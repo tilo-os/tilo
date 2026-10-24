@@ -4,7 +4,6 @@
 //! reports typed hits, while the host applies them through the existing
 //! authenticated `Workspace` mutation methods.
 
-use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
 use ui::num::{f32_of_f64, f64_of_usize};
 use ui::time::Instant;
@@ -17,7 +16,6 @@ use ui::ColorCompat;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::ButtonRole;
 
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{DesktopTree, UserId};
@@ -29,22 +27,6 @@ use super::{
     permissions_pane_layout,
 };
 use ui::TextRole;
-
-/// The "At a glance" stat tiles: the base surface inside the raised summary
-/// card, with a hairline derived against the card. Where a palette makes
-/// `base` and `raised` the same colour (high contrast), the lift alone
-/// cannot separate the tile from its card (HIG §9.3's caveat) and the edge
-/// does the job; `tests::stat_tiles_keep_an_edge_on_every_palette` holds it.
-fn stat_tile_face(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color) {
-    let colors = &theme.tokens.colors;
-    (
-        colors.surfaces.base,
-        ui::tokens::colors::Colors::hairline_on(
-            colors.surfaces.raised,
-            ui::chrome::shell::HAIRLINE_ALPHA,
-        ),
-    )
-}
 
 /// What the lens paints, read from the host once per frame. Everything is
 /// borrowed, so building it costs no copy of the desktop.
@@ -97,6 +79,8 @@ pub enum PublicCard {
     },
     /// It cannot be public here, or its host did not answer: why.
     Unavailable(String),
+    /// There is no network to reach its host through.
+    Offline,
 }
 
 /// One of the person's devices as the General tab offers it.
@@ -245,8 +229,9 @@ pub struct DrawPlan {
 pub struct WorkspaceSettingsOverlay {
     viewport: Rect,
     general_scroll_y: f64,
-    /// General body geometry reserves both OS UI and text scaling.
-    general_text_scale: f64,
+    /// The General page's first group stands `s2` under the body's top: the
+    /// other half of the strip's `s4` rhythm, in the theme's spacing.
+    general_lead: f64,
     /// Measured footer plus its themed inset/gap, reserved outside the body clip.
     general_footer_height: f64,
     transition: ui::motion::Presence,
@@ -284,21 +269,8 @@ pub struct WorkspaceSettingsOverlay {
     member_sheet: Option<MemberSheet>,
     member_sheet_focus: usize,
     member_sheet_option_rects: Vec<Rect>,
-    /// The General tab's devices card: one toggle per device, the two move
-    /// buttons and Delete, as painted (scroll applied).
-    device_toggle_rects: Vec<Rect>,
-    move_rects: [Rect; 2],
-    delete_rect: Rect,
-    /// Rows the devices card had when last painted, for the scroll range.
-    device_rows: usize,
-    /// The Public card's switch, role and description controls, as
-    /// painted (scroll applied); zero while they take no input.
-    public_rects: [Rect; 3],
-    /// The archived workspaces card: each row's Restore and Delete, as
-    /// painted (scroll applied).
-    archived_rects: Vec<[Rect; 2]>,
-    /// Rows the archived card had when last painted, for the scroll range.
-    archived_rows: usize,
+    /// The General tab's body, laid out by the toolkit.
+    general: general::GeneralPage,
     /// Shaped caret/scroll cache; the host owns the rename draft and selection.
     name_input: Option<ui::widget::TextInput>,
 }
@@ -308,7 +280,7 @@ impl Default for WorkspaceSettingsOverlay {
         Self {
             viewport: Rect::ZERO,
             general_scroll_y: 0.0,
-            general_text_scale: 1.0,
+            general_lead: f64::from(ui::tokens::Spacing::BASE.s2),
             general_footer_height: 48.0,
             transition: ui::motion::Presence::closed(),
             tab_pill_rects: [Rect::ZERO; 5],
@@ -332,13 +304,7 @@ impl Default for WorkspaceSettingsOverlay {
             member_sheet: None,
             member_sheet_focus: 0,
             member_sheet_option_rects: Vec::new(),
-            device_toggle_rects: Vec::new(),
-            move_rects: [Rect::ZERO; 2],
-            delete_rect: Rect::ZERO,
-            device_rows: 0,
-            public_rects: [Rect::ZERO; 3],
-            archived_rects: Vec::new(),
-            archived_rows: 0,
+            general: general::GeneralPage::default(),
             name_input: None,
         }
     }
@@ -486,25 +452,9 @@ impl WorkspaceSettingsOverlay {
         body
     }
 
+    /// The "At a glance" statistics, as last laid out (scroll applied).
     pub fn general_summary_rect(&self) -> Rect {
-        Self::summary_card_rect_for(
-            self.general_body_rect(),
-            self.general_text_scale,
-            self.general_scroll_y,
-        )
-    }
-
-    /// The "At a glance" card of the General tab: its authored place under
-    /// the identity and sharing cards, scaled with the body's text and
-    /// shifted by the body's scroll. One definition for hit-testing and
-    /// painting.
-    pub fn summary_card_rect_for(body: Rect, text_scale: f64, scroll_y: f64) -> Rect {
-        Rect::new(
-            body.x0,
-            body.y0 + 268.0 * text_scale - scroll_y,
-            body.x1,
-            body.y0 + 374.0 * text_scale - scroll_y,
-        )
+        self.general.rect(general::GLANCE)
     }
 
     /// Scroll only General's body; headers, tabs and footer remain anchored.
@@ -512,138 +462,55 @@ impl WorkspaceSettingsOverlay {
         if !delta.is_finite() || self.member_sheet.is_some() {
             return false;
         }
-        let content = 382.0
-            + Self::devices_card_height(self.device_rows)
-            + 16.0
-            + PUBLIC_CARD_HEIGHT
-            + 16.0
-            + Self::archived_card_height(self.archived_rows);
-        let max = (content * self.general_text_scale - self.general_body_rect().height()).max(0.0);
+        let content = self.general_lead + self.general.height();
+        let max = (content - self.general_body_rect().height()).max(0.0);
         let old = self.general_scroll_y;
         self.general_scroll_y = (old + delta).clamp(0.0, max);
+        let body = self.general_body_rect();
+        self.general.place(Point::new(
+            body.x0,
+            body.y0 + self.general_lead - self.general_scroll_y,
+        ));
         (old - self.general_scroll_y).abs() > f64::EPSILON
     }
 
-    fn devices_card_height(rows: usize) -> f64 {
-        let rows = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
-        48.0 + rows * 40.0 + 56.0
-    }
-
-    /// The devices card under "At a glance": where this workspace shows,
-    /// its place in the list, and Delete. Scroll applied.
-    pub fn devices_card_rect(&self) -> Rect {
-        let body = self.general_body_rect();
-        let scale = self.general_text_scale;
-        let top = body.y0 + 390.0 * scale - self.general_scroll_y;
-        Rect::new(
-            body.x0,
-            top,
-            body.x1,
-            top + Self::devices_card_height(self.device_rows) * scale,
-        )
-    }
-
-    /// The Public card under the devices card. Scroll applied.
-    pub fn public_card_rect(&self) -> Rect {
-        let devices = self.devices_card_rect();
-        let scale = self.general_text_scale;
-        let top = devices.y1 + 16.0 * scale;
-        Rect::new(
-            devices.x0,
-            top,
-            devices.x1,
-            top + PUBLIC_CARD_HEIGHT * scale,
-        )
-    }
-
-    /// Unscaled height of the archived card for `rows` workspaces, its gap
-    /// above included; none when nothing is archived.
-    fn archived_card_height(rows: usize) -> f64 {
-        if rows == 0 {
-            return 0.0;
-        }
-        let rows = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
-        48.0 + rows * 40.0 + 8.0 + 16.0
-    }
-
-    /// The archived workspaces card under the Public card. Scroll applied.
-    pub fn archived_card_rect(&self) -> Rect {
-        let public = self.public_card_rect();
-        let scale = self.general_text_scale;
-        let height = Self::archived_card_height(self.archived_rows);
-        if height <= 0.0 {
-            return Rect::new(public.x0, public.y1, public.x1, public.y1);
-        }
-        let top = public.y1 + 16.0 * scale;
-        Rect::new(public.x0, top, public.x1, top + (height - 16.0) * scale)
-    }
-
-    fn archived_card_hit(&self, point: Point) -> Option<EventOutcome> {
-        let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
-        self.archived_rects
-            .iter()
-            .enumerate()
-            .find_map(|(index, [restore, delete])| {
-                if hit(restore) {
-                    Some(EventOutcome::RestoreArchived(index))
-                } else {
-                    hit(delete).then_some(EventOutcome::DeleteArchived(index))
-                }
-            })
-    }
-
-    pub fn archived_rects(&self) -> &[[Rect; 2]] {
-        &self.archived_rects
-    }
-
-    fn public_card_hit(&self, point: Point) -> Option<EventOutcome> {
-        let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
-        let [switch, role, description] = &self.public_rects;
-        if hit(switch) {
-            return Some(EventOutcome::TogglePublic);
-        }
-        if hit(role) {
-            return Some(EventOutcome::CycleDefaultRole);
-        }
-        hit(description).then_some(EventOutcome::EditDescription)
-    }
-
-    fn devices_card_hit(&self, point: Point) -> Option<EventOutcome> {
-        let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
-        if let Some(index) = self.device_toggle_rects.iter().position(hit) {
+    /// The General control under `point`, by the id it carries in the page.
+    fn general_hit(&self, point: Point) -> Option<EventOutcome> {
+        let hit = |id: &str| {
+            let rect = self.general.rect(id);
+            rect.area() > 0.0 && rect.contains(point)
+        };
+        let rows = |id: fn(usize) -> String| {
+            (0..)
+                .map(id)
+                .take_while(|id| self.general.rect(id).area() > 0.0)
+        };
+        if let Some(index) = rows(general::device_id).position(|id| hit(&id)) {
             return Some(EventOutcome::ToggleDevice(index));
         }
-        if hit(&self.move_rects[0]) {
-            return Some(EventOutcome::MoveWorkspace(-1));
+        if let Some(index) = rows(general::restore_id).position(|id| hit(&id)) {
+            return Some(EventOutcome::RestoreArchived(index));
         }
-        if hit(&self.move_rects[1]) {
-            return Some(EventOutcome::MoveWorkspace(1));
+        if let Some(index) = rows(general::delete_archived_id).position(|id| hit(&id)) {
+            return Some(EventOutcome::DeleteArchived(index));
         }
-        hit(&self.delete_rect).then_some(EventOutcome::DeleteWorkspace)
+        [
+            (general::MOVE_UP, EventOutcome::MoveWorkspace(-1)),
+            (general::MOVE_DOWN, EventOutcome::MoveWorkspace(1)),
+            (general::PUBLIC_SWITCH, EventOutcome::TogglePublic),
+            (general::PUBLIC_ROLE, EventOutcome::CycleDefaultRole),
+            (general::PUBLIC_DESCRIBE, EventOutcome::EditDescription),
+            (general::DELETE, EventOutcome::DeleteWorkspace),
+            (general::INVITE, EventOutcome::CreateInvite),
+            (general::NAME, EventOutcome::EditName),
+        ]
+        .into_iter()
+        .find_map(|(id, outcome)| hit(id).then_some(outcome))
     }
 
-    pub fn device_toggle_rects(&self) -> &[Rect] {
-        &self.device_toggle_rects
-    }
-
+    /// The workspace's name field, as last laid out (scroll applied).
     pub fn name_rect(&self) -> Rect {
-        let body = self.general_body_rect();
-        Rect::new(
-            body.x0 + 16.0,
-            body.y0 + 62.0 * self.general_text_scale - self.general_scroll_y,
-            body.x1 - 16.0,
-            body.y0 + 96.0 * self.general_text_scale - self.general_scroll_y,
-        )
-    }
-
-    pub fn name_rect_for(card: Rect) -> Rect {
-        let body = Self::body_rect_for(card);
-        Rect::new(
-            body.x0 + 16.0,
-            body.y0 + 62.0,
-            body.x1 - 16.0,
-            body.y0 + 96.0,
-        )
+        self.general.rect(general::NAME)
     }
 
     pub fn close_rect(&self) -> Rect {
@@ -666,21 +533,9 @@ impl WorkspaceSettingsOverlay {
         )
     }
 
+    /// The button that opens the invite composer, as last laid out.
     pub fn invite_rect(&self) -> Rect {
-        let body = self.general_body_rect();
-        let y = body.y0 + 202.0 * self.general_text_scale - self.general_scroll_y;
-        Rect::new(
-            body.x1 - 16.0 - 72.0 * self.general_text_scale,
-            y,
-            body.x1 - 16.0,
-            y + 34.0 * self.general_text_scale,
-        )
-    }
-
-    pub fn invite_rect_for(card: Rect) -> Rect {
-        let body = Self::body_rect_for(card);
-        let link_y = body.y0 + 202.0;
-        Rect::new(body.x1 - 88.0, link_y, body.x1 - 16.0, link_y + 34.0)
+        self.general.rect(general::INVITE)
     }
 
     pub fn force_settled(&mut self) {
@@ -1182,29 +1037,10 @@ impl WorkspaceSettingsOverlay {
         if matches!(active_tab, WsTab::General) && !self.general_body_rect().contains(point) {
             return EventOutcome::CommitName;
         }
-        if matches!(active_tab, WsTab::General)
-            && let Some(outcome) = self.devices_card_hit(point)
-        {
-            return outcome;
+        if matches!(active_tab, WsTab::General) {
+            return self.general_hit(point).unwrap_or(EventOutcome::CommitName);
         }
-        if matches!(active_tab, WsTab::General)
-            && let Some(outcome) = self.public_card_hit(point)
-        {
-            return outcome;
-        }
-        if matches!(active_tab, WsTab::General)
-            && let Some(outcome) = self.archived_card_hit(point)
-        {
-            return outcome;
-        }
-        if matches!(active_tab, WsTab::General) && self.invite_rect().contains(point) {
-            return EventOutcome::CreateInvite;
-        }
-        if self.name_rect().contains(point) {
-            EventOutcome::EditName
-        } else {
-            EventOutcome::CommitName
-        }
+        EventOutcome::CommitName
     }
 
     pub fn draw_contents(
@@ -1258,59 +1094,27 @@ impl WorkspaceSettingsOverlay {
             return;
         }
 
-        self.general_text_scale = f64::from(theme.text_scale * theme.ui_scale);
+        self.general_lead = f64::from(tokens.spacing.s2);
         let editing = model.owner_controls && model.editing_name.is_some();
         let hint = Self::footer_hints(editing);
         let footer = Self::footer_hint_rect(rect, &hint, text_renderer, theme);
         self.general_footer_height = rect.y1 - footer.y0 + f64::from(tokens.spacing.s2);
+        let body = self.general_body_rect();
+        let content = general::content(model);
+        self.general
+            .lay_out(&content, body.width(), theme, text_renderer);
         self.scroll_general(0.0);
-        let body_clip = self.general_body_rect();
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &body_clip,
-        );
-        let content_rect = Rect::new(
-            rect.x0,
-            rect.y0 - self.general_scroll_y,
-            rect.x1,
-            rect.y1 - self.general_scroll_y,
-        );
-        let body_y = rect.y0 + 168.0;
-        self.draw_ws_settings_name_input(
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
+        self.general.draw(scene, transform, text_renderer, theme);
+        let shown = model
+            .editing_name
+            .filter(|_| model.owner_controls)
+            .unwrap_or(active_name.as_str());
+        self.paint_name_field(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            content_rect,
             model,
-            active_name.as_str(),
+            shown,
         );
-        let can_invite = model.desktop.active_workspace().is_some_and(|workspace| {
-            model.governs_active_room && workspace.may_administer(model.acting_user)
-        });
-        let invite_y = self.draw_ws_settings_invite_link(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            content_rect,
-            can_invite,
-            body_y,
-        );
-        let collab_y = invite_y + 72.0;
-        Self::draw_ws_settings_collaborators(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            content_rect,
-            model,
-            collab_y,
-        );
-        self.draw_ws_settings_devices(scene, transform, text_renderer, theme, model);
-        self.draw_ws_settings_public(scene, transform, text_renderer, theme, model);
-        self.draw_ws_settings_archived(scene, transform, text_renderer, theme, model);
-
         scene.pop_layer();
 
         ui::widget::KeyHintsFace::new(&hint).paint(
@@ -2081,89 +1885,6 @@ impl WorkspaceSettingsOverlay {
         Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
     }
 
-    fn draw_ws_settings_name_input(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        model: &WorkspaceSettingsModel<'_>,
-        active_name: &str,
-    ) -> bool {
-        let (scene, transform, text_renderer, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let body = Self::body_rect(rect);
-        let identity_card = Rect::new(
-            body.x0,
-            body.y0 + 8.0 * f64::from(theme.text_scale * theme.ui_scale),
-            body.x1,
-            body.y0 + 112.0 * f64::from(theme.text_scale * theme.ui_scale),
-        );
-        ui::surface::card(
-            scene,
-            transform,
-            identity_card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-identity-title"),
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    identity_card.x0 + 16.0,
-                    identity_card.y0 + 13.0 * f64::from(theme.text_scale * theme.ui_scale),
-                )
-                    .into(),
-            ),
-            None,
-            &tokens.typography.style(TextRole::Body),
-        );
-        let description = text_renderer.elide_to_width_style(
-            &t("workspace-settings-identity-description"),
-            f32_of_f64(identity_card.width() - 32.0),
-            &tokens.typography.style(TextRole::Caption),
-        );
-        text_renderer.draw_style(
-            scene,
-            &description,
-            colors.text_dim,
-            transform.pre_translate(
-                (
-                    identity_card.x0 + 16.0,
-                    identity_card.y0 + 36.0 * f64::from(theme.text_scale * theme.ui_scale),
-                )
-                    .into(),
-            ),
-            None,
-            &tokens.typography.style(TextRole::Caption),
-        );
-        let can_rename = model.owner_controls;
-        let editing = can_rename && model.editing_name.is_some();
-        let shown = if editing {
-            model.editing_name.unwrap_or(active_name)
-        } else {
-            active_name
-        };
-        self.paint_name_field(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            model,
-            shown,
-        );
-        if !editing && !can_rename {
-            text_renderer.draw_style(
-                scene,
-                &t("workspace-settings-rename-admin-only"),
-                colors.text_dim,
-                transform.pre_translate((identity_card.x0 + 16.0, identity_card.y1 - 12.0).into()),
-                None,
-                &tokens.typography.style(TextRole::Caption),
-            );
-        }
-        editing
-    }
-
     fn paint_name_field(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -2212,726 +1933,6 @@ impl WorkspaceSettingsOverlay {
             &ui::presence::PresenceCtx::default(),
         );
     }
-
-    /// Sharing card that opens the signed invite composer.
-    fn draw_ws_settings_invite_link(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        can_invite: bool,
-        _body_y: f64,
-    ) -> f64 {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let body = Self::body_rect(rect);
-        let sharing_card =
-            Self::draw_ws_settings_invite_link_card(scene, transform, theme, text_renderer, body);
-        let invite_y = body.y0 + 202.0 * f64::from(theme.text_scale * theme.ui_scale);
-        let url_pill = Rect::new(
-            sharing_card.x0 + 16.0,
-            invite_y,
-            sharing_card.x1 - 24.0 - 72.0 * f64::from(theme.text_scale * theme.ui_scale),
-            invite_y + 34.0 * f64::from(theme.text_scale * theme.ui_scale),
-        );
-        ui::surface::card(
-            scene,
-            transform,
-            url_pill,
-            f64::from(tokens.radii.detail),
-            colors.surfaces.base,
-        );
-        let invite_url = t(if can_invite {
-            "workspace-settings-invite-hint"
-        } else {
-            "workspace-settings-invite-admin-only"
-        });
-        let invite_url = text_renderer.elide_to_width_style(
-            &invite_url,
-            f32_of_f64(url_pill.width() - 24.0),
-            &tokens.typography.style(TextRole::Caption),
-        );
-        text_renderer.draw_style(
-            scene,
-            &invite_url,
-            colors.text_primary,
-            transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 9.0).into()),
-            None,
-            &tokens.typography.style(TextRole::Caption),
-        );
-        let invite_btn = self.invite_rect();
-        let invite_label = t("workspace-settings-invite-create");
-        ui::widget::Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ui::widget::ButtonFace::new(invite_btn, &invite_label)
-                .role(ui::widget::ButtonRole::Primary)
-                .disabled(!can_invite),
-        );
-        invite_y
-    }
-
-    /// The sharing card's background, icon and title/subtitle — split out
-    /// of [`Self::draw_ws_settings_invite_link`] to keep that under
-    /// `too_many_lines`. Returns the card's rect, since the caller's URL
-    /// pill and copy button are placed relative to it.
-    fn draw_ws_settings_invite_link_card(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        body: Rect,
-    ) -> Rect {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let sharing_card = Rect::new(
-            body.x0,
-            body.y0 + 128.0 * f64::from(theme.text_scale * theme.ui_scale),
-            body.x1,
-            body.y0 + 252.0 * f64::from(theme.text_scale * theme.ui_scale),
-        );
-        ui::surface::card(
-            scene,
-            transform,
-            sharing_card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        let share_icon = Rect::new(
-            sharing_card.x0 + 16.0,
-            sharing_card.y0 + 14.0 * f64::from(theme.text_scale * theme.ui_scale),
-            sharing_card.x0 + 48.0,
-            sharing_card.y0 + 46.0 * f64::from(theme.text_scale * theme.ui_scale),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.text_primary.with_alpha_factor(SHARE_TILE_WASH),
-            None,
-            &RoundedRect::from_rect(share_icon, f64::from(tokens.radii.control)),
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            share_icon.inset(-8.0),
-            ui::icons::Icon::Copy,
-            accent_icon_on_tile(theme, SHARE_TILE_WASH),
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-invite-title"),
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    sharing_card.x0 + 60.0,
-                    sharing_card.y0 + 13.0 * f64::from(theme.text_scale * theme.ui_scale),
-                )
-                    .into(),
-            ),
-            None,
-            &tokens.typography.style(TextRole::Body),
-        );
-        let description = text_renderer.elide_to_width_style(
-            &t("workspace-settings-invite-description"),
-            f32_of_f64(sharing_card.width() - 76.0),
-            &tokens.typography.style(TextRole::Caption),
-        );
-        text_renderer.draw_style(
-            scene,
-            &description,
-            colors.text_dim,
-            transform.pre_translate(
-                (
-                    sharing_card.x0 + 60.0,
-                    sharing_card.y0 + 36.0 * f64::from(theme.text_scale * theme.ui_scale),
-                )
-                    .into(),
-            ),
-            None,
-            &tokens.typography.style(TextRole::Caption),
-        );
-        sharing_card
-    }
-
-    /// Paint the devices card and record its controls' rects. A workspace
-    /// that is not the person's own lists no devices but still offers its
-    /// place in the list and Delete.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one card painted top to bottom from shared running offsets, recording each control's rect as it goes"
-    )]
-    fn draw_ws_settings_devices(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        model: &WorkspaceSettingsModel<'_>,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let scale = f64::from(theme.text_scale * theme.ui_scale);
-        self.device_rows = model.devices.len();
-        let card = self.devices_card_rect();
-        ui::surface::card(
-            scene,
-            transform,
-            card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        let style = theme.text(TextRole::Caption);
-        let text = |text_renderer: &mut TextRenderer,
-                    scene: &mut Scene,
-                    label: &str,
-                    color,
-                    x: f64,
-                    y: f64| {
-            text_renderer.draw_style(
-                scene,
-                label,
-                color,
-                transform.pre_translate((x, y).into()),
-                None,
-                &style,
-            );
-        };
-        let title = t("workspace-settings-devices-title");
-        text_renderer.draw_style(
-            scene,
-            &title,
-            colors.text_primary,
-            transform.pre_translate((card.x0 + 16.0, card.y0 + 16.0 * scale).into()),
-            None,
-            &theme.text(TextRole::Body),
-        );
-        // What stays on each device, beside the devices it is about: the
-        // workspace's content is shared, its arrangement here is not.
-        let (title_w, _) = text_renderer.measure_style(&title, None, &theme.text(TextRole::Body));
-        let local_x = card.x0 + 16.0 + f64::from(title_w) + 12.0;
-        let local = text_renderer.elide_to_width_style(
-            &t("workspace-settings-devices-local"),
-            f32_of_f64((card.x1 - 16.0 - local_x).max(0.0)),
-            &style,
-        );
-        text(
-            text_renderer,
-            scene,
-            &local,
-            colors.text_dim,
-            local_x,
-            card.y0 + 18.0 * scale,
-        );
-        let button = |scene: &mut Scene, text_renderer: &mut TextRenderer, face: CardButton<'_>| {
-            paint_card_button(scene, transform, text_renderer, theme, face);
-        };
-        self.device_toggle_rects.clear();
-        let mut y = card.y0 + 48.0 * scale;
-        for device in model.devices {
-            let label = if device.here {
-                t_args(
-                    "workspace-settings-device-here",
-                    &[("device", device.label.clone().into())],
-                )
-            } else {
-                device.label.clone()
-            };
-            text(
-                text_renderer,
-                scene,
-                &label,
-                colors.text_primary,
-                card.x0 + 16.0,
-                y + 10.0 * scale,
-            );
-            let toggle = Rect::new(
-                card.x1 - 16.0 - 96.0 * scale,
-                y,
-                card.x1 - 16.0,
-                y + 32.0 * scale,
-            );
-            // A shown device is the toggle pressed in, never an accent.
-            let label = t(if device.shown {
-                "workspace-settings-device-shown"
-            } else {
-                "workspace-settings-device-hidden"
-            });
-            button(
-                scene,
-                text_renderer,
-                CardButton {
-                    toggled: device.shown,
-                    ..CardButton::new(toggle, &label)
-                },
-            );
-            self.device_toggle_rects.push(toggle);
-            y += 40.0 * scale;
-        }
-        let row = y + 8.0 * scale;
-        let first = model
-            .desktop
-            .workspaces
-            .first()
-            .is_some_and(|workspace| workspace.id == model.desktop.active);
-        let last = model
-            .desktop
-            .workspaces
-            .last()
-            .is_some_and(|workspace| workspace.id == model.desktop.active);
-        let earlier = Rect::new(
-            card.x0 + 16.0,
-            row,
-            card.x0 + 16.0 + 96.0 * scale,
-            row + 32.0 * scale,
-        );
-        let later = Rect::new(
-            earlier.x1 + 8.0,
-            row,
-            earlier.x1 + 8.0 + 96.0 * scale,
-            row + 32.0 * scale,
-        );
-        for (rect, key, enabled) in [
-            (earlier, "workspace-settings-move-earlier", !first),
-            (later, "workspace-settings-move-later", !last),
-        ] {
-            let label = t(key);
-            button(
-                scene,
-                text_renderer,
-                CardButton {
-                    enabled,
-                    ..CardButton::new(rect, &label)
-                },
-            );
-        }
-        self.move_rects = [
-            if first { Rect::ZERO } else { earlier },
-            if last { Rect::ZERO } else { later },
-        ];
-        let deletable = model.desktop.workspaces.len() > 1;
-        let delete_label = t("workspace-settings-delete");
-        // As wide as its label needs on the shared face, never narrower
-        // than the row's other buttons.
-        let delete_w = ui::widget::ButtonFace::new(Rect::ZERO, &delete_label)
-            .role(ButtonRole::Destructive)
-            .intrinsic_width(text_renderer, theme)
-            .max(120.0 * scale);
-        let delete = Rect::new(
-            card.x1 - 16.0 - delete_w,
-            row,
-            card.x1 - 16.0,
-            row + 32.0 * scale,
-        );
-        button(
-            scene,
-            text_renderer,
-            CardButton {
-                role: ButtonRole::Destructive,
-                enabled: deletable,
-                ..CardButton::new(delete, &delete_label)
-            },
-        );
-        self.delete_rect = if deletable { delete } else { Rect::ZERO };
-    }
-
-    /// The archived workspaces card: each workspace this device keeps off
-    /// its switcher, with Restore and Delete. Painted only while there are
-    /// any.
-    fn draw_ws_settings_archived(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        model: &WorkspaceSettingsModel<'_>,
-    ) {
-        self.archived_rows = model.archived.len();
-        self.archived_rects.clear();
-        if model.archived.is_empty() {
-            return;
-        }
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let scale = f64::from(theme.text_scale * theme.ui_scale);
-        let card = self.archived_card_rect();
-        ui::surface::card(
-            scene,
-            transform,
-            card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        let style = theme.text(TextRole::Caption);
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-archived-title"),
-            colors.text_primary,
-            transform.pre_translate((card.x0 + 16.0, card.y0 + 16.0 * scale).into()),
-            None,
-            &theme.text(TextRole::Body),
-        );
-        let button = |scene: &mut Scene, text_renderer: &mut TextRenderer, face: CardButton<'_>| {
-            paint_card_button(scene, transform, text_renderer, theme, face);
-        };
-        let mut y = card.y0 + 48.0 * scale;
-        for archived in model.archived {
-            let delete = Rect::new(
-                card.x1 - 16.0 - 96.0 * scale,
-                y,
-                card.x1 - 16.0,
-                y + 32.0 * scale,
-            );
-            let restore = Rect::new(
-                delete.x0 - 8.0 - 96.0 * scale,
-                y,
-                delete.x0 - 8.0,
-                y + 32.0 * scale,
-            );
-            let name = text_renderer.elide_to_width_style(
-                &archived.name,
-                f32_of_f64((restore.x0 - 12.0 - card.x0 - 16.0).max(0.0)),
-                &style,
-            );
-            text_renderer.draw_style(
-                scene,
-                &name,
-                colors.text_primary,
-                transform.pre_translate((card.x0 + 16.0, y + 10.0 * scale).into()),
-                None,
-                &style,
-            );
-            let restore_label = t("workspace-settings-archived-restore");
-            button(
-                scene,
-                text_renderer,
-                CardButton::new(restore, &restore_label),
-            );
-            let delete_label = t("workspace-settings-archived-delete");
-            button(
-                scene,
-                text_renderer,
-                CardButton {
-                    role: ButtonRole::Destructive,
-                    ..CardButton::new(delete, &delete_label)
-                },
-            );
-            self.archived_rects.push([restore, delete]);
-            y += 40.0 * scale;
-        }
-    }
-
-    /// The Public card: a switch that lists the workspace in its host's
-    /// directory, what the listing says, and the role people who join get.
-    /// Its host answers the listing only to whoever may change the
-    /// workspace's settings; everyone else sees why not.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a paint routine that lays the card out top to bottom from shared running offsets"
-    )]
-    fn draw_ws_settings_public(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        model: &WorkspaceSettingsModel<'_>,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let scale = f64::from(theme.text_scale * theme.ui_scale);
-        let card = self.public_card_rect();
-        self.public_rects = [Rect::ZERO; 3];
-        ui::surface::card(
-            scene,
-            transform,
-            card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        let caption = theme.text(TextRole::Caption);
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-public-title"),
-            colors.text_primary,
-            transform.pre_translate((card.x0 + 16.0, card.y0 + 16.0 * scale).into()),
-            None,
-            &theme.text(TextRole::Body),
-        );
-        let (known, line) = match model.public {
-            PublicCard::Asking => (None, t("workspace-settings-public-asking")),
-            PublicCard::Unavailable(why) => (None, why.clone()),
-            PublicCard::Known {
-                public,
-                description,
-                default_role,
-            } => (
-                Some((*public, *default_role)),
-                if *public && !description.is_empty() {
-                    description.replace('\n', " ")
-                } else if *public {
-                    t("workspace-settings-public-on")
-                } else {
-                    t("workspace-settings-public-off")
-                },
-            ),
-        };
-        let width = ui::num::f32_of_f64((card.width() - 32.0).max(0.0));
-        let line = text_renderer.elide_to_width_style(&line, width, &caption);
-        text_renderer.draw_style(
-            scene,
-            &line,
-            colors.text_dim,
-            transform.pre_translate((card.x0 + 16.0, card.y0 + 44.0 * scale).into()),
-            None,
-            &caption,
-        );
-        let Some((public, role)) = known else {
-            return;
-        };
-        // The host answers the listing only to someone the room lets change
-        // its settings, and decides each change again: a known listing has
-        // working controls.
-        let button = |scene: &mut Scene, text_renderer: &mut TextRenderer, face: CardButton<'_>| {
-            paint_card_button(scene, transform, text_renderer, theme, face);
-        };
-        // The switch, at the title's end: pressed in while public.
-        let switch = Rect::new(
-            card.x1 - 16.0 - 96.0 * scale,
-            card.y0 + 12.0 * scale,
-            card.x1 - 16.0,
-            card.y0 + 44.0 * scale,
-        );
-        let switch_label = t(if public {
-            "workspace-settings-public-switch-on"
-        } else {
-            "workspace-settings-public-switch-off"
-        });
-        button(
-            scene,
-            text_renderer,
-            CardButton {
-                toggled: public,
-                ..CardButton::new(switch, &switch_label)
-            },
-        );
-        // Who joins as what, and what it says, once it is public.
-        let row = card.y0 + 76.0 * scale;
-        let role_label = t_args(
-            "workspace-settings-public-role",
-            &[("role", super::role_label(role).into())],
-        );
-        let role_rect = Rect::new(
-            card.x0 + 16.0,
-            row,
-            card.x0 + 16.0 + 200.0 * scale,
-            row + 32.0 * scale,
-        );
-        let description_rect = Rect::new(
-            card.x1 - 16.0 - 160.0 * scale,
-            row,
-            card.x1 - 16.0,
-            row + 32.0 * scale,
-        );
-        button(
-            scene,
-            text_renderer,
-            CardButton::new(role_rect, &role_label),
-        );
-        let describe_label = t("workspace-settings-public-describe");
-        button(
-            scene,
-            text_renderer,
-            CardButton::new(description_rect, &describe_label),
-        );
-        self.public_rects = [switch, role_rect, description_rect];
-    }
-
-    /// Live workspace summary. Detailed member management belongs to the
-    /// Members tab; General stays an honest overview rather than inventing
-    /// a placeholder collaborator.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a paint routine that lays the summary out top to bottom from shared running offsets"
-    )]
-    fn draw_ws_settings_collaborators(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        model: &WorkspaceSettingsModel<'_>,
-        _collab_y: f64,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let body = Self::body_rect(rect);
-        let summary_card =
-            Self::summary_card_rect_for(body, f64::from(theme.text_scale * theme.ui_scale), 0.0);
-        ui::surface::card(
-            scene,
-            transform,
-            summary_card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-glance-title"),
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    summary_card.x0 + 16.0,
-                    summary_card.y0 + 13.0 * f64::from(theme.text_scale * theme.ui_scale),
-                )
-                    .into(),
-            ),
-            None,
-            &tokens.typography.style(TextRole::Body),
-        );
-        let (members, grants, app_rules) =
-            model.desktop.active_workspace().map_or((0, 0, 0), |ws| {
-                let members = ws.roster().len();
-                let sandbox = ws
-                    .sandbox
-                    .iter()
-                    .filter(|cap| cap.effect == collab_types::caps::Effect::Grant);
-                let given =
-                    ws.policy.grants.iter().filter(|grant| {
-                        !matches!(grant.subject, tilo_action_policy::Subject::Role(_))
-                    });
-                let grants = sandbox.count().saturating_add(given.count());
-                (members, grants, ws.default_apps.policy.len())
-            });
-        let stats = [
-            (
-                members.to_string(),
-                t_args(
-                    "workspace-settings-stat-members",
-                    &[("count", members.into())],
-                ),
-            ),
-            (
-                grants.to_string(),
-                t_args(
-                    "workspace-settings-stat-grants",
-                    &[("count", grants.into())],
-                ),
-            ),
-            (
-                app_rules.to_string(),
-                t_args(
-                    "workspace-settings-stat-app-rules",
-                    &[("count", app_rules.into())],
-                ),
-            ),
-        ];
-        let stat_gap = 8.0;
-        let stat_y0 = summary_card.y0 + 44.0 * f64::from(theme.text_scale * theme.ui_scale);
-        let stat_w = (summary_card.width() - 32.0 - stat_gap * 2.0) / 3.0;
-        for (i, (value, label)) in stats.iter().enumerate() {
-            let x0 = summary_card.x0 + 16.0 + f64_of_usize(i) * (stat_w + stat_gap);
-            let stat = Rect::new(
-                x0,
-                stat_y0,
-                x0 + stat_w,
-                summary_card.y1 - 14.0 * f64::from(theme.text_scale * theme.ui_scale),
-            );
-            let stat_rr = RoundedRect::from_rect(stat, f64::from(tokens.radii.control));
-            let (stat_fill, stat_edge) = stat_tile_face(theme);
-            scene.fill(Fill::NonZero, transform, stat_fill, None, &stat_rr);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                stat_edge,
-                None,
-                &stat_rr,
-            );
-            text_renderer.draw_style(
-                scene,
-                value,
-                colors.text_primary,
-                transform.pre_translate(
-                    (
-                        stat.x0 + 12.0,
-                        stat.y0 + 8.0 * f64::from(theme.text_scale * theme.ui_scale),
-                    )
-                        .into(),
-                ),
-                None,
-                &tokens.typography.style(TextRole::Heading),
-            );
-            text_renderer.draw_style(
-                scene,
-                label,
-                colors.text_dim,
-                transform.pre_translate(
-                    (
-                        stat.x0 + 12.0,
-                        stat.y0 + 33.0 * f64::from(theme.text_scale * theme.ui_scale),
-                    )
-                        .into(),
-                ),
-                None,
-                &tokens.typography.style(TextRole::Caption),
-            );
-        }
-    }
-}
-
-/// The Public card: its title and switch, the listing's line, and the role
-/// and description controls.
-const PUBLIC_CARD_HEIGHT: f64 = 124.0;
-
-/// A card's button: the shared [`ui::widget::ButtonFace`] of `role`,
-/// pressed in while `toggled`, dimmed and inert while not `enabled`.
-#[derive(Clone, Copy)]
-struct CardButton<'a> {
-    rect: Rect,
-    label: &'a str,
-    role: ButtonRole,
-    toggled: bool,
-    enabled: bool,
-}
-
-impl<'a> CardButton<'a> {
-    fn new(rect: Rect, label: &'a str) -> Self {
-        Self {
-            rect,
-            label,
-            role: ButtonRole::Secondary,
-            toggled: false,
-            enabled: true,
-        }
-    }
-}
-
-/// Paints one [`CardButton`] the way every General-tab card draws its
-/// buttons, so the cards cannot drift apart: the shared button face, drawn
-/// with the theme as seen from the card's raised ground, so a secondary
-/// button steps off the card as it steps off a window.
-fn paint_card_button(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    button: CardButton<'_>,
-) {
-    let on_card = theme.on_ground(theme.tokens.colors.surfaces.raised);
-    ui::widget::Button::paint(
-        scene,
-        transform,
-        text_renderer,
-        &on_card,
-        &ui::widget::ButtonFace::new(button.rect, button.label)
-            .role(button.role)
-            .toggled(button.toggled)
-            .disabled(!button.enabled),
-    );
 }
 
 /// Accent-toned text on `ground`: the accent as ink, stepped out until it
@@ -2948,10 +1949,9 @@ fn accent_text_on(theme: &Theme, ground: vello::peniko::Color) -> vello::peniko:
     colors.ink_on(ground, colors.intent.accent_ink, floor)
 }
 
-/// How strongly the identity card's and the sharing card's icon tiles wash
-/// the raised card with primary ink.
+/// How strongly the identity card's icon tile washes the raised card with
+/// primary ink.
 const IDENTITY_TILE_WASH: f32 = 0.18;
-const SHARE_TILE_WASH: f32 = 0.16;
 
 /// An accent icon on a tile washed `wash` over a raised card: the accent as
 /// ink, stepped out until it stands there as a mark (WCAG 1.4.11).
@@ -3003,7 +2003,8 @@ mod tests {
                 );
             }
             let colors = &theme.tokens.colors;
-            for wash in [IDENTITY_TILE_WASH, SHARE_TILE_WASH] {
+            {
+                let wash = IDENTITY_TILE_WASH;
                 let tile =
                     ui::tokens::colors::over(colors.surfaces.raised, colors.text_primary, wash);
                 let ratio = ui::a11y::contrast_ratio(accent_icon_on_tile(&theme, wash), tile);
@@ -3023,7 +2024,6 @@ mod tests {
         let mut overlay = WorkspaceSettingsOverlay::default();
         overlay.layout(Rect::new(0.0, 0.0, 600.0, 700.0));
         let theme = Theme::dark().with_text_scale(2.0);
-        overlay.general_text_scale = 2.0;
         let mut scene = Scene::new();
         let desktop = DesktopTree::default();
         let local_user = "owner".to_string();
@@ -3045,6 +2045,7 @@ mod tests {
             archived: &[],
             public: &PublicCard::Asking,
         };
+        overlay.draw_contents(&mut scene, Affine::IDENTITY, &mut tr, &theme, &model);
         overlay.paint_name_field(
             &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
             &model,
@@ -3090,8 +2091,8 @@ mod tests {
         for (width, scale) in [(1280.0, 1.0), (600.0, 2.0), (480.0, 2.0)] {
             let theme = Theme::dark().with_text_scale(scale);
             overlay.layout(Rect::new(0.0, 0.0, width, 800.0));
-            overlay.general_text_scale = f64::from(scale);
             let mut scene = Scene::new();
+            overlay.draw_contents(&mut scene, Affine::IDENTITY, &mut renderer, &theme, &model);
             overlay.paint_name_field(
                 &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme),
                 &model,
@@ -3183,7 +2184,6 @@ mod tests {
         ] {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.layout(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
-            overlay.general_text_scale = f64::from(theme.text_scale * theme.ui_scale);
             let model = WorkspaceSettingsModel {
                 desktop: &desktop,
                 tab: WsTab::General,
@@ -3201,22 +2201,7 @@ mod tests {
             };
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
-            let clip = overlay.general_body_rect();
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                1.0,
-                Affine::IDENTITY,
-                &clip,
-            );
-            let rect = overlay.rect();
-            overlay.draw_ws_settings_name_input(
-                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-                rect,
-                &model,
-                &name,
-            );
-            scene.pop_layer();
+            overlay.draw_contents(&mut scene, Affine::IDENTITY, &mut text, &theme, &model);
             let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
             renderer.render_png(
                 &scene,
@@ -3248,37 +2233,6 @@ mod tests {
 
     #[test]
     fn overlay_tiles_cards_and_fields_keep_an_edge_on_every_palette() {
-        // Phase `stat_tiles_keep_an_edge_on_every_palette`.
-        // HIG §9.3's caveat: where a palette makes `base` and `raised` the same
-        // colour, a tile filled with `base` inside a `raised` card has no lift
-        // left to separate it. The derived hairline must therefore move
-        // against the card on every shipped palette — measured as the
-        // composite of the edge over the card, not asserted from its alpha.
-        {
-            use ui::a11y::relative_luminance;
-            let over = |top: vello::peniko::Color, bottom: vello::peniko::Color| {
-                let a = top.components[3];
-                let t = top.components;
-                let b = bottom.components;
-                vello::peniko::Color::new([
-                    t[0] * a + b[0] * (1.0 - a),
-                    t[1] * a + b[1] * (1.0 - a),
-                    t[2] * a + b[2] * (1.0 - a),
-                    1.0,
-                ])
-            };
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let card = theme.tokens.colors.surfaces.raised;
-                let (_, edge) = stat_tile_face(&theme);
-                let delta = (relative_luminance(over(edge, card)) - relative_luminance(card)).abs();
-                assert!(
-                    delta >= 0.008,
-                    "{}: the stat tile's edge must separate it from the card (Δ luminance {delta:.4})",
-                    theme.name
-                );
-            }
-        }
-
         // Phase `lens_cards_and_fields_keep_an_edge_on_every_palette`.
         // Every card class the lens paints — raised cards (identity, sharing,
         // summary), base-filled fields (name, invite link) and the base-filled
@@ -3341,41 +2295,6 @@ mod tests {
             }
         }
 
-        // Phase `general_name_field_sits_on_the_card_pad_and_clears_the_summary_card`.
-        // General at 1×: the name field sits on the card pad (`s4`) inside the
-        // body and the "At a glance" card starts a token step or more under it,
-        // sharing the body's left edge. ux-bench cannot measure this pair at
-        // 200 % text, where the two are never co-visible on an 800 px body, so
-        // the production geometry helpers carry the assertion.
-        {
-            let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
-            let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
-            for card in [
-                Rect::new(720.0, 68.0, 1260.0, 780.0),
-                Rect::new(0.0, 0.0, 540.0, 700.0),
-            ] {
-                let body = WorkspaceSettingsOverlay::body_rect_for(card);
-                let name = WorkspaceSettingsOverlay::name_rect_for(card);
-                let summary = WorkspaceSettingsOverlay::summary_card_rect_for(body, 1.0, 0.0);
-                assert_eq!(name.x0 - body.x0, s4, "name field sits on the card pad");
-                assert_eq!(
-                    body.x1 - name.x1,
-                    s4,
-                    "name field keeps the card pad on the right"
-                );
-                assert!(
-                    summary.y0 - name.y1 >= s1,
-                    "summary card clears the name field (gap {})",
-                    summary.y0 - name.y1
-                );
-                assert_eq!(
-                    summary.x0, body.x0,
-                    "summary card shares the body's left edge"
-                );
-                assert_eq!(summary.x1, body.x1);
-            }
-        }
-
         {
             let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
             let lens = WorkspaceSettingsOverlay::rect_for(viewport);
@@ -3414,6 +2333,59 @@ mod tests {
                 let close_hint_baseline = card.y1 - 24.0;
                 assert!(body.y1 <= close_hint_baseline - 20.0);
             }
+        }
+    }
+
+    /// General at 1×: the name field keeps the same margin on both sides
+    /// of the body and the "At a glance" statistics start a token step or
+    /// more under it, inside the body's edges.
+    #[test]
+    fn general_name_field_stands_inside_the_body_and_clears_the_summary() {
+        let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
+        let desktop = DesktopTree::default();
+        let user = "owner".to_string();
+        let model = WorkspaceSettingsModel {
+            desktop: &desktop,
+            tab: WsTab::General,
+            grant_draft: GrantDraft::default(),
+            acting_user: &user,
+            people: &crate::collaborators::PeopleNames::default(),
+            editing_name: None,
+            name_selection: ui::text_selection::Selection::collapsed(0),
+            governs_active_room: false,
+            owner_controls: true,
+            apps: &super::super::NoAppDirectory,
+            devices: &[],
+            archived: &[],
+            public: &PublicCard::Asking,
+        };
+        for viewport in [
+            Rect::new(0.0, 0.0, 1600.0, 900.0),
+            Rect::new(0.0, 0.0, 600.0, 900.0),
+        ] {
+            let mut overlay = WorkspaceSettingsOverlay::default();
+            overlay.layout(viewport);
+            overlay.draw_contents(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &model,
+            );
+            let body = overlay.general_body_rect();
+            let name = overlay.name_rect();
+            let summary = overlay.general_summary_rect();
+            assert!(name.width() > 0.0 && summary.width() > 0.0);
+            assert!(
+                ((name.x0 - body.x0) - (body.x1 - name.x1)).abs() < 0.5,
+                "the name field keeps one margin on both sides: {name:?} in {body:?}"
+            );
+            assert!(
+                summary.y0 - name.y1 >= s1,
+                "summary clears the name field (gap {})",
+                summary.y0 - name.y1
+            );
+            assert!(summary.x0 >= body.x0 && summary.x1 <= body.x1);
         }
     }
 
@@ -3576,6 +2548,8 @@ mod tests {
         }
     }
 }
+
+mod general;
 
 #[cfg(test)]
 mod general_scroll_tests;
