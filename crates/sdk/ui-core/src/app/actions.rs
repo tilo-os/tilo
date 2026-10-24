@@ -4743,30 +4743,28 @@ impl App {
     }
 
     /// Confirm what the host asks through its own dialog, as the person
-    /// does: Enter on its question; what it confirmed is applied.
-    /// Answers the action confirmed; `None`, changing nothing, when nothing
-    /// is asked.
+    /// does: activate its button named for the verb (a destructive question
+    /// starts on Cancel, so Enter would not go ahead); what it confirmed is
+    /// applied. Answers the action confirmed; `None`, changing nothing, when
+    /// nothing is asked or the dialog refused the activation.
     #[cfg(feature = "native")]
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
-        use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
         let (address, _question) = self.asking()?;
-        let event = winit::event::KeyEvent::synthetic(
-            winit::event::RawKeyEvent {
-                physical_key: PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
-                ),
-                state: winit::event::ElementState::Pressed,
-            },
-            Key::Named(NamedKey::Enter),
-            None,
-            KeyLocation::Standard,
-            false,
-            None,
-            Key::Named(NamedKey::Enter),
+        self.refresh_action_palette_resources();
+        let palette = self.actions.action_palette.as_mut()?;
+        let target = palette.confirming_target()?;
+        self.bindings.clear();
+        self.layout.node_map.clear();
+        self.focused_node = None;
+        let handled = palette.perform_semantic_action(
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
         );
-        self.action_palette_handle_key(&crate::synthetic_input::keyboard_input(event));
+        self.finish_action_palette_input(handled);
         self.dispatch_control_invocations();
-        Some(address)
+        handled.then_some(address)
     }
 
     #[cfg(feature = "native")]
