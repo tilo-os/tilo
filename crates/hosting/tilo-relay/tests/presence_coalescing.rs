@@ -377,9 +377,6 @@ fn seeded_room(author: &TestDevice, reader: &TestDevice) -> (StatePeer, AutoComm
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
-    // Untyped fixture documents, decided by their record: no other test's
-    // process-wide app surfaces may apply while this runs.
-    let _surfaces = crate::common::no_process_surfaces();
     let user = TestUser::fresh("Keystroke writes");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("tilo-relay/7 peer", DeviceCapabilities::member());
