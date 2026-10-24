@@ -775,6 +775,7 @@ widget-screenshot-edit = Edit
 widget-screenshot-open = Open
 widget-screenshot-reveal = Show in Files
 widget-screenshot-send = Send…
+widget-capture-title = Capture
 widget-capture-dismiss = Dismiss
 widget-capture-mode-screenshot = Screenshot
 widget-capture-mode-recording = Recording
