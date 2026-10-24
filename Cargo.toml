@@ -432,6 +432,7 @@ members = [
     "crates/system/net-answers",
     "crates/system/ntfs-mount",
     "crates/system/os-actions",
+    "crates/system/pam-tilo",
     "crates/system/power",
     "crates/system/projector",
     "crates/system/sandbox-core",
