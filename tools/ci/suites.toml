@@ -119,6 +119,7 @@ suites = [
   "os/tests/boot_health_greeter.sh",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
+  "os/tests/firewalld_names.sh",
   "os/tests/clock_floor.sh",
   "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
