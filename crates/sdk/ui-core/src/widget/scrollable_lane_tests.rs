@@ -63,3 +63,57 @@ fn a_lane_needed_only_in_a_box_measured_on_the_way_is_given_back() {
         "the content fits the box it gets, so its bar's lane is given back"
     );
 }
+
+/// A page in a navigation shell, as Clocks shows its timers: the
+/// shell's first solve gives the scroll view no width, where the
+/// wrapped page is far taller than the window, and the next gives it
+/// its place, where the page fits. That early overflow does not keep
+/// the bar's lane at the real size, or each layout would end with the
+/// lane the one before it dropped, and the window would never settle
+/// on any width.
+#[test]
+fn content_that_overflowed_before_the_view_had_its_place_keeps_no_lane() {
+    let page = || -> crate::widget::Element {
+        let mut column = Column::new().with_intrinsic_height();
+        for _ in 0..6 {
+            column = column.push(Box::new(Text::new(
+                "A paragraph long enough to wrap onto many lines when the view it \
+                 is laid out in has no width yet, and onto one or two once it has.",
+            )));
+        }
+        Box::new(column)
+    };
+    let shell = crate::widget::NavShell::new()
+        .content_kind(crate::widget::ContentKind::Page)
+        .mode(crate::widget::NavMode::Push)
+        .sidebar(Box::new(crate::widget::NavList::new(vec![
+            crate::widget::NavSection::untitled(
+                "sections",
+                ["One", "Two", "Three"]
+                    .into_iter()
+                    .map(|label| crate::widget::NavItem::new(label.to_owned(), label))
+                    .collect(),
+            ),
+        ])))
+        .content(Box::new(
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_child(page()),
+        ));
+    let mut harness = crate::headless::FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(shell),
+        (900, 760),
+        Theme::dark(),
+    );
+    assert!(harness.take_skip_report().is_none());
+    for width in [880, 700, 520] {
+        harness
+            .resize((width, 760))
+            .unwrap_or_else(|error| panic!("{width} px: {error:?}"));
+        let lane = harness
+            .with_widget_mut(|scroll: &mut Scrollable| scroll.reserve_vertical)
+            .unwrap();
+        assert!(!lane, "{width} px: the page fits, so no lane is kept");
+    }
+}
