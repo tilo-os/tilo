@@ -53,6 +53,7 @@ use crate::library::Bookmarks;
 use crate::omnibox;
 use crate::resource::{Browser, bookmark_resource_id, browser};
 use crate::settings::{Settings, SettingsActionBindings, SettingsPane, SettingsPresentation};
+use load_failure::AddressProblem;
 use ui::lock::MutexRecover as _;
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::Resource as _;
@@ -61,7 +62,9 @@ use ui::tilo_resource::Resource as _;
 mod action_surface_tests;
 mod address_rows;
 mod continuity;
+mod http_fallback;
 mod library;
+mod load_failure;
 pub(crate) mod personal;
 #[cfg(test)]
 mod regression_tests;
@@ -563,6 +566,9 @@ pub struct BrowserWidget {
     resource_navigation_invocation: Option<ui::tilo_actions::InvocationId>,
     resource_navigation_request: Option<u32>,
     next_navigation_request: u32,
+    /// Where the typed address now opening over `https://` goes if that
+    /// fails (`http_fallback`).
+    http_fallback: Option<http_fallback::HttpFallback>,
     explicit_navigation_requested: bool,
     resource_navigation_result: Option<ui::tilo_actions::InvocationUpdate>,
     /// Navigations a later one replaced, settled and not yet read.
@@ -1355,6 +1361,7 @@ impl BrowserWidget {
             resource_navigation_invocation: None,
             resource_navigation_request: None,
             next_navigation_request: 0,
+            http_fallback: None,
             explicit_navigation_requested: false,
             resource_navigation_result: None,
             replaced_navigations: Vec::new(),
@@ -1598,12 +1605,14 @@ impl BrowserWidget {
                 return Err("Browser migration must use its resource action".into());
             }
             BrowserOperation::Back => {
+                self.expect_http_fallback(None, "");
                 self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
                 self.send_navigation(NavigationCommand::Back, owner)?;
             }
             BrowserOperation::Forward => {
+                self.expect_http_fallback(None, "");
                 self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
@@ -1621,6 +1630,7 @@ impl BrowserWidget {
                 } else {
                     NavigationCommand::Reload
                 };
+                self.expect_http_fallback(None, "");
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
                 self.send_navigation(command, owner)?;
@@ -1650,6 +1660,7 @@ impl BrowserWidget {
             }
             BrowserOperation::Navigate { url } => {
                 let target = self.navigation_target(url.trim())?;
+                self.expect_http_fallback(Some(url.as_str()), &target);
                 self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
                 self.show_library = false;
@@ -2152,10 +2163,10 @@ impl BrowserWidget {
     fn navigation_target(&mut self, input: &str) -> Result<String, String> {
         let input = input.trim();
         if input.is_empty() {
-            return self.reject_navigation("Enter a web address or search terms.");
+            return self.reject_navigation(AddressProblem::Empty);
         }
         if input.len() > 8 * 1024 || input.chars().any(char::is_control) {
-            return self.reject_navigation("That address is not valid.");
+            return self.reject_navigation(AddressProblem::Invalid);
         }
 
         // An explicitly schemed address must satisfy the manifest boundary.
@@ -2163,11 +2174,10 @@ impl BrowserWidget {
         // cannot get rewritten into an apparent HTTPS address.
         if input.contains("://") {
             let Ok(url) = url::Url::parse(input) else {
-                return self.reject_navigation("That web address is malformed.");
+                return self.reject_navigation(AddressProblem::Invalid);
             };
             if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
-                return self
-                    .reject_navigation("Browser can open only http:// or https:// addresses.");
+                return self.reject_navigation(AddressProblem::NotWeb);
             }
             return Ok(input.to_string());
         }
@@ -2180,7 +2190,7 @@ impl BrowserWidget {
             // schemes, and WebKit internals.
             && !looks_like_bare_web_host(input)
         {
-            return self.reject_navigation("Browser can open only http:// or https:// addresses.");
+            return self.reject_navigation(AddressProblem::NotWeb);
         }
 
         let candidate =
@@ -2190,10 +2200,10 @@ impl BrowserWidget {
                 search_url(&self.settings.search_engine, input)
             };
         let Ok(parsed) = url::Url::parse(&candidate) else {
-            return self.reject_navigation("That web address is malformed.");
+            return self.reject_navigation(AddressProblem::Invalid);
         };
         if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
-            return self.reject_navigation("Browser can open only http:// or https:// addresses.");
+            return self.reject_navigation(AddressProblem::NotWeb);
         }
         Ok(candidate)
     }
@@ -2221,14 +2231,15 @@ impl BrowserWidget {
         }
     }
 
-    fn reject_navigation<T>(&mut self, message: &str) -> Result<T, String> {
-        self.show_navigation_error(message);
-        Err(message.into())
+    fn reject_navigation<T>(&mut self, problem: AddressProblem) -> Result<T, String> {
+        let message = problem.message();
+        self.show_navigation_error(&message);
+        Err(message)
     }
 
     fn show_navigation_error(&mut self, message: &str) {
         self.progress = 1.0;
-        self.title = "Couldn’t open this address".into();
+        self.title = load_failure::address_failed_title();
         self.load_error = Some(message.into());
         self.address_error_active = true;
         self.structure_dirty = true;
@@ -2694,9 +2705,14 @@ impl BrowserWidget {
                 self.engine_setup_shown.as_ref(),
             )
         } else if let Some(error) = &self.load_error {
-            let recovery = EmptyState::error("Couldn’t open this page", error)
+            let heading = if self.address_error_active {
+                load_failure::address_failed_title()
+            } else {
+                load_failure::page_failed_title()
+            };
+            let recovery = EmptyState::error(heading, error)
                 .with_icon(Icon::Wifi)
-                .with_action("Try again")
+                .with_action(crate::resource::CATALOG.t("browser-page-retry"))
                 .with_action_id("browser.retry");
             let recovery: Box<dyn Widget> =
                 Box::new(match self.unit_binding("browser.page", "reload") {
@@ -2975,6 +2991,7 @@ impl BrowserWidget {
                     self.structure_dirty = true;
                 }
                 WebViewEvent::UriChanged(uri) => {
+                    self.follow_http_fallback(&uri);
                     self.site.navigation(&uri);
                     let requests = self.credentials.navigation(&uri);
                     crate::credentials::Credentials::send(&self.engine, requests);
@@ -3141,6 +3158,9 @@ impl BrowserWidget {
                     self.page_navigation_settled(None);
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
+                    if self.retry_over_http(&uri, &error) {
+                        continue;
+                    }
                     self.site.navigation(&uri);
                     self.favicon = None;
                     self.favicon_png = None;
@@ -3157,8 +3177,8 @@ impl BrowserWidget {
                     self.address_navigation_value = None;
                     self.set_loading_progress(1.0);
                     tracing::warn!("load failed for {uri}: {error}");
-                    self.title = format!("Failed to load {uri}");
-                    self.load_error = Some(error.chars().take(240).collect());
+                    self.title = load_failure::page_failed_title();
+                    self.load_error = Some(load_failure::page_failed_message(&error));
                     self.structure_dirty = true;
                     self.page_navigation_settled(Some(&error));
                 }
@@ -6488,7 +6508,12 @@ mod architecture_tests {
             widget.apply_engine_events();
             assert_eq!(widget.address.get(), failed_uri);
             assert_eq!(widget.current_uri, failed_uri);
-            assert_eq!(widget.load_error.as_deref(), Some("ERR_UNSAFE_PORT"));
+            // The person reads what happened; the engine's error is logged.
+            assert_eq!(
+                widget.load_error.as_deref(),
+                Some(load_failure::page_failed_message("ERR_UNSAFE_PORT").as_str())
+            );
+            assert_eq!(widget.title, load_failure::page_failed_title());
             assert!((widget.progress - 1.0).abs() < f64::EPSILON);
             widget
                 .perform_browser_operation(BrowserOperation::Reload)
@@ -8357,7 +8382,8 @@ mod tests {
             omnibox::RowKind::Go,
             "Enter opens the bar's text"
         );
-        assert_eq!(rows[0].url, "https://youtube.com");
+        assert_eq!(rows[0].url, "youtube.com");
+        assert_eq!(rows[0].detail, "https://youtube.com");
         assert!(
             rows.iter()
                 .any(|row| row.kind == omnibox::RowKind::History && row.title == "Cats - YouTube"),
@@ -8761,7 +8787,7 @@ mod tests {
             assert!(w.address_error_active);
             assert_eq!(
                 w.load_error.as_deref(),
-                Some("Browser can open only http:// or https:// addresses.")
+                Some(AddressProblem::NotWeb.message().as_str())
             );
 
             assert!(

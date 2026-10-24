@@ -199,3 +199,17 @@ browser-page-dialog-reload-title = Diese Seite neu laden?
 browser-page-dialog-unsaved = Vorgenommene Änderungen werden eventuell nicht gespeichert.
 browser-page-dialog-leave = Verlassen
 browser-page-dialog-reload = Neu laden
+
+## An address or page that did not open
+browser-address-failed = Diese Adresse konnte nicht geöffnet werden
+browser-address-empty = Geben Sie eine Webadresse oder Suchbegriffe ein
+browser-address-invalid = Diese Adresse lässt sich nicht öffnen. Prüfen Sie sie und versuchen Sie es erneut.
+browser-address-not-web = Hier öffnen sich nur Webadressen. Geben Sie eine ein, die mit https:// beginnt
+browser-page-failed = Diese Seite konnte nicht geöffnet werden
+browser-page-failed-not-found = Unter dieser Adresse gibt es keine Website. Prüfen Sie sie auf Tippfehler und versuchen Sie es erneut.
+browser-page-failed-offline = Sie sind offline. Verbinden Sie sich mit dem Internet und versuchen Sie es erneut.
+browser-page-failed-no-answer = Die Website hat nicht geantwortet. Versuchen Sie es gleich noch einmal.
+browser-page-failed-not-secure = Die sichere Verbindung zur Website ist fehlgeschlagen, deshalb wurde die Seite nicht geöffnet. Versuchen Sie es später erneut.
+browser-page-failed-blocked = Diese Seite ist gesperrt und kann hier nicht geöffnet werden.
+browser-page-failed-retry = Die Seite wurde nicht geladen. Versuchen Sie es erneut.
+browser-page-retry = Erneut versuchen

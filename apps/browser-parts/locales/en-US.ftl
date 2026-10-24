@@ -199,3 +199,17 @@ browser-page-dialog-reload-title = Reload this page?
 browser-page-dialog-unsaved = Changes you made may not be saved.
 browser-page-dialog-leave = Leave
 browser-page-dialog-reload = Reload
+
+## An address or page that did not open
+browser-address-failed = Couldn’t open this address
+browser-address-empty = Enter a web address or search words
+browser-address-invalid = This address can’t be opened. Check it and try again.
+browser-address-not-web = Only web addresses open here. Enter one that starts with https://
+browser-page-failed = Couldn’t open this page
+browser-page-failed-not-found = No site has this address. Check it for typos and try again.
+browser-page-failed-offline = You’re offline. Connect to the internet and try again.
+browser-page-failed-no-answer = The site didn’t answer. Try again in a moment.
+browser-page-failed-not-secure = The site’s secure connection failed, so the page wasn’t opened. Try again later.
+browser-page-failed-blocked = This page is blocked and can’t be opened here.
+browser-page-failed-retry = The page didn’t load. Try again.
+browser-page-retry = Try again
