@@ -487,6 +487,117 @@ p99_tolerance = 2.0
 min_delta = 0.5
 source = "per step: the held re-ask answers with news; only cancellation polls come back empty"
 
+# A whole agent task (scripts/perf/agent_task.py), as an agent in a terminal
+# of the login runs it: a scripted model streamed from a loopback fake at 0 ms
+# think time drives `tilo-runtime-mcp --connect` through the session's agent
+# door, admitted by the person and granted Notes; it finds Notes' new-note,
+# creates a note, finds the note by its title, looks inside it for its body,
+# appends the body and reads the note back. `tilo` is the time in the tool
+# calls (relay, door, broker, app and answer), `model` the fake's own
+# loopback overhead, `client` the loop's. A first debug run on t measured 720
+# ms of wall, 621 ms of it in Tilo, in 8 turns (one call asked again because
+# the note was not listed yet). The ceilings are the targets for a release
+# build: the whole task in a quarter of a second of Tilo time, a step in 80 ms.
+# Reported, not enforced, and compared only once three nightly records exist.
+[kpi."agent.task.notes.wall"]
+unit = "ms"
+p50 = 300.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 20.0
+source = "target: a five-step Notes task at 0 ms model time in 300 ms"
+
+[kpi."agent.task.notes.tilo"]
+unit = "ms"
+p50 = 250.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 20.0
+source = "target: the task's tool calls in 250 ms"
+
+[kpi."agent.task.notes.model"]
+unit = "ms"
+p50 = 100.0
+p50_tolerance = 2.0
+p99_tolerance = 2.5
+baseline_min_runs = 3
+min_delta = 20.0
+source = "the fake model's loopback overhead, kept small so the split stays Tilo's"
+
+[kpi."agent.task.notes.client"]
+unit = "ms"
+p50 = 10.0
+p50_tolerance = 2.0
+p99_tolerance = 2.5
+baseline_min_runs = 3
+min_delta = 5.0
+source = "the agent loop's own work, kept small so the split stays Tilo's"
+
+[kpi."agent.task.notes.turns"]
+unit = "count"
+p50 = 7.0
+p50_tolerance = 1.2
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 1.0
+source = "floor: six tool turns and the reply, when the new note is listed at once"
+
+[kpi."agent.task.notes.retries"]
+unit = "count"
+p50 = 0.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+baseline_min_runs = 3
+min_delta = 1.0
+source = "target: a note is listed and its text read back the moment the action that made it answers"
+
+[kpi."agent.task.notes.step.discover"]
+unit = "ms"
+p50 = 80.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 10.0
+source = "target: one search of the running apps in 80 ms"
+
+[kpi."agent.task.notes.step.create"]
+unit = "ms"
+p50 = 80.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 10.0
+source = "target: one app action, applied and answered, in 80 ms"
+
+[kpi."agent.task.notes.step.locate"]
+unit = "ms"
+p50 = 80.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 10.0
+source = "target: a search and one listing in 80 ms, with no search asked again"
+
+[kpi."agent.task.notes.step.write"]
+unit = "ms"
+p50 = 80.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 10.0
+source = "target: one app action, applied and answered, in 80 ms"
+
+[kpi."agent.task.notes.step.read"]
+unit = "ms"
+p50 = 80.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 10.0
+source = "target: one read of a short note in 80 ms"
+
 # Latency, compositor side (scripts/perf/latency_bench.py): a headless dev
 # build on the shared `runner` class, input through the control socket,
 # lavapipe. The ceilings are the KPIs' 60 Hz targets ("Input→photon

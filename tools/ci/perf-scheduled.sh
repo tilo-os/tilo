@@ -63,13 +63,21 @@ case $group in
     exit "$status"
     ;;
   agent)
-    cargo build --locked --release -p shell --bin shell --features dev-overrides
+    cargo build --locked --release -p shell --bin shell --bin tilo-runtime-mcp \
+      --example agent_task_desktop --features dev-overrides
     test -r "$VK_DRIVER_FILES"
     env_json release lavapipe kvm > "$out/env.json"
     bash tools/with-test-environment.sh python3 scripts/perf/agent_rtt.py \
       --spawn "$target/release/shell" --samples 1000 --warmup 100 \
       --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
       --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/compositor.log"
+    # A whole task as an agent in the login runs it: a scripted, streamed
+    # model at 0 ms think time, through tilo-runtime-mcp and the agent door.
+    bash tools/with-test-environment.sh python3 scripts/perf/agent_task.py \
+      --spawn "$target/release/shell" --repetitions 30 --warmup 3 \
+      --transport "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO" \
+      --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/task-compositor.log" \
+      --client-log "$out/task-client.log"
     env_json release none kvm > "$out/env-pipeline.json"
     TILO_AGENT_NATIVE_REPS=30 TILO_AGENT_NATIVE_SAMPLES="$out/native" \
       cargo test --locked --release -p agent --lib native_task_benchmark -- --nocapture

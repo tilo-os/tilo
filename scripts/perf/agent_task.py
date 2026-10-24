@@ -1,70 +1,72 @@
 #!/usr/bin/env python3
-"""An agent task, end to end: a scripted model drives Notes through the action surface.
+"""An agent task, end to end: a scripted model drives Notes through the agent door.
 
 The task is the one a person gives an agent: "Create a note titled T with
-the body B in Notes, then find it by searching for its text." It runs the
-way an external agent (Claude Code, any MCP client) runs it, with the model
-replaced so the number measures Tilo and needs no key:
+the body B in Notes, then find it by searching and read it back." It runs
+the way an agent in a terminal inside a Tilo login (Claude Code, Codex)
+runs it, with the model replaced so the number measures Tilo and needs no
+key:
 
   agent loop  --HTTP, Anthropic Messages streaming-->  fake model (loopback)
-  agent loop  --control socket JSON lines---------->  compositor -> Notes
+  agent loop  --MCP stdio-->  tilo-runtime-mcp --connect
+              --agent.sock-->  compositor (as the admitted agent) -> Notes
+
+`tilo-runtime-mcp --connect` is the program `tilo agent connect claude`
+registers. Inside the login it relays to the session's agent door, so the
+agent is admitted by the person (here: the `permission-prompts` decision on
+the control socket, as the owner answers remotely), is an agent member of
+the workspace, is granted Notes like Settings → Agents grants it, and every
+call passes the broker's gate as that agent. Its tools are the door's own
+path-addressed ones (`tilo_find`, `tilo_do`, `tilo_ls`, `tilo_read`), and
+the fake model is offered exactly what the door's `tools/list` answers.
 
 The fake model is a loopback HTTP server that answers each turn with a
 streamed `tool_use` (server-sent events, as the Messages API streams them).
 Its policy reads the previous tool results the way a perfect model would and
-picks the next call from what Tilo published; it never knows an address in
-advance. `--think-ms` delays each turn's first content block and
-`--tokens-per-s` paces the stream, so a run can model a real provider; the
-scheduled lane runs them at 0, and the model's share is then only the fake
-server's loopback overhead, reported apart.
-
-The agent loop posts each turn, parses the stream and runs the tool call
-over one persistent control-socket connection, the transport `tilo-control`
-and the MCP shim use:
-
-  tilo_enumerate_actions  actions_enumerate {query, detail: compact,
-                          wait_ms} and every next page; `wait_ms` holds the
-                          answer until no app directory page is still owed,
-                          so a search sees what the apps have published
-  tilo_invoke_action      actions_invoke {provider, id, args, wait_ms}: one
-                          round trip that answers with the terminal receipt
+picks the next call from what Tilo answered; it knows no path in advance.
+`--think-ms` delays each turn's first content block and `--tokens-per-s`
+paces the stream, so a run can model a real provider; the scheduled lane
+runs them at 0, and the model's share is then only the fake server's
+loopback overhead, reported apart.
 
 The steps, one tool call per turn because each needs the last one's result:
 
-  discover  search the actions for "New note"
-  create    invoke Notes' notebook `new-page` with the title
-  locate    search the actions for the title: the new note's body
-  write     invoke the body's `append-paragraph` with the body text
-  search    search for a phrase of the body: the note's block hit
-  open      invoke the hit: Notes opens the note at that block
+  discover  tilo_find "new note" in notes: the action that makes a note
+  create    tilo_do it with the title
+  locate    tilo_find the title: the new note (or its body's append action
+            straight away), then tilo_ls of the note for its body
+            ("locate.inspect")
+  write     tilo_do the body's append-paragraph with the body text
+  read      tilo_read the note: the body text is in it
 
 then a final text turn. Each step is timed from the request written to the
-whole answer read. With `--split-repetitions N`, N more repetitions invoke
-without `wait_ms` (the admission receipt: "accept") and then wait on
-`actions_status` ("apply"), the invoke -> app applied -> result returned
-breakdown; those runs pay one more round trip per invoke, so they are not
-the task's KPI.
+client's stdin to its whole answer read back: the relay, the door, the
+broker, the app applying the action and the answer. A result that says the
+note is not there yet (`nothing matches`, a path that does not resolve, a
+read without the text) is read and the step asked again, as a model would,
+named `<step>.retry` and counted to its step; a run that needs more than
+MAX_RETRIES of them fails.
 
 Records (tools/perf/record.py), one sample per repetition:
 
   agent.task.notes.wall          the task end to end, ms
-  agent.task.notes.tilo          the six tool calls together, ms
-  agent.task.notes.model         the seven model turns together (fake), ms
+  agent.task.notes.tilo          the tool calls together, ms
+  agent.task.notes.model         the model turns together (fake), ms
   agent.task.notes.client        the agent loop's own work, ms
   agent.task.notes.turns         model turns the task took
-  agent.task.notes.step.<step>   one step's tool call, ms
-  agent.task.notes.step.<create|write|open>.accept / .apply  (split runs)
+  agent.task.notes.retries       tool calls asked again
+  agent.task.notes.step.<step>   one step's tool calls, ms
 
 The desktop is `crates/session/shell/examples/agent_task_desktop.rs`: a
 signed-in person with one empty Notes notebook, restored from a seeded
-profile. Authorization and the capability gate stay on; Notes is the
-person's own notebook, so no step asks for consent. The compositor, its
-profile and its socket are removed on exit, whatever happens. Against a
-running desktop (`--socket`, e.g. a VM's admin-control.sock) nothing is
-seeded, and the task never touches the notebook a person already has: every
-Notes window in a workspace opens that workspace's notebook, so the run first
-creates a workspace of its own (a new room), opens Notes there and only acts
-on Notes rows of that room and record (`scratch_notes.py`).
+profile, serving its agent door in the profile's runtime directory. The
+compositor, its profile, its sockets and the client are removed on exit,
+whatever happens. Against a running desktop (`--socket`, a device's
+admin-control.sock, with its `agent.sock` beside it) nothing is seeded, and
+the task never touches the notebook a person already has: the run first
+creates a workspace of its own (a new room) and opens Notes there
+(`scratch_notes.py`), so the agent is admitted to that workspace and its
+`notes` is that room's notebook; the agent is removed again at the end.
 """
 
 from __future__ import annotations
@@ -91,41 +93,22 @@ sys.path.insert(0, str(REPO / "tools" / "perf"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import record  # noqa: E402
 from agent_rtt import (  # noqa: E402
-    TERMINAL, BenchError, Connection, answer_of, receipt_state, request, spawned)
-from scratch_notes import NOTES_APP, ScratchNotes, ScratchRoomError, open_scratch_notes  # noqa: E402
-# Generous: each answer leaves as soon as its invocation or listing settles.
+    MCP_PROTOCOL, BenchError, Connection, answer_of, receipt_state, request, spawned)
+from scratch_notes import NOTES_APP, ScratchRoomError, open_scratch_notes  # noqa: E402
+
+# Generous: each answer leaves as soon as its invocation settles.
 WAIT_MS = 5000
-# How long a search may wait for the apps' directory pages to complete it
-# (`--listing-wait-ms`). An answer still incomplete then is what the agent
-# works from, as one through the MCP door (which does not wait) would be.
-LISTING_WAIT_MS = 1000
-STEPS = ("discover", "create", "locate", "write", "search", "open")
-INVOKE_STEPS = ("create", "write", "open")
-# The fake model's Messages API version and model name, echoed in records.
+STEPS = ("discover", "create", "locate", "write", "read")
+# The client the person admits; the door names the agent after it.
+CLIENT_NAME = "Agent task bench"
+AGENT = "agent-task-bench"
+GRANT_ID = "agent-task-bench-notes"
+# The fake model's name, echoed in records.
 MODEL_NAME = "tilo-scripted-notes-task"
 # Rough characters per token, to pace a streamed answer at --tokens-per-s.
 CHARS_PER_TOKEN = 4
-
-TOOLS = [
-    {
-        "name": "tilo_enumerate_actions",
-        "description": "List the typed actions the running Tilo desktop exports for a query, "
-                       "through the same registry the command palette searches. Read-only.",
-        "input_schema": {"type": "object", "properties": {"query": {"type": "string"}},
-                         "required": []},
-    },
-    {
-        "name": "tilo_invoke_action",
-        "description": "Invoke one enumerated action by its (provider, id) address with typed "
-                       "arguments; answers once it has settled.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"provider": {"type": "string"}, "id": {"type": "string"},
-                           "args": {"type": "object", "additionalProperties": True}},
-            "required": ["provider", "id"],
-        },
-    },
-]
+# How long one door call may take before the run fails.
+CALL_TIMEOUT_S = 60.0
 
 
 # --- the fake model -------------------------------------------------------------
@@ -134,10 +117,18 @@ class PolicyError(RuntimeError):
     """The scripted model found nothing to do with what Tilo answered."""
 
 
-def conversation_calls(messages: list[dict[str, Any]]) -> list[tuple[dict[str, Any], Any]]:
-    """Every (tool_use block, parsed tool_result) pair of the conversation, in order."""
+@dataclass
+class Result:
+    """A tool's answer as the model reads it: the door answers text."""
+
+    text: str
+    failed: bool
+
+
+def conversation_calls(messages: list[dict[str, Any]]) -> list[tuple[dict[str, Any], Result]]:
+    """Every (tool_use block, tool result) pair of the conversation, in order."""
     uses: dict[str, dict[str, Any]] = {}
-    pairs: list[tuple[dict[str, Any], Any]] = []
+    pairs: list[tuple[dict[str, Any], Result]] = []
     for message in messages:
         content = message.get("content")
         if not isinstance(content, list):
@@ -152,186 +143,185 @@ def conversation_calls(messages: list[dict[str, Any]]) -> list[tuple[dict[str, A
                 text = block.get("content")
                 if isinstance(text, list):
                     text = "".join(part.get("text", "") for part in text)
-                try:
-                    result = json.loads(text) if isinstance(text, str) else text
-                except json.JSONDecodeError:
-                    result = text
-                pairs.append((use, result))
+                pairs.append((use, Result(str(text or ""), bool(block.get("is_error")))))
     return pairs
 
 
-def rows_of(result: Any) -> list[dict[str, Any]]:
-    if isinstance(result, dict) and isinstance(result.get("actions"), list):
-        return [row for row in result["actions"] if isinstance(row, dict)]
-    raise PolicyError(f"expected a listing, got {json.dumps(result)[:300]}")
+@dataclass(frozen=True)
+class Hit:
+    """One line of a door listing: `path#action(params)  label`, or `path  kind`."""
+
+    path: str
+    action: str | None
+    params: tuple[str, ...]
+    label: str
 
 
-def notes_row(row: dict[str, Any]) -> bool:
-    return row.get("application") == NOTES_APP or NOTES_APP in str(row.get("id", ""))
+HIT = re.compile(r"^(?P<path>(?:\\.|[^#\\])*?)(?:#(?P<action>[\w.:@-]+)(?:\((?P<params>[^)]*)\))?)?"
+                 r"(?:  +(?P<label>.*))?$")
 
 
-def operation_of(row: dict[str, Any]) -> str:
-    operation = row.get("operation")
-    if isinstance(operation, str) and operation:
-        return operation
-    # A provider without hierarchy names the operation last in its id.
-    return re.split(r"[\x1f/#:]", str(row.get("id", "")))[-1]
+def hits_of(text: str) -> list[Hit]:
+    """The door's lines, read the way a model reads them."""
+    found = []
+    for line in text.splitlines():
+        match = HIT.match(line.strip())
+        if not match or line.startswith(("… ", "nothing matches", "apps")):
+            continue
+        params = tuple(part.strip() for part in (match["params"] or "").split(",") if part.strip())
+        found.append(Hit(match["path"].strip(), match["action"], params, (match["label"] or "").strip()))
+    return found
 
 
-def text_param(row: dict[str, Any]) -> str:
-    """The name of the row's one required text parameter."""
-    params = row.get("params") or []
-    names = [p.get("name") for p in params
-             if isinstance(p, dict) and p.get("required", True) and p.get("name")]
-    if len(names) != 1:
-        raise PolicyError(f"expected one required parameter on {row.get('id')!r}: {params}")
-    return str(names[0])
+def param_name(hit: Hit, prefer: str) -> str:
+    """The parameter to pass the text in: `prefer` when the action takes it,
+    else its first (`title?`, `kind:a|b` name only)."""
+    names = [re.split(r"[?:]", param, maxsplit=1)[0] for param in hit.params]
+    if prefer in names:
+        return prefer
+    if not names:
+        raise PolicyError(f"{hit.path}#{hit.action} takes no parameter")
+    return names[0]
 
 
-def describe_rows(rows: list[dict[str, Any]], limit: int = 40) -> str:
-    return "; ".join(
-        f"{row.get('title')!r} op={operation_of(row)} app={row.get('application')} "
-        f"res={row.get('resource')}" for row in rows[:limit])
-
-
-def invoke_input(row: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
-    return {"provider": row["provider"], "id": row["id"], "args": args}
+def describe(text: str, limit: int = 1500) -> str:
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 @dataclass
 class NotesTask:
     """The scripted model of the Notes task: one tool call per turn, then a reply.
 
-    A step's listing discloses the address its invoke uses. When the desktop
-    refuses that address as gone ("list it again"), the model lists again and
-    retries, as a model reading the refusal would, at most MAX_RETRIES times
-    a task; those calls are named `<step>.retry` and count to their step.
+    The note appears in the door's listings a moment after it is created and
+    its text a moment after it is written; until then the model asks again,
+    as a model reading "nothing matches" would, at most MAX_RETRIES times a
+    task. Those calls are named `<step>.retry` and count to their step.
     """
 
     title: str
     body: str
-    phrase: str
     # The step of every tool call this model issued, in order.
     steps: list[str] = field(default_factory=list)
     retries: int = 0
-    # The run's own notebook against a running desktop; Notes rows of any
-    # other notebook are never chosen. None on a seeded throwaway desktop.
-    notes: ScratchNotes | None = None
+    # What the conversation established: the note's path and its body's.
+    note: str | None = None
+    append: Hit | None = None
+    # The last answer that sent the model to ask again.
+    last_miss: str = ""
 
-    def visible(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """What the model may act on: every row but another notebook's Notes rows."""
-        return [r for r in rows if self.notes is None or not notes_row(r) or self.notes.owns(r)]
+    MAX_RETRIES = 100
 
     def prompt(self) -> str:
         return (f"Create a note titled {self.title!r} with the body {self.body!r} in Notes, "
-                f"then find it by searching for {self.phrase!r} and open it.")
-
-    # Each invoke step and the listing step that discloses its address.
-    LISTING = {"create": "discover", "write": "locate", "open": "search"}
-    MAX_RETRIES = 8
+                f"then find it by searching for its title and read it back.")
 
     def respond(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The next turn's content blocks for this conversation."""
         done = conversation_calls(messages)
         if not done:
-            return [self.call("discover")]
+            return [self.call("discover", "tilo_find", {"query": "new note", "app": "notes"})]
         last = done[-1][1]
-        step = self.steps[len(done) - 1].removesuffix(".retry")
-        if isinstance(last, dict) and "error" in last:
-            if step not in self.LISTING or not retriable(last) or self.retries >= self.MAX_RETRIES:
-                raise PolicyError(f"{step} was refused: {json.dumps(last)[:400]}")
-            self.retries += 1
-            return [self.call(self.LISTING[step], retry=True)]
-        if step == "discover":
-            rows = self.visible(rows_of(last))
-            found = [r for r in rows if notes_row(r) and operation_of(r) == "new-page"]
-            if not found:
-                raise PolicyError(f"no Notes new-page among {len(rows)} rows: {describe_rows(rows)}")
-            return [self.call("create", found[0], {text_param(found[0]): self.title})]
-        if step == "create":
-            check_succeeded(last, "create")
-            return [self.call("locate")]
-        if step == "locate":
-            row = self.body_action(self.visible(rows_of(last)))
-            return [self.call("write", row, {text_param(row): self.body})]
-        if step == "write":
-            check_succeeded(last, "write")
-            return [self.call("search")]
-        if step == "search":
-            rows = self.visible(rows_of(last))
-            # The phrase is in one block of one note, so the hit is that
-            # block's `open` ("Reveal block"), or a row naming the phrase.
-            hits = [r for r in rows if self.phrase in str(r.get("title", ""))
-                    or (notes_row(r) and operation_of(r) == "open"
-                        and resource_of(r).startswith("notes.block:"))]
-            hits.sort(key=lambda r: not notes_row(r))
-            if not hits:
-                raise PolicyError(f"no Notes hit for {self.phrase!r} among {len(rows)} rows: "
-                                  f"{describe_rows(rows)}")
-            return [self.call("open", hits[0], {})]
-        if step == "open":
-            check_succeeded(last, "open")
-            return [{"type": "text", "text": f"Created {self.title!r} and opened it from search."}]
+        step = self.steps[len(done) - 1]
+        base = step.split(".", 1)[0]
+        if base == "discover":
+            found = [hit for hit in hits_of(last.text) if hit.action == "new-note"]
+            if last.failed or not found:
+                raise PolicyError(f"no Notes new-note in what tilo_find answered: {describe(last.text)}")
+            hit = found[0]
+            return [self.call("create", "tilo_do", {"path": f"{hit.path}#{hit.action}",
+                                                    "args": {param_name(hit, "title"): self.title}})]
+        if base == "create":
+            succeeded(last, "create")
+            return [self.locate()]
+        if step == "locate.inspect":
+            return self.after_inspect(last)
+        if base == "locate":
+            return self.after_locate(last)
+        if base == "write":
+            if last.failed and stale(last):
+                # The path moved under the agent: find the note again.
+                return [self.locate(retry=True)]
+            succeeded(last, "write")
+            return [self.read()]
+        if base == "read":
+            if self.body in last.text and not last.failed:
+                return [{"type": "text", "text": f"Created {self.title!r}; it reads back."}]
+            self.last_miss = last.text
+            return [self.read(retry=True)]
         raise PolicyError(f"the task has no step after {step}")
 
-    def call(self, step: str, row: dict[str, Any] | None = None,
-             args: dict[str, Any] | None = None, retry: bool = False) -> dict[str, Any]:
-        """The tool call of `step`; an invoke step's after a retried listing
-        is a retry too."""
-        if retry or (row is not None and self.steps and self.steps[-1].endswith(".retry")):
-            name = f"{step}.retry"
-        else:
-            name = step
-        self.steps.append(name)
-        if row is None:
-            query = {"discover": "New note", "locate": self.title, "search": self.phrase}[step]
-            return tool("tilo_enumerate_actions", {"query": query})
-        return tool("tilo_invoke_action", invoke_input(row, args or {}))
+    def after_locate(self, last: Result) -> list[dict[str, Any]]:
+        hits = [hit for hit in hits_of(last.text) if self.title.lower() in hit.path.lower()]
+        appends = [hit for hit in hits if hit.action == "append-paragraph"]
+        if not last.failed and len(appends) == 1:
+            self.append = appends[0]
+            self.note = parent_of(appends[0].path, self.title)
+            return [self.write()]
+        # The note itself, or actions on it, but not its body's: look inside it.
+        notes = sorted({hit.path for hit in hits if hit.path.lower().endswith(self.title.lower())})
+        if not last.failed and len(notes) == 1:
+            self.note = notes[0]
+            return [self.call("locate.inspect", "tilo_ls", {"path": self.note})]
+        if len(appends) > 1 or len(notes) > 1:
+            raise PolicyError(f"more than one note titled {self.title!r}: {describe(last.text)}")
+        self.last_miss = last.text
+        return [self.locate(retry=True)]
 
-    def body_action(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
-        """The new note's body `append-paragraph`. The listing for the title
-        holds the note (`notes.page:<id>`) and its body, a child resource
-        (`…/page/<id>/body`) labelled with the title; read the ids the way a
-        model reads the listing it was given."""
-        notes = [r for r in rows if notes_row(r)]
-        appends = [r for r in notes if operation_of(r) == "append-paragraph"]
-        pages = {m.group(1) for r in notes
-                 for m in [re.search(r"notes\.page:([0-9a-f-]{36})", resource_of(r))] if m}
-        bodies = [r for r in appends
-                  if (m := re.search(r"page/([0-9a-f-]{36})/body", resource_of(r)))
-                  and m.group(1) in pages]
-        if len(bodies) == 1:
-            return bodies[0]
-        if not pages and len(appends) == 1:
-            return appends[0]
-        raise PolicyError(f"no single append-paragraph on {self.title!r} ({len(pages)} notes, "
-                          f"{len(appends)} bodies) among {len(rows)} rows: {describe_rows(rows)}")
+    def after_inspect(self, last: Result) -> list[dict[str, Any]]:
+        """The note's own listing: its body is the child with append-paragraph,
+        or the child named body."""
+        assert self.note is not None
+        children = [hit for hit in hits_of(last.text) if hit.action is None]
+        bodies = [hit for hit in children if hit.path.rstrip("/").lower() == "body"]
+        if last.failed or len(bodies) != 1:
+            self.last_miss = last.text
+            return [self.locate(retry=True)]
+        body = f"{self.note}/{bodies[0].path.rstrip('/')}"
+        self.append = Hit(body, "append-paragraph", ("text",), "")
+        return [self.write()]
+
+    def locate(self, retry: bool = False) -> dict[str, Any]:
+        return self.call("locate.retry" if retry else "locate", "tilo_find",
+                         {"query": self.title, "app": "notes"})
+
+    def write(self) -> dict[str, Any]:
+        assert self.append is not None
+        name = "write.retry" if any(step.startswith("write") for step in self.steps) else "write"
+        return self.call(name, "tilo_do", {"path": f"{self.append.path}#append-paragraph",
+                                           "args": {param_name(self.append, "text"): self.body}})
+
+    def read(self, retry: bool = False) -> dict[str, Any]:
+        assert self.note is not None
+        return self.call("read.retry" if retry else "read", "tilo_read", {"path": self.note})
+
+    def call(self, step: str, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if step.endswith(".retry"):
+            if self.retries >= self.MAX_RETRIES:
+                raise PolicyError(f"{step.split('.')[0]} still not done after {self.retries} retries; "
+                                  f"last answer: {describe(self.last_miss)}")
+            self.retries += 1
+        self.steps.append(step)
+        return tool(name, arguments)
 
 
-def resource_of(row: dict[str, Any]) -> str:
-    """A row's resource id, with a bound resource's hex-encoded tail read
-    (`tilo-ui-bound:v1:<room>:<record>:<hex>`)."""
-    resource = str(row.get("resource") or "")
-    tail = resource.rsplit(":", 1)[-1]
-    if resource.startswith("tilo-ui-bound:") and len(tail) % 2 == 0:
-        try:
-            return bytes.fromhex(tail).decode()
-        except ValueError:
-            pass
-    return resource
+def parent_of(path: str, title: str) -> str:
+    """The note's path above a child of it (`notes/Notebook/T/Body` -> `…/T`)."""
+    at = path.lower().rfind(title.lower())
+    if at < 0:
+        raise PolicyError(f"{path!r} is not inside the note {title!r}")
+    return path[:at + len(title)]
 
 
-def retriable(result: dict[str, Any]) -> bool:
-    """Whether a refusal says the address went stale: list it again."""
-    error = result.get("error") or {}
-    message = str(error.get("message", ""))
-    return error.get("code") == "unknown_action" or "list it again" in message
+def succeeded(result: Result, what: str) -> None:
+    if result.failed or not result.text.startswith("ok"):
+        raise PolicyError(f"{what} did not succeed: {describe(result.text, 600)}")
 
 
-def check_succeeded(result: Any, what: str) -> None:
-    state = receipt_state(result)
-    if state != "succeeded":
-        raise PolicyError(f"{what} ended {state!r}: {json.dumps(result)[:300]}")
+def stale(result: Result) -> bool:
+    """Whether a failure says the path no longer names anything there."""
+    text = result.text.lower()
+    return any(phrase in text for phrase in ("list it again", "no longer", "not found", "nothing named",
+                                             "unknown_action", "tilo_ls"))
 
 
 _tool_ids = iter(range(1, 1 << 62))
@@ -362,7 +352,7 @@ def sse_events(blocks: list[dict[str, Any]], usage_in: int) -> Iterator[tuple[st
             delta = "text_delta", "text"
         yield "content_block_start", {"type": "content_block_start", "index": index,
                                       "content_block": start}
-        # One delta per ~token, as providers stream: 4 characters each.
+        # Pieces of a few tokens each, as providers stream.
         for at in range(0, len(text), CHARS_PER_TOKEN * 8):
             piece = text[at:at + CHARS_PER_TOKEN * 8]
             yield "pace", {"chars": len(piece)}
@@ -452,8 +442,6 @@ class ToolCall:
     name: str
     ms: float
     response_bytes: int
-    accept_ms: float | None = None
-    apply_ms: float | None = None
 
 
 @dataclass
@@ -463,8 +451,6 @@ class TaskRun:
     model_ms: float = 0.0
     model_first_byte_ms: list[float] = field(default_factory=list)
     calls: list[ToolCall] = field(default_factory=list)
-    # Listings that answered unsettled at their wait_ms (Tools.unsettled).
-    unsettled: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def tilo_ms(self) -> float:
@@ -478,8 +464,11 @@ class TaskRun:
 class ModelClient:
     """Streams one Messages turn over a kept-alive loopback connection."""
 
-    def __init__(self, port: int):
+    def __init__(self, port: int, tools: list[dict[str, Any]]):
         self.connection = http.client.HTTPConnection("127.0.0.1", port, timeout=120)
+        # As the Messages API takes them: an MCP tool's inputSchema is its input_schema.
+        self.tools = [{"name": t["name"], "description": t.get("description", ""),
+                       "input_schema": t.get("inputSchema", {"type": "object"})} for t in tools]
 
     def close(self) -> None:
         self.connection.close()
@@ -487,7 +476,7 @@ class ModelClient:
     def turn(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str, float]:
         """(content blocks, stop reason, ms to the first streamed byte)."""
         body = json.dumps({"model": MODEL_NAME, "max_tokens": 1024, "stream": True,
-                           "tools": TOOLS, "messages": messages})
+                           "tools": self.tools, "messages": messages})
         start = time.perf_counter_ns()
         self.connection.request("POST", "/v1/messages", body=body,
                                 headers={"content-type": "application/json",
@@ -532,122 +521,105 @@ class ModelClient:
         return [blocks[index] for index in sorted(blocks)], stop, first_byte or 0.0
 
 
-class Refused(BenchError):
-    """The desktop refused an invocation; the model reads why."""
+class Door:
+    """`tilo-runtime-mcp --connect`, spoken to over its stdio as an MCP client does."""
 
-    def __init__(self, code: str, message: str):
-        super().__init__(f"{code}: {message}")
-        self.code = code
-        self.message = message
+    def __init__(self, process: subprocess.Popen):
+        self.process = process
+        self.next_id = 0
+        self.lines: list[bytes] = []
+        self.ready = threading.Condition()
+        self.closed = False
+        threading.Thread(target=self._read, daemon=True).start()
 
+    @classmethod
+    def start(cls, binary: Path, env: dict[str, str], log: Path | None) -> "Door":
+        if not binary.is_file() or not os.access(binary, os.X_OK):
+            raise BenchError(f"no tilo-runtime-mcp at {binary}")
+        stderr = log.open("ab") if log else subprocess.DEVNULL
+        try:
+            process = subprocess.Popen([str(binary), "--connect"], env=env, stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=stderr)
+        finally:
+            if log:
+                stderr.close()
+        return cls(process)
 
-def answer_or_refusal(line: bytes, what: str) -> Any:
-    """`answer_of`, with a refusal raised as Refused rather than a bench failure."""
-    reply = json.loads(line)
-    if isinstance(reply, dict) and "err" in reply:
-        err = reply["err"] or {}
-        raise Refused(str(err.get("code")), str(err.get("message")))
-    return answer_of(line, what)
+    def _read(self) -> None:
+        assert self.process.stdout is not None
+        for line in iter(self.process.stdout.readline, b""):
+            with self.ready:
+                self.lines.append(line)
+                self.ready.notify_all()
+        with self.ready:
+            self.closed = True
+            self.ready.notify_all()
 
+    def send(self, message: dict[str, Any]) -> None:
+        assert self.process.stdin is not None
+        try:
+            self.process.stdin.write(json.dumps(message, separators=(",", ":")).encode() + b"\n")
+            self.process.stdin.flush()
+        except OSError as error:
+            raise BenchError(f"tilo-runtime-mcp stopped reading: {error}") from error
 
-class Tools:
-    """The agent's tools, run on one persistent control-socket connection."""
+    def reply(self, ident: int, timeout: float = CALL_TIMEOUT_S) -> tuple[dict[str, Any], int]:
+        """The answer to request `ident` (notifications before it are skipped), and its size."""
+        deadline = time.monotonic() + timeout
+        with self.ready:
+            while True:
+                while self.lines:
+                    line = self.lines.pop(0)
+                    message = json.loads(line)
+                    if message.get("id") == ident:
+                        return message, len(line)
+                if self.closed:
+                    raise BenchError(f"tilo-runtime-mcp closed (exit {self.process.poll()}) "
+                                     f"before answering request {ident}")
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise BenchError(f"tilo-runtime-mcp did not answer request {ident} in {timeout:.0f} s")
+                self.ready.wait(left)
 
-    def __init__(self, conn: Connection, split: bool, unsettled: list[dict[str, Any]] | None = None,
-                 listing_wait_ms: int = LISTING_WAIT_MS):
-        self.conn = conn
-        self.split = split
-        self.listing_wait_ms = listing_wait_ms
-        # Listings that answered at their wait_ms without settling: what an
-        # agent then works from is what the desktop had, and the step paid
-        # the whole wait. Reported, never hidden.
-        self.unsettled = unsettled if unsettled is not None else []
+    def request(self, method: str, params: dict[str, Any] | None = None,
+                timeout: float = CALL_TIMEOUT_S) -> tuple[dict[str, Any], int, int]:
+        """(reply, its size, nanoseconds from the request written to the reply read)."""
+        self.next_id += 1
+        ident = self.next_id
+        message: dict[str, Any] = {"jsonrpc": "2.0", "id": ident, "method": method}
+        if params is not None:
+            message["params"] = params
+        start = time.perf_counter_ns()
+        self.send(message)
+        reply, size = self.reply(ident, timeout)
+        return reply, size, time.perf_counter_ns() - start
 
-    def run(self, name: str, arguments: dict[str, Any], step: str) -> tuple[Any, ToolCall]:
-        if name == "tilo_enumerate_actions":
-            return self.enumerate(str(arguments.get("query", "")), step)
-        if name == "tilo_invoke_action":
-            started = time.perf_counter_ns()
-            try:
-                return self.invoke(arguments, step)
-            except Refused as refusal:
-                # The refusal is the tool's result, as an MCP tool error is:
-                # the model reads it and decides.
-                return ({"error": {"code": refusal.code, "message": refusal.message}},
-                        ToolCall(step, name, (time.perf_counter_ns() - started) / 1e6,
-                                 len(refusal.message)))
-        raise BenchError(f"the model called an unknown tool {name!r}")
+    def call(self, name: str, arguments: dict[str, Any]) -> tuple[Result, int, int]:
+        reply, size, elapsed = self.request("tools/call", {"name": name, "arguments": arguments})
+        if "error" in reply:
+            raise BenchError(f"{name} answered a protocol error: {json.dumps(reply['error'])[:600]}")
+        result = reply.get("result") or {}
+        text = "".join(part.get("text", "") for part in result.get("content", [])
+                       if isinstance(part, dict))
+        return Result(text, bool(result.get("isError"))), size, elapsed
 
-    def enumerate(self, query: str, step: str) -> tuple[Any, ToolCall]:
-        payload: dict[str, Any] = {"op": "actions_enumerate", "query": query,
-                                   "detail": "compact", "wait_ms": self.listing_wait_ms}
-        rows: list[Any] = []
-        total_ns = 0
-        size = 0
-        settled = None
-        while True:
-            elapsed, line = self.conn.round_trip(request(payload))
-            total_ns += elapsed
-            size += len(line)
-            answer = answer_of(line, f"{step}: actions_enumerate {query!r}")
-            if settled is None:
-                settled = answer.get("settled", answer.get("complete"))
-                first = {key: value for key, value in answer.items() if key != "actions"}
-            rows.extend(answer.get("actions", []))
-            cursor = answer.get("next_cursor")
-            if not cursor:
-                break
-            payload = {"op": "actions_enumerate", "query": query, "detail": "compact",
-                       "cursor": cursor}
-        if settled is False:
-            self.unsettled.append({
-                "step": step, "query": query, "ms": round(total_ns / 1e6, 1), "rows": len(rows),
-                "providers": sorted({str(r.get("provider")) for r in rows if isinstance(r, dict)}),
-                "answer": first})
-        result = {"query": query, "count": len(rows), "actions": rows}
-        return result, ToolCall(step, "tilo_enumerate_actions", total_ns / 1e6, size)
-
-    def invoke(self, arguments: dict[str, Any], step: str) -> tuple[Any, ToolCall]:
-        payload: dict[str, Any] = {"op": "actions_invoke", "provider": arguments.get("provider"),
-                                   "id": arguments.get("id"), "args": arguments.get("args") or {}}
-        if not self.split:
-            payload["wait_ms"] = WAIT_MS
-            elapsed, line = self.conn.round_trip(request(payload))
-            answer = answer_or_refusal(line, f"{step}: actions_invoke")
-            settled(answer, step)
-            return answer, ToolCall(step, "tilo_invoke_action", elapsed / 1e6, len(line))
-        accept_ns, line = self.conn.round_trip(request(payload))
-        answer = answer_or_refusal(line, f"{step}: actions_invoke")
-        apply_ns = 0
-        size = len(line)
-        if receipt_state(answer) not in TERMINAL:
-            job = (answer.get("receipt") or {}).get("broker_invocation_id")
-            if not isinstance(job, int):
-                raise BenchError(f"{step}: an unsettled receipt names no invocation: "
-                                 f"{json.dumps(answer)[:400]}")
-            apply_ns, line = self.conn.round_trip(request(
-                {"op": "actions_status", "invocation_id": job, "wait_ms": WAIT_MS}))
-            size += len(line)
-            status = answer_of(line, f"{step}: actions_status")
-            answer = {**answer, "receipt": status.get("receipt", status)}
-        settled(answer, step)
-        return answer, ToolCall(step, "tilo_invoke_action", (accept_ns + apply_ns) / 1e6, size,
-                                accept_ns / 1e6, apply_ns / 1e6)
+    def close(self) -> None:
+        if self.process.stdin is not None:
+            with contextlib.suppress(OSError):
+                self.process.stdin.close()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+        if self.process.stdout is not None:
+            self.process.stdout.close()
 
 
-def settled(answer: Any, step: str) -> None:
-    state = receipt_state(answer)
-    if state not in TERMINAL:
-        raise BenchError(f"{step}: wait_ms answered before the invocation settled (state {state!r})")
-    if state != "succeeded":
-        raise BenchError(f"{step}: the invocation ended {state}: {json.dumps(answer)[:600]}")
-
-
-def run_task(model: ModelClient, tools: Tools, prompt: str, max_turns: int = 24,
-             steps: list[str] | None = None) -> TaskRun:
+def run_task(model: ModelClient, door: Door, task: NotesTask, max_turns: int = 160) -> TaskRun:
     """One task: model turns and tool calls until the model ends its turn."""
     run = TaskRun()
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    messages: list[dict[str, Any]] = [{"role": "user", "content": task.prompt()}]
     start = time.perf_counter_ns()
     while True:
         if run.turns >= max_turns:
@@ -663,61 +635,106 @@ def run_task(model: ModelClient, tools: Tools, prompt: str, max_turns: int = 24,
             break
         results = []
         for block in uses:
-            index = len(run.calls)
-            if steps is not None and index < len(steps):
-                step = steps[index]
-            else:
-                step = STEPS[index] if index < len(STEPS) else f"extra{index}"
-            result, call = tools.run(block["name"], block["input"], step)
-            run.calls.append(call)
+            step = task.steps[len(run.calls)]
+            result, size, elapsed = door.call(block["name"], block["input"])
+            run.calls.append(ToolCall(step, block["name"], elapsed / 1e6, size))
             results.append({"type": "tool_result", "tool_use_id": block["id"],
-                            "content": json.dumps(result, separators=(",", ":"))})
+                            "content": result.text, "is_error": result.failed})
         messages.append({"role": "user", "content": results})
     run.wall_ms = (time.perf_counter_ns() - start) / 1e6
-    run.unsettled = list(tools.unsettled)
-    if [call.step for call in run.calls if not call.step.endswith(".retry")] != list(STEPS):
+    firsts = [call.step for call in run.calls if "." not in call.step]
+    if firsts != list(STEPS):
         raise BenchError(f"the task ran {[c.step for c in run.calls]}, not {list(STEPS)}")
     return run
 
 
 # --- the desktop ----------------------------------------------------------------
 
-def wait_for_notes(conn: Connection, timeout: float, diagnostics: Path | None = None) -> None:
-    """Until the restored notebook publishes `new-page`; fail with what the desktop showed."""
+def control(conn: Connection, payload: dict[str, Any], what: str) -> Any:
+    _, line = conn.round_trip(request(payload))
+    return answer_of(line, what)
+
+
+def waiting_prompt(conn: Connection, timeout: float) -> str:
+    """The agent admission the person is asked, as its decision rows name it."""
     deadline = time.monotonic() + timeout
-    rows: list[Any] = []
+    while True:
+        listed = control(conn, {"op": "actions_enumerate", "query": "permission-prompts",
+                                "limit": 2000}, "list the person's prompts")
+        for row in listed.get("actions", []) if isinstance(listed, dict) else []:
+            ident = str(row.get("id", ""))
+            if row.get("provider") == "permission-prompts" and ident.startswith("deny@"):
+                return ident.removeprefix("deny@")
+        if time.monotonic() >= deadline:
+            raise BenchError(f"the person was never asked to admit the agent within {timeout:.0f} s")
+        time.sleep(0.1)
+
+
+def admit(conn: Connection, door: Door, timeout: float) -> list[dict[str, Any]]:
+    """Connect as an agent, have the person admit it and grant it Notes; the door's tools."""
+    door.next_id += 1
+    ident = door.next_id
+    door.send({"jsonrpc": "2.0", "id": ident, "method": "initialize", "params": {
+        "protocolVersion": MCP_PROTOCOL, "capabilities": {},
+        "clientInfo": {"name": CLIENT_NAME, "version": "1"}}})
+    prompt = waiting_prompt(conn, timeout)
+    answer = control(conn, {"op": "actions_invoke", "provider": "permission-prompts",
+                            "id": f"allow-once@{prompt}", "args": {"confirm": True},
+                            "wait_ms": WAIT_MS}, "admit the agent")
+    state = receipt_state(answer)
+    if state not in (None, "succeeded"):
+        raise BenchError(f"admitting the agent ended {state}: {json.dumps(answer)[:400]}")
+    initialized, _ = door.reply(ident, timeout)
+    if "error" in initialized or not isinstance(initialized.get("result", {}).get("serverInfo"), dict):
+        raise BenchError(f"the door did not serve the admitted agent: {json.dumps(initialized)[:600]}")
+    door.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    # The agent holds no role of its own: the person grants it Notes.
+    control(conn, {"op": "allow", "subject": f"agent:{AGENT}", "node": f"app:{NOTES_APP}",
+                   "kinds": ["read", "undoable"], "answer": "allow", "id": GRANT_ID},
+            "grant the agent Notes")
+    listed, _, _ = door.request("tools/list")
+    tools = (listed.get("result") or {}).get("tools")
+    names = sorted(t.get("name") for t in tools or [])
+    if not {"tilo_find", "tilo_do", "tilo_ls", "tilo_read"} <= set(names):
+        raise BenchError(f"the door offers {names}, not the agent tools")
+    return tools
+
+
+def wait_for_notes(door: Door, conn: Connection, timeout: float, diagnostics: Path | None) -> None:
+    """Until the agent finds Notes' new-note; fail with what the desktop showed."""
+    deadline = time.monotonic() + timeout
+    text = ""
     while time.monotonic() < deadline:
-        _, line = conn.round_trip(request({"op": "actions_enumerate", "query": "New note",
-                                           "detail": "compact", "wait_ms": WAIT_MS}))
-        rows = answer_of(line, "actions_enumerate").get("actions", [])
-        if any(notes_row(r) and operation_of(r) == "new-page" for r in rows):
+        result, _, _ = door.call("tilo_find", {"query": "new note", "app": "notes"})
+        text = result.text
+        if any(hit.action == "new-note" for hit in hits_of(text)):
             return
         time.sleep(0.2)
     seen = describe_desktop(conn, diagnostics)
-    raise BenchError(f"Notes never published new-page within {timeout:.0f} s; "
-                     f"'New note' listed {len(rows)}: {describe_rows(rows)}\n{seen}")
+    raise BenchError(f"the agent never found Notes' new-note within {timeout:.0f} s; "
+                     f"tilo_find answered: {describe(text)}\n{seen}")
 
 
-def open_own_notebook(conn: Connection, name: str, timeout: float) -> ScratchNotes:
-    """A workspace of the run's own with Notes open in it, over the control socket."""
+def open_own_notebook(conn: Connection, name: str, timeout: float) -> None:
+    """A workspace of the run's own, in front, with Notes open in it."""
     def state() -> dict[str, Any]:
-        _, line = conn.round_trip(request({"op": "state_dump"}))
-        reply = answer_of(line, "state_dump")
+        reply = control(conn, {"op": "state_dump"}, "state_dump")
         return reply.get("state", reply) if isinstance(reply, dict) else {}
 
     def invoke(provider: str, action: str, args: dict[str, Any]) -> Any:
-        _, line = conn.round_trip(request({"op": "actions_invoke", "provider": provider,
-                                           "id": action, "args": args, "wait_ms": WAIT_MS}))
-        answer = answer_of(line, f"{provider} {action}")
-        settled(answer, f"{provider} {action}")
+        answer = control(conn, {"op": "actions_invoke", "provider": provider, "id": action,
+                                "args": args, "wait_ms": WAIT_MS}, f"{provider} {action}")
+        if receipt_state(answer) != "succeeded":
+            raise BenchError(f"{provider} {action} did not succeed: {json.dumps(answer)[:400]}")
         return answer
 
     def rows() -> list[dict[str, Any]]:
-        listing, _ = Tools(conn, split=False).enumerate(NOTES_APP, "own-notebook")
-        return listing["actions"]
+        listed = control(conn, {"op": "actions_enumerate", "query": NOTES_APP, "detail": "compact",
+                                "wait_ms": 1000}, "list Notes")
+        return [row for row in listed.get("actions", []) if isinstance(row, dict)]
 
     try:
-        return open_scratch_notes(state, invoke, rows, name, timeout)
+        open_scratch_notes(state, invoke, rows, name, timeout)
     except ScratchRoomError as error:
         raise BenchError(str(error)) from error
 
@@ -729,10 +746,6 @@ def describe_desktop(conn: Connection, path: Path | None) -> str:
     for name, payload in (
             ("listing", {"op": "actions_enumerate", "query": "", "detail": "compact",
                          "limit": 2000, "wait_ms": WAIT_MS}),
-            ("listing_note", {"op": "actions_enumerate", "query": "note", "detail": "compact",
-                              "wait_ms": WAIT_MS}),
-            ("listing_app", {"op": "actions_enumerate", "query": NOTES_APP, "detail": "compact",
-                             "include_programmatic": True, "wait_ms": WAIT_MS}),
             ("windows", {"op": "windows"}),
             ("targets", {"op": "list_targets"}),
             ("state", {"op": "state_dump"})):
@@ -743,39 +756,26 @@ def describe_desktop(conn: Connection, path: Path | None) -> str:
             probes[name] = {"probe_error": str(error)}
     if path is not None:
         path.write_text(json.dumps(probes, indent=1, default=str), encoding="utf-8")
-
-    def rows(name: str) -> list[dict[str, Any]]:
-        answer = probes[name].get("answer") or {}
-        return [r for r in answer.get("actions", []) if isinstance(r, dict)] if isinstance(answer, dict) else []
-
-    listing = rows("listing")
-    applications = sorted({str(r.get("application")) for r in listing})
+    answer = probes["listing"].get("answer") or {}
+    listing = [r for r in answer.get("actions", []) if isinstance(r, dict)] if isinstance(answer, dict) else []
     targets = probes["targets"].get("targets") or []
     names = [t.get("name") for t in targets if isinstance(t, dict)][:60]
-    state = probes["state"]
-    capture = json.dumps(state)[:0]
-    with contextlib.suppress(AttributeError, TypeError):
-        capture = json.dumps(state.get("chrome", state.get("state", {}).get("chrome", {}))
-                             .get("input_capture"))
-    return (f"whole listing: {len(listing)} rows, applications {applications}; "
-            f"providers {sorted({str(r.get('provider')) for r in listing})}\n"
-            f"'note' listed: {describe_rows(rows('listing_note'))}\n"
-            f"'{NOTES_APP}' listed: {describe_rows(rows('listing_app'))}\n"
-            f"targets ({len(targets)}): {names}\ninput capture: {capture}\n"
-            f"state keys: {sorted(state) if isinstance(state, dict) else type(state)}"
-            + (f"\nfull probes: {path}" if path else ""))
+    return (f"whole listing: {len(listing)} rows, applications "
+            f"{sorted({str(r.get('application')) for r in listing})}\n"
+            f"targets ({len(targets)}): {names}" + (f"\nfull probes: {path}" if path else ""))
 
 
 @contextlib.contextmanager
-def seeded_desktop(shell: Path, seeder: Path, log: Path, timeout: int) -> Iterator[str]:
-    """The seeded Notes desktop through spawn-headless.sh; its profile removed on exit."""
+def seeded_desktop(shell: Path, seeder: Path, log: Path, timeout: int) -> Iterator[tuple[str, Path]]:
+    """The seeded Notes desktop through spawn-headless.sh, serving its agent
+    door: (control socket, runtime directory). Its profile is removed on exit."""
     if not seeder.is_file() or not os.access(seeder, os.X_OK):
         raise BenchError(f"no desktop seeder at {seeder}")
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     cache.mkdir(parents=True, exist_ok=True)
     profile = Path(tempfile.mkdtemp(prefix="agent-task.", dir=cache))
     try:
-        for sub in ("config/tilo/identity", "data", "state", "cache", "home"):
+        for sub in ("config/tilo/identity", "data", "state", "cache", "home", "run"):
             (profile / sub).mkdir(parents=True, exist_ok=True, mode=0o700)
         seeded = subprocess.run([str(seeder), "--profile", str(profile)], capture_output=True,
                                 text=True, check=False)
@@ -784,24 +784,45 @@ def seeded_desktop(shell: Path, seeder: Path, log: Path, timeout: int) -> Iterat
         env = json.loads(seeded.stdout.strip().splitlines()[-1])
         env = {key: str(value) for key, value in env.items()}
         env["TILO_HEADLESS_PROFILE"] = str(profile)
-        # What the session says while it starts is the first thing to read
-        # when a run cannot find Notes.
-        env.setdefault("RUST_LOG", os.environ.get("RUST_LOG", "info,tilo::listing=debug"))
+        # spawn-headless.sh runs the compositor with XDG_RUNTIME_DIR=<profile>/run;
+        # the door goes where a client in that login looks for it.
+        runtime = profile / "run"
+        env["TILO_AGENT_DOOR"] = str(runtime / "tilo-session" / "agent.sock")
+        env.setdefault("RUST_LOG", os.environ.get("RUST_LOG", "info"))
         with spawned(shell, log, timeout, env) as socket_path:
-            yield socket_path
+            yield socket_path, runtime
     finally:
         shutil.rmtree(profile, ignore_errors=True)
 
 
+def client_env(runtime: Path, scratch: Path | None) -> dict[str, str]:
+    """The environment of an agent in a terminal of that login: its runtime
+    directory, and (on a throwaway desktop) homes inside the profile."""
+    env = {key: value for key, value in os.environ.items()
+           if key not in ("TILO_RUNTIME_PROFILE", "TILO_RUNTIME_STANDALONE", "TILO_RUNTIME_BINARY")}
+    env["XDG_RUNTIME_DIR"] = str(runtime)
+    if scratch is not None:
+        env.update(HOME=str(scratch / "home"), XDG_CONFIG_HOME=str(scratch / "config"),
+                   XDG_DATA_HOME=str(scratch / "data"), XDG_STATE_HOME=str(scratch / "state"),
+                   XDG_CACHE_HOME=str(scratch / "cache"))
+    return env
+
+
+def wait_for_door(path: Path, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while not path.exists():
+        if time.monotonic() >= deadline:
+            raise BenchError(f"the desktop never served its agent door at {path} within {timeout:.0f} s")
+        time.sleep(0.1)
+
+
 # --- records --------------------------------------------------------------------
 
-def collect(runs: list[TaskRun], split_runs: list[TaskRun]) -> list[tuple[str, str, list[float], dict[str, Any]]]:
+def collect(runs: list[TaskRun]) -> list[tuple[str, str, list[float], dict[str, Any]]]:
     results: list[tuple[str, str, list[float], dict[str, Any]]] = []
     if not runs:
         raise BenchError("no repetition was measured")
-    unsettled = sum(len(r.unsettled) for r in runs)
-    results.append(("agent.task.notes.wall", "ms", [r.wall_ms for r in runs],
-                    {"unsettled_listings": unsettled}))
+    results.append(("agent.task.notes.wall", "ms", [r.wall_ms for r in runs], {}))
     results.append(("agent.task.notes.tilo", "ms", [r.tilo_ms for r in runs], {}))
     results.append(("agent.task.notes.model", "ms", [r.model_ms for r in runs], {}))
     results.append(("agent.task.notes.client", "ms", [r.client_ms for r in runs], {}))
@@ -813,20 +834,12 @@ def collect(runs: list[TaskRun], split_runs: list[TaskRun]) -> list[tuple[str, s
                         {"tool": first_call(runs[0], step).name,
                          "response_bytes_max": max(first_call(r, step).response_bytes
                                                    for r in runs)}))
-    for step in STEPS:
-        if step not in INVOKE_STEPS or not split_runs:
-            continue
-        calls = [first_call(r, step) for r in split_runs]
-        results.append((f"agent.task.notes.step.{step}.accept", "ms",
-                        [c.accept_ms or 0.0 for c in calls], {"split": True}))
-        results.append((f"agent.task.notes.step.{step}.apply", "ms",
-                        [c.apply_ms or 0.0 for c in calls], {"split": True}))
     return results
 
 
 def step_ms(run: TaskRun, step: str) -> float:
-    """What `step` cost the agent: its call, and its retries'."""
-    return sum(c.ms for c in run.calls if c.step.removesuffix(".retry") == step)
+    """What `step` cost the agent: its calls, retries and look-insides included."""
+    return sum(c.ms for c in run.calls if c.step.split(".", 1)[0] == step)
 
 
 def first_call(run: TaskRun, step: str) -> ToolCall:
@@ -836,7 +849,7 @@ def first_call(run: TaskRun, step: str) -> ToolCall:
 def summary(runs: list[TaskRun]) -> str:
     def p50(values: list[float]) -> float:
         return record.nearest_rank(sorted(values), 50)
-    lines = [f"agent task (Notes), {len(runs)} repetitions, p50:",
+    lines = [f"agent task (Notes, agent door), {len(runs)} repetitions, p50:",
              f"  wall {p50([r.wall_ms for r in runs]):8.2f} ms   turns {p50([r.turns for r in runs]):.0f}",
              f"  tilo {p50([r.tilo_ms for r in runs]):8.2f} ms   model {p50([r.model_ms for r in runs]):.2f} ms"
              f"   client {p50([r.client_ms for r in runs]):.2f} ms"]
@@ -847,53 +860,84 @@ def summary(runs: list[TaskRun]) -> str:
     return "\n".join(lines)
 
 
-def measure(socket_path: str, args: argparse.Namespace) -> tuple[list[TaskRun], list[TaskRun]]:
-    conn = Connection(socket_path, timeout=60)
+def measure(conn: Connection, door: Door, args: argparse.Namespace) -> list[TaskRun]:
+    """Warm-up and measured repetitions of the task, each with a note of its own."""
     model: FakeModel | None = None
     client: ModelClient | None = None
     tag = f"{os.getpid():x}{int(time.time()) % 100000:05d}"
-    task = {"value": None}
+    task: dict[str, NotesTask] = {}
 
     def respond(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        assert task["value"] is not None
         return task["value"].respond(messages)
 
     try:
-        log = getattr(args, "log", None)
-        notes = None
-        if args.own_notebook:
-            notes = open_own_notebook(conn, f"Agent bench {tag}", args.startup_timeout)
-        else:
-            wait_for_notes(conn, args.startup_timeout,
-                           log.with_name(log.stem + ".probes.json") if log else None)
         model = FakeModel(respond, args.think_ms, args.tokens_per_s)
-        client = ModelClient(model.port)
+        client = ModelClient(model.port, args.tools)
         runs: list[TaskRun] = []
-        split_runs: list[TaskRun] = []
-        plan = ([("warmup", False)] * args.warmup + [("measure", False)] * args.repetitions
-                + [("split", True)] * args.split_repetitions)
-        for index, (kind, split) in enumerate(plan):
-            phrase = f"agentbench{tag}n{index:03d}"
+        for index in range(args.warmup + args.repetitions):
             task["value"] = NotesTask(title=f"Agent bench {tag} {index:03d}",
-                                      body=f"Benchmark body {phrase} written by a scripted agent.",
-                                      phrase=phrase, notes=notes)
-            tools = Tools(conn, split, listing_wait_ms=getattr(args, "listing_wait_ms", LISTING_WAIT_MS))
+                                      body=f"Benchmark body agentbench{tag}n{index:03d} "
+                                           f"written by a scripted agent.")
             try:
-                run = run_task(client, tools, task["value"].prompt(), steps=task["value"].steps)
+                run = run_task(client, door, task["value"])
             except BenchError as error:
                 why = model.errors[-1] if model.errors else str(error)
-                seen = "".join(f"\n  unsettled: {json.dumps(entry)[:1500]}" for entry in tools.unsettled)
-                raise BenchError(f"repetition {index}: {why}{seen}") from error
-            if kind == "measure":
+                done = summary(runs) if runs else "no repetition finished"
+                raise BenchError(f"repetition {index}: {why}\nbefore it: {done}\n"
+                                 f"{what_the_agent_sees(door, task['value'].title)}") from error
+            if index >= args.warmup:
                 runs.append(run)
-            elif kind == "split":
-                split_runs.append(run)
-        return runs, split_runs
+        return runs
     finally:
         if client is not None:
             client.close()
         if model is not None:
             model.close()
+
+
+def what_the_agent_sees(door: Door, title: str) -> str:
+    """The door's own view of Notes, for a run that could not find its note."""
+    lines = []
+    for name, arguments in (("tilo_ls", {"path": "notes/Notebook"}),
+                            ("tilo_ls", {"path": f"notes/Notebook/{title}"}),
+                            ("tilo_read", {"path": f"notes/Notebook/{title}"}),
+                            ("tilo_find", {"query": title, "app": "notes"}),
+                            ("tilo_find", {"query": title})):
+        try:
+            result, _, _ = door.call(name, arguments)
+            lines.append(f"{name} {json.dumps(arguments)}{' (error)' if result.failed else ''}:\n"
+                         f"{describe(result.text, 3000)}")
+        except BenchError as error:
+            lines.append(f"{name} {json.dumps(arguments)}: {error}")
+    return "\n".join(lines)
+
+
+def session(socket_path: str, runtime: Path, args: argparse.Namespace,
+            scratch: Path | None) -> list[TaskRun]:
+    """Admit the agent on this desktop, run the task, and take the agent back
+    out when the desktop is a person's."""
+    conn = Connection(socket_path, timeout=60)
+    door: Door | None = None
+    try:
+        if args.own_notebook:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            open_own_notebook(conn, f"Agent task bench {stamp}", args.startup_timeout)
+        wait_for_door(runtime / "tilo-session" / "agent.sock", args.startup_timeout)
+        door = Door.start(args.mcp, client_env(runtime, scratch), args.client_log)
+        args.tools = admit(conn, door, args.startup_timeout)
+        log = args.log
+        wait_for_notes(door, conn, args.startup_timeout,
+                       log.with_name(log.stem + ".probes.json") if log else None)
+        return measure(conn, door, args)
+    finally:
+        if door is not None:
+            door.close()
+        if args.own_notebook:
+            # The agent leaves the person's desktop as it found it.
+            with contextlib.suppress(OSError, BenchError):
+                control(conn, {"op": "actions_invoke", "provider": "actions", "id": "agent.remove",
+                               "args": {"name": AGENT, "confirm": True}, "wait_ms": WAIT_MS},
+                        "remove the agent")
         conn.close()
 
 
@@ -901,60 +945,58 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     target = parser.add_mutually_exclusive_group(required=True)
-    target.add_argument("--socket", help="a running desktop's control socket; the run opens "
-                        "Notes in a new workspace of its own")
+    target.add_argument("--socket", type=Path,
+                        help="a running desktop's admin control socket; its agent.sock is beside "
+                        "it, and the run opens Notes in a new workspace of its own")
     target.add_argument("--spawn", type=Path, metavar="SHELL",
                         help="start this compositor headless on a seeded Notes desktop")
     parser.add_argument("--seeder", type=Path,
                         help="the agent_task_desktop example (default beside SHELL)")
+    parser.add_argument("--mcp", type=Path,
+                        help="tilo-runtime-mcp (default beside SHELL, else on PATH)")
     parser.add_argument("--repetitions", type=int, default=30)
     parser.add_argument("--warmup", type=int, default=3)
-    parser.add_argument("--split-repetitions", type=int, default=10,
-                        help="repetitions that time accept and apply apart (not the KPI)")
-    parser.add_argument("--listing-wait-ms", type=int, default=LISTING_WAIT_MS,
-                        help="how long a search waits for the apps to complete it (default %(default)s)")
     parser.add_argument("--think-ms", type=float, default=0.0,
                         help="the fake model's time to its first content block, per turn")
     parser.add_argument("--tokens-per-s", type=float, default=0.0,
                         help="the fake model's streaming rate; 0 streams at once")
     parser.add_argument("--transport", default=None,
-                        help="how the socket is reached, recorded in each record's meta")
+                        help="how the desktop is reached, recorded in each record's meta")
     parser.add_argument("--env-json", type=Path,
                         help="record.py env output; without it, summaries are printed instead")
     parser.add_argument("--out", type=Path, help="append records here (default stdout)")
-    parser.add_argument("--log", type=Path, help="the spawned compositor's stderr")
+    parser.add_argument("--log", type=Path, help="the spawned compositor's output")
+    parser.add_argument("--client-log", type=Path, help="tilo-runtime-mcp's stderr")
     parser.add_argument("--startup-timeout", type=int, default=120)
     args = parser.parse_args(argv)
-    if args.repetitions < 1 or args.warmup < 0 or args.split_repetitions < 0:
-        parser.error("--repetitions must be positive, --warmup and --split-repetitions not negative")
+    if args.repetitions < 1 or args.warmup < 0:
+        parser.error("--repetitions must be positive and --warmup not negative")
     if args.transport is None:
-        args.transport = ("test-control socket, headless compositor" if args.spawn
-                          else "control socket")
+        args.transport = ("tilo-runtime-mcp --connect, agent door, headless compositor" if args.spawn
+                          else "tilo-runtime-mcp --connect, agent door")
     # Only the seeded throwaway desktop's notebook is the bench's; on any
     # running desktop the notebooks belong to a person.
     args.own_notebook = not args.spawn
+    if args.mcp is None:
+        beside = args.spawn.resolve().parent / "tilo-runtime-mcp" if args.spawn else None
+        found = shutil.which("tilo-runtime-mcp")
+        args.mcp = beside if beside and beside.is_file() else Path(found) if found else Path("tilo-runtime-mcp")
     env = record.load_env(args.env_json) if args.env_json else None
     try:
         if args.spawn:
             seeder = args.seeder or args.spawn.resolve().parent / "examples" / "agent_task_desktop"
             log = args.log or Path(tempfile.gettempdir()) / "agent-task-compositor.log"
-            with seeded_desktop(args.spawn, seeder, log, args.startup_timeout) as socket_path:
-                runs, split_runs = measure(socket_path, args)
+            args.log = log
+            with seeded_desktop(args.spawn, seeder, log, args.startup_timeout) as (socket_path, runtime):
+                runs = session(socket_path, runtime, args, runtime.parent)
         else:
-            runs, split_runs = measure(args.socket, args)
-        results = collect(runs, split_runs)
+            runs = session(str(args.socket), args.socket.resolve().parent.parent, args, None)
+        results = collect(runs)
     except (BenchError, OSError) as error:
         print(f"agent_task: {error}", file=sys.stderr)
         return 1
     print(summary(runs), file=sys.stderr)
-    unsettled = [entry for run in runs + split_runs for entry in run.unsettled]
-    if unsettled:
-        print(f"agent_task: {len(unsettled)} listings answered unsettled at "
-              f"{args.listing_wait_ms} ms; first:",
-              file=sys.stderr)
-        for entry in unsettled[:5]:
-            print(f"  {json.dumps(entry)[:1500]}", file=sys.stderr)
-    common = {"transport": args.transport, "task": "notes: create, write, search, open",
+    common = {"transport": args.transport, "task": "notes: find, create, locate, write, read",
               "model": MODEL_NAME, "think_ms": args.think_ms, "tokens_per_s": args.tokens_per_s,
               "warmup": args.warmup}
     emit(results, common, env, args.out)
