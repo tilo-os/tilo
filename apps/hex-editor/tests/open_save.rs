@@ -139,10 +139,11 @@ fn agents_edit_the_bytes_through_the_published_actions() {
         .is_err(),
         "an offset past the end is refused"
     );
-    assert!(
-        app.call("delete-byte", serde_json::json!({})).is_err(),
-        "a delete waits for confirmation"
-    );
+    // An undoable delete runs at once and offers Undo.
+    app.call("delete-byte", serde_json::json!({})).unwrap();
+    assert_eq!(app.state().bytes.len(), 4, "one byte deleted at once");
+    assert!(app.undo());
+    assert_eq!(app.state().bytes, [0x7F, 0x00, 0xFF, 0xEE, 0x33]);
     // An agent deletes in one call, confirmed.
     app.invoke_confirmed(HexEditor::DELETE_BYTES.with(DeleteBytes { offset: 0, len: 2 }))
         .unwrap();
