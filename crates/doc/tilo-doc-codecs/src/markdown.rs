@@ -752,11 +752,13 @@ fn export_md(
 }
 
 /// The backticks a code block's fence takes: three, or one more than the
-/// longest line of `code` that is only backticks (trailing whitespace aside),
-/// since such a line would close a shorter fence and end the block early.
+/// longest line of `code` that is only backticks (surrounding whitespace
+/// aside), since such a line would close a shorter fence and end the block
+/// early. Markdown closes a fence on a line indented up to three spaces,
+/// such as the fence of a list item the code shows.
 fn fence_length(code: &str) -> usize {
     code.lines()
-        .map(str::trim_end)
+        .map(str::trim)
         .filter(|line| !line.is_empty() && line.bytes().all(|byte| byte == b'`'))
         .map(str::len)
         .max()
@@ -1286,6 +1288,13 @@ mod tests {
         assert_eq!(shape(&import(&out)), shape(&imported), "exported {out:?}");
         assert_eq!(export(&out), out);
         assert!(export("```sh\nls\n```\n").contains("```sh\nls\n```"));
+        // A fence the code shows indented, as under a list item, closes a
+        // three-backtick fence too.
+        let src = "````md\n- step\n  ```sh\n  ls\n  ```\nmore\n````\n\nafter\n";
+        let imported = import(src);
+        assert!(imported.blocks[0].text.contains("  ```\nmore"), "{src:?}");
+        let out = export(src);
+        assert_eq!(shape(&import(&out)), shape(&imported), "exported {out:?}");
     }
 
     #[test]
