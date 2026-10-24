@@ -9,6 +9,12 @@
 //! `cargo test` starts the test binary again for that one test, so no other
 //! test ever shares the process with it.
 
+#![allow(
+    clippy::panic,
+    clippy::expect_used,
+    reason = "test support: failing the calling test is the point"
+)]
+
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
