@@ -1295,12 +1295,19 @@ fn drive_input(
     let mut out = Vec::with_capacity(frames);
     let mut fingers = ui::interaction::TouchPointerEmulator::default();
     let mut next = ui::time::now();
+    // Each frame's input and work see the 60 Hz clock a host's frames keep,
+    // so a loaded machine that oversleeps a frame cannot age the finger's
+    // last move out of the release velocity's window.
+    let mut frame_clock = next;
     for frame in 0..frames {
         next += period;
+        frame_clock += period;
         let t = ui::time::now();
-        send_scroll_input(&mut app, &surface, &mut fingers, input, frame, at);
-        scene.reset();
-        app.surface_frame_with_damage(&surface, &mut scene, &mut damage);
+        ui::time::testing::with_monotonic_time(frame_clock, || {
+            send_scroll_input(&mut app, &surface, &mut fingers, input, frame, at);
+            scene.reset();
+            app.surface_frame_with_damage(&surface, &mut scene, &mut damage);
+        });
         let ui_ms = t.elapsed().as_secs_f64() * 1000.0;
         let t = ui::time::now();
         let frame = damage.take_copying();
