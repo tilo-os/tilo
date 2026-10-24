@@ -112,5 +112,4 @@ Jobs that need more than an unprivileged container:
 
 | Job | Needs |
 |---|---|
-| `dev-disk.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
 | `release-imager.yml` | `/dev/kvm` |

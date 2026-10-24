@@ -5,7 +5,6 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflows="$repo/.forgejo/workflows"
-cosign_action="$repo/.forgejo/actions/install-cosign/action.yml"
 fail=0
 
 manifest="$repo/os/external-assets/github-assets.tsv"
@@ -24,9 +23,7 @@ github_cache_workflows=(
 )
 cosign_workflows=(
   "$workflows/release-imager.yml"
-  "$workflows/dev-disk.yml"
 )
-dev_disk_workflow="$workflows/dev-disk.yml"
 # A t check's field, one value per line (a string as itself, an array per element, a table as
 # key=value); fails when t.toml declares no such check, so a renamed check cannot pass unobserved.
 tcheck() {
@@ -189,17 +186,7 @@ for arch in amd64 arm64; do
     fail=1
   fi
 done
-if ! grep -Fq './os/dev/install-cached-cosign.sh' "$cosign_action" \
-  || ! grep -Fq 'key: cosign-v2.5.2-${{ inputs.cache-architecture }}-' "$cosign_action" \
-  || ! grep -Fq 'uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684' "$cosign_action" \
-  || ! grep -Fq 'uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684' "$cosign_action"; then
-  printf 'shared Cosign action bypasses verified installation or persistent caching\n' >&2
-  fail=1
-fi
 for workflow in "${cosign_workflows[@]}"; do
-  if grep -Fq 'uses: ./.forgejo/actions/install-cosign' "$workflow"; then
-    continue
-  fi
   if ! grep -Fq './os/dev/install-cached-cosign.sh' "$workflow" \
     || ! grep -Fq 'github-assets-all-v1-' "$workflow"; then
     printf 'workflow bypasses cached, checksum-verified Cosign installation: %s\n' \
@@ -343,17 +330,4 @@ else
   fail=1
 fi
 
-# Dev images carry sshd, a toolchain and an unsealed /usr. Signing one with the
-# OS release authority would let a production machine accept it as an update,
-# so the dev workflow only verifies the base against keys/cosign.pub.
-if grep -Eq 'COSIGN_KEY_REF|AWS_SIGNING_ROLE_ARN|cosign (sign|attest)' "$dev_disk_workflow"; then
-  printf 'dev disk workflow can sign with the OS release authority\n' >&2
-  fail=1
-elif ! grep -Fq 'cosign verify --key keys/cosign.pub "$child"' "$dev_disk_workflow" \
-  || ! grep -Fq '"git+ssh://code.tilo.so/tilo/tilo@" + $source' "$dev_disk_workflow"; then
-  printf 'dev disk workflow builds on a base it has not bound to the release key and source\n' >&2
-  fail=1
-else
-  printf 'ok    dev disks build only on a verified same-source base and are never release-signed\n'
-fi
 exit "$fail"
