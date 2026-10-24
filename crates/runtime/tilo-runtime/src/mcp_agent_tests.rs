@@ -37,6 +37,9 @@ struct Notes {
     /// read: while it is above zero the app's top level comes in two pages,
     /// and asking for the second finds the revision changed.
     moves: Arc<Mutex<u32>>,
+    /// What the directory was asked, in order: `apps` for which apps run,
+    /// else the provider and the parent a listing is under.
+    asked: Arc<Mutex<Vec<String>>>,
 }
 
 impl Notes {
@@ -46,6 +49,7 @@ impl Notes {
             publication: "2a4120d7-2f63-4578-aed8-11cb91ed3628",
             invoked: Arc::default(),
             moves: Arc::default(),
+            asked: Arc::default(),
         }
     }
 
@@ -62,6 +66,11 @@ impl Notes {
         } else {
             bound(self.publication, key)
         }
+    }
+
+    /// What the directory was asked since the last time this was taken.
+    fn take_asked(&self) -> Vec<String> {
+        std::mem::take(&mut *self.asked.lock().unwrap())
     }
 
     fn invoked(&self) -> Vec<(String, String, Value)> {
@@ -301,6 +310,20 @@ impl ActionHost for Notes {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         let running = *self.running.lock().unwrap();
+        if query.target.is_none() && query.needle.is_empty() {
+            self.asked
+                .lock()
+                .unwrap()
+                .push(query.provider.as_ref().map_or_else(
+                    || "apps".to_owned(),
+                    |provider| {
+                        format!(
+                            "{provider} under {}",
+                            query.parent_resource.as_deref().unwrap_or_default()
+                        )
+                    },
+                ));
+        }
         let Some(provider) = query.provider.clone() else {
             return Pending::ready(Ok(CataloguePage {
                 revision: "v1".into(),
@@ -1061,4 +1084,36 @@ fn a_directory_that_never_holds_still_is_reported() {
     let (text, failed) = run(tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})));
     assert!(failed, "{text}");
     assert!(text.contains("kept changing"), "{text}");
+}
+
+/// One call asks the app's directory for each level once and asks which apps
+/// run once: reading a note finds the action that reads it among the levels
+/// its path was resolved through, and running an action resolves its path in
+/// the app it looked up, without asking either again.
+#[test]
+fn a_call_asks_for_each_directory_level_and_the_running_apps_once() {
+    let host = Notes::new(true);
+    run(async {
+        let (text, failed) = tool(&agent(&host), "tilo_read", json!({"path": "notes/Todo"})).await;
+        assert!(!failed, "{text}");
+        let asked = host.take_asked();
+        let mut once = asked.clone();
+        once.sort();
+        once.dedup();
+        assert_eq!(asked.len(), once.len(), "asked twice: {asked:#?}");
+
+        let (text, failed) = tool(
+            &agent(&host),
+            "tilo_do",
+            json!({"path": "notes/Todo/body#append-paragraph", "args": {"text": "x"}}),
+        )
+        .await;
+        assert!(!failed, "{text}");
+        let asked = host.take_asked();
+        assert_eq!(
+            asked.iter().filter(|asked| *asked == "apps").count(),
+            1,
+            "{asked:#?}"
+        );
+    });
 }
