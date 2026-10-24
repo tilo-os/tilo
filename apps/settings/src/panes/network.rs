@@ -595,11 +595,10 @@ fn profile_label(profile: &SavedNetworkProfile) -> String {
     format!("{} ({})", profile.name, short_uuid)
 }
 
-/// A comma-separated list, trimmed, at most 17 entries.
+/// The entries of a list separated by commas or spaces, at most 17.
 fn list_of(value: &str) -> Vec<String> {
     value
-        .split(',')
-        .map(str::trim)
+        .split(|c: char| c == ',' || c.is_whitespace())
         .filter(|v| !v.is_empty())
         .take(17)
         .map(str::to_string)
@@ -673,6 +672,9 @@ pub struct VpnInfo {
     pub uuid: String,
     /// `wireguard`, or `vpn` for a plugin's.
     pub kind: String,
+    /// A plugin's service type, which says its protocol
+    /// (`org.freedesktop.NetworkManager.openvpn`).
+    pub service: Option<String>,
     pub active: bool,
 }
 
@@ -758,6 +760,10 @@ impl NetworkSnapshot {
             vpns: Some(os_actions::list_vpn_connections().map(|vpns| {
                 vpns.into_iter()
                     .map(|v| VpnInfo {
+                        service: (v.kind == "vpn")
+                            .then(|| os_actions::network_settings::vpn_service_type(&v.uuid))
+                            .and_then(Result::ok)
+                            .flatten(),
                         name: v.name,
                         uuid: v.uuid,
                         kind: v.kind,
@@ -1309,12 +1315,14 @@ impl NetworkService for SampleNetwork {
                 name: "Home".into(),
                 uuid: SAMPLE_VPN_HOME.into(),
                 kind: "wireguard".into(),
+                service: None,
                 active: true,
             },
             VpnInfo {
                 name: "Work".into(),
                 uuid: SAMPLE_VPN_WORK.into(),
                 kind: "vpn".into(),
+                service: Some("org.freedesktop.NetworkManager.openvpn".into()),
                 active: false,
             },
         ]));
@@ -1430,6 +1438,15 @@ pub(crate) enum Landed {
         uuid: String,
         result: Result<VpnProfileSettings, String>,
     },
+    /// A VPN turned on; one carrying all traffic turned the others off.
+    VpnOn {
+        change: NetworkChange,
+        result: Result<(), String>,
+        full_tunnel: bool,
+    },
+    /// The VPNs carrying all traffic turned off for a route through one of
+    /// the person's devices.
+    TunnelsLeft(Result<(), String>),
     VpnCreated(Result<String, String>),
     VpnExported(Result<(), String>),
 }
@@ -1881,7 +1898,11 @@ impl NetworkModel {
             }
             Some(NetworkSample::VpnDevices) => {
                 // Out through the desk PC, and the phone out through this
-                // laptop.
+                // laptop. Everything goes through the desk PC, so the Home
+                // tunnel, which carries everything too, is off.
+                for vpn in &mut model.vpns {
+                    vpn.active = false;
+                }
                 if let Some(status) = &mut model.vpn.devices.status {
                     status.client = Some(ClientStatus {
                         device: SAMPLE_DESK_PC.into(),
@@ -3054,6 +3075,30 @@ impl NetworkModel {
         }
     }
 
+    /// A VPN turned on: one carrying all traffic leaves the route through
+    /// a device.
+    fn vpn_on(
+        &mut self,
+        change: NetworkChange,
+        result: Result<(), String>,
+        full_tunnel: bool,
+    ) -> EffectAnswer {
+        if full_tunnel && result.is_ok() {
+            self.leave_device_route();
+        }
+        self.land(Landed::Changed(change, result))
+    }
+
+    /// The VPNs carrying all traffic turned off for a route through a
+    /// device: read back what stands.
+    fn tunnels_left(&mut self, result: Result<(), String>) -> Result<String, String> {
+        self.in_flight = self.in_flight.saturating_sub(1);
+        if self.in_flight == 0 {
+            self.start_snapshot();
+        }
+        result.map(|()| String::new())
+    }
+
     /// A saved network's password, read to show it or its code.
     fn password_read(
         &mut self,
@@ -3110,6 +3155,12 @@ impl NetworkModel {
                 self.settle_prompt(&reported);
                 reported
             }
+            Landed::VpnOn {
+                change,
+                result,
+                full_tunnel,
+            } => return self.vpn_on(change, result, full_tunnel),
+            Landed::TunnelsLeft(result) => self.tunnels_left(result),
             Landed::Connected { ssid, result } => {
                 let reported = self.joined(&ssid, result);
                 self.settle_prompt(&reported);
