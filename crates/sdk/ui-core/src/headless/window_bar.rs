@@ -358,7 +358,7 @@ impl FrameHarness {
     }
 
     /// The window's title and app, as its tab shows them.
-    fn window_tab(&self) -> TabDescriptor {
+    pub(super) fn window_tab(&self) -> TabDescriptor {
         let bound = self
             .root
             .as_any()

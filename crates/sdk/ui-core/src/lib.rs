@@ -292,6 +292,7 @@ pub mod selection;
 pub mod session_door;
 pub mod shared_selection;
 pub mod shell_tabs;
+mod slot_row;
 mod standalone_history;
 mod standalone_history_host;
 pub mod state;
