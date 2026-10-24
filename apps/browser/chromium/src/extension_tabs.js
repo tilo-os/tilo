@@ -93,12 +93,16 @@
   };
 
   // Events the host fires: a toolbar click, a tab that changed. The host
-  // fires only those an extension listens to, so it is told of each.
+  // fires only those an extension listens to, so it is told of each. A
+  // worker tells all its first script listens for at once, when that script
+  // has run (`listening`), and hears then what happened while it started;
+  // what it listens for later, it tells as it does.
   const listeners = new Map();
   const listened = new Set();
   // What a listener is given where the host's arguments are not all it
   // gets: a callback (omnibox.onInputChanged's `suggest`).
   const adapters = new Map();
+  let told = !(typeof ServiceWorkerGlobalScope === 'function' && globalThis instanceof ServiceWorkerGlobalScope);
   const event = (namespace, key, name) => {
     const target = namespace && namespace[key];
     if (!target) return;
@@ -109,7 +113,7 @@
       own.add(listener);
       if (!listened.has(name)) {
         listened.add(name);
-        call('listen', {event: name}).catch(() => listened.delete(name));
+        if (told) call('listen', {event: name}).catch(() => listened.delete(name));
       }
     };
     target.removeListener = (listener) => own.delete(listener);
@@ -292,7 +296,13 @@
   // The worker's first script has run once this task ends: its listeners
   // are registered, and an event may reach them.
   let ready = false;
-  setTimeout(() => { ready = true; });
+  setTimeout(() => {
+    ready = true;
+    if (told) return;
+    told = true;
+    const events = [...listened];
+    call('listening', {events}).catch(() => { for (const name of events) listened.delete(name); });
+  });
   Object.defineProperty(globalThis, '__tiloExtensionTabs', {
     value: Object.freeze({
       get ready() { return ready; },
