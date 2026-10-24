@@ -40,7 +40,7 @@ use crate::shell::automation_triggers::{Firing, ManualClock, TriggerEvent, Trigg
 use crate::shell::portal_dialog::{DialogView, PortalDialogController, PortalDialogQueue};
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ReadDoc};
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::Signer as _;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
 use tilo_actions::remote::{
@@ -64,10 +64,8 @@ use ui::collaboration::{
 #[path = "shortcuts_door_tests/unhosted.rs"]
 mod unhosted;
 
-/// The room the suite's workspace is: one this device governs and its
-/// native owner holds, enrolled as every room is
-/// (`tilo_joined_room::testing::ROOM`).
-const ROOM: uuid::Uuid = uuid::Uuid::from_u128(0xaaaa_aaaa_aaaa_4aaa_8aaa_aaaa_aaaa_aaaa);
+use crate::shell::network::one_host_tests::{Device, Person, Wakes, hosted_workspace, until};
+
 const FIXTURE: &str = "so.tilo.fixture-drafts";
 const FIXTURE_HANDLE: &str = "drafts";
 const RECORD: &str = "file:drafts.qdoc";
@@ -83,45 +81,8 @@ const SILENT_HANDLE: &str = "silent-app";
 const INVOKER_HANDLE: &str = "invoker-app";
 const SILENT_APP: &str = "so.tilo.fixture-silent";
 const INVOKER_APP: &str = "so.tilo.fixture-invoker";
-/// The person root of a member of the room who is not its owner, and the
-/// key of the device he edits from.
-const BOB_ROOT: [u8; 32] = [0xB0; 32];
-const BOB_DEVICE: [u8; 32] = [0xB1; 32];
-
-fn room() -> crate::shell::state::RoomId {
-    crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id")
-}
-
-/// The person a fixture compositor session acts for: this device's own,
-/// the room's owner.
-fn session_person() -> String {
-    crate::shell::state::local_user_id_for_room(&room())
-}
-
-/// This device's key and certificate in the room: the identity the host
-/// provisioned, which governs the room and every app here connects as.
-fn this_device() -> (SigningKey, tilo_user_identity::DeviceCert) {
-    tilo_identity_host::broker::trusted_current_device(&ROOM.to_string())
-        .expect("this device's identity in the room")
-}
-
-/// An application's presentation of this device to the broker.
-fn endpoint_identity() -> CertifiedEndpointIdentity {
-    let (device, certificate) = this_device();
-    let presentation = runtime_collab::CertifiedJoinIdentity {
-        workspace_id: ROOM.to_string(),
-        device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
-        proof: device
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                &ROOM.to_string(),
-            ))
-            .to_bytes()
-            .to_vec(),
-    }
-    .encode()
-    .expect("certified join encodes");
-    CertifiedEndpointIdentity::new(presentation, device)
-}
+/// The seed of the root of Bob, a member of the room who is not its owner.
+const BOB_SEED: u8 = 0xB0;
 
 fn person_of(root: [u8; 32]) -> String {
     match collab_types::Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(root))
@@ -131,192 +92,188 @@ fn person_of(root: [u8; 32]) -> String {
     }
 }
 
-/// The room's owner: the person this device is.
+/// The room's owner: the person this host was set up as, whose device
+/// hosts the room.
 fn owner_principal() -> String {
-    person_of(this_device().1.user_public_key)
+    let paths = crate::firstboot::collaboration_identity_paths();
+    person_of(
+        tilo_user_identity::persist::read_public_key(&paths.user_pubkey)
+            .expect("this host's person"),
+    )
 }
 
 /// Bob, a member of the room who may edit it.
 fn bob() -> String {
-    person_of(SigningKey::from_bytes(&BOB_ROOT).verifying_key().to_bytes())
-}
-
-/// Bob's device, certified by his root.
-fn bob_device() -> (SigningKey, tilo_user_identity::DeviceCert) {
-    let key = SigningKey::from_bytes(&BOB_DEVICE);
-    let certificate = tilo_joined_room::testing::certificate(
-        &SigningKey::from_bytes(&BOB_ROOT),
-        &key,
-        "Bob's laptop",
-    );
-    (key, certificate)
+    person_of(Person::new(BOB_SEED).user())
 }
 
 /// The room's workspace in `tree`.
-fn room_workspace(tree: &crate::shell::state::WorkspaceTree) -> &crate::shell::state::Workspace {
+fn room_workspace(
+    tree: &crate::shell::state::WorkspaceTree,
+    room: crate::shell::state::RoomId,
+) -> &crate::shell::state::Workspace {
     tree.desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room() == room())
+        .find(|workspace| workspace.room() == room)
         .expect("the room's workspace")
 }
 
-/// Bob joins the room on his device through the invitation its governor
-/// issues him, as an editor.
-fn enroll_bob(
-    owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
-    governor: &mut tilo_joined_room::testing::governor::TestGovernor,
-) {
-    use tilo_peer_state::join;
-    let now = std::time::SystemTime::now();
-    let (key, certificate) = bob_device();
-    let hint = governor.hint(iroh::EndpointAddr::new(
-        iroh::EndpointId::from_bytes(&governor.governor().device_public_key)
-            .expect("the governor's endpoint"),
-    ));
-    let invitation = governor.issue(
-        vec![hint],
-        join::MemberRole::Editor,
-        Some(certificate.user_public_key),
-        Some("Bob".into()),
-        tilo_joined_room::testing::ns(now)
-            .expect("now in nanoseconds")
-            .saturating_add(60_000_000_000),
-    );
-    let join::JoinTransportResponse::Challenge(challenge) = governor.handle(
-        certificate.device_public_key,
-        join::JoinTransportRequest::Challenge(join::JoinChallengeRequest {
-            signed_invitation: invitation,
-            device_cert: certificate.clone(),
-            request_id: [0xB2; 32],
-        }),
-    ) else {
-        panic!("the governor challenges Bob's device");
-    };
-    let completed = governor.handle(
-        certificate.device_public_key,
-        join::JoinTransportRequest::Complete(join::JoinCompleteRequest {
-            proof: join::sign_join_proof(challenge.challenge, &key).expect("Bob proves his key"),
-        }),
-    );
-    assert!(
-        matches!(completed, join::JoinTransportResponse::Complete(_)),
-        "Bob joins: {completed:?}"
-    );
-    for (bytes, _) in governor.outgoing() {
-        let message: neighbour_wire::NeighbourMsg =
-            postcard::from_bytes(bytes).expect("a governor publication");
-        owner
-            .receive(
-                room(),
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                    governor.governor().device_public_key,
-                ),
-                message,
-                now,
-            )
-            .expect("the room's owner takes the room with Bob in it");
+/// An application's presentation of this device to the broker in `room`:
+/// the device the room's host admitted, whose key the network holds.
+fn endpoint_identity(room: crate::shell::state::RoomId) -> CertifiedEndpointIdentity {
+    let (device, certificate) =
+        tilo_identity_host::broker::trusted_current_device(&room.to_string())
+            .expect("this device's identity in the room");
+    let presentation = runtime_collab::CertifiedJoinIdentity {
+        workspace_id: room.to_string(),
+        device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
+        proof: device
+            .sign(&runtime_identity::collaboration_join_signing_bytes(
+                &room.to_string(),
+            ))
+            .to_bytes()
+            .to_vec(),
     }
+    .encode()
+    .expect("certified join encodes");
+    CertifiedEndpointIdentity::new(presentation, device)
 }
 
-/// Commit `command` to the room as its governor, this device, decides it
-/// for the owner: the room's admitted document carries it, and the
-/// workspace shows it from there.
-fn govern(
-    owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
-    command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-) {
-    let (key, certificate) = this_device();
-    owner
-        .commit_workspace_membership_command(
-            tilo_owner_commit::OwnerCommitRequest {
-                room: ROOM.to_string(),
-                operation: tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
-                    invocation: uuid::Uuid::new_v4(),
-                    caller: certificate.clone(),
-                    command,
-                },
-            },
-            &certificate,
-            &key,
-            std::time::SystemTime::now(),
-        )
-        .expect("the room's governor commits the owner's change");
+/// This device, hosting a new workspace's room on its own host as every
+/// device does, with the fixture application allowed its own surface.
+struct HostedRoom {
+    device: Device,
+    wakes: std::sync::Arc<Wakes>,
+    local: crate::shell::state::WorkspaceId,
+    room: crate::shell::state::RoomId,
 }
 
-/// Grant `grant` in the room, given by the owner.
-fn grant_in_room(
-    owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
-    grant: tilo_action_policy::Grant,
-) {
-    govern(
-        owner,
-        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant { grant },
-    );
-}
-
-/// The room's native owner and its governor's network, with Bob a member
-/// and the fixture application admitted and allowed its own surface.
-struct GovernedRoom {
-    membership: crate::shell::state::WorkspaceTreeHandle,
-    owner: crate::shell::native_workspace_owner::NativeWorkspaceOwner,
-    network: std::sync::Arc<crate::shell::network::ShellNetwork>,
-    _commands: tokio::sync::mpsc::Receiver<crate::network::NetCmd>,
-}
-
-/// Enroll this device into the room it governs, beside `state`, the way
-/// every room is held: its native owner opened first, so the broker finds
-/// it open.
-fn govern_room(state: &Path) -> GovernedRoom {
-    assert_eq!(ROOM.to_string(), tilo_joined_room::testing::ROOM);
-    let (key, certificate) = this_device();
-    let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-    let active = tree.desktop.active;
-    assert!(tree.stand_in_room(active, room()));
-    // As on a desktop, the broker keeps its invocation journal beside the
-    // saved tree: an admission attested as the owner's is recorded there.
-    tree.persist_path = Some(state.to_path_buf());
-    let membership = tree.shared();
-    let owner = crate::shell::native_workspace_owner::open(membership.clone())
-        .expect("the room's native owner");
-    let mut governor =
-        tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate)
-            .expect("this device enrolls into the room it governs");
-    enroll_bob(&owner, &mut governor);
-    govern(
-        &owner,
-        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::AddAgent {
-            agent: FIXTURE_HANDLE.into(),
-            preset: tilo_action_policy::roles::AgentPreset::Operator,
-        },
-    );
-    let fixture = room_workspace(&membership.read()).node().app(FIXTURE);
-    grant_in_room(
-        &owner,
-        tilo_action_policy::Grant::new(
+impl HostedRoom {
+    /// Start this device as the identity set up under `identity_root`, its
+    /// session's state under `dir`, and make the workspace.
+    fn start(identity_root: &Path, dir: &Path) -> Self {
+        let wakes = std::sync::Arc::new(Wakes::default());
+        let device = Device::start_as_this_host(identity_root, "Desktop", dir, 1, &wakes);
+        let (local, room) = hosted_workspace(&device, &[], "Drafts room");
+        let hosted = Self {
+            device,
+            wakes,
+            local,
+            room,
+        };
+        let fixture = hosted.workspace_node().app(FIXTURE);
+        hosted.grant(tilo_action_policy::Grant::new(
             "fixture-surface",
             tilo_action_policy::Subject::agent(FIXTURE_HANDLE),
             fixture,
             KindSet::ALL,
             Answer::Allow,
             tilo_action_policy::Subject::person(owner_principal()),
-        ),
-    );
-    let (network, commands) = crate::shell::network::native_read_network_for_test(
-        membership.clone(),
-        crate::network::HostIdentity {
-            device_cert: certificate,
-            device_signing_key: key,
-            workspace_device_certs: std::collections::HashMap::new(),
-            workspace_revocations: std::collections::HashMap::new(),
-            identity_paths: None,
-        },
-    );
-    GovernedRoom {
-        membership,
-        owner,
-        network: std::sync::Arc::new(network),
-        _commands: commands,
+        ));
+        hosted
+    }
+
+    /// Bob joins the room from his own device, its state under `dir`,
+    /// through the invitation the room's host issues him as an editor.
+    fn bob_joins(&self, dir: &Path) -> Device {
+        let person = Person::new(BOB_SEED);
+        let device = Device::start(
+            &person,
+            "Bob's laptop",
+            dir,
+            2,
+            tilo_user_identity::DeviceCapabilities::primary(),
+            &self.wakes,
+        );
+        let invitation = self.device.invite(self.local, "Bob", Some(person.user()));
+        device
+            .join(&invitation)
+            .expect("Bob's join field takes the invitation");
+        let joined = until(&[&self.device, &device], "Bob to join the room", || {
+            device.joins.lock().expect("joins").pop()
+        });
+        assert_eq!(joined, Ok(self.room), "Bob joins the room");
+        until(
+            &[&self.device, &device],
+            "Bob to be a member of the room here",
+            || {
+                room_workspace(&self.device.tree.read(), self.room)
+                    .role_of(&bob())
+                    .is_some()
+                    .then_some(())
+            },
+        );
+        device
+    }
+
+    fn network(&self) -> &std::sync::Arc<crate::shell::network::ShellNetwork> {
+        self.device.net()
+    }
+
+    fn workspace_node(&self) -> TreePath {
+        room_workspace(&self.device.tree.read(), self.room).node()
+    }
+
+    /// Ask the room's host, as its owner, for the governance change
+    /// `action` with `arguments`, and wait until this device's room shows
+    /// what `shown` looks for.
+    fn govern(
+        &self,
+        action: &str,
+        arguments: Value,
+        what: &str,
+        shown: impl Fn(&crate::shell::state::Workspace) -> bool,
+    ) {
+        let Value::Object(arguments) = arguments else {
+            panic!("governance arguments are an object");
+        };
+        self.device
+            .govern(self.room, action, arguments)
+            .unwrap_or_else(|error| panic!("the room's host takes the change: {error}"));
+        until(&[&self.device], what, || {
+            shown(room_workspace(&self.device.tree.read(), self.room)).then_some(())
+        });
+    }
+
+    /// Grant `grant` in the room, as its owner gives it.
+    fn grant(&self, grant: tilo_action_policy::Grant) {
+        let id = grant.id.clone();
+        self.govern(
+            tilo_action_policy::roles::governance::GRANT,
+            json!({ "grant": grant }),
+            "the grant to reach the room",
+            |workspace| workspace.policy.grants.iter().any(|held| held.id == id),
+        );
+    }
+
+    /// Let `app` keep records in the room and have the room's host make
+    /// its record `record`, as opening the app there first does.
+    fn open_first(&self, app: &str, record: &str) {
+        let net = self.network();
+        let certificate = self.device.cert();
+        let runtime = net.runtime_handle().expect("the network's runtime");
+        runtime
+            .block_on(net.grant_app_authorship_at_host(self.room, &certificate, app))
+            .expect("the room's host answers for the app's authorship")
+            .unwrap_or_else(|error| panic!("the host lets {app} author: {error}"));
+        runtime
+            .block_on(net.prepare_application_record_at_host(self.room, &certificate, app, record))
+            .expect("the room's host answers for the app's record")
+            .unwrap_or_else(|error| panic!("the host makes {app}'s record: {error}"));
+        let owner = net.native_owner().expect("the room's native owner");
+        until(
+            &[&self.device],
+            "the app's record to reach the room",
+            || {
+                owner
+                    .with_current(self.room, |view| {
+                        Ok(view.peer().document(app, record).is_some())
+                    })
+                    .unwrap_or(false)
+                    .then_some(())
+            },
+        );
     }
 }
 
@@ -360,21 +317,28 @@ fn launched(path: &Path, app_id: &str, room: &str) -> UnixStream {
 /// returns its id, `publish` publishes a draft by id.
 struct FixtureApp {
     manager: CollaborationManager,
+    /// The device's network, whose turn runs each time the app is served,
+    /// as the compositor's loop runs beside the app.
+    net: std::sync::Arc<crate::shell::network::ShellNetwork>,
     doc: AutoCommit,
     /// Every invocation served, in order: the action and its arguments.
     served: Vec<(String, Map<String, Value>)>,
 }
 
 impl FixtureApp {
-    fn connect(path: &Path) -> Self {
-        let stream = launched(path, FIXTURE, &ROOM.to_string());
+    fn connect(
+        path: &Path,
+        room: crate::shell::state::RoomId,
+        net: &std::sync::Arc<crate::shell::network::ShellNetwork>,
+    ) -> Self {
+        let stream = launched(path, FIXTURE, &room.to_string());
         let mut manager = CollaborationManager::for_route_fd_with_identity(
             stream.into_raw_fd(),
             FIXTURE,
-            ROOM,
+            room.to_string().parse().expect("a room is a UUID"),
             Some(RECORD.to_string()),
             Some(FIXTURE_HANDLE.to_string()),
-            endpoint_identity(),
+            endpoint_identity(room),
         )
         .expect("start the collaboration client");
         let mut doc = AutoCommit::new();
@@ -437,6 +401,7 @@ impl FixtureApp {
         manager.send(CollabRequest::document_snapshot(doc.save()));
         Self {
             manager,
+            net: std::sync::Arc::clone(net),
             doc,
             served: Vec::new(),
         }
@@ -444,6 +409,7 @@ impl FixtureApp {
 
     /// Serve whatever the broker sent since the last call.
     fn pump(&mut self) {
+        self.net.tick();
         for event in self.manager.poll() {
             match event {
                 CollabEvent::DocumentSnapshotRequested { .. } => {
@@ -534,11 +500,14 @@ struct Door {
     broker: crate::shell::collab_broker::BrokerHandle,
     membership: crate::shell::state::WorkspaceTreeHandle,
     host: crate::shell::remote_actions::BrokerActionHost,
-    /// The room's native owner and network, kept open as long as the broker.
-    room: GovernedRoom,
     owner: Caller,
     app: FixtureApp,
     deadline: Instant,
+    /// Bob's device, once he joined the room.
+    bob: Option<Device>,
+    /// This device and the room it hosts, kept up as long as the broker.
+    hosted: HostedRoom,
+    room: crate::shell::state::RoomId,
     dir: tempfile::TempDir,
     /// This host's own identity, which signs the evidence of every
     /// admission it attests, as a desktop's does.
@@ -571,6 +540,8 @@ impl Door {
             &crate::firstboot::collaboration_identity_paths(),
         )
         .expect("the host's own identity");
+        let hosted = HostedRoom::start(&dir.path().join("system"), &dir.path().join("session"));
+        let room = hosted.room;
         // The person this device acts as in the room is the identity it
         // was set up with.
         let registry = tilo_identity_host::registry::IdentityRegistryStore::at(&identity);
@@ -580,34 +551,45 @@ impl Door {
             .default_identity
             .expect("the set-up identity");
         registry
-            .bind_workspace(&ROOM.to_string(), &selected)
+            .bind_workspace(&room.to_string(), &selected)
             .expect("the room acts as the set-up identity");
-        let room = govern_room(&dir.path().join("state.json"));
         assert_eq!(
-            session_person(),
+            crate::shell::state::local_user_id_for_room(&room),
             owner_principal(),
             "the session acts for the room's owner"
         );
+        let (_, certificate) =
+            tilo_identity_host::broker::trusted_current_device(&room.to_string())
+                .expect("this device's identity in the room");
+        assert_eq!(
+            certificate,
+            hosted.device.cert(),
+            "the broker's device is the one the network holds"
+        );
+        hosted.open_first(FIXTURE, RECORD);
         let socket = dir.path().join("collab.sock");
         let broker = crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
             socket.clone(),
-            room.membership.clone(),
-            vec![this_device().1.device_public_key],
-            &room.network,
+            hosted.device.tree.clone(),
+            vec![certificate.device_public_key],
+            hosted.network(),
             None,
         )
         .expect("bind the collaboration service");
         let host = crate::shell::remote_actions::BrokerActionHost::new(
             broker.app_action_broker().expect("the action broker"),
         );
+        let app = FixtureApp::connect(&socket, room, hosted.network());
         let mut door = Self {
             broker,
-            membership: room.membership.clone(),
+            membership: hosted.device.tree.clone(),
             host,
-            room,
             owner: Caller::local_person(owner_principal()),
-            app: FixtureApp::connect(&socket),
+            app,
             deadline: tilo_test_env::hang_deadline(),
+            bob: None,
+            hosted,
+            room,
             dir,
             _host_identity: host_identity,
         };
@@ -623,6 +605,12 @@ impl Door {
             std::thread::sleep(Duration::from_millis(10));
         }
         door
+    }
+
+    /// The person a compositor session on this device acts for in the
+    /// room: the room's owner.
+    fn session_person(&self) -> String {
+        crate::shell::state::local_user_id_for_room(&self.room)
     }
 
     fn offers(&self, app: &str, resource: &str, action: &str) -> bool {
@@ -670,7 +658,7 @@ impl Door {
                 on_behalf_of: None,
                 invocation,
                 target: RemoteActionTarget {
-                    provider: workspace_provider(&ROOM.to_string()),
+                    provider: workspace_provider(&self.room.to_string()),
                     address: ActionAddress::new(resource, action),
                 },
                 argument: if arguments.is_empty() {
@@ -703,54 +691,30 @@ impl Door {
     }
 
     /// Save `shortcut` from Bob's own device, as the room's member who
-    /// may edit it.
-    fn save_from_bobs_device(&self, shortcut: &Shortcut) {
+    /// may edit it; he joins the room on it first.
+    fn save_from_bobs_device(&mut self, shortcut: &Shortcut) {
+        if self.bob.is_none() {
+            self.bob = Some(self.hosted.bob_joins(&self.dir.path().join("bob")));
+        }
         self.save_as(&Caller::local_person(bob()), shortcut)
             .expect("a member saves a scheduled shortcut");
     }
 
-    /// The room's governor, this device, removes the person whose root is
-    /// `root` from the room as its owner asks, and the room's owner takes
-    /// the room as its governor published it. Whether they were a member.
-    fn remove_member(&self, root: [u8; 32]) -> bool {
-        let person = SigningKey::from_bytes(&root).verifying_key().to_bytes();
-        let (key, certificate) = this_device();
-        let now = std::time::SystemTime::now();
-        let published = self
-            .room
-            .owner
-            .with_current(room(), |view| {
-                let mut peer = view.peer().clone();
-                if !peer.governance_mut().remove_member(person, &key, now)? {
-                    return Ok(Vec::new());
-                }
-                let generation = view
-                    .generation()
-                    .checked_add(1)
-                    .ok_or("the room's generations ran out")?;
-                peer.durable_mutation_messages(view.peer(), &key, now, generation)
-            })
-            .expect("the governor removes the member");
-        if published.is_empty() {
+    /// The room's owner removes `person` from the room at its host, and
+    /// the room here shows them gone. Whether they were a member.
+    fn remove_member(&self, person: &str) -> bool {
+        if room_workspace(&self.membership.read(), self.room)
+            .role_of(person)
+            .is_none()
+        {
             return false;
         }
-        let origin =
-            tilo_peer_state::TransportOrigin::RetainedRelayDelta(certificate.device_public_key);
-        for admitted in self
-            .room
-            .owner
-            .receive_batch(
-                room(),
-                published
-                    .into_iter()
-                    .map(|message| (origin, message))
-                    .collect(),
-                now,
-            )
-            .expect("the room's owner commits the removal")
-        {
-            admitted.expect("the room's owner takes the governor's removal");
-        }
+        self.hosted.govern(
+            tilo_action_policy::roles::governance::REMOVE_MEMBER,
+            json!({ "person": person }),
+            "the removed member to leave the room",
+            |workspace| workspace.role_of(person).is_none(),
+        );
         true
     }
 
@@ -789,8 +753,8 @@ impl Door {
             .app_action_broker()
             .expect("the action broker")
             .start_triggered_shortcut_run(
-                &Caller::local_person(person).in_room(ROOM.to_string()),
-                &ROOM.to_string(),
+                &Caller::local_person(person).in_room(self.room.to_string()),
+                &self.room.to_string(),
                 shortcut,
                 trigger,
                 run,
@@ -958,7 +922,7 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
         ..shortcut
     };
     assert_eq!(
-        room_workspace(&door.membership.read()).shortcuts,
+        room_workspace(&door.membership.read(), door.room).shortcuts,
         std::slice::from_ref(&stored),
         "the workspace holds the saved shortcut, as saved by the owner"
     );
@@ -1047,7 +1011,11 @@ fn a_shortcut_reaching_outside_its_grant_is_refused() {
         ),
         other => panic!("a step outside the grant must be refused: {other:?}"),
     }
-    assert!(room_workspace(&door.membership.read()).shortcuts.is_empty());
+    assert!(
+        room_workspace(&door.membership.read(), door.room)
+            .shortcuts
+            .is_empty()
+    );
     assert!(!door.offers(SHORTCUTS_APP_ID, &shortcut_resource_id("sneaky"), "run"));
     let served_nothing = door.app.served.is_empty();
     drop(door);
@@ -1171,7 +1139,7 @@ fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     let mut door = Door::open();
     // The person is read while the door's host identity is installed:
     // dropping the door restores the environment it replaced.
-    let person = session_person();
+    let person = door.session_person();
     let session = Caller::local_person(person.clone());
     let chord = TriggerSpec::Keyboard {
         chord: "Super+Shift+Y".into(),
@@ -1514,7 +1482,7 @@ fn revoking_the_savers_membership_or_deleting_the_shortcut_stops_its_triggers() 
     ));
 
     // The owner revokes Bob's membership: the next fire starts nothing.
-    assert!(door.remove_member(BOB_ROOT), "Bob was a member to remove");
+    assert!(door.remove_member(&bob()), "Bob was a member to remove");
     clock.advance(chrono::Duration::hours(1));
     let fired = tick(&mut triggers, &door, &bob());
     assert_eq!(fired.len(), 1, "the schedule itself still comes round");
@@ -1550,15 +1518,23 @@ struct AppConnection {
 }
 
 impl AppConnection {
-    fn connect(socket: &Path, app_id: &str, device: &str) -> Self {
-        let stream = launched(socket, app_id, &ROOM.to_string());
+    /// `app_id` opening its record of `device` in the door's room, as the
+    /// launcher opens it there.
+    fn connect(door: &Door, app_id: &str, device: &str) -> Self {
+        let record = format!("file:{device}.qdoc");
+        door.hosted.open_first(app_id, &record);
+        let stream = launched(
+            &door.dir.path().join("collab.sock"),
+            app_id,
+            &door.room.to_string(),
+        );
         let manager = CollaborationManager::for_route_fd_with_identity(
             stream.into_raw_fd(),
             app_id,
-            ROOM,
-            Some(format!("file:{device}.qdoc")),
+            door.room.to_string().parse().expect("a room is a UUID"),
+            Some(record),
             None,
-            endpoint_identity(),
+            endpoint_identity(door.room),
         )
         .expect("start the collaboration client");
         Self {
@@ -1768,9 +1744,9 @@ fn fixture_target(door: &Door, resource: &str, action: &str) -> RemoteActionTarg
     .expect("the fixture offers the action")
 }
 
-fn library(action: &str) -> RemoteActionTarget {
+fn library(door: &Door, action: &str) -> RemoteActionTarget {
     RemoteActionTarget {
-        provider: workspace_provider(&ROOM.to_string()),
+        provider: workspace_provider(&door.room.to_string()),
         address: ActionAddress::new("shortcuts", action),
     }
 }
@@ -1778,8 +1754,7 @@ fn library(action: &str) -> RemoteActionTarget {
 #[test]
 fn an_app_that_declared_nothing_is_refused_the_catalogue() {
     let mut door = door_with_declared_access();
-    let socket = door.dir.path().join("collab.sock");
-    let mut silent = AppConnection::connect(&socket, SILENT_APP, SILENT_HANDLE);
+    let mut silent = AppConnection::connect(&door, SILENT_APP, SILENT_HANDLE);
     assert_eq!(
         silent.catalogue(&mut door).map(|page| page.rows.len()),
         Err(ActionHostError::NotPermitted),
@@ -1804,8 +1779,7 @@ fn an_app_that_declared_nothing_is_refused_the_catalogue() {
 )]
 fn the_shortcuts_app_uses_its_library_but_cannot_invoke_another_app_itself() {
     let mut door = door_with_declared_access();
-    let socket = door.dir.path().join("collab.sock");
-    let mut shortcuts = AppConnection::connect(&socket, SHORTCUTS_APP_ID, SHORTCUTS_HANDLE);
+    let mut shortcuts = AppConnection::connect(&door, SHORTCUTS_APP_ID, SHORTCUTS_HANDLE);
 
     let page = shortcuts
         .catalogue(&mut door)
@@ -1827,11 +1801,13 @@ fn the_shortcuts_app_uses_its_library_but_cannot_invoke_another_app_itself() {
     // Its own library is its own, used as the person.
     let saved = publish_draft("from-the-app", &["draft", "publish"]);
     let arguments = json!({ "shortcut": serde_json::to_value(&saved).unwrap() });
-    match shortcuts.invoke(&mut door, library("create"), &arguments) {
+    let create = library(&door, "create");
+    match shortcuts.invoke(&mut door, create, &arguments) {
         ReceiptStatus::Completed { .. } => {}
         other => panic!("the shortcuts app saves through its own library: {other:?}"),
     }
-    match shortcuts.invoke(&mut door, library("list"), &json!({})) {
+    let list = library(&door, "list");
+    match shortcuts.invoke(&mut door, list, &json!({})) {
         ReceiptStatus::Completed { output } => {
             let listed: Vec<Shortcut> =
                 serde_json::from_value(output.value.expect("the library")).unwrap();
@@ -1850,8 +1826,7 @@ fn the_shortcuts_app_uses_its_library_but_cannot_invoke_another_app_itself() {
 #[test]
 fn an_app_that_may_invoke_still_needs_the_workspace_to_grant_it() {
     let mut door = door_with_declared_access();
-    let socket = door.dir.path().join("collab.sock");
-    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let mut invoker = AppConnection::connect(&door, INVOKER_APP, INVOKER_HANDLE);
     let draft = fixture_draft(&door);
 
     match invoker.invoke(&mut door, draft.clone(), &json!({"title": "x"})) {
@@ -1860,18 +1835,15 @@ fn an_app_that_may_invoke_still_needs_the_workspace_to_grant_it() {
     }
     assert!(door.app.served.is_empty(), "nothing ran");
 
-    let node = room_workspace(&door.membership.read()).node().app(FIXTURE);
-    grant_in_room(
-        &door.room.owner,
-        tilo_action_policy::Grant::new(
-            "invoker-fixture",
-            tilo_action_policy::Subject::app(INVOKER_APP),
-            node,
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            tilo_action_policy::Subject::person(owner_principal()),
-        ),
-    );
+    let node = door.hosted.workspace_node().app(FIXTURE);
+    door.hosted.grant(tilo_action_policy::Grant::new(
+        "invoker-fixture",
+        tilo_action_policy::Subject::app(INVOKER_APP),
+        node,
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        tilo_action_policy::Subject::person(owner_principal()),
+    ));
     if let ReceiptStatus::Rejected { error } =
         invoker.invoke(&mut door, draft, &json!({"title": "Granted"}))
     {
@@ -1908,7 +1880,7 @@ fn door_asking(present: bool) -> (Door, PortalDialogController) {
 /// Grants that let the invoker use the fixture's `draft`.
 fn invoker_draft_grants(door: &Door) -> Vec<tilo_action_policy::Grant> {
     let tree = door.membership.read();
-    let room = room_workspace(&tree);
+    let room = room_workspace(&tree, door.room);
     let draft = tilo_actions::action_node(&room.node(), FIXTURE, INBOX_KIND, INBOX, None, "draft");
     let grants = room
         .policy
@@ -1924,7 +1896,7 @@ fn invoker_draft_grants(door: &Door) -> Vec<tilo_action_policy::Grant> {
 }
 
 fn history_mentions(door: &Door, text: &str) -> bool {
-    room_workspace(&door.membership.read())
+    room_workspace(&door.membership.read(), door.room)
         .effect_receipts
         .iter()
         .any(|receipt| {
@@ -1956,8 +1928,7 @@ fn not_permitted(status: &ReceiptStatus) -> bool {
 #[test]
 fn allowing_once_admits_that_call_and_the_next_asks_again() {
     let (mut door, mut sheet) = door_asking(true);
-    let socket = door.dir.path().join("collab.sock");
-    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let mut invoker = AppConnection::connect(&door, INVOKER_APP, INVOKER_HANDLE);
     let draft = fixture_draft(&door);
 
     let (status, seen) = invoker.invoke_answering(
@@ -2020,28 +1991,24 @@ fn allowing_once_admits_that_call_and_the_next_asks_again() {
 #[test]
 fn a_grant_that_asks_first_runs_each_call_on_the_persons_confirmation() {
     let (mut door, mut sheet) = door_asking(true);
-    let socket = door.dir.path().join("collab.sock");
-    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let mut invoker = AppConnection::connect(&door, INVOKER_APP, INVOKER_HANDLE);
     let draft = fixture_draft(&door);
     let node = tilo_actions::action_node(
-        &room_workspace(&door.membership.read()).node(),
+        &door.hosted.workspace_node(),
         FIXTURE,
         INBOX_KIND,
         INBOX,
         None,
         "draft",
     );
-    grant_in_room(
-        &door.room.owner,
-        tilo_action_policy::Grant::new(
-            "invoker-drafts-when-asked",
-            tilo_action_policy::Subject::app(INVOKER_APP),
-            node,
-            KindSet::READ_UNDOABLE,
-            Answer::Ask,
-            tilo_action_policy::Subject::person(owner_principal()),
-        ),
-    );
+    door.hosted.grant(tilo_action_policy::Grant::new(
+        "invoker-drafts-when-asked",
+        tilo_action_policy::Subject::app(INVOKER_APP),
+        node,
+        KindSet::READ_UNDOABLE,
+        Answer::Ask,
+        tilo_action_policy::Subject::person(owner_principal()),
+    ));
 
     // The app claims a confirmation of its own; it counts for nothing.
     let mut confirm = |door: &mut Door, answer: AppActionConsent, title: &str| {
@@ -2119,8 +2086,7 @@ fn a_grant_that_asks_first_runs_each_call_on_the_persons_confirmation() {
 #[test]
 fn an_app_granted_one_resources_action_is_asked_again_for_another_resource() {
     let (mut door, mut sheet) = door_asking(true);
-    let socket = door.dir.path().join("collab.sock");
-    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let mut invoker = AppConnection::connect(&door, INVOKER_APP, INVOKER_HANDLE);
     let inbox = fixture_draft(&door);
     let outbox = fixture_target(&door, OUTBOX, "draft");
 
@@ -2155,8 +2121,7 @@ fn an_app_granted_one_resources_action_is_asked_again_for_another_resource() {
 #[test]
 fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
     let (mut door, mut sheet) = door_asking(true);
-    let socket = door.dir.path().join("collab.sock");
-    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let mut invoker = AppConnection::connect(&door, INVOKER_APP, INVOKER_HANDLE);
     let draft = fixture_draft(&door);
 
     let (status, seen) = invoker.invoke_answering(
@@ -2206,9 +2171,9 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
                     on_behalf_of: None,
                     invocation: InvocationId::new(),
                     target: RemoteActionTarget {
-                        provider: workspace_provider(&ROOM.to_string()),
+                        provider: workspace_provider(&door.room.to_string()),
                         address: ActionAddress::new(
-                            format!("workspace.permissions:{ROOM}"),
+                            format!("workspace.permissions:{}", door.room),
                             tilo_desktop::workspace_settings::APP_ACTION_REVOKE_ACTION_ID,
                         ),
                     },
@@ -2262,8 +2227,7 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
 #[test]
 fn denying_refuses_and_records_nothing() {
     let (mut door, mut sheet) = door_asking(true);
-    let socket = door.dir.path().join("collab.sock");
-    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let mut invoker = AppConnection::connect(&door, INVOKER_APP, INVOKER_HANDLE);
     let draft = fixture_draft(&door);
     let (status, seen) = invoker.invoke_answering(
         &mut door,
@@ -2282,8 +2246,7 @@ fn denying_refuses_and_records_nothing() {
 #[test]
 fn with_nobody_present_the_call_is_refused_without_asking() {
     let (mut door, mut sheet) = door_asking(false);
-    let socket = door.dir.path().join("collab.sock");
-    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let mut invoker = AppConnection::connect(&door, INVOKER_APP, INVOKER_HANDLE);
     let draft = fixture_draft(&door);
     let (status, seen) = invoker.invoke_answering(
         &mut door,
@@ -2328,8 +2291,8 @@ fn run_interactively(door: &Door, shortcut: &str) -> u64 {
         .app_action_broker()
         .expect("the action broker")
         .start_interactive_shortcut_run(
-            &Caller::local_person(session_person()).in_room(ROOM.to_string()),
-            &ROOM.to_string(),
+            &Caller::local_person(door.session_person()).in_room(door.room.to_string()),
+            &door.room.to_string(),
             shortcut,
             Map::new(),
         )
@@ -2380,7 +2343,7 @@ fn a_confirmation_step_is_approved_in_the_sheet_and_the_run_continues() {
     tidy.steps = vec![invoke_step("archive", "archive", &[])];
     tidy.output = None;
     tidy.grant.push(archive_grant());
-    door.save_as(&Caller::local_person(session_person()), &tidy)
+    door.save_as(&Caller::local_person(door.session_person()), &tidy)
         .expect("saved");
     let mut host = session_host(&door);
 
@@ -2426,7 +2389,7 @@ fn a_question_answered_in_the_sheet_is_bound_and_a_secret_stays_hidden() {
         invoke_step("draft", "draft", &[("title", Binding::step("title", ""))]),
     ];
     ask.output = None;
-    door.save_as(&Caller::local_person(session_person()), &ask)
+    door.save_as(&Caller::local_person(door.session_person()), &ask)
         .expect("saved");
     let mut host = session_host(&door);
 
@@ -2480,7 +2443,7 @@ fn cancelling_the_sheet_stops_the_run_with_nothing_applied() {
     let mut tidy = triggered_draft("tidy-then-draft", Vec::new());
     tidy.steps.insert(0, invoke_step("archive", "archive", &[]));
     tidy.grant.push(archive_grant());
-    door.save_as(&Caller::local_person(session_person()), &tidy)
+    door.save_as(&Caller::local_person(door.session_person()), &tidy)
         .expect("saved");
     let mut host = session_host(&door);
 
