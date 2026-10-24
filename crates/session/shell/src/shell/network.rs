@@ -1650,6 +1650,9 @@ pub struct ShellNetwork {
     /// Recent reader/transport exits, retained independently of mutable room
     /// state so cleanup cannot erase the evidence it needs to diagnose.
     peer_departures: Arc<PeerDepartureHistory>,
+    /// How tabs another of the person's devices has open are titled here
+    /// ([`Self::with_continuation_labels`]).
+    continuation_labels: Box<dyn crate::shell::state::ContinuationLabels + Send + Sync>,
 }
 
 /// One remote-action request kept until its sender's identity is accepted.
@@ -1976,6 +1979,19 @@ impl ShellNetwork {
     /// As [`Self::spawn`], and when the session has no state directory.
     pub fn spawn_for_session(tree: WorkspaceTreeHandle) -> std::io::Result<Self> {
         Self::spawn(tree, &peer_key_path(), &peer_state_dir()?)
+    }
+
+    /// Title the placeholder tabs of what the person's other devices have
+    /// open with the session's `labels`. Without them an app goes by its id
+    /// and a file by a generic name
+    /// ([`crate::shell::state::UnresolvedContinuationLabels`]).
+    #[must_use]
+    pub fn with_continuation_labels(
+        mut self,
+        labels: Box<dyn crate::shell::state::ContinuationLabels + Send + Sync>,
+    ) -> Self {
+        self.continuation_labels = labels;
+        self
     }
 
     /// [`Self::spawn`] reaching peers as `reach` says, authenticating to
@@ -2343,6 +2359,7 @@ impl ShellNetwork {
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             workspace_control_observers: Mutex::new(Vec::new()),
             peer_departures: Arc::new(PeerDepartureHistory::default()),
+            continuation_labels: Box::new(crate::shell::state::UnresolvedContinuationLabels),
         };
         if !app_continuations_permitted {
             network.enforce_app_continuations_policy();
@@ -8214,7 +8231,11 @@ impl ShellNetwork {
                     materializations
                         .into_iter()
                         .fold(false, |changed, (source, workspace)| {
-                            tree.materialize_continuation_workspace(&source, &workspace) || changed
+                            tree.materialize_continuation_workspace(
+                                &source,
+                                &workspace,
+                                &*self.continuation_labels,
+                            ) || changed
                         });
                 let reconciled_tabs = tree.reconcile_continuation_tabs(&desired_tabs);
                 let reconciled_rooms = tree.reconcile_continuation_rooms(&desired_rooms);
@@ -9045,6 +9066,7 @@ pub(crate) fn shell_network_for_test(
         inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         workspace_control_observers: Mutex::new(Vec::new()),
         peer_departures: Arc::new(PeerDepartureHistory::default()),
+        continuation_labels: Box::new(crate::shell::doc_open::DesktopContinuationLabels),
     };
     (net, cmd_rx)
 }
