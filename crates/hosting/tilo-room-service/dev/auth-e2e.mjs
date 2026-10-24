@@ -352,14 +352,20 @@ export async function page(browser, context, {before = []} = {}) {
 async function settle(tab, {relay, timeout}) {
   // A page that never settles is that check's failure, reported with what
   // it showed by then; the run goes on to the next check.
+  // The page keeps waiting for a graphics start that stopped moving on
+  // (`data-gpu-stalled`: 60 s on one step without progress), offering Try
+  // again; for this test that is a desktop that never drew, and the check
+  // fails then, naming the step, instead of waiting out its whole timeout.
+  const STALLED = "document.documentElement.hasAttribute('data-gpu-stalled') ? 'no first frame' : null";
   const state = await tab.waitFor(`(() => {
     const root = document.documentElement.dataset;
-    return !globalThis.__authE2eLeft && ${JSON.stringify(SETTLED)}.includes(root.entry) ? root.entry : null;
+    if (globalThis.__authE2eLeft) return null;
+    return ${JSON.stringify(SETTLED)}.includes(root.entry) ? root.entry : ${STALLED};
   })()`, {timeout}).catch(() => null);
   if (state === 'open') {
     // The desktop drew its first frame (`data-arrival` done); SwiftShader
     // compiles its pipelines on the first one.
-    await tab.waitFor("document.documentElement.dataset.arrival === 'done'", {timeout}).catch(() => {});
+    await tab.waitFor(`document.documentElement.dataset.arrival === 'done' || (${STALLED})`, {timeout}).catch(() => {});
   }
   return tab.evaluate(`(() => ({
     entry: globalThis.__authE2eLeft ? 'not loaded' : document.documentElement.dataset.entry ?? 'unsettled',
@@ -368,6 +374,9 @@ async function settle(tab, {relay, timeout}) {
     status: document.getElementById('status')?.textContent ?? '',
     hash: location.hash,
     desktop: Boolean(globalThis.tiloMount),
+    // A desktop that never drew: the graphics step it stopped on.
+    firstFrame: document.documentElement.hasAttribute('data-gpu-stalled')
+      ? \`none: stalled on \${document.documentElement.dataset.gpuStep ?? 'graphics start-up'}\` : undefined,
     persistAsked: globalThis.__authE2ePersistAsked ?? 0,
     membership: (${membershipFor})(localStorage.getItem(${JSON.stringify(MEMBERSHIPS)}), ${JSON.stringify(relay)}),
     // Where a page that never settled stood: still loading its modules, or past them.
@@ -1057,7 +1066,7 @@ async function main() {
       && turned.length === 1 && turned[0].status === 503 && spectating.length === 1 && spectating[0].status === 200
       && watched.membership === null,
     {entry: watched.entry, arrival: watched.arrival, joins: turned.map(j => j.status), spectate: spectating.map(s => s.status),
-      membership: watched.membership, status: watched.status});
+      membership: watched.membership, status: watched.status, firstFrame: watched.firstFrame});
     if (watched.arrival !== 'done') await shoot('door-failing', passerby);
     await passerby.close();
 
@@ -1368,7 +1377,7 @@ async function main() {
     {inviter: {entry: inviting.entry, membership: inviting.membership, status: inviting.status}, invitePressed, inviteLink,
       joined, letIn, asking, inviterLog: letIn.pressed ? undefined : inviter.log.slice(-8),
       inviteeLog: invited.entry === 'open' ? undefined : door.log.slice(-12), entry: invited.entry, arrival: invited.arrival, membership: invited.membership, status: invited.status,
-      doorJoins: invitedJoins.map(j => j.status)});
+      firstFrame: invited.firstFrame, doorJoins: invitedJoins.map(j => j.status)});
     if (invited.entry !== 'open') await shoot('invite-admits', door);
     await door.close();
 
@@ -1395,9 +1404,10 @@ async function main() {
         const steps = globalThis.__authE2eSteps = [];
         const note = () => {
           const {arrival, phase, gpuStep, frames} = document.documentElement.dataset;
+          const stalled = document.documentElement.hasAttribute('data-gpu-stalled');
           const last = steps.at(-1);
-          if (!last || last.arrival !== arrival || last.phase !== phase || last.gpuStep !== gpuStep || (last.frames === '0') !== (frames === '0')) {
-            steps.push({at: Math.round(performance.now()), arrival, phase, gpuStep, frames});
+          if (!last || last.arrival !== arrival || last.phase !== phase || last.gpuStep !== gpuStep || last.stalled !== stalled || (last.frames === '0') !== (frames === '0')) {
+            steps.push({at: Math.round(performance.now()), arrival, phase, gpuStep, frames, stalled});
           }
         };
         note();
@@ -1412,7 +1422,7 @@ async function main() {
       const opened = now.entry === 'open' && now.arrival === 'done';
       const steps = await stranger.evaluate('globalThis.__authE2eSteps ?? []').catch(() => []);
       rounds.push({round, joined: joinedAgain, letIn: pressed.pressed || pressed.error, entry: now.entry, arrival: now.arrival,
-        status: now.status, steps: steps.map(step => ({...step, at: letInAt === null ? step.at : step.at - letInAt})),
+        status: now.status, firstFrame: now.firstFrame, steps: steps.map(step => ({...step, at: letInAt === null ? step.at : step.at - letInAt})),
         console: opened ? undefined : stranger.log.slice(-40)});
       if (!opened) {
         keepLog(`invite-admits-again-${round}`, stranger);
