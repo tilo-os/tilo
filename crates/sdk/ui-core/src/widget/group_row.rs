@@ -2817,19 +2817,12 @@ impl GroupRow {
     }
 
     /// The furthest a reveal pans `lane` once the slot-width springs of its
-    /// laid-out groups have settled: [`Pan::max_scroll_x`] of the finished
-    /// layout.
+    /// groups have settled: [`Pan::max_scroll_x`] of the strip they are
+    /// going to ([`Self::dest_content_w`]), which is already where they
+    /// end, so nothing of their flight is added to it again.
     fn settled_max_scroll_x(&self, lane: usize) -> f64 {
-        let growth: f64 = self
-            .groups
-            .iter()
-            .filter(|g| {
-                self.laid_group_ids.contains(&g.id) && self.lane_of_group(g.id).unwrap_or(0) == lane
-            })
-            .map(|g| g.dest_width_px() - g.layout_width_px())
-            .sum();
-        let pan = self.pan_of_lane(lane);
-        pan.max_scroll_x_of(pan.content_w + growth)
+        self.pan_of_lane(lane)
+            .max_scroll_x_of(self.dest_content_w(lane))
     }
 
     /// Pan so that `keep` and `also` are both wholly in view when they fit
