@@ -73,6 +73,11 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   two buttons with them, and change and go as the extension says; getAll
   lists those shown. The person choosing one, or one of its buttons, reaches
   the worker, which hears it closed.
+- An ad blocker whose button shows how many requests its rules blocked or
+  redirected on the page (uBlock Origin Lite) shows that count for that tab
+  alone, changed as it says, under text of its own set for the page, and the
+  next page counts anew. With two blockers each counts what its own rules
+  did, and one that may read what they matched finds its rules for a tab.
 """
 import base64
 import hashlib
@@ -228,6 +233,18 @@ def _token(path):
     return first.split('"')[1]
 
 
+def prepare_manager(into):
+    """A copy of the Browser's own extension at `into`, with the token its
+    worker reports to the engine with, as the Browser writes it
+    (extensions.rs, write_manager)."""
+    target = into / 'extension-manager'
+    if not target.exists():
+        shutil.copytree(MANAGER, target)
+        (target / 'tilo-bridge-token.js').write_text(f'globalThis.__tiloBridgeToken = "{secrets.token_hex(24)}";\n')
+    target = target.resolve()
+    return target, (target / 'tilo-bridge-token.js').read_text().split('"')[1]
+
+
 def extension_id(path):
     """The id Chromium gives an extension loaded from `path`."""
     digest = hashlib.sha256(str(path).encode()).hexdigest()[:32]
@@ -304,6 +321,23 @@ def image(url, kind):
 SHIELDED = (b'<!doctype html><title>loading</title><script src="/tracker/t.js"></script>'
             b"<script>addEventListener('load', () => {"
             b"document.title = 'page:' + (window.tracked ? 'tracked' : 'untracked'); });</script>")
+# A page with two trackers, two scripts an ad blocker puts its own in place
+# of, and a beacon, which says what loaded. The stand-in at an address of
+# its own for the session counts, though it does not run here (README).
+COUNTED = (b'<!doctype html><title>loading</title><script src="/tracker/a.js"></script>'
+           b'<script src="/surrogate/s.js"></script><script src="/standin/s.js"></script><img src="/tracker/b.png">'
+           b"<script>addEventListener('load', async () => { let beacon = 'sent';"
+           b"try { await fetch('/beacon/c'); } catch (error) { beacon = 'stopped'; }"
+           b"document.title = 'counted:' + JSON.stringify({tracked: !!window.tracked,"
+           b"standin: window.standin || 'none', beacon}); });</script>")
+# The counted page as it loads with the ad blocker fixture.
+TALLIED = {'tracked': False, 'standin': 'extension', 'beacon': 'sent'}
+# What the ad blocker fixtures may do, as the Browser grants it.
+TALLY = (['declarativeNetRequest', 'activeTab', 'scripting'], ['<all_urls>'])
+SPOTTER = (['declarativeNetRequest', 'declarativeNetRequestFeedback'], ['<all_urls>'])
+# What Chromium answers for the badge of an extension that shows each page's
+# count, and may not read it.
+COUNT_PLACEHOLDER = '<<declarativeNetRequestActionCount>>'
 # What the privacy blocker fixture may do, as the Browser grants it.
 SHIELD = (['declarativeNetRequest', 'webRequest', 'tabs', 'scripting'], ['<all_urls>'])
 
@@ -363,8 +397,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = f'<!doctype html><html{lang}><title>page {self.path}</title><body>page{frame}</body></html>'.encode()
         if self.path.startswith('/tracker/'):
             kind, body = 'text/javascript', b'window.tracked = true;'
+        elif self.path.startswith('/surrogate/'):
+            kind, body = 'text/javascript', b"window.surrogate = 'server';"
+        elif self.path.startswith('/standin/'):
+            kind, body = 'text/javascript', b"window.standin = 'server';"
+        elif self.path.startswith('/beacon/'):
+            kind, body = 'text/plain', b'ok'
         elif self.path.startswith('/shielded'):
             body = SHIELDED
+        elif self.path.startswith('/counted'):
+            body = COUNTED
         self.send_response(200)
         self.send_header('Content-Type', kind)
         self.send_header('Content-Length', str(len(body)))
@@ -405,13 +447,16 @@ class ExtensionTabs(unittest.TestCase):
             for file, data in (files or {}).get(name, {}).items():
                 (path / file).write_bytes(data)
         paths = [path for path, _ in prepared]
-        host = Host(args=['--use-mock-keychain', '--load-extension=' + ','.join(map(str, [MANAGER, *paths]))], profile=profile)
+        manager, manager_token = prepare_manager(installed)
+        host = Host(args=['--use-mock-keychain', '--load-extension=' + ','.join(map(str, [manager, *paths]))], profile=profile)
         self.addCleanup(host.close)
-        host.send(op='extension_identity', id=extension_id(MANAGER))
+        host.send(op='extension_identity', id=extension_id(manager))
         # The Browser tells the engine what each extension may do once it has
         # read its profile: after the extensions' workers started.
         host.settle(1.0)
-        ids = {}
+        # Its worker tells the engine what rules acted on in the tabs.
+        ids = {'manager': extension_id(manager)}
+        host.send(op='extension_access', id=ids['manager'], permissions=[], hosts=[], scriptable=[], token=manager_token)
         for name, (path, token) in zip(names, prepared):
             ids[name] = extension_id(path)
             permissions, hosts, *scriptable = access.get(name, ([], []))
@@ -1178,6 +1223,124 @@ class ExtensionTabs(unittest.TestCase):
         opened, _ = seek(mark, lambda e: e['event'] == 'extension_open_popup')
         self.assertEqual((opened.get('tab'), opened['id'], opened['url']),
                          (1, counter, f'chrome-extension://{counter}/popup.html'))
+
+    def counted(self, host, query, expected):
+        """The counted page in tab 1 as it loads once the blockers' rules are
+        in, which the engine applies a moment after it starts; and the index
+        in host.seen from which the page it settled on is told of."""
+        deadline = time.monotonic() + HANG_BOUND
+        for attempt in itertools.count():
+            mark = len(host.seen)
+            host.send(op='navigate', url=f'{self.url}/counted?{query}{attempt}')
+            title = host.until(lambda e: e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'].startswith('counted:'))['title']
+            seen = json.loads(title[len('counted:'):])
+            if seen == expected or time.monotonic() > deadline:
+                self.assertEqual(seen, expected)
+                return mark
+            host.settle(0.5)
+
+    def counting(self, host, ids, names):
+        """Wait until the Browser's own extension listens for what rules do,
+        and each of `names` has asked its button to show the page's count."""
+        # A worker attached to as it starts has no `chrome` yet.
+        listens = ("typeof globalThis.chrome == 'object' && typeof chrome.webRequest == 'object'"
+                   " && chrome.webRequest.onErrorOccurred.hasListeners()")
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, ids['manager'], listens) is not True:
+            self.assertLess(time.monotonic(), deadline, 'the Browser\'s extension never listened')
+            host.settle(0.25)
+        for name in names:
+            show = ("typeof globalThis.chrome != 'object' ? 'starting' : chrome.declarativeNetRequest"
+                    ".setExtensionActionOptions({displayActionCountAsBadgeText: true}).then(() => 'shown', (e) => e.message)")
+            while (shown := self.in_worker(host, ids[name], show)) in ('starting', None):
+                self.assertLess(time.monotonic(), deadline, f'{name} never started')
+                host.settle(0.25)
+            self.assertEqual(shown, 'shown')
+
+    def badge(self, host, since, extension, text, tab=1):
+        """The first count told for the extension's button on the tab since
+        `since` (an index of host.seen) that is `text`, and its index."""
+        told = lambda e: (e['event'] == 'extension_action' and e.get('tab') == tab and e['id'] == extension
+                          and not e['global'] and 'badge' in e['change'] and e['change']['badge'] == text)
+        for index in range(since, len(host.seen)):
+            if told(host.seen[index]):
+                return index
+        host.until(told)
+        return len(host.seen) - 1
+
+    def test_an_ad_blocker_shows_how_many_requests_it_blocked_on_the_page(self):
+        host, ids = self.start('tally', access={'tally': TALLY})
+        tally = ids['tally']
+        self.counting(host, ids, ['tally'])
+        mark = self.counted(host, 'first', TALLIED)
+        # Two trackers blocked and two scripts put in place of others.
+        self.badge(host, mark, tally, '4')
+        tab = "(await chrome.tabs.query({}))[0].id"
+        # It may not read the count, as in Chrome, nor find which rules matched.
+        self.assertEqual(self.in_worker(host, tally, f"(async () => chrome.action.getBadgeText({{tabId: {tab}}}))()"),
+                         COUNT_PLACEHOLDER)
+        refused = self.in_worker(host, tally, f"(async () => chrome.declarativeNetRequest.getMatchedRules({{tabId: {tab}}})"
+                                 ".then(() => 'answered', (e) => e.message))()")
+        self.assertIn('declarativeNetRequestFeedback', refused)
+
+        # It changes the count for the page; text of its own shows over it
+        # until it takes it back.
+        mark = len(host.seen)
+        changed = self.in_worker(host, tally, f"(async () => chrome.declarativeNetRequest.setExtensionActionOptions("
+                                 f"{{tabUpdate: {{tabId: {tab}, increment: 2}}}}).then(() => 'changed'))()")
+        self.assertEqual(changed, 'changed')
+        self.badge(host, mark, tally, '6')
+        self.in_worker(host, tally, f"(async () => chrome.action.setBadgeText({{tabId: {tab}, text: 'off'}}).then(() => 'set'))()")
+        self.badge(host, mark, tally, 'off')
+        self.in_worker(host, tally, f"(async () => chrome.action.setBadgeText({{tabId: {tab}, text: null}}).then(() => 'set'))()")
+        took_back = self.badge(host, mark, tally, None)
+        self.badge(host, took_back, tally, '6')
+        missing = self.in_worker(host, tally, "chrome.declarativeNetRequest.setExtensionActionOptions("
+                                 "{tabUpdate: {tabId: 2000000000, increment: 1}}).then(() => 'changed', (e) => e.message)")
+        self.assertEqual(missing, 'No tab with id: 2000000000.')
+
+        # The next page counts anew: what it changed went with the last.
+        mark = self.counted(host, 'next', TALLIED)
+        own = self.badge(host, mark, tally, '4')
+        reset = next((i for i, e in enumerate(host.seen) if i >= mark and e['event'] == 'extension_action_reset'
+                      and e.get('tab') == 1), None)
+        self.assertIsNotNone(reset, 'what the last page showed goes')
+        self.assertLess(reset, own)
+        self.assertFalse([e for e in host.seen[mark:] if e['event'] == 'extension_action' and e['id'] == tally
+                          and e['change'].get('badge') == '6'], 'the next page keeps no change of the last')
+
+        # Asked to show no count, the button shows none.
+        mark = len(host.seen)
+        self.in_worker(host, tally, "chrome.declarativeNetRequest.setExtensionActionOptions("
+                       "{displayActionCountAsBadgeText: false}).then(() => 'hidden')")
+        self.badge(host, mark, tally, None)
+
+    def test_two_blockers_each_count_what_their_own_rules_did(self):
+        host, ids = self.start('tally', 'spotter', access={'tally': TALLY, 'spotter': SPOTTER})
+        tally, spotter = ids['tally'], ids['spotter']
+        self.counting(host, ids, ['tally', 'spotter'])
+        mark = self.counted(host, 'both', {**TALLIED, 'beacon': 'stopped'})
+        self.badge(host, mark, tally, '4')
+        self.badge(host, mark, spotter, '1')
+        host.settle(1.0)
+        told = lambda extension: [e['change']['badge'] for e in host.seen[mark:] if e['event'] == 'extension_action'
+                                  and e['id'] == extension and 'badge' in e['change']]
+        self.assertNotIn('2', told(spotter), 'a blocker counts no request another blocked')
+        self.assertNotIn('5', told(tally))
+
+        # The one that may read what its rules matched finds them for the
+        # tab, and reads its count.
+        tab = "(await chrome.tabs.query({}))[0].id"
+        matched = self.in_worker(host, spotter, f"(async () => {{ const id = {tab};"
+                                 "const found = await chrome.declarativeNetRequest.getMatchedRules({tabId: id});"
+                                 "const since = await chrome.declarativeNetRequest.getMatchedRules({tabId: id, minTimeStamp: Date.now() + 1000});"
+                                 "return JSON.stringify({rules: found.rulesMatchedInfo.map((m) => [m.rule.ruleId, m.rule.rulesetId, m.tabId === id,"
+                                 "typeof m.timeStamp]), later: since.rulesMatchedInfo.length,"
+                                 "badge: await chrome.action.getBadgeText({tabId: id})}); })()")
+        self.assertEqual(json.loads(matched), {'rules': [[1, 'beacons', True, 'number']], 'later': 0, 'badge': '1'})
+        missing = self.in_worker(host, spotter, "chrome.declarativeNetRequest.getMatchedRules({tabId: 2000000000})"
+                                 ".then(() => 'answered', (e) => e.message)")
+        self.assertEqual(missing, 'No tab with id: 2000000000.')
 
 
 def walk(items):

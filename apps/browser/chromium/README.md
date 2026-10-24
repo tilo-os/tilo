@@ -551,6 +551,30 @@ content scripts (with `sender.tab`) work without help.
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
   this site" and uBlock Origin Lite's element zapper do) closes once its
   calls are answered, or after two seconds.
+- Network rules (`declarativeNetRequest`) block and redirect in the
+  Browser's tabs, but Chromium counts what they did there for no tab (its
+  rules see the tab id -1), so it shows no count on an ad blocker's button
+  and answers for no tab. The Browser's own extension sees each request a
+  rule blocked, or redirected to an extension's file, by the tab webRequest
+  reports it for, and tells the host (`requests.acted`, with a token the
+  Browser writes beside its worker, `extensions.rs` `write_manager`). The
+  host (`src/action_counts.h`) keeps them for the page each tab shows, from
+  when it began loading, and counts each for the extensions whose button
+  shows the page's count (`setExtensionActionOptions` with
+  `displayActionCountAsBadgeText`, as uBlock Origin Lite asks). A redirect
+  to a file by its extension's id counts for that extension; any other
+  request counts for the one extension with network rules, or else for each
+  whose own rules match it (`testMatchOutcome`, which Chromium offers here,
+  every extension being unpacked to it). The count reaches the Browser as
+  the page's badge for that tab (`extension_action`), under text the
+  extension set for the page; it changes as the extension says
+  (`tabUpdate`) and goes with the page. The toolbar shows no badge for
+  Chromium's placeholder for every tab. `getMatchedRules({tabId})` answers
+  an extension with `declarativeNetRequestFeedback`, or `activeTab` granted
+  on the tab, with its rules that blocked or redirected requests of the
+  page; `onRuleMatchedDebug` reports what Chromium reports, tab id -1.
+  Rules that only change a request (headers, an upgrade to https) and a
+  blocked page itself are not counted.
 - A click or a tab event reaches a worker through the DevTools pipe, which
   wakes it if it sleeps; the host attaches only while it delivers, so an idle
   worker still sleeps. `tests/extension_tabs.py` covers each of these.
@@ -568,6 +592,9 @@ content scripts (with `sender.tab`) work without help.
   image, and a notification the person dismisses without choosing it stays
   in `getAll` until the extension clears it: Tilo's notification service
   says nothing of a dismissal.
+- A rule's redirect to an extension's file at an address of its own for the
+  session (`use_dynamic_url`, as uBlock Origin Lite's stand-ins for ad
+  scripts are) is counted but does not run in the page.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs

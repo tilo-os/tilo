@@ -16,6 +16,11 @@ use crate::extensions::ExtensionInfo;
 
 /// Chrome shows at most four characters of a badge.
 const MAX_BADGE_CHARS: usize = 4;
+/// What Chromium answers for the badge of every tab while an extension's
+/// button shows each page's count of what its rules did there
+/// (`declarativeNetRequest`): no text of its own. The engine tells each
+/// page's count for that page's tab (`extension_action`).
+const RULE_COUNT_PLACEHOLDER: &str = "<<declarativeNetRequestActionCount>>";
 const MAX_TITLE_BYTES: usize = 256;
 /// The button's icon is drawn at toolbar size; larger sources downscale.
 const TARGET_ICON_PX: u32 = 32;
@@ -461,7 +466,10 @@ pub fn action_state(body: &str) -> Option<ActionState> {
     let value = reply.get("result")?.get("value")?.as_str()?;
     let state: Value = serde_json::from_str(value).ok()?;
     Some(ActionState {
-        badge: badge_text(state.get("text")?.as_str()?),
+        badge: match state.get("text")?.as_str()? {
+            RULE_COUNT_PLACEHOLDER => String::new(),
+            text => badge_text(text),
+        },
         title: state
             .get("title")
             .and_then(Value::as_str)
@@ -783,6 +791,17 @@ mod tests {
             Some(ActionState {
                 popup: Some(format!("chrome-extension://{id}/p.html")),
                 disabled: true,
+                ..ActionState::default()
+            })
+        );
+        // A button that shows each page's count has no text for every tab.
+        let counting = json!({"result":{"type":"string","value":
+            json!({"text":RULE_COUNT_PLACEHOLDER,"title":"uBlock Origin Lite"}).to_string()}})
+        .to_string();
+        assert_eq!(
+            action_state(&counting),
+            Some(ActionState {
+                title: Some("uBlock Origin Lite".into()),
                 ..ActionState::default()
             })
         );
