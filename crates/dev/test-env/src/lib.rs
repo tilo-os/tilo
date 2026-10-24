@@ -36,6 +36,8 @@
 //!   session bus, portals, media players or display.
 //! - [`package_binary!`] finds a binary of the package under test where the
 //!   test run put it, which an archived run moves away from Cargo's path.
+//! - [`in_own_process`] runs a test that changes what the whole process
+//!   sees, such as a held wall clock, in a process no other test shares.
 //!
 //! The lock only orders code that takes it. Code under test that reads the
 //! environment from a thread of its own is still racing any other test that
@@ -46,6 +48,7 @@ mod capability;
 mod desktop;
 pub mod hang;
 pub mod idle;
+mod own_process;
 pub mod swtpm;
 
 pub use capability::{Capability, Probe, capability_unavailable};
@@ -55,6 +58,7 @@ pub use capability::{bubblewrap, mount_namespace, user_namespace};
 pub use capability::{chown_to, switch_identity};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
 pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, within};
+pub use own_process::in_own_process;
 
 use std::ffi::{OsStr, OsString};
 use std::marker::PhantomData;

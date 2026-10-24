@@ -74,19 +74,26 @@ pub fn now() -> Instant {
     Instant::now()
 }
 
-/// Per-thread monotonic scopes for tests of input work and due deadlines.
-/// Wall time and other threads continue to use their ordinary clocks.
+/// Per-thread clock scopes for tests: monotonic instants for input work and
+/// due deadlines, and wall times for what expires at a time of day. Other
+/// threads, and this one outside the scope, read their ordinary clocks, so
+/// tests sharing a process never see each other's times.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing {
-    use super::Instant;
+    use super::{Instant, SystemTime};
     use std::cell::Cell;
 
     thread_local! {
         static MONOTONIC: Cell<Option<Instant>> = const { Cell::new(None) };
+        static WALL: Cell<Option<SystemTime>> = const { Cell::new(None) };
     }
 
     pub(super) fn monotonic_override() -> Option<Instant> {
         MONOTONIC.with(Cell::get)
+    }
+
+    pub(super) fn wall_override() -> Option<SystemTime> {
+        WALL.with(Cell::get)
     }
 
     struct Restore(Option<Instant>);
@@ -103,6 +110,22 @@ pub mod testing {
     /// explicit later scope can exercise those timers independently.
     pub fn with_monotonic_time<T>(at: Instant, operation: impl FnOnce() -> T) -> T {
         let _restore = Restore(MONOTONIC.with(|clock| clock.replace(Some(at))));
+        operation()
+    }
+
+    struct RestoreWall(Option<SystemTime>);
+
+    impl Drop for RestoreWall {
+        fn drop(&mut self) {
+            WALL.with(|clock| clock.set(self.0));
+        }
+    }
+
+    /// Run `operation` with [`super::wall`] reading `at` on this thread.
+    /// Nested scopes and unwinding restore the previous reading; other
+    /// threads keep the real wall clock.
+    pub fn with_wall_time<T>(at: SystemTime, operation: impl FnOnce() -> T) -> T {
+        let _restore = RestoreWall(WALL.with(|clock| clock.replace(Some(at))));
         operation()
     }
 }
@@ -127,6 +150,51 @@ mod scoped_monotonic_tests {
             assert_eq!(now(), at);
         });
         assert!(now() < at);
+    }
+
+    #[test]
+    fn scoped_wall_time_is_thread_local_nested_and_restored_after_unwind() {
+        let at = UNIX_EPOCH + Duration::from_secs(4_000_000_000);
+        testing::with_wall_time(at, || {
+            assert_eq!(wall(), at);
+            let later = at + Duration::from_secs(3);
+            testing::with_wall_time(later, || assert_eq!(wall(), later));
+            assert_eq!(wall(), at);
+            assert!(std::thread::spawn(wall).join().unwrap() < at);
+            let panicked = std::panic::catch_unwind(|| {
+                testing::with_wall_time(later, || panic!("unwind the clock scope"));
+            });
+            assert!(panicked.is_err());
+            assert_eq!(wall(), at);
+        });
+        assert!(wall() < at);
+    }
+
+    #[test]
+    fn two_threads_holding_different_wall_times_at_once_each_read_their_own() {
+        let first = UNIX_EPOCH + Duration::from_secs(4_000_000_000);
+        let second = UNIX_EPOCH + Duration::from_secs(4_100_000_000);
+        // Both holds are in force together: each thread reads its time
+        // while the other holds a different one, then again after the
+        // other's hold ended.
+        let together = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let hold = |at: SystemTime, other: SystemTime| {
+            let together = std::sync::Arc::clone(&together);
+            std::thread::spawn(move || {
+                testing::with_wall_time(at, || {
+                    together.wait();
+                    assert_eq!(wall(), at);
+                    assert_ne!(wall(), other);
+                    together.wait();
+                });
+                together.wait();
+                assert!(wall() < first, "the hold ended with its scope");
+            })
+        };
+        let threads = [hold(first, second), hold(second, first)];
+        for thread in threads {
+            thread.join().unwrap();
+        }
     }
 }
 
@@ -155,6 +223,10 @@ fn frozen_ms() -> u64 {
 #[must_use]
 #[inline]
 pub fn wall() -> SystemTime {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(at) = testing::wall_override() {
+        return at;
+    }
     match frozen_ms() {
         0 => SystemTime::now(),
         ms => UNIX_EPOCH
