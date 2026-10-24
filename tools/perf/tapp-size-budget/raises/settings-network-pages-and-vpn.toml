@@ -1,0 +1,6 @@
+reason = "Settings reworked its Network page and took VPN in (d6187cae7d, 375a744110, ea63249cfe, ce74437a6b): a page per network with every saved setting (autoconnect, priority, metered, MAC address, hidden, password, IPv4, IPv6, DNS, proxy, work or school identity), sharing by QR code, known networks by last use, and VPN profiles with a switch and a page each, export and delete, adding a tunnel from WireGuard keys, a pasted configuration, a NetworkManager plugin or a chosen file, and sharing the VPN list with your devices. Measured from app-binaries' symbol tables at d6187cae7d^ and 7d9ebef466, Settings x86_64 grew +170 KB of .text and +105 KB of unwind tables, read-only data and relocations; the new symbols are the Network and VPN panes' own (NetworkModel::begin 25 KB, begin_vpn 17 KB, network_page 16 KB, build_composition 15 KB, land 10 KB, vpn_profile and vpn_pages 18 KB, the Network and VPN effects' rows and decoding 26 KB) and the iterators and drop glue of their types; the toolkit's generic code grew 6 KB, and the WireGuard keys and tilo-seal are generated in os-actions, outside the app. The amounts are each overage past the other raises plus the budget's headroom, at 4080128 bytes (x86_64) and 3678208 (aarch64), t run r0185ac7fa2"
+run = "r0185ac7fa2"
+
+[apps."so.tilo.settings"]
+x86_64 = 262144
+aarch64 = 196608
