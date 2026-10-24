@@ -1079,16 +1079,32 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         usize::from(inputs.toggle_in_window_bar() && stack.first() == Some(&NavPane::Sidebar));
     let drills = stack.len().saturating_sub(first) > 1;
 
-    // 5. The header row.
+    // 5. The header row. A column's header stands in it only where the
+    //    column stands at the window's top: a floating drawer carries its
+    //    header in itself, so a column the row would hold nothing for
+    //    starts at the top.
+    let in_row = |column: Column| match column {
+        Column::Sidebar => g.sidebar != SidebarPlacement::Drawer,
+        Column::Inspector => g.inspector != InspectorPlacement::Drawer,
+        Column::Overview | Column::Content => true,
+    };
     let needs_header = !inputs.slots_in_bar()
         && ((inputs.has_sidebar && !inputs.toggle_in_bar)
             || inputs.has_inspector
             || inputs.history.is_some()
-            || Column::ALL.iter().any(|c| inputs.header_wanted(*c))
+            || Column::ALL
+                .iter()
+                .any(|c| in_row(*c) && inputs.header_wanted(*c))
             || (!inputs.toggle_in_bar && (inputs.content_back || drills)));
     // A header in the window's bar stands over the content and only while
     // the person reaches for the bar; the columns' bodies start at the top.
     let in_bar = inputs.header_in_window_bar();
+    // A drawer's own header, as tall as the row and hidden with it.
+    let drawer_hh = if in_bar && !inputs.bar_revealed {
+        0.0
+    } else {
+        m.header.min(h)
+    };
     let row_h = if needs_header { m.header.min(h) } else { 0.0 };
     g.header_height = if in_bar && !inputs.bar_revealed {
         0.0
@@ -1160,8 +1176,11 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 let dw = m.drawer.min((w - m.gap - m.drawer_dismiss_band).max(0.0));
                 let x0 = m.gap - (dw + m.gap) * (1.0 - sidebar_reveal);
                 g.sidebar_column = Rect::new(x0, drawer_top, x0 + dw, drawer_bottom);
-                (sidebar_header, sidebar_body) =
-                    drawer_split(g.sidebar_column, hh, inputs.header_wanted(Column::Sidebar));
+                (sidebar_header, sidebar_body) = drawer_split(
+                    g.sidebar_column,
+                    drawer_hh,
+                    inputs.header_wanted(Column::Sidebar),
+                );
             }
         }
         SidebarPlacement::Screen => {
@@ -1216,7 +1235,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 g.inspector_column = Rect::new(x1 - dw, drawer_top, x1, drawer_bottom);
                 (inspector_header, inspector_body) = drawer_split(
                     g.inspector_column,
-                    hh,
+                    drawer_hh,
                     inputs.header_wanted(Column::Inspector),
                 );
             }
