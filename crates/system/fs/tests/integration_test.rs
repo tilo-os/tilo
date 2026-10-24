@@ -2000,6 +2000,7 @@ struct SignalledMount {
     namespace: Arc<Mutex<Namespace>>,
     signal: Arc<fs::change_signal::ChangeSignal>,
     availability: Arc<Mutex<fs::AvailabilityRegistry>>,
+    hydrator: Arc<Hydrator>,
     _registry_dir: tempfile::TempDir,
 }
 
@@ -2021,7 +2022,7 @@ async fn signalled_mount() -> SignalledMount {
     let availability = Arc::new(Mutex::new(
         fs::AvailabilityRegistry::open(registry_dir.path().join("availability.json")).unwrap(),
     ));
-    let quick_fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
+    let quick_fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics)
         .with_change_signal(signal.clone())
         .with_availability(availability.clone());
     let dir = tempdir().unwrap();
@@ -2037,6 +2038,7 @@ async fn signalled_mount() -> SignalledMount {
         namespace,
         signal,
         availability,
+        hydrator,
         _registry_dir: registry_dir,
     }
 }
@@ -2237,6 +2239,115 @@ async fn an_availability_change_reaches_inotify_on_its_directory() {
 
     drop(watcher);
     drop(task);
+    let SignalledMount {
+        session,
+        endpoint,
+        store,
+        ..
+    } = mount;
+    shutdown_fuse_fixture(session, endpoint, store).await;
+}
+
+/// A file read whole through the mount is stored here: the read that
+/// brings its last bytes says so on its record, as a pin's download does,
+/// and its folder's watcher hears of it without polling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
+    use fs_protocol::Residency;
+    use notify::Watcher as _;
+
+    require_fuse!();
+    let mount = signalled_mount().await;
+    // A device that keeps the file: larger than one read, so several reads
+    // fetch it and only the last one completes it.
+    let data: Vec<u8> = (0..3 * 1024 * 1024_u32)
+        .map(|i| u8::try_from(i.wrapping_mul(2_654_435_761) >> 24).unwrap())
+        .collect();
+    let len = data.len() as u64;
+    let keeper_store = Arc::new(ContentStore::memory());
+    let hash = keeper_store.write_content(&data).await.unwrap().unwrap();
+    let keeper = Endpoint::bind(presets::N0).await.unwrap();
+    let router = iroh::protocol::Router::builder(keeper.clone())
+        .accept(iroh_blobs::ALPN, keeper_store.blobs_protocol(None))
+        .spawn();
+    mount.hydrator.add_peer(keeper.addr());
+    let (record, version) = {
+        let mut ns = mount.namespace.lock().unwrap();
+        let docs_ino = ns.resolve_path_ino("/docs").unwrap();
+        let ino = ns
+            .create_file(docs_ino, "film.mkv", Some(&hash), len, 1)
+            .unwrap();
+        let record = ns.record_id_for(ino).unwrap();
+        let revision = fs_protocol::ContentRevisionV1 {
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+            record_id: record,
+            version_id: fs_protocol::FileVersionId::new(),
+            content_hash: Some(fs_protocol::ContentHash(*hash.as_bytes())),
+            byte_len: len,
+            metadata_hash: fs_protocol::ContentHash([7; 32]),
+        };
+        assert!(ns.set_content_revision(ino, &revision, 1));
+        drop(ns);
+        (record, revision.version_id)
+    };
+    let task = start_signal(&mount).await;
+
+    let docs = mount.dir.path().join("docs");
+    let film = docs.join("film.mkv");
+    let availability = |path: &std::path::Path| {
+        let mut value = vec![0_u8; usize::from(u16::MAX)];
+        let len = rustix::fs::getxattr(path, fs_protocol::AVAILABILITY_XATTR, &mut value[..])
+            .expect("the mount projects the file's availability");
+        fs_protocol::AvailabilityProjectionV1::parse_xattr(&value[..len]).unwrap()
+    };
+    assert_eq!(availability(&film).residency, Residency::NotResident);
+    let (events_tx, events) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        let _ = events_tx.send(event);
+    })
+    .unwrap();
+    watcher
+        .watch(&docs, notify::RecursiveMode::NonRecursive)
+        .unwrap();
+
+    // Read the whole file, as a player or a copy does.
+    let read = {
+        let film = film.clone();
+        tokio::task::spawn_blocking(move || std::fs::read(film))
+            .await
+            .unwrap()
+            .expect("the keeper serves the file")
+    };
+    assert!(read == data, "the file's bytes");
+    let stored = mount
+        .availability
+        .lock()
+        .unwrap()
+        .get(record)
+        .cloned()
+        .expect("the read that completed the file wrote its record");
+    assert_eq!(stored.residency, Residency::Resident { bytes: len });
+    assert_eq!(stored.current_version, Some(version));
+
+    let (event, _events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
+        .await
+        .unwrap();
+    let event = event
+        .expect("inotify reports that the file is stored")
+        .unwrap();
+    assert!(
+        event.paths.iter().any(|path| path == &docs),
+        "the event names the file's folder: {event:?}"
+    );
+    assert_eq!(
+        availability(&film).residency,
+        Residency::Resident { bytes: len },
+        "the folder's watcher reads the file as stored"
+    );
+
+    drop(watcher);
+    drop(task);
+    router.shutdown().await.unwrap();
     let SignalledMount {
         session,
         endpoint,
