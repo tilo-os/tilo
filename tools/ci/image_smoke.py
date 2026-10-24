@@ -192,9 +192,13 @@ def check_interpreters() -> None:
 
 
 # The rootfs stage removes these with `rpm -e --nodeps` on purpose (os/Containerfile, the
-# OpenSSL-backed plugins and Perl's HTTPS backend no Tilo path uses), so what required them
-# is knowingly left without.
-REMOVED_ON_PURPOSE = re.compile(r"^(libshout|perl\(IO::Socket::SSL\)|perl\(Net::SSLeay\)|perl-IO-Socket-SSL|perl-Net-SSLeay)")
+# OpenSSL-backed plugins and Perl's HTTPS backend no Tilo path uses; os/image/packages.Containerfile,
+# the build-time CMake macros and Ninja that Wine's mingw toolchain requires), so what required
+# them is knowingly left without.
+REMOVED_ON_PURPOSE = re.compile(
+    r"^(libshout|perl\(IO::Socket::SSL\)|perl\(Net::SSLeay\)|perl-IO-Socket-SSL|perl-Net-SSLeay"
+    r"|cmake-rpm-macros |ninja-build )"
+)
 
 
 def check_rpm_dependencies() -> None:
