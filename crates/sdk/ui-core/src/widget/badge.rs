@@ -947,15 +947,15 @@ mod tests {
             "the value is new at once"
         );
         assert!(badge.needs_animation_frame(), "the numbers cross-fade");
-        with_monotonic_time(ms(t0, 40), || {
+        with_monotonic_time(ms(t0, 12), || {
             let (old, opacity) = badge
                 .label
-                .outgoing(ms(t0, 40))
+                .outgoing(ms(t0, 12))
                 .expect("the old number fades");
             assert_eq!(old.as_deref(), Some("3"));
             assert!(opacity > 0.0 && opacity < 1.0);
-            assert!(badge.label.incoming(ms(t0, 40)) < 1.0);
-            assert!(!badge.presence.is_moving(ms(t0, 40)), "it never pulses");
+            assert!(badge.label.incoming(ms(t0, 12)) < 1.0);
+            assert!(!badge.presence.is_moving(ms(t0, 12)), "it never pulses");
             present(&mut badge, &theme);
             assert!(badge.needs_redraw());
         });
