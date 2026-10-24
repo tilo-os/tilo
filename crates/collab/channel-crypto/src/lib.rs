@@ -69,7 +69,7 @@ pub use governance::{
     ChannelGate, DeliveryKind, GovernanceDelivery, GovernanceJournal, MirrorAppend, admission,
 };
 pub use group::{ChannelGroup, MemberAddition};
-pub use member::{Access, ChannelMember, MemberEvent};
+pub use member::{Access, ChannelMember, MemberEvent, Succession};
 pub use persistence::VaultKey;
 pub use signer::{DeviceSigner, SignFuture};
 pub use steward::{ChannelSteward, Outgoing, Reconciled};

@@ -167,6 +167,29 @@ impl ChannelSteward {
     }
 }
 
+impl ChannelSteward {
+    /// [`Self::succeed`] with the steward's records under `dir`, signing
+    /// with `device_key`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::succeed`].
+    pub fn succeed_in(
+        dir: &Path,
+        device_key: SigningKey,
+        succession: crate::Succession,
+        vault: &VaultKey,
+    ) -> Result<Self> {
+        let channel = succession.channel_id();
+        Self::succeed(
+            FileStewardStore::new(dir, channel),
+            Box::new(device_key),
+            succession,
+            vault,
+        )
+    }
+}
+
 impl<S: StewardStore> ChannelSteward<S> {
     /// Open the steward state for `channel` in `store`, creating the group
     /// and its genesis frame when absent, and finishing or discarding a
@@ -236,6 +259,59 @@ impl<S: StewardStore> ChannelSteward<S> {
             steward.genesis().await?;
         }
         Ok(steward)
+    }
+
+    /// Steward `succession`'s channel from this device on, in `store`: the
+    /// room's governance named this device its governor, and this device was
+    /// a member of the channel. The group goes on from this device's own
+    /// leaf, under the same channel and epoch; the journal starts at the
+    /// previous steward's last frame, which this steward's first frame
+    /// follows, so every member that applied it applies the next. The
+    /// previous steward's leaf goes with the first reconcile, as any device
+    /// the access policy no longer allows.
+    ///
+    /// A succession interrupted before its group was written is written
+    /// again; the group is written last.
+    ///
+    /// # Errors
+    ///
+    /// The store already holds this channel's steward group, the group is
+    /// another device's, or a record cannot be written.
+    pub fn succeed(
+        mut store: S,
+        signer: Box<dyn DeviceSigner>,
+        succession: crate::Succession,
+        vault: &VaultKey,
+    ) -> Result<Self> {
+        let device = Ed25519PublicKey::from_bytes(signer.device_public_key());
+        let crate::Succession { group, head } = succession;
+        if group.member().name() != device.as_bytes() {
+            return Err(Error::InvalidState(
+                "the member group to steward is another device's".into(),
+            ));
+        }
+        if store.read(StewardRecord::Group)?.is_some() {
+            return Err(Error::InvalidState(
+                "this device already stewards the channel".into(),
+            ));
+        }
+        let journal = GovernanceJournal::starting_at(head);
+        let ledger = StewardLedger::default();
+        store.write(StewardRecord::Journal, &journal.to_bytes()?)?;
+        store.write(
+            StewardRecord::Ledger,
+            &postcard::to_allocvec(&ledger)
+                .map_err(|error| Error::Serialization(error.to_string()))?,
+        )?;
+        store.write(StewardRecord::Group, &group.seal(vault)?)?;
+        Ok(Self {
+            channel: group.channel_id(),
+            signer,
+            group,
+            journal,
+            ledger,
+            store,
+        })
     }
 
     /// The store holding this steward's records.

@@ -114,7 +114,7 @@ impl ChannelMember {
         vault: &VaultKey,
     ) -> Result<Self> {
         let record_path = dir.join(format!("{}.member", channel.0));
-        let journal = GovernanceJournal::open(dir.join(format!("{}.mirror", channel.0)))?;
+        let mut journal = GovernanceJournal::open(dir.join(format!("{}.mirror", channel.0)))?;
         let record = if record_path.exists() {
             MemberRecord::load_sealed(&record_path, vault)?
         } else {
@@ -128,6 +128,15 @@ impl ChannelMember {
             return Err(Error::InvalidState(
                 "member state names another channel".into(),
             ));
+        }
+        if journal
+            .frames()
+            .last()
+            .is_some_and(|head| head.signed_by != steward)
+        {
+            // The channel changed steward since: the next one's frames
+            // follow this head.
+            journal.restart_at_head()?;
         }
         Ok(Self {
             channel,
@@ -201,7 +210,26 @@ impl ChannelMember {
                 "member state names another channel".into(),
             ));
         }
-        let journal = GovernanceJournal::mirrored(channel, steward, exported.frames)?;
+        let journal = match exported.frames.last() {
+            // The channel changed steward since: the next one's frames
+            // follow the head this device holds.
+            Some(head)
+                if exported
+                    .frames
+                    .iter()
+                    .any(|frame| frame.signed_by != steward) =>
+            {
+                if head.channel != channel {
+                    return Err(Error::Governance(
+                        "mirrored frame names another channel".into(),
+                    ));
+                }
+                head.verify_signature()
+                    .map_err(|error| Error::Governance(error.to_string()))?;
+                GovernanceJournal::starting_at(head.clone())
+            }
+            _ => GovernanceJournal::mirrored(channel, steward, exported.frames)?,
+        };
         Ok(Self {
             channel,
             device,
@@ -226,6 +254,79 @@ impl ChannelMember {
     /// The steward whose frames this member accepts.
     pub fn steward(&self) -> Ed25519PublicKey {
         self.steward
+    }
+
+    /// Accept frames from `steward` from now on: the room's governance
+    /// named another governor, which stewards its channels. The group is
+    /// kept, and the mirror restarts at its head, which the new steward's
+    /// first frame follows. Frames held back for the old steward are
+    /// dropped. Returns whether the steward changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the mirror cannot be written.
+    pub fn follow_steward(&mut self, steward: Ed25519PublicKey) -> Result<bool> {
+        if steward == self.steward {
+            return Ok(false);
+        }
+        self.journal.restart_at_head()?;
+        self.buffered.clear();
+        self.steward = steward;
+        Ok(true)
+    }
+
+    /// This member's group and the head of its mirror, for this device to
+    /// steward the channel from now on ([`ChannelSteward::succeed`]): its
+    /// governance named this device the room's governor. The member's files
+    /// stay until [`Self::remove_files`] is called once the steward's state
+    /// is durable, so the group has one owner at a time.
+    ///
+    /// # Errors
+    ///
+    /// The member was not admitted, or its mirror does not end at the epoch
+    /// its group is at (a crash between the two writes): the next steward
+    /// then has nothing to follow from.
+    ///
+    /// [`ChannelSteward::succeed`]: crate::ChannelSteward::succeed
+    pub fn into_succession(self) -> Result<Succession> {
+        let MemberRecord::Joined(group) = self.record else {
+            return Err(Error::InvalidState(
+                "a member that was not admitted has no group to steward".into(),
+            ));
+        };
+        let head = self
+            .journal
+            .frames()
+            .last()
+            .filter(|head| head.epoch == group.epoch())
+            .cloned()
+            .ok_or_else(|| {
+                Error::InvalidState("the member's mirror does not end at its group's epoch".into())
+            })?;
+        Ok(Succession {
+            group: *group,
+            head,
+        })
+    }
+
+    /// Remove the files [`Self::open`] keeps for `channel` under `dir`: the
+    /// device stewards the channel now, from the group they held.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a file exists and cannot be removed.
+    pub fn remove_files(dir: &Path, channel: ChannelId) -> Result<()> {
+        for path in [
+            dir.join(format!("{}.member", channel.0)),
+            dir.join(format!("{}.mirror", channel.0)),
+        ] {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(Error::Io(error)),
+            }
+        }
+        Ok(())
     }
 
     /// This device's mirror of the steward's journal.
@@ -565,6 +666,34 @@ enum OffChain {
     Stale,
     /// A frame whose predecessor may still arrive.
     Early,
+}
+
+/// A member's group and the head of its mirror, taken over by the device
+/// that stewards the channel from now on ([`ChannelMember::into_succession`]).
+pub struct Succession {
+    pub(crate) group: ChannelGroup,
+    pub(crate) head: MlsGovernanceFrameV1,
+}
+
+impl Succession {
+    pub fn channel_id(&self) -> ChannelId {
+        self.group.channel_id()
+    }
+
+    /// The epoch the group is at, which the next steward's first frame
+    /// moves on from.
+    pub fn epoch(&self) -> u64 {
+        self.group.epoch()
+    }
+}
+
+impl std::fmt::Debug for Succession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Succession")
+            .field("channel", &self.channel_id())
+            .field("epoch", &self.epoch())
+            .finish_non_exhaustive()
+    }
 }
 
 /// What [`ChannelMember::export_sealed`] writes.

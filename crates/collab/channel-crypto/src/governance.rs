@@ -503,6 +503,43 @@ impl GovernanceJournal {
         Ok(digest)
     }
 
+    /// Restart the journal at its head frame alone, for a channel whose
+    /// steward changed: the next steward's first frame follows that head,
+    /// whoever signed it, and nothing before it is of use. The channel was
+    /// encrypted from its genesis, so the plaintext gate stays closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal cannot be written.
+    pub(crate) fn restart_at_head(&mut self) -> Result<()> {
+        let Some(head) = self.state.frames.last().cloned() else {
+            return Ok(());
+        };
+        let next = JournalState {
+            version: JOURNAL_VERSION,
+            frames: vec![head],
+            deliveries: Vec::new(),
+            encryption_required: true,
+        };
+        self.persist(&next)?;
+        self.state = next;
+        Ok(())
+    }
+
+    /// A journal kept in memory that starts at `head`, a frame of the
+    /// channel's previous steward, for the device stewarding it from now on.
+    pub(crate) fn starting_at(head: MlsGovernanceFrameV1) -> Self {
+        Self {
+            path: None,
+            state: JournalState {
+                version: JOURNAL_VERSION,
+                frames: vec![head],
+                deliveries: Vec::new(),
+                encryption_required: true,
+            },
+        }
+    }
+
     /// Whether a frame with this digest is in the journal.
     pub fn contains(&self, digest: [u8; 32]) -> bool {
         self.state

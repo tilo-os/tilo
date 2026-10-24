@@ -24,6 +24,8 @@ mod provisioning;
 mod sealed_persistence;
 #[path = "steward_store.rs"]
 mod steward_store;
+#[path = "succession.rs"]
+mod succession;
 #[path = "third_member_joins.rs"]
 mod third_member_joins;
 #[path = "two_member_round_trip.rs"]
