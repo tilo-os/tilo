@@ -21,7 +21,7 @@ EXAMPLE_APPS = "examples/apps/"
 # Patched vendored crates with test suites of their own. The workspace builds
 # them only as path dependencies, so its tests never run theirs;
 # tools/ci/test-vendored-crates.sh does (t.toml's `vendored` check).
-VENDORED_TEST_CRATES = ("vendor/automerge",)
+VENDORED_TEST_CRATES = ("vendor/automerge", "vendor/vello_encoding")
 
 
 def android_apps(packages: dict[str, dict]) -> set[str]:

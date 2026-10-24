@@ -70,6 +70,9 @@ void TraceGeometry(const char* stage,int tab,int width=0,int height=0,double sca
   static std::atomic<unsigned> count{0};
   if(enabled && count.fetch_add(1)<128) std::fprintf(stderr,"[chromium-geometry] %s tab=%d %dx%d scale=%g\n",stage,tab,width,height,scale);
 }
+// The app applies a frame's changed rects to the frame before it
+// (`--tilo-frame-damage`), so a caret's blink is not the whole page again.
+bool frame_damage=false;
 // CEF callbacks only enqueue: a slow UI must never block Chromium's UI thread.
 class Output {
  public:
@@ -94,12 +97,24 @@ class Output {
     else failed_=true;
     cv_.notify_one();
   }
-  // A frame packet (tilo::FramePacket), shared with the tab that keeps it:
-  // only each tab's newest pending frame is kept, so one tab's paints never
-  // drop another's last frame.
-  void SendFrame(uint32_t tab,std::shared_ptr<const std::string> packet) {
+  // A frame packet (tilo::FramePacket), shared with the tab that keeps it,
+  // with what changed since the tab's frame before it (`damage`; null when
+  // not known): only each tab's newest pending frame is kept, so one tab's
+  // paints never drop another's last frame, and it keeps the rects of the
+  // frames it replaced. With --tilo-frame-damage the writer sends just those
+  // rects (tilo::DamagePacket) when the app has the frame they change.
+  void SendFrame(uint32_t tab,std::shared_ptr<const std::string> packet,uint32_t width,uint32_t height,const std::vector<tilo::DamageRect>* damage=nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
-    frames_[tab]=std::move(packet);
+    auto [entry,fresh]=frames_.try_emplace(tab);
+    auto& pending=entry->second;
+    bool whole=!damage || (!fresh && (pending.whole || pending.width!=width || pending.height!=height));
+    if(whole || fresh) pending.damage.clear();
+    if(!whole) {
+      pending.damage.insert(pending.damage.end(),damage->begin(),damage->end());
+      // A reader that falls behind gets the frame whole, not a growing list.
+      if(pending.damage.size()>4*tilo::kMaxDamageRects) {whole=true;pending.damage.clear();}
+    }
+    pending.whole=whole;pending.packet=std::move(packet);pending.width=width;pending.height=height;
     cv_.notify_one();
   }
   bool Failed() const { return failed_; }
@@ -111,7 +126,7 @@ class Output {
   void Run() {
     int flags=fcntl(STDOUT_FILENO,F_GETFL,0); fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK);
     for(;;) {
-      std::string owned;std::shared_ptr<const std::string> frame;
+      std::string owned;std::shared_ptr<const std::string> frame;PendingFrame damaged;uint32_t damaged_tab=0;
       { std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait(lock,[&]{ return stopping_ || !events_.empty() || !audio_.empty() || !frames_.empty(); });
         if(!events_.empty()) { owned=std::move(events_.front()); events_.pop_front(); }
@@ -119,9 +134,21 @@ class Output {
         else if(!frames_.empty()) {
           // Tabs take turns, so a tab painting every frame cannot starve another.
           auto next=frames_.upper_bound(last_frame_tab_);if(next==frames_.end())next=frames_.begin();
-          last_frame_tab_=next->first;frame=std::move(next->second);frames_.erase(next);
+          last_frame_tab_=next->first;PendingFrame pending=std::move(next->second);frames_.erase(next);
+          // Only rects of the frame the app was sent last apply to it.
+          auto& sent=sent_[last_frame_tab_];
+          if(frame_damage && !pending.whole && sent.first==pending.width && sent.second==pending.height) {damaged=pending;damaged_tab=last_frame_tab_;}
+          sent={pending.width,pending.height};frame=std::move(pending.packet);
         }
         else break;
+      }
+      if(damaged_tab) {
+        const size_t offset=tilo::FramePixelOffset(damaged_tab);
+        auto rects=tilo::ClipDamage(damaged.damage,damaged.width,damaged.height);
+        if(!rects.empty() && frame->size()>offset) {
+          owned=tilo::DamagePacket(damaged_tab,damaged.width,damaged.height,frame->data()+offset,frame->size()-offset,rects);
+          if(!owned.empty()) frame.reset();
+        }
       }
       const std::string& packet=frame?*frame:owned;
       size_t offset=0;
@@ -139,8 +166,11 @@ class Output {
       }
     }
   }
+  struct PendingFrame { std::shared_ptr<const std::string> packet; uint32_t width=0,height=0; std::vector<tilo::DamageRect> damage; bool whole=true; };
   std::atomic<bool> stopping_{false},failed_{false};
-  std::mutex mutex_; std::condition_variable cv_; std::deque<std::string> events_; std::deque<std::pair<bool,std::string>> audio_; std::map<uint32_t,std::shared_ptr<const std::string>> frames_; uint32_t last_frame_tab_=0; std::thread thread_;
+  std::mutex mutex_; std::condition_variable cv_; std::deque<std::string> events_; std::deque<std::pair<bool,std::string>> audio_; std::map<uint32_t,PendingFrame> frames_;
+  // The dimensions of the frame last written for each tab.
+  std::map<uint32_t,std::pair<uint32_t,uint32_t>> sent_; uint32_t last_frame_tab_=0; std::thread thread_;
 };
 Output* output=nullptr;
 // Page audio goes to the app (`--tilo-audio-bridge`) because its sandbox has no audio device; without it Chromium plays on its own.
@@ -731,7 +761,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void OnPopupShow(CefRefPtr<CefBrowser>,bool show) override { popup_visible_=show;if(!show) { popup_.clear(); EmitFrame(); } }
   void OnPopupSize(CefRefPtr<CefBrowser>,const CefRect& rect) override { popup_rect_=rect; }
-  void OnPaint(CefRefPtr<CefBrowser> browser,PaintElementType type,const RectList&,const void* buffer,int width,int height) override {
+  void OnPaint(CefRefPtr<CefBrowser> browser,PaintElementType type,const RectList& dirty,const void* buffer,int width,int height) override {
     if(!visible_) return;
     auto size=tilo::FrameSize(width,height);if(!size) return;
     if(type==PET_VIEW && !geometry_.PaintMatches(width,height)) {
@@ -756,14 +786,26 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       // the tab keeps to composite a popup over and to send again.
       auto packet=tilo::FramePacket(static_cast<uint32_t>(id_),width,height,static_cast<const char*>(buffer),size);if(packet.empty()) return;
       frame_=std::make_shared<const std::string>(std::move(packet));pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted();
+      // What Chromium repainted, in the frame's pixels.
+      std::vector<tilo::DamageRect> damage;
+      for(const auto& rect:dirty) {
+        const int64_t x0=std::max(0,rect.x),y0=std::max(0,rect.y),x1=int64_t(rect.x)+rect.width,y1=int64_t(rect.y)+rect.height;
+        if(x1>x0 && y1>y0) damage.push_back({uint32_t(x0),uint32_t(y0),uint32_t(x1-x0),uint32_t(y1-y0)});
+      }
+      EmitFrame(&damage);return;
     }
-    else { popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height; }
+    popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height;
     EmitFrame();
   }
-  void EmitFrame() {
+  // Publishes the tab's frame; `damage` says what changed since the frame
+  // before it, null when that is not known.
+  void EmitFrame(const std::vector<tilo::DamageRect>* damage=nullptr) {
     if(!visible_ || !frame_) return;
     TraceGeometry("frame-published",id_,pixel_width_,pixel_height_,geometry_.scale());
-    if(!popup_visible_ || popup_.empty()) { output->SendFrame(static_cast<uint32_t>(id_),frame_); return; }
+    if(whole_next_) {damage=nullptr;whole_next_=false;}
+    if(!popup_visible_ || popup_.empty()) { output->SendFrame(static_cast<uint32_t>(id_),frame_,pixel_width_,pixel_height_,damage); return; }
+    // The popup's pixels are in this frame only: the next one goes whole.
+    whole_next_=true;
     std::string body=*frame_;const size_t offset=tilo::FramePixelOffset(static_cast<uint32_t>(id_));
     int x=static_cast<int>(std::round(popup_rect_.x*geometry_.scale())),y=static_cast<int>(std::round(popup_rect_.y*geometry_.scale()));
     for(int row=0;row<popup_height_;++row) {
@@ -771,7 +813,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       int start=std::max(0,-x),end=std::min(popup_width_,pixel_width_-x);
       if(end>start) std::memcpy(body.data()+offset+(size_t(dest_y)*pixel_width_+x+start)*4,popup_.data()+(size_t(row)*popup_width_+start)*4,size_t(end-start)*4);
     }
-    output->SendFrame(static_cast<uint32_t>(id_),std::make_shared<const std::string>(std::move(body)));
+    output->SendFrame(static_cast<uint32_t>(id_),std::make_shared<const std::string>(std::move(body)),pixel_width_,pixel_height_);
   }
   bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
     if(source!=PID_RENDERER) return false;
@@ -968,8 +1010,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         host->Invalidate(PET_VIEW);
         // A background load may have completed without an eligible handshake.
         if(!was_visible && !credential_identity_) OfferCredentialContext(browser_->GetMainFrame());
-      } else {frame_.reset();popup_.clear();}
+      } else {frame_.reset();popup_.clear();whole_next_=true;}
     }
+    // The app lost the frame its next rects would change: send it whole.
+    else if(op=="resend_frame") {whole_next_=true;if(frame_)EmitFrame();else host->Invalidate(PET_VIEW);}
     else if(op=="js_dialogs") {
       js_dialogs_=d->GetBool("enabled");
       // An embedder that stops answering lets the open question go.
@@ -1087,7 +1131,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       TraceGeometry("resize-applied",id_,w,h,scale);
       stale_paint_recovery_pending_=false;
       if(effect==tilo::ResizeEffect::Repaint) { host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
-      popup_.clear();frame_.reset();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
+      popup_.clear();frame_.reset();whole_next_=true;host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
       if(op=="mouse_move") host->SendMouseMoveEvent(event,false);
@@ -1227,7 +1271,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!download_owners.Detach(id_)){Event("close_blocked");return;}
     InvalidateCredentials();
     transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
-    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();frame_.reset();popup_.clear();Event("tab_detached");PublishDownloadRuntime();
+    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();frame_.reset();popup_.clear();whole_next_=true;Event("tab_detached");PublishDownloadRuntime();
   }
  private:
   struct CredentialPending {
@@ -1562,7 +1606,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=200;
   std::vector<tilo::MenuOffer> menu_offers_;tilo::MenuContext menu_context_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
-  tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::shared_ptr<const std::string> frame_;std::string popup_;std::vector<CefString> scripts_,blocking_scripts_;
+  tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::shared_ptr<const std::string> frame_;
+  // The next frame goes whole: the app may not have the one before it.
+  bool whole_next_=true;std::string popup_;std::vector<CefString> scripts_,blocking_scripts_;
   IMPLEMENT_REFCOUNTING(Client);
 };
 void FaviconDownload::OnDownloadImageFinished(const CefString&,int,CefRefPtr<CefImage> image) {
@@ -1832,6 +1878,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   auto no_payload=[&]{CefDictionaryValue::KeyList keys;d->GetKeys(keys);return std::all_of(keys.begin(),keys.end(),[](const CefString& key){return key=="op" || key=="tab";});};
   if(op=="create_tab" || op=="close_tab" || op=="try_close_tab") return d->HasKey("tab");
   if(op=="visibility") return type("visible",VTYPE_BOOL);
+  if(op=="resend_frame") return d->HasKey("tab") && no_payload();
   if(op=="audio_muted") return type("muted",VTYPE_BOOL);
   if(op=="navigation_history" || op=="history_entry") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && (op=="navigation_history" ? (!d->HasKey("direction") || (type("direction",VTYPE_STRING) && (d->GetString("direction")=="back" || d->GetString("direction")=="forward"))) : (type("id",VTYPE_INT) && d->GetInt("id")>0));
   if(op=="scoped_navigation" || op=="cancel_navigation") {
@@ -2174,7 +2221,7 @@ void CloseHost() {
 int RunHost(int argc,char** argv) {
   signal(SIGPIPE,SIG_IGN);
   std::string profile;
-  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true;if(arg=="--tilo-sealed-documents") sealed_documents=true;if(arg=="--tilo-audio-bridge") audio_bridge=true;if(arg.rfind("--service-session=",0)==0) {service_session_id=arg.substr(18);if(!tilo::ServiceSessionId(service_session_id))return 2;} }
+  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true;if(arg=="--tilo-sealed-documents") sealed_documents=true;if(arg=="--tilo-audio-bridge") audio_bridge=true;if(arg=="--tilo-frame-damage") frame_damage=true;if(arg.rfind("--service-session=",0)==0) {service_session_id=arg.substr(18);if(!tilo::ServiceSessionId(service_session_id))return 2;} }
   if(private_mode && !service_session_id.empty())return 2;
   if(profile.empty() || profile[0]!='/') {std::cerr<<"--profile requires an absolute directory\n";return 2;}
   std::filesystem::create_directories(profile);

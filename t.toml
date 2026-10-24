@@ -1409,6 +1409,8 @@ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-g
   python3 apps/browser/chromium/tests/resize_frames.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/frame_transport.py target/chromium/tilo-chromium-host
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/frame_damage.py target/chromium/tilo-chromium-host
 """
 inputs = ["apps/browser/chromium/**", "apps/browser-parts/assets/extension-manager/**", "apps/browser-parts/src/extension_toolbar.rs", "apps/browser/tilo-app.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/ci/ensure-browser-dependencies.sh"]
 writable_sources = true

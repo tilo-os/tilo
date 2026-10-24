@@ -52,7 +52,11 @@ so the host outlives every process still using it.
 
 stdin/stdout are a binary protocol, not a terminal. Each packet starts with a
 little-endian u32 length including a one-byte kind. Kind 1 carries UTF-8 JSON;
-kind 2 carries u32 width, u32 height, then exactly width × height × 4 BGRA bytes.
+kind 2 carries u32 width, u32 height, then exactly width × height × 4 BGRA bytes;
+kind 3 is a frame of another tab, its u32 tab first. Kind 4 (with
+`--tilo-frame-damage`) changes a tab's last frame: u32 tab, width, height and
+rect count, then each rect's u32 x, y, width and height, then each rect's rows
+of BGRA pixels in turn.
 The limit is 64 MiB per packet, with dimensions 1–8192 and checked frame sizes.
 
 JSON commands use `op`; events use `event`. Supported operations are navigate,
@@ -147,6 +151,19 @@ the process that draws a frame converts it. `tests/frame_transport.py` prints
 what the host's process spends per frame of a full-screen animation, for the
 first tab and a routed one, and checks that every change of a still tab beside
 it arrives.
+
+With `--tilo-frame-damage`, which the toolkit always passes, a paint after a
+tab's first goes as a damage packet (kind 4): the rects Chromium repainted
+(`OnPaint`'s dirty rects, at most 16, else their bounding box) and their
+pixels, cut from the frame the tab keeps when the writer takes it. The writer
+keeps the rects of every paint a newer one replaced, and sends the frame whole
+when it is the tab's first, its size changed, a popup is composited onto it,
+the rects cover half of it, or the app asks (`resend_frame`, when it lacks the
+frame they change). The toolkit applies the rects to the frame it keeps whole,
+converts only their pixels, and repaints and uploads only them.
+`tests/frame_damage.py` checks that a blinking caret arrives as small rects
+inside its field, that the frame rebuilt from them is the frame the host sends
+whole, and prints the bytes per blink each way.
 
 ## macOS packaging and sandbox
 
