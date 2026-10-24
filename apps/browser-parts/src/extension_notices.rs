@@ -107,14 +107,22 @@ pub fn notification(
     };
     let mut shown = Notification::new(tag(extension, id), title, lines.join("\n"))
         .with_activation(activation(extension, id, None));
-    for (index, label) in notice
-        .buttons
-        .iter()
-        .enumerate()
-        .filter(|(_, label)| !label.trim().is_empty())
-    {
+    if notice.silent {
+        shown = shown.quietly();
+    }
+    for (index, label) in notice.buttons.iter().enumerate() {
+        // A button's name is one line: a control character in it (a line
+        // break, a tab) would have the whole notification refused.
+        let label = label
+            .split(char::is_control)
+            .filter(|part| !part.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if label.trim().is_empty() {
+            continue;
+        }
         if let Ok(index) = u8::try_from(index) {
-            shown = shown.with_button(label.clone(), activation(extension, id, Some(index)));
+            shown = shown.with_button(label, activation(extension, id, Some(index)));
         }
     }
     shown
@@ -215,6 +223,7 @@ mod tests {
             items: vec![("First".into(), "done".into())],
             buttons: vec!["Pause".into(), "Stop".into()],
             progress: Some(40),
+            silent: false,
         };
         let shown = notification("Copier", ID, "copy", &notice);
         assert_eq!(shown.title, "Copying");
@@ -239,6 +248,37 @@ mod tests {
         // Without a title it is named for the extension.
         let untitled = notification("Copier", ID, "copy", &ExtensionNotice::default());
         assert_eq!(untitled.title, "Copier");
+        assert!(!shown.silent);
+    }
+
+    #[test]
+    fn a_change_shows_quietly_and_a_button_name_on_two_lines_still_shows() {
+        // Not through `announce`: that sets the engine a choice goes back
+        // to, which another test here relies on.
+        let notifier = Recording::default();
+        // `notifications.update` of a progress: the engine marks it quiet.
+        let notice = ExtensionNotice {
+            title: "Copying".into(),
+            buttons: vec!["\t".into(), "Stop\nnow\t".into()],
+            progress: Some(80),
+            silent: true,
+            ..ExtensionNotice::default()
+        };
+        notifier
+            .show(&notification("Copier", ID, "copy", &notice))
+            .expect("a control character refused it");
+        let shown = notifier.shown();
+        assert_eq!(shown.len(), 1);
+        assert!(shown[0].silent);
+        let buttons: Vec<(&str, Option<Choice>)> = shown[0]
+            .buttons
+            .iter()
+            .map(|button| (button.label.as_str(), chosen(&button.activation)))
+            .collect();
+        assert_eq!(
+            buttons,
+            [("Stop now", Some((ID.into(), "copy".into(), Some(1))))]
+        );
     }
 
     #[test]

@@ -590,7 +590,8 @@ content scripts (with `sender.tab`) work without help.
   buttons) and answers `update`, `clear` and `getAll`. The Browser is told
   of each change through the page used last (`extension_notification`) and
   shows it as its own notification, named for the extension
-  (`extension_notices.rs`). The person choosing it or one of its buttons
+  (`extension_notices.rs`); a change by `update` (a download's progress)
+  shows without a sound, as does one the extension made `silent`. The person choosing it or one of its buttons
   comes back as `extension_notification_chosen`: the worker, woken if it
   sleeps, hears `onClicked` or `onButtonClicked`, then `onClosed` by the
   person, since Tilo takes a chosen notification away; `clear` is heard as

@@ -365,8 +365,19 @@ fn an_extensions_notification_arrives_and_a_choice_goes_back() {
                 items: vec![("a".into(), "b".into())],
                 buttons: vec!["Pause".into(), "Stop".into()],
                 progress: Some(40),
+                silent: false,
             }),
         })
+    );
+    // A quiet one (asked so, or a change to one shown) says so.
+    let quiet = event(
+        json!({"event":"extension_notification","tab":2,"id":id,"notification":"copy",
+        "title":"Copying","message":"Two files","context":"","items":[],"buttons":[],
+        "progress":80,"require_interaction":false,"silent":true}),
+    );
+    assert!(
+        matches!(&quiet, Some(WebViewEvent::ExtensionNotification { notice: Some(notice), .. }) if notice.silent),
+        "{quiet:?}"
     );
     assert_eq!(
         event(

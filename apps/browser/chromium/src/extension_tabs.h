@@ -1520,7 +1520,9 @@ class ExtensionTabs {
     } else if (method == "notifications.update") {
       auto updated = notifications_.Update(extension, id, NotificationOptionsOf(args->GetDictionary("options")));
       if (updated.error) { Fail(reply, *updated.error); return; }
-      if (updated.updated) TellNotification(extension, id);
+      // A change to one shown makes no sound: a download's progress would
+      // sound at every step.
+      if (updated.updated) TellNotification(extension, id, true);
       answer->SetBool(updated.updated);
     } else if (method == "notifications.clear") {
       const bool cleared = notifications_.Clear(extension, id);
@@ -1574,7 +1576,8 @@ class ExtensionTabs {
   }
   // Tell the Browser what the notification shows now, or that it is gone,
   // through the page the person used last: a notification is no tab's.
-  void TellNotification(const std::string& extension, const std::string& id) {
+  // `quiet`: shown without a sound, whatever the extension asked.
+  void TellNotification(const std::string& extension, const std::string& id, bool quiet = false) {
     if (!hooks_.event) return;
     const auto tabs = Tabs();
     const auto* tab = LastFocused(tabs);
@@ -1602,7 +1605,7 @@ class ExtensionTabs {
       fields->SetList("buttons", buttons);
       if (shown->progress) fields->SetInt("progress", *shown->progress);
       fields->SetBool("require_interaction", shown->require_interaction);
-      fields->SetBool("silent", shown->silent);
+      fields->SetBool("silent", shown->silent || quiet);
     }
     hooks_.event(tab->tab, "extension_notification", fields);
   }
