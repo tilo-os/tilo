@@ -5944,11 +5944,9 @@ impl GroupRow {
             .collect();
         for (i, h) in self.handles.iter_mut().enumerate() {
             // A group with nothing on screen has no border to be one
-            // side of. Still-opening counts as shown: it's already a
-            // card with real edges at the width it's waiting to fill.
-            let shown = |g: Option<&WindowGroup>| {
-                g.is_some_and(|g| Widget::presented(g) || Widget::opening(g))
-            };
+            // side of. A window whose content is on its way counts as
+            // shown: its place is reserved, with real edges at its width.
+            let shown = |g: Option<&WindowGroup>| g.is_some_and(WindowGroup::stands);
             let next_i = i.saturating_add(1);
             // Only a gap between two groups of this run; the seam between
             // two displays is not a gap.
