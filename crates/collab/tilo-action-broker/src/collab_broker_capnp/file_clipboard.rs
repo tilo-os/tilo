@@ -203,7 +203,9 @@ impl CapnpChannelHandle {
                 .map_err(str::to_owned)
         });
         Ok(FileClipboardContext {
-            peer: self.peer_id,
+            // The clipboard service's session is the connection's, ended
+            // with its process.
+            peer: self.connection_id,
             window,
             duplicate,
             workspace,

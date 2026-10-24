@@ -220,8 +220,9 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
                     .host_workers
                     .lock()
                     .unwrap()
-                    .get(APP_PEER, &other)
-                    .is_none()
+                    .holder_of(&other)
+                    .is_none(),
+                "no worker speaks for another app's route"
             );
             let refused = foreign
                 .admit_local_document_action(&edit_report(&env, &other))
@@ -321,9 +322,14 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                 for (peer, ..) in &windows {
                     for record in 0..RECORDS {
                         let window = peer - 1_000;
+                        let route = route(window, record);
+                        let holder = workers
+                            .holder_of(&route)
+                            .expect("every record a window holds has its worker");
+                        assert_eq!(rig.state.connection_of(holder), *peer);
                         assert!(
                             workers
-                                .get(*peer, &route(window, record))
+                                .get(holder, &route)
                                 .is_some_and(|worker| worker.worker_registration.is_some()),
                             "window {window} is the worker of record {record}"
                         );
@@ -345,7 +351,9 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
             rig.state.remove_connection(closed);
             {
                 let workers = rig.state.host_workers.lock().unwrap();
-                assert!(!workers.holds(closed));
+                for record in 0..RECORDS {
+                    assert!(workers.holder_of(&route(closed - 1_000, record)).is_none());
+                }
                 assert_eq!(workers.len(), before + (WINDOWS - 1) * RECORDS);
             }
             let (open, _, _, _, channels) = &windows[0];
@@ -354,6 +362,156 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                 .await
                 .expect("the other windows keep their workers");
             drop(windows);
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// One window holding three records publishes for each of them: every
+/// record is its own root and canonical publisher, another device of the
+/// person reaches each one's own invocation stream, and closing one record
+/// withdraws only what it published.
+#[tokio::test(flavor = "current_thread")]
+async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
+    use tilo_actions::remote::{
+        CanonicalActionRoute, CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    };
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            const WINDOW: u64 = 907;
+            let env = Environment::new();
+            let mut services = env.membership.services();
+            services.launcher = Some(Arc::new(LaunchedHere {
+                app: env.route.app_id.clone(),
+                room: env.route.cluster_id.clone(),
+            }));
+            let rig = Rig::with_services(&env, services).await;
+            let (window, _server, _client) = launched_app_connection(
+                &rig.state,
+                &rig.directories,
+                WINDOW,
+                &env.route.app_id,
+                &env.route.cluster_id,
+            );
+            let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
+            let record =
+                |id: &str| CrdtRoute::record(&env.route.app_id, env.route.cluster_id.clone(), id);
+            let mut pages = Vec::new();
+            for id in ["page-a", "page-b", "page-c"] {
+                let channel = window
+                    .join_channel(&record(id).channel_key(), &identity)
+                    .await
+                    .unwrap();
+                channel
+                    .publish_action_directory(
+                        &env.route.app_id,
+                        super::signed_worker::directory_server(&directory_state(&format!(
+                            "{id}-r1"
+                        ))),
+                    )
+                    .await
+                    .unwrap();
+                let stream = channel.subscribe_stable_invocations().await.unwrap();
+                pages.push((id, channel, stream));
+            }
+            let roots = |state: &CapnpBrokerState| {
+                state
+                    .action_directory_roots()
+                    .into_iter()
+                    .filter(|root| state.connection_of(root.peer_id) == WINDOW)
+                    .map(|root| root.record_id)
+                    .collect::<std::collections::BTreeSet<_>>()
+            };
+            assert_eq!(
+                roots(&rig.state),
+                ["page-a", "page-b", "page-c"].map(String::from).into(),
+                "the window publishes a directory for every record it holds"
+            );
+
+            let (caller, evidence) = member_device_evidence(&env, 97, false);
+            let host = rig
+                .state
+                .certified_local_action_host(&caller, &evidence)
+                .unwrap();
+            let canonical = |id: &str| CatalogueQuery {
+                canonical_route: Some(CanonicalActionRoute {
+                    room: env.route.cluster_id.clone(),
+                    app_id: env.route.app_id.clone(),
+                    record_id: id.into(),
+                }),
+                max_results: 0,
+                ..Default::default()
+            };
+            let edit = |provider: String, id: &str| InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider,
+                    address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: Some(format!("{id}-r1")),
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            for (id, _, stream) in &pages {
+                let page = local_host_answer(host.query(&caller, canonical(id)))
+                    .await
+                    .unwrap();
+                assert_eq!(page.providers.len(), 1, "{id} has its canonical publisher");
+                let request = edit(page.providers[0].provider.clone(), id);
+                local_host_answer(host.invoke(&caller, request.clone()))
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("{id} is editable from the other device: {error:?}")
+                    });
+                let delivered = tilo_test_env::within("the record's own delivery", stream.read())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    delivered.invocation_uuid,
+                    *request.invocation.0.as_bytes(),
+                    "{id}'s edit reaches {id}'s own stream"
+                );
+            }
+
+            // The window closes page-b and keeps the others.
+            let (_, closed, closed_stream) = pages.remove(1);
+            drop((closed, closed_stream));
+            let deadline = tilo_test_env::hang_deadline();
+            while roots(&rig.state).contains("page-b") {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the dropped record's directory stays published"
+                );
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                roots(&rig.state),
+                ["page-a", "page-c"].map(String::from).into()
+            );
+            let gone = local_host_answer(host.query(&caller, canonical("page-b"))).await;
+            assert!(
+                gone.is_ok_and(|page| page.providers.is_empty()),
+                "nothing publishes for the dropped record"
+            );
+            assert!(
+                rig.state
+                    .host_workers
+                    .lock()
+                    .unwrap()
+                    .holder_of(&record("page-b"))
+                    .is_none()
+            );
+            for id in ["page-a", "page-c"] {
+                let page = local_host_answer(host.query(&caller, canonical(id)))
+                    .await
+                    .unwrap();
+                assert_eq!(page.providers.len(), 1, "{id} keeps its publisher");
+            }
+            drop((pages, window));
             rig.stop().await;
         })
         .await;

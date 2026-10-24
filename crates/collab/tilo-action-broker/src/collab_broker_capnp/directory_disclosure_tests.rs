@@ -79,6 +79,7 @@ impl Connection {
                 directories: directories.clone(),
                 peer_id: peer,
             }),
+            holds: route_holds::ConnectionHolds::default(),
         });
         let (server, client) = tokio::net::UnixStream::pair().unwrap();
         let driver =

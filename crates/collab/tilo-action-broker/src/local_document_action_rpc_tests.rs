@@ -120,9 +120,11 @@ async fn local_report_admission(
                 directories: rig.directories.clone(),
                 channel_id: env.route.channel_key(),
                 peer_id: 903,
+                connection_id: 903,
                 verified_identity: identity.clone(),
                 record_kind: None,
                 lease: None,
+                _hold: None,
             });
             let before_stale = receipt_barriers(&rig);
             assert!(matches!(
@@ -238,9 +240,11 @@ async fn local_report_admission(
                     directories: rig.directories.clone(),
                     channel_id: env.route.channel_key(),
                     peer_id: 904,
+                    connection_id: 904,
                     verified_identity: identity.clone(),
                     record_kind: None,
                     lease: None,
+                    _hold: None,
                 });
             let mut call = app_connection.admit_local_document_action_request();
             call.get()
