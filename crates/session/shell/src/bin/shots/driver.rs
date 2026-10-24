@@ -1527,6 +1527,28 @@ impl ShellDriver {
         st_bump(&handle);
     }
 
+    /// `who`'s pointer is heard at `at` in the workspace on screen, as their
+    /// device sends it a few dozen times a second.
+    pub fn peer_pointer_for_shots(&mut self, who: &str, at: Point) {
+        let room = self
+            .chrome()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room().to_string());
+        let Some(room) = room else {
+            return;
+        };
+        self.fb.apply_remote_presence_for_shots(
+            who.into(),
+            ui::presence::PresenceKey::Workspace { id: room },
+            ui::collaboration::PresencePayload::Pointer {
+                x: ui::num::f32_of_f64(at.x),
+                y: ui::num::f32_of_f64(at.y),
+            },
+        );
+    }
+
     /// `who` says `text` beside their pointer.
     pub fn remote_cursor_chat_for_shots(&mut self, who: &str, text: &str, sent: bool) {
         let now = Instant::now();
