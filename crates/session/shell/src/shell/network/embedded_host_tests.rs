@@ -112,44 +112,55 @@ fn a_room_another_device_hosts_is_entered_at_that_devices_host() {
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("TILO_HOME_PEERS_PATH", &peers);
     let (network, mut commands) = personal_continuity_network_for_test(user);
-    let network = Arc::new(network);
     let plans = RoomId::new();
-    let follow = {
-        let network = Arc::clone(&network);
-        std::thread::spawn(move || {
-            network.follow_list(crate::shell::personal_workspaces::Adoption {
-                changed: true,
-                enter: vec![crate::shell::personal_workspaces::ToEnter {
-                    room: plans,
-                    name: "Plans".into(),
-                    host: other,
-                }],
-                release: Vec::new(),
-            });
-        })
-    };
-    let asked = loop {
-        if let NetCmd::OwnDeviceHost(asked) = commands.blocking_recv().expect("the network asks") {
-            break asked;
+    // The other device's host, answering what reaches it. The list is
+    // followed on this thread, which holds the environment it reads.
+    let host = std::thread::spawn(move || {
+        while let Some(command) = commands.blocking_recv() {
+            if let NetCmd::OwnDeviceHost(asked) = command {
+                let request = &asked.request;
+                let answer = (
+                    asked.device,
+                    *asked.addr.id.as_bytes(),
+                    request.invoke.target.address.action.clone(),
+                    match &request.invoke.argument {
+                        tilo_actions::remote::InvokeArgument::Json(arguments) => {
+                            arguments.get("room").cloned()
+                        }
+                        _ => None,
+                    },
+                );
+                let _ = request.reply.send(Err("not answered here".into()));
+                return Some(answer);
+            }
         }
-    };
-    assert_eq!(asked.device, other, "the device the list names is asked");
-    assert_eq!(asked.addr.id.as_bytes(), &other);
-    assert_eq!(asked.request.invoke.target.address.action, ENTER_ROOM);
-    let tilo_actions::remote::InvokeArgument::Json(arguments) = &asked.request.invoke.argument
-    else {
-        panic!("host operations take JSON arguments");
-    };
-    assert_eq!(
-        arguments.get("room"),
-        Some(&serde_json::Value::from(plans.to_string()))
-    );
-    asked
-        .request
-        .reply
-        .send(Err("not answered here".into()))
-        .expect("waiting for the answer");
-    follow.join().expect("the list is followed");
-    let replica = network.replica.lock().expect("replica");
-    assert!(!replica.tree.read().holds_room(plans));
+        None
+    });
+    network.follow_list(crate::shell::personal_workspaces::Adoption {
+        changed: true,
+        enter: vec![crate::shell::personal_workspaces::ToEnter {
+            room: plans,
+            name: "Plans".into(),
+            host: other,
+        }],
+        release: Vec::new(),
+    });
+    let held = network
+        .replica
+        .lock()
+        .expect("replica")
+        .tree
+        .read()
+        .holds_room(plans);
+    // The network's queue closes with it, which ends the host's wait.
+    drop(network);
+    let (device, endpoint, action, room) = host
+        .join()
+        .expect("the host answers")
+        .expect("the device the list names is asked");
+    assert_eq!(device, other, "the device the list names is asked");
+    assert_eq!(endpoint, other);
+    assert_eq!(action, ENTER_ROOM);
+    assert_eq!(room, Some(serde_json::Value::from(plans.to_string())));
+    assert!(!held, "a room its host did not let in is not held");
 }
