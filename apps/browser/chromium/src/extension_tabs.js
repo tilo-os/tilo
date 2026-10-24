@@ -3,11 +3,11 @@
 // windows, and Tilo draws every page offscreen. Run in an extension's service
 // worker and its own pages, this answers the tab and window APIs, the toolbar
 // click, keyboard shortcuts, a tab's capture, context menu items,
-// notifications and scripts on a tab from the host's tabs instead, over a
-// request the host answers
-// itself. A page of the extension is known by its address; its worker,
-// which has none, by a token the Browser wrote with this script into the
-// worker it runs first (extensions.rs).
+// notifications, scripts on a tab and what network rules did in a tab from
+// the host's tabs instead, over a request the host answers itself. A page of
+// the extension is known by its address; its worker, which has none, by a
+// token the Browser wrote with this script into the worker it runs first
+// (extensions.rs).
 (() => {
   const runtime = globalThis.chrome && chrome.runtime;
   if (!runtime || !runtime.id || location.protocol !== 'chrome-extension:') return;
@@ -197,6 +197,23 @@
   };
   if ((manifest.permissions || []).includes('scripting')) watch();
 
+  // Network rules (declarativeNetRequest). Chromium counts what they do in
+  // the Browser's tabs for no tab (-1), so it shows no count for the page
+  // and answers for no tab. The Browser's own extension sees the requests
+  // rules acted on in each tab, and the host counts them for the page: on
+  // the button of an extension that asks (displayActionCountAsBadgeText),
+  // changed as it says (tabUpdate). Which rules matched a request is asked
+  // of the extension's own rules here.
+  const rules = globalThis.chrome.declarativeNetRequest;
+  const testOutcome = rules && typeof rules.testMatchOutcome === 'function' ? rules.testMatchOutcome.bind(rules) : null;
+  const matchedRules = (request) => {
+    if (!testOutcome) return Promise.resolve([]);
+    const {url, type, method, initiator, tabId} = request;
+    const asked = {url, type, method, tabId};
+    if (initiator) asked.initiator = initiator;
+    return testOutcome(asked).then((outcome) => outcome.matchedRules || [], () => []);
+  };
+
   // The worker's first script has run once this task ends: its listeners
   // are registered, and an event may reach them.
   let ready = false;
@@ -225,6 +242,11 @@
           fire(own.onDisconnect, own.port);
         }
         return true;
+      },
+      // Which of these requests rules acted on in a tab the extension's own
+      // rules match: the host counts them for the page.
+      matched(requests) {
+        return Promise.all((requests || []).map((request) => matchedRules(request).then((found) => found.length > 0)));
       },
       // The host tells the extension of a tab event: every listener runs.
       dispatch(name, args) {
@@ -458,6 +480,52 @@
       return listed.map(({name, description, shortcut}) => ({name, description: localized(description), shortcut}));
     });
     event(commands, 'onCommand', 'commands.onCommand');
+  }
+
+  // Chromium's own call, in the callback form older extensions' APIs take.
+  const nativeCall = (method, ...args) => new Promise((resolve, reject) => {
+    method(...args, (value) => {
+      const error = runtime.lastError;
+      if (error) reject(new Error(error.message)); else resolve(value);
+    });
+  });
+  if (rules && typeof rules.setExtensionActionOptions === 'function') {
+    const native = rules.setExtensionActionOptions.bind(rules);
+    replace(rules, 'setExtensionActionOptions', async (options) => {
+      const {displayActionCountAsBadgeText: display, tabUpdate} = options || {};
+      if (tabUpdate !== undefined && (tabUpdate === null || typeof tabUpdate !== 'object'
+        || !Number.isInteger(tabUpdate.tabId) || !Number.isInteger(tabUpdate.increment))) {
+        throw new Error('Invalid value for tabUpdate');
+      }
+      // Chromium keeps the choice for every tab, and answers getBadgeText by it.
+      if (typeof display === 'boolean') await nativeCall(native, {displayActionCountAsBadgeText: display});
+      if (typeof display === 'boolean' || tabUpdate) {
+        await call('dnr.options', {display: typeof display === 'boolean' ? display : null, tabUpdate: tabUpdate || null});
+      }
+    });
+  }
+  // The rules that matched in one tab: Chromium finds none of the Browser's
+  // tabs and refuses ("No tab with id"). The host knows the requests rules
+  // acted on in the tab's page; which of the extension's own rules matched
+  // each is asked of them.
+  if (rules && typeof rules.getMatchedRules === 'function') {
+    const native = rules.getMatchedRules.bind(rules);
+    replace(rules, 'getMatchedRules', async (filter) => {
+      const tabId = filter && filter.tabId;
+      try {
+        return await nativeCall(native, filter || {});
+      } catch (error) {
+        if (!Number.isInteger(tabId) || !/^No tab with id/.test(error.message)) throw error;
+      }
+      const since = typeof filter.minTimeStamp === 'number' ? filter.minTimeStamp : -Infinity;
+      const requests = (await call('dnr.requests', {tabId})).filter((request) => request.timeStamp >= since);
+      const found = await Promise.all(requests.map(matchedRules));
+      const rulesMatchedInfo = [];
+      requests.forEach((request, index) => {
+        for (const rule of found[index]) rulesMatchedInfo.push({rule, tabId, timeStamp: request.timeStamp});
+      });
+      return {rulesMatchedInfo};
+    });
   }
 
   // Context menu items: the host keeps them and shows them in the page's

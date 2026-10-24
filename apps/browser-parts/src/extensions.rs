@@ -968,18 +968,42 @@ const MANAGER_FILES: [(&str, &str); 4] = [
     ),
 ];
 
+/// The token the manager's worker reports to the engine with, beside it
+/// (`worker.js`): what extensions' rules acted on in the Browser's tabs.
+const MANAGER_TOKEN_FILE: &str = "tilo-bridge-token.js";
+
 /// Where the manager extension is, written beside the profile's extensions
 /// and never listed among them; `None` when it cannot be written.
 pub fn manager_dir() -> Option<PathBuf> {
     let dir = crate::storage::data_dir()?.join("extension-manager");
-    std::fs::create_dir_all(&dir).ok()?;
+    write_manager(&dir)?;
+    dir.canonicalize().ok()
+}
+
+/// Write the manager's files into `dir`, with its worker's token, which
+/// lasts from one start to the next.
+fn write_manager(dir: &Path) -> Option<()> {
+    std::fs::create_dir_all(dir).ok()?;
     for (name, text) in MANAGER_FILES {
         let path = dir.join(name);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(text) {
             std::fs::write(&path, text).ok()?;
         }
     }
-    dir.canonicalize().ok()
+    if manager_token(dir).is_none() {
+        let token = new_token()?;
+        std::fs::write(
+            dir.join(MANAGER_TOKEN_FILE),
+            format!("globalThis.__tiloBridgeToken = \"{token}\";\n"),
+        )
+        .ok()?;
+    }
+    Some(())
+}
+
+/// The token the worker of the manager at `dir` reports to the engine with.
+pub fn manager_token(dir: &Path) -> Option<String> {
+    tabs_token(&std::fs::read_to_string(dir.join(MANAGER_TOKEN_FILE)).ok()?)
 }
 
 /// The identifier Chromium gives the manager unpacked at `dir`.
@@ -1826,6 +1850,20 @@ mod tabs_tests {
 
     const RUNS_TABS: &str =
         ";typeof importScripts=='function'&&importScripts('/tilo-extension-tabs.js');";
+
+    #[test]
+    fn the_manager_keeps_the_token_its_worker_reports_with() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let dir = root.path().join("extension-manager");
+        write_manager(&dir).expect("the manager is written");
+        let token = manager_token(&dir).expect("its worker is given a token");
+        assert_eq!(token.len(), 48);
+        let worker = std::fs::read_to_string(dir.join("worker.js")).expect("worker");
+        assert!(worker.contains(&format!("importScripts('{MANAGER_TOKEN_FILE}')")));
+        // Written again at the next start: the same token.
+        write_manager(&dir).expect("the manager is written again");
+        assert_eq!(manager_token(&dir), Some(token));
+    }
 
     #[test]
     fn an_extensions_worker_runs_the_tab_script_first_with_its_token() {

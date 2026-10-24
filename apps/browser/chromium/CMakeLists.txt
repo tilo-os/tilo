@@ -171,6 +171,11 @@ target_include_directories(tilo-credential-commands-test PRIVATE src)
 target_compile_options(tilo-credential-commands-test PRIVATE -UNDEBUG)
 add_test(NAME credential-commands COMMAND tilo-credential-commands-test)
 
+add_executable(tilo-action-counts-test tests/action_counts_test.cc)
+target_include_directories(tilo-action-counts-test PRIVATE src)
+target_compile_options(tilo-action-counts-test PRIVATE -UNDEBUG)
+add_test(NAME action-counts COMMAND tilo-action-counts-test)
+
 add_executable(tilo-renderer-media-lifetime-test tests/renderer_media_lifetime_test.cc)
 target_include_directories(tilo-renderer-media-lifetime-test PRIVATE src)
 target_compile_options(tilo-renderer-media-lifetime-test PRIVATE -UNDEBUG)

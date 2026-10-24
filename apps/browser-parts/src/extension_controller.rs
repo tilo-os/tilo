@@ -840,11 +840,22 @@ impl ExtensionController {
     /// installed extension may do with the Browser's tabs, as it changes.
     fn tell_access(&mut self, engine: &SharedEngine) {
         if self.identity_told.is_none()
-            && let Some(id) = extensions::manager_dir()
-                .as_deref()
-                .and_then(extensions::manager_id)
+            && let Some(dir) = extensions::manager_dir()
+            && let Some(id) = extensions::manager_id(&dir)
         {
             engine.send(WebViewCommand::ExtensionIdentity { id: id.clone() });
+            // Its worker tells the engine what extensions' rules acted on in
+            // the tabs, which it counts for each page.
+            if let Some(token) = extensions::manager_token(&dir) {
+                engine.send(WebViewCommand::ExtensionAccess {
+                    id: id.clone(),
+                    permissions: Vec::new(),
+                    hosts: Vec::new(),
+                    scriptable: Vec::new(),
+                    token: Some(token),
+                    commands: None,
+                });
+            }
             self.identity_told = Some(id);
         }
         let current: HashMap<String, toolbar::Access> = self
@@ -2188,19 +2199,32 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
+        // The Browser's own extension first: its worker reports what rules
+        // acted on in the tabs, by a token of its own and with no access.
+        let manager = extensions::manager_dir().expect("the manager is written");
         assert_eq!(
             told(&window),
-            [WebViewCommand::ExtensionAccess {
-                id: "reader".into(),
-                permissions: vec!["tabs".into()],
-                hosts: vec!["https://*/*".into()],
-                scriptable: vec!["<all_urls>".into()],
-                token: Some("a".repeat(48)),
-                commands: Some(shortcuts),
-            }]
+            [
+                WebViewCommand::ExtensionAccess {
+                    id: extensions::manager_id(&manager).expect("its id"),
+                    permissions: Vec::new(),
+                    hosts: Vec::new(),
+                    scriptable: Vec::new(),
+                    token: extensions::manager_token(&manager),
+                    commands: None,
+                },
+                WebViewCommand::ExtensionAccess {
+                    id: "reader".into(),
+                    permissions: vec!["tabs".into()],
+                    hosts: vec!["https://*/*".into()],
+                    scriptable: vec!["<all_urls>".into()],
+                    token: Some("a".repeat(48)),
+                    commands: Some(shortcuts),
+                }
+            ]
         );
         controller.tell_access(&shared);
-        assert_eq!(told(&window).len(), 1, "told once while it stays the same");
+        assert_eq!(told(&window).len(), 2, "told once while it stays the same");
         controller.installed.clear();
         controller.tell_access(&shared);
         assert_eq!(
