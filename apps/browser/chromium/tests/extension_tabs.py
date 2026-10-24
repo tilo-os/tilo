@@ -1575,13 +1575,18 @@ class ExtensionTabs(unittest.TestCase):
         calls = iter(range(1, 1000))
 
         def workers():
+            """The clicker's running worker, as Chromium lists it."""
             request = next(calls)
             host.send(op='devtools_call', request_id=request, method='Target.getTargets', params={})
             reply = host.until(lambda e: e['event'] == 'devtools_result' and e['request_id'] == request)
-            return [t for t in json.loads(reply['body'])['targetInfos'] if t['type'] == 'service_worker']
+            own = f"chrome-extension://{ids['clicker']}/"
+            return [t for t in json.loads(reply['body'])['targetInfos']
+                    if t['type'] == 'service_worker' and t['url'].startswith(own)]
 
         # Chromium stops an idle extension worker after thirty seconds; the
-        # host never keeps one awake.
+        # host never keeps one awake. The Browser's own extension's worker
+        # is woken by what the page loads and the host asks it, and has no
+        # say here.
         deadline = time.monotonic() + max(HANG_BOUND, 60)
         while workers():
             self.assertLess(time.monotonic(), deadline, 'the worker never went to sleep')
