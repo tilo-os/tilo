@@ -1143,6 +1143,27 @@ fn open_channel_encryption(
             return None;
         }
     };
+    channel_key_access(
+        crate::shell::channel_encryption::ChannelEncryptionConfig {
+            root: vault.channel_state_root(),
+            vault: vault.channel_state_key(),
+            device_key,
+        },
+        workspaces,
+        net,
+        channels,
+    )
+}
+
+/// Open this device's channel encryption service under `config`: its
+/// directory follows `workspaces`, the devices `net` authenticates and each
+/// room's steward as this device's native owner holds the room.
+pub(crate) fn channel_key_access(
+    config: crate::shell::channel_encryption::ChannelEncryptionConfig,
+    workspaces: crate::shell::state::WorkspaceTreeHandle,
+    net: Option<Arc<ShellNetwork>>,
+    channels: Arc<Mutex<BrokerChannels>>,
+) -> Option<crate::shell::channel_encryption::ChannelKeyAccess> {
     // An endpoint opening a channel queues governance the parked drain
     // must send now (a genesis, an access request): it pokes the drain.
     let drain_wake = net.as_ref().map(|net| Arc::clone(&net.drain_wake));
@@ -1183,11 +1204,7 @@ fn open_channel_encryption(
     .with_authenticated_changes(authenticated_changes)
     .with_stewards(stewards);
     match crate::shell::channel_encryption::ChannelEncryption::open(
-        crate::shell::channel_encryption::ChannelEncryptionConfig {
-            root: vault.channel_state_root(),
-            vault: vault.channel_state_key(),
-            device_key,
-        },
+        config,
         Box::new(directory),
         channels,
     ) {
