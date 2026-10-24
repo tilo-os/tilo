@@ -341,6 +341,20 @@ answer:
   outlined. The bar shows "n of m", Match case and Whole word, previous/next,
   and replace or a text/hex mode when the view supports them.
 
+### 4b. Confirmations are questions, not search
+
+Use the shared `ModalDialog` or `ModalSheet` for confirmation, over the window
+that asked. Name the action in the title and primary button, explain its
+consequence, and offer Cancel. Do not show a search field, unrelated commands,
+provider scopes or internal resource identifiers. Refreshing resources while a
+question is open must not replace it with search results.
+
+A destructive question starts on Cancel; Enter must not accidentally delete
+anything. Pointer, keyboard and accessibility activate the same retained request,
+with its exact arguments and fresh permission checks. Escape and Cancel perform
+nothing. Ordinary owner-authorized navigation needs no extra confirmation;
+explicit workspace approval rules still apply.
+
 ---
 
 ## 5. System integration (file access, host services)
