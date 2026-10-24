@@ -71,12 +71,17 @@ mod community_tests;
 #[cfg(test)]
 mod device_approval_tests;
 pub(crate) mod device_approvals;
+#[cfg(test)]
+mod device_steward_tests;
 pub(crate) mod directory;
 #[cfg(test)]
 mod directory_tests;
 mod embedded_host;
 #[cfg(test)]
 mod enrollment_resume_tests;
+mod grant_in_force;
+#[cfg(test)]
+mod grant_in_force_tests;
 pub(crate) mod join_field;
 mod joining;
 #[cfg(test)]
@@ -619,12 +624,19 @@ fn needs_reachability(
     other_devices: bool,
 ) -> Option<&'static str> {
     // A room names this device too, so only an endpoint other than this one
-    // is a peer.
-    let shared = tree.rooms().into_iter().any(|room| {
-        tree.room_peer_endpoints(room)
-            .iter()
-            .any(|peer| peer.to_string() != local_endpoint)
-    });
+    // is a peer. A native room's names are no reason: its document keeps a
+    // removed member's devices as signed history, so who may still dial is
+    // its membership, read below and in `ShellNetwork::hosts_other_members`.
+    let native: std::collections::BTreeSet<_> = tree.native_authority.rooms().collect();
+    let shared = tree
+        .rooms()
+        .into_iter()
+        .filter(|room| !native.contains(room))
+        .any(|room| {
+            tree.room_peer_endpoints(room)
+                .iter()
+                .any(|peer| peer.to_string() != local_endpoint)
+        });
     if shared {
         Some("a room shared with a peer")
     } else if tree
@@ -1413,6 +1425,9 @@ pub struct ShellNetwork {
     /// request found its governor out of reach: asked again only once
     /// either moved.
     governance_waiting: Mutex<Option<(u64, usize)>>,
+    /// The room state and count of unrecorded receipts last asked for
+    /// ([`Self::record_unrecorded_receipts_off_loop`]).
+    receipts_asked: Mutex<Option<(u64, usize)>>,
     /// Transport-authenticated direct neighbours, scoped by workspace.
     /// Populated only after `IdentityHello` admission succeeds.
     workspace_control_direct: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
@@ -2224,6 +2239,7 @@ impl ShellNetwork {
             room_rosters_sent: Mutex::default(),
             local_governor: std::sync::OnceLock::new(),
             governance_waiting: Mutex::default(),
+            receipts_asked: Mutex::default(),
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
             workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
             runtime: Some(runtime),
@@ -4931,6 +4947,19 @@ impl ShellNetwork {
         )
     }
 
+    /// The person this device acts as in `room`: the root of the
+    /// certificate it holds the room with, which is who the room's host
+    /// decides for. The session's person when it has no identity of its own.
+    fn person_in_room(&self, room: RoomId) -> crate::shell::state::UserId {
+        self.host_identity
+            .as_ref()
+            .and_then(|identity| identity.current_native_material(room_topic_id(room)).ok())
+            .and_then(|(certificate, _)| {
+                crate::shell::state::person_id_of(certificate.user_public_key)
+            })
+            .unwrap_or_else(|| crate::shell::state::local_user_id_for_room(&room))
+    }
+
     /// Have the room's host issue an invitation into `local`'s room, when the
     /// one invitation policy lets this device ask for one.
     fn issue_invite_for(
@@ -4959,7 +4988,7 @@ impl ShellNetwork {
             (room, tree.installed_native_owner())
         };
         let governor = crate::shell::invite_policy::native_governor(owner, room);
-        let local_user = crate::shell::state::local_user_id_for_room(&room);
+        let local_user = self.person_in_room(room);
         let tree = tree_handle.read();
         let ws = tree
             .desktop
@@ -6691,6 +6720,7 @@ impl ShellNetwork {
         steps.time("network/keepalive", || self.live_keepalive());
         steps.time("network/governance", || {
             self.send_governance_requests_off_loop();
+            self.record_unrecorded_receipts_off_loop();
         });
         steps.time("network/room-rosters", || self.send_room_rosters());
         // Hold the lock for the whole drain so a concurrent frame-tick
@@ -8166,6 +8196,7 @@ pub(crate) fn shell_network_for_test(
         room_rosters_sent: Mutex::default(),
         local_governor: std::sync::OnceLock::new(),
         governance_waiting: Mutex::default(),
+        receipts_asked: Mutex::default(),
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
         workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
         runtime: None,

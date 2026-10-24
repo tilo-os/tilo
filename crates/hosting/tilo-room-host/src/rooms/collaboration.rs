@@ -62,17 +62,22 @@ impl tilo_peer_state::join_ledger::GovernanceMessages for RoomRecord {
 impl GovernedRoom {
     /// The room as its join ledger reads it: committed now.
     pub(super) fn governed(&self) -> Governed<'_> {
-        governed(&self.record, self.peer())
+        governed(&self.record, self.peer(), &self.hosts)
     }
 }
 
 /// `record` and `peer`, a room's committed state, as its join ledger reads it.
-fn governed<'a>(record: &'a RoomRecord, peer: &'a tilo_peer_state::StatePeer) -> Governed<'a> {
+fn governed<'a>(
+    record: &'a RoomRecord,
+    peer: &'a tilo_peer_state::StatePeer,
+    hosts: &'a [tilo_peer_state::join::TransportHint],
+) -> Governed<'a> {
     Governed {
         peer,
         workspace_id: record.workspace_id,
         generation: record.generation,
         governance_messages: record,
+        hosts,
     }
 }
 
@@ -1121,9 +1126,10 @@ impl RoomTxn for HeldRoom<'_> {
         now: u64,
         ledger: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
+        let hosts = self.room.hosts.clone();
         self.room
             .commit(peer, self.key, system_time(now), |record, peer| {
-                ledger(&governed(record, peer)).map_err(|error| error.to_string())
+                ledger(&governed(record, peer, &hosts)).map_err(|error| error.to_string())
             })?;
         // The commit wrote the whole record, the ledger staged before
         // included.
