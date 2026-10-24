@@ -348,6 +348,9 @@ fn project_record_entries(
 }
 
 impl WorkspaceRecordIndexPager {
+    /// How many roots one [`Self::poll_generation`] reads.
+    pub const GENERATION_ROOTS_PER_POLL: usize = 8;
+
     pub fn new(roots: &[PathBuf]) -> Self {
         Self {
             source_roots: roots.to_vec(),
@@ -473,26 +476,35 @@ impl WorkspaceRecordIndexPager {
         !self.discovered || self.root_index < self.roots.len()
     }
 
-    /// Cheap, periodic manifest/root-set poll. It never reads record pages;
-    /// a changed or vanished authority withdraws the retained index before a
-    /// fresh bounded page is admitted on the next idle turn.
     /// Whether there is any root whose generation [`Self::poll_generation`]
     /// watches; without one, polling it is a no-op.
     pub fn has_roots(&self) -> bool {
         !self.source_roots.is_empty() || !self.roots.is_empty()
     }
 
-    pub fn poll_generation(&mut self) -> bool {
-        const ROOT_WATCH_BUDGET: usize = 8;
+    /// The roots whose generation [`Self::poll_generation`] reads, in the
+    /// order it takes them. A mount moves a root's generation by changing
+    /// the root itself, so a watch on each root says when to read again.
+    pub fn generation_roots(&self) -> Vec<PathBuf> {
         let mut roots = self.source_roots.clone();
         roots.extend(self.roots.iter().cloned());
         roots.sort();
         roots.dedup();
+        roots
+    }
+
+    /// Cheap manifest/root-set check, when a root's watch reports a change
+    /// or, where none can, on a timer. It never reads record pages; a
+    /// changed or vanished authority withdraws the retained index before a
+    /// fresh bounded page is admitted on the next idle turn. It reads at
+    /// most [`Self::GENERATION_ROOTS_PER_POLL`] roots, taking them in turn.
+    pub fn poll_generation(&mut self) -> bool {
+        let roots = self.generation_roots();
         if roots.is_empty() {
             return false;
         }
         let mut changed = false;
-        for _ in 0..ROOT_WATCH_BUDGET.min(roots.len()) {
+        for _ in 0..Self::GENERATION_ROOTS_PER_POLL.min(roots.len()) {
             let index = self.generation_root_cursor % roots.len();
             self.generation_root_cursor = self.generation_root_cursor.wrapping_add(1);
             // `index` is modulo `roots.len()` above; preserve that invariant

@@ -754,6 +754,9 @@ pub struct QuickFS {
     /// blessed into their certified actor's signed history.
     allow_legacy_record_migration: bool,
     share_control_path: Option<std::path::PathBuf>,
+    /// Tells inotify of the changes the kernel did not make
+    /// ([`crate::change_signal`]); `None` leaves watchers to poll.
+    change_signal: Option<Arc<crate::change_signal::ChangeSignal>>,
     /// Test-only: make content commits of one inode fail with an errno.
     #[cfg(test)]
     commit_fault: Mutex<Option<(u64, i32)>>,
@@ -811,6 +814,7 @@ impl QuickFS {
             held_deltas: Mutex::new(Vec::new()),
             allow_legacy_record_migration: true,
             share_control_path: None,
+            change_signal: None,
             #[cfg(test)]
             commit_fault: Mutex::new(None),
             #[cfg(test)]
@@ -2296,6 +2300,15 @@ impl QuickFS {
     #[must_use]
     pub fn with_share_control_path(mut self, path: std::path::PathBuf) -> Self {
         self.share_control_path = Some(path);
+        self
+    }
+
+    /// Answer and accept `signal`'s attribute, and tell it which directories
+    /// the kernel lists; its worker raises the signals once the mount is up
+    /// ([`crate::change_signal`]).
+    #[must_use]
+    pub fn with_change_signal(mut self, signal: Arc<crate::change_signal::ChangeSignal>) -> Self {
+        self.change_signal = Some(signal);
         self
     }
 
@@ -6230,6 +6243,9 @@ impl Filesystem for QuickFS {
             }
         }
         reply.ok();
+        if let Some(signal) = &self.change_signal {
+            signal.note_listed(ino.0);
+        }
         self.heuristics.on_readdir(ino.0);
     }
 
@@ -6269,6 +6285,9 @@ impl Filesystem for QuickFS {
             }
         }
         reply.ok();
+        if let Some(signal) = &self.change_signal {
+            signal.note_listed(ino.0);
+        }
         self.heuristics.on_readdir(ino.0);
     }
 
@@ -6692,6 +6711,15 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(EINVAL));
             return;
         }
+        // The daemon's own change signal: it changes nothing, and is only
+        // ever raised by the daemon, which alone knows the token.
+        if name.to_str() == Some(tilo_files::native::CHANGE_SIGNAL_XATTR) {
+            match &self.change_signal {
+                Some(signal) if signal.accepts(value) => reply.ok(),
+                _ => reply.error(to_errno(libc::EPERM)),
+            }
+            return;
+        }
         if name.to_str() == Some(fs_protocol::files::CHECKED_HISTORY_RESTORE_XATTR) {
             match self.checked_restore_xattr(ino.0, value) {
                 Ok(()) => reply.ok(),
@@ -6790,6 +6818,17 @@ impl Filesystem for QuickFS {
         // attribute name, so the sync state never reports on a hidden file.
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
+            return;
+        }
+        if name.to_str() == Some(tilo_files::native::CHANGE_SIGNAL_XATTR) {
+            match self
+                .change_signal
+                .as_ref()
+                .and_then(|signal| signal.answer())
+            {
+                Some(live) => reply_xattr_bytes(reply, live, size),
+                None => reply.error(to_errno(libc::ENODATA)),
+            }
             return;
         }
         if let Some(name) = name
