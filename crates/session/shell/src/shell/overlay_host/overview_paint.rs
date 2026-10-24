@@ -49,6 +49,40 @@ impl ShellOverlayHost {
 
     /// The display the overview dims. The combined desktop rect covers every
     /// scanout, and a scrim that wide is the two-output readback.
+    /// While the overview's zoom is open or flying, the windows on its
+    /// display are drawn by the flight ([`Self::draw_overview_tiles`]), one
+    /// picture each, from where they stood to their place in the overview
+    /// and back: the strips leave them out meanwhile, or each would show
+    /// twice, once flying and once behind the fading desktop. Call before
+    /// the desktop is drawn.
+    pub(super) fn hand_flying_windows_to_the_overview(&self, now: ui::time::Instant) {
+        let flying =
+            !self.overview_layout_theme.reduce_motion && self.overview_zoom.progress(now) > 0.0;
+        let output = self.overview_output_rect();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see the field doc on `group_row_ptrs`.
+            let row: &mut ui::widget::GroupRow = unsafe { &mut *ptr };
+            let ids = if flying {
+                row.groups
+                    .iter()
+                    .filter(|group| Self::flies_from(group.get_rect(), output))
+                    .map(|group| group.id)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            row.set_shown_elsewhere(ids);
+        }
+    }
+
+    /// Whether a window laid out at `rect` flies into the overview of
+    /// `output`: it is on that display's screen. One off screen (on another
+    /// strip, panned away) fades in at its place instead of streaking in
+    /// from past the edge.
+    pub(super) fn flies_from(rect: Rect, output: Rect) -> bool {
+        rect.width() > 0.0 && rect.height() > 0.0 && rect.intersect(output).area() > 0.0
+    }
+
     pub(super) fn overview_output_rect(&self) -> Rect {
         self.focused_output()
             .or_else(|| self.primary_output())

@@ -77,6 +77,7 @@ mod task_import;
 mod top_bar_reveal;
 mod widget;
 mod window_toolbars;
+mod workspace_slide;
 
 pub use controller::{ControllerDelivery, ControllerKey};
 use layers::{
@@ -489,6 +490,9 @@ pub struct ShellOverlayHost {
     /// The content of workspaces shown recently, kept while another one is
     /// `content` so a switch back puts it back instead of building it again.
     parked_workspaces: parked_workspaces::ParkedWorkspaces,
+    /// The pointer-made workspace switch moving between the content kept
+    /// for the workspace shown before and the content shown now.
+    workspace_slide: Option<workspace_slide::WorkspaceSlide>,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
     /// stay unreachable until a real identity has been provisioned and the

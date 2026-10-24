@@ -115,6 +115,16 @@ impl Drill {
         reduced: Reduced::Fades,
         shortcut: Shortcut::Lands,
     };
+    /// Switching to another workspace by pointer (its menu, a banner): the
+    /// whole view goes along the same shared axis, at `slow` toward a later
+    /// workspace and `base` back, as a whole-view change. A shortcut lands;
+    /// reduced motion cross-fades at `fast`.
+    pub const WORKSPACE: MotionSpec = MotionSpec {
+        enter: Pace::Slow,
+        exit: Pace::Base,
+        reduced: Reduced::Fades,
+        shortcut: Shortcut::Lands,
+    };
     const SHIFT_PX: f64 = 28.0;
     const SHIFT_FRACTION: f64 = 0.1;
     const FADE_RATE: f64 = 1.6;

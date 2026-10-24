@@ -405,6 +405,7 @@ impl ShellOverlayHost {
             content,
             desktop_close_reports: Vec::new(),
             parked_workspaces: parked_workspaces::ParkedWorkspaces::default(),
+            workspace_slide: None,
             onboarding: None,
             onboarding_node: None,
             onboarding_released: false,

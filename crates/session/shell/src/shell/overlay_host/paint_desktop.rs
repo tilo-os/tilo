@@ -230,20 +230,60 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<Rect> {
+        let slide = self.workspace_slide_poses(theme);
+        if let Some((from, leaving, _)) = slide {
+            self.draw_leaving_workspace(
+                from,
+                leaving,
+                workspace_scene,
+                transform,
+                (text_renderer, theme, presence),
+            );
+        }
+        let clip = self.rect;
         let Some(surface) = self.desktop_surface_mut() else {
             self.content
                 .draw(backdrop_scene, transform, text_renderer, theme, presence);
             return None;
         };
-        let bounds = surface.draw_sections(
-            backdrop_scene,
-            topbar_scene,
-            workspace_scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-        )?;
+        let bounds = if let Some((_, _, arriving)) = slide {
+            // A workspace switch by pointer: the windows arrive along the
+            // slide's axis; the bar and the backdrop stay.
+            let bounds = surface.draw_chrome_sections(
+                backdrop_scene,
+                topbar_scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )?;
+            workspace_scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                arriving.opacity,
+                transform,
+                &clip,
+            );
+            let drawn = surface.draw_workspace_area(
+                workspace_scene,
+                transform.pre_translate(arriving.transform.translation()),
+                text_renderer,
+                theme,
+                presence,
+            );
+            workspace_scene.pop_layer();
+            drawn.map(|()| bounds)?
+        } else {
+            surface.draw_sections(
+                backdrop_scene,
+                topbar_scene,
+                workspace_scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )?
+        };
         // The compact bars of the other displays share the top bar's scene.
         let bars = surface
             .display_chrome()

@@ -433,3 +433,44 @@ fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
     assert!(!chrome.borrow().overlays.overview);
     assert!(!h.overview_zoom.is_open());
 }
+
+/// A window on the display's screen flies into the overview (and the strip
+/// stops drawing it meanwhile, so it is never seen twice); one off screen or
+/// with no size fades in at its place in the picture instead.
+#[test]
+fn only_a_window_on_screen_flies_into_the_overview() {
+    let output = Rect::new(0.0, 0.0, 1600.0, 900.0);
+    assert!(ShellOverlayHost::flies_from(
+        Rect::new(100.0, 40.0, 900.0, 860.0),
+        output
+    ));
+    assert!(
+        ShellOverlayHost::flies_from(Rect::new(1200.0, 40.0, 2000.0, 860.0), output),
+        "partly on screen still flies from where it is seen"
+    );
+    assert!(!ShellOverlayHost::flies_from(
+        Rect::new(1700.0, 40.0, 2500.0, 860.0),
+        output
+    ));
+    assert!(!ShellOverlayHost::flies_from(
+        Rect::new(-900.0, 40.0, -100.0, 860.0),
+        output
+    ));
+    assert!(!ShellOverlayHost::flies_from(
+        Rect::new(100.0, 40.0, 100.0, 860.0),
+        output
+    ));
+}
+
+/// Super+Up and Super+Down are told to the desktop as keyboard motion
+/// before they act, so the window lands maximized or restored at once.
+#[test]
+fn maximize_and_restore_keys_land() {
+    use settings_store::hardware::ShortcutAction as A;
+    for action in [A::MaximizeWindow, A::RestoreWindow, A::ToggleMaximize] {
+        assert!(
+            ShellOverlayHost::is_navigation_shortcut(action),
+            "{action:?}"
+        );
+    }
+}
