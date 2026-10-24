@@ -363,6 +363,18 @@ impl Calls {
     fn permits(&self, id: &[u8; 32], direction: Direction, namespace: &str) -> bool {
         self.state().permits(id, direction, namespace)
     }
+
+    /// Participation `id`'s carrier session is still connected: as good as
+    /// a heartbeat. A browser runs a hidden, silent tab's timers once a
+    /// minute, its heartbeats with them, while its network stack keeps the
+    /// carrier alive; the carrier's idle timeout still ends a device that
+    /// went away.
+    #[cfg(feature = "web")]
+    fn carrier_connected(&self, id: &[u8; 32]) {
+        if let Some(participation) = self.state().participations.get_mut(id) {
+            participation.seen = Instant::now();
+        }
+    }
 }
 
 impl State {
@@ -865,6 +877,12 @@ impl SessionAuthorization for Session {
             .map_or(AuthorizationStatus::Denied, |calls| {
                 self.status_offered_in(&calls.state(), offered, lapsed)
             })
+    }
+
+    fn connected(&self) {
+        if let Some(calls) = self.calls.upgrade() {
+            calls.carrier_connected(&self.participation);
+        }
     }
 }
 
@@ -1421,6 +1439,36 @@ mod tests {
             publishing.status_all(),
             AuthorizationStatus::Denied
         ));
+    }
+
+    /// A hidden browser tab beats once a minute; its connected carrier keeps
+    /// its participation, and one with no carrier still ends on time.
+    #[cfg(feature = "web")]
+    #[test]
+    fn a_connected_carrier_keeps_a_participation_whose_heartbeats_are_late() {
+        let calls = Arc::new(Calls::default());
+        let unheard = Instant::now()
+            .checked_sub(PARTICIPATION_TTL.saturating_add(Duration::from_secs(1)))
+            .unwrap();
+        let mut connections = Vec::new();
+        for id in [[4; 32], [5; 32]] {
+            let (outbound, connection) = mpsc::channel(1);
+            connections.push(connection);
+            let mut fixture = participation(id, [3; 32], false);
+            fixture.outbound = outbound;
+            fixture.seen = unheard;
+            fixture.token = id;
+            fixture.token_expires = Instant::now().checked_add(GRANT_TTL).unwrap();
+            let mut state = calls.state();
+            state.participations.insert(id, fixture);
+            state.tokens.insert(id, id);
+        }
+        let carrier = Authority(Arc::downgrade(&calls)).admit(&[4; 32]).unwrap();
+        carrier.connected();
+        calls.expire();
+        let remaining: Vec<[u8; 32]> = calls.state().participations.keys().copied().collect();
+        assert_eq!(remaining, [[4; 32]]);
+        drop(connections);
     }
 
     /// One participation of `device` in `call`, for `State` fixtures.
