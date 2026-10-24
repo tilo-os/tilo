@@ -1095,8 +1095,8 @@ impl DesktopSurface {
                 model,
             );
             // A window that held an app's place (its code or record still
-            // coming) hands its opening card to what is built there now.
-            rebuilt.continue_opening_card(host);
+            // coming) hands its arrival to what is built there now.
+            rebuilt.continue_arrival(host);
             *host = rebuilt;
             built = true;
             if ui::time::now().duration_since(started) >= BUILD_BUDGET {

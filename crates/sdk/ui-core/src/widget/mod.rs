@@ -2136,19 +2136,34 @@ pub trait Widget {
         })
     }
 
-    /// Default `true`; the exception is a widget standing in for a process
-    /// that has started but not drawn. Must **latch**: once `true`, never
-    /// `false` again for the same content, or an un-presenting widget would
-    /// make a window vanish mid-resize. What shows meanwhile is decided by
-    /// [`Widget::opening`].
+    /// Default `true`; the exception is a widget standing in for a window's
+    /// content whose first frame is not drawn yet (a process that has started
+    /// but not drawn, a stream from another device before its first picture).
+    /// Must **latch**: once `true`, never `false` again for the same content,
+    /// or an un-presenting widget would make a window vanish mid-resize. What
+    /// shows meanwhile is the framework's ([`crate::arriving`]), timed from
+    /// [`Widget::arrives_from`].
     fn presented(&self) -> bool {
         true
     }
-    /// True once waiting long enough, while not yet
-    /// [`presented`](Widget::presented), that showing nothing would read as
-    /// broken. Delayed so a fast open never flashes an indicator.
-    fn opening(&self) -> bool {
-        false
+    /// Where this content's first frame comes from while it has not
+    /// [`presented`](Widget::presented): this device (an app starting here),
+    /// another device or a host. A frame from this device may hold the
+    /// window's first frame up to one frame budget; any other reserves the
+    /// window's place and says where it comes from after a while.
+    fn arrives_from(&self) -> crate::arriving::Source {
+        crate::arriving::Source::Local
+    }
+    /// How much of what this content's first frame waits on has come, when
+    /// that measures itself (its app downloaded before it starts).
+    fn arrival_progress(&self) -> Option<crate::arriving::Progress> {
+        None
+    }
+    /// The shape this content declares for the placeholder standing in for
+    /// its first frame. Undeclared, the placeholder is the ground alone:
+    /// nothing guesses what a window will show.
+    fn arrival_shape(&self) -> crate::widget::SkeletonShape {
+        crate::widget::SkeletonShape::Ground
     }
 
     /// `(caret_byte, text)`, byte offset on a char boundary. The host diffs
@@ -3184,8 +3199,7 @@ pub use scrollbar::BarFade;
 pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{
-    AppKind, OpeningCardText, TileContent, TileHost, hold_windows, opening_card_spinner,
-    paint_opening_card, record_unavailable_title, release_windows,
+    AppKind, TileContent, TileHost, hold_windows, record_unavailable_title, release_windows,
 };
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
@@ -3410,6 +3424,8 @@ pub mod file_open;
 pub use file_open::{FileOpenEvent, FileOpenSurface};
 pub mod skeleton;
 pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
+pub mod arrival_failure;
+pub use arrival_failure::{WindowFailure, arrival_failure};
 pub mod arriving_rows;
 pub mod arriving_view;
 pub use arriving_rows::{ArrivingRows, RowFade};

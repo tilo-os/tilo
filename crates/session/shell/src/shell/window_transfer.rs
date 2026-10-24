@@ -1984,7 +1984,7 @@ fn carry_over(
                 instance: roots.instance,
                 retired_at: None,
             });
-            let Some(tab) = opening_card(st, plan) else {
+            let Some(tab) = pending_place(st, plan) else {
                 roll_back(
                     st,
                     plan,
@@ -1999,9 +1999,9 @@ fn carry_over(
     )
 }
 
-/// The destination's card for the window while its instance starts, or
+/// The destination's place for the window while its instance starts, or
 /// `None` when the destination workspace is gone.
-fn opening_card(st: &mut ChromeState, plan: &Plan) -> Option<TabId> {
+fn pending_place(st: &mut ChromeState, plan: &Plan) -> Option<TabId> {
     let strip = destination_strip(st, plan.destination.workspace)?;
     Some(place_in(
         st,

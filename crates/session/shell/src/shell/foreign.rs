@@ -1280,7 +1280,7 @@ pub struct ChildFrame {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
-    /// Where each tab still showing its opening card was last laid out, so
+    /// Where each tab still holding its window's place was last laid out, so
     /// the window that binds into it is configured to that size at once
     /// rather than after the next layout pass.
     opening_tabs: Mutex<HashMap<crate::shell::state::TabId, Rect>>,
@@ -3966,34 +3966,34 @@ impl ForeignFrameStore {
         guard.get(&id).is_some_and(|e| e.presented)
     }
 
-    /// Whether the tile standing in for `id` should say its app is on its
-    /// way: nothing presented, waited longer than `OPENING_DELAY`. Read
-    /// by [`ForeignSurfaceWidget::opening`] before painting the
-    /// placeholder card; `presented` wins, so this goes false and stays false — a watched-away placeholder must not return.
-    pub fn is_opening(&self, id: SurfaceId) -> bool {
+    /// Whether `id`'s window stands on screen: drawn, or its place reserved
+    /// past the one frame budget its first frame may hold the window's
+    /// ([`ui::arriving`]). A launch is settled once it does.
+    pub fn stands(&self, id: SurfaceId) -> bool {
         let guard = self.entries.lock_recover();
         guard
             .get(&id)
-            .is_some_and(|e| !e.presented && e.first_seen.elapsed() >= OPENING_DELAY)
+            .is_some_and(|e| e.presented || e.first_seen.elapsed() >= ui::arriving::frame_budget())
     }
 
-    /// When the tile of `id`, not yet presented, next changes with no frame
-    /// from its client: the opening card is put up after `OPENING_DELAY`,
-    /// and the window is shown regardless after `PRESENT_GRACE`. `None`
-    /// once presented. A client's frame wakes the loop by itself (its
-    /// sequence moves), so waiting needs these two wakes and no frames.
-    pub fn presentation_wake(&self, id: SurfaceId) -> Option<Instant> {
+    /// When the store next decides something about `id`'s window by itself
+    /// while it has not presented: the opening configure sent anyway, or the
+    /// window shown anyway past [`PRESENT_GRACE`]. Deadlines, so a window
+    /// whose app is slow to draw asks for no frames meanwhile. Past the
+    /// backstop the deadline stays due until a draw presents the window
+    /// (`mark_presented`), which is what serving it does. `None` once
+    /// presented.
+    pub fn opening_deadline(&self, id: SurfaceId) -> Option<Instant> {
         let first_seen = self
             .entries
             .lock_recover()
             .get(&id)
-            .filter(|entry| !entry.presented)?
+            .filter(|e| !e.presented)?
             .first_seen;
-        let card = first_seen.checked_add(OPENING_DELAY);
-        let backstop = first_seen.checked_add(PRESENT_GRACE);
-        // Past the backstop the deadline stays due until a draw presents
-        // the window (`mark_presented`), which is what serving it does.
-        card.filter(|&at| at > Instant::now()).or(backstop)
+        let configure = first_seen
+            .checked_add(OPENING_CONFIGURE_GRACE)
+            .filter(|at| *at > Instant::now());
+        configure.or_else(|| first_seen.checked_add(PRESENT_GRACE))
     }
 
     /// Test-only: pretend this surface was first heard of `age` ago, reaching past a delay without sleeping; creates the entry if absent.
@@ -4090,13 +4090,13 @@ impl ForeignFrameStore {
     }
 
     /// Record the tab rectangle the surface is laid into, in physical pixels — called from `apply_layout`, the authority on where a tab lives.
-    /// The opening card of `tab` was laid out at `rect`.
+    /// The place `tab` holds for its window was laid out at `rect`.
     pub fn note_opening_tab(&self, tab: crate::shell::state::TabId, rect: Rect) {
         self.opening_tabs.lock_recover().insert(tab, rect);
     }
 
-    /// A window bound into `tab`, which showed its opening card: it is placed
-    /// where the card was, so the configure that lets it map can go out in
+    /// A window bound into `tab`, which held its place: it is placed where
+    /// that place was, so the configure that lets it map can go out in
     /// the same dispatch as its toplevel ([`flush_configures`]) instead of
     /// after the next layout. The next layout publishes the tab's own rect
     /// as for any window.
@@ -4107,7 +4107,7 @@ impl ForeignFrameStore {
         }
     }
 
-    /// Forget the opening card of `tab`: it closed or became something else.
+    /// Forget the place `tab` held: it closed or became something else.
     pub fn forget_opening_tab(&self, tab: crate::shell::state::TabId) {
         self.opening_tabs.lock_recover().remove(&tab);
     }
@@ -4291,13 +4291,6 @@ impl ForeignFrameStore {
     }
 }
 
-/// How long a window's place is held in silence before the card saying
-/// what's coming is put there.
-///
-/// An app already on this machine can be on screen well inside a quarter
-/// second, and a briefer flicker is noise, not information; past it, the wait is long enough to read as one.
-pub(crate) const OPENING_DELAY: Duration = Duration::from_millis(250);
-
 /// How long a surface may take to produce a frame that fits its tab
 /// before its window is shown regardless.
 ///
@@ -4415,7 +4408,7 @@ impl WindowCard {
             return Some(Self::NotResponding);
         }
         // Past its opening grace with nothing to show: the card says so.
-        // Before it, the window's opening card holds its place.
+        // Before it, the window's place is reserved for it.
         (store().is_presented(surface_id) && store().frame_seq(surface_id) == 0)
             .then_some(Self::Unshowable)
     }
@@ -5162,11 +5155,6 @@ impl Widget for ForeignSurfaceWidget {
         store().mark_presented(self.surface_id, self.rect)
     }
 
-    /// Whether this is a window's place being held for an app asked for but not yet drawn. See [`Widget::opening`], [`ForeignFrameStore::is_opening`].
-    fn opening(&self) -> bool {
-        store().is_opening(self.surface_id)
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some(&self.test_id)
     }
@@ -5179,18 +5167,20 @@ impl Widget for ForeignSurfaceWidget {
         self.rect
     }
 
-    /// A window never asks for animation frames: nothing of it moves. A
-    /// client commit is `needs_redraw` (one shot), and an unpresented
-    /// window's own changes (its opening card, its presentation backstop)
-    /// are wake deadlines ([`Self::next_wake_deadline`]). As cadence, a
-    /// window whose client had not drawn a fitting frame kept the desktop
-    /// at the refresh rate for the whole ten second backstop.
+    /// A window asks for no animation frames, not even while its first frame
+    /// is on its way: the client's commits wake the loop (one `needs_redraw`
+    /// each), what stands in its place meanwhile steps on deadlines
+    /// ([`ui::arriving`]), and the store's own decisions about it are
+    /// deadlines too ([`Self::next_wake_deadline`]). Treating a pending
+    /// sequence as cadence kept off-screen tiles — never drawn, so never
+    /// cached — asking for frames at the refresh rate after the app itself had
+    /// gone idle, and an app slow to start held the desktop at display rate.
     fn needs_animation_frame(&self) -> bool {
         false
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        store().presentation_wake(self.surface_id)
+        store().opening_deadline(self.surface_id)
     }
 
     fn animation_detail(&self) -> Option<String> {
@@ -6140,52 +6130,54 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn foreign_window_status_copy_names_the_app_in_plain_words() {
-        /// An app already on this machine can be on screen almost at once, so saying "on its way" that fast would flicker before anyone reads it.
-        fn a_surface_just_heard_of_is_not_yet_worth_saying_anything_about() {
+        /// An app on this machine may hold the window's first frame for one
+        /// frame budget: until then its window does not stand.
+        fn a_surface_just_heard_of_holds_its_first_frame() {
             let id = sid(50);
             store().forget(id);
             store().note_placement(id, TILE);
             assert!(
-                !store().is_opening(id),
-                "an app that may still open in a blink must not flash an \
-                 indicator on its way past",
+                !store().stands(id),
+                "an app that may still draw in time must not have its place put up \
+                 empty first",
             );
             store().forget(id);
         }
 
-        /// Past the delay the wait is a wait, and an empty space where a window was asked for reads as nothing having happened.
-        fn a_surface_still_starting_after_the_delay_says_so() {
+        /// Past the budget the window's place is reserved, and the store's
+        /// own decisions about it are deadlines, not frames.
+        fn a_surface_still_starting_after_its_budget_stands_and_waits_on_deadlines() {
             let id = sid(51);
             store().forget(id);
-            store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
+            store().backdate_first_seen(id, Duration::from_millis(50));
             assert!(
-                store().is_opening(id),
+                store().stands(id),
                 "the person is watching an empty desktop for a window they \
                  asked for, and nothing on screen accounts for it",
             );
+            let w = ForeignSurfaceWidget::new(id, "org.example.app".into());
+            assert!(
+                !Widget::needs_animation_frame(&w),
+                "an app slow to draw must not hold the desktop at display rate"
+            );
+            let due = Widget::next_wake_deadline(&w).expect("the store decides later");
+            assert!(due > Instant::now(), "the next decision is ahead");
             store().forget(id);
         }
 
-        /// And it stops the instant there is a window, without coming back —
-        /// a placeholder someone has watched go away must not return, worse to see than the wait it was covering.
-        fn a_surface_that_has_been_shown_is_never_opening_again() {
+        /// And once there is a window it stands for good, and nothing about
+        /// its opening is due any more.
+        fn a_surface_that_has_been_shown_stands_for_good() {
             let id = sid(52);
             store().forget(id);
-            store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
-            assert!(
-                store().is_opening(id),
-                "precondition: it was still starting"
-            );
+            store().backdate_first_seen(id, Duration::from_millis(50));
             store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
             assert!(
                 store().mark_presented(id, TILE),
                 "precondition: it presented"
             );
-            assert!(
-                !store().is_opening(id),
-                "the window is on screen; nothing may still be saying it is on \
-                 its way",
-            );
+            assert!(store().stands(id));
+            assert_eq!(store().opening_deadline(id), None);
             store().forget(id);
         }
 
@@ -6310,9 +6302,9 @@ mod tests {
             store().forget(id);
         }
 
-        a_surface_just_heard_of_is_not_yet_worth_saying_anything_about();
-        a_surface_still_starting_after_the_delay_says_so();
-        a_surface_that_has_been_shown_is_never_opening_again();
+        a_surface_just_heard_of_holds_its_first_frame();
+        a_surface_still_starting_after_its_budget_stands_and_waits_on_deadlines();
+        a_surface_that_has_been_shown_stands_for_good();
         a_card_in_a_windows_place_names_the_app_not_its_id();
         a_window_that_cannot_be_shown_says_so_in_plain_words();
         a_card_says_which_of_the_two_it_is_and_what_can_be_done();
@@ -6955,12 +6947,10 @@ mod tests {
             store().forget(id);
         }
 
-        /// A window never asks for animation frames. Until it has drawn a
-        /// frame that fits, it is woken twice by deadlines (its opening card,
-        /// its presentation backstop); a client's frame is a one-shot redraw.
-        /// As cadence, a client that had not drawn kept the desktop at the
-        /// refresh rate for the whole backstop.
-        fn an_undrawn_window_waits_on_deadlines_not_frames() {
+        /// A surface never asks for animation frames, before it has drawn or
+        /// after: its commits ask for one redraw each, so an app with nothing
+        /// newer, or slow to draw its first frame, never holds the loop awake.
+        fn widget_asks_for_no_frames_and_one_redraw_per_new_buffer() {
             let id = sid(7);
             store().forget(id);
             // Its toplevel was adopted: the wait for its first frame starts.
@@ -6969,27 +6959,9 @@ mod tests {
             // A 1×1 tab, so the 1×1 frame below *fits* it — what being presented waits for, not merely a frame having landed.
             w.rect = Rect::new(0.0, 0.0, 1.0, 1.0);
             assert!(
-                w.needs_redraw(),
-                "nothing presented yet: the window is drawn whenever a frame is"
-            );
-            assert!(
                 !w.needs_animation_frame(),
-                "a window that has not drawn moves nothing and asks for no frames"
-            );
-            let card = w
-                .next_wake_deadline()
-                .expect("an undrawn window wakes the loop for its opening card");
-            let card_due = Instant::now()
-                .checked_add(OPENING_DELAY)
-                .expect("a short delay fits the clock");
-            assert!(card <= card_due, "the first wake is the opening card's");
-            store().backdate_first_seen(id, OPENING_DELAY.saturating_mul(2));
-            let backstop = w
-                .next_wake_deadline()
-                .expect("past the card it still wakes for the backstop");
-            assert!(
-                backstop > card_due,
-                "the next wake is the backstop, not a frame"
+                "nothing presented yet, and still no frames: its first buffer's \
+                 commit wakes the loop"
             );
             store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
             assert!(
@@ -7097,7 +7069,7 @@ mod tests {
 
         pending_configure_fires_once_per_size_change();
         a_window_shown_only_elsewhere_takes_the_size_shown_there();
-        an_undrawn_window_waits_on_deadlines_not_frames();
+        widget_asks_for_no_frames_and_one_redraw_per_new_buffer();
         widget_fit_rect_letterboxes_preserving_aspect();
         painted_frame_origin_matches_the_origin_input_is_mapped_with();
         moving_a_static_foreign_surface_requests_one_repaint();

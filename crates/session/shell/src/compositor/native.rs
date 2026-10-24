@@ -3745,9 +3745,11 @@ impl ControlState for FrameBuilderControlState<'_> {
                         "presented": store.is_presented(tab.surface_id),
                         "pixels_ready": pixels.is_some(),
                         "capture_pending": capture_pending,
-                        // And, while it is not, whether the placeholder card is up — without this
-                        // a harness can't tell an empty desktop from one announcing an app is on its way.
-                        "opening": store.is_opening(tab.surface_id),
+                        // And, while it is not, whether its place is reserved past its
+                        // first frame's budget: without this a harness can't tell an empty
+                        // desktop from one whose window is on its way.
+                        "opening": store.stands(tab.surface_id)
+                            && !store.is_presented(tab.surface_id),
                     });
                     self.insert_primary_preedit_route(&mut row, tab.surface_id);
                     row
@@ -14021,7 +14023,15 @@ pub fn run() {
         let display_dark = session.is_blanked();
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
-        let cadence_due = force_first_paint || frame_clock.due(iter_t0);
+        // A window whose first frame may still land inside its frame budget
+        // holds the frame back until then, so a window that answers in time
+        // opens with no placeholder ([`ui::arriving`]); the hold's end is a
+        // wake deadline, and what changed meanwhile is owed to that frame.
+        ui::arriving::set_frame_budget(frame_clock.interval());
+        let held_until = (!force_first_paint)
+            .then(|| frame_builder.holds_frame_until(iter_t0))
+            .flatten();
+        let cadence_due = force_first_paint || (frame_clock.due(iter_t0) && held_until.is_none());
         // Is there room in the pipe? Building another scene while the render
         // thread is behind would only grow the queue (and input-to-photon latency); capped at the presenter's queue depth plus the frame presenting, the tick still services input/clients without rendering.
         // A frame still waiting for the render thread is replaced by the one built now (latest
@@ -14055,14 +14065,15 @@ pub fn run() {
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame. A full presenter is itself the
         // gate: its retirement ping wakes the loop when capacity returns.
-        let cadence_needed = cadence_wait_needed(
-            pipe_ready,
-            (content_changed && !cadence_due)
-                || (!session.is_locked() && !display_dark && animating)
-                || (session.is_locked()
-                    && !display_dark
-                    && retained_lock.feedback_frame_due(iter_t0)),
-        );
+        let cadence_needed = held_until.is_none()
+            && cadence_wait_needed(
+                pipe_ready,
+                (content_changed && !cadence_due)
+                    || (!session.is_locked() && !display_dark && animating)
+                    || (session.is_locked()
+                        && !display_dark
+                        && retained_lock.feedback_frame_due(iter_t0)),
+            );
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.

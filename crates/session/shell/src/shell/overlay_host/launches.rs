@@ -430,9 +430,9 @@ impl ShellOverlayHost {
     }
 
     /// Settles the pending launch of any app now on screen, so it can be
-    /// opened again. Neither `Started` (forked, no window yet) nor an
-    /// adopted-but-not-presenting tab counts — what settles it is the app's
-    /// first frame or placeholder card, whichever shows first.
+    /// opened again. Neither `Started` (forked, no window yet) nor a window
+    /// still holding its first frame counts — what settles it is the app's
+    /// window standing: its first frame, or its place reserved for it.
     pub(crate) fn settle_launches_of_opened_windows(&self) -> bool {
         if self.desktop_controls.is_explicit() {
             return false;
@@ -455,10 +455,7 @@ impl ShellOverlayHost {
                 .flat_map(|g| g.tabs.iter())
                 .filter_map(|t| match &t.tile {
                     crate::shell::state::TileContent::Foreign { app_id, surface_id }
-                        if {
-                            let store = crate::compositor::foreign::store();
-                            store.is_presented(*surface_id) || store.is_opening(*surface_id)
-                        } =>
+                        if { crate::compositor::foreign::store().stands(*surface_id) } =>
                     {
                         Some(app_id.clone())
                     }
