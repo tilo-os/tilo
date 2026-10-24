@@ -1,8 +1,7 @@
 //! The alignment the editor's chrome promises, read back from the production
 //! layout functions rather than from a copy of their arithmetic: a control
-//! cluster shares one centre line, the two pane headings share one band, a
-//! sibling row keeps the clearance its neighbours have, and the topbar is
-//! inset the same at both edges.
+//! cluster shares one centre line, the two pane headings share one band, and
+//! a sibling row keeps the clearance its neighbours have.
 //!
 //! A child module of `app` so it can reach the private geometry — `regions`,
 //! `transport_buttons`, `inspector_layout` — which is exactly what the draw
@@ -35,7 +34,7 @@ fn assert_close(actual: f64, expected: f64, what: &str) {
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
-fn transport_and_topbar_share_centre_lines_insets_and_steps() {
+fn transport_and_go_to_field_share_centre_lines_and_steps() {
     // Case `the_transport_cluster_shares_one_centre_line`.
     {
         let app = app_sized(1280.0, 800.0);
@@ -91,88 +90,6 @@ fn transport_and_topbar_share_centre_lines_insets_and_steps() {
         let foot = tops[0] + heights[0];
         for (top, height) in tops.iter().zip(heights).skip(1) {
             assert_close(top + height, foot, "readout part foot at large text");
-        }
-    }
-    // Case `the_topbar_commands_and_side_toggles_keep_one_sibling_step_at_every_width`.
-    {
-        for w in [390.0, 480.0, 768.0, 1280.0] {
-            let app = app_sized(w, 800.0);
-            let r = app.regions();
-            let mut row: Vec<(&str, Rect)> = [
-                ("menu", r.menu_btn),
-                ("project", r.project_btn),
-                ("import", r.import_btn),
-                ("split", r.split_btn),
-                ("export", r.export_btn),
-                ("inspector", r.inspector_btn),
-            ]
-            .into_iter()
-            .filter(|(_, rect)| rect.width() > 0.0)
-            .collect();
-            row.sort_by(|a, b| a.1.x0.total_cmp(&b.1.x0));
-            // The trailing cluster (Import, Split, Export, the inspector
-            // toggle) is packed at exactly the sibling step; the
-            // leading controls keep at least that much from whatever follows
-            // them — the project button is width-bounded and may leave the
-            // middle of the bar empty, but never creeps closer than a step to
-            // the trailing cluster.
-            let trailing = ["import", "split", "export", "inspector"];
-            for pair in row.windows(2) {
-                let gap = x_gap(pair[0].1, pair[1].1);
-                assert!(
-                    gap >= TOPBAR_GAP - 1e-6,
-                    "{w}px: {} ↔ {} gap {gap}, want at least {TOPBAR_GAP}",
-                    pair[0].0,
-                    pair[1].0
-                );
-                if trailing.contains(&pair[0].0) && trailing.contains(&pair[1].0) {
-                    assert_close(
-                        gap,
-                        TOPBAR_GAP,
-                        &format!("{w}px: {} ↔ {}", pair[0].0, pair[1].0),
-                    );
-                }
-            }
-            const { assert!(TOPBAR_GAP >= S1, "the topbar step is on the scale") };
-            let (first, last) = (row.first().unwrap().1, row.last().unwrap().1);
-            assert_close(
-                first.x0 - r.topbar.x0,
-                TOPBAR_EDGE,
-                &format!("{w}px leading inset"),
-            );
-            assert_close(
-                r.topbar.x1 - last.x1,
-                TOPBAR_EDGE,
-                &format!("{w}px trailing inset"),
-            );
-        }
-    }
-    // Case `the_topbar_is_inset_equally_at_both_edges_and_its_commands_sit_on_its_midline`.
-    {
-        let app = app_sized(1280.0, 800.0);
-        let r = app.regions();
-        assert!(!r.bin_overlay, "1280px docks the bin");
-        assert_close(
-            r.menu_btn.x0 - r.topbar.x0,
-            r.topbar.x1 - r.inspector_btn.x1,
-            "leading inset vs trailing inset",
-        );
-        let widths = app.topbar_widths();
-        for (name, rect, label) in [
-            ("import", r.import_btn, widths.import),
-            ("split", r.split_btn, widths.split),
-            ("export", r.export_btn, widths.export),
-        ] {
-            assert_close(
-                rect.width(),
-                label,
-                &format!("{name} is as wide as its label"),
-            );
-            assert_close(
-                rect.center().y,
-                r.topbar.center().y,
-                &format!("{name} centre on the topbar's midline"),
-            );
         }
     }
     // Case `the_go_to_field_stacks_its_three_lines_above_the_transport`:
@@ -234,17 +151,6 @@ fn bin_track_heads_and_captions_keep_token_clearances() {
         assert!(
             add.y1 <= r.bin.y0 + VideoEditorApp::BIN_LIST_TOP,
             "the heading row ends before the first bin row starts"
-        );
-        // The export chip lives in the header row, on its midline, between
-        // the project and the commands.
-        assert_close(
-            r.export_chip.center().y,
-            r.topbar.center().y,
-            "export chip centre on the header row's midline",
-        );
-        assert!(
-            r.export_chip.x1 <= r.import_btn.x0 - TOPBAR_GAP + 1e-6,
-            "the export chip keeps a step from Import"
         );
     }
     // Case `the_transition_caption_keeps_the_clearance_every_other_row_has`.

@@ -75,6 +75,7 @@ pub mod records;
 pub mod relay;
 pub mod runs;
 pub mod seccomp;
+pub mod shell_start;
 pub mod store;
 pub mod supervisor;
 pub mod terminal_sessions;

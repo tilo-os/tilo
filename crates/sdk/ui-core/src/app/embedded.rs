@@ -671,6 +671,17 @@ impl Widget for EmbeddedApp {
             .unwrap_or(false)
     }
 
+    fn ime_refuses_ordinary_commits(&self) -> bool {
+        self.app
+            .focused_node
+            .and_then(|node| {
+                self.app
+                    .inspect_node(node, |widget| widget.ime_refuses_ordinary_commits())
+                    .ok()
+            })
+            .unwrap_or(false)
+    }
+
     fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
         self.app
             .mutate_node(self.app.focused_node?, |widget| {

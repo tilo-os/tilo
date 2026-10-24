@@ -62,7 +62,7 @@ impl VideoEditorApp {
             && self.project.tracks.is_empty()
     }
 
-    /// What the project button says: the file's name, or the project's name
+    /// What the window bar's location says: the file's name, or the project's name
     /// while it has no file yet.
     pub(super) fn project_label(&self) -> String {
         let kept = self
@@ -78,8 +78,8 @@ impl VideoEditorApp {
 
     /// The one-line answer to "what am I editing, and is it safe?".
     ///
-    /// Spoken to a screen reader and used as the project button's tooltip
-    /// text, so both say the same thing the dot on the button means.
+    /// The window bar's location speaks it to a screen reader, alongside
+    /// the bar's own edited state.
     pub(super) fn project_status_line(&self) -> String {
         let label = self.project_label();
         match (&self.project_path, self.project_is_dirty()) {
@@ -164,7 +164,7 @@ impl VideoEditorApp {
         match crate::project_file::save(&path, &self.project) {
             Ok(()) => {
                 self.recents = crate::project_file::recents::remember(&self.recents, &path);
-                // The project button's unsaved mark clears; saving says
+                // The location's edited state clears; saving says
                 // nothing more.
                 self.project_notice = None;
                 // Save As can move the project; relative media follows it.
@@ -185,7 +185,7 @@ impl VideoEditorApp {
         }
     }
 
-    /// The project as it now stands is saved: the unsaved mark clears and a
+    /// The project as it now stands is saved: the edited state clears and a
     /// save that was only standing in the way of an open lets it through.
     fn saved_now(&mut self, doc: &AutoCommit) {
         // The document's heads as they are *now*, not the copy `sync`
@@ -441,62 +441,6 @@ impl VideoEditorApp {
             }
         }
         rows
-    }
-
-    pub(super) fn open_project_menu(&mut self, at: Point) {
-        let rows = self.project_menu_rows();
-        self.project_menu = ContextMenu::new();
-        self.project_menu_items.clear();
-        let mut first_recent = true;
-        for (item, label) in rows {
-            if matches!(item, ProjectMenuItem::Recent(_)) && first_recent {
-                self.project_menu.push(ui::widget::MenuItem::separator());
-                first_recent = false;
-            }
-            // The menu names the keys that do the same thing, so the rows
-            // teach them.
-            let shortcut = match item {
-                ProjectMenuItem::Open => Some(ui::platform::Shortcut::command("O")),
-                ProjectMenuItem::Save => Some(ui::platform::Shortcut::command("S")),
-                ProjectMenuItem::SaveAs => Some(ui::platform::Shortcut::command("S").shift()),
-                ProjectMenuItem::Recent(_) => None,
-            };
-            let mut row = ui::widget::MenuItem::action(label, || {});
-            if let Some(shortcut) = shortcut {
-                row = row.with_shortcut(shortcut);
-            }
-            self.project_menu.push(row);
-            self.project_menu_items.push(item);
-        }
-        self.project_menu.open_at([at.x as f32, at.y as f32]);
-        self.project_menu.layout_at_position();
-    }
-
-    /// Resolve a click on the open project menu. Separators occupy a row in
-    /// the menu but not in [`Self::project_menu_items`], so the index is
-    /// mapped through the same skip the build used rather than assumed equal.
-    pub(super) fn project_menu_intent(&self, idx: usize) -> Option<ProjectMenuItem> {
-        let mut actionable = 0usize;
-        for (i, row) in self.project_menu.items().iter().enumerate() {
-            if matches!(row, ui::widget::MenuItem::Separator) {
-                continue;
-            }
-            if i == idx {
-                return self.project_menu_items.get(actionable).cloned();
-            }
-            actionable += 1;
-        }
-        None
-    }
-
-    /// Act on a chosen project-menu row.
-    pub(super) fn run_project_menu_item(&mut self, item: ProjectMenuItem) {
-        match item {
-            ProjectMenuItem::Open => self.request_open_project(),
-            ProjectMenuItem::Save => self.queue_save_project(),
-            ProjectMenuItem::SaveAs => self.request_save_as(),
-            ProjectMenuItem::Recent(p) => self.begin_open(p, None),
-        }
     }
 
     /// Ask the user where the render should land, then encode there. The

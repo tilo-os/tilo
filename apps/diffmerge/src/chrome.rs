@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use ui::LocalState;
 use ui::icons::Icon;
-use ui::widget::toggle_group::{Segment, SegmentedStyle};
-use ui::widget::{Button, ButtonRole, ControlSize, Element, ModelView, ToggleGroup};
+use ui::widget::toggle_group::Segment;
+use ui::widget::{Button, ButtonRole, ControlSize, Element, ModelView};
 
 use crate::app::Mode;
 use crate::i18n::t;
@@ -102,11 +102,10 @@ impl Chrome {
             t("toolbar-merge")
         };
         Box::new(
-            ToggleGroup::new(
+            ui::widget::ViewTabs::new(
                 vec![Segment::new(t("toolbar-diff")), Segment::new(merge_label)],
                 usize::from(header.mode == Mode::Merge),
             )
-            .with_style(SegmentedStyle::Segmented)
             .control_size(if header.compact {
                 ControlSize::Large
             } else {

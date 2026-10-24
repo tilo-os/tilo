@@ -66,6 +66,7 @@ pub struct LogsShell;
 impl ResourceApp for LogsShell {
     type Resource = Logs;
     const ID: &'static str = "so.tilo.logs";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Journal];
     const TITLE: &'static str = "Logs";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {

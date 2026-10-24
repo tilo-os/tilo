@@ -2105,9 +2105,7 @@ impl AppHandler {
         } else {
             self.app
                 .ime_window_state()
-                .filter(|_| {
-                    !self.app.focused_ime_requires_deferred_ack() || self.private_input.admitted()
-                })
+                .filter(|_| self.private_input.standard_input_open(&self.app))
                 .map(NativeImeWindowState::from)
         };
         #[cfg(target_os = "android")]

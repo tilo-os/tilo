@@ -69,6 +69,18 @@ impl JoinError {
         }
     }
 
+    /// A Complete this host admitted before, whose device takes the room's
+    /// current state through the membership exchange instead
+    /// ([`crate::join::JOIN_COMPLETED_REFRESH`]).
+    fn refresh() -> Self {
+        Self {
+            message:
+                "join request ID already completed; refresh membership for the current workspace"
+                    .into(),
+            code: crate::join::JOIN_COMPLETED_REFRESH,
+        }
+    }
+
     /// The code a workspace join answer carries for this refusal.
     #[must_use]
     pub const fn code(&self) -> u16 {
@@ -286,10 +298,7 @@ impl JoinCompletionRecord {
             ..self.bootstrap.clone()
         };
         if bootstrap_digest(&rebuilt)?.as_slice() != delivered {
-            return Err(JoinError {
-                message: "join request ID already completed; refresh membership for the current workspace".into(),
-                code: crate::join::JOIN_COMPLETED_REFRESH,
-            });
+            return Err(JoinError::refresh());
         }
         Ok(rebuilt)
     }
@@ -637,7 +646,8 @@ impl JoinLedger {
     ///
     /// The request completed with a different proof or from another
     /// endpoint, its device is no longer a member, or the room moved on
-    /// since ([`crate::join::JOIN_COMPLETED_REFRESH`]).
+    /// or the certificate it admitted ran out since
+    /// ([`crate::join::JOIN_COMPLETED_REFRESH`]).
     pub fn completed(
         &self,
         room: &Governed<'_>,
@@ -658,10 +668,18 @@ impl JoinLedger {
                 "join request ID already completed with different proof",
             ));
         }
-        room.peer.permissions(
-            prior.bootstrap.device_cert.device_public_key,
-            system_time(now),
-        )?;
+        let device = prior.bootstrap.device_cert.device_public_key;
+        if let Err(error) = room.peer.permissions(device, system_time(now)) {
+            // The certificate this request was admitted with ran out since.
+            // The device is the member it admitted, and proves it again
+            // with its renewal through the membership exchange, which puts
+            // the renewal in the room. Refused here, a retained proof would
+            // be sent again and refused for good.
+            if room.peer.certificate_expired(&device, system_time(now)) {
+                return Err(JoinError::refresh());
+            }
+            return Err(error.into());
+        }
         prior.replay(room).map(Some)
     }
 

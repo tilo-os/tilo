@@ -1990,3 +1990,164 @@ async fn document_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> 
         namespace,
     }
 }
+
+/// A mount holding an empty `/docs`, with a change signal not yet started.
+struct SignalledMount {
+    session: fuser::BackgroundSession,
+    endpoint: Endpoint,
+    store: Arc<ContentStore>,
+    dir: tempfile::TempDir,
+    namespace: Arc<Mutex<Namespace>>,
+    signal: Arc<fs::change_signal::ChangeSignal>,
+}
+
+async fn signalled_mount() -> SignalledMount {
+    let endpoint = Endpoint::bind(presets::Minimal)
+        .await
+        .expect("bind endpoint");
+    let store = Arc::new(ContentStore::memory());
+    let namespace = Arc::new(Mutex::new(Namespace::new("signalled").unwrap()));
+    namespace
+        .lock()
+        .unwrap()
+        .create_dir(ROOT_INO, "docs", 1)
+        .unwrap();
+    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+    let signal = Arc::new(fs::change_signal::ChangeSignal::new().unwrap());
+    let quick_fs =
+        QuickFS::new(namespace.clone(), hydrator, heuristics).with_change_signal(signal.clone());
+    let dir = tempdir().unwrap();
+    let mut config = Config::default();
+    config.mount_options = vec![MountOption::FSName("quickfs_change_signal".to_string())];
+    let session = fuser::spawn_mount(quick_fs, dir.path(), &config).expect("spawn FUSE session");
+    wait_for_mount(dir.path()).await;
+    SignalledMount {
+        session,
+        endpoint,
+        store,
+        dir,
+        namespace,
+        signal,
+    }
+}
+
+/// Opening and reading a folder is reported too; those are the watcher's
+/// own, not a change.
+fn is_change(event: &notify::Event) -> bool {
+    !matches!(event.kind, notify::EventKind::Access(_))
+}
+
+/// The next event from `events` that reports a change, waiting no longer
+/// than a hang.
+fn next_change(
+    events: &std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
+) -> Result<notify::Result<notify::Event>, std::sync::mpsc::RecvTimeoutError> {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match events.recv_timeout(left) {
+            Ok(Ok(event)) if !is_change(&event) => {}
+            other => return other,
+        }
+    }
+}
+
+/// A change the kernel did not make, here a peer's edit merged into the
+/// namespace, still reaches inotify on the directory it changed, and the
+/// mount says it does, so a folder's watcher need not poll for it. Nobody
+/// but the daemon can raise the signal, and an idle mount raises none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merged_change_reaches_inotify_on_its_directory() {
+    use notify::Watcher as _;
+    use tilo_files::native::CHANGE_SIGNAL_XATTR;
+
+    require_fuse!();
+    let SignalledMount {
+        session,
+        endpoint,
+        store,
+        dir,
+        namespace,
+        signal,
+    } = signalled_mount().await;
+    let docs = dir.path().join("docs");
+    let read_signal = |path: &std::path::Path| {
+        let mut value = [0_u8; 8];
+        rustix::fs::getxattr(path, CHANGE_SIGNAL_XATTR, &mut value[..])
+            .map(|len| value[..len].to_vec())
+    };
+    assert_eq!(
+        read_signal(&docs),
+        Err(rustix::io::Errno::NODATA),
+        "no folder claims to signal before a signal went through"
+    );
+
+    let task = {
+        let (namespace, mount, notifier) = (
+            namespace.clone(),
+            dir.path().to_path_buf(),
+            session.notifier(),
+        );
+        let runtime = tokio::runtime::Handle::current();
+        let signal = signal.clone();
+        tokio::task::spawn_blocking(move || signal.start(namespace, &mount, notifier, &runtime))
+            .await
+            .unwrap()
+            .expect("the first signal goes through")
+    };
+    assert_eq!(
+        read_signal(&docs),
+        Ok(b"1".to_vec()),
+        "the mount says it signals"
+    );
+    assert_eq!(
+        rustix::fs::setxattr(
+            &docs,
+            CHANGE_SIGNAL_XATTR,
+            b"guessed",
+            rustix::fs::XattrFlags::empty()
+        ),
+        Err(rustix::io::Errno::PERM),
+        "nobody else raises the signal"
+    );
+
+    // The watcher lists the folder, then watches it, as Files does.
+    assert!(list(&docs).unwrap().is_empty());
+    let (events_tx, events) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        let _ = events_tx.send(event);
+    })
+    .unwrap();
+    watcher
+        .watch(&docs, notify::RecursiveMode::NonRecursive)
+        .unwrap();
+
+    let mut peer = Namespace::from_bytes("peer", &namespace.lock().unwrap().save()).unwrap();
+    let peer_docs = peer.resolve_path_ino("/docs").unwrap();
+    peer.create_file(peer_docs, "from-peer.md", None, 0, 2)
+        .unwrap();
+    namespace.lock().unwrap().merge_doc(&mut peer).unwrap();
+
+    let (event, events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
+        .await
+        .unwrap();
+    let event = event.expect("inotify reports the peer's change").unwrap();
+    assert!(
+        event.paths.iter().any(|path| path == &docs),
+        "the event names the changed folder: {event:?}"
+    );
+    assert_eq!(list(&docs), Ok(vec!["from-peer.md".to_string()]));
+
+    // Reading the folder changes nothing, so nothing is signalled again.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let late: Vec<_> = events
+        .try_iter()
+        .filter(|event| event.as_ref().map_or(true, is_change))
+        .collect();
+    assert!(late.is_empty(), "an idle mount raises no signal: {late:?}");
+
+    drop(watcher);
+    drop(task);
+    shutdown_fuse_fixture(session, endpoint, store).await;
+}

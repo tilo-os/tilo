@@ -55,12 +55,17 @@ use super::output_link::{
     AtomicLink, Completion, LinkFailure, LinkStep, LinkTarget, OutputLink, Power,
 };
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
+use super::wake_check::{WakeStage, WakeVerdict};
 use super::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbTargetHistory, XrgbWritePlan,
 };
+
+#[path = "scanout_wake.rs"]
+mod wake;
 use crate::compositor::backend::OutputId;
 use crate::compositor::cursor::{self, CursorBitmap, CursorShape, PointerImage};
 use vello::{FineDamageRect, Scene};
+use wake::OutputWake;
 
 use super::output_signal::{
     AdaptiveSync, CrtcGamma, HdrRequest, HdrSignal, OutputSignalStatus, adaptive_sync_capability,
@@ -1362,6 +1367,7 @@ impl CardHandle {
             crtc,
             snapshot.mode,
             self.pci_bus_id.clone(),
+            is_builtin_connector(&snapshot.connector_name),
         )?;
         Ok(ScanoutBuild {
             device_id: self.device_id,
@@ -1960,6 +1966,8 @@ pub struct DrmScanout {
     /// binds it once proven up: the legacy cursor ioctl commits, and on a
     /// CRTC still modesetting that commit waits for the modeset.
     cursor_bound: bool,
+    /// How this output's wakes are checked ([`super::wake_check`]).
+    wake: OutputWake,
 }
 
 /// Two dumb buffers and their framebuffers, in one pixel format.
@@ -2067,6 +2075,7 @@ impl DrmScanout {
         crtc: crtc::Handle,
         mode: Mode,
         pci_bus_id: Option<String>,
+        builtin: bool,
     ) -> Result<Self, String> {
         let (mw, mh) = mode.size();
         let (width, height) = (u32::from(mw), u32::from(mh));
@@ -2176,6 +2185,7 @@ impl DrmScanout {
             flip,
             link,
             cursor_bound,
+            wake: OutputWake::new(builtin),
         })
     }
 
@@ -2700,9 +2710,15 @@ impl DrmScanout {
             self.crtc_gamma.forget_applied();
             self.hdr_signal.forget();
             self.cursor_bound = false;
+            self.wake.check = None;
+            self.wake.reason = Some("resume");
             self.with_link(|link, device| link.resume(device, false));
+            self.begin_wake();
             return;
         }
+        // The wake is judged when the panel is asked to light again
+        // (`set_dpms`), which re-binds the mode once more.
+        self.wake.reason = Some("resume");
         // Re-binding the mode is what the kernel needs to scan out again.
         if let Some(fb) = self.fb_at(self.front) {
             if let Err(e) = self.card.set_crtc(
@@ -3509,6 +3525,7 @@ impl DrmScanout {
     }
 
     fn log_flip_completion(&mut self) {
+        self.note_wake_flip();
         let Some(queued_at) = self.flip_queued_at.take() else {
             return;
         };
@@ -3839,6 +3856,19 @@ impl DrmScanout {
                     "tilo compositor: DRM scanout: output failed connector={} reason={reason:?}",
                     u32::from(self.connector)
                 );
+                let stage = match self.link_failure() {
+                    Some(LinkFailure::Refused(_)) => WakeStage::Commit,
+                    _ => WakeStage::Link,
+                };
+                self.judge_wake(Some(stage));
+            }
+            LinkStep::Redone => {
+                eprintln!(
+                    "tilo compositor: DRM scanout: no vblank after the modeset connector={}; redoing it from the CRTC switched off",
+                    u32::from(self.connector)
+                );
+                // The link already switches the CRTC off and modesets it again.
+                self.judge_wake(Some(WakeStage::Link));
             }
             LinkStep::Pending | LinkStep::Off => {}
         }
@@ -3870,6 +3900,11 @@ impl DrmScanout {
             self.crtc_gamma.describe(),
             os_actions::display::backlight_state().unwrap_or_else(|| "none".into()),
         );
+        if let Some(WakeVerdict::Redo(_)) = self.judge_wake(None) {
+            let flip_unread = self.flip_pending;
+            self.with_link(|link, device| link.redo(device, flip_unread));
+            return;
+        }
         if self.hw_cursor_active
             && !self.cursor_bound
             && let Some(buf) = self.cursor_buffer.as_ref()
@@ -3912,6 +3947,21 @@ impl DrmScanout {
         self.physical_identity.cancel_pending(self.flip_pending);
         self.invalidate_xrgb_history();
         let power = if on { Power::On } else { Power::Off };
+        if !on {
+            // A blank ends a wake still being judged.
+            self.wake.check = None;
+            self.wake.reason = None;
+            if let Some((link, _)) = self.link.as_mut() {
+                link.disarm_wake_redo();
+            }
+        }
+        if let Some((link, _)) = self.link.as_ref()
+            && on
+            && !link.wanted_on()
+            && link.failure().is_none()
+        {
+            self.begin_wake();
+        }
         if self
             .with_link(|link, device| link.want(power, device, flip_unread))
             .is_some()
@@ -3920,25 +3970,18 @@ impl DrmScanout {
         }
         self.set_dpms_property(on);
         if on {
-            // Re-modeset the saved framebuffer + mode so the last frame is back on screen; the next `present` resumes normal blitting.
-            let Some(fb) = self.fb_at(self.front) else {
-                tracing::warn!(
-                    "DRM scanout: set_dpms(on) has no front framebuffer; skipping restore"
-                );
-                return;
-            };
-            if let Err(e) = self.card.set_crtc(
-                self.crtc,
-                Some(fb),
-                (0, 0),
-                &[self.connector],
-                Some(self.mode),
-            ) {
-                tracing::warn!("DRM scanout: set_dpms(on) restore set_crtc failed: {e}");
-            } else {
-                tracing::info!("DRM scanout: display restored (DPMS on)");
+            self.begin_wake();
+            let committed = self.legacy_light();
+            if let Some(WakeVerdict::Redo(_)) =
+                self.judge_wake((!committed).then_some(WakeStage::Commit))
+            {
+                // The wake's one recovery: modeset again from the CRTC off.
+                if let Err(e) = self.card.set_crtc(self.crtc, None, (0, 0), &[], None) {
+                    tracing::warn!("DRM scanout: switching off to redo the modeset failed: {e}");
+                }
+                let committed = self.legacy_light();
+                self.judge_wake((!committed).then_some(WakeStage::Commit));
             }
-            self.match_signal_to_dumb_front();
         } else {
             // Blank: detach the CRTC so nothing is scanned out.
             if let Err(e) = self.card.set_crtc(self.crtc, None, (0, 0), &[], None) {
@@ -3947,6 +3990,31 @@ impl DrmScanout {
                 tracing::info!("DRM scanout: display blanked (DPMS off)");
             }
         }
+    }
+
+    /// Re-modeset the saved framebuffer and mode, so the last frame is back
+    /// on screen; the next `present` resumes normal blitting. Whether the
+    /// driver took it.
+    fn legacy_light(&mut self) -> bool {
+        let Some(fb) = self.fb_at(self.front) else {
+            tracing::warn!("DRM scanout: set_dpms(on) has no front framebuffer; skipping restore");
+            return false;
+        };
+        let lit = if let Err(e) = self.card.set_crtc(
+            self.crtc,
+            Some(fb),
+            (0, 0),
+            &[self.connector],
+            Some(self.mode),
+        ) {
+            tracing::warn!("DRM scanout: set_dpms(on) restore set_crtc failed: {e}");
+            false
+        } else {
+            tracing::info!("DRM scanout: display restored (DPMS on)");
+            true
+        };
+        self.match_signal_to_dumb_front();
+        lit
     }
 
     /// Best-effort legacy DPMS toggle: a missing property (atomic-only drivers) or ioctl error is ignored — the CRTC toggle in [`Self::set_dpms`] is the load-bearing path.

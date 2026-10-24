@@ -129,6 +129,45 @@ fn retain(store: &WorkspaceStore, frames: Vec<Vec<u8>>, seq: &mut u64) {
     }
 }
 
+/// [`retain`] for the long histories compaction's thresholds need: each
+/// delta whose author's lineage has a generation is written into it at the
+/// next ordinal, as a commit leaves it, without the commit's two barriers.
+/// Compaction reads those files whether or not they were synced; hundreds
+/// of barriers made these tests wait minutes on a busy CI disk. An author's
+/// first frame is retained through the store, which provisions its lineage.
+fn append(store: &WorkspaceStore, frames: Vec<Vec<u8>>, seq: &mut u64) {
+    for frame in frames {
+        let Some((author, CoeditPayload::RetainedDelta { .. })) =
+            crate::store::retained::payload(&frame, WORKSPACE)
+        else {
+            panic!("only a delta appends");
+        };
+        let lineage = store
+            .root()
+            .join(crate::store::RETAINED_DIR)
+            .join("v2")
+            .join(format!(
+                "{}-{}",
+                hex::encode(author),
+                hex::encode(channel())
+            ));
+        let Some(active) = crate::store::retained::current(&lineage).unwrap() else {
+            retain(store, vec![frame], seq);
+            continue;
+        };
+        *seq = seq.saturating_add(1);
+        let next = std::fs::read_dir(&active)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.unwrap().file_name();
+                u64::from_str_radix(name.to_str()?.strip_suffix(".delta")?, 16).ok()
+            })
+            .max()
+            .map_or(0, |last| last.saturating_add(1));
+        std::fs::write(active.join(format!("{next:016x}.delta")), frame).unwrap();
+    }
+}
+
 /// Each entry checked as a round with nothing remembered checks it.
 fn checked(entries: &[ChannelEntry]) -> Vec<Checked<'_>> {
     let mut signatures = Signatures::default();
@@ -217,7 +256,7 @@ fn the_host_folds_a_long_tail_and_a_late_joiner_converges_from_its_snapshot() {
             .unwrap();
         doc.commit();
         let author = if edit % 3 == 0 { 2 } else { 1 };
-        retain(
+        append(
             &store,
             device_frames(
                 author,
@@ -351,7 +390,7 @@ fn a_sealed_tail_is_never_folded_and_asks_for_a_member() {
         let before = doc.get_heads();
         doc.put(ROOT, "k", i64::try_from(edit).unwrap()).unwrap();
         doc.commit();
-        retain(
+        append(
             &store,
             device_frames(
                 1,
@@ -608,13 +647,24 @@ fn history(store: &WorkspaceStore, edits: u64, seq: &mut u64) -> (AutoCommit, Au
 }
 
 fn extend(store: &WorkspaceStore, doc: &mut AutoCommit, edits: u64, seq: &mut u64) {
+    extend_with(store, doc, edits, seq, retain);
+}
+
+/// [`extend`], writing each edit's frames with `write`.
+fn extend_with(
+    store: &WorkspaceStore,
+    doc: &mut AutoCommit,
+    edits: u64,
+    seq: &mut u64,
+    write: fn(&WorkspaceStore, Vec<Vec<u8>>, &mut u64),
+) {
     for _ in 0..edits {
         let before = doc.get_heads();
         doc.put(ROOT, format!("k{}", *seq), i64::try_from(*seq).unwrap())
             .unwrap();
         doc.commit();
         let at = seq.saturating_add(10);
-        retain(
+        write(
             store,
             device_frames(
                 1,
@@ -848,14 +898,15 @@ fn opaque_payloads_are_never_folded_or_gc_selected() {
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
     let mut seq = 0;
-    history(&store, 300, &mut seq);
+    let (_, mut doc) = history(&store, 0, &mut seq);
+    extend_with(&store, &mut doc, 300, &mut seq, append);
     let mut sealed = AutoCommit::new();
     for edit in 0..COMPACT_TAIL_ENTRIES {
         let before = sealed.get_heads();
         sealed.put(ROOT, "k", i64::try_from(edit).unwrap()).unwrap();
         sealed.commit();
         let at = seq.saturating_add(10);
-        retain(
+        append(
             &store,
             device_frames(
                 2,

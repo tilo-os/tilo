@@ -40,107 +40,96 @@ fn a_calls_own_controls_are_unavailable_until_you_join_it() {
     }
 }
 
-#[test]
-fn sidebar_remains_docked_and_semantically_resizable_in_a_medium_chat_window() {
-    let mut app = TestApp::<ChatShell>::new().unwrap();
-    app.harness().resize((760, 720)).unwrap();
-    let resources = app.harness().resources();
-    let resize = resources
-        .iter()
-        .find(|resource| resource.label == "Resize sidebar")
-        .expect("a medium conversation keeps its shared resize handle");
-    let address = ui::tilo_actions::door::survey(std::slice::from_ref(resize))
-        .into_iter()
-        .find(|offered| offered.address.action == "set-value")
-        .expect("the separator offers set-value")
-        .address;
-    let arguments = serde_json::Map::from_iter([(
-        ui::tilo_actions::PROMPTED_PARAM.to_owned(),
-        serde_json::Value::String("40%".into()),
-    )]);
-    assert!(
-        app.harness()
-            .invoke_action(&address, &arguments, false, None)
-            .unwrap()
-            .completed()
-            .is_some()
-    );
-    assert_eq!(
-        app.with_surface::<ChatApp, _>(|surface| (
-            surface.left_flap.is_docked(),
-            surface.sidebar_rect().width(),
-            surface.content_rect().width(),
-        )),
-        Some((true, 304.0, 456.0))
-    );
-    assert!(app.harness().component_contract_violations().is_empty());
-    // Below the sidebar's minimum beside the conversation's (560), the
-    // channel list and the conversation take turns.
-    app.harness().resize((540, 720)).unwrap();
-    assert!(
-        app.harness()
-            .resources()
-            .iter()
-            .all(|resource| resource.label != "Resize sidebar"),
-        "a genuinely narrow window shows one column at a time"
-    );
-    app.harness().resize((760, 720)).unwrap();
-    assert_eq!(
-        app.with_surface::<ChatApp, _>(|surface| surface.sidebar_rect().width()),
-        Some(304.0),
-        "the usable resized width survives narrow-window collapse"
-    );
+/// The row of sidebar place `id` where the shell's list paints it.
+fn sidebar_row(app: &mut TestApp<ChatShell>, id: &str) -> vello::kurbo::Rect {
+    app.with_widget::<ui::widget::NavList, _>(|list| list.row_rect(id))
+        .flatten()
+        .unwrap_or_else(|| panic!("{id} is a row of the sidebar"))
 }
 
-#[test]
-fn sidebar_shared_resize_uses_the_complete_mounted_app_door() {
-    let mut app = TestApp::<ChatShell>::new().unwrap();
-    app.harness().resize((960, 720)).unwrap();
-    let resources = app.harness().resources();
-    let resize = resources
-        .iter()
-        .find(|resource| resource.label == "Resize sidebar")
-        .expect("the live shared separator has its localized human label");
-    let spec = resize
-        .actions
-        .iter()
-        .find(|action| action.id == "set-value")
-        .expect("the mounted app publishes exact resize");
-    assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
-    assert!(app.harness().component_contract_violations().is_empty());
-    let address = ui::tilo_actions::door::survey(std::slice::from_ref(resize))
-        .into_iter()
-        .find(|offered| offered.address.action == "set-value")
-        .expect("the separator offers set-value")
-        .address;
-    let arguments = serde_json::Map::from_iter([(
-        ui::tilo_actions::PROMPTED_PARAM.to_owned(),
-        serde_json::Value::String("30%".into()),
-    )]);
-    assert!(
-        app.harness()
-            .invoke_action(&address, &arguments, false, None)
-            .expect("the actual published shared control accepts canonical invocation")
-            .completed()
-            .is_some()
-    );
-    assert_eq!(
-        app.with_surface::<ChatApp, _>(|surface| surface.left_flap.list_rect().width()),
-        Some(288.0)
-    );
-    let mut viewer = TestApp::<ChatShell>::with_role(ui::permissions::Role::Viewer).unwrap();
-    viewer.harness().resize((960, 720)).unwrap();
-    assert!(viewer.harness().component_contract_violations().is_empty());
-    let resources = viewer.harness().resources();
-    let separator = resources
-        .iter()
-        .find(|resource| resource.label == "Resize sidebar")
-        .expect("the Viewer frame observes the actual shared separator");
-    for action in &separator.actions {
-        if matches!(action.id.as_str(), "set-value" | "increment" | "decrement") {
-            assert_eq!(action.kind, ui::tilo_actions::OperationKind::Effect);
-        }
+fn right_click(app: &mut TestApp<ChatShell>, row: vello::kurbo::Rect) {
+    let harness = app.harness();
+    harness.send(&ui::synthetic_input::cursor_moved(
+        row.center().x,
+        row.center().y,
+    ));
+    for state in [
+        winit::event::ElementState::Pressed,
+        winit::event::ElementState::Released,
+    ] {
+        harness.send(&ui::synthetic_input::mouse_input(
+            state,
+            winit::event::MouseButton::Right,
+        ));
     }
+    app.settle();
+}
+
+/// The room's channels are the shell's sidebar: choosing one opens it, a
+/// right click on a channel or a category asks for its menu, and its
+/// Rename names it in place there.
+#[test]
+fn the_rooms_channels_are_the_shells_sidebar() {
+    let mut app = TestApp::<ChatShell>::capture(Some("channels")).unwrap();
+    app.harness().resize((1280, 720)).unwrap();
+    app.settle();
+    let frontend = sidebar_row(&mut app, "channel:c_frontend");
+    app.harness()
+        .click_at(frontend.center().x, frontend.center().y);
+    app.settle();
+    assert_eq!(app.surface_mut::<ChatApp>().active_channel, "c_frontend");
+
+    let random = sidebar_row(&mut app, "channel:c_random");
+    right_click(&mut app, random);
+    let target = app
+        .surface_mut::<ChatApp>()
+        .menu
+        .as_ref()
+        .map(|menu| menu.target.clone());
+    assert_eq!(
+        target,
+        Some(crate::app::MenuTarget::Channel("c_random".into())),
+        "a channel's row asks for the channel's menu"
+    );
+    // Its Rename, the second row, opens the name in place in the sidebar,
+    // which takes the keyboard.
+    for key in ["Down", "Down", "Enter"] {
+        app.harness().key(key);
+    }
+    app.settle();
+    let old = app
+        .surface_mut::<ChatApp>()
+        .channel("c_random")
+        .map(|channel| channel.name.clone())
+        .expect("the channel");
+    app.harness().key("End");
+    for _ in old.chars() {
+        app.harness().key("Backspace");
+    }
+    app.harness().type_text("watercooler");
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        app.surface_mut::<ChatApp>()
+            .channel("c_random")
+            .map(|channel| channel.name.as_str()),
+        Some("watercooler")
+    );
+
+    let category = app
+        .surface_mut::<ChatApp>()
+        .sidebar_categories()
+        .first()
+        .map(|category| category.id.clone())
+        .expect("the fixture has a category");
+    let header = sidebar_row(&mut app, &crate::sidebar::category_place(&category));
+    right_click(&mut app, header);
+    let target = app
+        .surface_mut::<ChatApp>()
+        .menu
+        .as_ref()
+        .map(|menu| menu.target.clone());
+    assert_eq!(target, Some(crate::app::MenuTarget::Category(category)));
 }
 
 #[test]
@@ -684,6 +673,23 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
 }
 
 #[test]
+fn feedback_is_filed_by_people_and_never_offered_to_agents() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let resources = app.harness().resources();
+    let submit = ui::tilo_actions::door::survey(&resources)
+        .into_iter()
+        .find(|descriptor| {
+            descriptor.address.resource.as_str() == item("channels", "c_chat")
+                && descriptor.address.action == "submit-feedback"
+        })
+        .expect("a channel takes feedback");
+    // The submission is what the feedback sheet reviewed with a person; an
+    // agent offered it files nothing and posts nothing.
+    assert!(!submit.contract.reaches_agents());
+    assert!(submit.contract.reaches_people());
+}
+
+#[test]
 fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
     let mut app = TestApp::<ChatShell>::new().unwrap();
@@ -1053,4 +1059,50 @@ fn a_message_another_replica_posts_shows_without_input() {
         app.frame();
     }
     assert!(shows(&mut app, text), "the bot's post shows with no input");
+}
+
+/// The channels a narrow window shows on their own know who is in a call,
+/// though the conversation behind them is not drawn, and follow someone
+/// joining it.
+#[test]
+fn the_compact_channels_show_who_is_in_a_call_and_who_joins() {
+    let mut app = TestApp::<ChatShell>::capture(Some("mention")).unwrap();
+    app.harness().resize((480, 800)).unwrap();
+    app.settle();
+    app.with_widget::<ui::widget::NavShell, _>(|shell| {
+        shell.show(ui::widget::NavPane::Sidebar);
+        shell.snap();
+    });
+    app.settle();
+    let on_its_own = app.with_widget::<ui::widget::NavShell, _>(|shell| {
+        (shell.geometry().sidebar, shell.front_pane())
+    });
+    assert_eq!(
+        on_its_own,
+        Some((
+            ui::widget::SidebarPlacement::Screen,
+            ui::widget::NavPane::Sidebar
+        )),
+        "the channels fill the window; the conversation is put away"
+    );
+    let standup = ChatApp::voice_presence_key("c_standup");
+    let join = |app: &mut TestApp<ChatShell>, person: &str| {
+        app.harness()
+            .presence_mut()
+            .set_caret(&standup, ui::permissions::UserId(person.into()), 0);
+        app.settle();
+    };
+    let in_call = |app: &mut TestApp<ChatShell>, person: &str| {
+        app.with_widget::<ui::widget::NavList, _>(|list| {
+            list.row_rect(&format!("in-call:c_standup/{person}"))
+        })
+        .flatten()
+        .is_some()
+    };
+    join(&mut app, "u_aria");
+    join(&mut app, "u_milo");
+    assert!(in_call(&mut app, "u_aria") && in_call(&mut app, "u_milo"));
+    assert!(!in_call(&mut app, "u_sora"));
+    join(&mut app, "u_sora");
+    assert!(in_call(&mut app, "u_sora"), "who joins shows at once");
 }

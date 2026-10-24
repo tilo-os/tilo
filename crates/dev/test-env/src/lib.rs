@@ -46,6 +46,7 @@ mod capability;
 mod desktop;
 pub mod hang;
 pub mod idle;
+pub mod swtpm;
 
 pub use capability::{Capability, Probe, capability_unavailable};
 #[cfg(target_os = "linux")]

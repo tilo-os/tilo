@@ -486,12 +486,12 @@ fn retired_worker_after_admission_never_launches_or_closes() {
                 certificate: admitted.certificate.clone().unwrap(),
             };
             admitted.worker_registration = Some(registration);
-            fixture
-                .state
-                .host_workers
-                .lock()
-                .unwrap()
-                .insert(7, *admitted.clone());
+            let worker_route = route.clone();
+            fixture.state.host_workers.lock().unwrap().insert(
+                7,
+                worker_route.clone(),
+                *admitted.clone(),
+            );
             fixture
                 .state
                 .check_launch_origin(&fixture.caller, Some(&fixture.origin), &fixture.room)
@@ -523,10 +523,11 @@ fn retired_worker_after_admission_never_launches_or_closes() {
             fixture.assert_signed(&request, false);
             {
                 let mut workers = fixture.state.host_workers.lock().unwrap();
-                let mut retired = workers.remove(&7).unwrap();
+                let mut retired = workers.only(7).unwrap().clone();
+                workers.remove(7);
                 if replacement {
                     retired.worker_registration.as_mut().unwrap().identity = uuid::Uuid::new_v4();
-                    workers.insert(7, retired);
+                    workers.insert(7, worker_route.clone(), retired);
                 }
             }
             let custody = (

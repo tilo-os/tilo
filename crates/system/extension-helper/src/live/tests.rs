@@ -324,7 +324,11 @@ impl LiveHost for Fake {
             Deployment::Composefs { verity, .. } => verity.clone(),
             Deployment::Ostree { checksum, .. } => checksum.clone(),
         };
-        Ok(self.roots.borrow()[&key].clone())
+        self.roots
+            .borrow()
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| Error::Pack(format!("mount failed: {key}")))
     }
 
     fn close(&self, _at: &Path) {}
@@ -607,4 +611,66 @@ fn nothing_staged_takes_a_stale_layer_off() {
     let state = read_state(&layout).unwrap();
     assert_eq!(state.image, "");
     assert!(!state.reboot_required && !state.desktop_pending);
+}
+
+#[test]
+fn an_image_that_cannot_be_opened_waits_for_a_restart_of_the_machine() {
+    let (_dir, layout, fake) = machine();
+    fake.roots.borrow_mut().remove(&"d".repeat(128));
+    assert!(apply(&fake, &fake, &layout, Phase::System).is_err());
+    assert!(!link(&layout).exists(), "nothing was linked");
+    let state = read_state(&layout).unwrap();
+    assert_eq!(state.image, format!("sha256:{}", "e".repeat(64)));
+    assert!(state.failed);
+    assert!(
+        state.reboot_required,
+        "the desktop asks for the restart that applies it"
+    );
+    assert!(state.detail.contains("mount failed"));
+    // A failed image is not retried live.
+    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+}
+
+#[test]
+fn a_composefs_image_is_checked_by_its_own_digest_algorithm() {
+    let sha512 = [0x5e_u8; 64];
+    let sha256 = [0x3c_u8; 32];
+    assert!(verity_matches(2, &sha512, &hex::encode(sha512)));
+    assert!(verity_matches(
+        2,
+        &sha512,
+        &hex::encode(sha512).to_uppercase()
+    ));
+    assert!(verity_matches(1, &sha256, &hex::encode(sha256)));
+    assert!(
+        !verity_matches(1, &sha512, &hex::encode(sha512)),
+        "wrong algorithm"
+    );
+    assert!(
+        !verity_matches(2, &[0x5f; 64], &hex::encode(sha512)),
+        "wrong digest"
+    );
+    assert!(
+        !verity_matches(2, &sha512, &hex::encode(sha256)),
+        "wrong length"
+    );
+    assert!(!verity_matches(2, &[], ""));
+
+    let args = composefs_mount(
+        Path::new("/sysroot/composefs/objects"),
+        Path::new("/proc/1/fd/3"),
+        Path::new("/run/tilo/live-update/mounts/staged"),
+    );
+    assert_eq!(
+        args,
+        [
+            "mount.composefs",
+            "-o",
+            "ro,verity,basedir=/sysroot/composefs/objects",
+            "/proc/1/fd/3",
+            "/run/tilo/live-update/mounts/staged",
+        ]
+        .map(OsString::from),
+        "no digest= option: libcomposefs measures only SHA-256 images"
+    );
 }

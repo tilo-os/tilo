@@ -114,7 +114,7 @@ frame-timing checks gated to real display hardware report that. The report (`rep
 check passes.
 
 
-### Agent door (M01-M04) and input fidelity (I01-I07)
+### Agent door (M01-M04) and input fidelity (I01-I08)
 
 M01-M04 (`checks/agent.py`) run `guest/mcp_client.py` in the guest, as Claude Code would run
 `tilo-runtime-mcp --connect`: the person's consent is answered through the control socket's
@@ -125,11 +125,14 @@ as `isError` / a JSON-RPC error. Until the image serves `$XDG_RUNTIME_DIR/tilo-s
 run (`core.ExpectedFailure`), is listed in the report, and becomes an ordinary check when the
 socket appears.
 
-I01-I07 (`checks/input_devices.py`) plug uinput devices copied from the Lenovo Yoga Slim 7x
+I01-I08 (`checks/input_devices.py`) plug uinput devices copied from the Lenovo Yoga Slim 7x
 (`os/hardware/profiles/lenovo-83ed/input/*.json`: I2C bus, 048D:8987 keyboard, 0488:1054
 touchpad; `tilo device input device plug lenovo-83ed-keyboard`) and check German keysyms,
 layout state over hotplug, no stuck modifiers after a lock, and touchpad tap/click/scroll and
-disable-while-typing. I05-I07 are `calibrating`: their observables come from the compositor's
+disable-while-typing. I08 starts a terminal that keeps printing, blanks the display, forces the next wake to read its CRTC as dark,
+suspends the VM through logind and checks the session log: the wake check saw the dark CRTC,
+redid the modeset and lit the output, the session still holds the keyboard, and a key after
+the resume arrives and unlocks. I05-I08 are `calibrating`: their observables come from the compositor's
 code and have not yet been seen in a CI run, so a failure is **xfail** (with its reason) until
 the marker is removed. hwdb `KEYBOARD_KEY_` remaps need the real driver and are not covered.
 Capture a new profile from a device's `/sys/class/input/eventN/device/capabilities/*` and HID
@@ -490,8 +493,9 @@ unobservable, not passed. The trace reading is unit-tested beside the app checks
 
 Touchpad gestures (W15) are driven through the control socket's `swipe` and `pinch`, which
 feed the shell's gesture tracker; libinput's own touchpad decoding needs a uinput touchpad
-`tilo device input` does not have yet. Not yet drivable, so failing as unobservable: output
-hotplug (B06; a slot's outputs are fixed at creation).
+`tilo device input` does not have yet. Output hotplug (B06) is driven by forcing one
+connector's sysfs status off and back to `detect`, each followed by the card's change uevent, which is
+the notification the compositor listens for.
 
 ## Terminal after a userspace cohort update
 

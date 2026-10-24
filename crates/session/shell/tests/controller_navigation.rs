@@ -45,6 +45,7 @@ fn group(id: GroupId, tab: u64, label: &str) -> WindowGroup {
                 kind: AppKind::Other("Test".into()),
                 label: label.into(),
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,

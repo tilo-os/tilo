@@ -42,6 +42,9 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
     (210, |context, _| {
         Box::new(network::NetworkArea::new(context.cx))
     }),
+    (215, |context, _| {
+        Box::new(network::mobile::MobileArea::new(context.cx))
+    }),
 ];
 
 /// Every area's vocabulary, in the order the union declares them.
@@ -57,6 +60,7 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (220, audio::AudioEffect::FAMILY),
     (240, display::DisplayEffect::FAMILY),
     (250, network::NetworkEffect::FAMILY),
+    (255, network::mobile::MobileEffect::FAMILY),
 ];
 
 /// Every area with live rows, in the order their rows are published.
@@ -220,7 +224,12 @@ pub(crate) const SECTIONS: &[(u16, crate::area::SectionEntry)] = &[
 pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     crate::area::PaneEntry {
         categories: &[Category::Network],
-        build: |app, _| model_pane(network::area(app).map(network::NetworkArea::model)),
+        build: |app, _| {
+            network::mobile::with_mobile(
+                model_pane(network::area(app).map(network::NetworkArea::model)),
+                model_pane(network::mobile::area(app).map(network::mobile::MobileArea::model)),
+            )
+        },
     },
     crate::area::PaneEntry {
         categories: &[Category::Bluetooth],
@@ -351,7 +360,7 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_switch!("network.wired" => network::values::wired, network::values::wired_switch),
     crate::setting::setting_switch!("network.airplane" => network::values::airplane, network::values::airplane_switch),
     crate::setting::setting_switch!("network.hotspot" => network::values::hotspot, network::values::hotspot_switch),
-    crate::setting::setting_switch!("network.mobile" => network::values::mobile, network::values::mobile_switch),
+    crate::setting::setting_switch!("network.mobile" => network::mobile::mobile_data, network::mobile::mobile_data_switch),
     crate::setting::setting_switch!("bluetooth.enabled" => bluetooth::enabled, bluetooth::enabled_switch),
     crate::setting::setting_value!("display.arrangement" => display::values::arrangement),
     crate::setting::setting_value!("display.brightness" => display::values::brightness),

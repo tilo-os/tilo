@@ -333,6 +333,27 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         );
         driver.key("Escape");
         assert_eq!(driver.refusal_shown(), None);
+        // What the app invokes on its own, for nobody's gesture, is refused
+        // without a word over the window: the person pressed nothing.
+        let failures = driver.control_failures().len();
+        QUEUED_CONTROL.with_borrow_mut(|queue| {
+            *queue = Some(tilo_actions::ControlInvocation {
+                address: tilo_actions::ActionAddress::new("missing", "on-its-own"),
+                arguments: serde_json::Map::default(),
+            });
+        });
+        QUEUED_ORIGIN.with(|origin| origin.set(tilo_ui::widget::controls::Origin::App));
+        driver.send(&winit::event::WindowEvent::Focused(true));
+        assert_eq!(
+            driver.refusal_shown(),
+            None,
+            "the app's own refused invocation is not said as the person's"
+        );
+        assert_eq!(
+            driver.control_failures().len(),
+            failures + 1,
+            "the app's own refused invocation is still kept as a failure"
+        );
         let target = driver
             .a11y_nodes()
             .into_iter()
@@ -481,6 +502,7 @@ thread_local! {
     static FINISH_OPERATION: Cell<bool> = const { Cell::new(false) };
     static REENTRY: RefCell<Option<RefusedNode>> = const { RefCell::new(None) };
     static QUEUED_CONTROL: RefCell<Option<tilo_actions::ControlInvocation>> = const { RefCell::new(None) };
+    static QUEUED_ORIGIN: Cell<tilo_ui::widget::controls::Origin> = const { Cell::new(tilo_ui::widget::controls::Origin::Person) };
     static LEGACY_INVOKED: Cell<bool> = const { Cell::new(false) };
     static LEGACY_INTENT: RefCell<Option<tilo_ui::record::RecordCheckout>> = const { RefCell::new(None) };
     static LEGACY_SCOPES: RefCell<Vec<tilo_ui::record::RecordId>> = const { RefCell::new(vec![]) };
@@ -924,7 +946,14 @@ impl tilo_ui::search::capability::SearchSource for Root {
 impl tilo_ui::widget::controls::ActionControls for Root {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.mark("control-drain");
-        QUEUED_CONTROL.with_borrow_mut(Option::take)
+        let taken = QUEUED_CONTROL.with_borrow_mut(Option::take);
+        if taken.is_some() {
+            tilo_ui::widget::controls::note_drained_origin(
+                QUEUED_ORIGIN
+                    .with(|origin| origin.replace(tilo_ui::widget::controls::Origin::Person)),
+            );
+        }
+        taken
     }
 }
 impl AppWidget for Root {

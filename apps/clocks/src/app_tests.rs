@@ -478,6 +478,12 @@ fn clicking_a_suggested_city_adds_its_clock() {
         .map(|clock| (clock.city.as_str(), clock.timezone.0.as_str()))
         .collect();
     assert_eq!(added, [("London", "Europe/London")]);
+    let targets = app.harness().targets();
+    assert!(
+        !targets.contains_key("clocks.world.add.europe-london"),
+        "a city already shown is not offered again"
+    );
+    assert!(targets.contains_key("clocks.world.add.asia-tokyo"));
 }
 
 #[test]
@@ -599,4 +605,111 @@ fn a_running_stopwatch_counts_up_with_no_input() {
         std::thread::sleep(std::time::Duration::from_millis(50));
         let _ = app.harness().poll_frame().unwrap();
     }
+}
+
+#[test]
+fn the_window_bar_names_the_open_section_and_the_page_draws_no_heading() {
+    for (scenario, section) in [
+        ("timers", "Timers"),
+        ("world", "World clocks"),
+        ("alarms", "Alarms"),
+        ("stopwatch", "Stopwatch"),
+    ] {
+        let mut app = TestApp::<ClocksShell>::capture_at(Some(scenario), (1280, 800)).unwrap();
+        app.harness().present_in_window_bar();
+        app.settle();
+        let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some(section),
+            "{scenario}: the bar names the open section"
+        );
+        let headings: Vec<String> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.role() == ui::accesskit::Role::Heading)
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        assert!(
+            !headings.iter().any(|heading| heading == section),
+            "{scenario}: the page repeats no title: {headings:?}"
+        );
+    }
+}
+
+#[test]
+fn the_window_search_narrows_the_cities_to_add() {
+    use ui::widget::{FindOptions, InPlace, SearchDriver};
+    let mut app = TestApp::<ClocksShell>::capture_at(Some("world"), (1280, 800)).unwrap();
+    let targets = app.harness().targets();
+    assert!(
+        targets.contains_key("clocks.world.add.europe-paris")
+            && targets.contains_key("clocks.world.add.asia-kolkata"),
+        "well-known cities are offered before anything is typed"
+    );
+    assert!(
+        !targets.contains_key("clocks.world.add.europe-london"),
+        "London is shown already, so it is not offered"
+    );
+    app.with_surface::<super::ClocksApp, _>(|surface| {
+        assert_eq!(
+            InPlace::of(surface),
+            InPlace::List,
+            "the search narrows a list"
+        );
+        let mut driver = SearchDriver::default();
+        driver.open(InPlace::List);
+        driver.drive(surface, "paris", FindOptions::default(), None, false);
+    })
+    .unwrap();
+    app.settle();
+    let targets = app.harness().targets();
+    assert!(targets.contains_key("clocks.world.add.europe-paris"));
+    assert!(!targets.contains_key("clocks.world.add.asia-kolkata"));
+    assert!(
+        !targets.contains_key("clocks.world.search"),
+        "the page draws no field of its own"
+    );
+}
+
+/// The timer setup fills the page's width: the custom timer takes what the
+/// quick starts beside it leave, so its duration fields stand in one row
+/// and nothing past them is left empty.
+#[test]
+fn the_timer_setup_fills_the_width_of_the_page() {
+    let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (1280, 800)).unwrap();
+    let harness = app.harness();
+    let targets = harness.targets();
+    let at = |id: &str| {
+        targets
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| panic!("missing {id}"))
+    };
+    let hours = at("clocks.timer.custom.hours");
+    let seconds = at("clocks.timer.custom.seconds");
+    assert!(
+        (hours.y0 - seconds.y0).abs() < 0.5,
+        "the duration fields share one row: {hours:?} {seconds:?}"
+    );
+    let label = at("clocks.timer.custom.label");
+    let quick = harness
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            node.label()
+                .is_some_and(|label| label.starts_with("Laundry"))
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .expect("the Laundry quick start");
+    assert!(
+        quick.x0 > label.x1,
+        "the quick starts stand beside the custom timer: {quick:?} {label:?}"
+    );
+    assert!(
+        quick.x1 > 1280.0 * 0.75,
+        "the quick starts reach the page's trailing side: {quick:?}"
+    );
 }

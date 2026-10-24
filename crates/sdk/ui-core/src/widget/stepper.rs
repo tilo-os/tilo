@@ -247,7 +247,7 @@ impl<'a> StepperFace<'a> {
                 ctx.scene.fill(
                     Fill::NonZero,
                     ctx.transform,
-                    colors.intent.neutral_fill,
+                    colors.intent.value_fill,
                     None,
                     &Circle::new(centre, radius),
                 );

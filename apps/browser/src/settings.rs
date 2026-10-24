@@ -470,7 +470,7 @@ pub(crate) fn homepage_of(value: &str) -> Option<String> {
         return crate::actions::normalized_bookmark_url(value);
     }
     crate::omnibox::looks_like_address(value)
-        .then(|| crate::actions::normalized_bookmark_url(&format!("https://{value}")))
+        .then(|| crate::actions::normalized_bookmark_url(&crate::omnibox::address_target(value)))
         .flatten()
 }
 
@@ -609,7 +609,7 @@ mod tests {
             ("example.com", Some("https://example.com/")),
             ("  news.example/today ", Some("https://news.example/today")),
             ("http://intranet.example", Some("http://intranet.example/")),
-            ("localhost:3000", Some("https://localhost:3000/")),
+            ("localhost:3000", Some("http://localhost:3000/")),
             ("exa", None),
             ("example.", None),
             ("file:///etc/passwd", None),

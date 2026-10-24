@@ -3262,6 +3262,58 @@ impl ForeignFrameStore {
         })
     }
 
+    /// What differs between `id`'s snapshots numbered `previous` and
+    /// `current` ([`FrameSnapshot::seq`]), as whole pixels of the snapshot.
+    /// `None` when that is not known: the snapshot is composited from
+    /// subsurfaces or resampled, or the history between them is incomplete.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "each edge is rounded outwards and clamped into the u32 window first"
+    )]
+    pub fn snapshot_changes(
+        &self,
+        id: SurfaceId,
+        previous: u64,
+        current: u64,
+    ) -> Option<Vec<(u32, u32, u32, u32)>> {
+        self.with_frames(id, |guard, children| {
+            if !children.is_empty() {
+                return None;
+            }
+            let layout = layout_of(guard, id, &[]).filter(|l| l.canvas.root_is_canvas)?;
+            let entry = guard.get(&id)?;
+            let rects =
+                entry
+                    .damage_history
+                    .between(previous, current, (entry.width, entry.height))?;
+            let (x, y, width, height) = layout.content;
+            let window = Rect::new(
+                f64::from(x),
+                f64::from(y),
+                f64::from(x) + f64::from(width),
+                f64::from(y) + f64::from(height),
+            );
+            Some(
+                rects
+                    .into_iter()
+                    .map(|rect| rect.intersect(window).expand())
+                    .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+                    .map(|rect| {
+                        let left = (rect.x0 - f64::from(x)).max(0.0) as u32;
+                        let top = (rect.y0 - f64::from(y)).max(0.0) as u32;
+                        (
+                            left,
+                            top,
+                            (rect.width() as u32).min(width.saturating_sub(left)),
+                            (rect.height() as u32).min(height.saturating_sub(top)),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+    }
+
     /// Record that the last capture failed and drop the stale frame.
     ///
     /// Two things read it: the window stops waiting (shown at once rather
@@ -6398,6 +6450,40 @@ mod tests {
     /// A toolkit drawing its own shadow commits a buffer bigger than its
     /// window and says where the window is. The tile shows that rectangle —
     /// shadow and resize border are not part of a tiled window.
+    #[test]
+    fn a_snapshot_says_what_changed_within_the_window() {
+        let id = sid(700);
+        store().forget(id);
+        let (w, h) = (20u32, 16u32);
+        let rgba = numbered_frame(w, h);
+        store().publish_rgba(id, &rgba, w, h);
+        store().note_window_geometry(id, Some(geometry(3, 2, 12, 10)));
+        let first = store().snapshot(id).expect("frame").seq;
+
+        store().publish_damaged_rgba_for_test(
+            id,
+            &rgba,
+            (w, h),
+            vec![Rect::new(5.0, 4.0, 7.0, 5.0), Rect::new(0.0, 0.0, 2.0, 2.0)],
+        );
+        let second = store().snapshot(id).expect("frame").seq;
+        assert_eq!(
+            store().snapshot_changes(id, first, second),
+            Some(vec![(2, 2, 2, 1)]),
+            "in the window's pixels, and nothing of the shadow around it"
+        );
+
+        store().publish_rgba(id, &rgba, w, h);
+        let third = store().snapshot(id).expect("frame").seq;
+        assert_eq!(store().snapshot_changes(id, second, third), None);
+        assert_eq!(
+            store().snapshot_changes(id, first, third),
+            None,
+            "a frame whose damage is unknown changed all of it"
+        );
+        store().forget(id);
+    }
+
     #[test]
     fn a_declared_window_geometry_crops_the_frame_to_the_window() {
         let id = sid(60);

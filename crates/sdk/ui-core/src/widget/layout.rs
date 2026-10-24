@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use taffy::style_helpers::length;
-use taffy::{AvailableSpace, LengthPercentage, NodeId, Size, TaffyTree};
+use taffy::{AvailableSpace, Dimension, LengthPercentage, NodeId, Size, TaffyTree};
 
 use super::Widget;
 use crate::Theme;
@@ -177,12 +177,21 @@ pub enum WidgetLayoutError {
     #[error(transparent)]
     Taffy(#[from] taffy::TaffyError),
     /// `still_changing` names the widgets whose style or manual placement
-    /// still changed in the last pass, so the one that oscillates is known.
+    /// still changed in the last pass, so the one that oscillates is known;
+    /// `passes` gives each one's solved size over the last passes and
+    /// `available` the space offered, so the geometry that loops can be
+    /// rebuilt in a test.
     #[error(
-        "widget layout styles did not settle after eight adjustments; still changing: {}",
-        still_changing.join(", ")
+        "widget layout styles did not settle after eight adjustments in {available}; still \
+         changing: {}; solved sizes by pass: {}",
+        still_changing.join(", "),
+        passes.join("; ")
     )]
-    DidNotSettle { still_changing: Vec<&'static str> },
+    DidNotSettle {
+        still_changing: Vec<&'static str>,
+        passes: Vec<String>,
+        available: String,
+    },
     #[error("widget composition did not settle after eight layout passes")]
     CompositionDidNotSettle,
     #[error("manual layout nesting exceeds 32 levels")]
@@ -195,6 +204,42 @@ pub enum WidgetLayoutError {
     UnplacedManualChild,
     #[error("manual child {0} was placed more than once")]
     DuplicateManualPlacement(usize),
+}
+
+/// The frames a host skipped because their layout failed, and when it last
+/// said so. Every host (native, headless, the browser) skips such a frame
+/// and keeps showing the last one, so input still lands and the next frame
+/// lays out again. A layout that keeps failing would fail on every frame,
+/// so the first failure is reported in full and later ones at most once a
+/// minute, with how many frames were skipped since.
+#[derive(Debug, Default)]
+pub struct SkippedFrames {
+    reported: Option<crate::time::Instant>,
+    unreported: u64,
+}
+
+impl SkippedFrames {
+    const QUIET: crate::time::Duration = crate::time::Duration::from_secs(60);
+
+    /// Note a frame skipped for `error` at `now`; the line to log, when one
+    /// is due.
+    pub fn skip(&mut self, error: &WidgetLayoutError, now: crate::time::Instant) -> Option<String> {
+        self.unreported = self.unreported.saturating_add(1);
+        if self
+            .reported
+            .is_some_and(|reported| now.saturating_duration_since(reported) < Self::QUIET)
+        {
+            return None;
+        }
+        let line = match std::mem::take(&mut self.unreported) {
+            1 => format!("widget layout failed; skipping the frame: {error}"),
+            skipped => format!(
+                "widget layout failed; skipped {skipped} frames since the last report: {error}"
+            ),
+        };
+        self.reported = Some(now);
+        Some(line)
+    }
 }
 
 /// Measure the host tree and settle allocation-dependent styles before calling
@@ -303,7 +348,21 @@ pub(super) unsafe fn compute_widget_layout_depth(
         super::manual::reset_region(policy, taffy, *node)?;
     }
     let mut still_changing = Vec::new();
+    // The last passes' solved sizes of the nodes that changed in them.
+    let mut recent: std::collections::VecDeque<Vec<(NodeId, String)>> =
+        std::collections::VecDeque::new();
     for _ in 0..8 {
+        if !still_changing.is_empty() {
+            if recent.len() == 3 {
+                recent.pop_front();
+            }
+            recent.push_back(
+                still_changing
+                    .iter()
+                    .map(|&node| (node, solved_node(taffy, node)))
+                    .collect(),
+            );
+        }
         still_changing.clear();
         solve_layout(taffy, root, available, &mut |known, available, node| {
             // SAFETY: caller owns the stable matching tree, each callback is
@@ -353,14 +412,60 @@ pub(super) unsafe fn compute_widget_layout_depth(
             return Ok(());
         }
     }
+    if recent.len() == 3 {
+        recent.pop_front();
+    }
+    recent.push_back(
+        still_changing
+            .iter()
+            .map(|&node| (node, solved_node(taffy, node)))
+            .collect(),
+    );
     // Named once it gave up, outside every owner's lease.
+    let passes = still_changing
+        .iter()
+        .map(|&node| {
+            let sizes: Vec<String> = recent
+                .iter()
+                .filter_map(|pass| pass.iter().find(|(at, _)| *at == node))
+                .map(|(_, solved)| solved.clone())
+                .collect();
+            // SAFETY: the caller's exact live-tree ownership contract.
+            let name = unsafe { widget_name(bindings, nodes, node) };
+            format!("{name} {}", sizes.join(" -> "))
+        })
+        .collect();
     let mut still_changing: Vec<&'static str> = still_changing
         .into_iter()
         .map(|node| unsafe { widget_name(bindings, nodes, node) })
         .collect();
     still_changing.sort_unstable();
     still_changing.dedup();
-    Err(WidgetLayoutError::DidNotSettle { still_changing })
+    Err(WidgetLayoutError::DidNotSettle {
+        still_changing,
+        passes,
+        available: format!("{available:?}"),
+    })
+}
+
+/// `node`'s unrounded solved size, its minimum height and its trailing
+/// padding (where a scroll view reserves its bar), for an unsettled layout's
+/// error.
+fn solved_node(taffy: &TaffyTree<()>, node: NodeId) -> String {
+    let layout = taffy.unrounded_layout(node);
+    let min_height = taffy
+        .style(node)
+        .map_or(Dimension::auto(), |style| style.min_size.height)
+        .into_raw();
+    let min_height = match min_height.tag() {
+        taffy::CompactLength::LENGTH_TAG => format!("{}px", min_height.value()),
+        taffy::CompactLength::PERCENT_TAG => format!("{}%", min_height.value() * 100.0),
+        _ => "auto".to_owned(),
+    };
+    format!(
+        "{}x{} (min height {min_height}, padding right {})",
+        layout.size.width, layout.size.height, layout.padding.right
+    )
 }
 
 /// The concrete type of the widget at `node`, for naming it in an error.
@@ -1123,7 +1228,7 @@ mod tests {
             };
             // The error names the widget that kept changing.
             match result {
-                Err(WidgetLayoutError::DidNotSettle { still_changing }) => {
+                Err(WidgetLayoutError::DidNotSettle { still_changing, .. }) => {
                     assert_eq!(still_changing, [std::any::type_name::<UnsettledStyles>()])
                 }
                 other => panic!("an oscillating style must not settle: {other:?}"),

@@ -28,6 +28,36 @@ Each site gets an isolated temporary profile. Its first run uses that fresh prof
 
 The harness saves raw results, environment/runtime/filter hashes, screenshots, and helper logs. Each pacing result includes `frameTimestampsMs` (Node process monotonic milliseconds) and `rawFrameIntervalsMs`, so its interval summary and delivered FPS can be recomputed. A failed warm reset stops that site, preserves earlier samples, and records the failed reset in JSON and Markdown. Invalid loads, non-scrolling pages, consent redirects, and timeouts are failures or unavailable metrics, never zero-time successes. Small samples and live websites are unsuitable for broad performance claims. Compare repeat runs on the same machine and configuration; per-run system load is recorded because concurrent development builds can affect results.
 
+## Native typing and retained-page regressions
+
+```sh
+python3 -m unittest discover -s scripts/browser -p 'test_benchmark_input.py'
+python3 scripts/browser/benchmark-input.py target/chromium/tilo-chromium-host \
+  --output target/input-1280.json
+python3 scripts/browser/benchmark-input.py target/chromium/tilo-chromium-host \
+  --width 3840 --height 2160 --output target/input-3840.json
+```
+
+Each native key press/release must produce a complete CPU frame whose pixel
+marker identifies the input's actual text length. An unrelated frame or a missing
+response cannot count as success. Reports retain every latency sample, the host
+executable digest and load per CPU before and after. Linux runs also record
+memory pressure and reject full-stall averages above 1%. A busy or swapping host
+invalidates the run rather than producing a misleading comparison; use the same machine,
+viewport and load limit for both revisions. Outputs are never overwritten.
+
+These numbers exclude Rust/Vello and display presentation. They cannot establish
+parity with a native Chromium window. Run the presentation diagnostics below as
+well before making end-to-end responsiveness claims.
+
+The Browser unit test `hosted_address_edits_retain_the_page_and_its_viewport`
+checks that host address-bar edits retain the WebView rather than resizing a new
+one per character, while opening Find still changes the composition. The host's
+protocol tests pin the single-copy frame packet to the existing wire format,
+including tab routing; shared-host frame tests verify forwarding without conversion.
+`t outputs chromium-host` builds and tests the engine remotely and retrieves its
+complete runnable directory for a local browser launch.
+
 ## Actual browser-window presentation diagnostics
 
 The engine benchmark above does not measure when the Rust browser window displays

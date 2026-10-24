@@ -1,0 +1,4 @@
+{"manifest_version": 3, "name": "Badger", "version": "1.0",
+ "action": {"default_title": "Clip this page"},
+ "permissions": ["activeTab", "scripting"],
+ "background": {"service_worker": "worker.js"}}

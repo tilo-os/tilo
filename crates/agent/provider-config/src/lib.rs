@@ -442,6 +442,13 @@ pub struct ProviderProfile {
     /// `messages`, `tools` and `tool_choice` cannot be listed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub omit_params: Vec<String>,
+    /// The `OpenAI` API an OpenAI-compatible profile's agent turns take.
+    /// `None` takes Responses at `OpenAI`'s own API, whose reasoning models
+    /// call tools only there, and chat completions at any other endpoint
+    /// ([`transform::openai_api`]). A `ChatGPT` sign-in always takes
+    /// Responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_api: Option<OpenAiApi>,
 }
 
 settings_store::read_through_json_value!(ProviderProfile);
@@ -469,6 +476,18 @@ impl TokenLimitParam {
         }
     }
 }
+
+/// The request API of an OpenAI-compatible endpoint's agent turns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", rename_all = "snake_case")]
+pub enum OpenAiApi {
+    /// `POST /chat/completions`, which every compatible server speaks.
+    ChatCompletions,
+    /// `POST /responses`.
+    Responses,
+}
+
+settings_store::read_through_json_value!(OpenAiApi);
 
 /// Where a provider takes its reasoning effort.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -523,6 +542,7 @@ impl Default for ProviderProfile {
             token_limit_param: None,
             reasoning: None,
             omit_params: Vec::new(),
+            openai_api: None,
         }
     }
 }
@@ -555,6 +575,7 @@ impl ProviderProfile {
             token_limit_param: None,
             reasoning: None,
             omit_params: Vec::new(),
+            openai_api: None,
         }
     }
 
@@ -578,6 +599,7 @@ impl ProviderProfile {
             token_limit_param: None,
             reasoning: None,
             omit_params: Vec::new(),
+            openai_api: None,
         }
     }
 
@@ -606,6 +628,7 @@ impl ProviderProfile {
             token_limit_param: None,
             reasoning: None,
             omit_params: Vec::new(),
+            openai_api: None,
         }
     }
 

@@ -19,11 +19,13 @@ use ui::tokens::{Rhythm, TextRole};
 use ui::widget::data_table::{CellAlign, ColumnDef, ColumnWidth, DataTable, TableSort};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Badge, Banner, Button, ButtonRole, ChipStyle, Column, Decorator, Dropdown, Element, EmptyState,
-    Field, FormControl, LabelPlacement, ModalDialog, NavItem, NavList, NavSection, Property,
-    PropertyList, Row, Scrollable, Section, SegmentedStyle, Spacer, StatGroup, StatTile, Text,
-    TextInput, TextInputKind, Toggle, ToggleGroup, Tone, Widget,
+    Banner, Button, Column, Decorator, Dropdown, Element, EmptyState, Field, FormControl,
+    LabelPlacement, ModalDialog, NavItem, NavList, NavSection, Property, PropertyList, Row,
+    Scrollable, Section, StatGroup, StatTile, Text, TextInput, TextInputKind, Toggle, ToggleGroup,
+    Tone, Widget,
 };
+
+use ui::window_toolbar::{ToolbarAction, ToolbarView, ToolbarViews};
 
 use crate::model::{Action, FirewallConfig, Proto, Rule, RuleId, ServiceCatalog, Zone, ZoneKind};
 
@@ -118,6 +120,14 @@ pub(crate) enum Tab {
 impl Tab {
     pub(crate) const ALL: [Tab; 2] = [Tab::Rules, Tab::Services];
 
+    /// The view's id in the window bar's switcher.
+    pub(crate) fn view_id(self) -> &'static str {
+        match self {
+            Tab::Rules => "firewall.view.rules",
+            Tab::Services => "firewall.view.services",
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Tab::Rules => "Rules",
@@ -200,100 +210,56 @@ pub(crate) fn zone_id(zone: ZoneKind) -> String {
     format!("zone:{}", zone.name())
 }
 
-/// The content header's controls: the firewall's two switches and Apply.
-pub(crate) fn header_actions(
-    intents: &Intents,
-    enabled: &LocalState<bool>,
-    panic: &LocalState<bool>,
-) -> Vec<Element> {
-    let apply = intents.clone();
-    vec![
-        Box::new(LabelledSwitch::new(
-            "Firewall",
-            "firewall-enabled",
-            enabled.clone(),
-        )),
-        Box::new(LabelledSwitch::new(
-            "Panic mode",
-            "firewall-panic",
-            panic.clone(),
-        )),
-        Box::new(
-            Button::new("firewall-apply", "Apply")
-                .role(ButtonRole::Primary)
-                .tooltip("Apply the configuration to the system")
-                .on_effect(move || apply.push(Intent::Apply)),
-        ),
-    ]
-}
+/// The window bar's action that turns the firewall on and off.
+pub(crate) const FIREWALL_ON: &str = "firewall.enabled";
+/// The window bar's action that enters and leaves panic mode.
+pub(crate) const PANIC_MODE: &str = "firewall.panic";
+/// The window bar's action that applies the configuration to the system.
+pub(crate) const APPLY: &str = "firewall.apply";
+/// The window bar's action that opens the add-rule dialog.
+pub(crate) const ADD_RULE: &str = "firewall.add-rule";
 
-/// A switch with its name beside it, as one header action: the row keeps
-/// the name and the switch together, and the overflow menu lists it by that
-/// name with its state.
-struct LabelledSwitch {
-    row: Row,
-    name: &'static str,
-    id: String,
-    state: LocalState<bool>,
-}
-
-impl LabelledSwitch {
-    fn new(name: &'static str, id: &str, state: LocalState<bool>) -> Self {
-        let row = Row::new()
-            .no_wrap()
-            .push(Box::new(Text::new(name).with_role(TextRole::Label)))
-            .push(Box::new(
-                Toggle::from_state(&state)
-                    .with_id(id)
-                    .with_accessible_name(name),
-            ));
-        Self {
-            row,
-            name,
-            id: id.to_string(),
-            state,
-        }
-    }
-}
-
-impl Decorator for LabelledSwitch {
-    type Inner = Row;
-
-    fn inner(&self) -> &Row {
-        &self.row
-    }
-
-    fn inner_mut(&mut self) -> &mut Row {
-        &mut self.row
-    }
-
-    fn accessibility(&self) -> Option<AccessNode> {
-        Some(
-            ui::widget::toggle_accessibility(
-                self.state.with(|on| *on),
-                false,
-                true,
-                Some(self.name),
-            )
-            .with_semantic_key(&self.id)
-            .with_action_target(&self.id),
+/// The firewall's commands in the window bar: its switch, Apply, Add rule
+/// while the rules show, and panic mode in the bar's menu.
+pub(crate) fn window_actions(enabled: bool, panic: bool, tab: Tab) -> Vec<ToolbarAction> {
+    let mut actions = vec![
+        // The switch is named by what a press does; it shows on while the
+        // rules are enforced.
+        ToolbarAction::new(
+            FIREWALL_ON,
+            Icon::Shield.name(),
+            if enabled {
+                "Turn off the firewall"
+            } else {
+                "Turn on the firewall"
+            },
         )
+        .on(enabled),
+        ToolbarAction::new(APPLY, Icon::Upload.name(), "Apply the rules to the system"),
+    ];
+    if tab == Tab::Rules {
+        actions.push(ToolbarAction::new(ADD_RULE, Icon::Plus.name(), "Add rule"));
     }
+    actions.push(
+        ToolbarAction::new(PANIC_MODE, Icon::Ban.name(), "Panic mode")
+            .on(panic)
+            .in_menu(),
+    );
+    actions
+}
 
-    fn perform_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        _key_path: &[u64],
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
-    ) -> bool {
-        match action {
-            ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck => {
-                self.state.update(|on| *on = !*on);
-                true
-            }
-            _ => self.row.perform_action(action, &[], state, path),
-        }
+/// The zone's two views, as the window bar's switcher.
+pub(crate) fn window_views(tab: Tab) -> ToolbarViews {
+    ToolbarViews {
+        name: "View".to_owned(),
+        choices: Tab::ALL
+            .into_iter()
+            .map(|tab| ToolbarView {
+                id: tab.view_id().to_owned(),
+                label: tab.label().to_owned(),
+            })
+            .collect(),
+        chosen: tab.view_id().to_owned(),
     }
 }
 
@@ -349,19 +315,15 @@ pub(crate) fn zone_page(
             Column::push,
         )));
     }
-    let tab = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(tab_bar(model.tab, intents)));
     let tab = match model.tab {
-        Tab::Rules => tab.push(rules(model, intents, switches)),
-        Tab::Services => tab.push(Box::new(services(model.zone, model.wide, switches))),
+        Tab::Rules => rules(model, intents, switches),
+        Tab::Services => Box::new(services(model.zone, model.wide, switches)),
     };
     page = page
         .push(Box::new(zone_status(model, intents)))
         .push(Box::new(stats(model.zone)))
         .push(Box::new(details(model.zone)))
-        .push(Box::new(tab));
+        .push(tab);
     if model.adding {
         page = page.push(Box::new(add_rule_dialog(
             model.zone.kind,
@@ -400,24 +362,23 @@ fn banners(config: &FirewallConfig) -> Vec<Element> {
 /// Whether this zone is the active one, and what it is for.
 fn zone_status(model: &PageModel<'_>, intents: &Intents) -> Column {
     let active = model.zone.kind == model.config.default_zone;
-    let status: Element = if active {
-        Box::new(Badge::text("Active zone").style(ChipStyle::Tinted(Tone::Success)))
-    } else {
+    let mut column = Column::new().with_intrinsic_height().with_no_padding();
+    // The zone list marks the active zone; the page offers to make another
+    // one active, and says nothing more about it.
+    if !active {
         let intents = intents.clone();
-        Box::new(
-            Button::new("firewall-make-active", "Make active zone")
-                .on_effect(move || intents.push(Intent::MakeActive)),
-        )
-    };
-    Column::new()
-        .with_intrinsic_height()
-        .with_no_padding()
-        .push(Box::new(Row::new().push(status)))
-        .push(Box::new(
-            Text::new(model.zone.kind.description())
-                .with_role(TextRole::Body)
-                .dimmed(),
-        ))
+        column = column.push(Box::new(
+            Row::new().push(Box::new(
+                Button::new("firewall-make-active", "Make active zone")
+                    .on_effect(move || intents.push(Intent::MakeActive)),
+            )),
+        ));
+    }
+    column.push(Box::new(
+        Text::new(model.zone.kind.description())
+            .with_role(TextRole::Body)
+            .dimmed(),
+    ))
 }
 
 fn stats(zone: &Zone) -> StatGroup {
@@ -447,36 +408,6 @@ fn details(zone: &Zone) -> Section {
             Property::new("Masquerading", masquerading),
         ]))],
     )
-}
-
-/// The page's two halves, and on the rules half the command that adds one.
-fn tab_bar(selected: Tab, intents: &Intents) -> Row {
-    let tab_intents = intents.clone();
-    let index = Tab::ALL
-        .iter()
-        .position(|tab| *tab == selected)
-        .unwrap_or(0);
-    let tabs = ToggleGroup::new(
-        Tab::ALL
-            .iter()
-            .map(|tab| Segment::new(tab.label()))
-            .collect(),
-        index,
-    )
-    .with_style(SegmentedStyle::Tabs)
-    .on_view("firewall-tabs", move |i| {
-        if let Some(tab) = Tab::ALL.get(i) {
-            tab_intents.push(Intent::SetTab(*tab));
-        }
-    });
-    let bar = Row::new().no_wrap().push(Box::new(tabs));
-    if selected != Tab::Rules {
-        return bar;
-    }
-    let add = intents.clone();
-    bar.push(Box::new(Spacer::new())).push(Box::new(
-        Button::new("firewall-rule-new", "Add rule").on_view(move || add.push(Intent::OpenAddRule)),
-    ))
 }
 
 /// One row of the rules table.
