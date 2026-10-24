@@ -386,4 +386,106 @@ mod tests {
             .is_empty()));
         assert_eq!(bar().location, None);
     }
+
+    /// Press the notice's action `index` in a bar `width` wide, by pointer
+    /// or through its semantic action.
+    fn press_notice(app: &mut TestApp<SampleCamera>, width: f64, semantic: bool) {
+        let harness = app.harness();
+        let pressed = if semantic {
+            harness.invoke_window_notice_action(width, 0)
+        } else {
+            harness.click_window_notice_action(width, 0)
+        };
+        pressed.expect("the notice's action is in the bar");
+        app.settle();
+    }
+
+    /// The labels of the notice's buttons in a bar `width` wide.
+    fn notice_buttons(app: &mut TestApp<SampleCamera>, width: f64) -> Vec<String> {
+        app.harness()
+            .window_bar_notice(width)
+            .expect("the notice is up")
+            .buttons
+            .into_iter()
+            .map(|button| button.name)
+            .collect()
+    }
+
+    const WAYS: [(f64, bool); 4] = [
+        (1280.0, false),
+        (1280.0, true),
+        (420.0, false),
+        (420.0, true),
+    ];
+
+    /// A scan that failed asks to try again, and carries Try again: pressed
+    /// by pointer or through its semantic action, wide or compact, it scans
+    /// the page again.
+    #[test]
+    fn a_failed_scans_try_again_scans_the_page_again() {
+        for (width, semantic) in WAYS {
+            let mut app = opened();
+            camera(&mut app, |camera| {
+                camera.show_screen(Screen::Document);
+                camera.show_with_action(
+                    crate::document_scan::capture_error_message("Device busy").into(),
+                    super::super::notice::NoticeAction::ScanAgain,
+                );
+            });
+            app.settle();
+            assert_eq!(notice_buttons(&mut app, width), ["Try again"]);
+            let before = camera(&mut app, |camera| camera.document_scan.pages.len());
+            press_notice(&mut app, width, semantic);
+            assert_eq!(
+                camera(&mut app, |camera| camera.document_scan.pages.len()),
+                before + 1,
+                "Try again scanned a page ({width}, semantic: {semantic})"
+            );
+        }
+    }
+
+    /// Text recognition that could not start carries Try again, which
+    /// starts it again.
+    #[test]
+    fn recognitions_try_again_starts_it_again() {
+        for (width, semantic) in WAYS {
+            let mut app = opened();
+            camera(&mut app, |camera| {
+                camera.show_screen(Screen::Document);
+                camera.capture_document_page();
+                camera.show_with_action(
+                    "Text recognition could not start. Try again in a moment.".into(),
+                    super::super::notice::NoticeAction::RecognizeAgain,
+                );
+            });
+            app.settle();
+            assert_eq!(notice_buttons(&mut app, width), ["Try again"]);
+            press_notice(&mut app, width, semantic);
+            assert!(
+                camera(&mut app, |camera| camera.document_job.is_some()),
+                "recognition started again ({width}, semantic: {semantic})"
+            );
+        }
+    }
+
+    /// Finding no camera asks to refresh, and carries Refresh, which looks
+    /// for cameras again.
+    #[test]
+    fn no_cameras_refresh_looks_again() {
+        for (width, semantic) in WAYS {
+            let mut app = opened();
+            camera(&mut app, |camera| {
+                camera.retry_camera();
+                camera.camera_issue = Some(super::super::CameraIssue::StartFailed);
+            });
+            app.settle();
+            assert_eq!(notice_buttons(&mut app, width), ["Refresh"]);
+            press_notice(&mut app, width, semantic);
+            assert_eq!(
+                camera(&mut app, |camera| camera.camera_issue),
+                None,
+                "Refresh looked for cameras again ({width}, semantic: {semantic})"
+            );
+        }
+    }
 }

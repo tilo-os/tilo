@@ -369,6 +369,10 @@ pub struct CameraApp {
     scan_gen: (u32, u32),
     /// The result of the last action, shown for a notice's lifetime.
     toast: Transient<String>,
+    /// What the person can do about the message up, when it asks them to
+    /// act: kept with the message it belongs to, so a later message without
+    /// one shows none.
+    toast_action: Option<(String, notice::NoticeAction)>,
     /// The last copy, whose outcome can arrive after its confirmation.
     copy: ui::CopyWatch,
     last_mouse: Point,
@@ -541,6 +545,7 @@ impl CameraApp {
             scanned: None,
             scan_gen: (0, 0),
             toast: Transient::new(),
+            toast_action: None,
             copy: ui::CopyWatch::default(),
             last_mouse: Point::new(-1_000.0, -1_000.0),
             document_scan: crate::document_scan::ScanSession::default(),
@@ -1572,8 +1577,10 @@ impl CameraApp {
         if spawn.is_err() {
             self.document_job = None;
             self.document_job_kind = None;
-            self.toast
-                .show("Text recognition could not start. Try again in a moment.".into());
+            self.show_with_action(
+                "Text recognition could not start. Try again in a moment.".into(),
+                notice::NoticeAction::RecognizeAgain,
+            );
         }
     }
 
@@ -1661,8 +1668,10 @@ impl CameraApp {
                     .show(format!("Page {} captured", self.document_scan.pages.len()));
             }
             DocumentJobResult::Capture(Err(error)) => {
-                self.toast
-                    .show(crate::document_scan::capture_error_message(&error).into());
+                self.show_with_action(
+                    crate::document_scan::capture_error_message(&error).into(),
+                    notice::NoticeAction::ScanAgain,
+                );
                 terminal_error = Some(("camera.document_capture_failed", error));
             }
             DocumentJobResult::Recognize {
@@ -2238,11 +2247,14 @@ impl CameraApp {
         }
         self.camera_issue = None;
         self.chooser.close();
-        self.toast.show(if devices.is_empty() {
-            "No cameras found. Connect one, then refresh".into()
+        if devices.is_empty() {
+            self.show_with_action(
+                "No cameras found. Connect one, then refresh".into(),
+                notice::NoticeAction::RefreshCameras,
+            );
         } else {
-            "Refreshing camera".into()
-        });
+            self.toast.show("Refreshing camera".into());
+        }
     }
 
     fn open_camera_privacy_settings(&mut self) {
@@ -2807,13 +2819,14 @@ impl Widget for CameraApp {
             }
         }
         self.take_window_toolbar_events();
+        self.take_notice_action();
         self.declare_window_toolbar();
         self.publish_notice();
     }
 
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // The window bar's slots are pressed between events.
-        if self.take_window_toolbar_events() {
+        if self.take_window_toolbar_events() | self.take_notice_action() {
             self.dirty = true;
         }
         self.declare_window_toolbar();
