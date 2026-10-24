@@ -223,15 +223,15 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return;
         };
-        // A press on the arrival line's "Change" is its own: it opens the
-        // avatar menu.
-        self.presence_notice_press = self.press_presence_notice(p);
         if !self.notification_stack.rect().contains(p) {
             self.release_banner_keyboard();
         }
         self.with_maximized_group(|group| group.note_maximized_press(p));
         if let Some((display, bar)) = self.top_bar_reveal_geometry() {
             self.top_bar_reveal.on_press(p, display, bar);
+        }
+        if let Some((display, bar)) = self.fullscreen_bar_geometry() {
+            self.fullscreen_bar_reveal.on_press(p, display, bar);
         }
     }
 

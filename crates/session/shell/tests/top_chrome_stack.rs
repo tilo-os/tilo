@@ -507,3 +507,100 @@ fn an_incoming_call_never_covers_the_window_bar() {
         }
     }
 }
+
+/// A raw touch contact, as the compositor hands the chrome one.
+fn touch(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> winit::event::WindowEvent {
+    winit::event::WindowEvent::Touch(winit::event::Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase,
+        location: winit::dpi::PhysicalPosition::new(x, y),
+        force: None,
+        id,
+    })
+}
+
+impl Panel {
+    fn dispatch(&mut self, event: &winit::event::WindowEvent) -> bool {
+        let mut doc = AutoCommit::new();
+        let mut focus = None;
+        self.fb.dispatch_event(
+            event,
+            &winit::event::Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &ROOT,
+            &mut focus,
+        )
+    }
+
+    /// A finger coming off the bezel at the top edge above `x` and dragging
+    /// down.
+    fn swipe_down_from_top(&mut self, x: f64) {
+        use winit::event::TouchPhase;
+        let top = self.output.logical_rect().y0;
+        assert!(
+            self.fb
+                .host()
+                .takes_top_edge_touch(vello::kurbo::Point::new(x, top + 2.0)),
+            "the top edge is the shell's while something hides there"
+        );
+        self.dispatch(&touch(9, TouchPhase::Started, x, top + 2.0));
+        for y in [12.0, 24.0, 40.0, 60.0] {
+            self.dispatch(&touch(9, TouchPhase::Moved, x, top + y));
+        }
+        self.dispatch(&touch(9, TouchPhase::Ended, x, top + 60.0));
+    }
+}
+
+#[test]
+fn a_swipe_down_from_the_top_edge_reveals_the_bar() {
+    use tilo_desktop::chrome::TopBarPresence;
+
+    // The top bar the person hides.
+    let mut panel = Panel::new();
+    panel.fb.host_mut().set_hide_top_bar_for_tests(true);
+    panel.settle_motion();
+    assert_eq!(panel.fb.chrome().top_bar_presence(), TopBarPresence::Hidden);
+    panel.swipe_down_from_top(700.0);
+    assert_eq!(
+        panel.fb.chrome().top_bar_presence(),
+        TopBarPresence::Shown,
+        "a swipe down from the top edge shows the hidden top bar"
+    );
+    panel.fb.host_mut().set_hide_top_bar_for_tests(false);
+    panel.settle_motion();
+
+    // A fullscreen window's bar.
+    panel
+        .fb
+        .with_chrome(|chrome| chrome.set_user_fullscreen_group(Some(GROUP)));
+    panel.settle_motion();
+    assert!(
+        panel.fb.chrome().is_fullscreen(),
+        "the window is fullscreen"
+    );
+    let before = panel.group().0.group;
+    let shown = |panel: &mut Panel| {
+        panel
+            .fb
+            .host_mut()
+            .group_row_mut_for_tests(STRIP)
+            .expect("the strip has a row")
+            .groups
+            .iter()
+            .find(|g| g.id == GROUP)
+            .is_some_and(ui::widget::WindowGroup::fullscreen_bar_shown)
+    };
+    assert!(!shown(&mut panel), "fullscreen, its bar hides");
+    panel.swipe_down_from_top(700.0);
+    panel.settle();
+    assert!(
+        shown(&mut panel),
+        "a swipe down from the top edge shows the fullscreen window's bar"
+    );
+    let (after, _) = panel.group();
+    assert_eq!(
+        after.group, before,
+        "over the window, which keeps its whole size"
+    );
+    assert!(after.tab_bar.area() > 0.0, "its bar is laid out: {after:?}");
+}

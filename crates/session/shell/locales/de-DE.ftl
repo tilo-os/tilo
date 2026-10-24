@@ -3290,20 +3290,16 @@ directory-reported = Arbeitsbereich gemeldet
 directory-reported-body = Die Betreibenden wurden benachrichtigt.
 directory-report-failed = Die Meldung ist nicht angekommen
 directory-moved = { $name } ist auf deinen Host umgezogen, damit alle ihn finden und beitreten können.
-arrival-others = { $count ->
-    [one] und 1 weitere Person
-   *[other] und { $count } weitere
-}
 
 # Cursor chat: a short message beside your pointer, shown to everyone in that window.
 cursor-chat-placeholder = Sag etwas
 cursor-chat-you = Du
 
-# The line under the top bar when you arrive where people are, or someone waves.
-presence-arrival-intro-where = Andere hier sehen deinen Namen, deine Farbe und wo du in diesem Arbeitsbereich bist
-presence-arrival-intro-here = Andere hier sehen deinen Namen und deine Farbe, nie wo du bist
-presence-arrival-intro-nothing = Andere hier sehen dich nicht, und du siehst ihre Zeiger nicht
-presence-arrival-change = Ändern
+# The top bar's status when you arrive in a public workspace the first time:
+# what its people see of you, in a few words.
+presence-arrival-seen-where = Sie sehen, wo du bist
+presence-arrival-seen-here = Sie sehen, dass du da bist
+presence-arrival-seen-nothing = Sie sehen dich nicht
 profile-name-not-saved = Dein Name wurde nicht gespeichert
 profile-action-say-something = Hier etwas sagen
 cursor-chat-no-window = Zeig auf ein geteiltes Fenster, um etwas zu sagen

@@ -412,14 +412,8 @@ impl ShellOverlayHost {
                 // through; a key that chose it keeps the flight short.
                 self.latch_overview_transition();
             }
-            WorkspaceMenuChoice::NewStrip => {
-                if let Some(bar) = self
-                    .desktop_surface_mut()
-                    .and_then(tilo_desktop::composition::DesktopSurface::topbar_mut)
-                {
-                    bar.begin_new_strip();
-                }
-            }
+            // Made in the strip switcher, the one place strips are.
+            WorkspaceMenuChoice::NewStrip => self.new_strip_in_switcher(),
             WorkspaceMenuChoice::Rename => {
                 if let Some(bar) = self
                     .desktop_surface_mut()

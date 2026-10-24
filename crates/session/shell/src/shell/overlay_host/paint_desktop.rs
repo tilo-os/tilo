@@ -46,26 +46,6 @@ impl ShellOverlayHost {
                 chip.y1,
             ))]
         });
-        // The arrival line belongs to the desktop, not to the overlays: it
-        // is drawn here, beneath Quick Settings, menus, popovers, the
-        // palette and the capture bar, on the display the person is working
-        // on. It says what the top bar says (the workspace and who is
-        // here), so an overlay opening takes it away rather than leaving
-        // it under the overlay or beside it.
-        self.settle_arrival_line_under_overlays();
-        let display = self.overlay_area();
-        part_drawn(scene, PartKey::new("shell.arrival", ()), |scene| {
-            if !self.arrival_line.visible() {
-                return Vec::new();
-            }
-            self.arrival_line
-                .draw(display, scene, transform, text_renderer, theme);
-            self.arrival_line
-                .painted_bounds()
-                .map(|bounds| transform.transform_rect_bbox(bounds))
-                .into_iter()
-                .collect()
-        });
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
         let area = self.overlay_area();
@@ -92,7 +72,8 @@ impl ShellOverlayHost {
 
         // Above desktop content, below modal overlays and the permission
         // prompt, so a prompt always wins focus. Top inset keeps toasts
-        // off the clock/tray, and the windows' bars keep them lower still.
+        // off the clock/tray.
+        let window_bars = self.window_bar_rects();
         if let Some(chrome) = self.chrome.as_ref() {
             let viewport = Rect::new(
                 area.x0,
@@ -101,11 +82,16 @@ impl ShellOverlayHost {
                 area.y1,
             );
             self.notification_stack.set_viewport(viewport);
-            // Under the top bar is where the windows' bars are: banners
-            // start below the ones under the corner, so an incoming call
-            // never hides a window's History, maximize or close.
-            let bars = self.window_bars_on_screen();
-            self.notification_stack.keep_clear_of(&bars);
+            // Banners share the transients' zone with the follow bar: below
+            // it while it is up, and below any window bar they would cover.
+            let follow = self.follow_chip_rect;
+            self.notification_stack
+                .set_clear_top(if follow.is_zero_area() {
+                    0.0
+                } else {
+                    follow.y1
+                });
+            self.notification_stack.set_window_bars(window_bars);
             let stack = &mut self.notification_stack;
             part_drawn(scene, PartKey::new("shell.notifications", ()), |scene| {
                 stack.draw(
@@ -190,6 +176,7 @@ impl ShellOverlayHost {
         {
             let ringing = NotificationStack::call_ringing(&ChromeNotifications::new(chrome));
             let top = f64::from(self.chrome_top_y);
+            let window_bars = self.window_bar_rects();
             let banners = &mut self.machine_banners;
             let edges = &mut self.call_edges;
             overlay_part(scene, "shell.machine-notices", desktop, |scene| {
@@ -201,7 +188,7 @@ impl ShellOverlayHost {
                         transform,
                         text_renderer,
                         theme,
-                        viewport,
+                        (viewport, &window_bars),
                     );
                     if !banner.is_zero_area() {
                         banners.push(banner);

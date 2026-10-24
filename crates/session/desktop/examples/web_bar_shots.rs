@@ -25,7 +25,7 @@ use std::rc::Rc;
 use taffy::{Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
-    ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, OwnChip, StripPlaces,
+    ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, OwnChip,
 };
 use tilo_desktop::collaborators::{CollaboratorsModel, CollaboratorsOverlay};
 use tilo_desktop::profile_card::{
@@ -67,10 +67,6 @@ impl DesktopChromeSource for Room {
                 weekday: "Thu".into(),
                 date: "16 October".into(),
             },
-            strip_places: Some(StripPlaces::in_active_workspace(
-                &self.tree.borrow(),
-                &[StripId(10), StripId(11)],
-            )),
             own: Some(OwnChip {
                 name: MY_NAME.into(),
                 rgb: (214, 140, 96),

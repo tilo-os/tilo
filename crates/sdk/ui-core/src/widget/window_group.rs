@@ -252,6 +252,10 @@ pub struct WindowGroup {
     external_navigation: bool,
     /// Transient presentation from the parent row; never a persisted maximize.
     fullscreen_presentation: bool,
+    /// While fullscreen, the bar shows over the window because the person
+    /// reached for the top edge: drawn over the content, which keeps its
+    /// whole size.
+    fullscreen_bar_revealed: bool,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
@@ -560,6 +564,7 @@ impl WindowGroup {
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
+            fullscreen_bar_revealed: false,
             edge_drag: None,
             edge_highlight: None,
             grip_dirty: false,
@@ -624,7 +629,47 @@ impl WindowGroup {
     }
 
     fn navigation_bar_visible(&self) -> bool {
-        !self.external_navigation && !self.fullscreen_presentation
+        !self.external_navigation && (!self.fullscreen_presentation || self.fullscreen_bar_revealed)
+    }
+
+    /// The bar stands over the content rather than above it: a fullscreen
+    /// window's bar the person reached for.
+    fn bar_over_content(&self) -> bool {
+        self.fullscreen_presentation && self.fullscreen_bar_revealed && !self.external_navigation
+    }
+
+    /// Whether a fullscreen window's bar shows over it now.
+    #[must_use]
+    pub fn fullscreen_bar_shown(&self) -> bool {
+        self.bar_over_content()
+    }
+
+    /// The bar and the window's search under it.
+    fn draw_bar(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.bar.set_maximized(self.maximized);
+        self.bar
+            .set_group_focused(self.focused || self.search_active);
+        // The bar's menus stay inside the window.
+        self.bar.set_popup_area(self.rect);
+        self.bar.draw(scene, transform, tr, theme, presence);
+        self.search.set_ground(self.bar.ground_color(theme));
+        self.search.draw(scene, transform, tr, theme, presence);
+    }
+
+    /// Show or hide a fullscreen window's bar over it (the host reads the
+    /// top edge for it, `top_edge_reveal`); nothing while not fullscreen.
+    pub fn set_fullscreen_bar_revealed(&mut self, revealed: bool) {
+        if self.fullscreen_bar_revealed != revealed {
+            self.fullscreen_bar_revealed = revealed;
+            self.style_dirty = true;
+        }
     }
 
     pub(crate) fn set_fullscreen_presentation(&mut self, fullscreen: bool) {
@@ -2135,6 +2180,7 @@ impl WindowGroup {
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
+            fullscreen_bar_revealed: false,
             edge_drag: None,
             edge_highlight: None,
             grip_dirty: false,
@@ -3713,6 +3759,18 @@ impl Widget for WindowGroup {
         let bar_node = self
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
+        // Over a fullscreen window the bar takes no room of its own: the
+        // content keeps its whole size, and the bar stands over its top.
+        if self.bar_over_content()
+            && let Some(bar) = bar_node
+            && let Ok(mut bar_style) = taffy.style(bar).cloned()
+        {
+            bar_style.position = taffy::Position::Absolute;
+            bar_style.inset.top = taffy::LengthPercentageAuto::length(0.0);
+            bar_style.inset.left = taffy::LengthPercentageAuto::length(0.0);
+            bar_style.size.width = Dimension::percent(1.0);
+            let _ = taffy.set_style(bar, bar_style);
+        }
         let active_id = self.bar.active_id();
         self.offer_history_controls();
         for (id, host) in &mut self.hosts {
@@ -3893,15 +3951,9 @@ impl Widget for WindowGroup {
         }
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
-        if self.navigation_bar_visible() {
-            self.bar.set_maximized(self.maximized);
-            self.bar
-                .set_group_focused(self.focused || self.search_active);
-            // The bar's menus stay inside the window.
-            self.bar.set_popup_area(self.rect);
-            self.bar.draw(scene, transform, tr, theme, presence);
-            self.search.set_ground(self.bar.ground_color(theme));
-            self.search.draw(scene, transform, tr, theme, presence);
+        let bar_over = self.bar_over_content();
+        if self.navigation_bar_visible() && !bar_over {
+            self.draw_bar(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();
         // A tile holding a place for an app that has not arrived takes
@@ -3974,6 +4026,11 @@ impl Widget for WindowGroup {
             }
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
+        // A fullscreen window's bar the person reached for stands over its
+        // content.
+        if bar_over {
+            self.draw_bar(scene, transform, tr, theme, presence);
+        }
         if self.navigation_bar_visible() {
             let band = self.bar.get_rect().inflate(0.0, 6.0);
             self.bar.draw_holder_chip(scene, transform, tr, theme, band);

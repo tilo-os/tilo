@@ -338,12 +338,10 @@ impl ShellOverlayHost {
     }
 
     /// Bring the person into each site workspace whose join installed: its
-    /// site's app opens there (off the loop), and the arrival line names it
-    /// and who is here. While the directory sheet is up, its rows follow
-    /// the joins. Answers whether anything changed.
+    /// site's app opens there (off the loop), and the bar says who is here.
+    /// While the directory sheet is up, its rows follow the joins. Answers
+    /// whether anything changed.
     pub(super) fn pump_arrivals(&mut self) -> bool {
-        let now = Instant::now();
-        self.arrival_line.expire(now);
         if self.directory_sheet.visible() {
             self.directory_sheet.set_joins(self.peer_sync.site_joins());
         }
@@ -363,21 +361,17 @@ impl ShellOverlayHost {
                 .iter()
                 .find(|workspace| workspace.room() == arrival.room)
                 .map(|workspace| {
-                    let people = workspace
+                    workspace
                         .collaborators
                         .iter()
-                        .map(|person| crate::shell::arrival_line::Present {
-                            name: person.name.clone(),
-                            id: person.id.clone(),
-                            colour: None,
-                            is_agent: false,
-                        })
-                        .collect::<Vec<_>>();
-                    (workspace.name.clone(), people)
+                        .map(|person| (person.id.clone(), person.name.clone()))
+                        .unzip::<_, _, Vec<_>, Vec<_>>()
                 })
         };
-        if let Some((name, people)) = shown {
-            self.arrival_line.show(&name, people, now);
+        if let Some((people, names)) = shown {
+            // With nobody there it says nothing, unless the person is to
+            // be told what a public workspace's people see of them.
+            self.say_arrived(people, names);
             self.introduce_joined(arrival.room);
         }
         true

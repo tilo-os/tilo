@@ -143,6 +143,92 @@ impl TopBarReveal {
         }
         self.edge.deadline().into_iter().chain(self.edge_due).min()
     }
+
+    /// A finger swiped down from the display's top edge: show the hidden
+    /// bar, as a push against the edge does. Returns whether it changed.
+    pub(crate) fn reveal_by_touch(&mut self, now: Instant) -> bool {
+        if !self.hide {
+            return false;
+        }
+        self.edge_due = None;
+        self.edge_click = false;
+        self.edge.reveal_by_touch(now)
+    }
+
+    /// Whether the bar is hidden now: the person hides it and nothing
+    /// shows it.
+    pub(crate) fn hidden(&self) -> bool {
+        self.hide && !self.edge.shown()
+    }
+}
+
+/// A fullscreen window's bar, which hides with the rest of the desktop's
+/// chrome: reaching for the top edge brings it back over the window, by the
+/// same edge model as the top bar the person hides. A finger swipes down
+/// from the edge; the pointer pushes into it or rests there. It shows over
+/// the window, which keeps its whole size, and goes when the pointer or a
+/// tap goes elsewhere.
+#[derive(Debug, Default)]
+pub(crate) struct FullscreenBarReveal {
+    /// The fullscreen window, whose bar this is.
+    group: Option<u64>,
+    edge: TopEdgeReveal,
+}
+
+impl FullscreenBarReveal {
+    /// Follow the window that is fullscreen now; another (or none) starts
+    /// hidden.
+    pub(crate) fn follow(&mut self, group: Option<u64>) {
+        if self.group != group {
+            self.group = group;
+            self.edge.reset();
+        }
+    }
+
+    /// Whether the fullscreen window's bar shows.
+    pub(crate) fn shown(&self) -> bool {
+        self.group.is_some() && self.edge.shown()
+    }
+
+    /// The fullscreen window's group.
+    pub(crate) fn group(&self) -> Option<u64> {
+        self.group
+    }
+
+    /// A pointer sample at `p` over the window `display` with its bar at
+    /// `bar`. Returns whether it may have changed.
+    pub(crate) fn on_motion(&mut self, p: Point, display: Rect, bar: Rect, now: Instant) -> bool {
+        if self.group.is_none() || (self.edge.shown() && bar.contains(p)) {
+            return false;
+        }
+        let bars = [bar];
+        self.edge
+            .on_motion(p, &TopBarReveal::geometry(display, &bars), now)
+    }
+
+    /// A press at `p`: one in the band while the bar hides is the window's.
+    pub(crate) fn on_press(&mut self, p: Point, display: Rect, bar: Rect) {
+        if self.group.is_some() {
+            let bars = [bar];
+            self.edge
+                .on_press(p, &TopBarReveal::geometry(display, &bars));
+        }
+    }
+
+    /// A finger swiped down from the top edge: show the bar.
+    pub(crate) fn reveal_by_touch(&mut self, now: Instant) -> bool {
+        self.group.is_some() && self.edge.reveal_by_touch(now)
+    }
+
+    /// Advance the timers to `now`.
+    pub(crate) fn settle(&mut self, now: Instant) -> bool {
+        self.group.is_some() && self.edge.settle(now)
+    }
+
+    /// When [`Self::settle`] next has something to do.
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.group.and(self.edge.deadline())
+    }
 }
 
 #[cfg(test)]

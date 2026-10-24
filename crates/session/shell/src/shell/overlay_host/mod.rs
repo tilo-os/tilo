@@ -76,6 +76,7 @@ mod switcher_layer;
 mod tab_menu;
 mod task_import;
 mod top_bar_reveal;
+mod transient_zone;
 mod widget;
 mod window_toolbars;
 mod workspace_slide;
@@ -732,6 +733,11 @@ pub struct ShellOverlayHost {
     session_action_policy: crate::shell::search::providers::SessionActionPolicy,
     /// When the top bar the person hides shows over the windows.
     top_bar_reveal: top_bar_reveal::TopBarReveal,
+    /// A fullscreen window's bar, shown over it when reached for.
+    fullscreen_bar_reveal: top_bar_reveal::FullscreenBarReveal,
+    /// A finger that came down on a display's top edge while something
+    /// hides there, and where: a swipe down from it reveals that.
+    top_edge_swipe: Option<(u64, Point)>,
     /// A direct strip pan (touchpad or touch) is in progress or settling.
     /// Its frames, and the frame it comes to rest on, are composited from
     /// layers drawn before it began, so the chrome they hold (the ribbon and
@@ -859,9 +865,9 @@ pub struct ShellOverlayHost {
     peer_sync_overlay: PeerSyncOverlay,
     /// "Join a workspace…": the public workspaces, as a sheet in place.
     directory_sheet: crate::shell::directory_sheet::DirectorySheet,
-    /// The workspace a join just installed, and who is in it, for a moment
-    /// under the top bar.
-    arrival_line: crate::shell::arrival_line::ArrivalLine,
+    /// The faces the bar pulses for an arrival, until the frame bounces
+    /// them (`arrival::say_arrived`).
+    arrival_pulses: Vec<String>,
     /// Top-right notification stack, above content but below the
     /// permission prompt and modals.
     notification_stack: NotificationStack,
@@ -1019,10 +1025,8 @@ pub struct ShellOverlayHost {
     cursor_chat: cursor_chat::CursorChatComposer,
     /// You, as the people in each workspace see you.
     self_presence: presence_self::SelfPresence,
-    /// The line under the top bar: arriving where people are, a wave.
+    /// Who was here when the bar last said someone arrived.
     presence_notices: arrival::PresenceNotices,
-    /// A press landed on that line: its release is the line's too.
-    presence_notice_press: bool,
     /// A capture shows the workspace on screen as public.
     #[cfg(feature = "hosted-test-control")]
     public_for_shots: bool,
@@ -1903,6 +1907,10 @@ mod peer_cursor_tests;
 #[cfg(test)]
 #[path = "multi_display_tests.rs"]
 mod multi_display_tests;
+
+#[cfg(test)]
+#[path = "transient_zone_tests.rs"]
+mod transient_zone_tests;
 
 #[cfg(test)]
 #[path = "window_bar_location_tests.rs"]

@@ -3335,20 +3335,16 @@ directory-reported = Workspace reported
 directory-reported-body = The people who run it have been told.
 directory-report-failed = The report didn't go through
 directory-moved = { $name } moved to your host, so anyone can find and join it.
-arrival-others = { $count ->
-    [one] and 1 other
-   *[other] and { $count } others
-}
 
 # Cursor chat: a short message beside your pointer, shown to everyone in that window.
 cursor-chat-placeholder = Say something
 cursor-chat-you = You
 
-# The line under the top bar when you arrive where people are, or someone waves.
-presence-arrival-intro-where = People here see your name, your colour and where you are in this workspace
-presence-arrival-intro-here = People here see your name and your colour, never where you are
-presence-arrival-intro-nothing = People here don't see you, and you don't see their pointers
-presence-arrival-change = Change
+# The top bar's status when you arrive in a public workspace the first time:
+# what its people see of you, in a few words.
+presence-arrival-seen-where = They see where you are
+presence-arrival-seen-here = They see you're here
+presence-arrival-seen-nothing = They don't see you
 profile-name-not-saved = Your name wasn’t saved
 profile-action-say-something = Say something here
 cursor-chat-no-window = Point at a shared window to say something

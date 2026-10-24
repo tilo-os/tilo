@@ -206,13 +206,14 @@ impl super::ShellOverlayHost {
         }
     }
 
-    /// A press or release for the open labels. Returns whether it was the
-    /// switcher's.
+    /// A press or release for the open labels; a secondary press (a
+    /// long-press by touch) also on the ribbon, putting a strip's actions
+    /// out. Returns whether it was the switcher's.
     pub(super) fn route_strip_switcher_pointer(&mut self, event: &WindowEvent) -> bool {
         let WindowEvent::MouseInput { state, button, .. } = event else {
             return false;
         };
-        if *button != MouseButton::Left {
+        if !matches!(button, MouseButton::Left | MouseButton::Right) {
             return false;
         }
         if *state == ElementState::Released {
@@ -222,10 +223,13 @@ impl super::ShellOverlayHost {
             return false;
         };
         let frame = self.strip_frame();
-        let Some(answer) = self
-            .strip_navigator
-            .press_labels(&frame, p, ui::time::now())
-        else {
+        let now = ui::time::now();
+        let answer = if *button == MouseButton::Right {
+            self.strip_navigator.secondary_press(&frame, p, now)
+        } else {
+            self.strip_navigator.press_labels(&frame, p, now)
+        };
+        let Some(answer) = answer else {
             return false;
         };
         if let Some(navigation) = answer {
@@ -235,17 +239,35 @@ impl super::ShellOverlayHost {
         true
     }
 
-    /// A press at `p` on a ribbon mark or a rail segment, once nothing over
-    /// them took it. Returns whether it was theirs.
+    /// A press at `p` on a ribbon mark (which opens the labels, pinned) or
+    /// a rail segment, once nothing over them took it. Returns whether it
+    /// was theirs.
     pub(super) fn press_strip_ribbon_or_rail(&mut self, p: Point) -> bool {
         let frame = self.strip_frame();
-        let Some(navigation) = StripNavigator::ribbon_target(&frame, p)
-            .or_else(|| StripNavigator::rail_target(&frame, p))
-        else {
+        if self
+            .strip_navigator
+            .open_from_ribbon(&frame, p, ui::time::now())
+        {
+            self.publish_strip_switcher_open();
+            return true;
+        }
+        let Some(navigation) = StripNavigator::rail_target(&frame, p) else {
             return false;
         };
         self.apply_strip_navigation(navigation);
         true
+    }
+
+    /// The workspace menu's New strip: made in the switcher, the one place
+    /// strips are, with its name in place for typing.
+    pub(super) fn new_strip_in_switcher(&mut self) {
+        self.strip_switcher_revision = None;
+        self.refresh_strip_switcher_model();
+        let frame = self.strip_frame();
+        if let Some(navigation) = self.strip_navigator.new_strip(&frame, ui::time::now()) {
+            self.apply_strip_navigation(navigation);
+        }
+        self.publish_strip_switcher_open();
     }
 
     /// A wheel or two-finger scroll: over the ribbon or its labels it moves
@@ -317,7 +339,14 @@ impl super::ShellOverlayHost {
                     }
                     None
                 }
-                Command::Create(name) => state.create_strip(&name).err(),
+                // Only where the desktop's policy lets this person add one.
+                Command::Create(name) => {
+                    if state.can_add_strip() {
+                        state.create_strip(&name).err()
+                    } else {
+                        Some(tilo_desktop::i18n::t("strip-switcher-refused"))
+                    }
+                }
                 Command::Rename(strip, name) => state.rename_strip(strip, &name).err(),
                 // Offered only for an empty strip that is not the last, so
                 // a refusal means it changed meanwhile.

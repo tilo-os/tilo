@@ -8,7 +8,8 @@ use super::*;
 
 impl ShellOverlayHost {
     /// While following someone: a 2 px frame in their colour around the
-    /// work area, and a small bar at the top centre with their face,
+    /// work area, and a small bar in the transients' zone (the trailing
+    /// side under the top bar, never on a window's bar) with their face,
     /// "Following Ada" and Stop (Escape stops too). When the person's own
     /// input ends it, the bar says "Stopped following" for a moment.
     pub(super) fn draw_follow_chip(
@@ -75,7 +76,7 @@ impl ShellOverlayHost {
             text_renderer,
             theme,
             (&label, &stop_label),
-            Point::new(area.center().x, bar_top),
+            (self.transient_viewport(), &self.window_bar_rects()),
             following,
         );
         self.follow_chip_rect = chip;
@@ -105,13 +106,14 @@ impl ShellOverlayHost {
         scene.pop_layer();
     }
 
-    /// Where the follow bar and its Stop go, the bar centred on `top`'s x
-    /// just under it: their face, `label` and, while following, Stop.
+    /// Where the follow bar and its Stop go: the transients' slot in
+    /// `viewport`, below any of `window_bars` it would cover. Their face,
+    /// `label` and, while following, Stop.
     fn follow_chip_rects(
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         (label, stop_label): (&str, &str),
-        top: Point,
+        (viewport, window_bars): (Rect, &[Rect]),
         following: bool,
     ) -> (Rect, Rect) {
         let spacing = &theme.tokens.spacing;
@@ -136,8 +138,12 @@ impl ShellOverlayHost {
                 0.0
             }
             + pad;
-        let y0 = top.y + f64::from(spacing.s3);
-        let chip = Rect::new(top.x - width / 2.0, y0, top.x + width / 2.0, y0 + 40.0);
+        let chip = tilo_desktop::notifications::transient_slot(
+            viewport,
+            viewport.y0,
+            (width, 40.0),
+            window_bars,
+        );
         let stop = Rect::new(
             chip.x1 - pad - stop_width,
             chip.center().y - 14.0,

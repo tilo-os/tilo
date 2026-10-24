@@ -182,9 +182,6 @@ pub struct DesktopChromeSnapshot {
     pub viewport_size: Option<(f64, f64)>,
     pub clock_activity: Option<ClockActivity>,
     pub active_exposures: Vec<ActiveExposure>,
-    /// The active workspace's strips as named places with who is in each;
-    /// `None` keeps the bar from showing a strip switcher.
-    pub strip_places: Option<StripPlaces>,
     /// People following the room without taking part (spectators). The bar
     /// counts them beside the avatars so an audience is never invisible.
     pub watching: u32,
@@ -199,6 +196,9 @@ pub struct DesktopChromeSnapshot {
     /// The last wave at this person: the bar says who waved, for a moment
     /// after it came.
     pub waved: Option<WaveNotice>,
+    /// The person arrived where others are: their faces pulse in the bar
+    /// and a short name slides out of them, for a moment.
+    pub arrived: Option<ArrivalNotice>,
 }
 
 /// Whether the host lets the person at this desktop invite others here.
@@ -230,6 +230,50 @@ pub struct WaveNotice {
     pub at: ui::time::Instant,
 }
 
+/// The person at this desktop arrived where others are (joined the
+/// workspace, or came back to it with someone new there). The bar says so
+/// on the faces it already shows, never over the windows: those faces pulse
+/// and a short name slides out of them, then goes on its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArrivalNotice {
+    /// Who is here, by roster id: the faces that pulse.
+    pub people: Vec<String>,
+    /// Their names, in the roster's order.
+    pub names: Vec<String>,
+    /// The first time in a public workspace: what its people see of the
+    /// person, in a few words. Pressing the status opens the person's own
+    /// menu, where they choose otherwise.
+    pub seen: Option<String>,
+    /// When the person arrived.
+    pub at: ui::time::Instant,
+}
+
+impl ArrivalNotice {
+    /// What slides out of the faces: the first person's short name, and
+    /// how many others ("Ada", "Ada and 2 others"), or what the people
+    /// here see of the person when that is told.
+    #[must_use]
+    pub fn text(&self) -> String {
+        if let Some(seen) = &self.seen {
+            return seen.clone();
+        }
+        let Some(first) = self.names.first() else {
+            return String::new();
+        };
+        // A short name: the first word of the name everyone here sees.
+        let short = first.split_whitespace().next().unwrap_or(first);
+        let others = self.names.len().saturating_sub(1);
+        if others == 0 {
+            crate::i18n::t_args("topbar-arrived-one", &[("name", short.into())])
+        } else {
+            crate::i18n::t_args(
+                "topbar-arrived-more",
+                &[("name", short.into()), ("count", others.into())],
+            )
+        }
+    }
+}
+
 /// The person at this desktop, as their own avatar in the bar shows them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OwnChip {
@@ -239,54 +283,6 @@ pub struct OwnChip {
     pub rgb: (u8, u8, u8),
 }
 
-/// Which people are on which strip of the active workspace.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct StripPlaces {
-    /// The other people whose focus is on each strip other than the one
-    /// shown; strips nobody else is on may be left out. Who is with this
-    /// person is the bar's faces; the strips say who is elsewhere.
-    pub present: Vec<(tilo_desktop_model::StripId, usize)>,
-    /// Whether the bar offers adding a named strip.
-    pub can_add: bool,
-}
-
-impl StripPlaces {
-    /// Who is elsewhere in `tree`'s active workspace: the room's other
-    /// people at the strips their presence names (`others`), except the
-    /// strip shown, whose people are already the bar's faces (counting them
-    /// again there showed presence twice). Adding is offered.
-    pub fn in_active_workspace(tree: &DesktopTree, others: &[tilo_desktop_model::StripId]) -> Self {
-        let mut present: Vec<(tilo_desktop_model::StripId, usize)> = Vec::new();
-        if let Some(workspace) = tree.active_workspace() {
-            let mine = tree
-                .active_strip
-                .get(&workspace.id)
-                .copied()
-                .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
-                .or_else(|| workspace.strips.first().map(|strip| strip.id));
-            for place in others.iter().copied() {
-                if Some(place) == mine || !workspace.strips.iter().any(|strip| strip.id == place) {
-                    continue;
-                }
-                match present.iter_mut().find(|(id, _)| *id == place) {
-                    Some((_, count)) => *count = count.saturating_add(1),
-                    None => present.push((place, 1)),
-                }
-            }
-        }
-        Self {
-            present,
-            can_add: true,
-        }
-    }
-
-    pub fn people_on(&self, strip: tilo_desktop_model::StripId) -> usize {
-        self.present
-            .iter()
-            .find(|(id, _)| *id == strip)
-            .map_or(0, |(_, count)| *count)
-    }
-}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChromeIntent {
     ToggleOverview,
@@ -319,15 +315,9 @@ pub enum ChromeIntent {
     AnswerAvatarAsk,
     /// The person put the ask off ("Not now"): it goes.
     PutOffAvatarAsk,
-    /// Move to another strip of the active workspace.
-    SwitchStrip(tilo_desktop_model::StripId),
-    /// Show the active workspace's strips to choose from: a click on the
-    /// strip's name in the workspace pill.
+    /// Show the active workspace's strips to choose from, in the strip
+    /// switcher: a click on the strip's name after the workspace's.
     ShowStrips,
-    /// Add a strip with this name to the active workspace and move to it.
-    AddStrip {
-        name: String,
-    },
     /// Give the active workspace this name.
     RenameWorkspace {
         name: String,
@@ -431,46 +421,3 @@ pub trait DesktopChromeSource {
     }
 }
 pub type Chrome = std::rc::Rc<dyn DesktopChromeSource>;
-
-#[cfg(test)]
-mod strip_places_tests {
-    use super::StripPlaces;
-    use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceId};
-
-    fn tree() -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-        workspace.strips = vec![
-            Strip::new(StripId(10), "Main"),
-            Strip::new(StripId(11), "Games"),
-        ];
-        let mut tree = DesktopTree {
-            active: workspace.id,
-            workspaces: vec![workspace],
-            ..DesktopTree::default()
-        };
-        tree.active_strip.insert(WorkspaceId(1), StripId(11));
-        tree
-    }
-
-    /// Others on the strip shown are the bar's faces, not a count beside
-    /// its name; the strips count who is elsewhere.
-    #[test]
-    fn counts_only_the_people_elsewhere() {
-        let places =
-            StripPlaces::in_active_workspace(&tree(), &[StripId(11), StripId(10), StripId(11)]);
-        assert_eq!(places.people_on(StripId(11)), 0, "the strip shown");
-        assert_eq!(places.people_on(StripId(10)), 1);
-        assert!(places.can_add);
-    }
-
-    #[test]
-    fn alone_shows_no_counts_and_unknown_places_are_ignored() {
-        assert!(
-            StripPlaces::in_active_workspace(&tree(), &[])
-                .present
-                .is_empty()
-        );
-        let places = StripPlaces::in_active_workspace(&tree(), &[StripId(99)]);
-        assert!(places.present.is_empty());
-    }
-}
