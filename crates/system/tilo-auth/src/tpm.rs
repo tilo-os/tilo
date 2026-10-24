@@ -2,9 +2,12 @@
 //! policy is its authorisation value, with dictionary-attack protection on
 //! (no `noda`), so every wrong secret costs one of the TPM's tries.
 //!
-//! The object lives under the same deterministic owner-hierarchy primary that
-//! tilo-rollback seals under, recreated on each use, so nothing is persisted in
-//! the TPM and a Windows-owned persistent SRK is never touched.
+//! The object lives under a primary made fresh from the standard ECC P-256
+//! storage key template on the owner hierarchy each time, so nothing is
+//! persisted in the TPM and a Windows-owned persistent SRK is never touched.
+//! The template has `noda`, as the standard one does: only the person's own
+//! object counts tries, so a locked-out TPM still loads it and can say so, and
+//! a new secret can be sealed while the lockout lasts.
 
 use crate::userkey::UserKey;
 use anyhow::{Context as _, Result, bail};
@@ -45,8 +48,33 @@ fn auth_file(ws: &Workspace, name: &str, auth: &[u8; 32]) -> Result<std::path::P
     ws.put(name, text.as_bytes())
 }
 
+/// The standard storage key: ECC P-256, AES-128-CFB, restricted decrypt.
+/// Deterministic, so every call makes the same key.
+pub fn primary(runner: &dyn Runner, ws: &Workspace) -> Result<std::path::PathBuf> {
+    flush(runner);
+    let ctx = ws.path("signin-primary.ctx");
+    require(
+        runner,
+        "tpm2_createprimary",
+        &argv![
+            "-C",
+            "o",
+            "-g",
+            "sha256",
+            "-G",
+            "ecc256:aes128cfb",
+            "-a",
+            "fixedtpm|fixedparent|sensitivedataorigin|userwithauth|noda|restricted|decrypt",
+            "-c",
+            ctx.as_os_str()
+        ],
+        "creating the TPM storage key",
+    )?;
+    Ok(ctx)
+}
+
 pub fn seal(runner: &dyn Runner, ws: &Workspace, key: &UserKey, auth: &[u8; 32]) -> Result<Sealed> {
-    let parent = tilo_rollback::keyslots::primary(runner, ws)?;
+    let parent = primary(runner, ws)?;
     let secret = ws.put("userkey.secret", key.expose())?;
     let auth_path = auth_file(ws, "userkey.auth", auth)?;
     let auth_spec = format!("file:{}", auth_path.display());
@@ -92,7 +120,7 @@ pub fn unseal(
     sealed: &Sealed,
     auth: &[u8; 32],
 ) -> Result<Unseal> {
-    let parent = tilo_rollback::keyslots::primary(runner, ws)?;
+    let parent = primary(runner, ws)?;
     let public = ws.put("unseal.pub", &sealed.public)?;
     let private = ws.put("unseal.priv", &sealed.private)?;
     let object = ws.path("unseal.ctx");
@@ -115,11 +143,6 @@ pub fn unseal(
     flush(runner);
     let loaded = loaded?;
     if !loaded.ok() {
-        // The parent is protected by the lockout too, so a locked-out TPM
-        // already refuses to load the object.
-        if matches!(classify(&loaded), Failure::LockedOut) {
-            return Ok(Unseal::LockedOut(tries(runner)));
-        }
         bail!(
             "loading the sealed user key failed: {}",
             loaded.last_error_line()
