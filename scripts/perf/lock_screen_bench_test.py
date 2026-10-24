@@ -31,6 +31,12 @@ class LockScreenBenchTests(unittest.TestCase):
         bench.wait_password_state(control, 1)
         self.assertEqual(control.send.call_count, 2)
 
+    def test_queued_backspace_waits_for_the_length_to_decrease(self):
+        control = Mock()
+        control.send.side_effect = [self.state(2), self.state(1)]
+        bench.wait_password_state(control, 1, previous=2)
+        self.assertEqual(control.send.call_count, 2)
+
     def test_queued_key_timeout_or_duplicate_is_not_accepted(self):
         for reply in (self.state(0), self.state(2), self.state(locked=False)):
             control = Mock()
@@ -46,7 +52,7 @@ class LockScreenBenchTests(unittest.TestCase):
     def test_samples_are_selected_in_time_order_not_sorted_before_slicing(self):
         rows = [{"input_latency_us": n, "input_retirement_latency_us": n + 100}
                 for n in (999000, 2000, 1000)]
-        frames = "\n".join(f"CPU-FRAME serial={i} gpu_us={n} submit_us=100 settle_us=200"
+        frames = "\n".join(f"CPU-FRAME serial={i} gpu_us={n} damage_px=256 raster_px=256 dense=0 submit_us=100 settle_us=200"
                            for i, n in enumerate((999000, 4000, 3000)))
         result = self.summarize(rows, frames)
         self.assertEqual(result["input_latency_us"]["max_ms"], 2)
@@ -55,12 +61,13 @@ class LockScreenBenchTests(unittest.TestCase):
 
     def test_missing_retirement_or_render_is_a_failure_not_an_empty_distribution(self):
         rows = [{"input_latency_us": 1000, "input_retirement_latency_us": 2000}] * 2
-        frames = "CPU-FRAME serial=1 gpu_us=1000 submit_us=100 settle_us=200\n" * 2
+        frames = "CPU-FRAME serial=1 gpu_us=1000 damage_px=256 raster_px=256 dense=0 submit_us=100 settle_us=200\n" * 2
         for changed_rows, changed_frames in (
             (rows[:1], frames),
             ([{**row, "input_retirement_latency_us": None} for row in rows], frames),
             (rows, ""),
             (rows, frames.replace("settle_us=200", "")),
+            (rows, frames.replace("raster_px=256", "")),
         ):
             with self.subTest(rows=changed_rows, log=changed_frames), self.assertRaises(ValueError):
                 self.summarize(changed_rows, changed_frames)

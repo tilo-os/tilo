@@ -31,6 +31,9 @@ use super::apply_scale_factor_changed;
 use super::{Backend, BackendEvent, Output, OutputId};
 use crate::compositor::present::Presenter;
 
+mod retained;
+use retained::{Target, TargetHistory};
+
 /// Initial host-window size — matches the `shots` default so a fresh
 /// `--mode native` launch is comparable to a `cargo run --bin shots`
 /// screenshot.
@@ -114,6 +117,7 @@ struct RenderState {
     render_cx: RenderContext,
     surface: RenderSurface<'static>,
     renderer: Renderer,
+    target_history: TargetHistory,
     /// Blurs floating surfaces' backdrops; built with the first frame that
     /// has any.
     backdrop_blur: Option<ui::backdrop::BackdropBlur>,
@@ -201,9 +205,13 @@ impl WinitPresenter {
         &mut self,
         scene: &Scene,
         backdrop: Option<&ui::backdrop::BackdropFrame>,
+        damage: Option<crate::shell::render::paint::SceneDamage<'_>>,
     ) {
         let base_color = self.base_color;
         let render = &mut self.render;
+        // Commit target authority only after every render, acquire, blit and
+        // completion check succeeded. Every early return leaves it invalid.
+        let mut history = std::mem::take(&mut render.target_history);
         let width = render.surface.config.width;
         let height = render.surface.config.height;
         // `dev_id` is minted by `RenderContext::create_surface` alongside
@@ -232,24 +240,35 @@ impl WinitPresenter {
         }
         // vello 0.5 removed `render_to_surface`; render into the surface's
         // target_view, blit via `TextureBlitter`, then present.
-        let result = render.renderer.render_to_texture(
-            &device_handle.device,
-            &device_handle.queue,
-            scene,
-            &render.surface.target_view,
-            &RenderParams {
-                base_color,
-                width,
-                height,
-                antialiasing_method: AaConfig::Area,
+        let params = RenderParams {
+            base_color,
+            width,
+            height,
+            antialiasing_method: AaConfig::Area,
+        };
+        // Backdrop preparation changes image resources outside the scene's
+        // retained proof; render it densely and break the revision chain.
+        let damage = damage.filter(|_| backdrop.is_none_or(ui::backdrop::BackdropFrame::is_empty));
+        let result = history.render(
+            Target {
+                device: &device_handle.device,
+                queue: &device_handle.queue,
+                renderer: &mut render.renderer,
+                view: &render.surface.target_view,
+                params: &params,
             },
+            scene,
+            damage,
         );
         if let Some(blur) = render.backdrop_blur.as_mut() {
             blur.release(&mut render.renderer);
         }
-        if let Err(e) = result {
-            eprintln!("tilo compositor: render_to_texture: {e:?}");
-            return;
+        match result {
+            Ok(work) => tracing::trace!(pixels = work.pixels, sparse = work.sparse, "winit render"),
+            Err(error) => {
+                eprintln!("tilo compositor: render_to_texture: {error}");
+                return;
+            }
         }
         let surface_texture = match render.surface.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
@@ -298,17 +317,27 @@ impl WinitPresenter {
         });
         if let Err(e) = waited {
             eprintln!("tilo compositor: frame fence wait: {e:?} — carrying on");
+        } else {
+            render.target_history = history;
         }
     }
 }
 
 impl Presenter for WinitPresenter {
     fn present(&mut self, scene: &Scene, _output: OutputId) {
-        self.render_and_present(scene, None);
+        self.render_and_present(scene, None, None);
     }
 
     fn present_frame(&mut self, frame: &crate::compositor::frame::FramePaint, _output: OutputId) {
-        self.render_and_present(&frame.scene, frame.backdrop.as_deref());
+        self.render_and_present(
+            &frame.scene,
+            frame.backdrop.as_deref(),
+            Some(crate::shell::render::paint::SceneDamage {
+                revision: frame.revision,
+                previous_revision: frame.previous_revision,
+                regions: frame.damage_regions.as_deref(),
+            }),
+        );
     }
 
     /// Reconfigure the swap chain for a new window size. Arrives through
@@ -318,6 +347,7 @@ impl Presenter for WinitPresenter {
         if size.0 == 0 || size.1 == 0 {
             return;
         }
+        self.render.target_history.clear();
         self.render
             .render_cx
             .resize_surface(&mut self.render.surface, size.0, size.1);
@@ -549,6 +579,7 @@ impl ApplicationHandler for Inner {
             render_cx,
             surface,
             renderer,
+            target_history: TargetHistory::default(),
             backdrop_blur: None,
         });
     }
