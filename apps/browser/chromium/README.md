@@ -414,7 +414,11 @@ content scripts (with `sender.tab`) work without help.
   for one tab and `scripting` by asking the host at
   `https://extension-bridge.tilo.invalid/`, which the host serves itself. A
   page of the extension is known by its frame's address, its worker by a token
-  written into it; a page cannot show either.
+  written into it; a page cannot show either. An extension whose security
+  policy lists the only servers its pages may connect to, in its manifest or
+  in a page's `<meta>` (password managers do), gets the bridge added to that
+  list (`extensions.rs` `policy_with_bridge`), and stays turned on. A failed
+  call's callback finds `runtime.lastError` set, as in Chrome.
 - Tabs carry the id Chromium's extension APIs know them by, the one in
   `sender.tab.id`. The Browser's own extension (`extension-manager`, with a
   content script in every page) asks it for each page on first use.
@@ -446,6 +450,17 @@ content scripts (with `sender.tab`) work without help.
   answers when the worker does not. A port's messages go to the host in
   order, batched while a request is under way, and on from the host to the
   worker or page the same way, so a burst wakes the worker once.
+- `scripting.executeScript` reaches the frames an extension names
+  (`frameIds`, `allFrames`) and `tabs.sendMessage` one frame (`frameId`), as
+  Bitwarden injects its form filler into each frame that asks. Chromium
+  knows a frame by an id the inspector does not show, so the host asks the
+  extension's world in the frame with a message only the tab script answers
+  (`sender.frameId`). Frames another site's process renders are not reached
+  yet.
+- A worker that asks for the last focused window before the person focused
+  a page (it starts with the engine) gets the first page's, as in Chrome. A
+  tab an extension was told of before the host learnt its id among
+  Chromium's keeps answering to the id it was told.
 - `tabs.connect` also reaches an extension's declared content scripts,
   which Chromium cannot find by a tab it does not know: the host gives their
   world what a port needs, through the same binding.

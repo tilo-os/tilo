@@ -54,16 +54,37 @@
   }
 
   // Chrome's APIs return a promise, or call a trailing callback instead.
+  // A callback learns of a failure as Chrome tells it: runtime.lastError is
+  // set while it runs, which is what extensions check before they read
+  // what they were given.
+  const failed = (callback, error) => {
+    const message = String((error && error.message) || error);
+    let checked = false;
+    let set = false;
+    try {
+      Object.defineProperty(runtime, 'lastError', {
+        configurable: true,
+        enumerable: true,
+        get() { checked = true; return {message}; },
+      });
+      set = true;
+    } catch (ignored) {
+      // Chromium's own lastError stays; the callback still runs.
+    }
+    try {
+      callback();
+    } finally {
+      if (set) delete runtime.lastError;
+      if (!checked) console.error(`Unchecked runtime.lastError: ${message}`);
+    }
+  };
   const api = (method) => (...args) => {
     const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
     const result = method(...args);
     pending += 1;
     result.then(settle, settle);
     if (!callback) return result;
-    result.then((value) => callback(value), (error) => {
-      console.error(`Unchecked runtime.lastError: ${error.message}`);
-      callback();
-    });
+    result.then((value) => callback(value), (error) => failed(callback, error));
     return undefined;
   };
   const replace = (namespace, name, method) => {
@@ -217,6 +238,37 @@
       },
     }),
   });
+
+  // The host asks which frame of a page the extension's world there is, by
+  // a message from that world: Chromium tells only the extension
+  // (`sender.frameId`). It is answered here and never reaches the
+  // extension's own listeners.
+  const onMessage = runtime.onMessage;
+  if (onMessage) {
+    const probe = (message) => message !== null && typeof message === 'object' && message.__tiloFrame === true;
+    const add = onMessage.addListener.bind(onMessage);
+    const remove = onMessage.removeListener.bind(onMessage);
+    add((message, sender, reply) => {
+      if (probe(message) && sender.id === runtime.id && sender.tab && typeof sender.frameId === 'number') reply(sender.frameId);
+    });
+    const own = new Map();
+    onMessage.addListener = (listener) => {
+      if (typeof listener !== 'function' || own.has(listener)) return;
+      const filtered = function (message, ...rest) {
+        return probe(message) ? undefined : listener.call(this, message, ...rest);
+      };
+      own.set(listener, filtered);
+      add(filtered);
+    };
+    onMessage.removeListener = (listener) => {
+      const filtered = own.get(listener);
+      if (!filtered) return;
+      own.delete(listener);
+      remove(filtered);
+    };
+    onMessage.hasListener = (listener) => own.has(listener);
+    onMessage.hasListeners = () => own.size > 0;
+  }
 
   const {tabs, windows, scripting, action} = chrome;
   const relative = (url) => (typeof url === 'string' ? new URL(url, location.href).href : url);
@@ -409,8 +461,8 @@
       inOrder('contextMenus.create', {properties: own}).then(() => {
         if (typeof callback === 'function') callback();
       }, (error) => {
-        console.error(`Unchecked runtime.lastError: ${error.message}`);
-        if (typeof callback === 'function') callback();
+        if (typeof callback === 'function') failed(callback, error);
+        else console.error(`Unchecked runtime.lastError: ${error.message}`);
       });
       return own.id;
     };
