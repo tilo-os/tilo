@@ -1759,7 +1759,7 @@ impl ActorState {
                 self.endpoint.clone(),
                 self.host_identity.as_ref(),
             ),
-            Some(NetCmd::RoomGovernance(request)) => self.send_room_governance(*request).await,
+            Some(NetCmd::RoomGovernance(request)) => self.send_room_governance(*request),
             Some(NetCmd::AttachActionBroker { queue, host, rooms }) => {
                 let rooms: HashMap<_, _> = rooms
                     .into_iter()
@@ -2642,12 +2642,12 @@ impl ActorState {
     /// Send `request` to whoever it is addressed to ([`room_governance`]): a
     /// room's relay device on any session of the room, or a host on its own
     /// session of the workspace once that session is subscribed.
-    async fn send_room_governance(&mut self, request: room_governance::Request) {
+    fn send_room_governance(&mut self, request: room_governance::Request) {
         let (ws, to) = (request.ws, request.to);
         match to {
             room_governance::Addressee::Device(host) => {
                 if let Some(frame) = self.room_governance.send(request, host, Instant::now()) {
-                    self.publish_to_host_sessions(ws, host, frame);
+                    self.publish_to_host_sessions(ws, host, &frame);
                 }
             }
             room_governance::Addressee::Host(endpoint) => {
@@ -2720,7 +2720,7 @@ impl ActorState {
     /// device, else any other, which routes it there. Never the direct
     /// surface route: a device hosting its own rooms is also a member of
     /// them under the same key, and its shell does not answer for its host.
-    fn publish_to_host_sessions(&self, ws: WorkspaceId, host: EndpointId, frame: Vec<u8>) {
+    fn publish_to_host_sessions(&self, ws: WorkspaceId, host: EndpointId, frame: &[u8]) {
         let device = *host.as_bytes();
         let mut sessions: Vec<_> = self
             .host_sessions
@@ -2729,9 +2729,11 @@ impl ActorState {
             .map(|(_, runtime)| &runtime.session)
             .collect();
         sessions.sort_by_key(|session| session.relay_device_public_key() != device);
-        let sent = sessions
-            .into_iter()
-            .any(|session| session.publish_remote_action(device, frame.clone()).is_ok());
+        let sent = sessions.into_iter().any(|session| {
+            session
+                .publish_remote_action(device, frame.to_vec())
+                .is_ok()
+        });
         if !sent {
             tracing::warn!(ws, %host, "no session with the room's host to send a request on");
         }
