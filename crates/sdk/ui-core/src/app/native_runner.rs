@@ -17,6 +17,7 @@ mod process_windows;
 mod slot_bar;
 #[cfg(any(windows, target_os = "linux"))]
 pub(super) mod startup;
+mod wheel_batch;
 
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
@@ -108,6 +109,8 @@ struct AppHandler {
     /// keyboard/IME events reach the reattached primary editor.
     floating_ime_return_continuation: Option<String>,
     private_input: private_text_input::Bridge,
+    /// Wheel deltas of this wake, routed as one event ([`wheel_batch`]).
+    wheel_batch: wheel_batch::WheelBatch,
     #[cfg(target_os = "android")]
     text_input: super::android_text_input::TextInputSession,
     /// The field with the keyboard was touched since the last IME sync.
@@ -3601,6 +3604,79 @@ impl AppHandler {
     }
 }
 
+impl AppHandler {
+    /// Route one event the platform reported for `window_id` (wheel deltas
+    /// already summed, [`wheel_batch`]).
+    fn platform_window_event(&mut self, window_id: WindowId, event: WindowEvent) {
+        let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
+        // What this event opens or closes follows it (a key lands it at
+        // once, a click moves it): `motion::input_source`.
+        crate::motion::note_input(&event);
+        if let Some(window) = self
+            .window
+            .clone()
+            .filter(|window| window.id() == window_id)
+            && self
+                .private_input
+                .event(&mut self.app, window.as_ref(), &event)
+        {
+            self.sync_ime(&window);
+            return;
+        }
+        #[cfg(target_os = "android")]
+        if let WindowEvent::Touch(touch) = &event
+            && touch.phase == winit::event::TouchPhase::Started
+            && self.ime_state.is_some()
+            && self.touches_focused_field(window_id, touch.location)
+        {
+            for settled in self.text_input.settle() {
+                self.route_window_event(
+                    window_id,
+                    settled,
+                    native_input_isolation::EventOrigin::Platform,
+                );
+            }
+            self.text_input_touched = true;
+        }
+        let physical_input = if crate::physical_input_trace::Trace::observes(&event)
+            && self
+                .window
+                .as_ref()
+                .is_some_and(|window| window.id() == window_id)
+        {
+            let state = self.physical_input_trace.as_ref().and_then(|_| {
+                self.slot_bar
+                    .with_search_evidence(self.app.native_input_snapshot())
+            });
+            self.physical_input_trace
+                .as_mut()
+                .and_then(|trace| trace.begin(&event, state))
+        } else {
+            None
+        };
+        self.note_host_appearance_event(&event);
+        let admitted = self.route_window_event(
+            window_id,
+            event,
+            native_input_isolation::EventOrigin::Platform,
+        );
+        if let Some(input) = physical_input {
+            let mut row = crate::physical_input_trace::Trace::effect(
+                input,
+                self.slot_bar
+                    .with_search_evidence(self.app.native_input_snapshot()),
+            );
+            let modifiers = self.app.input.modifiers.state();
+            row["input_route_admitted"] = serde_json::json!(admitted);
+            row["modifiers"] = serde_json::json!({
+                "shift": modifiers.shift_key(), "control": modifiers.control_key(),
+                "alt": modifiers.alt_key(), "super": modifiers.super_key(),
+            });
+            crate::native_scenario::log::emit_json("tilo-physical-input", row);
+        }
+    }
+}
+
 impl ApplicationHandler<UserEvent> for AppHandler {
     #[allow(
         clippy::too_many_lines,
@@ -4035,76 +4111,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
-        // What this event opens or closes follows it (a key lands it at
-        // once, a click moves it): `motion::input_source`.
-        crate::motion::note_input(&event);
-        if let Some(window) = self
-            .window
-            .clone()
-            .filter(|window| window.id() == window_id)
-            && self
-                .private_input
-                .event(&mut self.app, window.as_ref(), &event)
-        {
-            self.sync_ime(&window);
-            return;
-        }
-        #[cfg(target_os = "android")]
-        if let WindowEvent::Touch(touch) = &event
-            && touch.phase == winit::event::TouchPhase::Started
-            && self.ime_state.is_some()
-            && self.touches_focused_field(window_id, touch.location)
-        {
-            for settled in self.text_input.settle() {
-                self.route_window_event(
-                    window_id,
-                    settled,
-                    native_input_isolation::EventOrigin::Platform,
-                );
-            }
-            self.text_input_touched = true;
-        }
-        let physical_input = if crate::physical_input_trace::Trace::observes(&event)
-            && self
-                .window
-                .as_ref()
-                .is_some_and(|window| window.id() == window_id)
-        {
-            let state = self.physical_input_trace.as_ref().and_then(|_| {
-                self.slot_bar
-                    .with_search_evidence(self.app.native_input_snapshot())
-            });
-            self.physical_input_trace
-                .as_mut()
-                .and_then(|trace| trace.begin(&event, state))
-        } else {
-            None
-        };
-        self.note_host_appearance_event(&event);
-        let admitted = self.route_window_event(
-            window_id,
-            event,
-            native_input_isolation::EventOrigin::Platform,
-        );
-        if let Some(input) = physical_input {
-            let mut row = crate::physical_input_trace::Trace::effect(
-                input,
-                self.slot_bar
-                    .with_search_evidence(self.app.native_input_snapshot()),
-            );
-            let modifiers = self.app.input.modifiers.state();
-            row["input_route_admitted"] = serde_json::json!(admitted);
-            row["modifiers"] = serde_json::json!({
-                "shift": modifiers.shift_key(), "control": modifiers.control_key(),
-                "alt": modifiers.alt_key(), "super": modifiers.super_key(),
-            });
-            crate::native_scenario::log::emit_json("tilo-physical-input", row);
+        // Wheel deltas reported in one wake route as one event; anything
+        // else routes the waiting sum first.
+        for (window_id, event) in self.wheel_batch.push(window_id, event) {
+            self.platform_window_event(window_id, event);
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let _slow = slow_event::Span::begin("about_to_wait", "");
+        // The wake's last wheel deltas go before the loop waits.
+        if let Some((window_id, event)) = self.wheel_batch.flush() {
+            self.platform_window_event(window_id, event);
+        }
         self.app.service_close_admission();
         if self.app.finish_close_if_ready() {
             self.closing.set(true);
@@ -5237,6 +5256,7 @@ impl App {
             floating_ime_continuation: None,
             floating_ime_return_continuation: None,
             private_input: private_text_input::Bridge::default(),
+            wheel_batch: wheel_batch::WheelBatch::default(),
             #[cfg(target_os = "android")]
             text_input: super::android_text_input::TextInputSession::default(),
             #[cfg(target_os = "android")]

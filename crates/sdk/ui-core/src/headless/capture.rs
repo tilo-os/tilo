@@ -74,7 +74,9 @@ impl FrameHarness {
     }
 
     /// Write the `--shots` capture: the frame alone, or under the desktop's
-    /// window bar when `window_bar` is set.
+    /// window bar when `window_bar` is set. Only the native launcher takes
+    /// `--shots`.
+    #[cfg(feature = "native")]
     pub(crate) fn write_shot(&mut self, out: &std::path::Path, window_bar: bool) {
         if window_bar {
             self.present_in_window_bar();

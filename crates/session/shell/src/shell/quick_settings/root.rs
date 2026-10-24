@@ -329,7 +329,19 @@ pub struct QuickSettingsRoot {
     /// The password typed into the inline Wi-Fi prompt can be submitted
     /// (the field itself is the host's secret input).
     password_ready: bool,
+    /// The switches the open sections paint, sliding as a click turns them.
+    faces: ui::widget::FaceMotions,
+    /// Where each slider's thumb is drawn: on its value, except while it
+    /// glides to where its track was pressed.
+    slider_thumbs: std::cell::RefCell<HashMap<usize, ui::motion::Thumb>>,
+    /// The slider whose thumb glides to a press, and where the press was:
+    /// past a few pixels from there the drag is welded to the hand.
+    slider_glide: std::cell::Cell<Option<(usize, Point)>>,
 }
+
+/// How far the hand moves from a press on a slider before the drag is the
+/// hand's: a thumb gliding to the press gives way to it there.
+const SLIDER_DRAG_SLOP: f64 = 3.0;
 
 impl Default for QuickSettingsRoot {
     /// Deterministic for tests. Production construction calls
@@ -399,6 +411,9 @@ impl QuickSettingsRoot {
             followed: None,
             motion: None,
             password_ready: false,
+            faces: ui::widget::FaceMotions::default(),
+            slider_thumbs: std::cell::RefCell::default(),
+            slider_glide: std::cell::Cell::new(None),
         }
     }
     pub fn reset_focus(&mut self) {
@@ -705,6 +720,12 @@ impl QuickSettingsRoot {
     /// Whether a section is still opening or closing.
     pub fn is_animating(&self, now: Instant) -> bool {
         self.reveal.values().any(|extent| extent.is_moving(now))
+            || self.faces.is_moving(now)
+            || self
+                .slider_thumbs
+                .borrow()
+                .values()
+                .any(|thumb| thumb.is_moving(now))
     }
 
     /// How much of `section` shows at `now`: its full height when it is
@@ -2151,6 +2172,15 @@ impl QuickSettingsRoot {
             // The pointer target is the painted face — the same rect the
             // accessibility tree publishes — not a second band around the track.
             if self.slider_face_rect(layout.sliders, i).contains(point) {
+                // The value goes where the press is at once; a press away
+                // from the thumb glides it there.
+                let drawn = self
+                    .slider_thumbs
+                    .borrow()
+                    .get(&i)
+                    .map(|thumb| bar.x0 + thumb.get(ui::motion::frame_now()) * bar.width());
+                let away = drawn.is_some_and(|x| (point.x - x).abs() > SliderFace::overhang());
+                self.slider_glide.set(away.then_some((i, point)));
                 let value = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
                 self.set_slider_value(state, i, value);
                 self.slider_drag = Some(i);
@@ -2283,6 +2313,14 @@ impl QuickSettingsRoot {
         let panel = self.lay_out(panel, state);
         if let Some(i) = self.slider_drag {
             let (bar, _) = self.slider_geometry_for(panel, i);
+            // The hand moved off its press: the thumb is welded to it.
+            if self
+                .slider_glide
+                .get()
+                .is_some_and(|(_, from)| (point.x - from.x).abs() > SLIDER_DRAG_SLOP)
+            {
+                self.slider_glide.set(None);
+            }
             let v = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
             self.set_slider_value(state, i, v);
             return true;
@@ -2498,6 +2536,29 @@ impl QuickSettingsRoot {
     /// its glyph on the leading inset, in the tiles' glyph column. No Control
     /// surface of its own: the panel is already the surface, and a card in it
     /// read as a card in a card. The list rows below sit on the panel too.
+    /// Where slider `i`'s thumb is drawn this frame for a value of `value`
+    /// (`0..=1`): gliding there from a press away from it, under the hand
+    /// while dragged, and at once for a key, the hardware or a sync.
+    fn drawn_thumb(&self, i: usize, value: f64, motion: EffectiveMotion) -> f64 {
+        let now = ui::motion::frame_now();
+        let mut thumbs = self.slider_thumbs.borrow_mut();
+        let thumb = thumbs
+            .entry(i)
+            .or_insert_with(|| ui::motion::Thumb::at(value));
+        let gliding = self.slider_glide.get().is_some_and(|(glide, _)| glide == i);
+        if thumb.target().to_bits() != value.clamp(0.0, 1.0).to_bits() {
+            if gliding {
+                thumb.go(value, motion, MotionSource::Pointer, now);
+            } else {
+                thumb.snap(value);
+            }
+        }
+        if gliding && !thumb.is_moving(now) && self.slider_drag != Some(i) {
+            self.slider_glide.set(None);
+        }
+        thumb.get(now)
+    }
+
     fn draw_sliders(&self, ctx: &mut PaintCtx<'_>, layout: &PageLayout, frame: &RootFrame<'_>) {
         let (state, cursor) = (frame.state, frame.cursor);
         let (scene, transform, text, theme) =
@@ -2562,6 +2623,7 @@ impl QuickSettingsRoot {
             } else {
                 f64::from(self.slider_value(state, i))
             };
+            let shown = self.drawn_thumb(i, shown, theme.motion());
             Slider::paint(
                 scene,
                 transform,
@@ -2756,6 +2818,7 @@ impl QuickSettingsRoot {
                     .map(|point| Point::new(point.x - origin.x, point.y - origin.y)),
                 focused,
                 password_ready: self.password_ready,
+                faces: &self.faces,
             },
         );
         ctx.scene.pop_layer();

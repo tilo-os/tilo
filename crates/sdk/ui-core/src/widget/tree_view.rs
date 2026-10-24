@@ -943,6 +943,8 @@ pub struct TreeView<T, M = TreeNode<T>> {
     /// Set by changes the view signature cannot see (model content, layout,
     /// input the tree acted on); cleared once the tree is drawn.
     paint_dirty: bool,
+    /// The checkboxes its rows paint, filling as a click checks them.
+    faces: crate::widget::FaceMotions,
     layout_theme: Option<Theme>,
     /// [`Self::paint_signature`] as of the last completed draw.
     drawn_signature: Option<u64>,
@@ -1171,6 +1173,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             indent_guides: false,
             pending_reveal: None,
             paint_dirty: true,
+            faces: crate::widget::FaceMotions::default(),
             layout_theme: None,
             drawn_signature: None,
             paint_damage: crate::widget::paint_damage::PaintDamage::default(),
@@ -3713,6 +3716,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     fn needs_redraw(&self) -> bool {
         self.paint_dirty
             || self.drawn_signature != Some(self.paint_signature())
+            || self.faces.is_moving(crate::motion::frame_now())
             || self.momentum.is_active()
             || self.reorder.is_active()
             || self.transitions.is_active(crate::time::now())
@@ -3759,9 +3763,11 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.bar_fade
-            .get()
-            .fading_at(crate::motion::frame_now(), self.bar_held.get())
+        self.faces.is_moving(crate::motion::frame_now())
+            || self
+                .bar_fade
+                .get()
+                .fading_at(crate::motion::frame_now(), self.bar_held.get())
             || self.momentum.is_active()
             || self.model.needs_poll()
             || self.reorder.is_active()
