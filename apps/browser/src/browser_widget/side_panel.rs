@@ -98,7 +98,9 @@ impl BrowserWidget {
     /// The edge while a docked side panel shows: kept from the last layout,
     /// so a drag goes on, its bounds those of `theme` in this window, and
     /// its node registered so the pointer finds it (its resize cursor).
-    /// Gone with the panel.
+    /// Gone with the panel, and while settings, the library or a page that
+    /// failed stand in the page's place, the panel with it: the composition
+    /// is built before this, so the panel is in it or not.
     pub(super) fn build_side_panel_edge(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -106,19 +108,20 @@ impl BrowserWidget {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> Option<NodeId> {
         let room = self.rect.width();
-        if self.extensions.side_panel_shown().is_none()
-            || !self.side_panel_docks(theme)
-            || room <= 0.0
-        {
+        let region = self.side_panel_region();
+        let Some(region) = region.filter(|_| {
+            self.extensions.side_panel_shown().is_some()
+                && self.side_panel_docks(theme)
+                && room > 0.0
+        }) else {
             self.side_panel_edge = None;
             return None;
-        }
+        };
         let width = f64::from(self.side_panel_extent(theme));
         let (narrowest, widest) = side_panel_bounds(theme);
         let widest = f64::from(widest)
             .min(room - f64::from(theme.tokens.metrics.reading_min_width))
             .max(f64::from(narrowest));
-        let region = self.side_panel_region().unwrap_or(self.rect);
         let edge = self.side_panel_edge.get_or_insert_with(|| {
             Box::new(
                 SplitHandle::new(SplitOrientation::Horizontal, SplitRatio::default())
@@ -337,7 +340,7 @@ fn edge_look(edge: &SplitHandle) -> (bool, Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{layout_at, layout_keeping_tree};
+    use super::super::tests::{draw_at, layout_at, layout_keeping_tree};
     use super::*;
     use crate::extension_controller::{ExtensionController, SidePanelWidths, side_panel_width};
     use crate::extension_toolbar::{Access, Installed};
@@ -510,6 +513,65 @@ mod tests {
         layout_at(&mut later, 600.0, 800.0);
         assert!(later.side_panel_edge.is_none());
         assert!((width(&later) - 600.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn the_side_panels_edge_stands_only_beside_the_page() {
+        use super::super::{BrowserOperation, LibrarySection};
+        let dir = tempfile::tempdir().unwrap();
+        let store = ui::storage::Settings::<SidePanelWidths>::for_app("so.tilo.browser")
+            .in_file(dir.path().join("settings.json"));
+        let id = "n".repeat(32);
+        let mut widget = window_with_panel(&id, store);
+        let settle = |widget: &mut BrowserWidget| {
+            layout_at(widget, 1400.0, 800.0);
+            layout_at(widget, 1400.0, 800.0);
+            draw_at(widget, 1.0);
+        };
+        settle(&mut widget);
+        assert!(widget.side_panel_edge_access().is_some());
+
+        // Settings and the library stand in the page's place, its panel with
+        // it: no edge is drawn across them, takes a press there or is named
+        // to assistive technology.
+        for operation in [
+            BrowserOperation::ShowSettings,
+            BrowserOperation::ShowLibrary {
+                section: LibrarySection::Bookmarks,
+            },
+        ] {
+            widget.perform_browser_operation(operation).unwrap();
+            settle(&mut widget);
+            assert!(widget.find_rect(PANEL_ID).is_none());
+            assert!(
+                widget.side_panel_edge.is_none(),
+                "{:?}",
+                widget.side_panel_edge_drawn
+            );
+            assert!(widget.side_panel_edge_node.is_none());
+            assert!(widget.side_panel_edge_drawn.is_none());
+            assert!(widget.side_panel_edge_access().is_none());
+        }
+
+        // Back on the page, the edge is again at the panel's side.
+        widget
+            .perform_browser_operation(BrowserOperation::ShowPage)
+            .unwrap();
+        settle(&mut widget);
+        let panel = widget.find_rect(PANEL_ID).expect("the panel");
+        let edge = widget
+            .side_panel_edge
+            .as_ref()
+            .expect("its edge")
+            .hit_rect();
+        assert!(
+            edge.contains(Point::new(panel.x0, panel.center().y)),
+            "{edge:?} {panel:?}"
+        );
+        assert!(
+            edge.y0 >= panel.y0 - 1.0 && edge.y1 <= panel.y1 + 1.0,
+            "{edge:?} {panel:?}"
+        );
     }
 
     #[test]
