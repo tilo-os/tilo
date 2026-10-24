@@ -27,7 +27,7 @@ default = ["filesystem"]
 # External licensed simulator; never enabled by ordinary filesystem tests.
 rystic-tests = ["filesystem", "dep:tilo-cloud-files"]
 # The document-media capability over the content store, without the mount.
-document-media = ["dep:runtime-fs", "dep:tilo-net", "dep:serde_json"]
+document-media = ["dep:runtime-fs", "dep:tilo-net", "dep:serde_json", "dep:fs-protocol", "dep:thiserror"]
 filesystem = [
     "dep:clap",
     "dep:iroh",

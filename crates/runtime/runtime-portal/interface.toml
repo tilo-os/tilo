@@ -194,6 +194,7 @@ capnp = [
 "capnp:blobs.capnp:ReadStatus.ready" = "@0"
 "capnp:blobs.capnp:ReadStatus.unavailable" = "@2"
 "capnp:blobs.capnp:SessionBlobs" = "interface"
+"capnp:blobs.capnp:SessionBlobs.attributeWrites" = "@2 (paths:List(Text),actor:Text,label:Text,color:UInt32,ttlMs:UInt32)->()"
 "capnp:blobs.capnp:SessionBlobs.refreshPublicContent" = "@1 ()->(refreshed:UInt32)"
 "capnp:blobs.capnp:SessionBlobs.scope" = "@0 (room:Text,app:Text)->(blobs:DocumentBlobs)"
 "capnp:collab.capnp:ActionCatalogueStream" = "interface"

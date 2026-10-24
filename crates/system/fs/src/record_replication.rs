@@ -12,15 +12,21 @@ use collab_types::{
     CanonicalError, Signature, VerifyError, canonical_bytes, sign_event, verify_event,
 };
 use fs_protocol::{
-    ConflictResolution, ConflictStatus, ContentRevisionV1, FileActor, FileBindingV1,
-    FileConflictV1, FileMetadataV1, FileMutationTransaction, FileProvenance, FileRecordError,
-    FileRecordId, FileVersionId, FileVersionV1, prefer_conflict_resolution,
+    ConflictResolution, ConflictStatus, ContentRevisionV1, FileActor, FileAttributionV1,
+    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationTransaction, FileProvenance,
+    FileRecordError, FileRecordId, FileVersionAttributionV1, FileVersionId, FileVersionV1,
+    prefer_conflict_resolution,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Wire version for record operation envelopes.
 pub const RECORD_ENVELOPE_VERSION: u16 = 4;
+/// The envelope version that carries [`RecordOperationV1::AttributeVersion`],
+/// and only it: every other operation keeps signing at
+/// [`RECORD_ENVELOPE_VERSION`], so a device that predates attribution still
+/// reads everything else this one writes.
+pub const RECORD_ENVELOPE_V5: u16 = 5;
 pub const RECORD_ENVELOPE_V3: u16 = 3;
 pub const RECORD_ENVELOPE_V2: u16 = 2;
 pub const LEGACY_RECORD_ENVELOPE_VERSION: u16 = 1;
@@ -30,6 +36,7 @@ pub const LEGACY_RECORD_ENVELOPE_VERSION: u16 = 1;
 /// Keeping this value inside the canonical signed view prevents a signature
 /// made for another Tilo protocol from being replayed as a file operation.
 pub const RECORD_OPERATION_SIGNATURE_DOMAIN: &str = "tilo.collaborative-fs.record-operation.v4";
+const RECORD_OPERATION_SIGNATURE_DOMAIN_V5: &str = "tilo.collaborative-fs.record-operation.v5";
 const RECORD_OPERATION_SIGNATURE_DOMAIN_V3: &str = "tilo.collaborative-fs.record-operation.v3";
 const RECORD_OPERATION_SIGNATURE_DOMAIN_V2: &str = "tilo.collaborative-fs.record-operation.v2";
 const LEGACY_RECORD_OPERATION_SIGNATURE_DOMAIN: &str = "tilo.collaborative-fs.record-operation.v1";
@@ -87,6 +94,13 @@ pub enum RecordOperationV1 {
     /// Mark this participant committed. Projection remains invisible until
     /// the repository proves matching commits for the exact participant set.
     CommitTransaction { transaction_id: uuid::Uuid },
+    /// Record which agent, acting for the signing person through their
+    /// session, caused one of this same actor's versions of the record. The
+    /// session authenticated the agent from its action context; the device
+    /// signature covers this operation like any other. Appended to keep
+    /// every earlier discriminant, and carried only at
+    /// [`RECORD_ENVELOPE_V5`]. Presentation only: it grants nothing.
+    AttributeVersion(FileVersionAttributionV1),
 }
 
 impl RecordOperationV1 {
@@ -162,8 +176,23 @@ impl RecordOperationV1 {
                     return Err(RecordReplicationError::PayloadActorMismatch);
                 }
             }
+            Self::AttributeVersion(attributed) => {
+                attributed.attribution.validate()?;
+                if attributed.version_id.0.is_nil() {
+                    return Err(FileRecordError::NilVersionId.into());
+                }
+            }
         }
         Ok(())
+    }
+
+    /// The envelope version this operation is signed at.
+    const fn envelope_version(&self) -> u16 {
+        if matches!(self, Self::AttributeVersion(_)) {
+            RECORD_ENVELOPE_V5
+        } else {
+            RECORD_ENVELOPE_VERSION
+        }
     }
 }
 
@@ -203,6 +232,7 @@ impl RecordEnvelopeV1 {
                 LEGACY_RECORD_ENVELOPE_VERSION => LEGACY_RECORD_OPERATION_SIGNATURE_DOMAIN,
                 RECORD_ENVELOPE_V2 => RECORD_OPERATION_SIGNATURE_DOMAIN_V2,
                 RECORD_ENVELOPE_V3 => RECORD_OPERATION_SIGNATURE_DOMAIN_V3,
+                RECORD_ENVELOPE_V5 => RECORD_OPERATION_SIGNATURE_DOMAIN_V5,
                 _ => RECORD_OPERATION_SIGNATURE_DOMAIN,
             },
             protocol_version: self.protocol_version,
@@ -257,7 +287,7 @@ impl RecordEnvelopeV1 {
         device_key: &ed25519_dalek::SigningKey,
     ) -> Result<Self, CanonicalError> {
         let mut envelope = Self {
-            protocol_version: RECORD_ENVELOPE_VERSION,
+            protocol_version: operation.envelope_version(),
             record_id,
             actor,
             sequence,
@@ -283,6 +313,7 @@ impl RecordEnvelopeV1 {
                 | RECORD_ENVELOPE_V2
                 | RECORD_ENVELOPE_V3
                 | RECORD_ENVELOPE_VERSION
+                | RECORD_ENVELOPE_V5
         ) {
             return Err(RecordReplicationError::UnsupportedEnvelopeVersion(
                 self.protocol_version,
@@ -313,6 +344,12 @@ impl RecordEnvelopeV1 {
         {
             return Err(RecordReplicationError::OperationRequiresV4);
         }
+        // An attribution travels only at V5, and V5 carries nothing else.
+        if (self.protocol_version == RECORD_ENVELOPE_V5)
+            != matches!(self.operation, RecordOperationV1::AttributeVersion(_))
+        {
+            return Err(RecordReplicationError::OperationRequiresV5);
+        }
         self.operation.validate_for(self.record_id, self.actor)?;
         Ok(())
     }
@@ -333,6 +370,9 @@ pub struct RecordSnapshot {
     pub versions: Vec<FileVersionV1>,
     /// First-class open and resolved conflicts accepted for this record.
     pub conflicts: Vec<FileConflictV1>,
+    /// The agents behind those versions an agent caused, as each version's
+    /// own signing device recorded it, by version id.
+    pub attributions: Vec<FileVersionAttributionV1>,
 }
 
 /// In-memory merge state for exactly one file record.
@@ -354,6 +394,8 @@ pub struct RecordReplica {
     conflicts: HashMap<uuid::Uuid, FileConflictV1>,
     transactions: HashMap<uuid::Uuid, (FileMutationTransaction, bool)>,
     highest_sequence: HashMap<FileActor, u64>,
+    /// Who caused each attributed version, by its own signing actor.
+    attributions: HashMap<FileVersionId, FileAttributionV1>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -452,6 +494,7 @@ impl RecordReplica {
             conflicts: HashMap::new(),
             transactions: HashMap::new(),
             highest_sequence: HashMap::new(),
+            attributions: HashMap::new(),
         }
     }
 
@@ -686,6 +729,30 @@ impl RecordReplica {
                     self.conflicts.insert(*conflict_id, resolved);
                 }
             }
+            RecordOperationV1::AttributeVersion(attributed) => {
+                // Only the device that signed a version says who caused it:
+                // an attribution never reaches another actor's version.
+                let version = self
+                    .versions
+                    .get(&attributed.version_id)
+                    .or_else(|| self.transaction_versions.get(&attributed.version_id))
+                    .ok_or(RecordReplicationError::UnknownAttributedVersion)?;
+                if version.actor != envelope.actor {
+                    return Err(RecordReplicationError::ForeignAttribution);
+                }
+                match self.attributions.get(&attributed.version_id) {
+                    Some(existing) if *existing != attributed.attribution => {
+                        return Err(RecordReplicationError::AttributionCollision(
+                            attributed.version_id,
+                        ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.attributions
+                            .insert(attributed.version_id, attributed.attribution.clone());
+                    }
+                }
+            }
         }
         self.highest_sequence
             .insert(envelope.actor, envelope.sequence);
@@ -789,6 +856,15 @@ impl RecordReplica {
         versions.sort_by_key(|version| version.id.0);
         let mut conflicts: Vec<_> = self.conflicts.values().cloned().collect();
         conflicts.sort_by_key(|conflict| conflict.id);
+        let mut attributions: Vec<_> = self
+            .attributions
+            .iter()
+            .map(|(version_id, attribution)| FileVersionAttributionV1 {
+                version_id: *version_id,
+                attribution: attribution.clone(),
+            })
+            .collect();
+        attributions.sort_by_key(|attributed| attributed.version_id.0);
         RecordSnapshot {
             record_id: self.record_id,
             binding: self.binding.as_ref().map(|(_, value)| value.clone()),
@@ -796,6 +872,7 @@ impl RecordReplica {
             content_revision: self.content_revision.map(|(_, value)| value),
             versions,
             conflicts,
+            attributions,
         }
     }
 }
@@ -812,6 +889,8 @@ pub enum RecordReplicationError {
     OperationRequiresV3,
     #[error("record operation requires envelope version 4")]
     OperationRequiresV4,
+    #[error("a version attribution travels alone at envelope version 5")]
+    OperationRequiresV5,
     /// Sequence zero is reserved and cannot be accepted.
     #[error("record sequence numbers start at one")]
     InvalidSequence,
@@ -867,6 +946,12 @@ pub enum RecordReplicationError {
     TransactionIdCollision(uuid::Uuid),
     #[error("transaction {0} was committed before it was prepared")]
     TransactionNotPrepared(uuid::Uuid),
+    #[error("attribution names a version that is not present")]
+    UnknownAttributedVersion,
+    #[error("attribution names a version another actor signed")]
+    ForeignAttribution,
+    #[error("version {0:?} was already attributed differently")]
+    AttributionCollision(FileVersionId),
     /// Payload validation failed.
     #[error(transparent)]
     InvalidPayload(#[from] FileRecordError),
@@ -1876,5 +1961,154 @@ mod tests {
                 vec![version]
             );
         }
+    }
+
+    /// The device that signed a version records which agent caused it, at
+    /// V5 and only there; it can never attribute another actor's version,
+    /// name no agent, or change an attribution once made. Every other
+    /// operation keeps signing at V4.
+    #[test]
+    fn a_device_attributes_only_its_own_versions_to_an_agent() {
+        let (key, actor, record, mut auth) = fixture();
+        let (other_key, other_device) = generate_keypair();
+        let other = FileActor {
+            person: actor.person,
+            device: other_device,
+        };
+        auth.certified.insert(other);
+        auth.writers.insert((record, other));
+        let version = |actor: FileActor, parents: Vec<FileVersionId>| FileVersionV1 {
+            id: FileVersionId::new(),
+            record_id: record,
+            parents,
+            actor,
+            timestamp_ms: 1,
+            content_hash: None,
+            metadata_hash: ContentHash([1; 32]),
+            provenance: FileProvenance::Edit,
+        };
+        let own = version(actor, vec![]);
+        let theirs = version(other, vec![own.id]);
+        let scribe = FileAttributionV1 {
+            actor: "agent:scribe".into(),
+            label: "Scribe".into(),
+            color: [10, 20, 30],
+        };
+        let attribute = |version_id, attribution: &FileAttributionV1| {
+            RecordOperationV1::AttributeVersion(FileVersionAttributionV1 {
+                version_id,
+                attribution: attribution.clone(),
+            })
+        };
+        // Each device signs its next operation with its own key.
+        let signed = |signer: FileActor, sequence, operation| {
+            let signing_key = if signer == actor { &key } else { &other_key };
+            RecordEnvelopeV1::signed(record, signer, sequence, operation, signing_key).unwrap()
+        };
+        let mut replica = RecordReplica::new(record);
+        let append = signed(actor, 1, RecordOperationV1::AppendVersion(own.clone()));
+        assert_eq!(
+            append.protocol_version, RECORD_ENVELOPE_VERSION,
+            "ordinary operations keep their version"
+        );
+        replica.merge(&append, &auth).unwrap();
+        let theirs_append = signed(other, 1, RecordOperationV1::AppendVersion(theirs.clone()));
+        replica.merge(&theirs_append, &auth).unwrap();
+
+        let attributed = signed(actor, 2, attribute(own.id, &scribe));
+        assert_eq!(attributed.protocol_version, RECORD_ENVELOPE_V5);
+        let decoded =
+            RecordEnvelopeV1::decode_and_verify(&attributed.canonical_bytes().unwrap()).unwrap();
+        replica.merge(&decoded, &auth).unwrap();
+        let snapshot = replica.snapshot(&actor, &auth).unwrap();
+        assert_eq!(
+            snapshot.attributions,
+            vec![FileVersionAttributionV1 {
+                version_id: own.id,
+                attribution: scribe.clone(),
+            }]
+        );
+
+        // Another device of the same person cannot say who caused this
+        // device's version, nor this device say who caused that one's; a
+        // version nobody holds, a second agent and a person are refused.
+        let courier = FileAttributionV1 {
+            actor: "agent:courier".into(),
+            ..scribe.clone()
+        };
+        let person = FileAttributionV1 {
+            actor: "ada".into(),
+            ..scribe.clone()
+        };
+        let mut refused = |signer: FileActor, version_id, attribution| {
+            let sequence = if signer == actor { 3 } else { 2 };
+            let envelope = signed(signer, sequence, attribute(version_id, attribution));
+            replica.merge(&envelope, &auth).unwrap_err()
+        };
+        assert!(matches!(
+            refused(other, own.id, &scribe),
+            RecordReplicationError::ForeignAttribution
+        ));
+        assert!(matches!(
+            refused(actor, theirs.id, &scribe),
+            RecordReplicationError::ForeignAttribution
+        ));
+        assert!(matches!(
+            refused(actor, FileVersionId::new(), &scribe),
+            RecordReplicationError::UnknownAttributedVersion
+        ));
+        assert!(matches!(
+            refused(actor, own.id, &courier),
+            RecordReplicationError::AttributionCollision(_)
+        ));
+        assert!(matches!(
+            refused(actor, own.id, &person),
+            RecordReplicationError::InvalidPayload(FileRecordError::InvalidAttribution)
+        ));
+    }
+
+    /// The envelope version gates an attribution both ways, and the
+    /// signature covers it: relabelling an envelope breaks it.
+    #[test]
+    fn attributions_travel_alone_at_v5_under_the_signature() {
+        let (key, actor, record, _) = fixture();
+        let attributed = RecordEnvelopeV1::signed(
+            record,
+            actor,
+            2,
+            RecordOperationV1::AttributeVersion(FileVersionAttributionV1 {
+                version_id: FileVersionId::new(),
+                attribution: FileAttributionV1 {
+                    actor: "agent:scribe".into(),
+                    label: "Scribe".into(),
+                    color: [10, 20, 30],
+                },
+            }),
+            &key,
+        )
+        .unwrap();
+        assert_eq!(attributed.protocol_version, RECORD_ENVELOPE_V5);
+        // The version gates the operation both ways, and the signature
+        // covers both: relabelling an envelope breaks it.
+        let mut at_v4 = attributed.clone();
+        at_v4.protocol_version = RECORD_ENVELOPE_VERSION;
+        assert!(matches!(
+            at_v4.verify(),
+            Err(RecordReplicationError::OperationRequiresV5)
+        ));
+        let mut metadata_at_v5 = envelope(&key, actor, record, 3);
+        metadata_at_v5.protocol_version = RECORD_ENVELOPE_V5;
+        assert!(matches!(
+            metadata_at_v5.verify(),
+            Err(RecordReplicationError::OperationRequiresV5)
+        ));
+        let mut relabelled = attributed;
+        if let RecordOperationV1::AttributeVersion(attributed) = &mut relabelled.operation {
+            attributed.attribution.label = "Someone else".into();
+        }
+        assert!(matches!(
+            relabelled.verify(),
+            Err(RecordReplicationError::Signature(_))
+        ));
     }
 }

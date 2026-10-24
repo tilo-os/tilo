@@ -769,3 +769,62 @@ fn device_backend_state_does_not_download() {
         "state() asked for content: {reads:?}"
     );
 }
+
+/// Only the session names the agent behind writes, over the session root of
+/// the document media socket, and only for paths under the mount: an app's
+/// connection cannot, a path outside the mount is refused, and what the
+/// session named covers those paths and what is under them.
+#[test]
+fn only_the_session_names_the_agent_behind_writes_under_the_mount() {
+    use crate::write_attribution::WriteAttributions;
+    use runtime_fs::blobs::WriteAttribution;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("fs-blobs.sock");
+    let mount = std::path::PathBuf::from("/var/workspace");
+    let leases = Arc::new(WriteAttributions::default());
+    let _server = {
+        let _guard = runtime.enter();
+        let media = DocumentMedia::new(Arc::new(ContentStore::memory()))
+            .with_write_attributions((Arc::clone(&leases), mount));
+        serve_socket(&socket, media).unwrap()
+    };
+    let scribe = |paths: Vec<&str>| WriteAttribution {
+        paths: paths.into_iter().map(str::to_owned).collect(),
+        actor: "agent:scribe".into(),
+        label: "Scribe".into(),
+        color: [10, 20, 30],
+        ttl: std::time::Duration::from_secs(30),
+    };
+
+    let app = launcher_connection(&socket, "room-1", "so.tilo.file-explorer");
+    assert!(
+        app.attribute_writes(scribe(vec!["/var/workspace/Reports"]))
+            .is_err()
+    );
+    assert!(leases.is_idle(), "an app names nobody");
+
+    let session = BlobClient::connect_session(&socket).unwrap();
+    assert!(
+        session
+            .attribute_writes(scribe(vec!["/etc/passwd"]))
+            .is_err()
+    );
+    let mut person = scribe(vec!["/var/workspace/Reports"]);
+    person.actor = "ada".into();
+    assert!(session.attribute_writes(person).is_err(), "only an agent");
+    assert!(leases.is_idle());
+
+    session
+        .attribute_writes(scribe(vec!["/var/workspace/Reports"]))
+        .unwrap();
+    let named = leases.for_path("/Reports/q3.txt").unwrap();
+    assert_eq!(named.actor, "agent:scribe");
+    assert_eq!(named.color, [10, 20, 30]);
+    assert_eq!(leases.for_path("/notes.txt"), None);
+}

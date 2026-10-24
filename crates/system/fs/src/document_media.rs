@@ -96,6 +96,12 @@ pub struct DocumentMedia {
     store: Arc<ContentStore>,
     /// The public content this device keeps, where it keeps any.
     public: Option<Arc<PublicContent>>,
+    /// The mount's write attribution leases and its mount point, which the
+    /// session reaches through `SessionBlobs.attributeWrites`.
+    attributions: Option<(
+        Arc<crate::write_attribution::WriteAttributions>,
+        std::path::PathBuf,
+    )>,
 }
 
 impl DocumentMedia {
@@ -104,6 +110,7 @@ impl DocumentMedia {
         Arc::new(Self {
             store,
             public: None,
+            attributions: None,
         })
     }
 
@@ -112,6 +119,7 @@ impl DocumentMedia {
         Arc::new(Self {
             store,
             public: Some(public),
+            attributions: None,
         })
     }
 
@@ -119,6 +127,58 @@ impl DocumentMedia {
         self.public
             .as_ref()
             .ok_or_else(|| BlobError::Refused("this device keeps no public content".into()))
+    }
+
+    /// Let the session lease write attributions for the workspace mounted at
+    /// the given mount point ([`crate::write_attribution`]).
+    #[must_use]
+    pub fn with_write_attributions(
+        self: Arc<Self>,
+        attributions: (
+            Arc<crate::write_attribution::WriteAttributions>,
+            std::path::PathBuf,
+        ),
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            store: Arc::clone(&self.store),
+            public: self.public.clone(),
+            attributions: Some(attributions),
+        })
+    }
+
+    /// The session names the agent behind this device's next writes to some
+    /// absolute paths under the mount. Only the session root reaches this.
+    ///
+    /// # Errors
+    ///
+    /// Refuses when this daemon mounts no workspace, a path lies outside the
+    /// mount, or the lease is invalid.
+    pub fn lease_write_attribution(
+        &self,
+        attribution: runtime_fs::blobs::WriteAttribution,
+    ) -> Result<(), BlobError> {
+        let Some((leases, mount_point)) = &self.attributions else {
+            return Err(BlobError::Refused(
+                "this filesystem attributes no writes".into(),
+            ));
+        };
+        let paths = attribution
+            .paths
+            .iter()
+            .map(|path| crate::write_attribution::mount_relative(mount_point, path))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| BlobError::Refused("an attributed path is outside the mount".into()))?;
+        leases
+            .grant(
+                paths,
+                fs_protocol::FileAttributionV1 {
+                    actor: attribution.actor,
+                    label: attribution.label,
+                    color: attribution.color,
+                },
+                attribution.ttl,
+            )
+            .map_err(|error| BlobError::Refused(error.to_string()))
     }
 
     /// Store `bytes` for `scope`. The whole payload is always hashed and
@@ -345,6 +405,13 @@ impl BlobBackend for DocumentMedia {
                 None => 0,
             }
         })
+    }
+
+    fn attribute_writes(
+        &self,
+        attribution: runtime_fs::blobs::WriteAttribution,
+    ) -> Result<(), BlobError> {
+        self.lease_write_attribution(attribution)
     }
 }
 

@@ -406,11 +406,14 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
         .map(|version| {
             let person = version.actor.person.as_bytes();
             // The device that signed the version names who wrote it: an
-            // agent's own device reads as the agent, on behalf of its person.
-            let known = files
-                .target
-                .authors
-                .resolve_file_actor(person, version.actor.device.as_bytes());
+            // agent's own device reads as the agent, on behalf of its person,
+            // and so does the agent the signing device recorded as having
+            // caused the write through its person's session.
+            let known = files.target.authors.resolve_attributed_file_actor(
+                person,
+                version.actor.device.as_bytes(),
+                files.attributions.get(&version.id),
+            );
             let author = known.unwrap_or_else(|| {
                 let identity = hex::encode(person.get(..6).unwrap_or(person));
                 let name = if person.iter().all(|b| *b == 0) {
@@ -715,6 +718,7 @@ mod tests {
                     heads: vec![],
                     current_revision: None,
                     next_after: None,
+                    attributions: vec![],
                 }))
             }
             fn preview(
@@ -970,5 +974,45 @@ mod tests {
         // A device is an agent only of the person who delegated it.
         assert_ne!(rows[2].author.name, rows[1].author.name);
         assert_eq!(rows[2].author.attribution, None);
+
+        // An agent that wrote through Ada's own session, as Ada's laptop
+        // recorded it in the signed record, reads as that agent, for Ada --
+        // the person who signed the version, never anybody else.
+        let through_session = fs_protocol::FileAttributionV1 {
+            actor: "agent:courier".into(),
+            label: "Courier".into(),
+            color: [40, 50, 60],
+        };
+        files.versions = vec![version(4, ada, ada_laptop), version(5, ada, ada_laptop)];
+        files.attributions = [(version(4, ada, ada_laptop).id, through_session)].into();
+        let rows = file_timeline_entries(&files);
+        assert_eq!(rows[0].author.name, "Courier · Agent, for Ada");
+        assert_eq!(rows[0].author.rgb(), (40, 50, 60));
+        assert_eq!(
+            rows[0].author.attribution,
+            Some(HistoryAttribution {
+                actor: "agent:courier".into(),
+                kind: tilo_actions::ActorKind::Agent,
+                actor_name: "Courier".into(),
+                on_behalf_of: Some(hex::encode(ada)),
+                on_behalf_of_name: Some("Ada".into()),
+            })
+        );
+        assert_eq!(rows[1].author.name, "Ada", "an unattributed version");
+        assert_eq!(rows[1].author.attribution, None);
+
+        // A record that names no agent changes nothing.
+        files.attributions = [(
+            version(5, ada, ada_laptop).id,
+            fs_protocol::FileAttributionV1 {
+                actor: "ada".into(),
+                label: "Ada".into(),
+                color: [0, 0, 0],
+            },
+        )]
+        .into();
+        let rows = file_timeline_entries(&files);
+        assert_eq!(rows[1].author.name, "Ada");
+        assert_eq!(rows[1].author.attribution, None);
     }
 }

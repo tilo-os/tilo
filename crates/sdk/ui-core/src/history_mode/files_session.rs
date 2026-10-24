@@ -9,7 +9,7 @@ use fs_protocol::files::{
     FileHistoryReadQueryV1 as Query, FileHistoryReadScopeV1 as Scope,
     FileHistoryReadValueV1 as Value, FileRestoreReviewV1 as Review,
 };
-use fs_protocol::{FileVersionId, FileVersionV1};
+use fs_protocol::{FileAttributionV1, FileVersionId, FileVersionV1};
 use std::{
     cell::RefCell,
     sync::{Arc, mpsc},
@@ -26,6 +26,10 @@ struct Key {
     binding: uuid::Uuid,
     selection: Option<FileVersionId>,
 }
+/// The agents behind those versions of a file an agent caused, by version,
+/// as each version's own signing device recorded them.
+pub(super) type Attributions = std::collections::BTreeMap<FileVersionId, FileAttributionV1>;
+
 enum Reply {
     Activity(
         Result<
@@ -33,6 +37,7 @@ enum Reply {
                 Scope,
                 Vec<FileVersionV1>,
                 Option<fs_protocol::ContentRevisionV1>,
+                Attributions,
             ),
             Error,
         >,
@@ -52,6 +57,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 )]
 struct Presented {
     versions: Vec<FileVersionV1>,
+    attributions: Attributions,
     scope: Option<Scope>,
     current_revision: Option<fs_protocol::ContentRevisionV1>,
     message: String,
@@ -78,6 +84,8 @@ pub(super) struct FileController {
     wake: crate::wake::WakeHandle,
     background: Background,
     pub versions: Vec<FileVersionV1>,
+    /// Who caused those of [`Self::versions`] an agent caused.
+    pub attributions: Attributions,
     pub scope: Option<Scope>,
     pub current_revision: Option<fs_protocol::ContentRevisionV1>,
     pub after: Option<FileHistorySnapshot>,
@@ -119,6 +127,7 @@ impl FileController {
             wake: crate::wake::WakeHandle::new(),
             background,
             versions: vec![],
+            attributions: Attributions::new(),
             scope: None,
             current_revision: None,
             after: None,
@@ -300,6 +309,7 @@ impl FileController {
         self.after = None;
         self.before = None;
         self.versions.clear();
+        self.attributions.clear();
         self.current_revision = None;
         self.review = None;
         self.preview_changed = true;
@@ -312,6 +322,7 @@ impl FileController {
                 Scope,
                 Vec<FileVersionV1>,
                 Option<fs_protocol::ContentRevisionV1>,
+                Attributions,
             ),
             Error,
         >,
@@ -319,7 +330,7 @@ impl FileController {
         self.refreshing = false;
         self.schedule_poll();
         match result {
-            Ok((scope, versions, current_revision))
+            Ok((scope, versions, current_revision, attributions))
                 if self.visible_identity(
                     scope.workspace_id,
                     scope.mount_lifetime,
@@ -332,6 +343,7 @@ impl FileController {
                     .is_some_and(|after| after.scope.frontier != scope.frontier);
                 self.scope = Some(scope);
                 self.versions = versions;
+                self.attributions = attributions;
                 self.current_revision = current_revision;
                 // Activity polling is ambient status. Keep an admitted restore
                 // outcome visible, and after a transient read failure restore the
@@ -502,6 +514,7 @@ impl FileController {
     fn presented(&self) -> Presented {
         Presented {
             versions: self.versions.clone(),
+            attributions: self.attributions.clone(),
             scope: self.scope,
             current_revision: self.current_revision,
             message: self.message.clone(),
@@ -527,12 +540,14 @@ fn load_all(
         Scope,
         Vec<FileVersionV1>,
         Option<fs_protocol::ContentRevisionV1>,
+        Attributions,
     ),
     Error,
 > {
     let mut cursor = None;
     let mut expected = None;
     let mut versions = Vec::new();
+    let mut attributions = Attributions::new();
     let mut seen = std::collections::BTreeSet::new();
     let mut previous = None;
     loop {
@@ -573,6 +588,20 @@ fn load_all(
         if page.next_after.is_some() && page.next_after != page.versions.last().map(|v| v.id) {
             return Err(Error::InvalidRequest);
         }
+        // An attribution names an agent for one of this page's own versions.
+        for attributed in page.attributions {
+            if attributed.attribution.validate().is_err()
+                || !page
+                    .versions
+                    .iter()
+                    .any(|version| version.id == attributed.version_id)
+                || attributions
+                    .insert(attributed.version_id, attributed.attribution)
+                    .is_some()
+            {
+                return Err(Error::InvalidRequest);
+            }
+        }
         versions.extend(page.versions);
         if versions.len() as u64 > page.total_versions {
             return Err(Error::InvalidRequest);
@@ -593,7 +622,7 @@ fn load_all(
                 {
                     return Err(Error::InvalidRequest);
                 }
-                return Ok((page.scope, versions, page.current_revision));
+                return Ok((page.scope, versions, page.current_revision, attributions));
             }
             None => return Err(Error::InvalidRequest),
         }
@@ -627,6 +656,7 @@ fn read_snapshot(
     let Value::Version {
         scope: actual,
         version,
+        ..
     } = transport.read(Query::Version {
         frontier: scope.frontier,
         version_id,
@@ -806,6 +836,7 @@ mod tests {
                     heads: vec![],
                     current_revision: None,
                     next_after: next,
+                    attributions: vec![],
                 })
             };
             let transport = Pages(std::sync::Mutex::new(
@@ -828,6 +859,44 @@ mod tests {
                 Err(Error::InvalidRequest),
                 "a pinned frontier cannot change its total across pages"
             );
+
+            // A page names the agent behind one of its own versions; one that
+            // names another page's version, or no agent, is incoherent.
+            let attributed = |id, actor: &str| fs_protocol::FileVersionAttributionV1 {
+                version_id: version(id).id,
+                attribution: fs_protocol::FileAttributionV1 {
+                    actor: actor.into(),
+                    label: "Scribe".into(),
+                    color: [10, 20, 30],
+                },
+            };
+            let attributed_page = |attributions| {
+                Value::Page(fs_protocol::files::FileHistoryPageV1 {
+                    scope: scope(),
+                    versions: vec![version(1)],
+                    total_versions: 1,
+                    heads: vec![],
+                    current_revision: None,
+                    next_after: None,
+                    attributions,
+                })
+            };
+            let transport = Pages(std::sync::Mutex::new(
+                [attributed_page(vec![attributed(1, "agent:scribe")])].into(),
+            ));
+            let (_, _, _, attributions) = load_all(&transport).unwrap();
+            assert_eq!(
+                attributions
+                    .get(&version(1).id)
+                    .map(|attribution| attribution.actor.as_str()),
+                Some("agent:scribe")
+            );
+            for forged in [attributed(2, "agent:scribe"), attributed(1, "ada")] {
+                let transport = Pages(std::sync::Mutex::new(
+                    [attributed_page(vec![forged])].into(),
+                ));
+                assert_eq!(load_all(&transport), Err(Error::InvalidRequest));
+            }
         }
     }
 
@@ -848,7 +917,7 @@ mod tests {
             .tx
             .send(Completion {
                 key: initial_key,
-                reply: Reply::Activity(Ok((scope(), vec![], None))),
+                reply: Reply::Activity(Ok((scope(), vec![], None, Attributions::new()))),
             })
             .unwrap();
         initial.drain();
@@ -883,7 +952,7 @@ mod tests {
             .tx
             .send(Completion {
                 key,
-                reply: Reply::Activity(Ok((scope(), vec![], None))),
+                reply: Reply::Activity(Ok((scope(), vec![], None, Attributions::new()))),
             })
             .unwrap();
 
@@ -907,7 +976,7 @@ mod tests {
             .tx
             .send(Completion {
                 key,
-                reply: Reply::Activity(Ok((scope(), vec![], None))),
+                reply: Reply::Activity(Ok((scope(), vec![], None, Attributions::new()))),
             })
             .unwrap();
         controller.drain();
@@ -939,7 +1008,7 @@ mod tests {
             .tx
             .send(Completion {
                 key,
-                reply: Reply::Activity(Ok((scope(), vec![], None))),
+                reply: Reply::Activity(Ok((scope(), vec![], None, Attributions::new()))),
             })
             .unwrap();
         controller.drain();
@@ -999,7 +1068,7 @@ mod tests {
                     let mut foreign = scope();
                     foreign.mount_lifetime = uuid::Uuid::new_v4();
                     controller.scope = Some(scope());
-                    Reply::Activity(Ok((foreign, vec![], None)))
+                    Reply::Activity(Ok((foreign, vec![], None, Attributions::new())))
                 } else {
                     Reply::Activity(Err(Error::NotVisible))
                 };
@@ -1151,7 +1220,7 @@ mod tests {
                 .tx
                 .send(Completion {
                     key: controller.key,
-                    reply: Reply::Activity(Ok((foreign, vec![], None))),
+                    reply: Reply::Activity(Ok((foreign, vec![], None, Attributions::new()))),
                 })
                 .unwrap();
             controller.drain();
@@ -1231,11 +1300,13 @@ mod tests {
                                     heads: vec![self.version.id],
                                     current_revision: None,
                                     next_after: None,
+                                    attributions: vec![],
                                 }))
                             }
                             Query::Version { .. } => Ok(Value::Version {
                                 scope: scope(),
                                 version: self.version.clone(),
+                                attribution: None,
                             }),
                             _ => Err(Error::InvalidRequest),
                         }
