@@ -421,6 +421,7 @@ mod tests {
             tabs: vec![Tab {
                 id: id.saturating_add(1000),
                 title: "Notes".into(),
+                app_title: None,
                 tile: TileContent::AppPlaceholder {
                     kind: tilo_desktop_model::AppKind::Other("so.tilo.notes".into()),
                     label: "Notes".into(),
