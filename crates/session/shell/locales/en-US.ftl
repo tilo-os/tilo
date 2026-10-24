@@ -2308,16 +2308,6 @@ overview-items-shared = { $count ->
 }
 
 # Windows and documents the shell hosts
-shell-window-restoring = Restoring this window…
-shell-window-opening = Opening…
-shell-window-opening-slow = Opening { $app }… taking longer than usual
-shell-window-installing-slow = Installing { $app }… taking longer than usual
-shell-window-installing-of = Installing { $app }… { $received } of { $total }
-shell-window-installing-received = Installing { $app }… { $received }
-shell-window-updating = Updating { $app }…
-shell-window-updating-slow = Updating { $app }… taking longer than usual
-shell-window-updating-of = Updating { $app }… { $received } of { $total }
-shell-window-updating-received = Updating { $app }… { $received }
 peer-window-not-installed = Not installed on this device.
 peer-window-install = Install { $app }
 peer-window-installing = Installing { $app }…
@@ -2470,7 +2460,6 @@ pad-map-dial-brightness = Brightness
 
 # Peer views, opening documents, identity backup and invitations
 peer-view-surface-title = Peer surface #{ $id }
-peer-view-awaiting = Awaiting peer surface…
 doc-open-no-handler = no app on this desktop opens .{ $ext } files ({ $name })
 doc-open-no-file-type = { $name } has no file type to open it by
 doc-open-no-workspace = there is no active workspace to open it in
@@ -2859,6 +2848,7 @@ shell-launch-registry-unavailable = The app process registry is unavailable.
 shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.
 
 shell-window-restore-interrupted = This saved window did not finish reopening.
+shell-window-open-failed = This window didn’t open
 shell-window-retry = Reopen
 shell-window-app-missing = { $app } isn't on this computer
 shell-window-get-app = Get { $app }

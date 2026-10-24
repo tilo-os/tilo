@@ -3,7 +3,7 @@
 //! Like an app's `definition()` (`crate::split`), the export below is the
 //! only way to the composer's code, so the splitter moves it into its own
 //! module. The composer registers with the application registry as a
-//! deferred application: its windows show the opening card while the module
+//! deferred application: its windows reserve their place while the module
 //! loads, and the load hands the runtime the composer's code
 //! (`tilo_browser_runtime::install_feedback_composer`).
 

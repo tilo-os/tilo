@@ -93,6 +93,7 @@ pub(super) fn all() -> Vec<Scenario> {
         quick_settings(),
         notifications(),
         windows(),
+        window_arrival(),
         overview_and_switching(),
         popovers(),
         tabs(),
@@ -494,6 +495,58 @@ fn ribbon_and_rail() -> Scenario {
     scenario(
         "motion_review_ribbon",
         "The strip ribbon laying its strips out under a resting pointer and folding when it leaves; the window rail under the pointer and clicks on its first and last segments. Every frame at 60 Hz (needs --features test-support).",
+        a,
+    )
+}
+
+/// A window's first frame arriving inside its frame: a local window that
+/// draws in time opens with no placeholder; another member's window holds
+/// its place, shows the skeleton, says where it comes from, and its first
+/// picture fades in; a start that fails shows its failure in the place.
+fn window_arrival() -> Scenario {
+    let mut a = vec![Action::LoneWindow(0), Action::Wait(20)];
+    then_film(
+        &mut a,
+        act_film(
+            "01-local-in-time",
+            Action::OpenWindow {
+                app_id: "org.example.right",
+                surface_id: 6301,
+            },
+        ),
+    );
+    a.extend([Action::LoneWindow(0), Action::SelectGroup(None)]);
+    then_film(
+        &mut a,
+        act_film(
+            "02-launch-waiting",
+            Action::HoldLaunchPlace {
+                app_id: "so.tilo.notes",
+                label: "Notes",
+            },
+        )
+        .at_least(40),
+    );
+    a.push(Action::Film(Film::new(
+        "03-launch-fails",
+        vec![Step::LaunchFails {
+            app_id: "so.tilo.notes",
+            detail: "Notes could not start.",
+        }],
+    )));
+    // Long enough to pass the skeleton's grace and the moment the place
+    // names where the window comes from.
+    then_film(
+        &mut a,
+        Film::new("04-peer-waiting", vec![Step::PeerWindowOpens]).at_least(170),
+    );
+    a.push(Action::Film(Film::new(
+        "05-peer-first-picture",
+        vec![Step::PeerWindowFirstPicture],
+    )));
+    scenario(
+        "motion_review_window_arrival",
+        "A window's first frame arriving inside its frame: a local window drawing in time opens with no placeholder; another member's window reserves its place, shows the skeleton, names the device it comes from and fades its first picture in; a start that fails shows its failure and retry in the place it held. Every frame at 60 Hz (needs --features test-support).",
         a,
     )
 }

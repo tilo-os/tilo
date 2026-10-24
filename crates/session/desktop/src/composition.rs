@@ -954,13 +954,13 @@ impl DesktopSurface {
                                 tab,
                             });
                             match resolution {
-                                // Still opening: the card it shows stays.
+                                // Still opening: the arrival it shows goes on.
                                 crate::resolver::TileResolution::Opening if arriving => {
                                     tiles.insert(tab.id, tab.tile.clone());
                                     continue;
                                 }
                                 // Plain content swaps inside the live host, which keeps
-                                // its visibility and opening card until the new content
+                                // its visibility and its arrival until the new content
                                 // presents, and publishes the new content's size on the
                                 // next layout.
                                 crate::resolver::TileResolution::Content(content) => {
@@ -987,10 +987,10 @@ impl DesktopSurface {
                                     });
                                     let checked = other.holds_its_own_record();
                                     let mut host = other.mount(&mut failures, wake_sink.clone());
-                                    // The app whose record opened takes over
-                                    // the card its window showed meanwhile.
+                                    // The app whose record opened goes on with
+                                    // the arrival its window showed meanwhile.
                                     if let Some(old) = old.as_ref().filter(|_| arriving) {
-                                        host.continue_opening_card(old);
+                                        host.continue_arrival(old);
                                     }
                                     if !checked {
                                         host.bind_record(

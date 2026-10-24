@@ -295,10 +295,10 @@ pub fn open_beside(
     .map(drop)
 }
 
-/// The new tab is there from this frame, like a browser's: the opening card
-/// holds its place at `placement` and the app's window binds into it when it
+/// The new tab is there from this frame, like a browser's: it holds the
+/// window's place at `placement` and the app's window binds into it when it
 /// maps. Held before `queue` starts the launch, since the window may map
-/// before this returns. A launch refused before any process leaves no card.
+/// before this returns. A launch refused before any process leaves no place.
 fn hold_and_launch(
     st: &ChromeState,
     package_id: &str,

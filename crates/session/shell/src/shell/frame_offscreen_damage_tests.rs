@@ -31,12 +31,13 @@ fn client_damage_no_display_shows_repaints_nothing() {
     let mut clock = tilo_test_env::ScopedEnv::new();
     clock.set("TILO_CLOCK", "09:41");
     let surface = 8_493_302;
-    let (mut fixture, size) =
+    let (mut fixture, size, opened) =
         foreign_damage_fixture(ui::widget::WindowWidth::Fraction(1_500), surface);
     let mut pixels = [32, 32, 32, 255].repeat(size.0 as usize * size.1 as usize);
     let store = crate::shell::foreign::store();
     store.publish_rgba(surface, &pixels, size.0, size.1);
-    let _first = fixture.paint_with_damage();
+    // Pinned: the client answers the instant it is asked, so set-up is no slow client.
+    let _first = ui::time::testing::with_monotonic_time(opened, || fixture.paint_with_damage());
     let mounted = fixture.foreign_surface_rect(surface).expect("mounted");
     let (scene_width, _) = fixture.scene_size();
     let scale_x = mounted.width() / f64::from(size.0);
