@@ -11088,6 +11088,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pam-tilo"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tempfile",
+ "tilo-auth",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "papaya"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
