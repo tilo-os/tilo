@@ -176,7 +176,8 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     let bo = admit(rooms, &room, &owner, 2).await;
 
     // The relay's person runs every action the provider serves, on the
-    // room's own governance resource, and none it holds back.
+    // room's own governance resource, removing and banning included: their
+    // own request confirms it.
     let owners = offered(&host, workspace, &caller(&owner)).await;
     for verb in INVITE_FAMILY.iter().chain(&[
         governance::SET_ROLE,
@@ -184,17 +185,14 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
         governance::UNRESTRICT,
         governance::UNBAN,
         governance::CALL,
+        governance::REMOVE_MEMBER,
+        governance::BAN,
     ]) {
         assert!(
             owners.iter().any(|offered| offered == verb),
             "{verb}: {owners:?}"
         );
     }
-    assert!(
-        !owners
-            .iter()
-            .any(|verb| verb == governance::BAN || verb == governance::REMOVE_MEMBER)
-    );
 
     // An Editor by role alone is offered nothing.
     assert!(offered(&host, workspace, &caller(&ada)).await.is_empty());
@@ -521,6 +519,39 @@ async fn roles_follow_the_room_and_destructive_governance_waits_for_the_person()
     assert_eq!(
         invoke(&host, workspace, &caller(&bo), promote).await,
         Err(ActionHostError::UnknownAction)
+    );
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_owners_own_request_confirms_removing_a_member() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
+    let (room, workspace, host) = governed(rooms).await;
+    let ada = admit(rooms, &room, &owner, 1).await;
+    let person = |cert: &DeviceCert| hex::encode(cert.user_public_key);
+
+    let removed = invoke(
+        &host,
+        workspace,
+        &caller(&owner),
+        request(
+            &room,
+            governance::REMOVE_MEMBER,
+            json!({ "person": person(&ada) }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(removed["generation"].as_u64().is_some(), "{removed}");
+    let members = rooms.summary(&room).await.unwrap().members;
+    assert!(
+        members
+            .iter()
+            .any(|member| member.user_public_key == ada.user_public_key && member.removed),
+        "{members:?}"
     );
     relay.shutdown().await;
 }
