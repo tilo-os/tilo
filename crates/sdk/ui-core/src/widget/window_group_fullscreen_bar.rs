@@ -107,16 +107,25 @@ impl WindowGroup {
         }
     }
 
-    /// A fullscreen window's bar standing over its content, fading with
-    /// its reveal.
+    /// Whether a fullscreen window's bar is fading in or out.
+    pub(super) fn fullscreen_bar_fading(&self) -> bool {
+        self.fullscreen_presentation && self.fullscreen_bar.fade.is_moving(crate::time::now())
+    }
+
+    /// A fullscreen window's bar standing over its content (`over`),
+    /// fading with its reveal.
     pub(super) fn draw_bar_over_content(
         &mut self,
+        over: bool,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if !over {
+            return;
+        }
         let alpha =
             crate::motion::unit_opacity(self.fullscreen_bar.fade.progress(crate::time::now()));
         let fading = alpha < 1.0;
