@@ -120,6 +120,7 @@ fn responses() -> Vec<JoinTransportResponse> {
             .map(|message| postcard::to_allocvec(message).unwrap())
             .collect(),
         generation: 7,
+        hosts: Vec::new(),
     };
     let owner = OwnerBootstrapV1 {
         version: 1,

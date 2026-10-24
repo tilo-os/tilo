@@ -28,7 +28,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::network::local_host::room_host::{self, HostConfig, HostMode, RoomHost};
 use tilo_actions::remote::RemoteActionMessage;
 use tilo_relay_session::rooms::{
-    CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
+    ATTACH_HOST, CREATE_ROOM, CreatedRoom, DETACH_HOST, ENTER_ROOM, EnteredRoom,
+    HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
 };
 
 use super::{
@@ -475,6 +476,73 @@ impl ShellNetwork {
             .as_ref()?
             .join_client(own)
             .map(Via::Local)
+    }
+}
+
+impl ShellNetwork {
+    /// Have this person's home relay serve `room`, a workspace this device's
+    /// host governs, as well (their choice in Settings, Devices & Sync): the
+    /// relay then holds and serves the room while this device is off. Blocks
+    /// until the relay took the room up: call it off the frame loop.
+    ///
+    /// # Errors
+    ///
+    /// This device's host is not open or does not govern the room, the
+    /// person has no home relay, or the relay could not be reached or
+    /// refused the room.
+    pub fn add_hosting_member(&self, room: RoomId) -> Result<(), String> {
+        let (ws, relay) = self.home_relay_for(room)?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("room".into(), room.to_string().into());
+        arguments.insert(
+            "host".into(),
+            hex::encode(relay.expectation.device_public_key).into(),
+        );
+        arguments.insert(
+            "host_addr".into(),
+            serde_json::to_value(&relay.addr).map_err(|error| error.to_string())?,
+        );
+        self.local_host_action(ws, ATTACH_HOST, arguments).map(drop)
+    }
+
+    /// Take this person's home relay off as a host of `room` again: it no
+    /// longer serves the room, and is asked to stop. Blocks like
+    /// [`Self::add_hosting_member`].
+    ///
+    /// # Errors
+    ///
+    /// This device's host is not open or does not govern the room, or the
+    /// person has no home relay.
+    pub fn remove_hosting_member(&self, room: RoomId) -> Result<(), String> {
+        let (ws, relay) = self.home_relay_for(room)?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("room".into(), room.to_string().into());
+        arguments.insert(
+            "host".into(),
+            hex::encode(relay.expectation.device_public_key).into(),
+        );
+        arguments.insert(
+            "host_addr".into(),
+            serde_json::to_value(&relay.addr).map_err(|error| error.to_string())?,
+        );
+        self.local_host_action(ws, DETACH_HOST, arguments).map(drop)
+    }
+
+    /// The workspace this device's own host operations are asked on, and
+    /// the person's home relay to serve `room`.
+    fn home_relay_for(&self, room: RoomId) -> Result<(u64, super::RegisteredHomePeer), String> {
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or("native identity unavailable")?;
+        let (certificate, _) = identity.current_native_material(room_topic_id(room))?;
+        let user = certificate.user_public_key;
+        let topics = super::relay_topics_for_home_peers(std::iter::empty(), Some(user));
+        let relay = super::registered_home_peer_addrs(Some(user), &topics)?
+            .into_iter()
+            .next()
+            .ok_or("this person has no home relay")?;
+        Ok((personal_continuity_topic_id(&user), relay))
     }
 }
 
