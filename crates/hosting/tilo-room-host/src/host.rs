@@ -196,6 +196,7 @@ impl HostSessions {
                 "device certificate is not host-capable".into(),
             ));
         }
+        say_when_unsealed(governs, &identity.device_cert);
         std::fs::create_dir_all(&cfg.state_root)?;
         let workspaces: WorkspaceRegistry =
             Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
@@ -272,7 +273,6 @@ impl HostSessions {
                 max_pre_admissions: cfg
                     .max_room_grants
                     .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
-                #[cfg(feature = "agents")]
                 trust_policy: sessions.handler.trust_policy.clone(),
                 agents: sessions.handler.agents.clone(),
                 mode: cfg.mode.join_hint_mode(),
@@ -395,6 +395,19 @@ impl HostSessions {
         self.closing.send_replace(true);
         self.membership_watch.stop();
         self.handler.compactor.stop().await;
+    }
+}
+
+/// Say loudly when a host that `governs` rooms under `cert` stewards no
+/// channels: its certificate may not own workspaces, so the rooms it governs
+/// keep their records in the clear in the room document instead of sealed
+/// channels.
+fn say_when_unsealed(governs: bool, cert: &DeviceCert) {
+    if governs && !cert.capabilities.stewards_room_channels() {
+        tracing::error!(
+            device = %cert.device_label,
+            "this host's certificate cannot own workspaces, so the rooms it governs are not sealed; re-enroll it with the own capability"
+        );
     }
 }
 
