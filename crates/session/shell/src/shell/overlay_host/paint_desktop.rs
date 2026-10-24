@@ -92,7 +92,7 @@ impl ShellOverlayHost {
 
         // Above desktop content, below modal overlays and the permission
         // prompt, so a prompt always wins focus. Top inset keeps toasts
-        // off the clock/tray.
+        // off the clock/tray, and the windows' bars keep them lower still.
         if let Some(chrome) = self.chrome.as_ref() {
             let viewport = Rect::new(
                 area.x0,
@@ -101,6 +101,11 @@ impl ShellOverlayHost {
                 area.y1,
             );
             self.notification_stack.set_viewport(viewport);
+            // Under the top bar is where the windows' bars are: banners
+            // start below the ones under the corner, so an incoming call
+            // never hides a window's History, maximize or close.
+            let bars = self.window_bars_on_screen();
+            self.notification_stack.keep_clear_of(&bars);
             let stack = &mut self.notification_stack;
             part_drawn(scene, PartKey::new("shell.notifications", ()), |scene| {
                 stack.draw(
