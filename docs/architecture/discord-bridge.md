@@ -114,9 +114,13 @@ another server.
 
 The worker is the `discord-worker` binary in the connector's package. It keeps
 one gateway session with the intents `GUILDS`, `GUILD_MEMBERS`,
-`GUILD_MESSAGES`, `GUILD_MESSAGE_REACTIONS` and `MESSAGE_CONTENT`, and receives
-slash-command interactions over the same gateway. Its egress allowlist is
-`discord.com`, `gateway.discord.gg` and `cdn.discordapp.com`, and nothing else.
+`GUILD_MODERATION`, `GUILD_VOICE_STATES`, `GUILD_MESSAGES`,
+`GUILD_MESSAGE_REACTIONS` and `MESSAGE_CONTENT`, and receives slash-command
+interactions over the same gateway. Its egress allowlist is `discord.com`,
+`gateway.discord.gg` (and the regional `*.discord.gg` gateways Discord names),
+`cdn.discordapp.com`, and, while it carries a call, the voice server
+`wss://*.discord.media` Discord assigns plus UDP to the public address and
+port that server's Ready names. Nothing else.
 It receives the bot token and the webhook tokens from the host as `Secret`
 messages and never writes them anywhere. It honours Discord's rate-limit
 headers per route, which is why a burst of Tilo messages arrives late rather
@@ -129,6 +133,45 @@ Webhook tokens are created by the `create-webhook` op. The worker returns the
 token to the host as a secret, never in the op's result. The host stores it as
 `SecretStore::item("webhook", <channel id>)`, so the record holds only the
 webhook's id.
+
+### Voice
+
+The worker reports who is in the guild's voice channels (only the bridged
+channel when it bridges one) as `Calls`: each person's account, name (nick,
+global name or username), avatar and whether they are muted (self, server or
+suppressed), the bot left out, again whenever that changes. A `Call` from the
+host puts the bot in one voice channel (a bot can be in one per guild, so the
+newest wins) or takes it out; the report's `link` says `Joining`, `Joined`,
+`Idle` or `Refused` with the reason.
+
+Before joining the worker computes the bot's permissions in the channel from
+the guild's roles and the channel's overwrites and needs View Channel, Connect
+and Speak; what is missing is named ("the bot lacks Connect and Speak in
+#voice") in `Refused` and on the connector's status. So are a voice server's
+fatal close codes, a moderator moving or disconnecting the bot, and a join
+Discord ignores for 20 s (a full channel). A refused call is not retried until
+the host asks again.
+
+The voice connection is Discord's voice gateway v8 (heartbeats acknowledge the
+last sequence, a dropped socket resumes) and RTP over UDP after IP discovery,
+in `aead_aes256_gcm_rtpsize` when offered, else
+`aead_xchacha20_poly1305_rtpsize` (sealed by `tilo_seal::discord_voice`, as
+every raw AEAD is). Media is end-to-end encrypted with DAVE,
+which Discord requires in voice channels since March 2026: the worker is an
+MLS member through `davey` (vendored, see `vendor/davey/TILO-PATCH.md`),
+handles the external sender, proposals, commits, welcomes, transitions, epoch
+resets, invalid-commit recovery and the downgrade to transport only.
+
+Discord users' Opus frames go to the host as `Audio` with their account as
+the speaker. The host's frames are mixed on a 20 ms tick with a two-to-three
+frame jitter buffer per speaker: one speaker's Opus passes through undecoded,
+two or more are decoded, summed with saturation and encoded once (stereo,
+64 kbit/s). The worker sends Speaking before audio and five silence frames
+and Speaking off after it. Received and sent audio never meet, so nothing a
+Discord user says goes back to Discord. The `status` of a `Call` (who is on
+the Tilo side) is shown as the voice channel's status while the bot may set it
+(Set Voice Channel Status, granted with Administrator), else as the bot's
+nickname (Change Nickname); leaving clears it.
 
 ## 3. The bridge bot
 
