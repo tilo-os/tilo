@@ -2714,8 +2714,7 @@ impl FrameBuilder {
             self.retained_layer_width = capacity;
             return frame;
         }
-        let revision = self.next_scene_revision;
-        self.next_scene_revision = self.next_scene_revision.saturating_add(1);
+        let revision = self.reserve_scene_revision();
         let previous_revision = self
             .last_produced_sections
             .as_ref()
@@ -2735,17 +2734,18 @@ impl FrameBuilder {
         // a strip is unbaked. They cannot authorize sparse screen damage.
         let screen_space_damage = strips.as_ref().is_none_or(Vec::is_empty);
         let mut section_copies = Vec::new();
-        let damage_regions = (!pointer_filter && strips_kept && screen_space_damage)
-            .then(|| {
-                self.damage_from_sections_with_images(
-                    &sections,
-                    &parts,
-                    (pointer_filter, tint),
-                    &foreign_images,
-                    copying.then_some(&mut section_copies),
-                )
-            })
-            .flatten();
+        let damage_regions =
+            (revision != 0 && !pointer_filter && strips_kept && screen_space_damage)
+                .then(|| {
+                    self.damage_from_sections_with_images(
+                        &sections,
+                        &parts,
+                        (pointer_filter, tint),
+                        &foreign_images,
+                        copying.then_some(&mut section_copies),
+                    )
+                })
+                .flatten();
         // What a floating surface blurs, an HDR layer and a fullscreen
         // client over the desktop are not moved by a copy.
         let copies_shown =
@@ -3852,7 +3852,7 @@ impl FrameBuilder {
 
     /// `rect`, in scene pixels, rounded out to whole clip tiles inside the
     /// scene.
-    fn scene_tile_rect(&self, rect: Rect) -> Option<FineDamageRect> {
+    pub(crate) fn scene_tile_rect(&self, rect: Rect) -> Option<FineDamageRect> {
         // Vello evaluates clip layers in 16px tiles. Even outside a layer's
         // exact shape, compositing that tile can round an existing channel by
         // one unit. Retain complete clip tiles so a changed shadow cannot
@@ -10704,6 +10704,9 @@ mod tests {
         );
     }
 }
+
+#[path = "frame_scene_revision.rs"]
+mod scene_revision;
 
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]
