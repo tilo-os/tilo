@@ -179,21 +179,17 @@ pub(super) fn shortcut_reference_step() -> f64 {
     54.0
 }
 
-/// Rows a semantic group has room for: the longest group's.
+/// Rows a semantic group holds at most: the longest group's.
+#[cfg(test)]
 pub(super) const SHORTCUT_REFERENCE_GROUP_ROWS: usize = 6;
 
 /// Number of semantic reference groups.
 const SHORTCUT_REFERENCE_GROUPS: usize = 3;
 
-/// A reference group's card: its header, then its six rows, the last row's
+/// A reference group's card: its header, then its rows, the last row's
 /// trailing gap closing the card.
-pub(super) fn shortcut_reference_group_height(rhythm: GuideRhythm) -> f64 {
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "a constant of six rows converts exactly"
-    )]
-    let rows = SHORTCUT_REFERENCE_GROUP_ROWS as f64;
-    shortcut_group_rows_top(rhythm) + rows * shortcut_reference_step()
+pub(super) fn shortcut_reference_group_height(steps: &[f64], rhythm: GuideRhythm) -> f64 {
+    shortcut_group_rows_top(rhythm) + steps.iter().sum::<f64>()
 }
 
 /// Where a group's first row starts below the top of its surface: the
@@ -208,26 +204,166 @@ pub(super) fn shortcut_navigation_columns(body_width: f64) -> usize {
     if body_width >= 620.0 { 2 } else { 1 }
 }
 
-/// Height of the editable-navigation surface: its header plus one row per
-/// pair, derived from the row count so a surface can never be shorter than
-/// the rows it holds.
-pub(super) fn shortcut_navigation_height(pairs: usize, columns: usize, rhythm: GuideRhythm) -> f64 {
-    let rows = pairs.div_ceil(columns.max(1));
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "a handful of rows converts exactly"
-    )]
-    let rows = rows as f64;
-    shortcut_group_rows_top(rhythm) + rows * rhythm.navigation_step + 4.0
+/// Height of the editable-navigation surface: its header plus each row's
+/// measured step, so a surface is never shorter than the rows it holds.
+pub(super) fn shortcut_navigation_height(rows: &GuideRows, rhythm: GuideRhythm) -> f64 {
+    shortcut_group_rows_top(rhythm) + rows.navigation.iter().sum::<f64>() + 4.0
+}
+
+/// The width of one navigation column in a body `body_width` wide.
+pub(super) fn shortcut_navigation_column_width(body_width: f64) -> f64 {
+    let columns = shortcut_navigation_columns(body_width);
+    (body_width - 28.0 - 8.0 * f64_of(columns.saturating_sub(1))) / f64_of(columns)
+}
+
+/// The width of one reference group in a body `body_width` wide.
+pub(super) fn shortcut_reference_width(body_width: f64) -> f64 {
+    let columns = shortcut_reference_columns(body_width);
+    (body_width - 12.0 * f64_of(columns.saturating_sub(1))) / f64_of(columns)
+}
+
+/// The room a navigation row's reset button takes after its chords.
+pub(super) fn shortcut_reset_room(theme: &ui::theme::Theme) -> f64 {
+    8.0 + ui::widget::ControlSize::Small.height(theme)
+}
+
+fn f64_of(count: usize) -> f64 {
+    ui::num::f64_of_usize(count)
+}
+
+/// The keyboard guide's rows measured in a body width and theme: each
+/// navigation row's step (its label, its chords, which take two lines when
+/// they wrap after "or", and a tight gap) and each reference group's row
+/// steps. Resolved where the theme is in hand, so the panel's height, its
+/// paint and its hit-testing share one answer.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct GuideRows {
+    pub(super) body_width: f64,
+    pub(super) navigation: Vec<f64>,
+    pub(super) groups: Vec<Vec<f64>>,
+    /// What these rows were measured for: the theme, the bindings and the
+    /// keys' legends.
+    measured_for: Option<(
+        ui::theme::Theme,
+        ShortcutConfig,
+        ui::widget::LegendConventions,
+    )>,
+}
+
+impl GuideRows {
+    /// Whether these rows still hold for `theme`, `body_width`, `config`
+    /// and `conventions`.
+    pub(super) fn holds_for(
+        &self,
+        theme: &ui::theme::Theme,
+        body_width: f64,
+        config: &ShortcutConfig,
+        conventions: ui::widget::LegendConventions,
+    ) -> bool {
+        (self.body_width - body_width).abs() < 0.5
+            && self
+                .measured_for
+                .as_ref()
+                .is_some_and(|(seen, bindings, legends)| {
+                    seen == theme && bindings == config && *legends == conventions
+                })
+    }
+}
+
+/// A configured shortcut as the keycaps the guide draws for it.
+pub(super) fn shortcut_keyboard_binding(
+    config: &ShortcutConfig,
+    action: ShortcutAction,
+) -> ui::input::KeyboardBinding {
+    use ui::input::{KeyLegend, KeyboardModifier};
+    let chord = config.bindings.get(&action);
+    let modifiers = chord
+        .into_iter()
+        .flat_map(|chord| chord.modifiers.iter())
+        .filter_map(|modifier| match modifier.as_str() {
+            "Super" => Some(KeyboardModifier::System),
+            "Ctrl" => Some(KeyboardModifier::Control),
+            "Alt" => Some(KeyboardModifier::Alt),
+            "Shift" => Some(KeyboardModifier::Shift),
+            _ => None,
+        });
+    let key = chord.map_or_else(
+        || KeyLegend::Character("—".into()),
+        |chord| KeyLegend::from_name(&chord.key),
+    );
+    ui::input::KeyboardBinding::new(modifiers, key)
+}
+
+/// Measure the guide's rows for a body `body_width` wide in `theme`.
+pub(super) fn shortcut_guide_rows(
+    theme: &ui::theme::Theme,
+    body_width: f64,
+    config: &ShortcutConfig,
+    conventions: ui::widget::LegendConventions,
+) -> GuideRows {
+    use ui::widget::{InputHint, KeyHintsFace};
+    let tight = f64::from(theme.tokens.spacing.rhythm.tight);
+    let cap = InputHint::keycap_height(theme);
+    let columns = shortcut_navigation_columns(body_width);
+    let chords_end = shortcut_navigation_column_width(body_width) - shortcut_reset_room(theme);
+    let cell = shortcut_reference_width(body_width) - 24.0;
+    ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let pairs: Vec<f64> = super::shortcut_config::SHORTCUT_GUIDE_ROWS
+            .iter()
+            .map(|(_, previous, next)| {
+                let pair = [
+                    &shortcut_keyboard_binding(config, *previous),
+                    &shortcut_keyboard_binding(config, *next),
+                ];
+                InputHint::keyboard_choice_height(text, theme, pair, conventions, (0.0, chords_end))
+            })
+            .collect();
+        let navigation = pairs
+            .chunks(columns.max(1))
+            .map(|row| 18.0 + row.iter().copied().fold(0.0, f64::max) + tight)
+            .collect();
+        let groups = shortcut_reference_groups(config)
+            .iter()
+            .map(|group| {
+                group
+                    .iter()
+                    .map(|(_, chord)| {
+                        let hints = shortcut_chord_hints(chord);
+                        let chords = KeyHintsFace::new(&hints).height_in(cell, text, theme);
+                        shortcut_reference_step() - cap + chords
+                    })
+                    .collect()
+            })
+            .collect();
+        GuideRows {
+            body_width,
+            navigation,
+            groups,
+            measured_for: Some((theme.clone(), config.clone(), conventions)),
+        }
+    })
+}
+
+/// The height of reference band `band` (groups side by side): its tallest
+/// group's card.
+pub(super) fn shortcut_reference_band_height(
+    rows: &GuideRows,
+    band: usize,
+    rhythm: GuideRhythm,
+) -> f64 {
+    let columns = shortcut_reference_columns(rows.body_width).max(1);
+    rows.groups
+        .iter()
+        .skip(band.saturating_mul(columns))
+        .take(columns)
+        .map(|steps| shortcut_reference_group_height(steps, rhythm))
+        .fold(0.0, f64::max)
 }
 
 /// The keyboard guide's steps in a theme, resolved where the theme is in
 /// hand so the guide's hit-testing and paint share one answer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct GuideRhythm {
-    /// Distance between navigation rows: the action's caption line, its
-    /// keycaps under it, and a tight gap before the next row.
-    pub(super) navigation_step: f64,
     /// A group header's height (`ui::widget::SectionHeaderFace::group`).
     pub(super) header: f64,
     /// The gap around a header inside its surface.
@@ -244,7 +380,6 @@ pub(super) fn shortcut_guide_rhythm(theme: &ui::theme::Theme) -> GuideRhythm {
         )
     });
     GuideRhythm {
-        navigation_step: 18.0 + ui::widget::InputHint::keycap_height(theme) + tight,
         header,
         inset: tight,
     }
@@ -278,38 +413,38 @@ pub(super) fn shortcut_notes_height(lines: usize) -> f64 {
     4.0 + 14.0 + lines * 18.0
 }
 
-/// Intrinsic height of the keyboard guide body for `body_width`: everything
-/// the guide paints, so the panel is exactly as tall as its content (up to
-/// the window) and scrolls only when the window is shorter.
+/// Intrinsic height of the keyboard guide body: everything the guide
+/// paints, so the panel is exactly as tall as its content (up to the window)
+/// and scrolls only when the window is shorter.
 pub(super) fn shortcut_guide_content_height(
-    body_width: f64,
-    pairs: usize,
+    rows: &GuideRows,
     note_lines: usize,
     rhythm: GuideRhythm,
 ) -> f64 {
-    let navigation =
-        shortcut_navigation_height(pairs, shortcut_navigation_columns(body_width), rhythm);
-    let group_rows = SHORTCUT_REFERENCE_GROUPS.div_ceil(shortcut_reference_columns(body_width));
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "at most three group rows convert exactly"
-    )]
-    let group_rows = group_rows as f64;
-    let groups = group_rows * shortcut_reference_group_height(rhythm) + (group_rows - 1.0) * 12.0;
+    let bands = rows
+        .groups
+        .len()
+        .div_ceil(shortcut_reference_columns(rows.body_width).max(1));
+    let groups: f64 = (0..bands)
+        .map(|band| shortcut_reference_band_height(rows, band, rhythm))
+        .sum::<f64>()
+        + f64_of(bands.saturating_sub(1)) * 12.0;
     // The essentials header sits between the navigation surface and the
     // groups, its own height spacing it from both.
-    navigation + rhythm.header + groups + shortcut_notes_height(note_lines)
+    shortcut_navigation_height(rows, rhythm)
+        + rhythm.header
+        + groups
+        + shortcut_notes_height(note_lines)
 }
 
 /// The keyboard guide's natural height: its title block, the body, and the
 /// bottom margin.
 pub(super) fn shortcut_guide_height(
-    body_width: f64,
-    pairs: usize,
+    rows: &GuideRows,
     note_lines: usize,
     rhythm: GuideRhythm,
 ) -> f64 {
-    98.0 + shortcut_guide_content_height(body_width, pairs, note_lines, rhythm) + 22.0
+    98.0 + shortcut_guide_content_height(rows, note_lines, rhythm) + 22.0
 }
 
 /// A chord as keycap labels, one list per alternative: `Alt+F4  /  Super+W`
@@ -387,14 +522,54 @@ mod guide_layout_tests {
         );
     }
 
+    fn guide_rows(theme: &ui::theme::Theme, body_width: f64) -> GuideRows {
+        shortcut_guide_rows(
+            theme,
+            body_width,
+            &ShortcutConfig::default(),
+            ui::widget::LegendConventions {
+                platform: ui::PlatformConventions::default(),
+                keyboard: ui::KeyboardFamily::Pc,
+                controller: ui::ControllerFamily::Generic,
+            },
+        )
+    }
+
     #[test]
     fn navigation_surface_holds_every_row() {
-        // Eight pairs in two columns are four rows under the group header:
-        // the surface must contain the last row's keycaps.
-        let rhythm = shortcut_guide_rhythm(&ui::theme::Theme::dark());
-        let height = shortcut_navigation_height(8, 2, rhythm);
-        assert!(height >= shortcut_group_rows_top(rhythm) + 4.0 * rhythm.navigation_step);
-        assert!(shortcut_navigation_height(8, 1, rhythm) > height);
+        let theme = ui::theme::Theme::dark();
+        let rhythm = shortcut_guide_rhythm(&theme);
+        let keycap = ui::widget::InputHint::keycap_height(&theme);
+        let wide = guide_rows(&theme, 912.0);
+        // Nine pairs in two columns are five rows under the group header,
+        // each at least its label and one line of keycaps.
+        assert_eq!(wide.navigation.len(), 5);
+        let height = shortcut_navigation_height(&wide, rhythm);
+        assert!(height >= shortcut_group_rows_top(rhythm) + 5.0 * (18.0 + keycap));
+        assert!(shortcut_navigation_height(&guide_rows(&theme, 308.0), rhythm) > height);
+    }
+
+    #[test]
+    fn a_narrow_guide_gives_a_wrapped_chord_row_its_second_line() {
+        // A 420 px window leaves a 308 px body: the Tabs pair, two long
+        // chords, wraps after "or" and its row grows by a line of keycaps.
+        let theme = ui::theme::Theme::dark().with_density(ui::tokens::Density::Compact);
+        let keycap = ui::widget::InputHint::keycap_height(&theme);
+        let rows = guide_rows(&theme, 308.0);
+        let tabs = super::super::shortcut_config::SHORTCUT_GUIDE_ROWS
+            .iter()
+            .position(|(label, ..)| *label == "guide-row-tabs")
+            .unwrap();
+        let windows = rows.navigation[0];
+        assert!(
+            rows.navigation[tabs] >= windows + keycap,
+            "{:?}",
+            rows.navigation
+        );
+        let rhythm = shortcut_guide_rhythm(&theme);
+        let unwrapped =
+            shortcut_group_rows_top(rhythm) + f64_of(rows.navigation.len()) * windows + 4.0;
+        assert!(shortcut_navigation_height(&rows, rhythm) > unwrapped);
     }
 
     #[test]
@@ -405,8 +580,12 @@ mod guide_layout_tests {
         assert!(shortcut_reference_step() >= label * 1.3 + 4.0 + keycap);
         let rhythm = shortcut_guide_rhythm(&theme);
         assert!(rhythm.header >= label, "a group header holds its title");
+        let rows = guide_rows(&theme, 912.0);
+        for steps in &rows.groups {
+            assert!(steps.iter().all(|step| *step >= shortcut_reference_step()));
+        }
         assert!(
-            shortcut_reference_group_height(rhythm)
+            shortcut_reference_band_height(&rows, 0, rhythm)
                 >= shortcut_group_rows_top(rhythm) + 6.0 * shortcut_reference_step()
         );
     }
@@ -419,8 +598,7 @@ mod guide_layout_tests {
         for theme in [ui::theme::Theme::dark(), ui::theme::Theme::light()] {
             let rhythm = shortcut_guide_rhythm(&theme);
             let needed = shortcut_guide_height(
-                912.0,
-                super::super::shortcut_config::SHORTCUT_GUIDE_ROWS.len(),
+                &guide_rows(&theme, 912.0),
                 shortcut_note_lines(false, false),
                 rhythm,
             );
@@ -433,10 +611,11 @@ mod guide_layout_tests {
         assert_eq!(shortcut_reference_columns(912.0), 3);
         assert_eq!(shortcut_reference_columns(560.0), 2);
         assert_eq!(shortcut_reference_columns(300.0), 1);
-        let rhythm = shortcut_guide_rhythm(&ui::theme::Theme::dark());
+        let theme = ui::theme::Theme::dark();
+        let rhythm = shortcut_guide_rhythm(&theme);
         assert!(
-            shortcut_guide_content_height(300.0, 8, 1, rhythm)
-                > shortcut_guide_content_height(912.0, 8, 1, rhythm)
+            shortcut_guide_content_height(&guide_rows(&theme, 300.0), 1, rhythm)
+                > shortcut_guide_content_height(&guide_rows(&theme, 912.0), 1, rhythm)
         );
     }
 }

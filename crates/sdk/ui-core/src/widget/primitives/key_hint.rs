@@ -77,12 +77,31 @@ impl KeyHint {
     }
 }
 
-fn or_word() -> String {
+pub(crate) fn or_word() -> String {
     widget_format("key-hint-or", &[])
 }
 
 fn label_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption)
+}
+
+fn word_width(word: &str, text: &mut TextRenderer, theme: &Theme) -> f64 {
+    f64::from(text.measure_style(word, None, &label_style(theme)).0)
+}
+
+/// A chord's keycaps or a word, as a strip places them.
+enum Piece<'a> {
+    Keys(&'a [String]),
+    Word(String),
+}
+
+/// A strip laid out in a width: each piece with its offset from the
+/// leading edge and its line, the widest line, and the number of lines.
+#[derive(Default)]
+struct Placement<'a> {
+    pieces: Vec<(Piece<'a>, f64, usize)>,
+    width: f64,
+    lines: usize,
 }
 
 /// A strip of key hints, borrowed.
@@ -97,7 +116,7 @@ impl<'a> KeyHintsFace<'a> {
         Self { hints }
     }
 
-    /// The strip's height: one keycap.
+    /// The strip's height on one line: one keycap.
     #[must_use]
     pub fn height(theme: &Theme) -> f64 {
         InputHint::keycap_height(theme)
@@ -107,7 +126,7 @@ impl<'a> KeyHintsFace<'a> {
         let related = f64::from(theme.tokens.spacing.rhythm.related);
         let mut caps = InputHint::measure_keycap_labels(&hint.keys, text, theme);
         if !hint.alternatives.is_empty() {
-            let or = f64::from(text.measure_style(&or_word(), None, &label_style(theme)).0);
+            let or = word_width(&or_word(), text, theme);
             for keys in &hint.alternatives {
                 caps +=
                     related + or + related + InputHint::measure_keycap_labels(keys, text, theme);
@@ -117,84 +136,124 @@ impl<'a> KeyHintsFace<'a> {
             // Keys alone (a shortcut's chord): no gap for a missing label.
             return caps;
         }
-        let label = f64::from(text.measure_style(&hint.label, None, &label_style(theme)).0);
-        caps + related + label
+        caps + related + word_width(&hint.label, text, theme)
     }
 
-    /// The strip's natural width.
+    /// Where every chord and word goes in `width`. A chord that would run
+    /// past the edge starts a new line after the "or" before it, and a label
+    /// after its keys; the first hint is always placed, a later one that
+    /// does not fit whole on the line is left out.
+    fn place(&self, width: f64, text: &mut TextRenderer, theme: &Theme) -> Placement<'a> {
+        let rhythm = theme.tokens.spacing.rhythm;
+        let (related, sibling) = (f64::from(rhythm.related), f64::from(rhythm.sibling));
+        let mut placement = Placement::default();
+        let (mut x, mut line) = (0.0_f64, 0_usize);
+        for (i, hint) in self.hints.iter().enumerate() {
+            if i > 0 {
+                if x + sibling + Self::hint_width(hint, text, theme) > width {
+                    break;
+                }
+                x += sibling;
+            }
+            for (j, keys) in hint.chords().enumerate() {
+                let caps = InputHint::measure_keycap_labels(keys, text, theme);
+                if j > 0 {
+                    let or = or_word();
+                    x += related;
+                    let or_width = word_width(&or, text, theme);
+                    placement.pieces.push((Piece::Word(or), x, line));
+                    x += or_width;
+                    if x + related + caps > width {
+                        line += 1;
+                        x = 0.0;
+                    } else {
+                        x += related;
+                    }
+                }
+                placement.pieces.push((Piece::Keys(keys), x, line));
+                x += caps;
+                placement.width = placement.width.max(x);
+            }
+            if !hint.label.is_empty() {
+                let label = word_width(&hint.label, text, theme);
+                if x + related + label > width && x > 0.0 {
+                    line += 1;
+                    x = 0.0;
+                } else {
+                    x += related;
+                }
+                placement
+                    .pieces
+                    .push((Piece::Word(hint.label.clone()), x, line));
+                x += label;
+                placement.width = placement.width.max(x);
+            }
+        }
+        placement.lines = line + 1;
+        placement
+    }
+
+    /// The height of `lines` lines of keycaps, a tight gap apart.
+    fn lines_height(lines: usize, theme: &Theme) -> f64 {
+        let cap = InputHint::keycap_height(theme);
+        let gap = f64::from(theme.tokens.spacing.rhythm.tight);
+        crate::num::f64_of_usize(lines) * (cap + gap) - gap
+    }
+
+    /// The strip's natural width, on one line.
     #[must_use]
     pub fn width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
-        let widths: f64 = self
-            .hints
-            .iter()
-            .map(|h| Self::hint_width(h, text, theme))
-            .sum();
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "a strip holds a handful of hints"
-        )]
-        let gaps = self.hints.len().saturating_sub(1) as f64 * gap;
-        widths + gaps
+        self.place(f64::INFINITY, text, theme).width
     }
 
-    /// Paint the hints that fit in `rect` from its leading edge, centred on
-    /// its middle line; a hint that would not fit whole is left out.
+    /// The strip's height laid out in `width`: one keycap per line, a line
+    /// for each chord or label that wraps.
+    #[must_use]
+    pub fn height_in(&self, width: f64, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        Self::lines_height(self.place(width, text, theme).lines, theme)
+    }
+
+    /// Paint the strip in `rect` from its leading edge, its lines centred
+    /// on the rect's middle ([`Self::height_in`] is the room they need).
     /// Returns the painted width.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) -> f64 {
         let theme = ctx.theme;
-        let rhythm = theme.tokens.spacing.rhythm;
-        let style = label_style(theme);
+        let placement = self.place(rect.width(), ctx.text, theme);
         let cap_h = InputHint::keycap_height(theme);
-        let line = f64::from(ctx.text.measure_style("Ag", None, &style).1);
-        let cy = rect.center().y;
-        let mut x = rect.x0;
-        for (i, hint) in self.hints.iter().enumerate() {
-            let gap = if i == 0 {
-                0.0
-            } else {
-                f64::from(rhythm.sibling)
-            };
-            if x + gap + Self::hint_width(hint, ctx.text, theme) > rect.x1 {
-                break;
-            }
-            x += gap;
-            for (j, keys) in hint.chords().enumerate() {
-                if j > 0 {
-                    x += f64::from(rhythm.related);
-                    x += Self::paint_word(ctx, &or_word(), Point::new(x, cy - line / 2.0));
-                    x += f64::from(rhythm.related);
+        let pitch = cap_h + f64::from(theme.tokens.spacing.rhythm.tight);
+        let line = f64::from(ctx.text.measure_style("Ag", None, &label_style(theme)).1);
+        let top = rect.center().y - Self::lines_height(placement.lines, theme) / 2.0;
+        for (piece, x, row) in &placement.pieces {
+            let y = top + crate::num::f64_of_usize(*row) * pitch;
+            match piece {
+                Piece::Keys(keys) => {
+                    InputHint::paint_keycap_labels_at(
+                        ctx.scene,
+                        ctx.transform,
+                        Point::new(rect.x0 + x, y),
+                        keys,
+                        ctx.text,
+                        theme,
+                    );
                 }
-                x += InputHint::paint_keycap_labels_at(
-                    ctx.scene,
-                    ctx.transform,
-                    Point::new(x, cy - cap_h / 2.0),
-                    keys,
-                    ctx.text,
-                    theme,
-                );
+                Piece::Word(word) => {
+                    Self::paint_word(ctx, word, Point::new(rect.x0 + x, y + (cap_h - line) / 2.0));
+                }
             }
-            if hint.label.is_empty() {
-                continue;
-            }
-            x += f64::from(rhythm.related);
-            x += Self::paint_word(ctx, &hint.label, Point::new(x, cy - line / 2.0));
         }
-        x - rect.x0
+        placement.width
     }
 
-    /// A word in `Caption` secondary ink at `origin`; returns its width.
-    fn paint_word(ctx: &mut PaintCtx<'_>, word: &str, origin: Point) -> f64 {
-        let style = label_style(ctx.theme);
+    /// A word in `Caption` secondary ink at `origin`.
+    fn paint_word(ctx: &mut PaintCtx<'_>, word: &str, origin: Point) {
         ctx.text.draw_style(
             ctx.scene,
             word,
             ctx.theme.tokens.colors.text_dim,
             ctx.transform.pre_translate(origin.to_vec2()),
             None,
-            &style,
+            &label_style(ctx.theme),
         );
-        f64::from(ctx.text.measure_style(word, None, &style).0)
     }
 
     /// What a screen reader says for each hint: "Enter: Save".
@@ -239,20 +298,43 @@ impl crate::widget::Widget for KeyHints {
             self.theme = Some(theme.clone());
             self.dirty = true;
         }
-        let width = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
-            KeyHintsFace::new(&self.hints).width(text, theme)
-        });
+        // Measured in the width it is given: chords wrap after "or".
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(crate::num::f32_of_f64(width.ceil())),
-                height: taffy::Dimension::length(crate::num::f32_of_f64(KeyHintsFace::height(
-                    theme,
-                ))),
+            size: taffy::Size::auto(),
+            min_size: taffy::Size {
+                width: taffy::Dimension::length(0.0),
+                height: taffy::Dimension::auto(),
             },
-            flex_shrink: 0.0,
+            flex_shrink: 1.0,
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        let Some(theme) = self.theme.as_ref() else {
+            return taffy::Size::ZERO;
+        };
+        let face = KeyHintsFace::new(&self.hints);
+        let natural = face.width(text, theme).ceil();
+        let width = match (known.width, available.width) {
+            (Some(width), _) => f64::from(width),
+            (None, taffy::AvailableSpace::Definite(room)) => natural.min(f64::from(room)),
+            // Every chord on its own line: the widest one.
+            (None, taffy::AvailableSpace::MinContent) => face.place(0.0, text, theme).width.ceil(),
+            (None, taffy::AvailableSpace::MaxContent) => natural,
+        };
+        taffy::Size {
+            width: crate::num::f32_of_f64(width),
+            height: known
+                .height
+                .unwrap_or_else(|| crate::num::f32_of_f64(face.height_in(width, text, theme))),
+        }
     }
 
     crate::rect_geometry!();
@@ -355,5 +437,44 @@ mod tests {
             apart - f64::from(rhythm.sibling) + 2.0 * f64::from(rhythm.related) + or_width;
         assert!((joined - expected).abs() < 0.01, "{joined} vs {expected}");
         assert!(KeyHint::any_of(Vec::new(), "").is_none());
+    }
+
+    #[test]
+    fn a_row_narrower_than_its_alternatives_wraps_after_or_and_stays_inside() {
+        crate::i18n::I18nManager::init("en-US");
+        crate::i18n::I18nManager::register_widget_messages();
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let keys = |names: &[&str]| names.iter().map(|k| (*k).to_owned()).collect();
+        let tabs = [KeyHint::any_of(
+            vec![
+                keys(&["Super", "Ctrl", "Shift", "Tab"]),
+                keys(&["Super", "Ctrl", "Tab"]),
+            ],
+            "",
+        )
+        .unwrap()];
+        let face = KeyHintsFace::new(&tabs);
+        let natural = face.width(&mut text, &theme);
+        let cap = InputHint::keycap_height(&theme);
+        assert!((face.height_in(natural, &mut text, &theme) - cap).abs() < 0.01);
+
+        let width = natural - 10.0;
+        let placed = face.place(width, &mut text, &theme);
+        assert_eq!(placed.lines, 2, "the second chord moves to its own line");
+        assert!(placed.width <= width, "{} in {width}", placed.width);
+        let or_line = placed.pieces.iter().find_map(|(piece, _, line)| {
+            matches!(piece, Piece::Word(w) if *w == or_word()).then_some(*line)
+        });
+        assert_eq!(or_line, Some(0), "the or ends the first line");
+        let (_, x, line) = placed.pieces.last().unwrap();
+        assert!(matches!(placed.pieces.last().unwrap().0, Piece::Keys(_)));
+        assert_eq!(
+            (*x, *line),
+            (0.0, 1),
+            "the second chord starts the next line"
+        );
+        let tight = f64::from(theme.tokens.spacing.rhythm.tight);
+        assert!((face.height_in(width, &mut text, &theme) - (2.0 * cap + tight)).abs() < 0.01);
     }
 }

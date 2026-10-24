@@ -41,6 +41,7 @@ pub use bar_control::{BarControlFace, IconButton};
 pub use disclosure_row::{DisclosureGroup, DisclosureRow, DisclosureState};
 pub use facts::{Fact, Facts, FactsFace};
 pub use floating_panel::{FloatingPanel, FloatingPanelFace, FloatingPanelLayout};
+pub(crate) use key_hint::or_word;
 pub use key_hint::{KeyHint, KeyHints, KeyHintsFace};
 pub use quick_tile::{QuickTileFace, paint_level_gauge};
 pub use surface::{

@@ -482,6 +482,7 @@ impl Widget for ShellOverlayHost {
         // and paint share one answer.
         self.resolve_overview_layout(theme);
         self.shortcut_guide_rhythm = shortcut_guide_rhythm(theme);
+        self.resolve_shortcut_guide_rows(theme);
         self.onboarding_node = None;
         // Both pushed before the content tree is built, so this pass's
         // fullscreen collapse and per-display width resolution are in

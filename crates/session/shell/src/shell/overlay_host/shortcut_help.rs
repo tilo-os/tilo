@@ -11,7 +11,7 @@ impl ShellOverlayHost {
         // gives the two sections room to breathe, while compact height still
         // contains every documented action.
         let area = self.overlay_area();
-        let width = (area.width() - 64.0).clamp(0.0, 960.0);
+        let width = self.shortcut_help_body_width() + 48.0;
         // The keyboard guide is exactly as tall as its content (header, body,
         // bottom margin) and scrolls only when the window is shorter; the
         // other modalities keep their fixed card.
@@ -24,8 +24,7 @@ impl ShellOverlayHost {
                 self.desktop_controls.config().vim_mode,
             );
             shortcut_guide_height(
-                width - 48.0,
-                SHORTCUT_GUIDE_ROWS.len(),
+                &self.shortcut_guide_rows,
                 note_lines,
                 self.shortcut_guide_rhythm,
             )
@@ -39,6 +38,41 @@ impl ShellOverlayHost {
             area.center().x + width / 2.0,
             area.center().y + height / 2.0,
         )
+    }
+
+    /// The width of the guide's body: the panel, at most 960 wide and 32 px
+    /// in from the desktop's sides, less its 24 px margins.
+    pub(super) fn shortcut_help_body_width(&self) -> f64 {
+        (self.overlay_area().width() - 64.0).clamp(0.0, 960.0) - 48.0
+    }
+
+    /// Measure the keyboard guide's rows for the body it has in `theme`,
+    /// again only when the theme, the width, the bindings or the keyboard's
+    /// legends changed.
+    pub(super) fn resolve_shortcut_guide_rows(&mut self, theme: &ui::theme::Theme) {
+        let body_width = self.shortcut_help_body_width();
+        let conventions = self.shortcut_legend_conventions();
+        if self
+            .shortcut_guide_rows
+            .holds_for(theme, body_width, &self.shortcut_config, conventions)
+        {
+            return;
+        }
+        self.shortcut_guide_rows =
+            shortcut_guide_rows(theme, body_width, &self.shortcut_config, conventions);
+    }
+
+    /// How the guide labels keys and buttons: this platform, the keyboard
+    /// in use and the controller connected, if any.
+    fn shortcut_legend_conventions(&self) -> ui::widget::LegendConventions {
+        ui::widget::LegendConventions {
+            platform: ui::PlatformConventions::default(),
+            keyboard: self.interaction.keyboard_family,
+            controller: self
+                .interaction
+                .controller
+                .unwrap_or(ui::ControllerFamily::Generic),
+        }
     }
 
     /// The Done button: right-aligned in the header, as wide as its label
@@ -264,10 +298,7 @@ impl ShellOverlayHost {
         );
 
         use crate::compositor::controller_nav::{FaceRole, face_button};
-        use ui::input::{
-            ControllerBinding, ControllerButton, InputBinding, KeyLegend, KeyboardBinding,
-            KeyboardModifier, TouchGesture,
-        };
+        use ui::input::{ControllerBinding, ControllerButton, InputBinding, TouchGesture};
         use ui::widget::{
             InputDeviceGlyph, InputHint, KeyHintsFace, LegendConventions, SectionHeaderFace,
         };
@@ -485,24 +516,7 @@ impl ShellOverlayHost {
             ui::InputModality::Keyboard | ui::InputModality::Pointer => {
                 let shortcuts = &self.shortcut_config;
                 let defaults = settings_store::hardware::ShortcutConfig::default();
-                let binding = |action| {
-                    let chord = shortcuts.bindings.get(&action);
-                    let modifiers = chord
-                        .into_iter()
-                        .flat_map(|chord| chord.modifiers.iter())
-                        .filter_map(|modifier| match modifier.as_str() {
-                            "Super" => Some(KeyboardModifier::System),
-                            "Ctrl" => Some(KeyboardModifier::Control),
-                            "Alt" => Some(KeyboardModifier::Alt),
-                            "Shift" => Some(KeyboardModifier::Shift),
-                            _ => None,
-                        });
-                    let key = chord.map_or_else(
-                        || KeyLegend::Character("—".into()),
-                        |chord| KeyLegend::from_name(&chord.key),
-                    );
-                    KeyboardBinding::new(modifiers, key)
-                };
+                let binding = |action| shortcut_keyboard_binding(shortcuts, action);
                 let rows = SHORTCUT_GUIDE_ROWS;
                 let references = shortcut_reference_groups(shortcuts);
                 let summary = shortcut_action_summary(shortcuts);
@@ -512,9 +526,9 @@ impl ShellOverlayHost {
                 // shifted by `scroll`; the body clips it. The panel is as
                 // tall as this content, so scrolling only exists when the
                 // window is shorter than the guide.
+                let guide_rows = &self.shortcut_guide_rows;
                 let content_height = shortcut_guide_content_height(
-                    body.width(),
-                    rows.len(),
+                    guide_rows,
                     note_lines,
                     self.shortcut_guide_rhythm,
                 );
@@ -535,7 +549,7 @@ impl ShellOverlayHost {
                 );
                 let nav_columns = shortcut_navigation_columns(body.width());
                 let rhythm = self.shortcut_guide_rhythm;
-                let navigation_height = shortcut_navigation_height(rows.len(), nav_columns, rhythm);
+                let navigation_height = shortcut_navigation_height(guide_rows, rhythm);
                 let navigation_surface =
                     Rect::new(body.x0, body.y0, body.x1, body.y0 + navigation_height);
                 // The navigation chords sit on a recessed card in the panel.
@@ -561,15 +575,12 @@ impl ShellOverlayHost {
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index.checked_rem(nav_columns).unwrap_or_default();
                     let row = index.checked_div(nav_columns).unwrap_or_default();
-                    let column_width = (navigation_surface.width()
-                        - 28.0
-                        - 8.0 * f64_of_usize(nav_columns.saturating_sub(1)))
-                        / f64_of_usize(nav_columns);
+                    let column_width = shortcut_navigation_column_width(body.width());
                     let x =
                         navigation_surface.x0 + 14.0 + f64_of_usize(column) * (column_width + 8.0);
                     let y = navigation_surface.y0
                         + rows_top
-                        + f64_of_usize(row) * rhythm.navigation_step;
+                        + guide_rows.navigation.iter().take(row).sum::<f64>();
                     text_renderer.draw_style(
                         scene,
                         &t(label),
@@ -579,16 +590,17 @@ impl ShellOverlayHost {
                         &theme.text(TextRole::Caption),
                     );
                     let actions = [*previous, *next];
+                    // The chords wrap after "or" short of the reset button.
                     let hit_rects = InputHint::paint_keyboard_choice_at(
                         &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                         Point::new(x, y + 18.0),
-                        &binding(*previous),
-                        &binding(*next),
+                        [&binding(*previous), &binding(*next)],
                         LegendConventions {
                             platform,
                             keyboard: self.interaction.keyboard_family,
                             controller: family,
                         },
+                        x + column_width - shortcut_reset_room(theme),
                     );
                     for (action, rect) in actions.into_iter().zip(hit_rects) {
                         let hit =
@@ -629,7 +641,7 @@ impl ShellOverlayHost {
                     }
 
                     let reset_side = ui::widget::ControlSize::Small.height(theme);
-                    let caps_cy = y + 18.0 + InputHint::keycap_height(theme) / 2.0;
+                    let caps_cy = hit_rects[1].center().y;
                     let reset = Rect::new(
                         hit_rects[1].x1 + 8.0,
                         caps_cy - reset_side / 2.0,
@@ -671,13 +683,9 @@ impl ShellOverlayHost {
                     ui::widget::Interaction::default(),
                 );
                 let reference_columns = shortcut_reference_columns(body.width());
-                let reference_step = shortcut_reference_step();
                 let reference_top = essentials_y + rhythm.header;
                 let reference_gap = 12.0;
-                let reference_width = (body.width()
-                    - reference_gap * f64_of_usize(reference_columns.saturating_sub(1)))
-                    / f64_of_usize(reference_columns);
-                let reference_height = shortcut_reference_group_height(rhythm);
+                let reference_width = shortcut_reference_width(body.width());
                 let group_titles = [
                     "guide-group-windows",
                     "guide-group-search",
@@ -696,8 +704,23 @@ impl ShellOverlayHost {
                         .checked_div(reference_columns)
                         .unwrap_or_default();
                     let x = body.x0 + f64_of_usize(column) * (reference_width + reference_gap);
-                    let y = reference_top + f64_of_usize(band) * (reference_height + reference_gap);
-                    let group = Rect::new(x, y, x + reference_width, y + reference_height);
+                    let y = reference_top
+                        + (0..band)
+                            .map(|above| {
+                                shortcut_reference_band_height(guide_rows, above, rhythm)
+                                    + reference_gap
+                            })
+                            .sum::<f64>();
+                    let group = Rect::new(
+                        x,
+                        y,
+                        x + reference_width,
+                        y + shortcut_reference_band_height(guide_rows, band, rhythm),
+                    );
+                    let steps = guide_rows
+                        .groups
+                        .get(group_index)
+                        .map_or(&[][..], Vec::as_slice);
                     groups_bottom = groups_bottom.max(group.y1);
                     ui::surface::card(
                         scene,
@@ -720,7 +743,12 @@ impl ShellOverlayHost {
                     for (row_index, (label, chord)) in group_rows.iter().enumerate() {
                         let entry_y = group.y0
                             + shortcut_group_rows_top(rhythm)
-                            + f64_of_usize(row_index) * reference_step;
+                            + steps.iter().take(row_index).sum::<f64>();
+                        // The row's chords take its step less the label and
+                        // the gap under them: one line, or more when they wrap.
+                        let chords_h = steps
+                            .get(row_index)
+                            .map_or(cap_h, |step| step - shortcut_reference_step() + cap_h);
                         text_renderer.draw_style(
                             scene,
                             label,
@@ -733,7 +761,7 @@ impl ShellOverlayHost {
                         let cap_y = entry_y + label_gap;
                         KeyHintsFace::new(&shortcut_chord_hints(chord)).paint(
                             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                            Rect::new(group.x0 + 12.0, cap_y, group.x1 - 12.0, cap_y + cap_h),
+                            Rect::new(group.x0 + 12.0, cap_y, group.x1 - 12.0, cap_y + chords_h),
                         );
                     }
                 }

@@ -27,6 +27,22 @@ pub(crate) const HEIGHT: f64 = 22.0;
 const CAP_GAP: f64 = 3.0;
 const CAP_PAD_X: f64 = 6.0;
 const MIN_CAP_WIDTH: f64 = 22.0;
+/// The room either side of the `+` between shared modifiers and the keys.
+const PLUS_PAD: f64 = 7.0;
+/// The room either side of the "or" between two alternative chords.
+const OR_PAD: f64 = 10.0;
+
+/// Two alternative chords as [`InputHint::paint_keyboard_choice_at`] lays
+/// them out: their keycap labels, how many leading modifiers they share
+/// (shown once on one line), the "or" between them, and whether the second
+/// chord wraps to its own line.
+struct KeyboardChoice {
+    first: Vec<String>,
+    second: Vec<String>,
+    shared: usize,
+    or: String,
+    wrapped: bool,
+}
 
 fn token_height(theme: &Theme) -> f64 {
     HEIGHT.max(f64::from(theme.tokens.typography.size(TextRole::Caption)) + 8.0)
@@ -315,69 +331,131 @@ impl InputHint {
         rects.last().map_or(0.0, |(_, rect)| rect.x1 - origin.x)
     }
 
-    /// Paint two alternative keyboard chords without repeating their shared
-    /// modifiers. Separators are text rather than extra caps, so a pair reads
-    /// as `Super + Left or Right`, not as one long row of unrelated keys.
-    pub fn paint_keyboard_choice_at(
-        ctx: &mut PaintCtx<'_>,
-        origin: Point,
-        first: &KeyboardBinding,
-        second: &KeyboardBinding,
+    /// How two alternative keyboard chords lay out from `x0` up to `x1`:
+    /// on one line, their shared modifiers once, or, when that runs past
+    /// `x1`, the first chord and "or" on one line and the second chord whole
+    /// on the next.
+    fn keyboard_choice(
+        pair: [&KeyboardBinding; 2],
         conventions: LegendConventions,
-    ) -> [Rect; 2] {
+        text: &mut TextRenderer,
+        theme: &Theme,
+        (x0, x1): (f64, f64),
+    ) -> KeyboardChoice {
         let LegendConventions {
             platform, keyboard, ..
         } = conventions;
-        let theme = ctx.theme;
-        let first_labels = first.keycap_labels_for(platform, keyboard);
-        let second_labels = second.keycap_labels_for(platform, keyboard);
-        let share_modifiers = first.modifiers == second.modifiers;
-        let mut x = origin.x;
-
-        let (first_labels, second_labels) = if share_modifiers {
-            let modifier_count = first_labels
+        let [first, second] = pair.map(|binding| binding.keycap_labels_for(platform, keyboard));
+        let style = theme.text(TextRole::Caption);
+        let word = |text: &mut TextRenderer, label: &str| {
+            f64::from(text.measure_style(label, None, &style).0)
+        };
+        let shared = if pair[0].modifiers == pair[1].modifiers {
+            first
                 .len()
                 .saturating_sub(1)
-                .min(second_labels.len().saturating_sub(1));
-            if modifier_count > 0 {
-                x += Self::paint_keycap_labels_at(
-                    ctx.scene,
-                    ctx.transform,
-                    Point::new(x, origin.y),
-                    first_labels.get(..modifier_count).unwrap_or_default(),
-                    ctx.text,
-                    theme,
-                );
-                x += paint_separator(ctx, Point::new(x + 7.0, origin.y), "+") + 14.0;
-            }
-            (
-                first_labels.get(modifier_count..).unwrap_or_default(),
-                second_labels.get(modifier_count..).unwrap_or_default(),
-            )
+                .min(second.len().saturating_sub(1))
         } else {
-            (first_labels.as_slice(), second_labels.as_slice())
+            0
+        };
+        let or = crate::widget::primitives::or_word();
+        let mut one_line = Self::measure_keycap_labels(&first, text, theme)
+            + word(text, &or)
+            + 2.0 * OR_PAD
+            + Self::measure_keycap_labels(second.get(shared..).unwrap_or_default(), text, theme);
+        if shared > 0 {
+            one_line += word(text, "+") + 2.0 * PLUS_PAD;
+        }
+        KeyboardChoice {
+            wrapped: x0 + one_line > x1,
+            shared,
+            first,
+            second,
+            or,
+        }
+    }
+
+    /// The height two alternative chords take between `x0` and `x1`
+    /// ([`Self::paint_keyboard_choice_at`]): one keycap, or two lines when
+    /// the second chord wraps.
+    pub fn keyboard_choice_height(
+        text: &mut TextRenderer,
+        theme: &Theme,
+        pair: [&KeyboardBinding; 2],
+        conventions: LegendConventions,
+        span: (f64, f64),
+    ) -> f64 {
+        let choice = Self::keyboard_choice(pair, conventions, text, theme, span);
+        let cap = token_height(theme);
+        if choice.wrapped {
+            2.0 * cap + f64::from(theme.tokens.spacing.rhythm.tight)
+        } else {
+            cap
+        }
+    }
+
+    /// Paint two alternative keyboard chords from `origin` without running
+    /// past `max_x`, the catalogue's "or" between them. On one line their
+    /// shared modifiers show once (`Super + Left or Right`); when that does
+    /// not fit, the second chord starts the next line after the "or".
+    /// Returns each chord's rect.
+    pub fn paint_keyboard_choice_at(
+        ctx: &mut PaintCtx<'_>,
+        origin: Point,
+        pair: [&KeyboardBinding; 2],
+        conventions: LegendConventions,
+        max_x: f64,
+    ) -> [Rect; 2] {
+        let theme = ctx.theme;
+        let choice = Self::keyboard_choice(pair, conventions, ctx.text, theme, (origin.x, max_x));
+        let cap = token_height(theme);
+        let mut x = origin.x;
+        let (first, second) = if choice.wrapped || choice.shared == 0 {
+            (choice.first.as_slice(), choice.second.as_slice())
+        } else {
+            x += Self::paint_keycap_labels_at(
+                ctx.scene,
+                ctx.transform,
+                Point::new(x, origin.y),
+                choice.first.get(..choice.shared).unwrap_or_default(),
+                ctx.text,
+                theme,
+            );
+            x += paint_separator(ctx, Point::new(x + PLUS_PAD, origin.y), "+") + 2.0 * PLUS_PAD;
+            (
+                choice.first.get(choice.shared..).unwrap_or_default(),
+                choice.second.get(choice.shared..).unwrap_or_default(),
+            )
         };
         let first_x = x;
         x += Self::paint_keycap_labels_at(
             ctx.scene,
             ctx.transform,
             Point::new(x, origin.y),
-            first_labels,
+            first,
             ctx.text,
             theme,
         );
-        let first_rect = Rect::new(first_x, origin.y, x, origin.y + token_height(theme));
-        x += paint_separator(ctx, Point::new(x + 10.0, origin.y), "or") + 20.0;
-        let second_x = x;
-        x += Self::paint_keycap_labels_at(
-            ctx.scene,
-            ctx.transform,
-            Point::new(x, origin.y),
-            second_labels,
-            ctx.text,
-            theme,
-        );
-        let second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
+        let first_rect = Rect::new(first_x, origin.y, x, origin.y + cap);
+        x += paint_separator(ctx, Point::new(x + OR_PAD, origin.y), &choice.or) + 2.0 * OR_PAD;
+        let (second_x, second_y) = if choice.wrapped {
+            (
+                origin.x,
+                origin.y + cap + f64::from(theme.tokens.spacing.rhythm.tight),
+            )
+        } else {
+            (x, origin.y)
+        };
+        let end = second_x
+            + Self::paint_keycap_labels_at(
+                ctx.scene,
+                ctx.transform,
+                Point::new(second_x, second_y),
+                second,
+                ctx.text,
+                theme,
+            );
+        let second_rect = Rect::new(second_x, second_y, end, second_y + cap);
         [first_rect, second_rect]
     }
 
@@ -716,5 +794,80 @@ mod tests {
 
         retained_layout_grows_with_large_text();
         hint_accessibility_uses_platform_and_controller_legends();
+    }
+
+    #[test]
+    fn a_choice_narrower_than_its_chords_wraps_after_or_and_stays_inside() {
+        crate::i18n::I18nManager::init("en-US");
+        crate::i18n::I18nManager::register_widget_messages();
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let conventions = LegendConventions {
+            platform: PlatformConventions::new(Platform::Linux),
+            keyboard: KeyboardFamily::Pc,
+            controller: ControllerFamily::Generic,
+        };
+        let previous = KeyboardBinding::new(
+            [
+                KeyboardModifier::System,
+                KeyboardModifier::Control,
+                KeyboardModifier::Shift,
+            ],
+            KeyLegend::Tab,
+        );
+        let next = KeyboardBinding::new(
+            [KeyboardModifier::System, KeyboardModifier::Control],
+            KeyLegend::Tab,
+        );
+        let pair = [&previous, &next];
+        let cap = token_height(&theme);
+        let mut scene = Scene::new();
+        let mut paint = |text: &mut TextRenderer, max_x: f64| {
+            InputHint::paint_keyboard_choice_at(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, text, &theme),
+                Point::new(10.0, 0.0),
+                pair,
+                conventions,
+                max_x,
+            )
+        };
+        let [first, second] = paint(&mut text, 1000.0);
+        assert!((first.y0 - second.y0).abs() < 0.01, "one line when it fits");
+        let one_line = second.x1;
+        assert!(
+            (InputHint::keyboard_choice_height(
+                &mut text,
+                &theme,
+                pair,
+                conventions,
+                (10.0, 1000.0)
+            ) - cap)
+                .abs()
+                < 0.01
+        );
+
+        let max_x = one_line - 10.0;
+        let [first, second] = paint(&mut text, max_x);
+        assert!(
+            first.x1 <= max_x && second.x1 <= max_x,
+            "{first:?} {second:?} past {max_x}"
+        );
+        let tight = f64::from(theme.tokens.spacing.rhythm.tight);
+        assert!(
+            (second.y0 - (cap + tight)).abs() < 0.01,
+            "the second chord is on the next line"
+        );
+        assert!((second.x0 - 10.0).abs() < 0.01, "and starts it");
+        assert!(
+            (InputHint::keyboard_choice_height(
+                &mut text,
+                &theme,
+                pair,
+                conventions,
+                (10.0, max_x)
+            ) - (2.0 * cap + tight))
+                .abs()
+                < 0.01
+        );
     }
 }

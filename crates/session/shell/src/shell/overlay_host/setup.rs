@@ -460,6 +460,7 @@ impl ShellOverlayHost {
             overview_metrics: OverviewMetrics::default(),
             overview_layout_theme: Theme::default(),
             shortcut_guide_rhythm: shortcut_guide_rhythm(&Theme::default()),
+            shortcut_guide_rows: shortcuts::GuideRows::default(),
             overview_layout_viewport: Rect::ZERO,
             qs_motion: qs_motion::QsMotion::closed(),
             input_source: ui::tokens::MotionSource::default(),

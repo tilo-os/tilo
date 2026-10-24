@@ -1077,8 +1077,19 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         assert_eq!(shortcut_reference_columns(688.0), 3);
         assert_eq!(shortcut_reference_columns(912.0), 3);
         assert_eq!(shortcut_reference_columns(520.0), 2);
+        let theme = Theme::dark();
+        let rows = shortcut_guide_rows(
+            &theme,
+            912.0,
+            &settings_store::hardware::ShortcutConfig::default(),
+            ui::widget::LegendConventions {
+                platform: ui::PlatformConventions::default(),
+                keyboard: ui::KeyboardFamily::Pc,
+                controller: ui::ControllerFamily::Generic,
+            },
+        );
         assert!(
-            shortcut_reference_group_height(shortcut_guide_rhythm(&Theme::dark()))
+            shortcut_reference_band_height(&rows, 0, shortcut_guide_rhythm(&theme))
                 >= 6.0 * shortcut_reference_step(),
             "a group must hold its six rows"
         );

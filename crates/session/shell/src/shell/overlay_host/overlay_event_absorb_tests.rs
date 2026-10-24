@@ -2561,8 +2561,7 @@ fn compact_shortcut_help_fits_the_window_and_scrolls_its_body() {
         h.host.desktop_controls.config().vim_mode,
     );
     let content_h = shortcut_guide_content_height(
-        panel.width() - 48.0,
-        SHORTCUT_GUIDE_ROWS.len(),
+        &h.host.shortcut_guide_rows,
         note_lines,
         h.host.shortcut_guide_rhythm,
     );
