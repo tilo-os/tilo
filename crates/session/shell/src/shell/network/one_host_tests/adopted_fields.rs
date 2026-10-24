@@ -87,17 +87,15 @@ impl Hosted {
             ..shortcut
         };
         let net = Arc::clone(self.device.net());
-        net.runtime_handle()
-            .unwrap()
-            .block_on(
-                crate::shell::broker_services::NativeShortcutLibrary::commit(
-                    self.device.tree.clone(),
-                    Some(Arc::clone(&net)),
-                    self.room,
-                    actor,
-                    tilo_automation::ShortcutChange::Save(Box::new(saved)),
-                ),
-            )
+        let saving = crate::shell::broker_services::NativeShortcutLibrary::commit(
+            self.device.tree.clone(),
+            Some(net),
+            self.room,
+            actor,
+            tilo_automation::ShortcutChange::Save(Box::new(saved)),
+        );
+        self.device
+            .answer("the shortcut's save", saving)
             .unwrap_or_else(|error| panic!("Ada saves the shortcut: {error}"));
         self.until_shown("the saved shortcut to be listed", |workspace| {
             workspace.shortcuts.iter().any(|held| held.id == id)
