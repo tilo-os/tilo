@@ -673,6 +673,23 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
 }
 
 #[test]
+fn feedback_is_filed_by_people_and_never_offered_to_agents() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let resources = app.harness().resources();
+    let submit = ui::tilo_actions::door::survey(&resources)
+        .into_iter()
+        .find(|descriptor| {
+            descriptor.address.resource.as_str() == item("channels", "c_chat")
+                && descriptor.address.action == "submit-feedback"
+        })
+        .expect("a channel takes feedback");
+    // The submission is what the feedback sheet reviewed with a person; an
+    // agent offered it files nothing and posts nothing.
+    assert!(!submit.contract.reaches_agents());
+    assert!(submit.contract.reaches_people());
+}
+
+#[test]
 fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
     let mut app = TestApp::<ChatShell>::new().unwrap();
