@@ -29,9 +29,22 @@ const EXCHANGE_BOUND: Duration = Duration::from_secs(2);
 /// The longest reply line read. A name is at most 32 bytes.
 const REPLY_LIMIT: u64 = 4096;
 
+/// Present for the rest of a boot on which the installer's one-boot
+/// autologin started the new account's session
+/// (`tilo-firstboot-autologin-cleanup.service` creates it).
+pub const FIRST_BOOT_AUTOLOGIN: &str = "/run/tilo-firstboot-autologin";
+
 /// The person who signed in at boot and has not started a session yet.
+///
+/// Nobody, on a boot whose first session was the installer's autologin:
+/// one boot starts at most one session without a question. The greeter only
+/// runs then once that session has ended, and signing out must lead to a
+/// sign-in, not straight back in.
 #[must_use]
-pub fn pending_sign_in(socket: &Path) -> Option<String> {
+pub fn pending_sign_in(socket: &Path, first_boot_autologin: &Path) -> Option<String> {
+    if first_boot_autologin.exists() {
+        return None;
+    }
     exchange(socket, EXCHANGE_BOUND)
 }
 
@@ -80,7 +93,12 @@ mod tests {
                 .read_line(&mut request)
                 .unwrap();
             match reply {
-                Some(reply) => (&stream).write_all(reply.as_bytes()).unwrap(),
+                // A caller that hung up without asking gets nothing.
+                Some(reply) => {
+                    if !request.is_empty() {
+                        (&stream).write_all(reply.as_bytes()).unwrap();
+                    }
+                }
                 // Hold the connection open without answering.
                 None => std::thread::sleep(Duration::from_millis(400)),
             }
@@ -93,7 +111,7 @@ mod tests {
     fn the_daemon_names_the_person_who_signed_in_at_boot() {
         let (dir, served) = daemon(Some("{\"name\":\"ada\"}\n"));
         assert_eq!(
-            pending_sign_in(&dir.path().join("socket")).as_deref(),
+            pending_sign_in(&dir.path().join("socket"), &dir.path().join("autologin")).as_deref(),
             Some("ada")
         );
         assert_eq!(served.join().unwrap(), "{\"op\":\"pending-sign-in\"}\n");
@@ -102,11 +120,20 @@ mod tests {
     #[test]
     fn nobody_pending_no_daemon_or_no_answer_shows_the_ordinary_screen() {
         let (dir, served) = daemon(Some("null\n"));
-        assert_eq!(pending_sign_in(&dir.path().join("socket")), None);
+        assert_eq!(
+            pending_sign_in(&dir.path().join("socket"), &dir.path().join("autologin")),
+            None
+        );
         served.join().unwrap();
 
         let empty = tempfile::tempdir().unwrap();
-        assert_eq!(pending_sign_in(&empty.path().join("socket")), None);
+        assert_eq!(
+            pending_sign_in(
+                &empty.path().join("socket"),
+                &empty.path().join("autologin")
+            ),
+            None
+        );
 
         let (dir, served) = daemon(None);
         assert_eq!(
@@ -114,6 +141,20 @@ mod tests {
             None
         );
         served.join().unwrap();
+    }
+
+    #[test]
+    fn a_boot_whose_first_session_was_the_installer_autologin_hands_nobody_over() {
+        let (dir, served) = daemon(Some("{\"name\":\"ada\"}\n"));
+        let autologin = dir.path().join("autologin");
+        std::fs::create_dir(&autologin).unwrap();
+        assert_eq!(
+            pending_sign_in(&dir.path().join("socket"), &autologin),
+            None
+        );
+        // The daemon was not even asked: its first connection is this one.
+        drop(UnixStream::connect(dir.path().join("socket")).unwrap());
+        assert_eq!(served.join().unwrap(), "");
     }
 
     /// greetd's framing: a little-endian length, then JSON.
