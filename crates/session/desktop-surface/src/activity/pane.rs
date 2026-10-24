@@ -90,9 +90,12 @@ fn seed_roster_colours(authors: &mut AuthorDirectory, tree: &tilo_desktop_model:
     }
 }
 
-/// Facet written onto setup, view and layout rows so the feed can omit
-/// them without dropping them from replay.
+/// Facet written onto the rows that are not news: setup and layout rows
+/// ([`FEED_OMIT`]) stay out of the feed but in replay; a window opened
+/// ([`FEED_HISTORY_ONLY`]) is listed in History but is nobody's news.
 const FEED_OMIT_FACET: &str = "tilo.feed";
+const FEED_OMIT: &str = "omit";
+const FEED_HISTORY_ONLY: &str = "history";
 
 pub const HISTORY_COMPARE: &str = "history.compare";
 pub const HISTORY_UNDO: &str = "history.undo";
@@ -212,18 +215,34 @@ fn others_work(rows: Vec<&WorkspaceHistoryEntry>, local: &str) -> Vec<HistoryEnt
     rows.into_iter()
         .map(WorkspaceHistoryEntry::timeline_entry)
         .filter(|entry| !author_is_local(&entry.author, local))
-        .filter(is_feed_change)
+        .filter(is_news)
         .collect()
 }
 
-fn is_feed_change(entry: &HistoryEntry) -> bool {
-    !entry.context.as_ref().is_some_and(|context| {
-        !context.is_activity()
-            || context
-                .facets
-                .iter()
-                .any(|facet| facet.key == FEED_OMIT_FACET && facet.value == "omit")
+/// The feed tag `entry` carries, if any ([`FEED_OMIT_FACET`]).
+fn feed_tag(entry: &HistoryEntry) -> Option<&str> {
+    entry.context.as_ref().and_then(|context| {
+        context
+            .facets
+            .iter()
+            .find(|facet| facet.key == FEED_OMIT_FACET)
+            .map(|facet| facet.value.as_str())
     })
+}
+
+/// Whether History lists `entry`.
+fn is_feed_change(entry: &HistoryEntry) -> bool {
+    entry
+        .context
+        .as_ref()
+        .is_none_or(ui::tilo_actions::ActionContext::is_activity)
+        && feed_tag(entry) != Some(FEED_OMIT)
+}
+
+/// Whether `entry` is news to someone who did not make it: listed, and more
+/// than a window opened.
+fn is_news(entry: &HistoryEntry) -> bool {
+    is_feed_change(entry) && feed_tag(entry) != Some(FEED_HISTORY_ONLY)
 }
 
 fn local_resume_snapshot(entries: &[HistoryEntry], local: &str) -> Option<ResumeSnapshot> {
@@ -2268,6 +2287,7 @@ impl RoomActivityPane {
         let digest_rows: Vec<HistoryEntry> = rows
             .iter()
             .filter(|entry| !author_is_local(&entry.author, &local))
+            .filter(|entry| is_news(entry))
             .filter(|entry| {
                 !self.history_index.entries().is_empty()
                     || !self.catchup_frontier.acknowledged(&WorkspaceHistoryId {
@@ -2984,7 +3004,7 @@ fn describe_room_changes(
                 entry.summary = summary;
             }
             entry.entry_kind = entry_kind;
-            if !change.counts.feed_kind().belongs_in_feed() {
+            if let Some(tag) = change.counts.feed_kind().feed_tag() {
                 let mut context = entry.context.take().unwrap_or_default();
                 if !context
                     .facets
@@ -2993,7 +3013,7 @@ fn describe_room_changes(
                 {
                     context
                         .facets
-                        .push(ui::tilo_actions::ActionFacet::new(FEED_OMIT_FACET, "omit"));
+                        .push(ui::tilo_actions::ActionFacet::new(FEED_OMIT_FACET, tag));
                 }
                 entry.context = Some(context);
             }
@@ -3105,9 +3125,9 @@ fn workspace_touched(
 /// Running counts of one change's patches, turned into a single room event
 /// ([`PatchCounts::describe`]) and its place in the feed
 /// ([`PatchCounts::feed_kind`]). Content, membership and permission changes
-/// stay in the feed; setup (the workspace's own first writes), a plain open
-/// and window layout do not — they are durable, but they are not "what
-/// people did".
+/// are news; a window opened is listed in History but is nobody's news;
+/// setup (the workspace's own first writes) and window layout stay out of
+/// the feed: they are durable, but they are not "what people did".
 #[derive(Default)]
 struct PatchCounts {
     grants: Vec<String>,
@@ -3338,8 +3358,13 @@ enum RoomEventKind {
 }
 
 impl RoomEventKind {
-    fn belongs_in_feed(self) -> bool {
-        matches!(self, Self::Change)
+    /// How the feed treats a row of this kind: `None` lists it as news.
+    fn feed_tag(self) -> Option<&'static str> {
+        match self {
+            Self::Change => None,
+            Self::View => Some(FEED_HISTORY_ONLY),
+            Self::Setup | Self::Layout => Some(FEED_OMIT),
+        }
     }
 }
 

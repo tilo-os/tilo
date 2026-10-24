@@ -18,28 +18,36 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
     let provider = Provider::of(cx);
     let summary = provider.follow::<wire::Summary>(wire::SUMMARY, None::<&()>);
     let answer = summary.answer();
-    let marked = answer.clone();
-    let mark = Button::new("activity-mark-viewed", "activity-mark-viewed")
-        .with_icon(Icon::Check)
-        .on_view(move || {
-            let Arrival::Ready(summary) = marked.get() else {
-                return;
-            };
-            provider.ask(
-                wire::MARK_VIEWED,
-                &wire::Viewed {
-                    entries: summary
-                        .briefs
-                        .iter()
-                        .flat_map(|brief| brief.entries.iter().cloned())
-                        .collect(),
-                    later: false,
-                },
-            );
-        });
+    // Disabled while there is nothing new to mark: no summary yet, or one
+    // with no work sessions in it.
+    let mark = cx.switch(&answer.state(), move |_, answer| {
+        let entries: Vec<_> = match answer {
+            Arrival::Ready(summary) => summary
+                .briefs
+                .iter()
+                .flat_map(|brief| brief.entries.iter().cloned())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let nothing_new = entries.is_empty();
+        let provider = provider.clone();
+        let mut mark = Button::new("activity-mark-viewed", "activity-mark-viewed")
+            .with_icon(Icon::Check)
+            .on_view(move || {
+                provider.ask(
+                    wire::MARK_VIEWED,
+                    &wire::Viewed {
+                        entries: entries.clone(),
+                        later: false,
+                    },
+                );
+            });
+        mark.set_enabled(!nothing_new);
+        Box::new(mark)
+    });
     let nav = nav.clone();
     let content = cx.arriving(&answer, move |cx, summary| page(parts(cx, &nav, summary)));
-    (Box::new(content), vec![Box::new(mark)])
+    (Box::new(content), vec![mark])
 }
 
 fn parts(cx: &ViewCx<Filter>, nav: &Nav, summary: &wire::Summary) -> Vec<Element> {
@@ -100,18 +108,22 @@ fn briefs(nav: &Nav, summary: &wire::Summary) -> Element {
         "activity-sessions"
     });
     if summary.briefs.is_empty() {
-        return Box::new(Section::titled(
-            heading,
-            vec![Box::new(
-                EmptyState::new(tr(if summary.pending {
-                    "activity-history-pending"
-                } else {
-                    "activity-caught-up"
-                }))
+        // Nothing to list: no heading over nothing, and the way on from here.
+        if summary.pending {
+            return Box::new(
+                EmptyState::new(tr("activity-history-pending"))
+                    .with_icon(Icon::Clock)
+                    .with_id("activity-caught-up"),
+            );
+        }
+        let history = nav.clone();
+        return Box::new(
+            EmptyState::new(tr("activity-caught-up"))
                 .with_icon(Icon::Check)
-                .with_id("activity-caught-up"),
-            )],
-        ));
+                .with_action(tr("activity-see-history"))
+                .with_action_id("activity-see-history")
+                .on_view(move || history.show(crate::Place::History)),
+        );
     }
     let rows = summary
         .briefs
