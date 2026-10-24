@@ -18,6 +18,7 @@ fn tab(id: u64) -> Tab {
             label: "App".into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 

@@ -9,9 +9,16 @@
 //!
 //! The app's player is the one truth. It declares what plays through a
 //! [`TransportFeed`] ([`TransportFeed::show`], cheap when nothing changed)
-//! and takes back what the person asked for as [`TransportEvent`]s
-//! ([`TransportFeed::take_events`]); the transport keeps nothing of its own
-//! but where the knob is while a finger or the pointer holds it.
+//! and hands in the actions the controls invoke ([`TransportActions`]): play
+//! and pause, previous and next, shuffle, repeat, like, mute, the scrubber
+//! and the volume each run one of the app's own resource actions, as an
+//! agent invoking it would, so what the person presses is never a callback
+//! beside the app's actions. A control the app hands no action for is not
+//! there. What only changes what the window shows (the queue, the lyrics,
+//! the compact form's More menu, the art) and a swipe across the band come
+//! back as [`TransportEvent`]s ([`TransportFeed::take_events`]). The
+//! transport keeps nothing of its own but where the knob is while a finger
+//! or the pointer holds it.
 //!
 //! The transport has two forms, chosen by its width:
 //!
@@ -32,10 +39,11 @@
 //!
 //! ```ignore
 //! let transport = TransportFeed::new();
-//! let shell = NavShell::new().bottom_band(Box::new(MediaTransport::new(&transport)));
+//! let actions = TransportActions { play_pause: Some(play_pause), ..TransportActions::default() };
+//! let shell = NavShell::new().bottom_band(Box::new(MediaTransport::new(&transport, actions)));
 //! // each sync:
 //! transport.show(TransportState { title, playing, .. });
-//! for event in transport.take_events() { /* steer the player */ }
+//! for event in transport.take_events() { /* show the queue, the lyrics, a menu */ }
 //! ```
 
 use std::cell::{Cell, RefCell};
@@ -54,6 +62,8 @@ use crate::text_render::{ParagraphAlign, TextRenderer};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::media_card::{MediaArt, MediaSize, paint_art_tile};
+use tilo_actions::ActionBinding;
+
 use crate::widget::{
     Button, ButtonFace, ControlSize, Element, Manual, ManualContext, PanelAlign, PopoverSide,
     Slider, TaffyTreeExt, Text, TextStack, Tone, TransportControl, TransportFace, When, Widget,
@@ -119,20 +129,32 @@ pub struct TransportState {
     pub more: bool,
 }
 
-/// What the person asked the player for.
+/// The app's actions the transport's controls invoke, each through the
+/// resource/action door. A control whose action is `None` is left out.
+#[derive(Clone, Default)]
+pub struct TransportActions {
+    pub play_pause: Option<ActionBinding<()>>,
+    pub previous: Option<ActionBinding<()>>,
+    pub next: Option<ActionBinding<()>>,
+    pub shuffle: Option<ActionBinding<()>>,
+    pub repeat: Option<ActionBinding<()>>,
+    /// Like or unlike what plays.
+    pub like: Option<ActionBinding<()>>,
+    pub mute: Option<ActionBinding<()>>,
+    /// Go to a fraction (`0..=1`) of the song, once the scrubber is let go.
+    pub seek: Option<ActionBinding<f64>>,
+    /// Set the volume, `0..=1`.
+    pub volume: Option<ActionBinding<f64>>,
+}
+
+/// What the person asked for that changes what the window shows, rather
+/// than what plays ([`TransportActions`]), and the swipe across the band.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TransportEvent {
-    TogglePlay,
+    /// A swipe across the band, towards the previous song.
     Previous,
+    /// A swipe across the band, towards the next song.
     Next,
-    /// Go to this position, in milliseconds (the scrubber let go).
-    Seek(f64),
-    /// Set the volume, `0..=1`.
-    Volume(f64),
-    ToggleMute,
-    ToggleShuffle,
-    CycleRepeat,
-    ToggleLike,
     Lyrics,
     Queue,
     /// Open the More menu under the button, at this rect in window
@@ -242,6 +264,9 @@ struct Shared {
     /// Where each child stands (zero while it isn't there), in the
     /// transport's own coordinates.
     placed: Cell<[Rect; CHILDREN]>,
+    /// Which children have what they invoke: an action the app handed in,
+    /// or a request of the window's own.
+    handed: Cell<[bool; CHILDREN]>,
 }
 
 impl Shared {
@@ -545,8 +570,28 @@ const MORE: usize = 15;
 const VOLUME_MENU: usize = 16;
 const CHILDREN: usize = 17;
 
-/// Whether child `index` is there in `form` for `state`.
-fn present(index: usize, state: &TransportState, form: Form) -> bool {
+/// Which children have what they invoke, given the app's `actions`.
+fn handed(actions: &TransportActions) -> [bool; CHILDREN] {
+    std::array::from_fn(|index| match index {
+        PLAY => actions.play_pause.is_some(),
+        PREVIOUS => actions.previous.is_some(),
+        NEXT => actions.next.is_some(),
+        SHUFFLE => actions.shuffle.is_some(),
+        REPEAT => actions.repeat.is_some(),
+        LIKE => actions.like.is_some(),
+        MUTE => actions.mute.is_some(),
+        SCRUBBER => actions.seek.is_some(),
+        VOLUME | VOLUME_MENU => actions.volume.is_some(),
+        _ => true,
+    })
+}
+
+/// Whether child `index` is there in `form` for `state`, with what it
+/// invokes `handed`.
+fn present(index: usize, state: &TransportState, form: Form, handed: &[bool; CHILDREN]) -> bool {
+    if !handed[index] {
+        return false;
+    }
     let wide = form != Form::Compact;
     match index {
         ART => state.art != TransportArt::None,
@@ -572,21 +617,43 @@ fn time(ms: f64) -> String {
     crate::format::timecode(seconds)
 }
 
-fn button(id: &str, icon: Icon, name: &str, shared: &Rc<Shared>, event: TransportEvent) -> Button {
-    let shared = shared.clone();
-    Button::icon_only(id, icon, name)
-        .control_size(ControlSize::Regular)
-        .on_click(move || shared.push(event))
+/// A button that invokes the app's `action`; one the app handed none for
+/// invokes nothing and is left out ([`present`]).
+fn bound(button: Button, action: Option<&ActionBinding<()>>) -> Button {
+    match action {
+        Some(action) => button.on_action(action.clone()),
+        None => button,
+    }
 }
 
-fn transport(
+fn button(id: &str, icon: Icon, name: &str, action: Option<&ActionBinding<()>>) -> Button {
+    bound(
+        Button::icon_only(id, icon, name).control_size(ControlSize::Regular),
+        action,
+    )
+}
+
+/// A button that changes what the window shows: a view action of its own,
+/// which the app answers with `event`.
+fn view_button(
     id: &str,
-    control: TransportControl,
+    icon: Icon,
+    name: &str,
     shared: &Rc<Shared>,
     event: TransportEvent,
 ) -> Button {
     let shared = shared.clone();
-    Button::transport(id, control).on_click(move || shared.push(event))
+    Button::icon_only(id, icon, name)
+        .control_size(ControlSize::Regular)
+        .on_view(move || shared.push(event))
+}
+
+/// A slider that invokes the app's `action` with its value.
+fn bound_slider(slider: Slider, action: Option<&ActionBinding<f64>>) -> Slider {
+    match action {
+        Some(action) => slider.on_action(action.clone()),
+        None => slider,
+    }
 }
 
 /// A toggle that is on while `on` holds, rests while idle.
@@ -647,7 +714,7 @@ fn speaker(volume: f64) -> Icon {
     }
 }
 
-fn children(shared: &Rc<Shared>) -> Vec<Element> {
+fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
     let caption = |source: fn(&TransportState) -> String, align| {
         let shared = shared.clone();
         Text::dynamic(move || source(&shared.state.borrow()))
@@ -655,17 +722,6 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             .numeric()
             .dimmed()
             .with_align(align)
-    };
-    let seek = {
-        let shared = shared.clone();
-        move |fraction: f64| {
-            let duration = shared.state.borrow().duration_ms;
-            shared.push(TransportEvent::Seek(fraction * duration));
-        }
-    };
-    let volume = {
-        let shared = shared.clone();
-        move |value: f64| shared.push(TransportEvent::Volume(value))
     };
     let parts: [Element; CHILDREN] = [
         Box::new(Art {
@@ -687,13 +743,7 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             false
         })),
         Box::new(Follow::new(
-            button(
-                "transport.like",
-                Icon::Heart,
-                "Like",
-                shared,
-                TransportEvent::ToggleLike,
-            ),
+            button("transport.like", Icon::Heart, "Like", actions.like.as_ref()),
             shared,
             |b, state| {
                 b.set_accessible_name(if state.liked == Some(true) {
@@ -705,7 +755,7 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             },
         )),
         Box::new(Follow::new(
-            button(
+            view_button(
                 "transport.lyrics",
                 Icon::Mic,
                 "Lyrics",
@@ -720,18 +770,15 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
                 "transport.shuffle",
                 Icon::Shuffle,
                 "Shuffle",
-                shared,
-                TransportEvent::ToggleShuffle,
+                actions.shuffle.as_ref(),
             ),
             shared,
             |b, state| toggle(b, state.shuffle, state.idle),
         )),
         Box::new(Follow::new(
-            transport(
-                "transport.previous",
-                TransportControl::Previous,
-                shared,
-                TransportEvent::Previous,
+            bound(
+                Button::transport("transport.previous", TransportControl::Previous),
+                actions.previous.as_ref(),
             ),
             shared,
             |b, state| {
@@ -740,11 +787,12 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             },
         )),
         Box::new(Follow::new(
-            transport(
-                "transport.play",
-                TransportControl::PlayPause { playing: false },
-                shared,
-                TransportEvent::TogglePlay,
+            bound(
+                Button::transport(
+                    "transport.play",
+                    TransportControl::PlayPause { playing: false },
+                ),
+                actions.play_pause.as_ref(),
             ),
             shared,
             |b, state| {
@@ -756,11 +804,9 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             },
         )),
         Box::new(Follow::new(
-            transport(
-                "transport.next",
-                TransportControl::Next,
-                shared,
-                TransportEvent::Next,
+            bound(
+                Button::transport("transport.next", TransportControl::Next),
+                actions.next.as_ref(),
             ),
             shared,
             |b, state| {
@@ -773,8 +819,7 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
                 "transport.repeat",
                 Icon::Repeat,
                 "Repeat",
-                shared,
-                TransportEvent::CycleRepeat,
+                actions.repeat.as_ref(),
             ),
             shared,
             |b, state| {
@@ -795,11 +840,13 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             ParagraphAlign::End,
         )),
         Box::new(Follow::new(
-            Slider::from_state(&crate::LocalState::new(0.0))
-                .with_id("transport.position")
-                .with_accessible_name("Position")
-                .commits_on_release()
-                .on_change(seek),
+            bound_slider(
+                Slider::from_state(&crate::LocalState::new(0.0))
+                    .with_id("transport.position")
+                    .with_accessible_name("Position")
+                    .commits_on_release(),
+                actions.seek.as_ref(),
+            ),
             shared,
             |slider, state| {
                 let before = (slider.value(), slider.is_enabled());
@@ -820,7 +867,7 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             ParagraphAlign::Start,
         )),
         Box::new(Follow::new(
-            button(
+            view_button(
                 "transport.queue",
                 Icon::ListMusic,
                 "Queue",
@@ -835,8 +882,7 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
                 "transport.mute",
                 Icon::Volume2,
                 "Mute",
-                shared,
-                TransportEvent::ToggleMute,
+                actions.mute.as_ref(),
             ),
             shared,
             |b, state| {
@@ -849,10 +895,12 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             },
         )),
         Box::new(Follow::new(
-            Slider::from_state(&crate::LocalState::new(1.0))
-                .with_id("transport.volume")
-                .with_accessible_name("Volume")
-                .on_change(volume.clone()),
+            bound_slider(
+                Slider::from_state(&crate::LocalState::new(1.0))
+                    .with_id("transport.volume")
+                    .with_accessible_name("Volume"),
+                actions.volume.as_ref(),
+            ),
             shared,
             follow_volume,
         )),
@@ -860,7 +908,7 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             let shared = shared.clone();
             Button::icon_only("transport.more", Icon::MoreHorizontal, "More controls")
                 .control_size(ControlSize::Regular)
-                .on_click(move || {
+                .on_view(move || {
                     let origin = shared.origin.get().to_vec2();
                     shared.push(TransportEvent::More(shared.more.get() + origin));
                 })
@@ -869,10 +917,12 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             Button::icon_only("transport.volume-menu", Icon::Volume2, "Volume")
                 .control_size(ControlSize::Regular)
                 .with_popover(VolumePanel {
-                    slider: Slider::from_state(&crate::LocalState::new(1.0))
-                        .with_id("transport.volume-menu.slider")
-                        .with_accessible_name("Volume")
-                        .on_change(volume),
+                    slider: bound_slider(
+                        Slider::from_state(&crate::LocalState::new(1.0))
+                            .with_id("transport.volume-menu.slider")
+                            .with_accessible_name("Volume"),
+                        actions.volume.as_ref(),
+                    ),
                 })
                 .side(PopoverSide::Above)
                 .aligned(PanelAlign::Trailing),
@@ -889,7 +939,12 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
         .map(|(index, part)| {
             let shared = shared.clone();
             Box::new(When::new(part, move || {
-                present(index, &shared.state.borrow(), shared.form.get())
+                present(
+                    index,
+                    &shared.state.borrow(),
+                    shared.form.get(),
+                    &shared.handed.get(),
+                )
             })) as Element
         })
         .collect()
@@ -967,9 +1022,14 @@ fn place_scrub(rects: &mut [Rect; CHILDREN], m: &Metrics, x0: f64, x1: f64, y: f
     rects[SCRUBBER] = Rect::new(knob0, row.y0, knob1, row.y1);
 }
 
-fn layout(state: &TransportState, m: &Metrics, width: f64) -> (Form, [Rect; CHILDREN], f64) {
+fn layout(
+    state: &TransportState,
+    handed: &[bool; CHILDREN],
+    m: &Metrics,
+    width: f64,
+) -> (Form, [Rect; CHILDREN], f64) {
     let form = m.form(width);
-    let on = std::array::from_fn(|index| present(index, state, form));
+    let on = std::array::from_fn(|index| present(index, state, form, handed));
     let mut rects = [Rect::ZERO; CHILDREN];
     let height = m.height(form);
     let (x0, x1) = (m.section, (width - m.section).max(m.section));
@@ -1053,7 +1113,12 @@ fn policy(shared: &Shared, ctx: &mut ManualContext<'_>) -> Result<Size<f32>, Wid
     } else {
         0.0
     };
-    let (form, rects, height) = layout(&shared.state.borrow(), &metrics, width);
+    let (form, rects, height) = layout(
+        &shared.state.borrow(),
+        &shared.handed.get(),
+        &metrics,
+        width,
+    );
     shared.form.set(form);
     shared.more.set(rects[MORE]);
     shared.placed.set(rects);
@@ -1113,12 +1178,15 @@ impl MediaTransport {
         });
         true
     }
+    /// The transport showing what `feed` declares, its controls invoking
+    /// the app's `actions`.
     #[must_use]
-    pub fn new(feed: &TransportFeed) -> Self {
+    pub fn new(feed: &TransportFeed, actions: TransportActions) -> Self {
         let shared = feed.0.clone();
+        shared.handed.set(handed(&actions));
         let placing = shared.clone();
         let mut content = Manual::new(move |ctx| policy(&placing, ctx));
-        for child in children(&shared) {
+        for child in children(&shared, &actions) {
             content = content.child(child);
         }
         Self {

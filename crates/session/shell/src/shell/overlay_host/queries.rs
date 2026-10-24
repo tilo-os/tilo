@@ -640,7 +640,6 @@ impl ShellOverlayHost {
         };
         let args = &crate::shell::search::QueryArgs { scope, ..*args };
         let mut sections: Vec<serde_json::Value> = Vec::new();
-        let mut last_section = None;
         for group in launcher::groups(&self.search_registry, args) {
             let rows: Vec<serde_json::Value> = group
                 .rows
@@ -677,18 +676,6 @@ impl ShellOverlayHost {
             }
             let section = group.section;
             let group = serde_json::json!({ "name": group.label, "rows": rows });
-            // Apps comes as several groups: its most used apps, then one
-            // per purpose. Every other section is one group.
-            if last_section == Some(section)
-                && let Some(groups) = sections
-                    .last_mut()
-                    .and_then(|last| last.get_mut("groups"))
-                    .and_then(serde_json::Value::as_array_mut)
-            {
-                groups.push(group);
-                continue;
-            }
-            last_section = Some(section);
             sections.push(serde_json::json!({
                 "id": section.id(),
                 "name": section.label(),

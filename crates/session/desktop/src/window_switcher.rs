@@ -1518,6 +1518,7 @@ mod tests {
                 app_id: app.into(),
                 surface_id: id,
             },
+            app_title: None,
         }
     }
 

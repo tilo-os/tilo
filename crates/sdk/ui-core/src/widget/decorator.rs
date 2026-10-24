@@ -483,6 +483,7 @@ decorator_trait! {
         fn accessibility_child_description(child_index: usize) -> Option<String>;
         fn is_enabled() -> bool;
         fn ime_requires_deferred_ack() -> bool;
+        fn ime_refuses_ordinary_commits() -> bool;
         fn ime_edit_fingerprint(key: &[u8; 32]) -> Option<[u8; 32]>;
         fn ime_content() -> Option<crate::ime::InputContent>;
         fn ime_multiline() -> bool;

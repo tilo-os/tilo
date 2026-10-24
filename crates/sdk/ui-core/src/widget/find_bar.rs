@@ -1344,10 +1344,19 @@ pub fn with_findable<R>(
 
 /// Content with find: a [`FindBar`] that Ctrl+F (⌘F) opens as a band at the
 /// top of the content, driving the first [`Findable`] inside it.
+///
+/// Opened from a menu or by a pointer, the band discloses
+/// (`motion::Disclosure`): the content is laid out once, at its place under
+/// the open band, and moves with the band's edge by transform. Ctrl+F and
+/// Escape land at once; the close button collapses the band.
 pub struct FindScope {
     bar: FindBar,
     content: Element,
     open: bool,
+    /// How much of the band is drawn while it opens or closes.
+    disclosure: crate::motion::Disclosure,
+    /// The motion the person allows, from the last theme seen.
+    motion: crate::tokens::EffectiveMotion,
     structure_dirty: bool,
     rect: Rect,
     /// The pointer, for which side of the band a press lands on.
@@ -1366,6 +1375,8 @@ impl FindScope {
             bar: FindBar::new(),
             content,
             open: false,
+            disclosure: crate::motion::Disclosure::closed(),
+            motion: crate::tokens::EffectiveMotion::default(),
             structure_dirty: false,
             rect: Rect::ZERO,
             pointer: Point::ZERO,
@@ -1445,6 +1456,7 @@ impl FindScope {
         if !self.open {
             self.open = true;
             self.structure_dirty = true;
+            self.disclosure.show(true, self.motion);
         }
         self.bar.focus_query();
     }
@@ -1465,8 +1477,21 @@ impl FindScope {
             if self.open {
                 self.open = false;
                 self.structure_dirty = true;
+                self.disclosure.show(false, self.motion);
             }
         }
+    }
+
+    /// How far below its laid-out place the content is drawn now: the band
+    /// is drawn `reveal` tall while the layout gives it its full height
+    /// (opening) or none (closing). Zero at rest.
+    fn content_offset(&self) -> f64 {
+        if !self.disclosure.is_moving() {
+            return 0.0;
+        }
+        let full = self.bar.get_rect().height();
+        let laid = if self.bar_node.is_some() { full } else { 0.0 };
+        self.disclosure.reveal(full).height - laid
     }
 
     fn is_find_shortcut(&self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
@@ -1516,6 +1541,7 @@ impl Widget for FindScope {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
         let mut children = Vec::new();
         self.bar_node = if self.open {
             let node = self.bar.build_layout(taffy, theme, node_map);
@@ -1576,10 +1602,57 @@ impl Widget for FindScope {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.content.draw(scene, transform, text, theme, presence);
-        if self.open {
-            self.bar.draw(scene, transform, text, theme, presence);
+        self.motion = theme.motion();
+        if !self.disclosure.is_moving() {
+            self.content.draw(scene, transform, text, theme, presence);
+            if self.open {
+                self.bar.draw(scene, transform, text, theme, presence);
+            }
+            return;
         }
+        // The band opens or closes from the top: the content, laid out once
+        // where it rests, follows the band's edge by transform, clipped to
+        // the scope; the band's controls fade in over the second half.
+        let reveal = self.disclosure.reveal(self.bar.get_rect().height());
+        let offset = self.content_offset();
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &self.rect,
+        );
+        self.content.draw(
+            scene,
+            transform * Affine::translate((0.0, offset)),
+            text,
+            theme,
+            presence,
+        );
+        let band = self.bar.get_rect();
+        if reveal.height > 0.0 && reveal.opacity > 0.0 {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                reveal.opacity,
+                transform,
+                &Rect::new(band.x0, band.y0, band.x1, band.y0 + reveal.height),
+            );
+            self.bar.draw(scene, transform, text, theme, presence);
+            scene.pop_layer();
+        }
+        scene.pop_layer();
+    }
+
+    /// Frames while the band opens or closes; none once it rests.
+    fn needs_animation_frame(&self) -> bool {
+        self.disclosure.is_moving()
+            || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.disclosure.is_moving()
+            || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1635,8 +1708,14 @@ impl Widget for FindScope {
             }
         }
         let content = self.content_node.unwrap_or(ctx.node_id);
+        // While the band moves, the content is hit where it is drawn.
+        let event = super::event_offset(
+            event,
+            vello::kurbo::Vec2::new(0.0, self.content_offset()),
+            ctx.scale_factor,
+        );
         self.content
-            .handle_event(event, &mut ctx.reborrow(ctx.path, content));
+            .handle_event(&event, &mut ctx.reborrow(ctx.path, content));
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1932,6 +2011,154 @@ mod tests {
 
         let _ = send(&mut scope, &escape(), plain);
         assert!(!scope.is_open(), "Escape closes the bar");
+    }
+
+    fn page_scope() -> FindScope {
+        let page = Page {
+            doc: Doc {
+                text: "one two one".into(),
+                ..Doc::default()
+            },
+            rect: Rect::ZERO,
+        };
+        let mut scope = FindScope::new(Box::new(page));
+        scope.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+        scope
+    }
+
+    fn lay_out(scope: &mut FindScope) {
+        let _ = send(
+            scope,
+            &WindowEvent::Focused(true),
+            winit::event::Modifiers::default(),
+        );
+        let _ = scope.take_structure_dirty();
+    }
+
+    fn pointer_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    #[test]
+    fn opened_from_a_menu_the_band_discloses_and_the_content_moves_by_transform() {
+        let mut scope = page_scope();
+        lay_out(&mut scope);
+        // A menu item clicked: the host opens the bar. The frame's instant
+        // is held, so the test reads the motion where it starts.
+        let _frame = crate::motion::pin_frame();
+        crate::motion::note_input(&pointer_press());
+        scope.open();
+        lay_out(&mut scope);
+        assert!(scope.disclosure.is_moving(), "the band discloses");
+        assert!(Widget::needs_animation_frame(&scope));
+        let band = scope.bar.get_rect();
+        let laid = scope.content.get_rect();
+        assert!(
+            laid.y0 >= band.y1 - 0.5,
+            "the content is laid out once, where it rests under the band"
+        );
+        assert!(
+            (scope.content_offset() + band.height()).abs() < 0.5,
+            "and is drawn where it stood, moving down with the band's edge"
+        );
+        // A frame of the motion moves only the drawing: nothing asks for a
+        // new layout and the content's box stays put.
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        scope.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        assert!(!scope.structure_dirty);
+        assert_eq!(scope.content.get_rect(), laid);
+
+        // At rest it costs nothing.
+        let _settled = crate::motion::testing::settled();
+        assert!(!scope.disclosure.is_moving());
+        assert!(scope.content_offset().abs() < f64::EPSILON);
+        assert!(!Widget::needs_animation_frame(&scope));
+    }
+
+    #[test]
+    fn ctrl_f_and_escape_land_and_the_close_button_collapses_the_band() {
+        let mut scope = page_scope();
+        let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        let plain = winit::event::Modifiers::default();
+        lay_out(&mut scope);
+
+        crate::motion::note_input(&ctrl_f());
+        let _ = send(&mut scope, &ctrl_f(), ctrl);
+        assert!(scope.is_open());
+        assert!(!scope.disclosure.is_moving(), "Ctrl+F lands at once");
+        lay_out(&mut scope);
+        assert!(scope.content_offset().abs() < f64::EPSILON);
+
+        crate::motion::note_input(&escape());
+        let _ = send(&mut scope, &escape(), plain);
+        assert!(!scope.is_open());
+        assert!(!scope.disclosure.is_moving(), "Escape lands at once");
+
+        crate::motion::note_input(&ctrl_f());
+        let _ = send(&mut scope, &ctrl_f(), ctrl);
+        lay_out(&mut scope);
+        let full = scope.bar.get_rect().height();
+        // The close button, pressed.
+        let _frame = crate::motion::pin_frame();
+        crate::motion::note_input(&pointer_press());
+        scope.bar.toggle(Part::Close);
+        scope.drive();
+        assert!(!scope.is_open(), "the bar is closed at once for input");
+        assert!(scope.disclosure.is_moving(), "and its band collapses");
+        lay_out(&mut scope);
+        assert!(
+            (scope.content_offset() - full).abs() < 0.5,
+            "the content, laid out at the top, is drawn under the closing band"
+        );
+        assert!(Widget::needs_animation_frame(&scope));
+    }
+
+    #[test]
+    fn under_reduced_motion_the_band_lands_and_its_controls_fade_in() {
+        let mut scope = page_scope();
+        lay_out(&mut scope);
+        scope.motion = Theme::dark().with_reduce_motion(true).motion();
+        let _frame = crate::motion::pin_frame();
+        crate::motion::note_input(&pointer_press());
+        scope.open();
+        lay_out(&mut scope);
+        let full = scope.bar.get_rect().height();
+        let reveal = scope.disclosure.reveal(full);
+        assert!(
+            (reveal.height - full).abs() < f64::EPSILON,
+            "the height lands"
+        );
+        assert!(reveal.opacity < 1.0, "the controls fade in");
+        assert!(scope.content_offset().abs() < f64::EPSILON, "nothing moves");
+    }
+
+    #[test]
+    fn content_moving_with_the_band_is_hit_where_it_is_drawn() {
+        let pointer = WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: (10.0, 50.0).into(),
+        };
+        let moved = super::super::event_offset(&pointer, vello::kurbo::Vec2::new(0.0, -20.0), 2.0);
+        let WindowEvent::CursorMoved { position, .. } = moved.as_ref() else {
+            panic!("a pointer move stays a pointer move");
+        };
+        assert_eq!((position.x, position.y), (10.0, 90.0));
+        let key = escape();
+        assert!(matches!(
+            super::super::event_offset(&key, vello::kurbo::Vec2::new(0.0, -20.0), 2.0),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[test]

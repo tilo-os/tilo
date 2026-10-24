@@ -21,6 +21,10 @@ extern crate runtime_dylib;
 
 #[cfg(feature = "thin")]
 pub use rustypipe;
+// The queries themselves, with their response models' decoding: generic in
+// rustypipe, so without these each app compiled its own copy.
+#[cfg(feature = "thin")]
+pub use tilo_innertube;
 
 /// Run `rustypipe`'s own code without a network: its identifier grammar
 /// and its locale table.

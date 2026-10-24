@@ -126,6 +126,7 @@ impl Fixture {
                         kind: AppKind::Terminal,
                         label: "Terminal".into(),
                     },
+                    app_title: None,
                 };
                 strip.window_groups.push(WindowGroup {
                     id: next_id(),
@@ -159,6 +160,7 @@ impl Fixture {
                         app_id: app_id.into(),
                         surface_id,
                     },
+                    app_title: None,
                 };
                 strip.window_groups.push(WindowGroup {
                     id: next_id(),

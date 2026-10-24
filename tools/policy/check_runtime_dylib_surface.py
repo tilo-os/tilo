@@ -94,6 +94,8 @@ ENGINES = {
     "tilo-segment": "matte refinement under tilo-subject, in libtilo_paint_engine.so",
     "tilo-youtube-engine": "the YouTube client's engine library (libtilo_youtube_engine.so)",
     "rustypipe": "the YouTube client, which Music and Tube load from libtilo_youtube_engine.so",
+    "tilo-innertube": "the queries Music and Tube make of the YouTube client, in "
+                      "libtilo_youtube_engine.so",
     "rquickjs": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "rquickjs-core": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "rquickjs-sys": "QuickJS, rustypipe's JavaScript engine, in libtilo_youtube_engine.so",

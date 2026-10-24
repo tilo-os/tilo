@@ -537,6 +537,24 @@ pub fn move_page_plan_action(id: &str, after_id: Option<&str>) -> Invoke<PdfMark
     PdfMarkup::MOVE_PAGE.with((Id::from_raw(id), after_id.map(str::to_owned)))
 }
 
+/// The page rail's reorder of the page at `from` to final position `to`
+/// (the page is taken out, then put back at `to`) among the pages `ids`, as
+/// the move it is: after the page that will precede it, or to the start.
+/// Moving down, that page is the one at `to`; moving up, the one before it.
+pub fn reorder_page_plan_action(
+    ids: &[String],
+    from: usize,
+    to: usize,
+) -> Option<Invoke<PdfMarkup>> {
+    let id = ids.get(from)?;
+    let after = match to.cmp(&from) {
+        std::cmp::Ordering::Equal => return None,
+        std::cmp::Ordering::Greater => Some(ids.get(to)?),
+        std::cmp::Ordering::Less => to.checked_sub(1).and_then(|before| ids.get(before)),
+    };
+    Some(move_page_plan_action(id, after.map(String::as_str)))
+}
+
 /// Turn page occurrence `id` to `degrees` clockwise.
 #[cfg(test)]
 pub fn rotate_page_action(id: &str, degrees: i32) -> Invoke<PdfMarkup> {

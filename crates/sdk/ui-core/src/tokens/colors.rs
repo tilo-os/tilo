@@ -53,6 +53,36 @@ pub fn mix8(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
+/// How far a value's fill stands from the focus ring's ink, in OKLCH
+/// lightness, away from the ground: a focused slider's ring never merges
+/// with its own fill.
+const VALUE_FILL_STEP: f32 = 0.1;
+
+/// [`Intents::value_fill`] on `ground` beside `track` (the lift a bar's
+/// unfilled part is): the accent hue a step further from the ground than
+/// [`Intents::accent_ink`], then stepped on until it clears the non-text
+/// contrast floor against both.
+pub(crate) fn value_fill_on(accent_ink: Color, ground: Color, track: Color) -> Color {
+    use crate::a11y::contrast_ratio;
+    let ink = Oklch::from_color(accent_ink);
+    let away = if Oklch::from_color(ground).l > 0.5 {
+        -1.0
+    } else {
+        1.0
+    };
+    let reads = |fill: Color| {
+        contrast_ratio(fill, ground) >= NON_TEXT_MIN_CONTRAST
+            && contrast_ratio(fill, track) >= NON_TEXT_MIN_CONTRAST
+    };
+    let mut lightness = ink.l + away * VALUE_FILL_STEP;
+    let mut fill = oklch(lightness.clamp(0.0, 1.0), ink.c, ink.h);
+    while !reads(fill) && (0.0..=1.0).contains(&lightness) {
+        lightness += away * 0.02;
+        fill = oklch(lightness.clamp(0.0, 1.0), ink.c, ink.h);
+    }
+    fill
+}
+
 /// Composites `over` onto an opaque `ground`: a token's own RGBA says
 /// nothing about how it reads (`white/20` differs over black vs white), so
 /// every derivation below measures the composite, never the token.
@@ -320,9 +350,11 @@ pub struct Intents {
     /// The knob or mark standing on [`Self::on_state`].
     pub on_state_mark: Color,
     /// A value that is neither on nor an action: a slider's filled track,
-    /// a progress bar, a gauge, a spinner, a chart's default series. Strong
-    /// neutral ink (primary ink at 90 % over the window).
-    pub neutral_fill: Color,
+    /// a progress bar, a gauge, a spinner, a chart's default series, a
+    /// finished step. The accent as a mark ([`Self::accent_ink`]), held to
+    /// the non-text contrast floor on the ground it stands on; never the
+    /// text colour, so a filled bar never reads as a black slab.
+    pub value_fill: Color,
     /// A selected row, tab or segment on the content surface: one surface
     /// step, faintly the accent (colourless under [`Emphasis::Inverted`]).
     /// Other grounds lift with [`Colors::lift_on`].
@@ -985,7 +1017,7 @@ impl Colors {
                 accent_ink,
                 on_state: oklch(on_state.lightness, on_state.chroma, ON_STATE_HUE),
                 on_state_mark: Color::WHITE,
-                neutral_fill: mix8(content, primary, 0.9),
+                value_fill: value_fill_on(accent_ink, content, lift(1.0, true)),
                 selection: lift(1.0, true),
                 selection_hover: lift(0.5, false),
                 you: you_colour,

@@ -496,7 +496,7 @@ impl KeyboardMap {
         let pressed = self.is_pressed(key.physical);
         let colours = &theme.tokens.colors;
         let fill = if pressed {
-            colours.intent.neutral_fill
+            colours.intent.value_fill
         } else {
             colours.surfaces.raised
         };

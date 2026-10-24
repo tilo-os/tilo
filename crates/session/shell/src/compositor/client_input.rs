@@ -971,6 +971,17 @@ impl State {
         };
         let serial = mint_serial(self);
         let time = event_time(self);
+        // A finger down is a press, as a button or a key is: the same
+        // serial an activation token may be minted from, and the person's
+        // own when no agent or participant sends it through the seat.
+        if matches!(touch, BackendTouchEvent::Down { .. })
+            && let Some((surface_id, _)) = target
+            && focus.is_some()
+        {
+            record_activation_serial(self, serial, surface_id);
+            self.note_app_input(surface_id);
+            self.note_person_press(surface_id);
+        }
         match touch {
             BackendTouchEvent::Down { slot, x, y } => handle.down(
                 self,

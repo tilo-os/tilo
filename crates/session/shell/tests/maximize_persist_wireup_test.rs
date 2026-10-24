@@ -60,6 +60,7 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
                 kind: AppKind::Other("Test".into()),
                 label: "solo".into(),
             },
+            app_title: None,
         }],
         active_tab: tab_id,
         width: WindowWidth::Normal,

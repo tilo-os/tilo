@@ -218,6 +218,47 @@ fn set_records_with_a_key_updates_the_matching_row_and_appends_the_rest() {
 }
 
 #[test]
+fn upsert_item_finds_a_row_by_its_header_values_and_appends_a_new_one() {
+    let mut app = app();
+    call(
+        &mut app,
+        "new-sheet",
+        json!({"name": "Guests", "columns": ["Name", "Team", "Seats"], "records": [{"Name": "Ana Lima", "Team": "Ops", "Seats": 1}, {"Name": "Ben", "Team": "Web", "Seats": 2}]}),
+    );
+    call(
+        &mut app,
+        "upsert-item",
+        json!({"sheet": "Guests", "match": {"name": " ana  lima"}, "value": {"Seats": 3}}),
+    );
+    call(
+        &mut app,
+        "upsert-item",
+        json!({"sheet": "Guests", "match": {"Name": "Cy"}, "value": {"Team": "Ops", "Seats": 1}}),
+    );
+    // Run again, it changes nothing.
+    call(
+        &mut app,
+        "upsert-item",
+        json!({"sheet": "Guests", "match": {"Name": "Cy"}, "value": {"Team": "Ops", "Seats": 1}}),
+    );
+    assert_eq!(
+        read(&mut app, "Guests", "A2:C5")["rows"],
+        json!([
+            ["Ana Lima", "Ops", 3.0],
+            ["Ben", "Web", 2.0],
+            ["Cy", "Ops", 1.0],
+            [null, null, null]
+        ])
+    );
+    let two = refusal(
+        &mut app,
+        "upsert-item",
+        json!({"sheet": "Guests", "match": {"Team": "ops"}, "value": {"Seats": 9}}),
+    );
+    assert!(two.contains("rows 2 and 4"), "{two}");
+}
+
+#[test]
 fn set_records_on_an_empty_sheet_writes_its_headers_first() {
     let mut app = app();
     call(

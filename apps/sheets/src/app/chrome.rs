@@ -535,7 +535,7 @@ impl SheetsApp {
                 .iter()
                 .position(|(rect, _)| rect.contains(self.last_mouse));
             let face = SegmentedFace::new(&rects, &labels, selected)
-                .style(SegmentedStyle::Quiet)
+                .style(SegmentedStyle::Tabs)
                 .control_size(ControlSize::Small)
                 .hovered(hovered);
             ui::widget::ToggleGroup::paint(scene, transform, tr, theme, &face);

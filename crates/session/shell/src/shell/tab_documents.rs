@@ -302,6 +302,7 @@ mod tests {
                 kind: AppKind::Other("Word".into()),
                 label: title.into(),
             },
+            app_title: None,
         };
         let strip = Strip {
             id: strip_id,

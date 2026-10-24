@@ -673,20 +673,38 @@ const VIDEO: &str = "so.tilo.video-editor";
 /// on `host`, its records lent `store`.
 async fn planning_agent(
     root: &ed25519_dalek::SigningKey,
-    (host, host_device): (&support::TestHost, &support::Device),
+    host: (&support::TestHost, &support::Device),
     apps: &[&str],
     planner: Box<dyn tilo_agent_participant::Planner>,
     store: tilo_content::ContentStore,
 ) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
-    let agent_device = enrol(root, "Agent: Planner", CertificationPolicy::agent().ceiling);
+    planning_agent_as("planner", root, host, apps, (planner, store)).await
+}
+
+/// [`planning_agent`], its delegation naming it `id`.
+async fn planning_agent_as(
+    id: &str,
+    root: &ed25519_dalek::SigningKey,
+    (host, host_device): (&support::TestHost, &support::Device),
+    apps: &[&str],
+    (planner, store): (
+        Box<dyn tilo_agent_participant::Planner>,
+        tilo_content::ContentStore,
+    ),
+) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
+    let agent_device = enrol(
+        root,
+        &format!("Agent: {id}"),
+        CertificationPolicy::agent().ceiling,
+    );
     let now = tilo_clock::unix_now_ns();
     let delegation = Delegation::sign(
         root,
         agent_device.cert.device_public_key,
         tilo_relay_protocol::delegation::Delegate::Agent {
-            agent_id: "planner".into(),
+            agent_id: id.into(),
         },
-        "Planner",
+        id,
         [0x0f, 0x4c, 0x5c],
         DelegateScope {
             rooms: vec![ROOM.into()],
@@ -1219,5 +1237,258 @@ async fn written_steps_name_a_records_field_and_carry_content_into_it() {
     assert_eq!(task.steps.len(), 4, "{task:?}");
 
     agent.close();
+    host.relay.shutdown().await;
+}
+
+/// The id of a new workbook's first sheet, `Sheet1`.
+const FIRST_SHEET: &str = "00000000-0000-4000-8000-000000000001";
+
+/// What the cells `range` of the first sheet of the workbook at `route`
+/// show, row by row.
+fn sheet_rows(
+    agent: &mut AgentParticipant,
+    route: &DocumentRoute,
+    range: &str,
+) -> serde_json::Value {
+    let read = tilo_actions::door::ActionAddress::new("sheets.workbook", "read-cells");
+    let arguments = serde_json::json!({"sheet": "Sheet1", "range": range});
+    agent
+        .invoke(route, &read, arguments.as_object().unwrap())
+        .unwrap()
+        .and_then(|output| output.value)
+        .map(|value| value["rows"].clone())
+        .unwrap_or_default()
+}
+
+/// A step quotes a value a formula computed and computes with it
+/// (`{{Sheet1!B4|$}}`, `{{= Sheet1!B4 / 3 }}`): the host fills both in
+/// from the workbook as the step runs, so the model never adds the figures
+/// up itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_takes_the_value_a_formula_computed() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let sheets = agent.open(SHEETS, None).unwrap();
+    let set_cells = |start: &str, rows: serde_json::Value| {
+        serde_json::json!({"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+            "action": "set-cells", "arguments": {"sheet": FIRST_SHEET, "start": start, "rows": rows}})
+    };
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            set_cells(
+                "A1",
+                serde_json::json!([
+                    ["Item", "Cost"],
+                    ["Venue", 100],
+                    ["Food", 200],
+                    ["Total", "=SUM(B2:B3)"]
+                ])
+            ),
+            set_cells(
+                "C1",
+                serde_json::json!([["Total {{Sheet1!B4|$}}", "{{= Sheet1!B4 / 3 }}"]])
+            ),
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    assert_eq!(
+        sheet_rows(&mut agent, &sheets, "C1:D1"),
+        serde_json::json!([["Total $300.00", 100.0]])
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// A value that is not there fails its step with the reference named, and
+/// the task's repair plans around it with that reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_missing_value_goes_to_repair_naming_its_reference() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let set_cells = |rows: serde_json::Value| {
+        tool_call(
+            "p1",
+            "plan",
+            &serde_json::json!({"steps": [{"operation": "sheets.workbook#set-cells",
+                "arguments": {"sheet": FIRST_SHEET, "start": "A1", "rows": rows}}], "then": ""}),
+        )
+    };
+    let (url, sent) = model_endpoint(vec![
+        set_cells(serde_json::json!([["{{Sheet1!Z99}}"]])),
+        set_cells(serde_json::json!([["No figure yet"]])),
+    ]);
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        endpoint_planner(&url),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let sheets = agent.open(SHEETS, None).unwrap();
+
+    let info = run_task(
+        &mut agent,
+        &control,
+        "In Sheets, put the figure from Z99 in A1",
+    );
+    assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    let failed = info
+        .steps
+        .iter()
+        .find(|step| step.state == TaskState::Failed)
+        .and_then(|step| step.error.clone())
+        .unwrap_or_default();
+    assert!(
+        failed.contains("{{Sheet1!Z99}}") && failed.contains("empty"),
+        "the failed step names its reference: {info:?}"
+    );
+    let requests: Vec<serde_json::Value> = sent
+        .try_iter()
+        .map(|body| serde_json::from_str(&body).unwrap())
+        .collect();
+    assert_eq!(requests.len(), 2, "a plan and its repair");
+    let repair = message_text(&requests[1]["messages"][1]);
+    assert!(
+        repair.contains("{{Sheet1!Z99}}") && repair.contains("failed"),
+        "the repair is told which reference: {repair}"
+    );
+    assert_eq!(
+        sheet_rows(&mut agent, &sheets, "A1"),
+        serde_json::json!([["No figure yet"]])
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// Two agents adding a row by its key at once each keep their row: an
+/// upsert names the row by what it holds, and a new one is its own row,
+/// never the next one by position, which the other agent is writing too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upserts_by_key_from_two_agents_overwrite_nothing() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (mut first, _) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let (mut second, _) = planning_agent_as(
+        "second",
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        (
+            Box::new(tilo_agent_participant::DirectPlanner),
+            tilo_content::ContentStore::memory(),
+        ),
+    )
+    .await;
+    let sheets = first.open(SHEETS, None).unwrap();
+    let address = |action: &str| tilo_actions::door::ActionAddress::new("sheets.workbook", action);
+    let headers = serde_json::json!({"sheet": FIRST_SHEET, "start": "A1",
+        "rows": [["Name", "Seats"], ["Ana", 1]]});
+    first
+        .invoke(&sheets, &address("set-cells"), headers.as_object().unwrap())
+        .unwrap();
+    let theirs = wait_for("the second agent to open the workbook", || {
+        first.pump();
+        second.pump();
+        let opened = second
+            .open(SHEETS, Some(&sheets.record))
+            .ok()
+            .filter(|route| sheet_rows(&mut second, route, "A2") == serde_json::json!([["Ana"]]));
+        async move { opened }
+    })
+    .await;
+
+    // Neither has seen the other's upsert when it makes its own.
+    let upsert = |name: &str, seats: i64| serde_json::json!({"sheet": FIRST_SHEET, "match": {"Name": name}, "value": {"Seats": seats}});
+    first
+        .invoke(
+            &sheets,
+            &address("upsert-item"),
+            upsert("Ben", 2).as_object().unwrap(),
+        )
+        .unwrap();
+    second
+        .invoke(
+            &theirs,
+            &address("upsert-item"),
+            upsert("Cy", 3).as_object().unwrap(),
+        )
+        .unwrap();
+    second
+        .invoke(
+            &theirs,
+            &address("upsert-item"),
+            upsert("ana", 4).as_object().unwrap(),
+        )
+        .unwrap();
+    let rows = wait_for("both agents to hold both rows", || {
+        first.pump();
+        second.pump();
+        let ours = sheet_rows(&mut first, &sheets, "A2:B4");
+        let same = ours == sheet_rows(&mut second, &theirs, "A2:B4");
+        let full = ours
+            .as_array()
+            .is_some_and(|rows| rows.iter().all(|row| !row[0].is_null()));
+        async move { (same && full).then_some(ours) }
+    })
+    .await;
+    let mut rows: Vec<String> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| format!("{} {}", row[0].as_str().unwrap(), row[1]))
+        .collect();
+    rows.sort();
+    assert_eq!(rows, ["Ana 4.0", "Ben 2.0", "Cy 3.0"]);
+
+    first.close();
+    second.close();
     host.relay.shutdown().await;
 }

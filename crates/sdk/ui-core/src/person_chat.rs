@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Contact {
     pub public_key: String,
     pub display_name: String,

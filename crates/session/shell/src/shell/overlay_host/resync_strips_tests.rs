@@ -28,6 +28,7 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
                     kind: AppKind::Other("Test".into()),
                     label: "s".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: StateWidth::Normal,
@@ -384,6 +385,7 @@ fn make_stub_group(id: GroupId, label: &str) -> StateGroup {
                 kind: AppKind::Other("Test".into()),
                 label: label.into(),
             },
+            app_title: None,
         }],
         active_tab: tab_id,
         width: StateWidth::Normal,
@@ -892,6 +894,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                     kind: AppKind::Browser,
                     label: "second".into(),
                 },
+                app_title: None,
             },
             Tab {
                 id: 3,
@@ -900,6 +903,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                     kind: AppKind::Terminal,
                     label: "third".into(),
                 },
+                app_title: None,
             },
         ]);
         strip.window_groups.push(make_stub_group(201, "Other-A"));
@@ -1065,6 +1069,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                 kind,
                 label: title.into(),
             },
+            app_title: None,
         };
         peer.desktop
             .workspaces
@@ -1381,6 +1386,7 @@ fn focus_changes_are_flushed_before_restart_and_never_resurrect_removed_tabs() {
                     kind: AppKind::Browser,
                     label: "second".into(),
                 },
+                app_title: None,
             });
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.focus_window_on_strip(strip_id, group_id, 2));
@@ -1449,6 +1455,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
                     app_id: "com.openai.chatgpt".into(),
                     surface_id: 41,
                 },
+                app_title: None,
             },
             Tab {
                 id: 2,
@@ -1457,6 +1464,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
                     app_id: "com.openai.chatgpt".into(),
                     surface_id: 42,
                 },
+                app_title: None,
             },
         ];
         group.active_tab = 1;
@@ -1518,6 +1526,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
                 app_id: "org.example.Editor".into(),
                 surface_id: 51,
             },
+            app_title: None,
         }];
         group.active_tab = 1;
         tree.seed_doc_from_cache();
@@ -1708,6 +1717,7 @@ fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
                     kind: AppKind::Other("Test".into()),
                     label: "Report".into(),
                 },
+                app_title: None,
             },
             crate::shell::tab_binding::Placement::RightOf(301),
         )

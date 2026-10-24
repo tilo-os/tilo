@@ -260,6 +260,7 @@ mod tests {
                 kind: AppKind::Terminal,
                 label: "Terminal".into(),
             },
+            app_title: None,
         }
     }
 
@@ -283,6 +284,7 @@ mod tests {
                     app_id: "so.tilo.notes".into(),
                     surface_id: 2,
                 },
+                app_title: None,
             });
             (asked, other, notes)
         };

@@ -179,6 +179,16 @@ pub(super) fn ime_requires_deferred_ack(caret: Option<Rect>, each: EachChild<'_>
     required
 }
 
+pub(super) fn ime_refuses_ordinary_commits(caret: Option<Rect>, each: EachChild<'_>) -> bool {
+    let mut refused = false;
+    each(&mut |child| {
+        if child.ime_cursor_rect() == caret && child.ime_content().is_some() {
+            refused |= child.ime_refuses_ordinary_commits();
+        }
+    });
+    refused
+}
+
 fn typing_child<'a>(children: ChildrenMut<'a>, caret: Rect) -> Option<&'a mut (dyn Widget + 'a)> {
     children
         .into_iter()

@@ -1975,6 +1975,7 @@ mod tests {
                     label: app.into(),
                     note: String::new(),
                 },
+                app_title: None,
             })
             .collect::<Vec<_>>();
         let authors = [(tabs[0].id, GUEST), (tabs[1].id, OTHER_GUEST)]

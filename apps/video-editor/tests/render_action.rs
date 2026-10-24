@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 #![cfg(feature = "gst")]
 
-//! `render`: the timeline rendered on the device into content, through the
+//! `render-timeline`: the timeline rendered on the device into content, through the
 //! same door, permissions and job progress as any other action.
 
 use ui::permissions::{KindSet, PermissionContext, TreePath};
@@ -46,7 +46,7 @@ fn titled() -> Project {
 }
 
 fn render(start: f64, end: f64) -> VideoEditorEffect {
-    VideoEditorEffect::Render {
+    VideoEditorEffect::RenderTimeline {
         start: Some(start),
         end: Some(end),
         format: Some("webm".into()),

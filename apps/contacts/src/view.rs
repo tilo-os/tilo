@@ -23,7 +23,7 @@ use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::{Duration, Instant};
+use ui::time::Instant;
 use ui::widget::{
     AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, RowLeading, ScrollRegion,
     TaffyTreeExt, Widget,
@@ -31,9 +31,6 @@ use ui::widget::{
 
 use crate::form::{RowKind, Slot, TypeTarget};
 use crate::model::ContactId;
-
-/// Two presses on one row within this interval open it for editing.
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// One row of the contact list: what the list shows of a person.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -346,9 +343,12 @@ impl ContactList {
             MouseButton::Left => {
                 self.pressed = Some(id);
                 let now = ui::time::now();
-                let double = self
-                    .last_click
-                    .is_some_and(|(at, last)| last == id && now.duration_since(at) < DOUBLE_CLICK);
+                // Two presses on one row within the shared multi-click window
+                // open it for editing, so the list honours the same interval
+                // as every other double-click in the session.
+                let double = self.last_click.is_some_and(|(at, last)| {
+                    last == id && now.duration_since(at) < ui::gesture::multi_click_interval()
+                });
                 self.last_click = (!double).then_some((now, id));
                 let request = if double {
                     Request::Edit(id)

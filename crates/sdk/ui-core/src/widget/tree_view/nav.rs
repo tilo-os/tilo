@@ -74,11 +74,28 @@ pub(crate) struct NavItemSpec {
     pub checked: Option<bool>,
     pub level: Option<f32>,
     pub presence: Vec<String>,
+    pub person: Option<crate::widget::nav_list::NavPerson>,
+    pub unread: bool,
 }
 
 impl NavItemSpec {
     /// The face of this row over `row`, labelled `label`, without state.
     pub(crate) fn face<'a>(&'a self, row: Rect, label: &'a str, theme: &Theme) -> NavRowFace<'a> {
+        let mut face = self.plain_face(row, label);
+        if self.badge.is_some() {
+            let codes: Vec<&str> = self.section_badges.iter().map(String::as_str).collect();
+            face.badge_column = Some(crate::text_render::with_layout_renderer(
+                theme.text_scale,
+                |text| nav_badge_column(theme, text, &codes),
+            ));
+        }
+        face
+    }
+
+    /// [`Self::face`] without the badge column, which only painting and
+    /// hit-testing read: what the row says to assistive technology is not
+    /// made of the width every badge of its section lays out at.
+    fn plain_face<'a>(&'a self, row: Rect, label: &'a str) -> NavRowFace<'a> {
         let mut face = NavRowFace::new(row, label).depth(self.depth);
         face.under_section = self.under_section;
         face.icon = self.icon;
@@ -91,13 +108,6 @@ impl NavItemSpec {
             .as_ref()
             .map(|(label, tone)| (label.as_str(), *tone));
         face.badge = self.badge.as_deref();
-        if self.badge.is_some() {
-            let codes: Vec<&str> = self.section_badges.iter().map(String::as_str).collect();
-            face.badge_column = Some(crate::text_render::with_layout_renderer(
-                theme.text_scale,
-                |text| nav_badge_column(theme, text, &codes),
-            ));
-        }
         face.swatch = self.swatch;
         face.avatar = self.art.as_ref().map(|art| {
             crate::widget::AvatarFace::new(&art.name, &art.name)
@@ -105,9 +115,19 @@ impl NavItemSpec {
                 .neutral()
                 .image(art.image.as_ref())
         });
+        if let Some(person) = &self.person {
+            let mut avatar = crate::widget::AvatarFace::new(label, &person.identity)
+                .presence(person.colour)
+                .presence_ring();
+            if person.speaking {
+                avatar = avatar.speaking(1.0);
+            }
+            face.avatar = Some(avatar);
+        }
         face.checked = self.checked;
         face.level = self.level;
         face.presence = &self.presence;
+        face.unread = self.unread;
         face
     }
 }
@@ -124,6 +144,8 @@ pub(crate) enum NavRowSpec {
         /// What the trailing action is announced as.
         action_label: Option<String>,
         first: bool,
+        /// The header asks for its menu as a row does.
+        menu: bool,
     },
     /// A destination.
     Item(Box<NavItemSpec>),
@@ -183,6 +205,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     pub(crate) fn set_nav_presentation(&mut self, nav: NavPresentation<M>) {
         let theme = nav.theme.clone();
         self.nav = Some(nav);
+        self.changed_nav_presentation();
         self.apply_nav_metrics(&theme);
         // A list stands still when it first appears.
         self.transitions.clear();
@@ -212,7 +235,21 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 
     pub(crate) fn nav_mut(&mut self) -> Option<&mut NavPresentation<M>> {
+        self.changed_nav_presentation();
         self.nav.as_mut()
+    }
+
+    /// What a navigation row is read from beyond its own inputs (the model,
+    /// the presentation, the checks it shows) may have changed: no row of
+    /// the last accessibility walk is kept ([`Self::access_rows`]).
+    pub(super) fn changed_nav_presentation(&mut self) {
+        self.nav_revision = self.nav_revision.wrapping_add(1);
+    }
+
+    /// The revision of what navigation rows are read from beyond their own
+    /// inputs, while the tree is a navigation list.
+    pub(super) fn nav_revision(&self) -> Option<u64> {
+        self.nav.as_ref().map(|_| self.nav_revision)
     }
 
     pub(crate) fn is_nav(&self) -> bool {
@@ -231,8 +268,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let Some(nav) = self.nav.as_mut() else {
             return;
         };
-        nav.theme = theme.clone();
-        let row = if nav.rail {
+        let rail = nav.rail;
+        // Laid out on every layout pass: the rows' semantics (a section's
+        // action button) are read from the theme only when it changed.
+        if nav.theme != *theme {
+            nav.theme = theme.clone();
+            self.changed_nav_presentation();
+        }
+        let row = if rail {
             nav_rail_row_height(theme)
         } else {
             nav_row_height(theme)
@@ -352,6 +395,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return None;
         };
         let key = TreeRowKey::Node(id);
+        // The rename field stands where the title was.
+        let title = if self.renaming() == Some(id) {
+            ""
+        } else {
+            title
+        };
         let mut face = NavSectionFace::new(row, title)
             .hovered(self.hovered == Some(key))
             .focused(self.is_focused && self.focused == Some(key));
@@ -393,7 +442,11 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 }
             }
             NavRowSpec::Item(item) => {
-                let label = self.model.label(id).unwrap_or_default();
+                let label = if self.renaming() == Some(id) {
+                    ""
+                } else {
+                    self.model.label(id).unwrap_or_default()
+                };
                 let actions: Vec<Icon> =
                     self.row_actions.iter().map(|action| action.icon).collect();
                 if let Some(face) = self.nav_item_face(id, row, item, label, &actions) {
@@ -426,8 +479,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
     pub(crate) fn nav_lift_rect(&self, id: NodeId) -> Option<Rect> {
         let nav = self.nav.as_ref()?;
         let row = self.row_rect(id)?;
-        let NavRowSpec::Item(item) = self.nav_spec(id)? else {
-            return None;
+        let item = match self.nav_spec(id)? {
+            NavRowSpec::Item(item) => item,
+            NavRowSpec::Section { menu: true, .. } => {
+                return Some(nav_section_layout(&nav.theme, &NavSectionFace::new(row, "")).band);
+            }
+            _ => return None,
         };
         let label = self.model.label(id).unwrap_or_default();
         let mut face = item.face(row, label, &nav.theme);
@@ -486,9 +543,16 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let Some(id) = self.rename.as_ref().map(|field| field.id) else {
             return;
         };
-        let (Some(row), Some(NavRowSpec::Item(item))) = (self.row_rect(id), self.nav_spec(id))
-        else {
+        let Some(row) = self.row_rect(id) else {
             return;
+        };
+        let item = match self.nav_spec(id) {
+            Some(NavRowSpec::Item(item)) => item,
+            Some(spec @ NavRowSpec::Section { .. }) => {
+                self.place_nav_section_rename_field(id, row, &spec);
+                return;
+            }
+            _ => return,
         };
         let label = self.model.label(id).unwrap_or_default().to_owned();
         let Some(face) = self.nav_item_face(id, row, &item, &label, &[]) else {
@@ -505,6 +569,31 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 layout.selection.y0,
                 layout.label_x1.max(layout.label_x0),
                 layout.selection.y1,
+            ));
+        }
+    }
+
+    /// Lay the open rename field over section `id`'s title, in the title's
+    /// role, from its leading edge to its trailing action.
+    fn place_nav_section_rename_field(&mut self, id: NodeId, row: Rect, spec: &NavRowSpec) {
+        let Some(theme) = self.nav.as_ref().map(|nav| nav.theme.clone()) else {
+            return;
+        };
+        let Some(face) = self.nav_section_face(id, row, spec) else {
+            return;
+        };
+        let layout = nav_section_layout(&theme, &face);
+        let x1 = layout
+            .action
+            .map_or(layout.band.x1, |action| action.x0)
+            .max(layout.title_x0);
+        if let Some(field) = self.rename.as_mut() {
+            field.input.set_text_role(TextRole::Subheading);
+            field.input.apply_layout_external(Rect::new(
+                layout.title_x0,
+                layout.band.y0,
+                x1,
+                layout.band.y1,
             ));
         }
     }
@@ -645,6 +734,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if let Some(callback) = self.nav.as_mut().and_then(|nav| nav.on_check.as_mut()) {
             callback(id);
         }
+        // The row shows the new state before the app confirms it.
+        self.changed_nav_presentation();
         self.paint_dirty = true;
         true
     }
@@ -657,7 +748,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// Ask the host for item `id`'s menu at `at`, the row marked by its
     /// lift. Returns whether the list reports menus for the row.
     pub(super) fn open_nav_menu(&mut self, id: NodeId, at: Point) -> bool {
-        if !self.nav_offers_menu() || !matches!(self.nav_spec(id), Some(NavRowSpec::Item(_))) {
+        if !self.nav_offers_menu()
+            || !matches!(
+                self.nav_spec(id),
+                Some(NavRowSpec::Item(_) | NavRowSpec::Section { menu: true, .. })
+            )
+        {
             return false;
         }
         let Some(lift) = self.nav_lift_rect(id) else {
@@ -710,11 +806,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// What assistive technology hears about item `id` beyond its label
     /// (the secondary line, the state), and its check.
     pub(super) fn nav_semantics(&self, id: NodeId) -> Option<(Option<String>, Option<bool>)> {
-        let nav = self.nav.as_ref()?;
         let NavRowSpec::Item(item) = self.nav_spec(id)? else {
             return None;
         };
-        let face = item.face(Rect::ZERO, "", &nav.theme);
+        let face = item.plain_face(Rect::ZERO, "");
         Some((crate::chrome::nav_row_description(&face), item.checked))
     }
 

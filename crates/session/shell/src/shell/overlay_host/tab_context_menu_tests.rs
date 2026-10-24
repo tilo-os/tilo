@@ -56,6 +56,7 @@ fn tree_with_tabs(tabs: usize) -> (WorkspaceTree, StripId) {
             kind: AppKind::Other("Test".into()),
             label: "notes".into(),
         },
+        app_title: None,
     }];
     if tabs > 1 {
         group_tabs.push(Tab {
@@ -65,6 +66,7 @@ fn tree_with_tabs(tabs: usize) -> (WorkspaceTree, StripId) {
                 kind: AppKind::Other("Test".into()),
                 label: "files".into(),
             },
+            app_title: None,
         });
     }
     let strip = Strip {

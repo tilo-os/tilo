@@ -14,10 +14,9 @@ use taffy::{NodeId, TaffyTree};
 use ui::TextRole;
 use ui::icons::Icon;
 use ui::theme::Theme;
-use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    AppModel, Banner, Button, Column, ControlSize, Element, EmptyState, ModelPath, Row,
-    SegmentedStyle, Spacer, Text, ToggleGroup, Widget,
+    AppModel, Banner, Button, Column, ControlSize, Element, EmptyState, ModelPath, Row, Spacer,
+    Text, Widget,
 };
 
 use crate::connect_modal::{confirm_dialog, connect_dialog};
@@ -123,67 +122,6 @@ impl ui::widget::Decorator for ErrorBanner {
 
     fn name(&self) -> &'static str {
         "ErrorBanner"
-    }
-}
-
-fn tab_index(tab: MainTab) -> usize {
-    MainTab::all()
-        .iter()
-        .position(|candidate| *candidate == tab)
-        .unwrap_or(0)
-}
-
-/// The tabs of the open connection.
-struct TabStrip {
-    link: Link,
-    tabs: ToggleGroup,
-}
-
-impl TabStrip {
-    fn new(link: &Link) -> Self {
-        let pick = link.clone();
-        let tabs = ToggleGroup::new(
-            MainTab::all()
-                .iter()
-                .map(|tab| Segment::new(tab.label()))
-                .collect(),
-            0,
-        )
-        .with_style(SegmentedStyle::Tabs)
-        .with_id("db.tabs")
-        .on_change(move |index| {
-            if let Some(tab) = MainTab::all().get(index) {
-                pick.ask(Intent::SelectTab(*tab));
-            }
-        });
-        Self {
-            link: link.clone(),
-            tabs,
-        }
-    }
-}
-
-impl ui::widget::Decorator for TabStrip {
-    type Inner = ToggleGroup;
-
-    fn inner(&self) -> &ToggleGroup {
-        &self.tabs
-    }
-
-    fn inner_mut(&mut self) -> &mut ToggleGroup {
-        &mut self.tabs
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let tab = tab_index(self.link.read(|model| model.tab));
-        if self.tabs.selected() != tab {
-            self.tabs.set_selected(tab);
-        }
-        Widget::sync(&mut self.tabs, state, path);
-    }
-
-    fn name(&self) -> &'static str {
-        "TabStrip"
     }
 }
 
@@ -362,7 +300,6 @@ impl ui::widget::Decorator for DataPane {
 /// What the workspace's column holds, in order.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Part {
-    Tabs,
     /// The message of the failure it reports.
     Banner(String),
     FirstRun,
@@ -378,10 +315,7 @@ impl Part {
     /// A part that holds what a person did, and so waits out of sight rather
     /// than being rebuilt.
     fn is_kept(&self) -> bool {
-        matches!(
-            self,
-            Self::Tabs | Self::Query | Self::Data | Self::Structure
-        )
+        matches!(self, Self::Query | Self::Data | Self::Structure)
     }
 }
 
@@ -416,7 +350,6 @@ impl Workspace {
             if model.connections.is_empty() {
                 parts.push(Part::FirstRun);
             } else {
-                parts.push(Part::Tabs);
                 if let RunStatus::Error(message) = &model.status {
                     parts.push(Part::Banner(message.clone()));
                 }
@@ -435,7 +368,6 @@ impl Workspace {
     fn make(&self, part: &Part) -> Element {
         let link = &self.link;
         match part {
-            Part::Tabs => Box::new(TabStrip::new(link)),
             Part::Banner(message) => Box::new(ErrorBanner::new(link, message)),
             Part::FirstRun => Box::new(Placeholder::first_run(link)),
             Part::Query => query_pane(link),
@@ -549,18 +481,18 @@ mod tests {
             assert_eq!(shown(&harness), [Part::FirstRun]);
         }
 
-        // --- phase: a_connection_brings_the_tabs_and_the_query_view ---
+        // --- phase: a_connection_brings_the_query_view ---
         {
             link.publish(open_model(MainTab::Query));
             harness.relayout();
-            assert_eq!(shown(&harness), [Part::Tabs, Part::Query]);
+            assert_eq!(shown(&harness), [Part::Query]);
         }
 
         // --- phase: a_tab_without_a_table_says_so ---
         {
             link.publish(open_model(MainTab::Data));
             harness.relayout();
-            assert_eq!(shown(&harness), [Part::Tabs, Part::NoTable(MainTab::Data)]);
+            assert_eq!(shown(&harness), [Part::NoTable(MainTab::Data)]);
         }
 
         // --- phase: a_failure_shows_a_banner_above_the_view ---
@@ -572,11 +504,7 @@ mod tests {
             harness.relayout();
             assert_eq!(
                 shown(&harness),
-                [
-                    Part::Tabs,
-                    Part::Banner("Connection refused".into()),
-                    Part::Query
-                ]
+                [Part::Banner("Connection refused".into()), Part::Query]
             );
         }
 
@@ -589,11 +517,11 @@ mod tests {
             harness.relayout();
             assert_eq!(
                 shown(&harness),
-                [Part::Tabs, Part::Query, Part::Dialog(Dialog::Connect)]
+                [Part::Query, Part::Dialog(Dialog::Connect)]
             );
             link.publish(open_model(MainTab::Query));
             harness.relayout();
-            assert_eq!(shown(&harness), [Part::Tabs, Part::Query]);
+            assert_eq!(shown(&harness), [Part::Query]);
         }
     }
 
@@ -609,7 +537,7 @@ mod tests {
             Theme::dark(),
         );
         harness.relayout();
-        let before = harness.targets()["db.query.run"];
+        let before = harness.targets()["db.query.snippets"];
 
         link.publish(open_model(MainTab::Data));
         harness.relayout();
@@ -617,11 +545,11 @@ mod tests {
             harness.root::<Workspace>().kept.contains_key(&Part::Query),
             "the query view waits out of sight"
         );
-        assert!(!harness.targets().contains_key("db.query.run"));
+        assert!(!harness.targets().contains_key("db.query.snippets"));
 
         link.publish(open_model(MainTab::Query));
         harness.relayout();
-        assert_eq!(harness.targets()["db.query.run"], before);
+        assert_eq!(harness.targets()["db.query.snippets"], before);
         assert!(!harness.root::<Workspace>().kept.contains_key(&Part::Query));
     }
 }

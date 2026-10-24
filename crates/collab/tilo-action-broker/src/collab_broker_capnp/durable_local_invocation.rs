@@ -194,7 +194,7 @@ impl LocalCaller {
                 .lock()
                 .map_err(|_| "worker registry unavailable")?;
             if workers
-                .get(&self.peer)
+                .get(self.peer, &registration.route)
                 .and_then(|worker| worker.worker_registration.as_ref())
                 != Some(registration)
             {

@@ -361,6 +361,36 @@ pub fn range(start: &str, end: &str) -> String {
     )
 }
 
+/// A span of the calendar a view shows: one day, a run of days, or a
+/// month.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Period {
+    /// One day.
+    Day(NaiveDate),
+    /// From the first day to the last, both shown.
+    Days(NaiveDate, NaiveDate),
+    /// The month holding the day.
+    Month(NaiveDate),
+}
+
+impl Period {
+    /// How the period reads, widest first, each naming the same span:
+    /// `Mon, Jun 29 – Sun, Jul 5` then `Jun 29 – Jul 5`; `Mon, Jun 29`
+    /// then `Jun 29`; `June 2026` then `Jun 2026`. Where room is short a
+    /// narrower form stands instead of a cut-off wider one.
+    #[must_use]
+    pub fn forms(self) -> Vec<String> {
+        match self {
+            Self::Day(day) => vec![day_heading_short(day), month_day(day)],
+            Self::Days(start, end) => vec![
+                range(&day_heading_short(start), &day_heading_short(end)),
+                day_range(start, end),
+            ],
+            Self::Month(day) => vec![month_heading(day), month_heading_short(day)],
+        }
+    }
+}
+
 /// A month in a tight space: `Jun 2026`.
 #[must_use]
 pub fn month_heading_short(day: NaiveDate) -> String {

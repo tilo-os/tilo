@@ -139,6 +139,7 @@ pub mod storage;
 pub mod surface;
 pub mod table;
 pub mod text;
+mod upsert;
 mod value;
 pub mod vocabulary;
 
@@ -165,7 +166,7 @@ pub use model::{
     load_slot, read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,
 };
 pub use ordered::{Arranged, Ordered};
-pub use path::{Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};
+pub use path::{At, Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
