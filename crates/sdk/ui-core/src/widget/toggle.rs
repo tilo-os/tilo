@@ -33,6 +33,9 @@ pub struct Toggle {
     drawn_track: Rect,
     /// The motion the person allows, as last drawn.
     motion: Option<crate::tokens::EffectiveMotion>,
+    /// How far a held knob moves before the hold is a drag, the theme's
+    /// click slop as last laid out: below it, a press is a click.
+    slop: f64,
     /// What the last presented frame painted, and what the frame being drawn
     /// paints: the switch needs a redraw only when they differ.
     painted: Option<Painted>,
@@ -54,10 +57,6 @@ struct KeptSwitch {
 /// checked, hovered, focused, enabled, and the drawn knob position and
 /// tint (as bits, so a settled switch compares equal).
 type Painted = (bool, bool, bool, bool, u64, u32);
-
-/// How far a held knob moves before the hold is a drag: below it, a
-/// press is a click.
-const DRAG_SLOP: f64 = 3.0;
 
 /// A hand holding a switch: the pointer, or a finger dragging across it
 /// (which the touch emulator presents as the pointer).
@@ -116,6 +115,7 @@ impl Toggle {
             pointer_x: 0.0,
             drawn_track: Rect::ZERO,
             motion: None,
+            slop: f64::from(crate::tokens::Metrics::BASE.click_slop),
             painted: None,
             drawing: None,
             hand_on: crate::motion::HandOn::default(),
@@ -190,7 +190,7 @@ impl Toggle {
             return;
         };
         if !hold.dragged {
-            if (x - hold.start_x).abs() < DRAG_SLOP {
+            if (x - hold.start_x).abs() < self.slop {
                 return;
             }
             hold.dragged = true;
@@ -747,6 +747,7 @@ impl Widget for Toggle {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.slop = f64::from(theme.tokens.metrics.click_slop);
         let (track_w, track_h) = ToggleFace::size(theme);
         #[allow(
             clippy::cast_possible_truncation,
