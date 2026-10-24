@@ -104,7 +104,7 @@ fn channels(
         },
         Box::new(
             WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
-                .with_stewards(crate::shell::collab_broker::stewards_of(Arc::clone(net)))
+                .with_stewards(crate::shell::network::ShellNetwork::room_stewards(net))
                 .with_hosted_channel_keys(crate::shell::collab_broker::hosted_channel_keys_of(
                     Arc::clone(net),
                 )),

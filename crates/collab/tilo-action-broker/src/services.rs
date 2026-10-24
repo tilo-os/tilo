@@ -132,6 +132,14 @@ pub trait WorkspaceAuthority: Send + Sync {
     fn history_agents(&self, _room: &str) -> Vec<ui::history_source::RosterAgent> {
         Vec::new()
     }
+
+    /// The device revocations `room`'s document records, against which who
+    /// saved a shortcut is proven ([`tilo_peer_state::room::proven_saver`]).
+    /// `None` (the default) when this host holds no document of the room:
+    /// no shortcut there is anyone's.
+    fn room_revocations(&self, _room: &str) -> Option<tilo_user_identity::RevocationList> {
+        None
+    }
 }
 
 const UNANSWERED: &str = "workspace authority did not answer";
@@ -226,6 +234,13 @@ pub trait WorkspaceMemberships: Send + Sync {
     }
 
     fn requires_room(&self, room: &str) -> bool;
+
+    /// Why no app opens anything in `room` on this device, when none can: a
+    /// room no host holds has no documents to open. Said to the app as it
+    /// joins, in place of a failure further in.
+    fn room_unavailable(&self, _room: &str) -> Option<String> {
+        None
+    }
 
     /// Whether `room` is held here but governed by the node that stewards
     /// it, where the one membership change this device asks is the
@@ -787,15 +802,21 @@ pub trait WorkspaceGovernanceServices: Send + Sync {
     }
 }
 /// One checked change to a workspace's saved shortcuts. The broker mints
-/// `invocation` and has checked the change against what `actor` is offered.
-pub struct ShortcutLibraryRequest<'a> {
-    pub room: &'a str,
-    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
-    pub change: &'a crate::automation::ShortcutChange,
+/// `invocation` and has checked the change against what `actor` (a policy
+/// id) is offered.
+pub struct ShortcutLibraryRequest {
+    pub room: String,
+    pub actor: String,
+    pub change: crate::automation::ShortcutChange,
     /// The provenance the change leaves in workspace activity.
     pub context: tilo_actions::ActionContext,
     pub invocation: tilo_actions::InvocationId,
 }
+
+/// A shortcut change on its way into its workspace: done once the room's
+/// governor committed it and this device holds it, or failed with why.
+pub type ShortcutStore =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 /// A host that stores a workspace's shortcuts and runs them. The broker
 /// publishes the shortcut library and each saved shortcut's `run` only
@@ -805,12 +826,10 @@ pub trait ShortcutLibraryServices: Send + Sync {
     /// trigger may not take.
     fn keymap(&self) -> settings_store::hardware::ShortcutConfig;
     /// Store one checked change in workspace `request.room` and record its
-    /// effect in workspace activity.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace cannot take the change.
-    fn store(&self, request: &ShortcutLibraryRequest<'_>) -> Result<(), String>;
+    /// effect in workspace activity. The broker awaits it on [`Self::runtime`],
+    /// never on the thread that admitted the change; it fails with why the
+    /// workspace cannot take the change.
+    fn store(&self, request: ShortcutLibraryRequest) -> ShortcutStore;
     /// The runtime shortcut runs execute on.
     fn runtime(&self) -> Result<tokio::runtime::Handle, String>;
     /// What the desktop calls its fixed shortcut `fixed`, in the person's
@@ -1432,6 +1451,10 @@ pub trait FileClipboardServices: Send + Sync {
     ) -> Result<runtime_collab::file_clipboard::Reply, String>;
     fn disconnect(&self, peer: u64);
 }
+/// A grant being recorded ([`AppActionGrants::record`]): its id once it is
+/// in force, or why it is not.
+pub type GrantRecording =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>;
 /// Where grants a person gives an application for another app's action are
 /// recorded. The broker decides whether to ask and builds the grant; the
 /// host owns the workspace records it lands in.
@@ -1440,14 +1463,16 @@ pub trait AppActionGrants: Send + Sync {
     /// so a grant they give can be recorded here.
     fn may_grant(&self, room: &str, person: &str) -> bool;
     /// Record `grant` in `request.room` as given by `request.person`, and
-    /// note `answer` in the workspace's history. The recorded grant's id, or
-    /// `None` when it could not be recorded.
+    /// note `answer` in the workspace's history. Resolves to the recorded
+    /// grant's id once the grant is in force here, so the call it was given
+    /// for is admitted with it in place. Otherwise it resolves to why
+    /// nothing was granted, worded for the person.
     fn record(
         &self,
         request: &crate::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
         answer: crate::app_actions::AppActionConsent,
-    ) -> Option<String>;
+    ) -> GrantRecording;
     /// Remove the grant `grant` from `room`: a grant given once, now that
     /// its call was decided.
     fn revoke(&self, room: &str, grant: &str);

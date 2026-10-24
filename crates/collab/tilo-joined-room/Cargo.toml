@@ -34,6 +34,8 @@ serde.workspace = true
 serde_json.workspace = true
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
+# The shortcut change a governor commits.
+tilo-automation = { path = "../automation" }
 # The device custody an enrollment presents to the issuing host.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-peer-state = { path = "../tilo-peer-state" }

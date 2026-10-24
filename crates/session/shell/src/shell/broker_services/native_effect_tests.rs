@@ -1,5 +1,7 @@
 #[path = "native_checkpoint_tests.rs"]
 mod checkpoints;
+#[path = "native_shortcut_tests.rs"]
+mod shortcuts;
 use crate::shell::{
     broker_services::NativeCertificates, certified_action_session::ActionSessionSource,
     collab_broker, native_workspace_owner, state::WorkspaceTree,
