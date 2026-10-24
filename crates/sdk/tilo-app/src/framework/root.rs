@@ -2834,6 +2834,9 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
         if let Some(participant) = ui_core::invocation_scope::current_participant() {
             self.typed.note_applied(&participant, action);
         }
+        // Whoever applied it here, a surface that carries out what it means
+        // on this device is told once the state holds it.
+        self.typed.note_applied_here(action);
         with_app_view_mut(&mut self.content, |view| {
             if let Some(content) = ui_core::widget::capability::capability_mut::<
                 dyn ui_core::history_mode::capability::DocumentHistory,

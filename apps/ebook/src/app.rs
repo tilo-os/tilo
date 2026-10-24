@@ -2782,33 +2782,36 @@ impl BooksApp {
         self.commit_pending_share(doc);
     }
 
-    fn on_remove_from_library(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
-        let Some(i) = self.library.iter().position(|book| book.id == id) else {
-            return;
-        };
-        let removed = Arc::make_mut(&mut self.library).remove(i);
-        self.library_paths.remove(&removed.id);
+    /// Ask to take the book `id` off the shelf, through the library's door.
+    /// Removing is asked first, so nothing changes here yet: the shelf drops
+    /// the row when the library no longer lists it ([`Self::adopt_shelf`]),
+    /// and this device forgets the book's file once the removal applied
+    /// ([`Self::forget_removed`]). A cancelled removal leaves the book as it
+    /// was, still opening from its file.
+    fn on_remove_from_library(&self, id: &str, doc: &mut ui::widget::Edits<'_>) {
+        self.edit(
+            doc,
+            Ebook::REMOVE_FROM_LIBRARY.with(books::RemoveFromLibrary {
+                book: id.to_owned(),
+            }),
+        );
+    }
+
+    /// Forget what this device kept for the book `id`, which a removal
+    /// applied here took off the shelf, from whichever door: its file grant,
+    /// its watched-folder entry and its cover. Undo puts the row back but not
+    /// these, which is why the removal is asked first.
+    pub(crate) fn forget_removed(&mut self, id: &str) {
         // A removed watched book is eligible to be discovered again. Keep the
         // watch registry an optimisation, never a hidden permanent exclusion;
         // importantly, do not discard deduplication for every other watched
         // source when a single shelf row is removed.
-        self.watched_sources.retain(|_, id| id != &removed.id);
-        self.local_library.forget_book(&removed.id);
-        self.local_library.save();
-        self.cover_cache.remove(&removed.id);
-        self.edit(
-            doc,
-            Ebook::REMOVE_FROM_LIBRARY.with(books::RemoveFromLibrary {
-                book: removed.id.clone(),
-            }),
-        );
-        // Keep the reader pointed at a valid book after the shelf shrinks.
-        self.book_idx = self.book_idx.min(self.library.len().saturating_sub(1));
-        self.shelf_cursor = self.shelf_cursor.min(self.library.len().saturating_sub(1));
-        if self.library.is_empty() {
-            self.view = View::Library;
+        self.watched_sources.retain(|_, watched| watched != id);
+        if self.local_library.books.contains_key(id) {
+            self.local_library.forget_book(id);
+            self.local_library.save();
         }
-        self.retire_layout();
+        self.cover_cache.remove(id);
     }
 
     fn on_toggle_watch_folder(&mut self, folder: &std::path::Path, doc: &AutoCommit) {
@@ -3590,6 +3593,7 @@ impl BooksApp {
         self.library_paths.retain(|id, _| !gone(id));
         self.watched_sources.retain(|_, id| !gone(id));
         self.book_idx = self.book_idx.min(self.library.len().saturating_sub(1));
+        self.shelf_cursor = self.shelf_cursor.min(self.library.len().saturating_sub(1));
         if self.library.is_empty() {
             self.view = View::Library;
         }
@@ -9137,6 +9141,10 @@ mod query_view_tests;
 #[cfg(test)]
 #[path = "app/shelf_tests.rs"]
 mod shelf_tests;
+
+#[cfg(test)]
+#[path = "app/remove_tests.rs"]
+mod remove_tests;
 
 #[cfg(test)]
 #[path = "app/scroll_tests.rs"]

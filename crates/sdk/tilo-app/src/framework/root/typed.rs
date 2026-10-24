@@ -116,6 +116,10 @@ pub(crate) trait TypedRoot {
         action: &tilo_actions::EncodedAction,
     );
 
+    /// Note that `action` was applied here, through any door, for the
+    /// surfaces that follow what is applied ([`Live::follow_applied`]).
+    fn note_applied_here(&self, action: &tilo_actions::EncodedAction);
+
     /// [`Resource::publication_cache_epoch`] of `state`.
     fn cache_epoch(&self, state: &dyn Any) -> Option<String>;
 
@@ -361,6 +365,16 @@ impl<R: Resource> TypedRoot for Typed<R> {
     ) {
         for applied in own_actions::<R>(action) {
             self.live.note_applied(participant.clone(), applied);
+        }
+    }
+
+    fn note_applied_here(&self, action: &tilo_actions::EncodedAction) {
+        // Decoded only for a surface that follows it.
+        if !self.live.follows_applied() {
+            return;
+        }
+        for applied in own_actions::<R>(action) {
+            self.live.note_applied_here(applied);
         }
     }
 
