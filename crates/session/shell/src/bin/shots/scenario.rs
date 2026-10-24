@@ -31,7 +31,9 @@ use ui::widget::GroupRow;
 use super::driver::ShellDriver;
 
 mod file_chooser;
+pub mod film;
 mod launcher;
+mod motion_review;
 mod window_search;
 
 /// One tab of a window seeded for the window-bar shots.
@@ -557,6 +559,11 @@ pub enum Action {
         frames: u32,
         every_ms: u64,
     },
+    /// Record every frame of a motion at 60 Hz until it settles; see
+    /// [`film::Film`]. Needs the shell's `test-support` feature.
+    Film(film::Film),
+    /// A shell-side cue or set-up step of the films; see [`film::Step`].
+    Step(film::Step),
     /// Open `app` as a window of its own, `width` per mille of the display
     /// wide, as every app runs on a device: its surface shows the frames it
     /// draws in a frame of its own, and the window's bar reaches it only over
@@ -621,6 +628,18 @@ pub trait SnapshotSink {
     /// Called whenever the scenario emits a `Snapshot(name)`. The sink
     /// has full driver access so it can render, serialise, or both.
     fn capture(&mut self, driver: &mut ShellDriver, name: &str);
+    /// Called with every frame an [`Action::Film`] painted; a sink that
+    /// keeps no images ignores them.
+    #[cfg_attr(
+        not(feature = "test-support"),
+        allow(
+            dead_code,
+            reason = "only a test-support build pins the clock a film records on"
+        )
+    )]
+    fn film(&mut self, driver: &mut ShellDriver, prefix: &str, frames: Vec<film::FilmFrame>) {
+        let _ = (driver, prefix, frames);
+    }
 }
 
 /// Default no-op sink used by window mode (you watch the screen).
@@ -712,6 +731,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_desk(driver, action);
     apply_motion_frames(driver, action, sink);
     apply_own_process_window(driver, action);
+    film::apply(driver, action, sink);
 }
 
 /// The long note [`Action::SeedLongNotes`] writes: more than a window shows.
@@ -5830,7 +5850,8 @@ fn identify_snapshot(
 
 pub fn scenarios() -> &'static [Scenario] {
     use std::sync::LazyLock;
-    static TABLE: LazyLock<Vec<Scenario>> = LazyLock::new(build_scenarios);
+    static TABLE: LazyLock<Vec<Scenario>> =
+        LazyLock::new(|| [build_scenarios(), motion_review::all()].concat());
     &TABLE
 }
 

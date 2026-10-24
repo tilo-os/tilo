@@ -1294,27 +1294,8 @@ impl ShellDriver {
     /// this one, and three people here, one with a status line they wrote,
     /// one whose machine generated theirs, one with none, each on a window.
     pub fn seed_desk_for_shots(&mut self) {
-        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
         use shell::shell::state::Collaborator;
-        let player = PlayerSnapshot {
-            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
-            identity: "Spotify".to_string(),
-            status: PlaybackStatus::Playing,
-            title: Some("Teardrop".to_string()),
-            artist: Some("Massive Attack".to_string()),
-            artwork: None,
-            track_id: Some("/org/tilo/shots/track/1".to_string()),
-            length_us: Some(330_000_000),
-            position_us: 94_000_000,
-            can_play: true,
-            can_pause: true,
-            can_seek: true,
-            can_go_next: true,
-            can_go_previous: true,
-            observed_at: Instant::now(),
-        };
-        self.host_mut()
-            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
+        self.seed_now_playing_for_shots();
         let handle = self.chrome_handle();
         let room = {
             let st = handle.borrow();
@@ -1362,6 +1343,30 @@ impl ShellDriver {
                 );
             }
         }
+    }
+
+    /// A music player playing, as the now-playing card reads it.
+    pub fn seed_now_playing_for_shots(&mut self) {
+        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
+        let player = PlayerSnapshot {
+            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
+            identity: "Spotify".to_string(),
+            status: PlaybackStatus::Playing,
+            title: Some("Teardrop".to_string()),
+            artist: Some("Massive Attack".to_string()),
+            artwork: None,
+            track_id: Some("/org/tilo/shots/track/1".to_string()),
+            length_us: Some(330_000_000),
+            position_us: 94_000_000,
+            can_play: true,
+            can_pause: true,
+            can_seek: true,
+            can_go_next: true,
+            can_go_previous: true,
+            observed_at: Instant::now(),
+        };
+        self.host_mut()
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
     }
 
     /// Three people and an agent here, as the live shell folds them: Ada
@@ -3818,6 +3823,13 @@ impl ShellDriver {
         // out-of-process `compositor::test_control` and in-process
         // ShellDriver see exactly the same target set.
         self.fb.widget_registry()
+    }
+
+    /// Who asks for another animation frame at `now`: chrome sources by
+    /// label, widgets by path; empty once the loop may idle.
+    #[cfg(feature = "test-support")]
+    pub fn animation_owners_at(&self, now: Instant) -> Vec<String> {
+        self.fb.animation_owners_at(now)
     }
 
     /// Centre of a named rect — convenience for the scenario engine.
