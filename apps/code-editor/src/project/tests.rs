@@ -120,12 +120,11 @@ fn files_and_folders_keep_their_tree_whole() {
         .apply_confirmed(Invoke::apply(&crate::actions::delete_action(main.as_str())).unwrap())
         .unwrap();
     assert!(!project.state().unwrap().buffers.contains_key(main.as_str()));
-    assert!(
-        project
-            .apply(Invoke::apply(&crate::actions::delete_action(nested.as_str())).unwrap())
-            .is_err(),
-        "deleting asks for confirmation"
-    );
+    // Undo takes a deletion back, so it runs at once.
+    project
+        .apply(Invoke::apply(&crate::actions::delete_action(nested.as_str())).unwrap())
+        .expect("an undoable delete runs at once");
+    assert!(!ids(&project).contains(&nested), "the empty folder is gone");
 }
 
 /// What the editor read from disk is recorded once: an entry already
