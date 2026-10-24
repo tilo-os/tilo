@@ -27,6 +27,7 @@ mod publication;
 mod record;
 pub mod renewal;
 pub mod session;
+mod shortcuts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]
