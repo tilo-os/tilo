@@ -2743,10 +2743,9 @@ export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACH
 export TILO_IMAGER_TEST_CACHE_ROOT=$CARGO_TARGET_DIR/ci/imager-test-fs
 mkdir -p "$TILO_IMAGER_TEST_CACHE_ROOT" && chmod 700 "$TILO_IMAGER_TEST_CACHE_ROOT"
 cargo build --locked -p install --bin tilo-install
-# The browser peer's suites drive Chrome and the MoQ library the browser runtime builds.
-bash tools/ci/ensure-browser-dependencies.sh
-npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
-export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
+# The browser peer's suites drive Chromium and the MoQ library the browser runtime builds.
+# Chrome for Testing has no Linux arm64 build (its installer hands an arm64 host the x86_64
+# one), so they drive the builder image's Chromium, which `CHROME` already names.
 npm ci --prefix scripts/moq-browser --no-audit --no-fund
 node scripts/moq-browser/build.mjs
 # Where the kernel can enforce Landlock, the PDF tests require the helper's sandbox.
