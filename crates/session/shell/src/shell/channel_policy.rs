@@ -57,7 +57,21 @@ pub struct WorkspaceChannelDirectory {
     own_devices: OwnDevices,
     authenticated_changes: AuthenticatedChanges,
     stewards: Stewards,
+    hosted: Option<HostedChannelKeys>,
 }
+
+/// A channel's content keys from the steward of the room host this device
+/// runs, for a room that host governs; `None` for any other room. See
+/// [`ChannelDirectory::hosted_channel_keys`].
+pub type HostedChannelKeys = Box<
+    dyn Fn(
+            RoomId,
+            ChannelId,
+            Option<&ChannelRoute>,
+            bool,
+        ) -> Option<Result<channel_crypto::ChannelContentKeys, String>>
+        + Send,
+>;
 
 /// The device keys of this device and of `room`'s governor, as the room's
 /// admitted document names them: the governor stewards the room's
@@ -71,7 +85,17 @@ impl WorkspaceChannelDirectory {
             own_devices,
             authenticated_changes: Box::new(|_| None),
             stewards: Box::new(|_| None),
+            hosted: None,
         }
+    }
+
+    /// The directory, taking the keys of the rooms this device's own room
+    /// host governs from that host's steward, which is then the one steward
+    /// of their channels: this device stewards none of them.
+    #[must_use]
+    pub fn with_hosted_channel_keys(mut self, hosted: HostedChannelKeys) -> Self {
+        self.hosted = Some(hosted);
+        self
     }
 
     /// The directory, reading who stewards each room from `stewards`.
@@ -151,8 +175,21 @@ pub fn fleet_devices(
 
 impl ChannelDirectory for WorkspaceChannelDirectory {
     fn governs(&self, room: RoomId) -> bool {
-        self.tree.read().rooms().contains(&room)
+        // A room this device governs is its own room host's, whose steward
+        // stewards it.
+        self.hosted.is_none()
+            && self.tree.read().rooms().contains(&room)
             && (self.stewards)(room).is_some_and(|(here, governor)| here == governor)
+    }
+
+    fn hosted_channel_keys(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+        route: Option<&ChannelRoute>,
+        create: bool,
+    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+        (self.hosted.as_ref()?)(room, channel, route, create)
     }
 
     fn steward_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {

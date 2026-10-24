@@ -288,6 +288,7 @@ fn files_under(root: &Path) -> Vec<PathBuf> {
 /// Run a computer until it enrolled one room through the site and is
 /// joining the site's next room, `left` as far as the join got, then end
 /// its session and set the state file around that join as described above.
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
 fn leave_a_join_pending(left: Left) -> Shape {
     let dir = tempfile::tempdir().unwrap();
     let mut site = Site::start(dir.path());
@@ -345,10 +346,10 @@ fn leave_a_join_pending(left: Left) -> Shape {
     // The state file as such a session leaves it.
     let path = state_path(&root);
     let mut state = read_json(&path);
-    let room = lounge.to_string();
+    let lounge_key = lounge.to_string();
     {
         let authority = &mut state["native_authority"];
-        let pending = &mut authority["pending"][&room];
+        let pending = &mut authority["pending"][&lounge_key];
         assert_eq!(pending["status"], "Active", "{pending}");
         assert_eq!(pending["target"]["workspace"], lounge_workspace.0);
         pending["id"]["generation"] = 5.into();
@@ -357,13 +358,13 @@ fn leave_a_join_pending(left: Left) -> Shape {
         // The room enrolled for the archived workspace, beside this
         // device's own first workspace, which its host holds.
         assert!(authority["rooms"].get(enrolled.to_string()).is_some());
-        assert!(authority["rooms"].get(&room).is_none());
+        assert!(authority["rooms"].get(&lounge_key).is_none());
     }
     assert!(
         state["joining_rooms"]
             .as_array()
             .unwrap()
-            .contains(&room.clone().into())
+            .contains(&lounge_key.clone().into())
     );
     let archived_rooms: Vec<_> = state["archived_workspaces"]
         .as_array()
@@ -378,7 +379,7 @@ fn leave_a_join_pending(left: Left) -> Shape {
             prior.to_string().into()
         ]
     );
-    state["room_authority"] = serde_json::json!({ room.clone(): "Unpinned" });
+    state["room_authority"] = serde_json::json!({ lounge_key.clone(): "Unpinned" });
     std::fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
 
     // The site's room as the hosted-rooms record holds it.
@@ -386,7 +387,7 @@ fn leave_a_join_pending(left: Left) -> Shape {
     std::fs::write(
         peer_sync.join("hosted-rooms.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
-            "rooms": { room.clone(): {
+            "rooms": { lounge_key: {
                 "origin": site.origin(),
                 "site": door.entry.to_string(),
                 "host": hex::encode(site.host_cert.device_public_key),
@@ -455,6 +456,10 @@ fn enrolled_proof(state: &serde_json::Value, room: &str) -> Vec<u8> {
 /// goes on by itself into the same workspace with the proof it kept, with
 /// nothing else of the state file changed or dropped. A host that answered
 /// has moved on by then: someone else joined the room.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn a_pending_join_resumes_on_start(left: Left, cert: Cert) {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let shape = leave_a_join_pending(left);
@@ -585,6 +590,10 @@ fn a_join_whose_proof_never_reached_the_host_completes_on_start() {
 /// a join goes on when something happens, never on the frame clock.
 #[test]
 #[serial_test::serial]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn a_pending_join_with_no_host_to_reach_stays_joining_and_asks_nothing_per_frame() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let shape = leave_a_join_pending(Left::NeverSent);

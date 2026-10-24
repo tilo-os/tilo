@@ -672,9 +672,15 @@ stored = "value"
 title = "Topic"
 type = "String"
 "#;
+    // The surfaces it installs are the process's: no other test runs here.
+    if !crate::common::in_own_process(
+        "governed_rooms::the_relay_forwards_only_changes_their_app_surface_publishes",
+    ) {
+        return;
+    }
     let hash = *blake3::hash(SURFACE.as_bytes()).as_bytes();
     let hex = hex::encode(hash);
-    let _surfaces = crate::common::install_process_surfaces(
+    crate::common::install_process_surfaces(
         collab_types::Surfaces::from_source(std::sync::Arc::new(
             collab_types::surface::ContentSurfaces::new(move |_, wanted| {
                 (wanted == hex).then(|| SURFACE.as_bytes().to_vec())
@@ -845,9 +851,15 @@ label = "Comment"
 field = "comments"
 params = []
 "#;
+    // The surfaces it installs are the process's: no other test runs here.
+    if !crate::common::in_own_process(
+        "governed_rooms::the_relay_refuses_an_action_the_author_is_not_granted",
+    ) {
+        return;
+    }
     let hash = *blake3::hash(SURFACE.as_bytes()).as_bytes();
     let hex = hex::encode(hash);
-    let _surfaces = crate::common::install_process_surfaces(
+    crate::common::install_process_surfaces(
         collab_types::Surfaces::from_source(std::sync::Arc::new(
             collab_types::surface::ContentSurfaces::new(move |_, wanted| {
                 (wanted == hex).then(|| SURFACE.as_bytes().to_vec())

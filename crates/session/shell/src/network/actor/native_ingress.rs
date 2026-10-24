@@ -58,6 +58,14 @@ impl Routes {
     pub(super) fn any_remote(&self) -> bool {
         self.entries.values().any(|route| !route.local)
     }
+    /// Whether a session for the room on topic `ws` is being established:
+    /// a dial, or a renewal of this device's membership ahead of one, has
+    /// not reported back yet.
+    pub(super) fn establishing(&self, ws: u64) -> bool {
+        self.entries
+            .get(&ws)
+            .is_some_and(|route| route.pending.is_some())
+    }
     /// Whether the room on topic `ws` is hosted on this device.
     pub(super) fn is_local(&self, ws: u64) -> bool {
         self.entries.get(&ws).is_some_and(|route| route.local)
