@@ -300,7 +300,10 @@ containerfile="$repo/os/Containerfile"
 # resolver timeout) is one payload row.
 # tilo-deployment-status.socket and its service answer `tilo status` for the
 # device admin: two payload rows.
-expected_contract=bab5775a1478b43f8b687522de11d4fcb695eca70bfbb3e21c370b54dea369fc
+# Signing in adds tilo-authd.service, the tilo-auth-legacy PAM service and the
+# sign-in component's tilo-authd, tilo-auth and pam_tilo.so: five payload rows.
+# The boot-signin component's tilo-boot-signin is one more.
+expected_contract=89ab31045929a953b0cbaf17a172b65a331858e4c752f9511beeaa072e0ed42a
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

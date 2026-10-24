@@ -293,14 +293,32 @@ COPY --from=remote-capture-files / /
 COPY os/etc/greetd/config.toml /etc/greetd/config.toml
 COPY --from=virtio-gallivm-cpu /virtio-gallivm-cpu.so /usr/lib/tilo/virtio-gallivm-cpu.so
 
-# PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
-# fingerprint can satisfy login; falls back to password-auth, and starts /
-# unlocks the user's Secret Service for the authenticated session).
+# PAM stack for the greetd auth service (the boot sign-in first, tolerant
+# pam_fprintd so a fingerprint can satisfy login; falls back to password-auth,
+# and starts / unlocks the user's Secret Service for the authenticated session).
 # PAM stack for in-session unlock (tilo-unlock-helper). Auth + account only.
+# tilo-auth-legacy: the old password database alone, which tilo-authd checks
+# once per person before moving them onto their user key.
 COPY \
     os/etc/pam.d/greetd \
     os/etc/pam.d/tilo-unlock \
+    os/etc/pam.d/tilo-auth-legacy \
     /etc/pam.d/
+# One check for every PAM service: system-auth and password-auth, which the
+# greeter, the lock screen, polkit, sudo, su and passwd all include, ask
+# tilo-authd (pam_tilo) before the old password hash. A custom authselect
+# profile over the configured one, with its features, so authselect keeps
+# owning the files; an image whose base has no authselect configuration fails
+# here rather than shipping a stack that skips the daemon.
+RUN --mount=type=bind,source=os/scripts/authselect-tilo.py,target=/run/authselect-tilo.py,ro \
+    current="$(authselect current --raw)" \
+    && base="${current%% *}" \
+    && features="$(printf '%s' "$current" | cut -s -d' ' -f2-)" \
+    && authselect create-profile tilo --base-on="$base" \
+    && python3 /run/authselect-tilo.py /etc/authselect/custom/tilo \
+    && authselect select custom/tilo $features --force \
+    && grep -q pam_tilo.so /etc/pam.d/system-auth \
+    && grep -q pam_tilo.so /etc/pam.d/password-auth
 
 # polkit rule authorising the greeter's Reboot / Shut down buttons. Lets the
 # `greetd` user issue org.freedesktop.login1.{reboot,power-off} via logind
@@ -690,6 +708,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-security-audit.timer && \
     systemctl enable tilo-clock-floor.timer tilo-clock-floor-shutdown.service && \
     systemctl enable systemd-pstore.service tilo-pstore-console.service && \
+    systemctl enable tilo-authd.service && \
     systemctl enable tilo-rollback-harden.timer && \
     systemctl enable tilo-rollback-confirm.timer && \
     systemctl enable tilo-boot-entries.timer tilo-boot-health.service && \
