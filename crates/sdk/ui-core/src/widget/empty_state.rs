@@ -746,6 +746,13 @@ impl PaintedEmptyStates {
         if self.painted.is_empty() {
             return node;
         }
+        let mut node = node;
+        // A content that names a painted action's button without saying
+        // where it is gets the place it is drawn, so the button stands
+        // there in the tree and not over the whole content.
+        if let Some(node) = &mut node {
+            self.place_unplaced_buttons(node);
+        }
         let mut described = Vec::new();
         if let Some(node) = &node {
             buttons_in(node, &mut described);
@@ -791,6 +798,21 @@ impl PaintedEmptyStates {
         let mut node = node.unwrap_or_else(|| AccessNode::new(Role::Generic));
         node.children.extend(missing);
         Some(node)
+    }
+
+    /// Give each button in `node` that is named like a painted action and
+    /// has no bounds of its own the place that action is drawn.
+    fn place_unplaced_buttons(&self, node: &mut crate::a11y::AccessNode) {
+        if node.role == crate::a11y::Role::Button
+            && node.bounds.is_none()
+            && let Some(name) = &node.name
+            && let Some(action) = self.painted.iter().find(|action| action.label == *name)
+        {
+            node.bounds = Some(action.rect.into());
+        }
+        for child in &mut node.children {
+            self.place_unplaced_buttons(child);
+        }
     }
 
     /// Where the painted action at `path` beneath `described` (what
