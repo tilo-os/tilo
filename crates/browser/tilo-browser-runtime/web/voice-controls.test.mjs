@@ -248,7 +248,11 @@ test('the camera and a shared screen turn on in a live call from a gesture, and 
   const ben = 'b'.repeat(64);
   f.voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true,
     participants: [{user: ana, camera: true}, {user: ben, screen: true}]}];
-  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben]}]);
+  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben]}], 'muted is written only when someone is');
+  f.voice.calls[0].participants[1].muted = true;
+  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben], muted: [ben]}]);
+  f.voice.calls[0].participants.push({user: ben});
+  assert.equal(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].muted, undefined, 'heard on another device: not muted');
 });
 
 test('the app says what it shows and collects the pictures as they arrive', async () => {

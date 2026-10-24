@@ -10,7 +10,8 @@
  *
  * The camera and a shared screen work as on a Tilo device: the person turns
  * them on in the call (the browser asks for them), everyone learns who shows
- * what from the room's call list (`cameras`, `screens` in each roster), the
+ * what and who is muted from the room's call list (`cameras`, `screens`,
+ * `muted` in each roster), the
  * app says which pictures it shows (`show`) and collects them (`pictures`),
  * coded, to decode itself.
  */
@@ -59,17 +60,20 @@ export function revisionOf(status) {
 }
 
 /** Who is in each active call of `app`'s `record`, one roster per voice
- * channel with anyone in it, sorted by channel; each person once. */
+ * channel with anyone in it, sorted by channel; each person once, muted
+ * when muted on every device they are in the call on. */
 export function rostersOf(calls, app, record) {
   const channels = new Map();
   for (const call of calls ?? []) {
     if (!call.active || call.app !== app || call.record !== record) continue;
-    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set()};
+    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set(), unmuted: new Set()};
     for (const participant of call.participants ?? []) {
       if (!participant.user) continue;
       roster.people.add(participant.user);
       if (participant.camera) roster.cameras.add(participant.user);
       if (participant.screen) roster.screens.add(participant.user);
+      // Heard on any of their devices: not muted.
+      if (!participant.muted) roster.unmuted.add(participant.user);
     }
     channels.set(call.channel, roster);
   }
@@ -81,6 +85,8 @@ export function rostersOf(calls, app, record) {
       // Written only when someone shows something, as the native service does.
       if (roster.cameras.size) out.cameras = sorted(roster.cameras);
       if (roster.screens.size) out.screens = sorted(roster.screens);
+      const muted = [...roster.people].filter(person => !roster.unmuted.has(person));
+      if (muted.length) out.muted = muted.sort();
       return out;
     });
 }

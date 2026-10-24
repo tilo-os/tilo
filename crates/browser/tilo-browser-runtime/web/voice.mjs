@@ -20,9 +20,12 @@
  * - the camera and a shared screen (web/voice-video.mjs): published on the
  *   carrier while on, again on each new carrier, and told to the host
  *   (`signalling.show`); and the pictures of others the app shows, read off
- *   the carrier into an inbox the app collects from.
+ *   the carrier into an inbox the app collects from;
+ * - whether this person is muted, told to the host with what they show
+ *   whenever it changes, so everyone in the call sees it.
  *
- * `signalling` is the session side: `{join(call), leave(), onEvent(listener)}`
+ * `signalling` is the session side: `{join(call), leave(), show(camera,
+ * screen, muted), onEvent(listener)}`
  * where events are `{kind: 'granted', grant}` and `{kind: 'ended', call,
  * reason}` (`peer.voice` in peer.mjs adapts the wasm peer).
  */
@@ -66,7 +69,7 @@ export function microphoneIssue(error) {
  * not start (`permission_denied`, `source_lost`, `capture_failed`) or null; `phase` is `idle`, `joining`, `connecting`, `live`,
  * `reconnecting` or `ended`, `admitted` says whether the host granted the
  * call (an ended call that never was is a refusal), and each participant is `{namespace, device,
- * user, publishes, speaking, self}`.
+ * user, publishes, camera, screen, muted, speaking, self}`.
  */
 export function createVoiceCall({
   signalling,
@@ -98,6 +101,8 @@ export function createVoiceCall({
   let grantTimer;
   let capturePaused = false;
   let generation = 0;
+  /** Whether the host was last told this person is muted. */
+  let toldMuted;
   const speaking = new Map();
   /** The camera and screen streams this person shows, by source. */
   const streams = new Map();
@@ -113,7 +118,14 @@ export function createVoiceCall({
     return {phase: 'idle', call: null, admitted: false, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, videoIssue: null, micIssue: null, unsupported: false};
   }
   const emit = () => { for (const listener of [...listeners]) { try { listener(state); } catch (error) { report({type: 'voice-listener-error', error}); } } };
-  const update = change => { state = {...state, ...change}; emit(); };
+  const update = change => {
+    state = {...state, ...change};
+    // Muting, a refused or lost microphone and a grant that may not publish
+    // all reach the others.
+    if (state.muted !== toldMuted && inCall()) tellShowing();
+    emit();
+  };
+  const inCall = () => state.phase !== 'idle' && state.phase !== 'ended';
 
   function participants() {
     if (!grant) return [];
@@ -126,6 +138,7 @@ export function createVoiceCall({
       publishes: participant.publishes,
       camera: participant.camera === true,
       screen: participant.screen === true,
+      muted: participant.muted === true,
       self: participant.namespace === own,
       speaking: (speaking.get(participant.namespace.split('/')[1]) ?? -Infinity) > at - SPEAKING_HOLD_MS,
     }));
@@ -263,7 +276,8 @@ export function createVoiceCall({
   }
 
   function tellShowing() {
-    try { signalling.show?.(streams.has('camera'), streams.has('screen')); } catch (error) { report({type: 'voice-signalling-error', error}); }
+    toldMuted = state.muted;
+    try { signalling.show?.(streams.has('camera'), streams.has('screen'), state.muted); } catch (error) { report({type: 'voice-signalling-error', error}); }
   }
 
   function stopVideo() {
@@ -478,6 +492,7 @@ export function createVoiceCall({
     capturePaused = false;
     generation++;
     grant = undefined;
+    toldMuted = undefined;
     speaking.clear();
     stopVideo();
     const session = audioSession;
@@ -522,6 +537,8 @@ export function createVoiceCall({
       emit();
       void startAudio();
       signalling.join(call);
+      // Said before the grant: the session tells the host once granted.
+      tellShowing();
       startGrantDeadline(() => {
         if (state.call === call && !grant && state.phase !== 'idle' && state.phase !== 'ended') admissionEnded(call, NO_GRANT);
       });
