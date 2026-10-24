@@ -629,6 +629,44 @@ pub async fn dial(
     .map_err(|_| DialError::from("native relay connection timed out"))?
 }
 
+/// Whether `hint` names this device, `device`, as the room's host: a room
+/// placed on this device, whose host runs in this process. Such a room is
+/// joined over the host's in-process carrier ([`join_local`]), never
+/// dialled: an endpoint cannot dial itself.
+#[must_use]
+pub fn hosted_by(hint: &TransportHint, device: &[u8; 32]) -> bool {
+    &hint.host.device_public_key == device
+}
+
+/// Join the co-edit session of workspace `ws` as this device, `own_device`,
+/// over `client`, a session the host `hint` pins opened in this process
+/// (`RoomHost::connect_local`): the same pins [`dial`] checks, without a
+/// network between.
+///
+/// # Errors
+/// The hint does not authenticate for `ws`, it names another host than
+/// this device, or the session authenticated another host certificate.
+pub fn join_local(
+    client: RelayClient,
+    ws: u64,
+    hint: &TransportHint,
+    own_device: [u8; 32],
+) -> Result<RelayCoeditSession, DialError> {
+    let (payload, _) =
+        IrohWorkspaceHostHintV1::authenticate_transport_hint(hint).map_err(|e| e.to_string())?;
+    if payload.workspace_id != ws {
+        return Err("native relay workspace pin mismatch".into());
+    }
+    if !hosted_by(hint, &own_device) {
+        return Err("the room's host is not this device".into());
+    }
+    if client.relay_peer.cert != hint.host {
+        return Err("native relay authenticated a different host certificate".into());
+    }
+    RelayCoeditSession::join(client, ws, own_device)
+        .map_err(|error| DialError::Failed(error.to_string()))
+}
+
 /// [`dial`] the host `hint` pins over its HTTPS routes behind `http`: a
 /// host that publishes no iroh address. Only a certified host serves them,
 /// so the session pins its user and device as [`dial`] does an enrolled

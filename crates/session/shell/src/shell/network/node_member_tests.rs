@@ -2,11 +2,11 @@
 //! governs. The founder's root certifies two devices on the node: the relay
 //! (a node that hosts, governs and stewards her rooms) and the session (a
 //! plain device of hers, with its own key). Her browser creates the company
-//! workspace on the relay and writes a sealed record. The session finds the
-//! workspace among the rooms its person's host governs, joins it, gets the
-//! record's channel keys from the relay's steward and reads the record; a
-//! record its app writes reaches the browser the same way. The relay keeps
-//! ciphertext only.
+//! workspace on the relay and writes a sealed record. The session asks its
+//! configured host for the rooms it holds for her and enters the workspace
+//! there, joins it, gets the record's channel keys from the relay's steward
+//! and reads the record; a record its app writes reaches the browser the same
+//! way. The relay keeps ciphertext only.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -221,12 +221,12 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     )
     .unwrap();
 
-    // It finds the workspace among its host's rooms and joins it, through
-    // the host's own `tilo.host` actions on its continuity workspace: it
-    // lists the rooms and enters this one, and the host answers the
-    // invitation it redeems.
+    // Its host session is up: the session asks the node, once, for the
+    // rooms it holds for Ada and enters this one there, through the host's
+    // own `tilo.host` actions on its continuity workspace, and the host
+    // answers the invitation it redeems.
     let room = RoomId::parse(&acme.room).unwrap();
-    net.join_host_rooms();
+    net.enter_configured_host_rooms(None);
     // Its workspace is made as the join starts; the room is held once the
     // replica installs into it.
     until("the session to hold the company workspace", || {
@@ -249,7 +249,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         !tree.read().commits_native_documents(room),
         "its records are sealed channels the apps open, not committed documents"
     );
-    net.join_host_rooms();
+    net.enter_configured_host_rooms(None);
     assert_eq!(
         tree.read()
             .desktop
