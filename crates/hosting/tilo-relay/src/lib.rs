@@ -145,8 +145,7 @@ pub use tilo_room_host::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_room_host::{
-    authority_epoch, handshake, host_authority, membership_watch, persistence, room_access,
-    workspace_io,
+    authority_epoch, handshake, host_authority, persistence, room_access, workspace_io,
 };
 
 pub use tilo_relay_client::frame;
