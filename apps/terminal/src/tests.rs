@@ -4776,3 +4776,84 @@ fn typing_damages_only_its_row_and_the_cursor() {
         viewport.area()
     );
 }
+
+/// Fingers move the scrollback pixel by pixel, and a host that copies what
+/// a scroll keeps on screen copies the rows they only moved: the frame
+/// repaints the strip that came into view, not the grid.
+#[test]
+fn fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows() {
+    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+    use vello::{Scene, kurbo::Affine};
+    use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
+
+    let (mut widget, _) = build_test_widget();
+    let viewport = Rect::new(0.0, 0.0, 800.0, 400.0);
+    widget.force_geometry(viewport, 10.0, 20.0);
+    let mut output = Vec::new();
+    for line in 0..200 {
+        output.extend_from_slice(format!("line {line:03}\r\n").as_bytes());
+    }
+    widget.feed(&output);
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut frame = |widget: &mut TerminalWidget| {
+        widget.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+    };
+    // The first draw measures the cell and resizes the grid to the
+    // viewport; the next output applies that size.
+    frame(&mut widget);
+    widget.feed(b"");
+    frame(&mut widget);
+    widget.mark_drawn();
+    let mut doc = AutoCommit::new();
+    let mut fingers = |widget: &mut TerminalWidget, dy: f64| {
+        let event = WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, dy)),
+            phase: TouchPhase::Moved,
+        };
+        ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .send(widget, &event);
+    };
+    let centre = viewport.center();
+    ui::testing::Dispatch::new().send(
+        &mut widget,
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
+        },
+    );
+    fingers(&mut widget, 7.0);
+    assert_eq!(
+        widget.scroll_offset(),
+        1,
+        "seven pixels back show part of the row above the live screen"
+    );
+    frame(&mut widget);
+    let mut regions = Vec::new();
+    let offers = ui::scroll_copy::accepting(|| widget.collect_damage(&mut regions));
+    assert_eq!(offers.len(), 1, "the scroll is offered as a copy");
+    assert_eq!(offers[0].delta(), vello::kurbo::Vec2::new(0.0, 7.0));
+    let area: f64 = regions.iter().map(Rect::area).sum();
+    assert!(
+        area * 4.0 < viewport.area(),
+        "a scroll repaints a strip of the terminal, not {area} of {} px: {regions:?}",
+        viewport.area()
+    );
+    widget.mark_drawn();
+    // Back to the live output, exactly: the rows stand where they started.
+    fingers(&mut widget, -7.0);
+    assert_eq!(widget.scroll_offset(), 0);
+    let lines = widget.visible_lines();
+    assert!(
+        lines.iter().any(|line| line.contains("line 199")),
+        "the live output is in view: {lines:?}"
+    );
+}
