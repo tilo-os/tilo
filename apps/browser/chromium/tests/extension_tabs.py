@@ -53,6 +53,11 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
 - A script reaches the frame of a page an extension names (Bitwarden injects
   its form filler into each frame that asks), one of another site too, or
   every frame, and a message reaches one frame's content script.
+- A keyboard shortcut an extension's manifest suggests runs its command with
+  the page it was pressed on, which it may then script (activeTab), and the
+  page does not get the key; its toolbar button's command asks the Browser
+  to act as a click on the button does. commands.getAll lists each command
+  with its key, none for one the Browser keeps for itself.
 """
 import base64
 import hashlib
@@ -296,6 +301,9 @@ MENU_PAGE = """<!doctype html><title>menus</title><body style="margin:0">
 <p id="words" style="position:absolute;left:10px;top:160px;margin:0;font-size:24px">selected words</p>
 <script>if (location.search === '?select') getSelection().selectAllChildren(document.getElementById('words'));</script>
 </body>"""
+# A page that shows each key it gets in its title.
+KEYS_PAGE = (b'<!doctype html><title>keys</title><body>keys'
+             b"<script>addEventListener('keydown', (e) => { document.title = 'key:' + e.key; });</script>")
 IMAGE = b'<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="teal"/></svg>'
 
 
@@ -327,6 +335,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = MENU_PAGE.encode()
         elif self.path == '/image.svg':
             body, kind = IMAGE, 'image/svg+xml'
+        elif self.path == '/keys':
+            body = KEYS_PAGE
         else:
             # A page under /de says it is in Austrian German.
             lang = ' lang="de-AT"' if self.path.startswith('/de') else ''
@@ -393,6 +403,11 @@ class ExtensionTabs(unittest.TestCase):
             command = {'id': ids[name], 'permissions': permissions, 'hosts': hosts}
             if token:
                 command['token'] = token
+            # Its keyboard shortcuts, as its manifest declares them
+            # (extension_toolbar.rs, access).
+            commands = json.loads((path / 'manifest.json').read_text()).get('commands')
+            if isinstance(commands, dict):
+                command['commands'] = commands
             host.send(op='extension_access', **command)
         host.send(op='resize', width=800, height=600, scale_factor=1.0)
         if focus:
@@ -468,6 +483,45 @@ class ExtensionTabs(unittest.TestCase):
         host.send(op='extension_click', id=ids['clicker'])
         # Its second script sees what its first returned.
         self.title(host, 1, 'clicked:true|clicked:true')
+
+    def test_a_keyboard_shortcut_runs_the_extensions_command_on_the_page(self):
+        host, ids = self.start('commander', access={'commander': (['activeTab', 'scripting'], [])})
+        page = self.url + '/keys'
+        host.navigate(page)
+        host.settle(1.0)
+        mac = sys.platform == 'darwin'
+
+        def press(key, ctrl=False, alt=False, shift=False):
+            # On macOS a manifest's "Ctrl" is Command, which arrives as meta.
+            modifiers = {'ctrl': ctrl and not mac, 'meta': ctrl and mac, 'alt': alt, 'shift': shift}
+            host.send(op='key', key=key, down=True, **modifiers)
+            host.send(op='key', key=key, down=False, **modifiers)
+
+        press('K', alt=True, shift=True)
+        seen = json.loads(self.title(host, 1, 'command:')[len('command:'):])
+        self.assertEqual({key: seen[key] for key in ('command', 'url')}, {'command': 'mark', 'url': True})
+        self.assertEqual(seen['all'], [
+            {'name': '_execute_action', 'description': '', 'shortcut': '\u21e7\u2318Y' if mac else 'Ctrl+Shift+Y'},
+            # The Browser keeps it for Find.
+            {'name': 'find', 'description': 'Find on the page', 'shortcut': ''},
+            {'name': 'mark', 'description': 'Mark the page', 'shortcut': '\u2325\u21e7K' if mac else 'Alt+Shift+K'},
+            {'name': 'quiet', 'description': 'No key of its own', 'shortcut': ''},
+        ])
+        # The page got neither the command's key nor its release; the next
+        # key is its own.
+        press('a')
+        self.title(host, 1, 'key:a')
+        self.assertEqual([e['title'] for e in host.seen if e['event'] == 'title' and e['title'].startswith('key:')],
+                         ['key:a'])
+
+        # The button's own command: the Browser is asked to act as a click
+        # on the button would, over this page.
+        press('Y', ctrl=True, shift=True)
+        asked = host.until(lambda e: e['event'] == 'extension_execute_action')
+        self.assertEqual((asked.get('tab', 1), asked['id']), (1, ids['commander']))
+        # A key no command has reaches the page, with the same modifiers.
+        press('U', ctrl=True, shift=True)
+        self.title(host, 1, 'key:U')
 
     def test_a_worker_keeps_its_own_address(self):
         host, ids = self.start('located', access={'located': (['activeTab', 'scripting'], [])})
