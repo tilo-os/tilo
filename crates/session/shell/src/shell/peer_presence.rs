@@ -33,7 +33,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use collab_types::presence::PresenceKey;
-use ui::collaboration::{CollabEvent, PresencePayload};
+use collab_types::presence::PresencePayload;
+use ui::collaboration::CollabEvent;
 use ui::presence::PresenceCtx;
 
 use crate::shell::collab_broker::{BrokerHandle, RoomSubscription};
@@ -48,7 +49,7 @@ pub use desk_pointers::{
 /// A room's last-published cursor and when it went out, keyed by room —
 /// what [`should_publish_cursor`] rate-limits against.
 type CursorPublishHistory = HashMap<String, (PointerAnchor, Instant)>;
-type CertifiedPeopleInbound = Arc<Mutex<Vec<(String, Vec<ui::collaboration::Collaborator>)>>>;
+type CertifiedPeopleInbound = Arc<Mutex<Vec<(String, Vec<collab_types::presence::Collaborator>)>>>;
 type DepartureKey = (u64, String, std::time::SystemTime);
 
 /// Where a person's pointer is, in terms every device in the room shares:
@@ -195,7 +196,7 @@ pub struct PeerPresence {
     absent: Mutex<HashMap<String, std::collections::BTreeSet<u64>>>,
     /// Complete owner-backed People contexts. Ordinary app-authored Context
     /// fanout is deliberately not an input: it cannot establish membership.
-    room_people: Arc<Mutex<HashMap<String, Vec<ui::collaboration::Collaborator>>>>,
+    room_people: Arc<Mutex<HashMap<String, Vec<collab_types::presence::Collaborator>>>>,
     certified_people_inbound: CertifiedPeopleInbound,
     _certified_people_subscription:
         Option<Arc<tilo_action_broker::collab_broker::CertifiedPeopleSubscription>>,
@@ -573,7 +574,7 @@ impl PeerPresence {
     fn assemble(
         cursor: Arc<Mutex<Option<PointerAnchor>>>,
         typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
-        room_people: Arc<Mutex<HashMap<String, Vec<ui::collaboration::Collaborator>>>>,
+        room_people: Arc<Mutex<HashMap<String, Vec<collab_types::presence::Collaborator>>>>,
         certified_people_inbound: CertifiedPeopleInbound,
         certified_people_subscription: Option<
             Arc<tilo_action_broker::collab_broker::CertifiedPeopleSubscription>,
@@ -662,7 +663,7 @@ impl PeerPresence {
     pub(crate) fn set_certified_people(
         &self,
         room: &str,
-        people: Vec<ui::collaboration::Collaborator>,
+        people: Vec<collab_types::presence::Collaborator>,
     ) {
         let mine = self.rooms.lock_recover();
         if !mine.iter().any(|current| current == room) {
@@ -2593,7 +2594,7 @@ mod two_sessions {
         let relay = PeerPresence::for_network(&network, rooms_of(&tree));
         let mut presence = PresenceCtx::default();
         let id = ui::permissions::UserId("opaque-certified-software".into());
-        let row = ui::collaboration::Collaborator {
+        let row = collab_types::presence::Collaborator {
             id: id.0.clone(),
             name: "Tide".into(),
             colour: None,
@@ -3698,7 +3699,7 @@ mod two_sessions {
             guest,
             key,
             PresencePayload::Availability {
-                state: ui::Availability::Available,
+                state: collab_types::presence::Availability::Available,
                 call: None,
             },
         ));

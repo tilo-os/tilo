@@ -141,6 +141,7 @@ pub use runtime_collab::{
 pub use runtime_collab::{file_clipboard, open_selected};
 
 use crate::presence::PresenceKey;
+pub use collab_types::presence::{Collaborator, PresencePayload};
 
 use std::sync::mpsc;
 
@@ -945,64 +946,6 @@ impl CollabEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum PresencePayload {
-    Pointer {
-        x: f32,
-        y: f32,
-    },
-    Caret {
-        pos: usize,
-    },
-    Selection {
-        start: usize,
-        end: usize,
-    },
-    /// The local user just inserted `start..end` under scope `key`; peers
-    /// render a fading "just typed" swipe (see
-    /// [`crate::presence::PresenceCtx::record_peer_typing`]). Unlike
-    /// `Caret`/`Selection` this is an *event*, published once and decayed
-    /// on the receiver.
-    Typing {
-        start: usize,
-        end: usize,
-    },
-    Arrived,
-    Left,
-    /// A room-scoped, transient follow relationship announced by the
-    /// authenticated sender. It is a visual presence cue only; the local
-    /// Follow command remains private to the follower's session.
-    Following {
-        target: Option<String>,
-    },
-    /// Truthful action/resource activity. Identity is supplied by the
-    /// authenticated event envelope; this payload never describes a mouse or
-    /// keyboard gesture and therefore cannot create a synthetic cursor.
-    Interaction(Box<tilo_actions::SemanticInteraction>),
-    /// Short room-scoped intention. `automatic` distinguishes a local-model
-    /// suggestion from participant-authored words; empty text clears it.
-    Status {
-        text: String,
-        automatic: bool,
-    },
-    /// How available the authenticated sender is, and the voice channel
-    /// they are in, if any. Desktop presence: the shell shows it on faces
-    /// and in the roster; it never reaches an app ([`Self::reaches_apps`]).
-    Availability {
-        state: crate::Availability,
-        call: Option<String>,
-    },
-}
-
-impl PresencePayload {
-    /// Whether apps receive this: everything but the desktop's own
-    /// presence (availability), which only the shell shows.
-    #[must_use]
-    pub const fn reaches_apps(&self) -> bool {
-        !matches!(self, Self::Availability { .. })
-    }
-}
-
 /// Explicit correlation supplied by owner-backed membership, never decoded
 /// from a participant label or an actor-id prefix.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1011,68 +954,15 @@ pub struct CertifiedAgentIdentity {
     pub agent_key: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct Collaborator {
-    pub id: String,
-    pub name: String,
-    /// The colour this participant wears, as they chose it or as their
-    /// stable identity derives it. `None` when the room has not heard it;
-    /// they are then painted in the colour their id derives
-    /// ([`crate::presence::user_color`]).
-    pub colour: Option<crate::tokens::PresenceHue>,
-    /// Whether this participant is an agent rather than a person.
-    pub is_agent: bool,
-    /// Whether this row is the receiving machine's own participant.
-    /// Apps can't derive this themselves: `id` is the address *other*
-    /// machines use, and a machine never announces its own to its own apps.
-    pub is_self: bool,
-    /// When the room admitted this participant, Unix milliseconds, as its
-    /// membership records it; `None` for an agent or a member admitted
-    /// before rooms recorded it. People who share a name are numbered in
-    /// this order ([`crate::presence::ParticipantLabels::by_joining`]).
-    pub joined_at: Option<u64>,
-}
-
-impl Collaborator {
-    /// [`Self::joined_at`] as the roster's wire carries it: `u64::MAX` for
-    /// none.
-    #[must_use]
-    pub fn packed_joined_at(&self) -> u64 {
-        self.joined_at.unwrap_or(u64::MAX)
+/// The colour a roster row's packed `0x00RRGGBB` names: the presence
+/// hue nearest it, `None` for `0` or a grey.
+#[must_use]
+pub fn colour_from_packed(packed: u32) -> Option<crate::tokens::PresenceHue> {
+    if packed == 0 {
+        return None;
     }
-
-    /// The admission time a roster row's packed value names: `None` for
-    /// `u64::MAX`.
-    #[must_use]
-    pub const fn joined_at_from_packed(packed: u64) -> Option<u64> {
-        if packed == u64::MAX {
-            None
-        } else {
-            Some(packed)
-        }
-    }
-
-    /// [`Self::colour`] as the roster's wire carries it: the presence
-    /// colour's sRGB packed `0x00RRGGBB`, `0` for none (no presence colour
-    /// is black).
-    #[must_use]
-    pub fn packed_colour(&self) -> u32 {
-        self.colour.map_or(0, |hue| {
-            let (r, g, b) = crate::presence::identity_rgb(hue);
-            (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
-        })
-    }
-
-    /// The colour a roster row's packed `0x00RRGGBB` names: the presence
-    /// hue nearest it, `None` for `0` or a grey.
-    #[must_use]
-    pub fn colour_from_packed(packed: u32) -> Option<crate::tokens::PresenceHue> {
-        if packed == 0 {
-            return None;
-        }
-        let [_, r, g, b] = packed.to_be_bytes();
-        crate::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(r, g, b))
-    }
+    let [_, r, g, b] = packed.to_be_bytes();
+    crate::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(r, g, b))
 }
 
 /// Failure modes for [`CollaborationManager::send_signed_op`].

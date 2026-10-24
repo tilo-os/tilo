@@ -5678,7 +5678,7 @@ async fn spawn_context_stream(
                     .map(|collaborator| Collaborator {
                         id: collaborator.user_id,
                         name: collaborator.display_name,
-                        colour: Collaborator::colour_from_packed(collaborator.color),
+                        colour: super::colour_from_packed(collaborator.color),
                         is_agent: collaborator.is_agent,
                         is_self: collaborator.is_self,
                         joined_at: Collaborator::joined_at_from_packed(collaborator.joined_at_ms),

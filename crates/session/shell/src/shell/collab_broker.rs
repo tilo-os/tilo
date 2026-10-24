@@ -586,12 +586,12 @@ impl DrainQueues {
             );
             // Who acted is what the sender's certified identity supports.
             let (user_id, payload) = match payload {
-                ui::collaboration::PresencePayload::Interaction(update) => {
+                collab_types::presence::PresencePayload::Interaction(update) => {
                     let actor = update.actor.from_peer(&user_id, entry.person.as_deref());
                     let sequence = update.sequence;
                     (
                         actor.id.clone(),
-                        ui::collaboration::PresencePayload::Interaction(Box::new(
+                        collab_types::presence::PresencePayload::Interaction(Box::new(
                             update.normalized_by_broker(actor, sequence),
                         )),
                     )
@@ -1321,7 +1321,7 @@ fn remote_participant_id(
     if let Some(name) = say {
         announced.insert(slot, (name.clone(), colour, generation));
         let roster = CollabEvent::Context {
-            collaborators: vec![ui::collaboration::Collaborator {
+            collaborators: vec![collab_types::presence::Collaborator {
                 id: user_id.clone(),
                 name,
                 colour,
