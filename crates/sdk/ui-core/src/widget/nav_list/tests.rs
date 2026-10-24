@@ -1456,6 +1456,37 @@ fn an_unread_row_stands_out_and_a_persons_row_shows_them() {
     );
 }
 
+/// A person whose row says more than their name ("Dana (via Discord)")
+/// shows their own initials, or their picture.
+#[test]
+fn a_persons_row_takes_their_face_from_their_name() {
+    let colour = Color::from_rgb8(0x40, 0x80, 0xc0);
+    let list = NavList::new(vec![NavSection::untitled(
+        "rows",
+        vec![
+            NavItem::new("dana", "Dana Reyes (via Discord)")
+                .person("discord:7", colour, false)
+                .person_face("Dana Reyes", None),
+        ],
+    )]);
+    let h = harness(list, Theme::dark());
+    let list = h.root::<NavList>();
+    let node = list.tree().model().item_id("dana").expect("item");
+    let Some(NavRowSpec::Item(item)) = list.tree().nav_spec(node) else {
+        panic!("dana is an item");
+    };
+    let theme = Theme::dark();
+    let face = item.face(
+        Rect::new(0.0, 0.0, 200.0, 32.0),
+        "Dana Reyes (via Discord)",
+        &theme,
+    );
+    assert_eq!(
+        face.avatar.map(|avatar| avatar.initials()),
+        Some("DR".into())
+    );
+}
+
 /// `count` destinations as a mail sidebar lists them: icons, counts,
 /// account badges and secondary lines, in two sections, the second with a
 /// "New folder" action, and a calendar section of checkable rows.
