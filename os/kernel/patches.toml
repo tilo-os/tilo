@@ -115,3 +115,9 @@ upstream = "Tilo's own, not posted; mainline still discards unserviced HFI queue
 [[patch]]
 file = "0021-arm64-dts-qcom-x1e80100-lenovo-yoga-slim7x-reserve-a-ramoops-region.patch"
 upstream = "Tilo's own, not posted; mainline describes no ramoops region for any X1E board"
+
+[[patch]]
+file = "0022-i2c-qcom-geni-Restore-the-source-clock-selection-policy.patch"
+upstream = "Fixes the 7.2.9 stable backport of cb97bf3d4f91, which moved X1E80100 I2C from a 19.2 MHz to a 32 MHz source clock and broke the I2C HID keyboard and touchpad; not yet in 7.2 stable"
+merged = "v7.4"
+commit = "8cb5c17be3a2fadc41075d04ce1c24c831546aaf"
