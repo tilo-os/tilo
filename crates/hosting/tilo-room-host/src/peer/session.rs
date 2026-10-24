@@ -164,7 +164,10 @@ where
     let mut subscribed: Vec<u64> = Vec::new();
     let mut authority = crate::authority_epoch::subscribe();
     authority.mark_unchanged();
-    let mut access_audit = AccessAudit::new();
+    // The host's own device, connected in process while the host runs, is
+    // audited only when something changes.
+    let mut access_audit =
+        AccessAudit::new(peer.device_public_key == own_device_cert.device_public_key);
 
     let connection_live = ConnectionLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
     // Presence is coalesced, paced, batched and slot-coded.

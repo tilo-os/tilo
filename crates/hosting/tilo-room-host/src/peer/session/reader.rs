@@ -381,6 +381,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
         // become ready together; the delta must win so the peer still
         // receives NotAuthorised rather than a bare close.
         self.access_audit.cover(self.subscribed);
+        let audit_due = self.access_audit.due();
         tokio::select! {
             biased;
             frame = self.inbound.reader.read_next() => {
@@ -403,7 +404,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                 self.catching_up = !cx.session.lag.is_empty();
                 Ok(resume.map(EnvelopeV2::State))
             }
-            () = tokio::time::sleep_until(self.access_audit.due()) => {
+            () = crate::peer::access_audit::until(audit_due) => {
                 let watched = audit_subscriber_access(cx.peer, cx.session, self.subscribed).await?;
                 self.access_audit.audited(cx.peer, cx.session.agents, self.subscribed, watched);
                 Ok(None)
