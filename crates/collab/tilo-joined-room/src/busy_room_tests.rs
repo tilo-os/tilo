@@ -259,7 +259,6 @@ fn busy_room(messages_each: u64) -> BusyRoom {
             .map(|message| postcard::to_stdvec(message).unwrap())
             .collect(),
         generation: u64::from(AUTHORS) + 2,
-        hosts: Vec::new(),
     };
     let intent =
         VerifiedNativeEnrollmentIntent::from_proof(verified, complete, device, hint, now).unwrap();

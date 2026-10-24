@@ -26,7 +26,7 @@ use tilo_relay_session::rooms::{
 use tilo_user_identity::DeviceCert;
 
 use super::authority::RoomOp;
-use super::{CollaborationError, GovernedRoom, Rooms};
+use super::{CollaborationError, Rooms};
 use crate::federation::{PeerRelayDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::host_authority::HostOperation;
@@ -62,22 +62,15 @@ impl Rooms {
     /// signed.
     pub async fn hosts(&self, room: &str) -> Result<Vec<TransportHint>, CollaborationError> {
         let governed = self.room(room).await?;
-        let mut governed = governed.lock().await;
-        self.refresh_hosts(&mut governed)?;
-        Ok(governed.hosts.clone())
-    }
-
-    /// Bring `room`'s list of hosts up to date with this host's own address.
-    pub(super) fn refresh_hosts(&self, room: &mut GovernedRoom) -> Result<(), CollaborationError> {
-        let own = self.transport_hint(room)?;
-        room.hosts = std::iter::once(own)
-            .chain(room.peer().governance().room_hosts())
-            .collect();
-        Ok(())
+        let governed = governed.lock().await;
+        let own = self.transport_hint(&governed)?;
+        Ok(std::iter::once(own)
+            .chain(governed.peer().governance().room_hosts())
+            .collect())
     }
 
     /// Change which hosts `room`'s governance names with `change`, as its
-    /// governor, and bring the room's hosts up to date.
+    /// governor.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its decision is committed and settled"
@@ -102,8 +95,7 @@ impl Rooms {
             })?;
             self.settle(&mut governed).await?;
         }
-        self.refresh_hosts(&mut governed)
-            .map_err(|error| error.to_string())
+        Ok(())
     }
 
     /// Have the host `device` of this host's own person, at `addr`, serve
