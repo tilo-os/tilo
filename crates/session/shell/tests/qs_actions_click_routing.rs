@@ -701,7 +701,7 @@ fn only_the_invite_button_opens_the_signed_composer() {
         host.force_ws_settings_settled();
         // Paint once so the modal's geometry is populated the way it is in a
         // real frame before any click arrives.
-        let _ = &taffy;
+        paint(&mut host);
 
         let btn = host.ws_settings_invite_rect_for_tests();
         assert!(
@@ -735,9 +735,11 @@ fn only_the_invite_button_opens_the_signed_composer() {
         }
         let (taffy, host_node) = layout_host(&mut host);
         host.force_ws_settings_settled();
+        paint(&mut host);
 
         let btn = host.ws_settings_invite_rect_for_tests();
-        let p = Point::new(btn.x0 - 160.0, btn.center().y);
+        assert!(btn.area() > 0.0, "the Create button is laid out");
+        let p = Point::new(btn.x1 + 160.0, btn.center().y);
         click(&mut host, &taffy, host_node, p);
 
         assert!(

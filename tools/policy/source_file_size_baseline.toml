@@ -132,7 +132,6 @@
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/desktop/src/topbar.rs" = 7500
 "crates/session/desktop/src/workspace_settings.rs" = 6000
-"crates/session/desktop/src/workspace_settings/overlay.rs" = 4000
 "crates/session/greeter/src/greeter_app.rs" = 4500
 "crates/session/installer/src/installer_app.rs" = 7500
 "crates/session/shell/examples/redraw_bench.rs" = 7000

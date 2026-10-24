@@ -682,6 +682,13 @@ pub(super) fn public_card(
     use tilo_desktop::workspace_settings::overlay::PublicCard;
     match state {
         None | Some(PublicationState::Asking) => PublicCard::Asking,
+        // Without the network the host can't be asked or told, so there
+        // is nothing to show about being public.
+        Some(PublicationState::Unavailable(why))
+            if why == super::peer_sync_dispatch::NOT_RUNNING =>
+        {
+            PublicCard::Offline
+        }
         Some(PublicationState::Unavailable(why)) => PublicCard::Unavailable(why.clone()),
         Some(PublicationState::Known(known)) => PublicCard::Known {
             public: known.public,
