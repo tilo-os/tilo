@@ -20,7 +20,8 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   other's tab once they show web pages.
 - A worker hears of a page that finished loading, also one that finished
   before the Browser told the engine whose worker it is, as when the Browser
-  starts.
+  starts, and then by the id every other call names its tab by, also when
+  the Browser had not said which extension is its own yet.
 - An extension that follows navigations (webNavigation) hears of each
   frame's by the ids the tab APIs give and finds the page's frames; a page's
   link that opens a tab, in its main frame or in a frame, tells it which
@@ -541,7 +542,9 @@ class ExtensionTabs(unittest.TestCase):
         host started again with the `installed` directory and the `profile` of
         an earlier one finds the same extensions there. With `focus`, the
         person has focused the first page. The engine is not told yet of those
-        in `withhold`: what it would be told is in `self.withheld`."""
+        in `withhold`: what it would be told is in `self.withheld`. With
+        'manager' among them, it is not told which extension is the Browser's
+        own either, as when the Browser starts: it tells that with the rest."""
         if installed is None:
             directory = tempfile.TemporaryDirectory(prefix='tilo-extension-tabs-')
             self.addCleanup(directory.cleanup)
@@ -556,13 +559,18 @@ class ExtensionTabs(unittest.TestCase):
         manager, manager_token = prepare_manager(installed)
         host = Host(args=['--use-mock-keychain', '--load-extension=' + ','.join(map(str, [manager, *paths]))], profile=profile)
         self.addCleanup(host.close)
-        host.send(op='extension_identity', id=extension_id(manager))
+        ids = {'manager': extension_id(manager)}
+        # Its worker tells the engine what rules acted on in the tabs.
+        own = {'id': ids['manager'], 'permissions': [], 'hosts': [], 'scriptable': [], 'token': manager_token}
+        if 'manager' in withhold:
+            self.withheld = {**getattr(self, 'withheld', {}), 'manager': own}
+        else:
+            host.send(op='extension_identity', id=ids['manager'])
         # The Browser tells the engine what each extension may do once it has
         # read its profile: after the extensions' workers started.
         host.settle(1.0)
-        # Its worker tells the engine what rules acted on in the tabs.
-        ids = {'manager': extension_id(manager)}
-        host.send(op='extension_access', id=ids['manager'], permissions=[], hosts=[], scriptable=[], token=manager_token)
+        if 'manager' not in withhold:
+            host.send(op='extension_access', **own)
         for name, (path, token) in zip(names, prepared):
             ids[name] = extension_id(path)
             permissions, hosts, *scriptable = access.get(name, ([], []))
@@ -1286,6 +1294,33 @@ class ExtensionTabs(unittest.TestCase):
         except (TimeoutError, queue.Empty):
             self.fail(f"the worker heard {self.in_worker(host, ids['watcher'], 'JSON.stringify(heard)')}")
         self.assertRegex(title, r'^watched:\d+$')
+
+    def test_a_page_heard_of_before_the_browser_said_whose_it_is_has_its_own_id(self):
+        # As the Browser starts it tells the engine which extension is its own
+        # with the rest, after a page may have loaded: the worker hears of the
+        # page by the id Chromium gives it, the one every other call names,
+        # not by the engine's own number for the tab.
+        host, ids = self.start('watcher', access={'watcher': (['scripting'], ['http://127.0.0.1/*'])}, withhold=('manager', 'watcher'))
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, ids['watcher'], 'typeof heard') != 'object':
+            self.assertLess(time.monotonic(), deadline, 'the worker never started')
+            host.settle(0.25)
+        host.settle(0.5)
+        host.navigate(self.url + '/watched')
+        host.settle(0.5)
+        host.send(op='extension_identity', id=ids['manager'])
+        host.send(op='extension_access', **self.withheld['manager'])
+        host.send(op='extension_access', **self.withheld['watcher'])
+        watched = lambda e: e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'].startswith('watched:')
+        try:
+            title = (next((e for e in host.seen if watched(e)), None) or host.until(watched, timeout=20))['title']
+        except (TimeoutError, queue.Empty):
+            self.fail(f"the worker heard {self.in_worker(host, ids['watcher'], 'JSON.stringify(heard)')}")
+        real = self.in_worker(host, ids['watcher'], "chrome.tabs.query({}).then((tabs) => tabs.filter((t) => (t.url || '').endsWith('/watched')).map((t) => t.id))")
+        heard = self.in_worker(host, ids['watcher'], "[...new Set(heard.filter((h) => (h.url || '').endsWith('/watched')).map((h) => h.tabId))]")
+        self.assertEqual(len(real), 1, real)
+        self.assertEqual(heard, real)
+        self.assertEqual(title, f'watched:{real[0]}')
 
     def test_an_extension_that_may_connect_only_to_its_own_servers_finds_its_tabs(self):
         # Before the person focused any page, as when the Browser starts: the

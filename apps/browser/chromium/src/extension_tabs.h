@@ -928,7 +928,9 @@ class ExtensionTabs {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
     if (!found || found->panel) return;
-    Announce("tabs.onUpdated", [this, page = *found, change](const std::string& extension) {
+    Announce("tabs.onUpdated", [this, then = *found, change](const std::string& extension) {
+      auto page = then;
+      page.id = IdNow(page.tab, page.id);
       auto visible = change->Copy(false);
       if (!SeesContents(extension, page)) { visible->Remove("url"); visible->Remove("title"); visible->Remove("favIconUrl"); }
       if (visible->GetSize() == 0) return;
@@ -964,7 +966,8 @@ class ExtensionTabs {
     const auto* found = Find(tabs, tab);
     if (!found || found->panel) return;
     const int id = found->id;
-    Announce("tabs.onActivated", [this, id](const std::string& extension) {
+    Announce("tabs.onActivated", [this, tab, then = id](const std::string& extension) {
+      const int id = IdNow(tab, then);
       auto info = CefDictionaryValue::Create();
       info->SetInt("tabId", id);
       info->SetInt("windowId", id);
@@ -974,7 +977,8 @@ class ExtensionTabs {
     });
     // Each tab is its window's only one: activating it highlights it
     // alone, which Chrome tells as well.
-    Announce("tabs.onHighlighted", [this, id](const std::string& extension) {
+    Announce("tabs.onHighlighted", [this, tab, then = id](const std::string& extension) {
+      const int id = IdNow(tab, then);
       auto info = CefDictionaryValue::Create();
       info->SetInt("windowId", id);
       auto ids = CefListValue::Create();
@@ -984,7 +988,8 @@ class ExtensionTabs {
       args->SetDictionary(0, info);
       Push(extension, "tabs.onHighlighted", args, false);
     });
-    Announce("windows.onFocusChanged", [this, id](const std::string& extension) {
+    Announce("windows.onFocusChanged", [this, tab, then = id](const std::string& extension) {
+      const int id = IdNow(tab, then);
       auto args = CefListValue::Create();
       args->SetInt(0, id);
       Push(extension, "windows.onFocusChanged", args, false);
@@ -998,7 +1003,9 @@ class ExtensionTabs {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
     if (!found || found->panel) return;
-    Announce("tabs.onCreated", [this, page = *found](const std::string& extension) {
+    Announce("tabs.onCreated", [this, then = *found](const std::string& extension) {
+      auto page = then;
+      page.id = IdNow(page.tab, page.id);
       auto args = CefListValue::Create();
       args->SetDictionary(0, TabObject(extension, page));
       Push(extension, "tabs.onCreated", args, false);
@@ -1013,7 +1020,8 @@ class ExtensionTabs {
       const auto tabs = Tabs();
       const auto* found = Find(tabs, tab);
       if (!found || found->panel) return;
-      Announce("tabs.onZoomChange", [this, id = found->id, before, after](const std::string& extension) {
+      Announce("tabs.onZoomChange", [this, tab, then = found->id, before, after](const std::string& extension) {
+        const int id = IdNow(tab, then);
         auto info = CefDictionaryValue::Create();
         info->SetInt("tabId", id);
         info->SetDouble("oldZoomFactor", before);
@@ -1171,8 +1179,9 @@ class ExtensionTabs {
       const auto* source = Find(tabs, pending.source);
       if (!opened || !source || opened->panel) return;
       const double stamp = std::chrono::duration<double, std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
-      Announce("webNavigation.onCreatedNavigationTarget", [this, pending, stamp, from = source->id, to = opened->id](const std::string& extension) {
+      Announce("webNavigation.onCreatedNavigationTarget", [this, tab, pending, stamp, from_then = source->id, to_then = opened->id](const std::string& extension) {
         if (!Has(extension, "webNavigation")) return;
+        const int from = IdNow(pending.source, from_then), to = IdNow(tab, to_then);
         auto details = CefDictionaryValue::Create();
         details->SetInt("sourceTabId", from);
         // The frame's id and its process are Chromium's: the tab script
@@ -1296,13 +1305,23 @@ class ExtensionTabs {
   void Replay(const std::string& extension) {
     const auto now = std::chrono::steady_clock::now();
     while (!kept_.empty() && now - kept_.front().at > kStartingWorker) kept_.pop_front();
-    // A copy: telling may keep more.
-    auto kept = kept_;
-    for (const auto& event : kept) {
-      auto found = listening_.find(extension);
-      if (found != listening_.end() && found->second.count(event.event)) event.tell(extension);
-    }
+    auto kept = std::make_shared<std::deque<Kept>>(kept_);
     if (!Starting()) kept_.clear();
+    // What it missed may have come before the Browser said which extension
+    // is its own, when no tab's id among Chromium's could be known: it hears
+    // of each tab by the id every other call names it by, learnt first.
+    Ensure([this, extension, kept] {
+      for (const auto& event : *kept) {
+        auto found = listening_.find(extension);
+        if (found != listening_.end() && found->second.count(event.event)) event.tell(extension);
+      }
+    });
+  }
+  // The id an extension knows the host's `tab` by now, `then` if it has
+  // none: what is told of a tab later (Replay) names it as every call does.
+  int IdNow(int tab, int then) const {
+    const auto known = native_.find(tab);
+    return known != native_.end() ? known->second : then;
   }
   // The host's tabs, each by the id Chromium's extension APIs know it by
   // once it was identified, by its browser's until then.
