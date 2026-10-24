@@ -157,6 +157,8 @@ impl BootUnlock<'_> {
             )));
         }
         let key_file = self.keys_dir.join(format!("{}.key", self.volume));
+        tilo_files::native::atomic::create_private_directory(self.keys_dir)
+            .with_context(|| format!("creating {}", self.keys_dir.display()))?;
         tilo_files::native::atomic::write_private(&key_file, passphrase.as_bytes())
             .with_context(|| format!("writing {}", key_file.display()))?;
         if let Some(description) = self.handoff {
