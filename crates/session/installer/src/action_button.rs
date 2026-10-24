@@ -18,6 +18,7 @@
 //! Every colour is read from the [`Theme`]; nothing is hard-coded.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use ui::widget::ModelPath;
 use ui::widget::TaffyTreeExt;
 
@@ -55,6 +56,10 @@ pub struct ActionButton {
     /// state. Legacy callers may include a compact `[x]` prefix; drawing and
     /// assistive technology both strip it in favour of a real checkbox mark.
     checked: Option<bool>,
+    /// Where the checkbox's motion is kept, by the button's test id, so a
+    /// box the view rebuilds on each change still fades its mark in and
+    /// out ([`ActionButton::with_check_motions`]).
+    check_motions: Option<Rc<ui::widget::FaceMotions>>,
     primary: bool,
     /// Text-link look for a low-key alternative: no fill, no hairline.
     quiet: bool,
@@ -77,6 +82,7 @@ impl ActionButton {
             control,
             test_id: None,
             checked: None,
+            check_motions: None,
             primary: false,
             quiet: false,
             large: false,
@@ -131,6 +137,24 @@ impl ActionButton {
     pub fn checkbox(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
         self
+    }
+
+    /// Keep the checkbox's motion in `motions`, which the view holds across
+    /// rebuilds: the button built for the new value finds the motion the
+    /// last one started under its test id (or label) and carries it on.
+    #[must_use]
+    pub fn with_check_motions(mut self, motions: &Rc<ui::widget::FaceMotions>) -> Self {
+        self.check_motions = Some(Rc::clone(motions));
+        self
+    }
+
+    /// The checkbox is still on its way.
+    fn check_moving(&self) -> bool {
+        self.checked.is_some()
+            && self
+                .check_motions
+                .as_ref()
+                .is_some_and(|motions| motions.is_moving(ui::motion::frame_now()))
     }
 
     /// Mark disabled: dimmed, non-interactive, and removed from the focus
@@ -291,6 +315,65 @@ mod tests {
             assert_eq!(node.state.checked, Some(true));
         }
     }
+
+    /// The view rebuilds the box on each change; the motion it keeps
+    /// carries the click's fade into the rebuilt button, and a key lands.
+    #[test]
+    fn a_rebuilt_checkbox_fades_its_mark_from_the_motion_the_view_keeps() {
+        use ui::time::testing::with_monotonic_time;
+        use ui::tokens::MotionSource;
+        let motions = Rc::new(ui::widget::FaceMotions::default());
+        let theme = Theme::dark();
+        let built = |checked: bool| {
+            let (control, _) = Control::detached(
+                "installer.review",
+                "set-recovery-promise",
+                serde_json::json!({ "acknowledged": !checked }),
+            );
+            let mut button = ActionButton::new("I will save my recovery key", control)
+                .with_test_id("recovery_ack")
+                .checkbox(checked)
+                .with_check_motions(&motions);
+            button.rect = Rect::new(0.0, 0.0, 320.0, 40.0);
+            button
+        };
+        let paint = |button: &mut ActionButton| {
+            button.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::empty(),
+            );
+        };
+        let t0 = ui::time::now();
+        let at = |ms: u64| t0 + ui::time::Duration::from_millis(ms);
+        with_monotonic_time(t0, || paint(&mut built(false)));
+        assert!(
+            !built(false).needs_animation_frame(),
+            "first seen, it rests"
+        );
+        // A click: the view builds a checked button, which fades the mark in.
+        let mut checked = built(true);
+        with_monotonic_time(at(10), || {
+            ui::motion::note_source(MotionSource::Pointer);
+            paint(&mut checked);
+        });
+        with_monotonic_time(at(20), || {
+            assert!(checked.needs_animation_frame(), "the mark fades in");
+            assert!(checked.needs_redraw());
+            assert!(built(true).needs_animation_frame(), "in any rebuild");
+        });
+        with_monotonic_time(at(2_000), || {
+            assert!(!checked.needs_animation_frame(), "then rests");
+        });
+        // A key lands at once.
+        with_monotonic_time(at(3_000), || {
+            ui::motion::note_source(MotionSource::Keyboard);
+            paint(&mut built(false));
+            assert!(!built(false).needs_animation_frame());
+        });
+    }
 }
 
 impl Widget for ActionButton {
@@ -388,13 +471,21 @@ impl Widget for ActionButton {
                 tx + side,
                 self.rect.center().y + side / 2.0,
             );
-            // The shared checkbox face: the on state with its drawn mark.
-            ui::widget::Checkbox::paint(
-                scene,
-                transform,
-                theme,
-                &ui::widget::CheckboxFace::new(box_rect, checked),
-            );
+            // The shared checkbox face, posed by the motion the view keeps.
+            let mut face = ui::widget::CheckboxFace::new(box_rect, checked);
+            if let Some(motions) = &self.check_motions {
+                let key = self
+                    .test_id
+                    .as_deref()
+                    .unwrap_or_else(|| self.accessible_label());
+                face = face.pose(motions.check(
+                    key,
+                    checked,
+                    ui::widget::CheckGlyph::Check,
+                    theme.motion(),
+                ));
+            }
+            ui::widget::Checkbox::paint(scene, transform, theme, &face);
         }
         text_renderer.draw_text(
             scene,
@@ -455,6 +546,14 @@ impl Widget for ActionButton {
             }
             _ => {}
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.check_moving()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.check_moving()
     }
 
     fn name(&self) -> &'static str {

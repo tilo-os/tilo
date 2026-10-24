@@ -1114,6 +1114,8 @@ pub struct InstallerApp {
     /// Scroll position survives incidental composition rebuilds (network
     /// status, validation, progress). Deliberate step changes reset it.
     viewport_offset: Rc<Cell<(f32, f32)>>,
+    /// The motion of the checkboxes the view rebuilds on each change.
+    check_motions: Rc<ui::widget::FaceMotions>,
     /// Disk discovery, install, preflight and power. The live medium runs
     /// the real helpers; host tests substitute a recording fake.
     backend: Arc<dyn InstallBackend>,
@@ -1299,6 +1301,7 @@ impl InstallerApp {
             proxy_slot: None,
             power_probe: || None,
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
+            check_motions: Rc::default(),
             backend: Arc::new(SystemBackend),
             console: None,
         }
@@ -3666,7 +3669,8 @@ impl InstallerApp {
                 ),
             )
             .with_test_id("recovery_ack")
-            .checkbox(self.recovery_ack),
+            .checkbox(self.recovery_ack)
+            .with_check_motions(&self.check_motions),
         ));
 
         // Begin is gated on the recovery-key acknowledgement when
@@ -3833,7 +3837,8 @@ impl InstallerApp {
                 ),
             )
             .with_test_id("recovery_key_saved")
-            .checkbox(self.recovery_key_saved),
+            .checkbox(self.recovery_key_saved)
+            .with_check_motions(&self.check_motions),
         ));
     }
 }
