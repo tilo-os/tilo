@@ -578,8 +578,7 @@ async fn prepare_admission(
         .iter()
         .filter(|(key, sub)| {
             (**key != author || host_commit)
-                && !(role == crate::auth::PeerRole::PeerRelay
-                    && sub.role == crate::auth::PeerRole::PeerRelay)
+                && !(role == crate::auth::PeerRole::PeerRelay && runtime.federated(key, sub))
                 && steward
                     .as_ref()
                     .is_none_or(|steward| steward.contains(*key))
@@ -616,6 +615,7 @@ async fn prepare_admission(
     recipients.extend(sessions.iter().map(|(key, _)| *key));
     if role == crate::auth::PeerRole::PeerRelay {
         recipients.retain(|key| !runtime.known_peer_relays.contains(key));
+        tell_withheld(&runtime, source.as_ref());
     }
     let logical_offline_bytes = (delta_len as u64).saturating_mul(
         recipients
@@ -634,6 +634,32 @@ async fn prepare_admission(
             logical_offline_bytes,
         },
     })
+}
+
+/// Tell every other federated host subscribed to `runtime`'s workspace that
+/// it is behind: a change one federated host sent is not forwarded to
+/// another (that would loop a mesh), so each asks for what it lacks
+/// instead. From a host, a `SyncRequest` says exactly that
+/// ([`crate::federation`]); its heads are not this host's to send.
+fn tell_withheld(runtime: &crate::workspace::WorkspaceRuntime, source: Option<&StateSource>) {
+    let origin = source.map(|source| source.peer.device_public_key);
+    let workspace_id = runtime.store.workspace_id();
+    for (key, subscriber) in &runtime.subscribers {
+        if runtime.federated(key, subscriber) && Some(*key) != origin {
+            // A host too far behind to take the word reconnects, and asks
+            // for everything it lacks then.
+            if subscriber
+                .tx
+                .try_send(Envelope::SyncRequest {
+                    workspace_id,
+                    have_heads: Vec::new(),
+                })
+                .is_err()
+            {
+                let _ = subscriber.disconnect.try_send(());
+            }
+        }
+    }
 }
 
 /// Queued offline copies of an unretained delta: its encoding and the

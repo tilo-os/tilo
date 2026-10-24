@@ -21,6 +21,9 @@ tilo-user-identity = { path = "../tilo-user-identity" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # Import, task and membership commands, and the legacy policy basis.
 tilo-peer-state = { path = "../tilo-peer-state" }
+# The shortcut change a shortcut save commits.
+tilo-automation = { path = "../automation" }
+serde_json.workspace = true
 
 [lints]
 workspace = true

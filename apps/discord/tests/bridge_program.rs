@@ -638,6 +638,7 @@ fn program() -> Shortcut {
         grant: Vec::new(),
         triggers: triggers(),
         saved_by: None,
+        saved_proof: None,
     }
 }
 
