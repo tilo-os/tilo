@@ -417,31 +417,31 @@ pub fn login_account() -> Option<LoginAccount> {
     })
 }
 
-/// The command a Host session runs: the login shell as a login shell
-/// (`argv[0]` prefixed with `-`), or the requested program run by it. With
-/// `runs` (a key and the rc file [`crate::runs::bash_rc`] wrote) a `bash`
-/// starts on that rc file instead, which reads the profile as a login shell
-/// would and marks each command run.
+/// The command a Host session runs: the login shell as the session's
+/// interactive login shell ([`crate::shell_start`], a `bash` on `rc`), or
+/// the requested program run by the login shell (`argv[0]` prefixed with
+/// `-`). `runs` is the key a marking rc file reads.
 pub fn host_command(
     account: &LoginAccount,
     term: &str,
     program: &[String],
-    runs: Option<(&str, &Path)>,
+    rc: Option<&Path>,
+    runs: Option<&str>,
 ) -> std::process::Command {
     use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new(&account.shell);
-    let name = account
-        .shell
-        .file_name()
-        .map_or_else(|| "sh".into(), |n| n.to_string_lossy().into_owned());
     cmd.env_remove(crate::runs::KEY_ENV);
-    if let (Some((key, rc)), true) = (runs, program.is_empty()) {
-        cmd.arg("--rcfile").arg(rc).arg("-i");
-        cmd.env(crate::runs::KEY_ENV, key);
+    if program.is_empty() {
+        cmd.args(crate::shell_start::interactive_args(&account.shell, rc));
+        if let Some(key) = runs {
+            cmd.env(crate::runs::KEY_ENV, key);
+        }
     } else {
+        let name = account
+            .shell
+            .file_name()
+            .map_or_else(|| "sh".into(), |n| n.to_string_lossy().into_owned());
         cmd.arg0(format!("-{name}"));
-    }
-    if !program.is_empty() {
         cmd.arg("-c");
         cmd.arg(exec_script(program));
     }
@@ -638,14 +638,14 @@ mod tests {
             home: dir.path().to_path_buf(),
             shell: PathBuf::from("/usr/bin/fish"),
         };
-        let cmd = host_command(&account, "xterm-256color", &[], None);
+        let cmd = host_command(&account, "xterm-256color", &[], None, None);
         assert_eq!(cmd.get_program(), "/usr/bin/fish");
-        assert_eq!(cmd.get_args().count(), 0);
+        assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["-l"]);
         assert_eq!(cmd.get_current_dir(), Some(dir.path()));
         let home = (std::ffi::OsStr::new("HOME"), Some(dir.path().as_os_str()));
         assert!(cmd.get_envs().any(|pair| pair == home));
 
-        let run = host_command(&account, "xterm", &["htop".into(), "-d".into()], None);
+        let run = host_command(&account, "xterm", &["htop".into(), "-d".into()], None, None);
         let args: Vec<_> = run.get_args().collect();
         assert_eq!(args, ["-c", "exec 'htop' '-d'"]);
     }

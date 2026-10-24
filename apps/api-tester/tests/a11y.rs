@@ -116,14 +116,14 @@ fn every_control_is_a_focusable_accessible_node() {
         roles.contains(&Role::TextInput),
         "URL editor is a TextInput: {roles:?}"
     );
-    // The request tabs + the response-view switch are segmented groups.
+    // The request tabs and the response views are tab lists.
     assert!(
-        roles.iter().filter(|r| **r == Role::Group).count() >= 2,
-        "request tabs + response view are Groups, got {roles:?}"
+        roles.iter().filter(|r| **r == Role::TabBar).count() >= 2,
+        "request tabs and response views are tab lists, got {roles:?}"
     );
 
     // Labels / values a screen reader announces.
-    for name in ["Send", "Save", "New collection", "Search", "Hide sidebar"] {
+    for name in ["Send", "Save request", "New collection", "Hide sidebar"] {
         assert!(
             nodes
                 .iter()
@@ -146,14 +146,14 @@ fn every_control_is_a_focusable_accessible_node() {
     assert!(
         nodes
             .iter()
-            .any(|n| n.role == Role::Group && n.value.as_deref() == Some("Params")),
-        "the request-tab group announces the active tab"
+            .any(|n| n.role == Role::TabBar && n.value.as_deref() == Some("Params")),
+        "the request tab bar announces the active tab"
     );
     assert!(
         nodes
             .iter()
-            .any(|n| n.role == Role::Group && n.value.as_deref() == Some("Pretty")),
-        "the response-view group announces the active view"
+            .any(|n| n.role == Role::TabBar && n.value.as_deref() == Some("Pretty")),
+        "the response tab bar announces the active view"
     );
     // A saved request is an addressable, labelled row of the requests list
     // that reports selection, led by its method.
@@ -297,12 +297,13 @@ fn tab_traverses_every_control_in_order() {
         "Tab visits every focusable node, including platform controls"
     );
     let stops: Vec<_> = all_stops
-        .into_iter()
+        .iter()
+        .cloned()
         .skip_while(|(role, _)| *role != Role::ComboBox)
         .collect();
 
     // The builder comes first, top-left to top-right: method picker, URL
-    // field, Save, Send, then the request tabs.
+    // field, then the request tabs. Save and Send are the header's.
     let roles: Vec<Role> = stops.iter().map(|(r, _)| *r).collect();
     assert_eq!(
         roles.first(),
@@ -314,19 +315,25 @@ fn tab_traverses_every_control_in_order() {
         Some(&Role::TextInput),
         "second stop is the URL field"
     );
-    assert_eq!(stops[2].1.as_deref(), Some("Save"));
-    assert_eq!(stops[3].1.as_deref(), Some("Send"));
     assert_eq!(
-        roles.get(4),
-        Some(&Role::Group),
+        roles.get(2),
+        Some(&Role::TabBar),
         "request tabs follow the endpoint row"
     );
+    for name in ["Save request", "Send"] {
+        assert!(
+            all_stops
+                .iter()
+                .any(|(_, stop)| stop.as_deref() == Some(name)),
+            "{name} is a stop"
+        );
+    }
     let divider = roles
         .iter()
         .position(|role| *role == Role::Separator)
         .expect("the resize divider is keyboard reachable");
     assert!(
-        divider > 4,
+        divider > 2,
         "the divider follows the request controls in directional focus order"
     );
     assert_eq!(
@@ -443,10 +450,10 @@ fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     let mut app = sample();
     let d = app.harness();
     let before = d.targets()["api.request-divider"];
-    let top = d.targets()["api.send"].y0;
+    let top = d.targets()["api.url"].y0;
     assert!(
         before.y0 - top < 300.0,
-        "three parameter rows fit above the response: divider {before:?}, send y={top}"
+        "three parameter rows fit above the response: divider {before:?}, URL y={top}"
     );
     assert!(
         reset_disabled(d),
@@ -574,9 +581,10 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
         semantic_nodes(d).iter().any(|node| {
             node.action_target.as_deref() == Some("api.response-view:segment:2")
                 && node.name.as_deref() == Some("Headers")
-                && node.state.checked == Some(true)
+                && node.role == Role::Tab
+                && node.state.selected
         }),
-        "the real response switch selects Headers"
+        "the real response tabs select Headers"
     );
     // Response presentation changes do not save a request. Open the form
     // through the real request Save control before checking resize custody.

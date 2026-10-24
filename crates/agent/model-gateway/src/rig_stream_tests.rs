@@ -105,6 +105,7 @@ async fn test_stream_gated(
         profile: profile.clone(),
         model: "checked-model".into(),
         streaming: true,
+        api: None,
         target: crate::openai::Target::Standard,
         authenticated: true,
         budget: tilo_test_env::hang_bound(),
@@ -216,7 +217,7 @@ async fn reasoning_and_token_limit_are_preserved_without_dispatch() {
     let response = neutral_response(result.unwrap()).unwrap();
     assert_eq!(response.stop_reason, neutral::StopReason::OutputLimit);
     assert!(response.tool_calls().is_err());
-    assert!(response.message.content.iter().any(|content| matches!(content, neutral::Content::Reasoning { text } if text == "provider summary")));
+    assert!(response.message.content.iter().any(|content| matches!(content, neutral::Content::Reasoning { text, .. } if text == "provider summary")));
     assert!(
         events
             .iter()

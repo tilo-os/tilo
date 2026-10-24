@@ -19,6 +19,9 @@ const LAG_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// How many frames the reader reads ahead of a state frame in progress.
 const READ_AHEAD: usize = 32;
+/// A state frame handled for this long is logged: every state frame
+/// behind it, a call's heartbeat among them, waited as long.
+const SLOW_STATE_FRAME: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Most commits one run queues before the first is answered
 /// ([`SessionReaderLoop::handle_commit_run`]).
@@ -348,7 +351,20 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                         send_private_reply(cx.session.private_tx, reply).await?;
                     }
                 }
-                EnvelopeV2::State(env) => self.handle_state_frame(env, inbound_budget, cx).await?,
+                EnvelopeV2::State(env) => {
+                    let kind = env.kind();
+                    let started = std::time::Instant::now();
+                    self.handle_state_frame(env, inbound_budget, cx).await?;
+                    let held = started.elapsed();
+                    if held >= SLOW_STATE_FRAME {
+                        tracing::info!(
+                            kind,
+                            held_ms = held.as_millis(),
+                            backlog = self.inbound.backlog.len(),
+                            "a state frame held its connection"
+                        );
+                    }
+                }
                 frame => {
                     if let Some(reply) = handle_private(frame, cx.peer, cx.session).await? {
                         send_private_reply(cx.session.private_tx, reply).await?;

@@ -690,6 +690,21 @@ pub fn draw_target_to_surface(
     }
 }
 
+/// [`draw_target_to_surface`], submitted on its own. With nothing drawn into
+/// the target since, this shows the last frame again: a host that acquired
+/// `texture` for a frame it then skipped presents that frame rather than a
+/// cleared texture.
+pub fn submit_target_to_surface(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    surface: &RenderSurface<'_>,
+    texture: &Texture,
+) {
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    draw_target_to_surface(device, &mut encoder, surface, texture);
+    queue.submit([encoder.finish()]);
+}
+
 /// Prefix of every line a window prints about the adapter it renders on.
 /// The compositor reads app stderr for it; session checks grep for it.
 pub const ADAPTER_LINE_PREFIX: &str = "tilo-gpu:";

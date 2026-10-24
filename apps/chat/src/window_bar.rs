@@ -1,9 +1,10 @@
 //! Chat's toolbar, as slots in the window's bar ([`ui::window_toolbar`]).
 //!
-//! The bar shows the channels' toggle, the conversation (a channel, a person
-//! or an agent's task) as the window's location, and what can be done to it:
-//! stopping a shared view, floating an agent's conversation, the call in
-//! progress and leaving it, the pinned messages and the people; the host's
+//! The bar shows the shell's sidebar toggle, the conversation (a channel, a
+//! person or an agent's task) as the window's location, and what can be done
+//! to it: stopping a shared view, floating an agent's conversation, the call
+//! in progress, its microphone and leaving it, the pinned messages and the
+//! people; the host's
 //! model commands and creating a channel in its menu. Search is the bar's
 //! own. Each slot runs the window's own [`Hit`], as a press on the control
 //! the conversation used to draw did.
@@ -46,12 +47,23 @@ impl ChatApp {
                     ToolbarAction::new("call", "volume-2", name).on(true),
                     Hit::StartCall,
                 ));
+                // The microphone stays at hand wherever the call is.
+                let (icon, label) = if self.microphone_missing() {
+                    ("mic-off", "chat-call-no-microphone")
+                } else if self.call.muted {
+                    ("mic-off", "chat-call-unmute")
+                } else {
+                    ("mic", "chat-call-mute")
+                };
+                let label = crate::i18n::t(label);
+                actions.push((ToolbarAction::new("call-mute", icon, label), Hit::CallMute));
                 actions.push((
                     ToolbarAction::new(
                         "call-leave",
                         "phone-off",
                         crate::i18n::t("chat-call-leave-action"),
-                    ),
+                    )
+                    .destructive(),
                     Hit::CallLeave,
                 ));
             }
@@ -88,24 +100,38 @@ impl ChatApp {
         actions
     }
 
-    /// The window bar's slots for the conversation shown.
+    /// The window bar's slots for the conversation shown, starting from the
+    /// shell's own.
     fn window_toolbar(&self) -> WindowToolbar {
         let identity = self.header_identity_text();
-        WindowToolbar {
+        let mut bar = self
+            .bar
+            .as_ref()
+            .map(ui::widget::WindowBarLink::slots)
+            .unwrap_or_default();
+        if self.thread_is_page() {
             // A thread pushed over a narrow window is the whole page: its
             // own Back leads it.
-            sidebar: (!self.thread_is_page()).then(|| self.left_flap_open()),
-            location: Some(ToolbarLocation {
-                label: identity.name,
-                ..ToolbarLocation::default()
-            }),
-            actions: self
-                .window_bar_actions()
-                .into_iter()
-                .map(|(action, _)| action)
-                .collect(),
-            ..WindowToolbar::default()
+            bar.sidebar = None;
         }
+        // The location is what the window shows: the call while its stage
+        // fills the window, as the channels' chosen row says.
+        let call = (self.call.active && self.call.expanded)
+            .then(|| {
+                self.channel(&self.call.channel)
+                    .map(|channel| channel.name.clone())
+            })
+            .flatten();
+        bar.location = Some(ToolbarLocation {
+            label: call.unwrap_or(identity.name),
+            ..ToolbarLocation::default()
+        });
+        bar.actions = self
+            .window_bar_actions()
+            .into_iter()
+            .map(|(action, _)| action)
+            .collect();
+        bar
     }
 
     pub(crate) fn declare_window_toolbar(&self) {
@@ -115,8 +141,11 @@ impl ChatApp {
     /// Run what the person did in the window's bar as the window's own hits.
     pub(crate) fn apply_window_toolbar(&mut self, doc: &mut ui::widget::Edits<'_>) {
         for event in ui::window_toolbar::take_events() {
+            if self.bar.as_ref().is_some_and(|bar| bar.event(&event)) {
+                self.canonical_dirty = true;
+                continue;
+            }
             let hit = match event {
-                ToolbarEvent::ToggleSidebar => Hit::ToggleLeftFlap,
                 ToolbarEvent::Action { id } => {
                     let Some((_, hit)) = self
                         .window_bar_actions()

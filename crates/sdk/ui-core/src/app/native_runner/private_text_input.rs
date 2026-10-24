@@ -114,6 +114,13 @@ impl Bridge {
     pub(super) fn admitted(&self) -> bool {
         self.warm.is_some()
     }
+    /// Whether standard text input (and with it the on-screen keyboard) may
+    /// serve the focused field: always when the field takes ordinary commits,
+    /// and for one that takes text only through deferred receipts once
+    /// dictation prepared it.
+    pub(super) fn standard_input_open(&self, app: &App) -> bool {
+        !app.focused_ime_refuses_ordinary_commits() || self.admitted()
+    }
     pub(super) fn pending(&self) -> bool {
         self.pending.is_some()
     }

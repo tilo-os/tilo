@@ -73,8 +73,8 @@ impl ShellOverlayHost {
         if self.palette_visible
             && let Some(chrome) = self.chrome.clone()
         {
-            let calls = self.calls_here(presence);
-            chrome.borrow_mut().publish_calls_here(calls);
+            let calls = self.live_calls(presence);
+            chrome.borrow_mut().publish_live_calls(calls);
         }
         // Boxed so each section keeps its address while the caller draws
         // into it too: a floating surface's backdrop layer is found by the

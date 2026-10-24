@@ -64,6 +64,12 @@ const PERMISSIONS_ALL: &str = "permissions-all";
 const NETWORK_WIFI_OFF: &str = "network-wifi-off";
 const NETWORK_SCANNING: &str = "network-scanning";
 const NETWORK_KNOWN: &str = "network-known";
+/// Network with a modem: registered at home, roaming, its SIM asking for
+/// the PIN, and asking for the PUK after too many wrong PINs.
+const NETWORK_MOBILE: &str = "network-mobile";
+const NETWORK_MOBILE_ROAMING: &str = "network-mobile-roaming";
+const NETWORK_MOBILE_LOCKED: &str = "network-mobile-locked";
+const NETWORK_MOBILE_PUK: &str = "network-mobile-puk";
 
 /// Devices & sync with a device's row open, asking whether to remove it.
 const DEVICES_REMOVE: &str = "devices-remove";
@@ -118,6 +124,10 @@ pub fn names() -> &'static [&'static str] {
                 NETWORK_WIFI_OFF,
                 NETWORK_SCANNING,
                 NETWORK_KNOWN,
+                NETWORK_MOBILE,
+                NETWORK_MOBILE_ROAMING,
+                NETWORK_MOBILE_LOCKED,
+                NETWORK_MOBILE_PUK,
                 DEVICES_REMOVE,
                 SPEAKERS_LAYOUT,
                 SPEAKERS_LAYOUT_PICKED,
@@ -139,6 +149,10 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
         ) => (1200, 1300),
         Some(STORAGE_DRIVES) => (1200, 1450),
         Some(PERMISSIONS_ALL) => (1200, 2000),
+        // The Mobile section follows the rest of Network.
+        Some(
+            NETWORK_MOBILE | NETWORK_MOBILE_ROAMING | NETWORK_MOBILE_LOCKED | NETWORK_MOBILE_PUK,
+        ) => (1200, 2600),
         Some(SPEAKERS_LAYOUT | SPEAKERS_LAYOUT_PICKED | SPEAKERS_LAYOUT_DRAG) => (1200, 980),
         _ => WIDE_VIEWPORT,
     }
@@ -177,6 +191,8 @@ pub struct CaptureScene {
     /// Whether the capture asks about removing the first other device.
     pub device_removal: bool,
     pub network: Option<NetworkSample>,
+    /// The modem the mobile captures show; `None` for none.
+    pub mobile: Option<MobileSample>,
     /// Where the speaker setup stands, for the room layout captures.
     pub speakers: Option<SpeakersSample>,
 }
@@ -214,6 +230,19 @@ pub enum NetworkSample {
     Scanning,
     /// Connected, with a known network's details open.
     Known,
+}
+
+/// Where the mobile captures' modem stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MobileSample {
+    /// Registered with its home network on LTE, data on.
+    Registered,
+    /// On another operator's network abroad.
+    Roaming,
+    /// The SIM asks for its PIN.
+    Locked,
+    /// The SIM asks for its PUK after too many wrong PINs.
+    Puk,
 }
 
 /// A capture's room bridged to Discord, its person's account standing as
@@ -315,6 +344,13 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             Some(NETWORK_WIFI_OFF) => Some(NetworkSample::WifiOff),
             Some(NETWORK_SCANNING) => Some(NetworkSample::Scanning),
             Some(NETWORK_KNOWN) => Some(NetworkSample::Known),
+            _ => None,
+        },
+        mobile: match fixture.scenario() {
+            Some(NETWORK_MOBILE) => Some(MobileSample::Registered),
+            Some(NETWORK_MOBILE_ROAMING) => Some(MobileSample::Roaming),
+            Some(NETWORK_MOBILE_LOCKED) => Some(MobileSample::Locked),
+            Some(NETWORK_MOBILE_PUK) => Some(MobileSample::Puk),
             _ => None,
         },
         speakers: match fixture.scenario() {
@@ -589,9 +625,15 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
             Staged::Pane(Category::Keyboard)
         }
-        Some(NETWORK_WIFI_OFF | NETWORK_SCANNING | NETWORK_KNOWN) => {
-            Staged::Pane(Category::Network)
-        }
+        Some(
+            NETWORK_WIFI_OFF
+            | NETWORK_SCANNING
+            | NETWORK_KNOWN
+            | NETWORK_MOBILE
+            | NETWORK_MOBILE_ROAMING
+            | NETWORK_MOBILE_LOCKED
+            | NETWORK_MOBILE_PUK,
+        ) => Staged::Pane(Category::Network),
         Some(DEVICES_REMOVE) => Staged::Pane(Category::DeviceMesh),
         Some(SPEAKERS_LAYOUT | SPEAKERS_LAYOUT_PICKED | SPEAKERS_LAYOUT_DRAG) => {
             Staged::Pane(Category::Speakers)
@@ -745,7 +787,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 30 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 34 + CODEC_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),
@@ -759,7 +801,15 @@ mod tests {
         ] {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Displays));
         }
-        for scenario in [NETWORK_WIFI_OFF, NETWORK_SCANNING, NETWORK_KNOWN] {
+        for scenario in [
+            NETWORK_WIFI_OFF,
+            NETWORK_SCANNING,
+            NETWORK_KNOWN,
+            NETWORK_MOBILE,
+            NETWORK_MOBILE_ROAMING,
+            NETWORK_MOBILE_LOCKED,
+            NETWORK_MOBILE_PUK,
+        ] {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Network));
         }
         for scenario in [

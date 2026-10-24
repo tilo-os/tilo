@@ -10,7 +10,7 @@ fn anthropic() -> ProviderProfile {
 }
 
 fn sent(profile: &ProviderProfile, body: Value) -> Value {
-    outbound_body(profile, "claude-x", body, false).unwrap()
+    outbound_body(profile, "claude-x", body, false, false).unwrap()
 }
 
 fn markers(body: &Value) -> usize {
@@ -373,7 +373,7 @@ fn openai_compatible_bodies_get_no_breakpoints() {
         ],
         "tools": [{"type": "function", "function": {"name": "invoke", "parameters": {}}}]
     });
-    let body = outbound_body(&profile, "claude-x", caller.clone(), true).unwrap();
+    let body = outbound_body(&profile, "claude-x", caller.clone(), true, false).unwrap();
     assert!(!body.to_string().contains("cache_control"));
     assert_eq!(body["messages"], caller["messages"]);
     assert_eq!(body["tools"], caller["tools"]);

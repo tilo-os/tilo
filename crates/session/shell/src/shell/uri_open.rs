@@ -305,6 +305,7 @@ mod tests {
                         kind: AppKind::Other("Notes".into()),
                         label: "Notes".into(),
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: 9_300_004,
@@ -313,6 +314,7 @@ mod tests {
                         app_id: "so.tilo.browser".into(),
                         surface_id: 9_300_005,
                     },
+                    app_title: None,
                 },
             ],
             active_tab: 9_300_003,

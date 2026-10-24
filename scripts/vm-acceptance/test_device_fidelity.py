@@ -1,4 +1,4 @@
-"""The agent-door (M01-M04) and input-fidelity (I01-I07) checks, without a VM.
+"""The agent-door (M01-M04) and input-fidelity (I01-I08) checks, without a VM.
 
 The agent checks run for real against a fake `tilo-runtime-mcp` and a fake permission
 prompt, through the same guest client the VM runs; the input checks' parsers read the
@@ -361,6 +361,27 @@ class InputDeviceParsers(unittest.TestCase):
         wrong_bus = dict(input_devices.KEYBOARD_ID, bus=0x06)
         self.assertIsNone(input_devices.find_device(devices, wrong_bus))
 
+    def test_the_kernel_state_says_which_outputs_scan_out(self):
+        state = (
+            "plane[31]: plane-0\n\tcrtc=crtc-0\n\tfb=44\n\t\tallocated by = tilo\n\t\trefcount=2\n"
+            "plane[32]: plane-1\n\tcrtc=(null)\n\tfb=0\n"
+            "plane[33]: plane-2\n\tcrtc=crtc-1\n\tfb=0\n"
+            "crtc[34]: crtc-0\n\tenable=1\n\tactive=1\n\tself_refresh_active=0\n"
+            "crtc[35]: crtc-1\n\tenable=1\n\tactive=1\n"
+            "crtc[36]: crtc-2\n\tenable=0\n\tactive=0\n"
+            "connector[37]: Virtual-1\n\tcrtc=crtc-0\n\tself_refresh_aware=0\n"
+            "connector[38]: Virtual-2\n\tcrtc=crtc-1\n"
+            "connector[39]: Virtual-3\n\tcrtc=crtc-2\n"
+            "connector[40]: Virtual-4\n\tcrtc=(null)\n"
+        )
+        blocks = input_devices.parse_kms_state(state)
+        self.assertEqual(blocks[0], {"kind": "plane", "name": "plane-0", "crtc": "crtc-0", "fb": "44"})
+        self.assertEqual(
+            input_devices.scanning_out(blocks, ["Virtual-1", "Virtual-2", "Virtual-3", "Virtual-4"]),
+            {"Virtual-1": "crtc-0", "Virtual-2": None, "Virtual-3": None, "Virtual-4": None},
+            "only an active CRTC with a framebuffer on a plane scans out",
+        )
+
     def test_udev_properties(self):
         props = input_devices.parse_properties("ID_INPUT=1\nID_INPUT_TOUCHPAD=1\nID_INPUT_WIDTH_MM=130\n")
         self.assertEqual(props["ID_INPUT_WIDTH_MM"], "130")
@@ -368,11 +389,12 @@ class InputDeviceParsers(unittest.TestCase):
     def test_every_check_has_a_registered_order_and_area(self):
         from run import ORDER  # noqa: PLC0415
         ids = {c.id for c in core.REGISTRY if c.area in ("agent", "input")}
-        self.assertEqual(ids, {f"M0{i}" for i in range(1, 5)} | {f"I0{i}" for i in range(1, 8)})
+        self.assertEqual(ids, {f"M0{i}" for i in range(1, 5)} | {f"I0{i}" for i in range(1, 9)})
         self.assertTrue(ids <= set(ORDER), ids - set(ORDER))
         calibrating = {c.id for c in core.REGISTRY if c.area == "input" and c.func.__name__ in
-                       ("touchpad_tap_click", "touchpad_scroll", "disable_while_typing")}
-        self.assertEqual(calibrating, {"I05", "I06", "I07"})
+                       ("touchpad_tap_click", "touchpad_scroll", "disable_while_typing",
+                        "wake_from_sleep")}
+        self.assertEqual(calibrating, {"I05", "I06", "I07", "I08"})
 
 
 if __name__ == "__main__":

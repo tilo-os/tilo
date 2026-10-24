@@ -1,7 +1,7 @@
 //! Typed native workspace membership commands, not grant or identity blobs.
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::AgentPreset;
-use tilo_action_policy::{Grant, GrantId};
+use tilo_action_policy::{Answer, Grant, GrantId, KindSet, TreePath};
 
 use crate::installation::{Installation, InstallationId};
 use tilo_user_identity::DeviceCert;
@@ -124,6 +124,10 @@ fn validate_bot_entry(entry: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Why a retired task grant command is refused.
+pub const RETIRED_TASK_GRANTS: &str =
+    "a task's grants are retired; an issue's grants are ordinary grants";
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceMembershipCommand {
     AddAgent {
@@ -136,6 +140,22 @@ pub enum WorkspaceMembershipCommand {
     /// Delegate normal app authorship after an authenticated person opens it.
     GrantAppAuthorship {
         app: String,
+    },
+    /// Retired with room tasks: an issue's grants are ordinary grants. It
+    /// keeps the commands after it at their encoded positions, still reads
+    /// where rooms hold it, and is refused.
+    #[serde(rename = "GrantForTask")]
+    RetiredGrantForTask {
+        task: String,
+        node: TreePath,
+        kinds: KindSet,
+        answer: Answer,
+    },
+    /// Retired with room tasks, as [`Self::RetiredGrantForTask`].
+    #[serde(rename = "RevokeForTask")]
+    RetiredRevokeForTask {
+        task: String,
+        grant: GrantId,
     },
     /// Record `grant` in the room, as the caller gives it: they must hold the
     /// room's grant action and may give no more than they hold.
@@ -185,6 +205,8 @@ impl WorkspaceMembershipCommand {
         match self {
             Self::AddAgent { agent, .. } | Self::RemoveAgent { agent } => Some(agent),
             Self::GrantAppAuthorship { .. }
+            | Self::RetiredGrantForTask { .. }
+            | Self::RetiredRevokeForTask { .. }
             | Self::Grant { .. }
             | Self::Revoke { .. }
             | Self::InstallBot(_)
@@ -204,6 +226,12 @@ impl WorkspaceMembershipCommand {
     /// # Errors
     /// Refuses empty, unbounded, unnormalised or control-containing identifiers.
     pub fn validate(&self) -> Result<(), String> {
+        if matches!(
+            self,
+            Self::RetiredGrantForTask { .. } | Self::RetiredRevokeForTask { .. }
+        ) {
+            return Err(RETIRED_TASK_GRANTS.into());
+        }
         if let Self::InstallBot(install) = self {
             install.installation.validate()?;
             if install.program.len() > tilo_automation::program::MAX_PROGRAM_BYTES {
@@ -406,5 +434,70 @@ mod tests {
         }
         .validate()
         .unwrap();
+    }
+
+    /// Postcard names a variant by its position; rooms keep these commands,
+    /// and the digests of their administration requests, in those bytes.
+    #[test]
+    fn a_membership_command_keeps_its_bytes_around_the_retired_task_grants() {
+        let cases: Vec<(WorkspaceMembershipCommand, Vec<u8>)> = vec![
+            (
+                WorkspaceMembershipCommand::RemoveAgent { agent: "a".into() },
+                vec![0x01, 0x01, b'a'],
+            ),
+            (
+                WorkspaceMembershipCommand::GrantAppAuthorship { app: "x".into() },
+                vec![0x02, 0x01, b'x'],
+            ),
+            (
+                WorkspaceMembershipCommand::RetiredGrantForTask {
+                    task: "t".into(),
+                    node: TreePath::room("r"),
+                    kinds: KindSet::READ,
+                    answer: Answer::Allow,
+                },
+                [
+                    &[0x03, 0x01, b't', 0x06][..],
+                    b"room:r",
+                    &[0x01, 0x00, 0x02],
+                ]
+                .concat(),
+            ),
+            (
+                WorkspaceMembershipCommand::RetiredRevokeForTask {
+                    task: "t".into(),
+                    grant: GrantId::new("g"),
+                },
+                vec![0x04, 0x01, b't', 0x01, b'g'],
+            ),
+            (
+                WorkspaceMembershipCommand::Revoke {
+                    grant: GrantId::new("g"),
+                },
+                vec![0x06, 0x01, b'g'],
+            ),
+            (
+                WorkspaceMembershipCommand::WithdrawBotRequest { entry: "e".into() },
+                vec![0x0f, 0x01, b'e'],
+            ),
+        ];
+        for (command, golden) in cases {
+            assert_eq!(
+                postcard::to_stdvec(&command).unwrap(),
+                golden,
+                "{command:?}"
+            );
+            assert_eq!(
+                postcard::from_bytes::<WorkspaceMembershipCommand>(&golden).unwrap(),
+                command
+            );
+        }
+    }
+
+    #[test]
+    fn a_retired_task_grant_command_reads_and_is_refused() {
+        let held = [0x04, 0x01, b't', 0x01, b'g'];
+        let command = postcard::from_bytes::<WorkspaceMembershipCommand>(&held).unwrap();
+        assert_eq!(command.validate(), Err(RETIRED_TASK_GRANTS.into()));
     }
 }

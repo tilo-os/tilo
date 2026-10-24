@@ -577,8 +577,11 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
             lines += ['requirement = { cores = 16, memory = "32GiB" }',
                       f"outputs = {array([f'/target/thin-runtime/{path}' for path in SHARED_OUTPUTS])}"]
         else:
-            # An app's own crates, one of them compiled as one unit.
-            lines += ['requirement = { cores = 8, memory = "16GiB" }', f"needs = [{json.dumps(shared)}]"]
+            # An app's own crates, one of them compiled as one unit. One app's check compiling it
+            # afresh (optimized, with debug info) peaked at 7.4 GiB on 8 cores; reusing what is
+            # cached, at 2.1 GiB. The runtime size compiles several apps at once.
+            memory = "10GiB" if name.startswith("app-size/") else "16GiB"
+            lines += [f'requirement = {{ cores = 8, memory = "{memory}" }}', f"needs = [{json.dumps(shared)}]"]
         lines += ["timeout_secs = 5400", 'cost = "heavy"', "default = false"]
         return "\n".join(lines) + "\n" + cargo_check(name, spec, manifest, packages, ROOT)
 

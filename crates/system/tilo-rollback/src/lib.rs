@@ -68,6 +68,7 @@ pub mod approval;
 pub mod certify;
 pub mod confirm;
 pub mod counter;
+pub mod dual_boot;
 pub mod exec;
 pub mod generation;
 pub mod keyslots;

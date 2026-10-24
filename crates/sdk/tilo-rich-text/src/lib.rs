@@ -50,7 +50,9 @@ pub use blocks::{
     rich_text_at,
 };
 pub use composer::{ComposerFrame, RichTextComposer};
-pub use convert::{clip_block, clip_of_content, content_of, content_of_clip, document_mark};
+pub use convert::{
+    clip_block, clip_of_content, content_of, content_of_clip, document_mark, editor_mark,
+};
 pub use draft::Draft;
 pub use source::{Hosted, PersonField, RichTextField, RichTextSource};
 pub use surface::{FieldOutcome, RichTextSurface, SubmitKey};

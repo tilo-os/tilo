@@ -189,6 +189,11 @@ pub struct Metrics {
     pub aside_min_width: f32,
     /// A pane's figure (the time-zone globe), at the default text size.
     pub figure_size: f32,
+    /// The narrowest picture tile a chooser shows (a theme or wallpaper
+    /// preview) before its grid drops a column.
+    pub picture_tile_min_width: f32,
+    /// The width a picture tile asks for when nothing bounds its grid.
+    pub picture_tile_width: f32,
     /// How far a press may move and still be a click.
     pub click_slop: f32,
     /// The line a drag draws where the dragged item would land, and the
@@ -268,6 +273,8 @@ impl Metrics {
         chart_height: 168.0,
         aside_min_width: 240.0,
         figure_size: 280.0,
+        picture_tile_min_width: 104.0,
+        picture_tile_width: 168.0,
         click_slop: 4.0,
         drag_line_px: 2.0,
     };
@@ -390,6 +397,8 @@ impl Metrics {
             chart_height: self.chart_height * factor,
             aside_min_width: self.aside_min_width * factor,
             figure_size: self.figure_size * factor,
+            picture_tile_min_width: self.picture_tile_min_width * factor,
+            picture_tile_width: self.picture_tile_width * factor,
             click_slop: self.click_slop * factor,
             drag_line_px: self.drag_line_px * factor,
         }

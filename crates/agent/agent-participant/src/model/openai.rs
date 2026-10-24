@@ -32,9 +32,11 @@ pub const CLOUD_MODEL: &str = "gpt-4.1-mini-2025-04-14";
 /// real model may spend half a minute on.
 const PLAN_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// A model behind an OpenAI-compatible chat-completions endpoint with tool
-/// calls (`OpenAI`, vLLM, llama.cpp, Ollama, LM Studio, `OpenRouter`, Tilo
-/// Cloud's metered machine endpoint), planning as [`GatewayModel`] does. It
+/// A model behind an OpenAI-compatible endpoint with tool calls (`OpenAI`,
+/// vLLM, llama.cpp, Ollama, LM Studio, `OpenRouter`, Tilo Cloud's metered
+/// machine endpoint), planning as [`GatewayModel`] does: through chat
+/// completions, or Responses at `OpenAI`'s own API, whose reasoning models
+/// call tools only there ([`crate::profile::OPENAI_API_ENV`]). It
 /// calls the endpoint from this process with the key it was given: for a
 /// host operator's own endpoint, a Cloud machine's host and local
 /// development, not a sandboxed app.
@@ -202,6 +204,9 @@ impl EndpointTurns {
             .with_protocol(self.protocol);
         if let Some(param) = self.profile.token_limit_param() {
             client = client.with_token_limit_param(param);
+        }
+        if let Some(api) = self.profile.openai_api() {
+            client = client.with_openai_api(api);
         }
         if let Some(root) = &self.vault {
             client = client.with_credentials_in(root);

@@ -1,0 +1,6 @@
+{"manifest_version": 3, "name": "Counter", "version": "1.0",
+ "action": {"default_title": "Counter"},
+ "permissions": ["scripting"],
+ "host_permissions": ["http://127.0.0.1/*"],
+ "content_scripts": [{"matches": ["http://127.0.0.1/*"], "js": ["content.js"]}],
+ "background": {"service_worker": "worker.js"}}

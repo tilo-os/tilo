@@ -180,7 +180,10 @@ test('an explicit admission denial stops audio instead of retrying a refused gra
 
 test('late revocation of a replaced grant cannot end the newly admitted carrier', async () => {
   const f = await connected();
-  f.onEvent({kind:'granted',grant:{...f.grant,token:'02'}});
+  // The host forgot the participation and the session joined afresh: a new
+  // participation, so a new carrier.
+  const again = 'e'.repeat(64);
+  f.onEvent({kind:'granted',grant:{...f.grant,participation:again,token:'02',publication:`${CALL}/${again}`}});
   await drain();
   assert.equal(f.call.state.phase,'live');
   f.admission.enqueue(Uint8Array.of(STATUS_REVOKED));
