@@ -340,7 +340,13 @@ fn a_failed_saves_try_again_stays_in_the_window_bar_wide_and_compact() {
             button.bounds.x0 > shown.text_bounds.x1,
             "{width} px: {shown:?}"
         );
-        assert!(shown.whole || shown.beside == 0, "{width} px: {shown:?}");
-        assert!(button.labelled || width < 1280.0, "{width} px: {shown:?}");
+        // Wide, inline; compact, in a strip of its own under the row,
+        // its text whole.
+        assert_eq!(
+            shown.strip.is_some(),
+            width < 1280.0,
+            "{width} px: {shown:?}"
+        );
+        assert!(shown.whole && button.labelled, "{width} px: {shown:?}");
     }
 }
