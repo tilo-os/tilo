@@ -330,6 +330,72 @@ fn a_window_that_goes_away_hands_focus_to_its_left_neighbour_not_where_focus_was
 }
 
 #[test]
+fn a_focused_window_moved_to_another_strip_hands_its_strip_focus_to_its_neighbour() {
+    // [10 | 11]: the person works in 11, then moves its only tab to strip 2
+    // (the window menu's Move to workspace, a drop on another strip). Strip
+    // 1 focuses 10, beside it, rather than the group that is gone: every
+    // keyboard command on the focused window acts on that pointer.
+    let mut tree = tree();
+    tree.set_active_group(StripId(1), 11);
+    let moved = tree
+        .move_tab_across_strips(
+            StripId(1),
+            StripId(2),
+            110,
+            99,
+            DropTarget::GroupGap { gap_index: 1 },
+        )
+        .unwrap();
+    assert!(moved.source_group_removed);
+    assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+
+    // At the strip's start, the neighbour on the right.
+    let mut tree = self::tree();
+    tree.workspaces[0].strips[0]
+        .window_groups
+        .insert(0, group(12, &[120]));
+    tree.set_active_group(StripId(1), 12);
+    tree.move_tab_across_strips(
+        StripId(1),
+        StripId(2),
+        120,
+        99,
+        DropTarget::ExistingGroup {
+            group_id: 20,
+            tab_index: 0,
+        },
+    )
+    .unwrap();
+    assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+
+    // The strip's last window leaves: it has no focused group.
+    let mut tree = self::tree();
+    tree.set_active_group(StripId(2), 20);
+    tree.move_tab_across_strips(
+        StripId(2),
+        StripId(1),
+        200,
+        99,
+        DropTarget::GroupGap { gap_index: 0 },
+    )
+    .unwrap();
+    assert_eq!(tree.active_group_for(StripId(2)), None);
+
+    // A window that was not focused leaves the focus where it was.
+    let mut tree = self::tree();
+    tree.set_active_group(StripId(1), 10);
+    tree.move_tab_across_strips(
+        StripId(1),
+        StripId(2),
+        110,
+        99,
+        DropTarget::GroupGap { gap_index: 0 },
+    )
+    .unwrap();
+    assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+}
+
+#[test]
 fn activating_the_front_tab_again_records_nothing() {
     let mut group = group(30, &[300, 301]);
     group.activate_tab(300);

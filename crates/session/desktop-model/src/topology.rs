@@ -48,7 +48,9 @@ impl DesktopTree {
     /// Move `tab_id` out of `src_strip_id` and into `dest_strip_id` at
     /// `target` — the tree side of a cross-strip tab drop. The source group
     /// is removed if it empties; if the moved tab was its active tab, the
-    /// first remaining sibling becomes active.
+    /// first remaining sibling becomes active. A removed group that was its
+    /// strip's focused group hands focus on as a closed window's does
+    /// ([`Self::close_tab`]).
     ///
     /// `None`, with the tree unchanged, when the strips are the same, the
     /// destination (or the group `target` names) does not exist, or the tab
@@ -86,6 +88,7 @@ impl DesktopTree {
         // Validated above, so the insertion cannot miss; the snapshot keeps
         // "unchanged on `None`" true even if that ever stops holding.
         let before = self.workspaces.clone();
+        let source_index = self.group_index_holding(src_strip_id, tab_id);
         let (moved, source_group, source_group_removed) = self.detach_tab(src_strip_id, tab_id)?;
         let new_group = single_tab_group(new_group_id, moved.clone());
         let landed = self
@@ -120,6 +123,12 @@ impl DesktopTree {
             self.workspaces = before;
             return None;
         };
+        // The window left its strip as a closed one does: a strip whose
+        // focused group went with it focuses the neighbour it already shows,
+        // never a group that is no longer there.
+        if source_group_removed && let Some(index) = source_index {
+            self.hand_focus_to_neighbour(src_strip_id, source_group, index, true);
+        }
         Some(TabMove {
             source_group,
             source_group_removed,
@@ -448,30 +457,7 @@ impl DesktopTree {
         let group_removed = group.tabs.is_empty();
         if group_removed {
             strip.window_groups.remove(group_idx);
-            let at_index = strip
-                .window_groups
-                .get(group_idx)
-                .or_else(|| strip.window_groups.last())
-                .map(|group| group.id);
-            let on_the_left = group_idx
-                .checked_sub(1)
-                .and_then(|left| strip.window_groups.get(left))
-                .map(|group| group.id);
-            if self.active_group.get(&strip_id) == Some(&group_id) {
-                let next = if back_to_previous {
-                    on_the_left.or(at_index)
-                } else {
-                    at_index
-                };
-                match next {
-                    Some(next) => {
-                        self.active_group.insert(strip_id, next);
-                    }
-                    None => {
-                        self.active_group.remove(&strip_id);
-                    }
-                }
-            }
+            self.hand_focus_to_neighbour(strip_id, group_id, group_idx, back_to_previous);
         }
         Some(RemovedTab {
             strip: strip_id,
@@ -479,6 +465,60 @@ impl DesktopTree {
             tab,
             group_removed,
         })
+    }
+}
+
+impl DesktopTree {
+    /// The index, in `strip_id`, of the group holding `tab_id`.
+    fn group_index_holding(&self, strip_id: StripId, tab_id: TabId) -> Option<usize> {
+        self.workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .find(|strip| strip.id == strip_id)?
+            .window_groups
+            .iter()
+            .position(|group| group.tabs.iter().any(|tab| tab.id == tab_id))
+    }
+
+    /// `removed`, which stood at `index` of `strip_id`, has left the strip:
+    /// if it was the strip's focused group, focus goes to the group now at
+    /// its index (or the last), or with `to_the_left` to the one on its left
+    /// (at the strip's start, the one on its right). A strip left with no
+    /// group has no focused group.
+    fn hand_focus_to_neighbour(
+        &mut self,
+        strip_id: StripId,
+        removed: GroupId,
+        index: usize,
+        to_the_left: bool,
+    ) {
+        if self.active_group.get(&strip_id) != Some(&removed) {
+            return;
+        }
+        let Some(strip) = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .find(|strip| strip.id == strip_id)
+        else {
+            return;
+        };
+        let groups = &strip.window_groups;
+        let at_index = groups.get(index).or_else(|| groups.last());
+        let on_the_left = index.checked_sub(1).and_then(|left| groups.get(left));
+        let next = if to_the_left {
+            on_the_left.or(at_index)
+        } else {
+            at_index
+        };
+        match next.map(|group| group.id) {
+            Some(next) => {
+                self.active_group.insert(strip_id, next);
+            }
+            None => {
+                self.active_group.remove(&strip_id);
+            }
+        }
     }
 }
 
