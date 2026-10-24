@@ -5,8 +5,7 @@
 #   os-acceptance.sh ARCH IMAGE DEV OUT   IMAGE: os-image-ARCH's layout, DEV: os-dev-image-ARCH's;
 #                                         reports and logs into OUT
 #
-# Without a VM, the OS image is held to its size budget (os/image-size-budget.toml). Then the dev
-# image is installed onto a disk (os/dev/build-image.sh with TILO_SKIP_BUILD=1; it carries sshd
+# The dev image is installed onto a disk (os/dev/build-image.sh with TILO_SKIP_BUILD=1; it carries sshd
 # and tilo-control, which the gates drive the guests with), kept in OUT/disk for
 # publish-os-dev-ARCH, and three tracks run side by side, each booting throwaway overlays of that
 # disk or the OS image's own UKI:
@@ -50,10 +49,6 @@ use_cosign
 rm -rf "$out"
 mkdir -p "$out"
 status=0
-
-python3 tools/perf/image_size.py --oci-layout "$image/oci" --arch "$arch" --json "$out/image-size.json" --quiet \
-  && python3 os/tests/image_size_budget.py check --flavour "production-$arch" --report "$out/image-size.json" \
-  || { echo 'FAIL  the OS image is over its size budget'; status=1; }
 
 # The disk publish-os-dev-ARCH publishes once every gate passed: never booted itself (the gates
 # boot overlays of it), uncompressed so they read it fast (publication compresses it), following

@@ -6464,15 +6464,15 @@ arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 # a joined device signs in; nearby pairing from first-boot onboarding, a third device paired
 # through one without the identity key, sibling unlock and, on x86_64, wake; device-admin reach
 # through a relay; the installed desktop from the sign-in screen through first use, the apps,
-# hot-plugged input and the lock screen to tilo-vmd and app updates; the boot splash on a large
-# panel; and the OS image's size budget. `t outputs os-acceptance-x86_64` gives every gate's
+# hot-plugged input and the lock screen to tilo-vmd, app updates and a live system update; the
+# boot splash on a large panel. `t outputs os-acceptance-x86_64` gives every gate's
 # report and the guests' logs.
 [[check]]
 name = "os-acceptance-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-acceptance/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-acceptance.sh", "os/dev/**", "os/tests/**", "os/image-size-budget.toml", "tools/atspi_external_client.py", "crates/session/shell/tests/native_atspi_smoke.sh", "apps/file-explorer/tests/atspi_smoke.sh", "scripts/vm-acceptance/**", "tools/perf/image_size.py", "tools/perf/record.py"]
-needs = ["os-image-{arch}", "os-dev-image-{arch}", "signing-tools"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-acceptance.sh", "os/dev/**", "os/tests/**", "tools/atspi_external_client.py", "crates/session/shell/tests/native_atspi_smoke.sh", "apps/file-explorer/tests/atspi_smoke.sh", "scripts/vm-acceptance/**", "tools/perf/record.py"]
+needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-image-{arch}", "signing-tools"]
 outputs = ["/target/publish/os-acceptance/{arch}/**"]
 git = true
 requires = ["{node}", "/dev/kvm", "disk-100g"]
