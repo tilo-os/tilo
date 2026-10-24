@@ -504,9 +504,6 @@ struct Inputs {
     leading: [bool; 4],
     /// The app's own page stack can go back ([`NavShell::with_back`]).
     content_back: bool,
-    /// The window's empty state stands in for the overview, the content
-    /// and the inspector ([`NavShell::nothing_listed`]).
-    nothing_listed: bool,
     /// The docked sidebar width a person dragged to, authored at 1×.
     user_sidebar: Option<f64>,
     /// A navigation-list sidebar: rail while narrow, list while wide.
@@ -586,7 +583,6 @@ impl Default for Inputs {
             actions: [0; 4],
             leading: [false; 4],
             content_back: false,
-            nothing_listed: false,
             toolbar_in_bar: false,
             shell_bar: false,
             user_sidebar: None,
@@ -655,6 +651,11 @@ impl Inputs {
     /// The window bar shows the shell's own buttons and the app's actions.
     fn slots_in_bar(&self) -> bool {
         self.toolbar_in_bar || self.shell_bar
+    }
+
+    /// The window bar shows the sidebar toggle, the app's or the shell's.
+    fn toggle_in_window_bar(&self) -> bool {
+        self.toggle_in_bar || self.shell_bar
     }
 }
 
@@ -1073,9 +1074,11 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         Vec::new()
     };
-    // The window's empty state is its one screen, nothing to drill out of:
-    // the bar's toggle reaches the sidebar behind it, else Back does.
-    let drills = stack.len() > 1 && !(inputs.nothing_listed && inputs.toggle_in_bar);
+    // The bar's toggle reaches a sidebar screen; Back drills only past the
+    // first screen after it (a list, the empty state), else past the first.
+    let first =
+        usize::from(inputs.toggle_in_window_bar() && stack.first() == Some(&NavPane::Sidebar));
+    let drills = stack.len().saturating_sub(first) > 1;
 
     // 5. The header row.
     let needs_header = !inputs.slots_in_bar()
@@ -1083,8 +1086,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             || inputs.has_inspector
             || inputs.history.is_some()
             || Column::ALL.iter().any(|c| inputs.header_wanted(*c))
-            || inputs.content_back
-            || drills);
+            || (!inputs.toggle_in_bar && (inputs.content_back || drills)));
     // A header in the window's bar stands over the content and only while
     // the person reaches for the bar; the columns' bodies start at the top.
     let in_bar = inputs.header_in_window_bar();
@@ -1289,7 +1291,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         }
         NavPane::Content => Column::Content,
     };
-    let push_back = drills && front > 0;
+    let push_back = drills && front > first;
     let window_row = Rect::new(0.0, top, w, top + hh);
     if hh > 0.0
         && !push_back
@@ -1320,9 +1322,9 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         None
     };
     if let Some(column) = back_column
-        && inputs.slots_in_bar()
+        && (inputs.slots_in_bar() || inputs.toggle_in_bar)
     {
-        // Back is the window bar's ([`NavShell::window_toolbar`]).
+        // Back is the window bar's, beside its toggle ([`NavShell::window_toolbar`]).
         g.back_column = Some(column);
     } else if let Some(column) = back_column
         && (push_back || g.header(column) != Rect::ZERO)
@@ -2319,7 +2321,6 @@ impl NavShell {
             inputs.has_inspector = body(Column::Inspector);
             // The overview's rail and controls go with it.
             let listed = !self.nothing_listed_shown();
-            inputs.nothing_listed = !listed;
             inputs.has_rail = listed && has(self.rail.is_some(), self.pending.rail.as_ref());
             inputs.has_controls =
                 listed && has(self.controls.is_some(), self.pending.controls.as_ref());
@@ -2867,37 +2868,6 @@ impl NavShell {
         }
     }
 
-    fn take_requests(&mut self) -> bool {
-        let mut acted = self.requests.toggle.replace(false);
-        if acted {
-            self.toggle_sidebar();
-        }
-        if self.requests.back.replace(false) {
-            acted |= self.back();
-        }
-        if self.requests.inspector.replace(false) {
-            self.toggle_inspector();
-            acted = true;
-        }
-        if self.built
-            && let Some(open) = self.requests.staged_sidebar.take()
-        {
-            if self.is_sidebar_open() != open {
-                self.toggle_sidebar();
-            }
-            self.snap();
-            acted = true;
-        }
-        if self.requests.put_drawer_away.take()
-            && self.geometry.sidebar == SidebarPlacement::Drawer
-            && self.is_sidebar_open()
-        {
-            self.toggle_sidebar();
-            acted = true;
-        }
-        acted
-    }
-
     /// Open a More menu whose button was pressed, with the actions that did
     /// not fit.
     fn open_more_menus(&mut self) {
@@ -3139,11 +3109,9 @@ impl NavShell {
         if previous.as_ref() != Some(&stack) {
             let switched = previous.is_some();
             // The first layout opens on the stack's first screen unless the
-            // app chose one; a later collapse keeps the pane the person
-            // worked in.
-            // A later collapse lands where the keyboard is (a list the person
-            // is arrowing through stays in front, focus with it), else on
-            // the pane they last worked in.
+            // app chose one. A later collapse lands where the keyboard is (a
+            // list the person is arrowing through stays in front, focus with
+            // it), else on the pane they last worked in.
             // An app that opened a page keeps it in front. Where the content
             // is only a placeholder (nothing chosen yet), the app shows its
             // list first ([`Self::show`]), and that choice is kept.
@@ -3957,8 +3925,9 @@ fn place_header(
 }
 
 impl Widget for NavShell {
-    // The shell frames the app; what continues on another device, and what
-    // a diagnostic input reads, is the content it frames.
+    // The shell frames the app; what the window is (its view, presence,
+    // what continues on another device, what a diagnostic input reads) is
+    // the content it frames.
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
@@ -3968,7 +3937,7 @@ impl Widget for NavShell {
             request.provide::<dyn crate::resources::PublishesResources>(self);
         } else if request.wants::<dyn crate::widget::ResourceOperations>() {
             request.provide::<dyn crate::widget::ResourceOperations>(self);
-        } else if request.wants::<dyn crate::widget::Continuable>() {
+        } else {
             self.content.provide(request);
         }
     }
@@ -3982,7 +3951,7 @@ impl Widget for NavShell {
             request.provide::<dyn crate::resources::PublishesResources>(self);
         } else if request.wants::<dyn crate::widget::ResourceOperations>() {
             request.provide::<dyn crate::widget::ResourceOperations>(self);
-        } else if request.wants::<dyn crate::widget::Continuable>() {
+        } else {
             self.content.provide_mut(request);
         }
     }
@@ -4027,7 +3996,11 @@ impl Widget for NavShell {
 
     fn settle(&mut self, edits: &mut super::Edits<'_>, path: &automerge::ObjId) {
         self.run_shell_bar_events(edits, path);
-        super::defaults::settle(self.children_mut(), edits, path);
+        // Settling is the data pass: a column a narrow window put away
+        // still takes its writes and feeds the column on screen.
+        self.for_each_owned_mut(|child| child.settle(edits, path));
+        self.sync_status.settle(edits, path);
+        self.toasts.settle(edits, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {

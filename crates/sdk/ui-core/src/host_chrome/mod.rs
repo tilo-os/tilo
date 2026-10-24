@@ -21,6 +21,8 @@ mod owner;
 pub(crate) mod windows;
 #[cfg(any(all(windows, feature = "native"), test))]
 pub(crate) mod windows_items;
+#[cfg(feature = "native")]
+pub(crate) mod zoom;
 
 #[cfg(any(feature = "native", test))]
 pub(crate) use owner::HostChrome;

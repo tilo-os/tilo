@@ -3186,6 +3186,14 @@ impl Widget for TerminalWidget {
                 button,
                 ..
             } => {
+                // A press on the grid, by pointer or by a finger, gives it the
+                // keyboard. Typing already reached the session without it, but
+                // the first Tab then moved focus instead of completing.
+                if *element_state == ElementState::Pressed
+                    && self.grid_rect.contains(self.last_cursor_pos)
+                {
+                    *ctx.focus_target = Some(ctx.node_id);
+                }
                 self.handle_mouse_button_event(
                     *element_state,
                     *button,

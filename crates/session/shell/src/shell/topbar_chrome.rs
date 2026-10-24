@@ -268,7 +268,7 @@ impl DesktopChromeSource for NativeChrome {
         let people = self.people(&state);
         DesktopChromeSnapshot {
             revision: state.revision,
-            status: system_status(&state.status),
+            status: system_status(&state.quick_settings.status),
             clock: self.fixture_clock.clone().unwrap_or_else(clock_snapshot),
             overlays: ChromeOverlays {
                 overview: state.overlays.overview,
@@ -551,7 +551,7 @@ mod native_source_tests {
         let snapshot = source.snapshot();
         assert_eq!(
             snapshot.status.battery_percent,
-            chrome.borrow().status.battery_percent()
+            chrome.borrow().quick_settings.status.battery_percent()
         );
         assert_eq!(source.tree().active, chrome.borrow().tree().desktop.active);
     }

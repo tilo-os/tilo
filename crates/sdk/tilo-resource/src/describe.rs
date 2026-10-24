@@ -188,7 +188,7 @@ fn step(segment: &Segment) -> PathStep {
 const fn operation(op: &EditOp) -> tilo_actions::EditOp {
     use tilo_actions::EditOp as Recorded;
     match op {
-        EditOp::Set { .. } => Recorded::Set,
+        EditOp::Set { .. } | EditOp::UpsertItem { .. } => Recorded::Set,
         EditOp::Settle { .. } => Recorded::Settle,
         EditOp::Forget { .. } => Recorded::Forget,
         EditOp::Splice { .. } => Recorded::Splice,
@@ -206,6 +206,23 @@ const fn operation(op: &EditOp) -> tilo_actions::EditOp {
         EditOp::RemoveColumn { .. } => Recorded::RemoveColumn,
         EditOp::Rich { .. } => Recorded::Mark,
     }
+}
+
+/// The item an insert or upsert of `value` (found by `matching`) under `id`
+/// names: its id, else its label, with its label.
+fn added_item(
+    item: Shape,
+    value: &serde_json::Value,
+    matching: Option<&serde_json::Map<String, serde_json::Value>>,
+    id: Option<&crate::Id>,
+) -> Option<(String, Option<String>)> {
+    let label = label_in(item, value).or_else(|| {
+        matching.and_then(|matching| label_in(item, &serde_json::Value::Object(matching.clone())))
+    });
+    let id = id
+        .map(|id| id.as_str().to_owned())
+        .or_else(|| label.clone());
+    id.map(|id| (id, label))
 }
 
 /// A field edit of a record of shape `shape`, as it reads before it applies.
@@ -253,13 +270,16 @@ fn edit_at(
     let item = match (op, located.shape) {
         _ if located.item.is_some() => located.item.clone(),
         (EditOp::InsertItem { id, value, .. }, Shape::Collection(item) | Shape::Keyed(item)) => {
-            let label = label_in(*item, value);
-            let id = id
-                .as_ref()
-                .map(|id| id.as_str().to_owned())
-                .or_else(|| label.clone());
-            id.map(|id| (id, label))
+            added_item(*item, value, None, id.as_ref())
         }
+        (
+            EditOp::UpsertItem {
+                matching,
+                value,
+                id,
+            },
+            Shape::Collection(item) | Shape::Keyed(item),
+        ) => added_item(*item, value, Some(matching), id.as_ref()),
         (EditOp::RemoveItem { id }, Shape::Collection(item) | Shape::Keyed(item)) => {
             let stored = match &located.value {
                 Some((Value::Object(ObjType::Map), collection)) => {

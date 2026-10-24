@@ -305,7 +305,9 @@ fn portable_record(path: &Path) -> io::Result<(Zeroizing<Vec<u8>>, [u8; 32])> {
 /// record we are about to serialize. This duplicates public metadata and the
 /// zero-length schema-2 secret field only; the provider-held key remains in a
 /// `Zeroizing` buffer owned by the caller.
-fn record_for_validation(record: &super::ondisk::IdentityRecord) -> super::ondisk::IdentityRecord {
+pub(super) fn record_for_validation(
+    record: &super::ondisk::IdentityRecord,
+) -> super::ondisk::IdentityRecord {
     super::ondisk::IdentityRecord {
         profile_photo: record.profile_photo.clone(),
         display_name: record.display_name.clone(),

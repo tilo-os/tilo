@@ -67,6 +67,8 @@ pub enum RootAction {
     },
     /// Play sound through this output (its audio graph node).
     SoundOutput(u32),
+    /// Mute the output, or unmute it when it is muted.
+    ToggleMute,
     /// A press on a row the host describes (a Devices row, a copy): at
     /// `point` for a pointer, or `None` from the keyboard.
     Hosted {
@@ -181,6 +183,8 @@ enum RootStop {
     Expand(usize, QuickSettingsControl),
     /// The volume slider's chevron: opens or closes where sound plays.
     SoundExpand,
+    /// The speaker beside the volume slider: mutes and unmutes.
+    VolumeMute,
     /// A stop inside the open section.
     Section(SectionStop),
     Row(RootRow),
@@ -726,7 +730,7 @@ impl QuickSettingsRoot {
     /// The rows under the tiles that this machine shows.
     fn rows(state: &QuickSettingsState) -> Vec<RootRow> {
         let mut rows = Vec::new();
-        if state.battery.present
+        if state.battery().present
             || !state.power_profiles.is_empty()
             || !state.awake_holders.is_empty()
         {
@@ -942,14 +946,14 @@ impl QuickSettingsRoot {
     }
     fn slider_available(&self, state: &QuickSettingsState, i: usize) -> bool {
         if i == self.volume_slider() {
-            state.volume_available
+            state.volume_available && state.status.volume.is_some()
         } else {
             !state.displays.is_empty() || state.brightness_available
         }
     }
     fn slider_value(&self, state: &QuickSettingsState, i: usize) -> f32 {
         if i == self.volume_slider() {
-            state.volume
+            state.volume_level()
         } else {
             state
                 .displays
@@ -959,7 +963,7 @@ impl QuickSettingsRoot {
     }
     fn set_slider_value(&self, state: &mut QuickSettingsState, i: usize, value: f32) {
         if i == self.volume_slider() {
-            state.volume = value;
+            state.set_volume_level(value);
             return;
         }
         if let Some(display) = state.displays.get_mut(i) {
@@ -1277,8 +1281,9 @@ impl QuickSettingsRoot {
             + f64_of_usize(i) * (Self::target_at(self.layout_scale) + self.scaled(RELATED_GAP))
             + above
             + self.slider_caption_height(i);
-        // The volume slider leaves room for its chevron.
-        let trailing = if self.sound && i == self.volume_slider() {
+        // Every slider leaves room for the volume slider's chevron, so all
+        // the tracks are one length.
+        let trailing = if self.sound {
             self.scaled(Self::EXPAND_WIDTH)
         } else {
             self.scaled(CONTROL_INSET)
@@ -1289,6 +1294,13 @@ impl QuickSettingsRoot {
             block.x1 - trailing,
             y + Self::target_at(self.layout_scale),
         )
+    }
+
+    /// The speaker on the volume slider's leading edge: the glyph column,
+    /// one target tall.
+    fn volume_mute_rect(&self, block: Rect) -> Rect {
+        let face = self.slider_face_rect(block, self.volume_slider());
+        Rect::new(block.x0, face.y0, face.x0, face.y1)
     }
 
     /// The volume slider's chevron, on its band's trailing edge.
@@ -1330,10 +1342,13 @@ impl QuickSettingsRoot {
                 .map(|(stop, _)| RootStop::Section(stop))
                 .collect();
         }
-        let mut stops: Vec<RootStop> = (0..self.slider_count())
-            .filter(|&index| self.slider_available(state, index))
-            .map(RootStop::Slider)
-            .collect();
+        let mut stops = Vec::new();
+        for index in (0..self.slider_count()).filter(|&index| self.slider_available(state, index)) {
+            if index == self.volume_slider() {
+                stops.push(RootStop::VolumeMute);
+            }
+            stops.push(RootStop::Slider(index));
+        }
         let open = self.open_section(state);
         if self.sound {
             stops.push(RootStop::SoundExpand);
@@ -1413,6 +1428,7 @@ impl QuickSettingsRoot {
                 .get(index)
                 .map_or(Rect::ZERO, |(_, r)| self.expand_rect(*r)),
             RootStop::SoundExpand => self.volume_expand_rect(layout.sliders),
+            RootStop::VolumeMute => self.volume_mute_rect(layout.sliders),
             RootStop::Section(section_stop) => self
                 .open_slot(layout, state)
                 .and_then(|slot| {
@@ -1463,6 +1479,7 @@ impl QuickSettingsRoot {
                 )
             }
             RootStop::SoundExpand => "quick_settings_volume_details".into(),
+            RootStop::VolumeMute => "quick_settings_volume_mute".into(),
             RootStop::Section(stop) => format!("quick_settings_{}", section_stop_name(stop, state)),
             RootStop::Row(row) => format!(
                 "quick_settings_{}",
@@ -1566,6 +1583,7 @@ impl QuickSettingsRoot {
                 None => RootAction::None,
             },
             RootStop::SoundExpand => Self::toggle_section(QsSection::Sound, state),
+            RootStop::VolumeMute => RootAction::ToggleMute,
             RootStop::Section(stop) => self.activate_section_stop(stop, state),
             RootStop::Row(RootRow::Battery) => Self::toggle_section(QsSection::Battery, state),
             RootStop::Row(RootRow::Devices) => Self::toggle_section(QsSection::Devices, state),
@@ -1782,7 +1800,7 @@ impl QuickSettingsRoot {
     /// The network Wi-Fi is on: the observed link when it is Wi-Fi or
     /// offline, else (wired, or not observed yet) the last scan's.
     fn wifi_subline(s: &QuickSettingsState) -> String {
-        match &s.link {
+        match &s.status.link {
             Some(link) if link.kind == os_actions::LinkKind::Wifi => link
                 .name
                 .clone()
@@ -2514,11 +2532,22 @@ impl QuickSettingsRoot {
                     &caption_style,
                 );
             }
+            let volume = i == self.volume_slider();
+            let muted = volume && state.volume_muted();
+            if volume && available {
+                // The speaker is a control: it lifts under the pointer as
+                // the chevron does.
+                let mute = self.volume_mute_rect(sliders);
+                let focused = frame.focused == Some(RootStop::VolumeMute);
+                paint_glyph_target(scene, transform, theme, mute, cursor, focused);
+            }
             ui::icons::draw_icon(
                 scene,
                 transform,
                 leading_glyph(band, inset, glyph),
-                if i == self.volume_slider() {
+                if muted {
+                    ui::icons::Icon::VolumeX
+                } else if volume {
                     ui::icons::Icon::Volume2
                 } else {
                     ui::icons::Icon::Sun
@@ -2526,11 +2555,18 @@ impl QuickSettingsRoot {
                 colors.text_dim,
                 1.5,
             );
+            // A muted output is silent at any level: its track is empty, as
+            // the volume readout's is.
+            let shown = if muted {
+                0.0
+            } else {
+                f64::from(self.slider_value(state, i))
+            };
             Slider::paint(
                 scene,
                 transform,
                 &on_panel,
-                &SliderFace::new(face, f64::from(self.slider_value(state, i)))
+                &SliderFace::new(face, shown)
                     .hovered(available && cursor.is_some_and(|p| face.contains(p)))
                     .focused(frame.focused == Some(RootStop::Slider(i)))
                     .dragging(self.slider_drag == Some(i))
@@ -2541,24 +2577,10 @@ impl QuickSettingsRoot {
             let expand = self.volume_expand_rect(sliders);
             let turn = self.chevron_turn(QsSection::Sound, state);
             let chevron = Rect::from_center_size(expand.center(), (glyph, glyph));
-            if cursor.is_some_and(|p| expand.contains(p)) {
-                // The chevron's own target lifts under the pointer, as a
-                // tile's half does.
-                ui::widget::primitives::QuickTileFace {
-                    rect: expand,
-                    main: expand,
-                    expand: None,
-                    on: false,
-                    hovered: Some(expand),
-                    radius: control_radius(theme, expand),
-                }
-                .paint_ground(
-                    scene,
-                    transform,
-                    theme,
-                    tilo_desktop::drill_in::control_fill(theme, true),
-                );
-            }
+            // The chevron's own target lifts under the pointer, as a tile's
+            // half does.
+            let focused = frame.focused == Some(RootStop::SoundExpand);
+            paint_glyph_target(scene, transform, theme, expand, cursor, focused);
             ui::icons::draw_icon(
                 scene,
                 transform.pre_rotate_about(std::f64::consts::FRAC_PI_2 * turn, chevron.center()),
@@ -2567,15 +2589,6 @@ impl QuickSettingsRoot {
                 colors.text_dim,
                 1.5,
             );
-            if frame.focused == Some(RootStop::SoundExpand) {
-                ui::widget::paint_focus_ring(
-                    scene,
-                    transform,
-                    expand,
-                    control_radius(theme, expand),
-                    theme,
-                );
-            }
         }
     }
 
@@ -2798,16 +2811,16 @@ impl QuickSettingsRoot {
         };
         match row {
             RootRow::Battery => {
-                let present = state.battery.present;
+                let present = state.battery().present;
                 let title = t(if present { "qs-battery" } else { "qs-power" });
-                let value = present.then(|| format!("{}%", state.battery.percent));
+                let value = present.then(|| format!("{}%", state.battery().percent));
                 let secondary = if present {
                     sections::battery_time_text(state)
                         .unwrap_or_else(|| sections::battery_state_text(state))
                 } else {
                     state.power_profile.label()
                 };
-                let icon = match state.battery.state {
+                let icon = match state.battery().state {
                     tilo_power_mgmt::BatteryState::Charging if present => {
                         ui::icons::Icon::BatteryCharging
                     }
@@ -3262,6 +3275,9 @@ impl QuickSettingsRoot {
                         node.state.expanded =
                             Some(self.open_section(state) == Some(QsSection::Sound));
                     }
+                    RootStop::VolumeMute => {
+                        node.state.checked = Some(state.volume_muted());
+                    }
                     RootStop::Section(SectionStop::Output(index)) => {
                         node.state.selected = state
                             .sound_outputs
@@ -3337,15 +3353,16 @@ impl QuickSettingsRoot {
                 AccessNode::new(Role::Button).with_name(Self::details_label(control))
             }
             RootStop::SoundExpand => AccessNode::new(Role::Button).with_name(t("qs-sound-output")),
+            RootStop::VolumeMute => AccessNode::new(Role::Switch).with_name(t("qs-volume-mute")),
             RootStop::Section(stop) => section_access_node(stop, state),
             RootStop::Row(RootRow::Battery) => AccessNode::new(Role::Button)
-                .with_name(t(if state.battery.present {
+                .with_name(t(if state.battery().present {
                     "qs-battery"
                 } else {
                     "qs-power"
                 }))
-                .with_value(if state.battery.present {
-                    format!("{}%", state.battery.percent)
+                .with_value(if state.battery().present {
+                    format!("{}%", state.battery().percent)
                 } else {
                     state.power_profile.label()
                 }),
@@ -3484,7 +3501,7 @@ fn section_access_node(stop: SectionStop, state: &QuickSettingsState) -> ui::a11
         }
         SectionStop::Settings => AccessNode::new(Role::Link).with_name(t(match state.section {
             Some(QsSection::Bluetooth) => "qs-bluetooth-pair",
-            Some(QsSection::Battery) if state.battery.present => "qs-battery-settings",
+            Some(QsSection::Battery) if state.battery().present => "qs-battery-settings",
             Some(QsSection::Battery | QsSection::PowerMode) => "qs-power-settings",
             Some(QsSection::Vpn) => "qs-vpn-settings",
             Some(QsSection::Sound) => "qs-sound-settings",
@@ -3542,6 +3559,38 @@ fn section_access_node(stop: SectionStop, state: &QuickSettingsState) -> ui::a11
 /// `section`, in the page's coordinates.
 fn on_page(section: Rect, rect: Rect) -> Rect {
     Affine::translate(section.origin().to_vec2()).transform_rect_bbox(rect)
+}
+
+/// A glyph's own target beside a slider — the speaker, the chevron: it
+/// lifts under the pointer and wears the focus ring when focused.
+fn paint_glyph_target(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    target: Rect,
+    cursor: Option<Point>,
+    focused: bool,
+) {
+    let radius = control_radius(theme, target);
+    if cursor.is_some_and(|p| target.contains(p)) {
+        ui::widget::primitives::QuickTileFace {
+            rect: target,
+            main: target,
+            expand: None,
+            on: false,
+            hovered: Some(target),
+            radius,
+        }
+        .paint_ground(
+            scene,
+            transform,
+            theme,
+            tilo_desktop::drill_in::control_fill(theme, true),
+        );
+    }
+    if focused {
+        ui::widget::paint_focus_ring(scene, transform, target, radius, theme);
+    }
 }
 
 #[cfg(test)]

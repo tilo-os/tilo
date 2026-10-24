@@ -77,6 +77,7 @@ fn host() -> ShellOverlayHost {
                 app_id: "Alacritty".into(),
                 surface_id: 7,
             },
+            app_title: None,
         }],
         active_tab: 7,
         width: WindowWidth::Normal,

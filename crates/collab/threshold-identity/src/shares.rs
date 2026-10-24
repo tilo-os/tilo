@@ -127,7 +127,7 @@ impl RecoveryShare {
             )
         })?;
         Ok(Self {
-            mnemonic,
+            mnemonic: mnemonic.to_string(),
             share_index: identifier_to_u16(kp.identifier()),
             threshold: *kp.min_signers(),
             total_shares,

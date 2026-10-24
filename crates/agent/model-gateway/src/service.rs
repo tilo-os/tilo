@@ -1702,10 +1702,15 @@ fn outbound_body(
     model_id: &str,
     body: serde_json::Value,
     streaming: bool,
+    responses: bool,
 ) -> Result<serde_json::Value, String> {
     let serde_json::Value::Object(mut object) = body else {
         return Err("plan body must be a JSON object".into());
     };
+    let api_responses = responses && !provider_transform::speaks_responses(profile);
+    if api_responses && let Some(limit) = object.remove("max_output_tokens") {
+        object.insert("max_completion_tokens".into(), limit);
+    }
     let capped = model_output_limit(profile, model_id, &object)?;
     if profile.signs_in_with_google() && ends_with_model_turn(&object) {
         return Err("Google Vertex AI cannot continue the model\'s own reply: the conversation must end with a user or tool message".into());
@@ -1730,6 +1735,15 @@ fn outbound_body(
         for param in &profile.omit_params {
             object.remove(param.as_str());
         }
+        return Ok(serde_json::Value::Object(object));
+    }
+    if api_responses {
+        responses_body(
+            profile,
+            &mut object,
+            streaming,
+            capped.map(|(_, limit)| limit),
+        );
         return Ok(serde_json::Value::Object(object));
     }
     match profile.protocol {
@@ -1794,6 +1808,64 @@ fn outbound_body(
         object.insert(capped_field.into(), serde_json::Value::from(limit));
     }
     Ok(serde_json::Value::Object(object))
+}
+
+/// `object` as `OpenAI`'s Responses API takes it: the output limit in
+/// `max_output_tokens`, the reasoning effort as an object, and nothing kept
+/// (`store: false`), so a reasoning turn's ciphertext is asked for and
+/// carries its reasoning into the next turn. A model that does not reason
+/// refuses the ciphertext, so it is asked for only when the request reasons.
+fn responses_body(
+    profile: &ProviderProfile,
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    streaming: bool,
+    capped: Option<u64>,
+) {
+    const CIPHERTEXT: &str = "reasoning.encrypted_content";
+    let limit = object
+        .remove("max_completion_tokens")
+        .or_else(|| object.remove("max_tokens"));
+    object.remove("max_tokens");
+    if let Some(limit) = capped.map(serde_json::Value::from).or(limit) {
+        object.insert("max_output_tokens".into(), limit);
+    }
+    if let Some(effort) = object.remove("reasoning_effort") {
+        object.insert("reasoning".into(), serde_json::json!({ "effort": effort }));
+    }
+    if let Some(reasoning) = &profile.reasoning {
+        object.remove("reasoning");
+        if reasoning.param != ReasoningParam::Omit {
+            object.insert(
+                "reasoning".into(),
+                serde_json::json!({ "effort": reasoning.effort }),
+            );
+        }
+    }
+    object.remove("stream_options");
+    if streaming {
+        object.insert("stream".into(), serde_json::Value::Bool(true));
+    } else {
+        object.remove("stream");
+    }
+    object.insert("store".into(), serde_json::Value::Bool(false));
+    let reasons = object
+        .get("reasoning")
+        .and_then(|reasoning| reasoning.get("effort"))
+        .is_some_and(|effort| effort != "none");
+    let mut include: Vec<serde_json::Value> = object
+        .remove("include")
+        .and_then(|include| include.as_array().cloned())
+        .unwrap_or_default();
+    include.retain(|item| item != CIPHERTEXT);
+    if reasons {
+        include.push(CIPHERTEXT.into());
+    }
+    if !include.is_empty() {
+        object.insert("include".into(), serde_json::Value::Array(include));
+    }
+    for param in &profile.omit_params {
+        object.remove(param.as_str());
+    }
 }
 
 /// Whether the last message of a request is the model's (an assistant
@@ -3426,7 +3498,7 @@ mod tests {
                 serde_json::json!({"max_completion_tokens":4096}),
                 serde_json::json!({"max_tokens":4096,"max_completion_tokens":4096}),
             ] {
-                let outbound = outbound_body(&profile, "bounded", body, false).unwrap();
+                let outbound = outbound_body(&profile, "bounded", body, false, false).unwrap();
                 let key = if protocol == ProviderProtocol::Anthropic {
                     "max_tokens"
                 } else {
@@ -3455,8 +3527,8 @@ mod tests {
                 serde_json::json!({"max_tokens":1.5}),
                 serde_json::json!({"max_tokens":64,"max_completion_tokens":512}),
             ] {
-                assert!(outbound_body(&profile, "bounded", bad.clone(), false).is_err());
-                assert!(outbound_body(&profile, "legacy", bad, false).is_ok());
+                assert!(outbound_body(&profile, "bounded", bad.clone(), false, false).is_err());
+                assert!(outbound_body(&profile, "legacy", bad, false, false).is_ok());
             }
             profile.omit_params.clear();
             assert_eq!(
@@ -3464,6 +3536,7 @@ mod tests {
                     &profile,
                     "legacy",
                     serde_json::json!({"max_tokens":4096}),
+                    false,
                     false
                 )
                 .unwrap()["max_tokens"],
@@ -3494,7 +3567,14 @@ mod tests {
                 {"role": "user", "content": "u"}
             ]
         });
-        let sent = outbound_body(&vertex, "google/gemini-4-argon", caller.clone(), true).unwrap();
+        let sent = outbound_body(
+            &vertex,
+            "google/gemini-4-argon",
+            caller.clone(),
+            true,
+            false,
+        )
+        .unwrap();
         assert_eq!(sent["model"], "google/gemini-4-argon");
         assert_eq!(sent["stream"], true);
         assert_eq!(
@@ -3509,11 +3589,81 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .push(serde_json::json!({"role": "assistant", "content": "Hel"}));
-        let refused =
-            outbound_body(&vertex, "google/gemini-4-argon", prefill.clone(), false).unwrap_err();
+        let refused = outbound_body(
+            &vertex,
+            "google/gemini-4-argon",
+            prefill.clone(),
+            false,
+            false,
+        )
+        .unwrap_err();
         assert!(refused.contains("Vertex AI"), "{refused}");
         // Other providers accept a prefill; nothing changes for them.
-        assert!(outbound_body(&hosted_openai(), "vendor/model-a", prefill, false).is_ok());
+        assert!(outbound_body(&hosted_openai(), "vendor/model-a", prefill, false, false).is_ok());
+    }
+
+    #[test]
+    fn a_responses_body_names_its_limit_and_reasoning_and_keeps_nothing() {
+        let mut openai = hosted_openai();
+        openai.token_limit_param =
+            Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
+        let caller = serde_json::json!({
+            "model": "other", "input": [], "max_output_tokens": 64, "stream": true,
+            "stream_options": {"include_usage": true}, "reasoning_effort": "low",
+            "include": ["reasoning.encrypted_content", "message.output_text.logprobs"]
+        });
+        let body = outbound_body(&openai, "vendor/model-a", caller.clone(), false, true).unwrap();
+        assert_eq!(body["model"], "vendor/model-a");
+        assert_eq!(body["max_output_tokens"], 64);
+        assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
+        assert_eq!(body["store"], false);
+        assert_eq!(
+            body["include"],
+            serde_json::json!([
+                "message.output_text.logprobs",
+                "reasoning.encrypted_content"
+            ])
+        );
+        for chat_only in [
+            "max_completion_tokens",
+            "max_tokens",
+            "reasoning_effort",
+            "stream",
+            "stream_options",
+        ] {
+            assert!(body.get(chat_only).is_none(), "{chat_only}: {body}");
+        }
+        assert_eq!(
+            outbound_body(&openai, "vendor/model-a", caller.clone(), true, true).unwrap()["stream"],
+            true
+        );
+
+        // A model that does not reason is not asked for reasoning ciphertext.
+        let mut plain = openai.clone();
+        plain.reasoning = Some(reasoning(ReasoningParam::Omit, ""));
+        let body = outbound_body(&plain, "vendor/model-a", caller.clone(), false, true).unwrap();
+        assert!(body.get("reasoning").is_none(), "{body}");
+        assert_eq!(
+            body["include"],
+            serde_json::json!(["message.output_text.logprobs"])
+        );
+        let mut none = openai.clone();
+        none.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "none"));
+        let body =
+            outbound_body(&none, "vendor/model-a", serde_json::json!({}), false, true).unwrap();
+        assert_eq!(body["reasoning"], serde_json::json!({"effort": "none"}));
+        assert!(body.get("include").is_none(), "{body}");
+
+        // The model's own output policy caps the Responses limit.
+        let mut capped = openai;
+        capped.models[0].request_limits = Some(agent_provider_config::ModelRequestLimits {
+            max_output_tokens: 32,
+            runtime_context_tokens: None,
+            plan_timeout_ms: None,
+        });
+        let body = outbound_body(&capped, "vendor/model-a", caller, false, true).unwrap();
+        assert_eq!(body["max_output_tokens"], 32);
+        assert!(body.get("max_completion_tokens").is_none(), "{body}");
     }
 
     #[test]
@@ -3523,15 +3673,27 @@ mod tests {
             "stream_options": {"include_usage": true}, "reasoning_effort": "high", "messages": []
         });
         // An unconfigured profile: only the model, and the caller's stream, change.
-        let body =
-            outbound_body(&hosted_openai(), "vendor/model-a", caller.clone(), false).unwrap();
+        let body = outbound_body(
+            &hosted_openai(),
+            "vendor/model-a",
+            caller.clone(),
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(body["model"], "vendor/model-a");
         assert_eq!(body["max_completion_tokens"], 64);
         assert_eq!(body["reasoning_effort"], "high");
         assert!(body.get("stream").is_none() && body.get("stream_options").is_none());
 
-        let streamed =
-            outbound_body(&hosted_openai(), "vendor/model-a", caller.clone(), true).unwrap();
+        let streamed = outbound_body(
+            &hosted_openai(),
+            "vendor/model-a",
+            caller.clone(),
+            true,
+            false,
+        )
+        .unwrap();
         assert_eq!(streamed["stream"], true);
         assert_eq!(streamed["stream_options"]["include_usage"], true);
 
@@ -3539,7 +3701,7 @@ mod tests {
         let mut router = hosted_openai();
         router.token_limit_param = Some(agent_provider_config::TokenLimitParam::MaxTokens);
         router.reasoning = Some(reasoning(ReasoningParam::ReasoningObject, "low"));
-        let body = outbound_body(&router, "vendor/model-a", caller.clone(), false).unwrap();
+        let body = outbound_body(&router, "vendor/model-a", caller.clone(), false, false).unwrap();
         assert_eq!(body["max_tokens"], 64);
         assert!(body.get("max_completion_tokens").is_none());
         assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
@@ -3551,7 +3713,7 @@ mod tests {
             Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
         openai.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "none"));
         let legacy = serde_json::json!({"max_tokens": 9, "reasoning": {"effort": "high"}});
-        let body = outbound_body(&openai, "vendor/model-a", legacy, false).unwrap();
+        let body = outbound_body(&openai, "vendor/model-a", legacy, false, false).unwrap();
         assert_eq!(body["max_completion_tokens"], 9);
         assert!(body.get("max_tokens").is_none() && body.get("reasoning").is_none());
         assert_eq!(body["reasoning_effort"], "none");
@@ -3561,14 +3723,14 @@ mod tests {
         let mut strict = hosted_openai();
         strict.omit_params = vec!["stream_options".into(), "parallel_tool_calls".into()];
         let with_extras = serde_json::json!({"parallel_tool_calls": false, "messages": []});
-        let body = outbound_body(&strict, "vendor/model-a", with_extras, true).unwrap();
+        let body = outbound_body(&strict, "vendor/model-a", with_extras, true, false).unwrap();
         assert_eq!(body["stream"], true);
         assert!(body.get("stream_options").is_none() && body.get("parallel_tool_calls").is_none());
 
         // `none` strips every reasoning field.
         let mut omit = hosted_openai();
         omit.reasoning = Some(reasoning(ReasoningParam::Omit, ""));
-        let body = outbound_body(&omit, "vendor/model-a", caller, false).unwrap();
+        let body = outbound_body(&omit, "vendor/model-a", caller, false, false).unwrap();
         assert!(body.get("reasoning_effort").is_none() && body.get("reasoning").is_none());
 
         let mut anthropic = ProviderProfile::hosted(ProviderProtocol::Anthropic);
@@ -3577,13 +3739,13 @@ mod tests {
         anthropic.token_limit_param =
             Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
         let caller = serde_json::json!({"model": "other", "max_tokens": 9, "stream": true});
-        let body = outbound_body(&anthropic, "claude-x", caller.clone(), false).unwrap();
+        let body = outbound_body(&anthropic, "claude-x", caller.clone(), false, false).unwrap();
         assert_eq!(body["model"], "claude-x");
         assert_eq!(body["max_tokens"], 9);
         assert!(body.get("stream").is_none() && body.get("reasoning_effort").is_none());
         // A streamed Anthropic Plan asks for the event stream, and nothing
         // of the OpenAI-compatible stream options.
-        let streamed = outbound_body(&anthropic, "claude-x", caller, true).unwrap();
+        let streamed = outbound_body(&anthropic, "claude-x", caller, true, false).unwrap();
         assert_eq!(streamed["stream"], true);
         assert!(streamed.get("stream_options").is_none());
         assert!(streamed.get("reasoning_effort").is_none());
@@ -3593,6 +3755,7 @@ mod tests {
                 &hosted_openai(),
                 "vendor/model-a",
                 serde_json::json!([]),
+                false,
                 false
             )
             .is_err()

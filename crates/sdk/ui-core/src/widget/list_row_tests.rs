@@ -608,6 +608,10 @@ fn a_trailing_control_reserves_its_width_and_wraps_under_narrow_text() {
         wrapped.y0 > narrow.y0 + row.height() / 2.0,
         "under the text"
     );
+    assert!(
+        (wrapped.width() - toggle.width()).abs() < 0.5 && (wrapped.x0 - narrow.x0).abs() < 0.5,
+        "a switch keeps its own size under the text, on the text's edge: {wrapped:?} in {narrow:?}"
+    );
 }
 
 #[test]
@@ -705,4 +709,99 @@ fn the_words_a_search_found_are_marked_at_word_starts_whatever_their_case() {
         found_spans("İstanbul", &["i̇stan"]),
         [std::ops::Range { start: 0, end: 6 }]
     );
+}
+
+#[test]
+fn a_control_wrapped_under_its_text_fills_the_row_to_its_trailing_edge() {
+    let rows = || -> Element {
+        let segmented = ListRow::new("density", "Density")
+            .secondary("How much room controls and rows leave around them")
+            .trailing(Box::new(crate::widget::ToggleGroup::new(
+                vec![
+                    crate::widget::Segment::new("Compact"),
+                    crate::widget::Segment::new("Regular"),
+                    crate::widget::Segment::new("Roomy"),
+                ],
+                1,
+            )));
+        let chooser =
+            ListRow::new("scale", "Appearance").trailing(Box::new(crate::widget::Dropdown::new(
+                vec![
+                    "Follow the day and night schedule".into(),
+                    "Always light".into(),
+                ],
+                "scale",
+            )));
+        Box::new(
+            Column::new()
+                .with_horizontal_padding(24.0, 24.0)
+                .push(Box::new(segmented))
+                .push(Box::new(chooser)),
+        )
+    };
+    let controls = |harness: &FrameHarness| {
+        let root = harness.inspection().root;
+        let column = rect_of(&root);
+        let mut rows = Vec::new();
+        collect(&root, "ListRow", &mut rows);
+        let segmented = rect_of(find(rows[0], "ToggleGroup").unwrap());
+        let chooser = rect_of(find(rows[1], "Dropdown").unwrap());
+        (
+            column,
+            rect_of(rows[0]),
+            rect_of(rows[1]),
+            segmented,
+            chooser,
+        )
+    };
+    let mut harness = FrameHarness::new(crate::State::new(), rows(), (900, 400));
+    let (_, row, _, segmented, chooser) = controls(&harness);
+    assert!(
+        segmented.y1 <= row.y1 && (segmented.x1 - row.x1).abs() < 0.5,
+        "beside its text the control ends on the row's edge: {segmented:?} in {row:?}"
+    );
+    assert!(
+        segmented.width() < row.width() / 2.0,
+        "beside its text the control keeps its own width: {segmented:?}"
+    );
+    let wide_chooser = chooser.width();
+    for width in [360, 420] {
+        harness
+            .resize((width, 600))
+            .expect("the narrow layout settles");
+        let (_, segmented_row, chooser_row, segmented, chooser) = controls(&harness);
+        for (kind, control, row) in [
+            ("segmented control", segmented, segmented_row),
+            ("chooser", chooser, chooser_row),
+        ] {
+            assert!(
+                control.y0 > row.y0 + row.height() / 3.0,
+                "at {width}: the {kind} wraps under its text: {control:?} in {row:?}"
+            );
+            assert!(
+                (control.x1 - row.x1).abs() < 0.5,
+                "at {width}: the wrapped {kind} ends on the row's edge: {control:?} in {row:?}"
+            );
+            assert!(
+                (control.x0 - row.x0).abs() < 0.5,
+                "at {width}: the wrapped {kind} starts on the text's edge: {control:?} in {row:?}"
+            );
+        }
+    }
+    harness.resize((900, 400)).expect("the wide layout settles");
+    let (_, row, _, segmented, chooser) = controls(&harness);
+    assert!(
+        segmented.y1 <= row.y1 && segmented.width() < row.width() / 2.0,
+        "widened again, the control goes back beside its text at its own width: {segmented:?}"
+    );
+    assert!((chooser.width() - wide_chooser).abs() < 0.5);
+}
+
+fn collect<'a>(node: &'a InspectionNode, widget: &str, out: &mut Vec<&'a InspectionNode>) {
+    if node.widget == widget {
+        out.push(node);
+    }
+    for child in &node.children {
+        collect(child, widget, out);
+    }
 }

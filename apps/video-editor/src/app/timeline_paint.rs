@@ -414,7 +414,7 @@ impl VideoEditorApp {
                 draw_toggle_button(
                     &mut PaintCtx::new(scene, tf, tr, theme),
                     pill,
-                    ToggleContent::Label(""),
+                    "",
                     on,
                     hovered,
                 );

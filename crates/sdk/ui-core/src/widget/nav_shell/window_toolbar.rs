@@ -6,7 +6,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::{
-    Column, InspectorPlacement, NavPane, NavShell, Part, Staged, Widget, at, is_app_search,
+    Column, InspectorPlacement, NavPane, NavShell, Part, SidebarPlacement, Staged, Widget, at,
+    is_app_search,
 };
 use crate::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
 
@@ -20,6 +21,9 @@ pub(super) struct Requests {
     /// The sidebar open or closed, landed with no motion: a capture's
     /// staging ([`WindowBarLink::stage_sidebar`]).
     pub(super) staged_sidebar: Cell<Option<bool>>,
+    /// The push stack's front screen, landed with no motion
+    /// ([`WindowBarLink::stage_pane`]).
+    pub(super) staged_pane: Cell<Option<NavPane>>,
     /// Put a floating sidebar away ([`WindowBarLink::put_drawer_away`]).
     pub(super) put_drawer_away: Cell<bool>,
     /// The shell's own slots for the window's bar as of its last layout.
@@ -55,6 +59,13 @@ impl WindowBarLink {
         self.0.staged_sidebar.set(Some(open));
     }
 
+    /// Show `pane` in front at once, with no motion, when the window shows
+    /// one column at a time: what a screenshot scenario of an opened item
+    /// stages. A docked layout shows every column already.
+    pub fn stage_pane(&self, pane: NavPane) {
+        self.0.staged_pane.set(Some(pane));
+    }
+
     /// Put the sidebar away if it floats as a drawer over the content (the
     /// app opened something the drawer would cover); a docked sidebar
     /// stays.
@@ -83,6 +94,52 @@ pub const WINDOW_BACK: &str = "nav-shell-back";
 pub const WINDOW_INSPECTOR: &str = "nav-shell-inspector";
 
 impl NavShell {
+    /// Run what the shell's buttons and a linked app asked for since the
+    /// last pass. Returns whether anything changed.
+    pub(super) fn take_requests(&mut self) -> bool {
+        let mut acted = self.requests.toggle.replace(false);
+        if acted {
+            self.toggle_sidebar();
+        }
+        if self.requests.back.replace(false) {
+            acted |= self.back();
+        }
+        if self.requests.inspector.replace(false) {
+            self.toggle_inspector();
+            acted = true;
+        }
+        if self.built
+            && let Some(open) = self.requests.staged_sidebar.take()
+        {
+            if self.geometry.sidebar == SidebarPlacement::Screen {
+                self.show(if open {
+                    NavPane::Sidebar
+                } else {
+                    NavPane::Content
+                });
+            } else if self.is_sidebar_open() != open {
+                self.toggle_sidebar();
+            }
+            self.snap();
+            acted = true;
+        }
+        if self.built
+            && let Some(pane) = self.requests.staged_pane.take()
+        {
+            self.show(pane);
+            self.snap();
+            acted = true;
+        }
+        if self.requests.put_drawer_away.take()
+            && self.geometry.sidebar == SidebarPlacement::Drawer
+            && self.is_sidebar_open()
+        {
+            self.toggle_sidebar();
+            acted = true;
+        }
+        acted
+    }
+
     /// The app's toolbar is its window bar's slots ([`crate::window_toolbar`]):
     /// the shell draws no header row of its own, in a Tilo session or out of
     /// it. Its own buttons (the sidebar toggle, Back, the inspector toggle)

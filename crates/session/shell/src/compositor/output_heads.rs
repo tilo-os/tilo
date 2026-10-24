@@ -545,6 +545,7 @@ mod tests {
             MonitorHistory {
                 modes: vec![mode(2560, 1440, 59_951)],
                 scales: vec![1.5],
+                last: None,
             },
         )]);
         assert_eq!(risk_of(&new_mode, &["DP-1"], &shown), ChangeRisk::Safe);

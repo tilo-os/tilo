@@ -148,6 +148,7 @@ pub fn make_runnable(path: &Path) -> Result<(), HostError> {
 /// Returns [`HostError::Spawn`] if `launch`'s program cannot be spawned or
 /// waited on.
 pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
+    crate::chromium_frame::prepare(launch);
     // Started by the compositor's spawner, it was born in its app cgroup and
     // asks the manager for nothing.
     let busctl = Path::new(scope::BUSCTL);

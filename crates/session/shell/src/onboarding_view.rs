@@ -18,9 +18,15 @@
 //! notification.
 
 mod prepared;
+mod recovery_key;
 mod semantic;
 mod session;
+mod snapshot;
+use recovery_key::{
+    RecoveryKeyCopy, WordsCheck, import_recovery_words, recovery_key_copy_page, short_fingerprint,
+};
 use session::SessionPaths;
+pub use snapshot::OnboardingVisualState;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -72,8 +78,8 @@ const ACCESSIBLE_PANEL_HEIGHT: f32 = 672.0;
 /// them enough preferred height to avoid needless scrolling on a wide laptop;
 /// flex shrink still preserves the safety gutter on a compact display.
 const DENSE_PANEL_PREFERRED_HEIGHT: f32 = 560.0;
-/// The two choice screens get a lower cap than the recovery and completion
-/// stages; they still shrink to their contents.
+/// The introduction's choice gets a lower cap than the other stages; it
+/// still shrinks to its contents.
 const INTRO_PANEL_HEIGHT: f32 = 520.0;
 /// Completion is a hand-off surface, not a compact alert. Give its title,
 /// confirmation, next-step explanation, and backup guidance a stable canvas
@@ -156,6 +162,7 @@ enum AfterJournal {
     EnterReady,
     FinishPortableBackup,
     Import(PathBuf),
+    ImportWords,
     RetryMint,
     Mint,
     Tour(Option<TourPage>),
@@ -293,33 +300,6 @@ pub enum OnboardingContext {
     HostDesktop,
 }
 
-/// Deterministic states used only by the offscreen production renderer.
-/// They exercise the composition without performing identity I/O.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OnboardingVisualState {
-    Intro,
-    Existing,
-    Nearby,
-    NearbyCode,
-    Restore,
-    Protect,
-    Backup,
-    BackupVerified,
-    Ready,
-    TourNavigate,
-    TourOrganise,
-    TourCollaborate,
-    TourStart,
-    CreateError,
-    RestoreError,
-    Codecs,
-    CodecsInstalling,
-    CodecsWaitingForNetwork,
-    CodecsInstalled,
-    CodecsFailed,
-}
-
 #[must_use]
 pub fn host_desktop_intro_title() -> String {
     t("onboarding-host-intro-title")
@@ -334,6 +314,11 @@ pub const KEY_BEGIN: &str = "onboarding.begin";
 pub const KEY_EXISTING: &str = "onboarding.existing";
 pub const KEY_CHOOSE_NEARBY: &str = "onboarding.existing.nearby";
 pub const KEY_CHOOSE_RESTORE: &str = "onboarding.existing.restore";
+pub const KEY_CHOOSE_RECOVERY_KEY: &str = "onboarding.existing.recovery-key";
+pub const KEY_RECOVERY_KEY_RESTORE: &str = "onboarding.recovery-key.restore";
+pub const KEY_RECOVERY_KEY_SHOW: &str = "onboarding.backup.recovery-key";
+pub const KEY_RECOVERY_KEY_CONFIRM: &str = "onboarding.backup.recovery-key.confirm";
+pub const KEY_RECOVERY_KEY_CLOSE: &str = "onboarding.backup.recovery-key.close";
 pub const KEY_BACK: &str = "onboarding.back";
 pub const KEY_CONNECT_BROWSE: &str = "onboarding.connect.browse";
 pub const KEY_IMPORT: &str = "onboarding.import";
@@ -549,6 +534,9 @@ fn import_identity(
 }
 
 type Importer = Box<dyn Fn(&PathBuf, &[u8]) -> Result<MintedIdentity, String> + Send>;
+/// Restores an identity from the words of a recovery key.
+type WordsImporter = Box<dyn Fn(&str) -> Result<MintedIdentity, String> + Send>;
+
 type BackupCapability = Box<dyn Fn(&Path) -> Result<bool, String> + Send>;
 fn canonical_backup_capability(path: &Path) -> Result<bool, String> {
     runtime_identity::load_from_path(path.to_owned())
@@ -567,6 +555,8 @@ enum IdentityDone {
     Import(Result<MintedIdentity, String>),
     /// The destination the backup was written to.
     Export(Result<PathBuf, String>),
+    /// The words of this identity's recovery key, to write down.
+    RecoveryWords(Result<Zeroizing<String>, String>),
 }
 
 /// Identity work running off the compositor's loop.
@@ -740,6 +730,23 @@ pub struct OnboardingView {
     peer_attempted: bool,
     minter: Shared<Minter>,
     importer: Shared<Importer>,
+    words_importer: Shared<WordsImporter>,
+    /// The recovery key being typed. A secret: zeroized when it is used or
+    /// the screen is left.
+    recovery_words: Arc<Mutex<String>>,
+    recovery_check: WordsCheck,
+    /// The identity this computer belongs to, when its public record is
+    /// still readable: a recovery key for any other identity is refused.
+    expected_identity: Option<[u8; 32]>,
+    /// Why startup could not use this computer's identity, when it opened
+    /// recovery: the explanation and the step that may fix it differ.
+    recovery_problem: Option<crate::onboarding::IdentityProblem>,
+    /// The recovery key shown on the backup step, while it is written down.
+    recovery_key_copy: Option<RecoveryKeyCopy>,
+    /// The backup step was completed by writing down the recovery key.
+    recovery_key_written: bool,
+    /// The typed-back words match, as of the last frame.
+    recovery_key_copy_confirmed: bool,
     exporter: Shared<Exporter>,
     /// Identity work the worker thread is doing, if any. While it runs,
     /// actions that write the journal wait, still pressed, and Back and the
@@ -931,8 +938,10 @@ impl OnboardingView {
     ) -> Self {
         let mint_dir = identity_dir.clone();
         let import_dir = identity_dir.clone();
+        let words_dir = identity_dir.clone();
         let mint_paths = session.identity_paths();
         let import_paths = session.identity_paths();
+        let words_paths = session.identity_paths();
         let minter: Minter = Box::new(move || {
             let paths = mint_paths
                 .as_ref()
@@ -961,6 +970,18 @@ impl OnboardingView {
             context,
         );
         view.backup_capability = Box::new(canonical_backup_capability);
+        view.words_importer = Arc::new(Mutex::new(Box::new(move |words: &str| {
+            let paths = words_paths
+                .as_ref()
+                .ok_or_else(session::identity_root_unavailable)?;
+            import_recovery_words(&words_dir, paths, words)
+        })));
+        if recovery_only {
+            view.recovery_problem = crate::onboarding::IdentityProblem::from_recovery_env();
+        }
+        view.expected_identity = runtime_identity::recovery_expected_identity(&identity_dir)
+            .ok()
+            .flatten();
         view.session = session;
         view.nearby_status_path = Some(identity_dir.join(".nearby-enrollment-status.json"));
         view.recovery_only = recovery_only;
@@ -1084,6 +1105,16 @@ impl OnboardingView {
             peer_attempted: false,
             minter: Arc::new(Mutex::new(minter)),
             importer: Arc::new(Mutex::new(importer)),
+            words_importer: Arc::new(Mutex::new(Box::new(|_: &str| {
+                Err("recovery keys are unavailable in this test".to_string())
+            }) as WordsImporter)),
+            recovery_words: Arc::new(Mutex::new(String::new())),
+            recovery_check: WordsCheck::Empty,
+            expected_identity: None,
+            recovery_problem: None,
+            recovery_key_copy: None,
+            recovery_key_written: false,
+            recovery_key_copy_confirmed: false,
             exporter: Arc::new(Mutex::new(exporter)),
             identity_work: None,
             error: None,
@@ -1218,7 +1249,14 @@ impl OnboardingView {
 
     /// Setup's total step count: the codecs step adds one.
     fn total_steps(&self) -> u8 {
-        if self.codec_step_offered { 5 } else { 4 }
+        if self.recovery_only {
+            // Recovery is choosing a way back, then taking it.
+            2
+        } else if self.codec_step_offered {
+            5
+        } else {
+            4
+        }
     }
 
     fn codec_install_requested(&self) -> bool {
@@ -1435,7 +1473,7 @@ impl OnboardingView {
     pub fn secret_rect(&self) -> Option<Rect> {
         let shows_secret = self.tour_page.is_none()
             && match self.flow.screen() {
-                Screen::Nearby | Screen::Restore => true,
+                Screen::Nearby | Screen::Restore | Screen::RecoveryKey => true,
                 Screen::Done => !self.identity_ready_page,
                 Screen::Intro | Screen::Existing | Screen::NoRecovery => false,
             };
@@ -1684,6 +1722,11 @@ impl OnboardingView {
                     self.import_identity(&source);
                 }
             }
+            AfterJournal::ImportWords => {
+                if self.flow.screen() == Screen::RecoveryKey {
+                    self.import_words();
+                }
+            }
             AfterJournal::RetryMint => {
                 if self.recovery_only && self.flow.screen() == Screen::Existing {
                     self.retry_existing_identity();
@@ -1784,13 +1827,24 @@ impl OnboardingView {
             IdentityDone::RetryMint(identity) => self.finish_retry(identity),
             IdentityDone::Import(identity) => self.finish_import(identity),
             IdentityDone::Export(exported) => self.finish_export(exported),
+            IdentityDone::RecoveryWords(words) => match words {
+                Ok(words) => {
+                    self.backup_error = None;
+                    self.recovery_key_copy = Some(RecoveryKeyCopy::new(words));
+                }
+                Err(error) => self.backup_error = Some(error),
+            },
         }
         self.invalidation.structure();
     }
 
     fn finish_ceremony(&mut self) {
         self.finished = true;
+        if let Some(copy) = self.recovery_key_copy.take() {
+            copy.clear();
+        }
         clear_secret(&self.connect_passphrase);
+        clear_secret(&self.recovery_words);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
     }
@@ -1852,6 +1906,8 @@ impl OnboardingView {
         match imported {
             Ok(identity) => {
                 self.error = None;
+                clear_secret(&self.recovery_words);
+                self.recovery_check = WordsCheck::Empty;
                 self.error = self
                     .accept_connected_identity(identity)
                     .err()
@@ -1999,135 +2055,6 @@ impl OnboardingView {
         })
     }
 
-    /// Put the entrance transition in its steady state for deterministic
-    /// offscreen review. Production never calls this; the live compositor
-    /// advances the exact same transition on animation frames.
-    #[doc(hidden)]
-    pub fn settle_motion_for_snapshot(&mut self) {
-        self.transition = ui::motion::Presence::opened();
-    }
-
-    #[doc(hidden)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one fixture arm per reviewed onboarding state"
-    )]
-    pub fn set_visual_state_for_snapshot(&mut self, state: OnboardingVisualState) {
-        self.flow = Onboarding::new();
-        self.error = None;
-        self.backup_error = None;
-        self.backup_saved = None;
-        self.backup_was_verified = false;
-        self.backup_copy_form_open = false;
-        self.identity_ready_page = false;
-        self.joined_member = false;
-        self.portable_backup_only = false;
-        self.tour_page = None;
-        self.tour_only = false;
-        self.codec_page = false;
-        self.codec_error = None;
-        self.nearby_status = None;
-        self.nearby_failure = None;
-        self.nearby_code = None;
-        self.nearby_active_for_snapshot = false;
-        let minted = MintedIdentity {
-            fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
-            path: PathBuf::from("/var/lib/tilo/identities/primary.json"),
-        };
-        match state {
-            OnboardingVisualState::Intro => {}
-            OnboardingVisualState::Existing => self.flow.begin_existing(),
-            OnboardingVisualState::Nearby | OnboardingVisualState::NearbyCode => {
-                self.flow.begin_existing();
-                self.flow.choose_nearby();
-                self.nearby_active_for_snapshot = true;
-                if state == OnboardingVisualState::NearbyCode {
-                    self.nearby_code = Some("482913".into());
-                    self.nearby_status = Some(t("onboarding-nearby-code"));
-                } else {
-                    self.nearby_status = Some(t("onboarding-nearby-waiting"));
-                }
-            }
-            OnboardingVisualState::Restore | OnboardingVisualState::RestoreError => {
-                self.flow.begin_existing();
-                self.flow.choose_restore();
-                if state == OnboardingVisualState::RestoreError {
-                    self.error = Some(t("onboarding-snapshot-restore-error"));
-                }
-            }
-            OnboardingVisualState::Protect | OnboardingVisualState::CreateError => {
-                self.flow.begin();
-                if state == OnboardingVisualState::CreateError {
-                    self.error = Some(t("onboarding-snapshot-create-error"));
-                }
-            }
-            OnboardingVisualState::Backup
-            | OnboardingVisualState::BackupVerified
-            | OnboardingVisualState::Ready => {
-                self.flow.begin();
-                self.flow.set_acknowledged(true);
-                let _ = self.flow.complete(minted);
-                self.backup_was_verified = state == OnboardingVisualState::BackupVerified;
-                self.backup_saved = self.backup_was_verified.then(|| {
-                    PathBuf::from("/home/quinten/Documents/tilo-identity-backup.tilo-identity")
-                });
-                self.identity_ready_page = state == OnboardingVisualState::Ready;
-            }
-            OnboardingVisualState::TourNavigate => {
-                self.set_tour_visual_state_for_snapshot(minted, TourPage::Navigate);
-            }
-            OnboardingVisualState::TourOrganise => {
-                self.set_tour_visual_state_for_snapshot(minted, TourPage::Organise);
-            }
-            OnboardingVisualState::TourCollaborate => {
-                self.set_tour_visual_state_for_snapshot(minted, TourPage::Collaborate);
-            }
-            OnboardingVisualState::TourStart => {
-                self.set_tour_visual_state_for_snapshot(minted, TourPage::Start);
-            }
-            OnboardingVisualState::Codecs
-            | OnboardingVisualState::CodecsInstalling
-            | OnboardingVisualState::CodecsWaitingForNetwork
-            | OnboardingVisualState::CodecsInstalled
-            | OnboardingVisualState::CodecsFailed => {
-                self.flow.begin();
-                self.flow.set_acknowledged(true);
-                let _ = self.flow.complete(minted);
-                self.backup_was_verified = true;
-                self.identity_ready_page = true;
-                self.codec_step_offered = true;
-                self.codec_page = true;
-                self.codec_status = CodecPackStatus::parse(match state {
-                    OnboardingVisualState::CodecsInstalling => {
-                        r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":5,"label":"Downloading","bytes":14000000,"total":38000000}}"#
-                    }
-                    OnboardingVisualState::CodecsWaitingForNetwork => {
-                        r#"{"state":"waiting-for-network","desired":true}"#
-                    }
-                    OnboardingVisualState::CodecsInstalled => {
-                        r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#
-                    }
-                    OnboardingVisualState::CodecsFailed => {
-                        r#"{"state":"failed","desired":true,"last_error":"Could not download the manifest (connection reset)."}"#
-                    }
-                    _ => r#"{"state":"not-installed"}"#,
-                });
-            }
-        }
-        self.composed = None;
-        self.invalidation.both();
-        self.settle_motion_for_snapshot();
-    }
-
-    fn set_tour_visual_state_for_snapshot(&mut self, minted: MintedIdentity, page: TourPage) {
-        self.flow.begin();
-        self.flow.set_acknowledged(true);
-        let _ = self.flow.complete(minted);
-        self.backup_was_verified = true;
-        self.identity_ready_page = true;
-        self.tour_page = Some(page);
-    }
-
     #[expect(
         clippy::too_many_lines,
         reason = "a declarative page composition covering every onboarding screen"
@@ -2144,13 +2071,15 @@ impl OnboardingView {
             && theme.text_scale <= 1.0
             && !theme.name.eq_ignore_ascii_case("high contrast");
         let total = self.total_steps();
-        let (step, stage) = if self.prepared_pending {
+        let (step, stage) = if self.recovery_only && self.flow.screen() == Screen::Existing {
+            (1, t("onboarding-stage-choose"))
+        } else if self.recovery_only || self.prepared_pending {
             (2, t("onboarding-stage-restore"))
         } else {
             match self.flow.screen() {
                 Screen::Intro => (1, t("onboarding-stage-choose")),
                 Screen::Existing | Screen::Nearby => (2, t("onboarding-stage-connect")),
-                Screen::Restore => (2, t("onboarding-stage-restore")),
+                Screen::Restore | Screen::RecoveryKey => (2, t("onboarding-stage-restore")),
                 Screen::NoRecovery => (2, t("onboarding-stage-protect")),
                 Screen::Done if self.identity_ready_page && self.codec_page => {
                     (4, t("onboarding-stage-media"))
@@ -2167,6 +2096,7 @@ impl OnboardingView {
                 Screen::Existing => self.existing(theme),
                 Screen::Nearby => self.nearby(theme),
                 Screen::Restore => self.restore(theme),
+                Screen::RecoveryKey => self.recovery_key(theme),
                 Screen::NoRecovery => self.no_recovery(theme),
                 Screen::Done if self.identity_ready_page && self.codec_page => self.codecs(theme),
                 Screen::Done if self.identity_ready_page => self.done(theme, compact_ready),
@@ -2190,10 +2120,14 @@ impl OnboardingView {
                 Row::new()
                     .with_padding(spacing.s3, 0.0)
                     .push(Box::new(
-                        Text::new(&t("onboarding-progress-eyebrow"))
-                            .with_id("onboarding.progress.eyebrow")
-                            .with_role(ui::tokens::typography::TextRole::Label)
-                            .with_color(theme.text_dim),
+                        Text::new(&t(if self.recovery_only {
+                            "onboarding-recovery-eyebrow"
+                        } else {
+                            "onboarding-progress-eyebrow"
+                        }))
+                        .with_id("onboarding.progress.eyebrow")
+                        .with_role(ui::tokens::typography::TextRole::Label)
+                        .with_color(theme.text_dim),
                     ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
@@ -2242,8 +2176,10 @@ impl OnboardingView {
         let backup_in_scroll = self.flow.screen() == Screen::Done && !self.identity_ready_page;
         let acknowledgement_footer = matches!(self.flow.screen(), Screen::NoRecovery);
         let choice_footer = self.choice_footer_height(theme);
-        let backup_acknowledgement_visible =
-            backup_in_scroll && !self.portable_backup_only && !self.backup_was_verified;
+        let backup_acknowledgement_visible = backup_in_scroll
+            && !self.portable_backup_only
+            && !self.backup_was_verified
+            && self.recovery_key_copy.is_none();
         let footer_height = if backup_in_scroll {
             FOOTER_HEIGHT
                 + if backup_acknowledgement_visible {
@@ -2270,8 +2206,13 @@ impl OnboardingView {
                 || theme.name.eq_ignore_ascii_case("high contrast")
                 || matches!(
                     self.flow.screen(),
-                    Screen::Intro | Screen::Nearby | Screen::Restore | Screen::NoRecovery
+                    Screen::Intro
+                        | Screen::Nearby
+                        | Screen::Restore
+                        | Screen::RecoveryKey
+                        | Screen::NoRecovery
                 )
+                || (self.recovery_only && self.flow.screen() == Screen::Existing)
                 || self.flow.screen() == Screen::Done);
         let mut scroll = Scrollable::new_vertical();
         if backup_in_scroll {
@@ -2370,7 +2311,8 @@ impl OnboardingView {
     }
 
     fn backup_decision_footer(&self, theme: &Theme) -> Box<dyn Widget> {
-        if self.portable_backup_only || self.backup_was_verified {
+        if self.portable_backup_only || self.backup_was_verified || self.recovery_key_copy.is_some()
+        {
             return self.identity_actions();
         }
         Box::new(
@@ -2406,12 +2348,12 @@ impl OnboardingView {
     }
 
     /// The ways forward from a choice screen, one row per flow.
-    fn choices(&self) -> Option<[Choice; 2]> {
+    fn choices(&self) -> Option<Vec<Choice>> {
         if self.prepared_pending {
             return None;
         }
         match self.flow.screen() {
-            Screen::Intro => Some([
+            Screen::Intro => Some(vec![
                 Choice {
                     id: "onboarding.existing.card",
                     icon: ui::icons::Icon::User,
@@ -2427,13 +2369,20 @@ impl OnboardingView {
                     key: KEY_BEGIN,
                 },
             ]),
-            Screen::Existing => Some([
+            Screen::Existing => Some(vec![
                 Choice {
                     id: "onboarding.existing.nearby.card",
                     icon: ui::icons::Icon::Monitor,
                     title: "onboarding-choice-nearby",
                     detail: "onboarding-choice-nearby-detail",
                     key: KEY_CHOOSE_NEARBY,
+                },
+                Choice {
+                    id: "onboarding.existing.recovery-key.card",
+                    icon: ui::icons::Icon::ListOrdered,
+                    title: "onboarding-choice-recovery-key",
+                    detail: "onboarding-choice-recovery-key-detail",
+                    key: KEY_CHOOSE_RECOVERY_KEY,
                 },
                 Choice {
                     id: "onboarding.existing.restore.card",
@@ -2463,7 +2412,7 @@ impl OnboardingView {
         })
     }
 
-    fn choice_footer(&self, theme: &Theme, choices: [Choice; 2]) -> Box<dyn Widget> {
+    fn choice_footer(&self, theme: &Theme, choices: Vec<Choice>) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
         let rows = choices
             .into_iter()
@@ -2596,6 +2545,23 @@ impl OnboardingView {
                 }
                 footer_actions(actions)
             }
+            Screen::RecoveryKey => footer_actions(vec![
+                back_button(&self.pressed),
+                Box::new(
+                    self.pressed
+                        .button(
+                            "onboarding.recovery-key.restore.button",
+                            &t("onboarding-restore-backup"),
+                            KEY_RECOVERY_KEY_RESTORE,
+                        )
+                        .with_icon(ui::icons::Icon::ArrowRight)
+                        .role(ui::widget::ButtonRole::Primary)
+                        .with_enabled(
+                            matches!(self.recovery_check, WordsCheck::Ready { .. })
+                                && self.identity_idle(),
+                        ),
+                ),
+            ]),
             Screen::Restore => footer_actions(vec![
                 back_button(&self.pressed),
                 Box::new(
@@ -2626,6 +2592,25 @@ impl OnboardingView {
             ]),
             Screen::Done if self.identity_ready_page && self.codec_page => self.codec_actions(),
             Screen::Done if self.identity_ready_page => self.finish_action(),
+            Screen::Done if !self.identity_ready_page && self.recovery_key_copy.is_some() => {
+                footer_actions(vec![
+                    Box::new(self.pressed.button(
+                        "onboarding.backup.recovery-key.close.button",
+                        &t("onboarding-back"),
+                        KEY_RECOVERY_KEY_CLOSE,
+                    )),
+                    Box::new(
+                        self.pressed
+                            .button(
+                                "onboarding.backup.recovery-key.confirm.button",
+                                &t("onboarding-recovery-key-confirm-button"),
+                                KEY_RECOVERY_KEY_CONFIRM,
+                            )
+                            .role(ui::widget::ButtonRole::Primary)
+                            .with_enabled(self.recovery_key_copy_confirmed),
+                    ),
+                ])
+            }
             Screen::Done if self.portable_backup_only => footer_actions(vec![
                 Box::new(self.pressed.button(
                     "onboarding.backup.cancel.button",
@@ -2918,16 +2903,42 @@ impl OnboardingView {
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s4)
-            .push(heading(&t("onboarding-existing-title"), theme))
-            .push(paragraph(&t("onboarding-existing-body"), theme));
+            .with_gap(theme.tokens.spacing.s4);
         if self.recovery_only {
-            body = body.push(spaced_banner(
-                Banner::warning(t("onboarding-connect-recovery-title"))
-                    .with_message(t("onboarding-connect-recovery-message"))
-                    .with_icon(ui::icons::Icon::Shield),
-                theme,
-            ));
+            // Recovery is reached from a computer that already belongs to
+            // someone: say what happened and that nothing was replaced,
+            // then the same ways back as setting up a new computer.
+            use crate::onboarding::IdentityProblem;
+            let explanation = match self.recovery_problem {
+                Some(IdentityProblem::KeyringUnavailable) => "onboarding-recovery-body-keyring",
+                Some(IdentityProblem::RecordMissing) => "onboarding-recovery-body-missing",
+                Some(IdentityProblem::ChainInvalid) => "onboarding-recovery-body-invalid",
+                None => "onboarding-recovery-body",
+            };
+            body = body
+                .push(heading(&t("onboarding-recovery-title"), theme))
+                .push(paragraph(&t(explanation), theme));
+            if let Some(identity) = self.expected_identity {
+                // Which identity to bring back: matches the start of the
+                // fingerprint shown on the person's other devices.
+                body = body.push(Box::new(
+                    Text::new(&t_args(
+                        "onboarding-recovery-identity",
+                        &[(
+                            "fingerprint",
+                            short_fingerprint(&hex::encode(identity)).into(),
+                        )],
+                    ))
+                    .with_id("onboarding.recovery.identity")
+                    .with_role(ui::tokens::typography::TextRole::Label)
+                    .with_color(theme.text_dim)
+                    .numeric(),
+                ));
+            }
+        } else {
+            body = body
+                .push(heading(&t("onboarding-existing-title"), theme))
+                .push(paragraph(&t("onboarding-existing-body"), theme));
         }
         if let Some(error) = &self.error {
             body = body.push(spaced_banner(
@@ -3779,6 +3790,9 @@ impl OnboardingView {
         if !self.backup_export_available {
             return self.done(theme, false);
         }
+        if let Some(copy) = &self.recovery_key_copy {
+            return recovery_key_copy_page(theme, copy);
+        }
         let compact = self.rect.height() <= 540.0;
         let mut backup = Column::new().with_no_padding().with_intrinsic_height();
         if let Some(error) = &self.backup_error {
@@ -3787,7 +3801,14 @@ impl OnboardingView {
                 theme,
             ));
         }
-        if let Some(path) = &self.backup_saved {
+        if self.recovery_key_written && self.backup_saved.is_none() {
+            backup = backup.push(spaced_banner(
+                Banner::success(t("onboarding-recovery-key-written"))
+                    .with_message(t("onboarding-recovery-key-written-detail"))
+                    .with_icon(ui::icons::Icon::Check),
+                theme,
+            ));
+        } else if let Some(path) = &self.backup_saved {
             backup = backup.push(spaced_banner(
                 Banner::success(t("onboarding-backup-verified"))
                     .with_message(path.display().to_string())
@@ -3817,6 +3838,22 @@ impl OnboardingView {
             ));
         if self.backup_error.is_some() || self.backup_saved.is_some() || self.backup_was_verified {
             page = page.push(Box::new(backup));
+        }
+        if !self.recovery_key_written && (!self.backup_was_verified || self.backup_copy_form_open) {
+            // The quicker way to keep the identity: 24 words on paper. Offered
+            // first and beside the file, never instead of it, because the two
+            // suit different people.
+            let pressed = self.pressed.clone();
+            page = page.push(Box::new(Section::new(vec![Box::new(
+                ListRow::new(
+                    "onboarding.backup.recovery-key.row",
+                    t("onboarding-backup-recovery-key"),
+                )
+                .icon(ui::icons::Icon::ListOrdered)
+                .secondary(t("onboarding-backup-recovery-key-detail"))
+                .disclosure()
+                .on_activate(move || pressed.press(KEY_RECOVERY_KEY_SHOW)),
+            )])));
         }
         if !self.backup_was_verified || self.backup_copy_form_open {
             page = page.push(self.backup_form(theme));
@@ -4569,6 +4606,8 @@ impl Widget for OnboardingView {
             self.flow.choose_restore();
         }
 
+        self.sync_recovery_key();
+
         // Choosing the nearby flow is the explicit request to pair, so the
         // screen opens with pairing already under way.
         let mut start_nearby = self.pressed.take(KEY_CHOOSE_NEARBY)
@@ -4655,6 +4694,8 @@ impl Widget for OnboardingView {
                 self.invalidation.structure();
             }
         }
+
+        self.sync_recovery_key_copy();
 
         if self.pressed.take(KEY_BACKUP_ANOTHER)
             && self.flow.screen() == Screen::Done
@@ -4932,9 +4973,9 @@ impl Widget for OnboardingView {
             theme.text_scale > 1.0 || theme.name.eq_ignore_ascii_case("high contrast");
         let panel_height = if accessibility_expanded {
             ACCESSIBLE_PANEL_HEIGHT
-        } else if self.tour_page.is_none()
-            && matches!(self.flow.screen(), Screen::Intro | Screen::Existing)
-        {
+        } else if self.tour_page.is_none() && self.flow.screen() == Screen::Intro {
+            // The three ways to bring an existing identity (and recovery's
+            // explanation above them) need the ordinary limit.
             INTRO_PANEL_HEIGHT
         } else {
             PANEL_MAX_HEIGHT
@@ -4951,8 +4992,10 @@ impl Widget for OnboardingView {
             && (accessibility_expanded
                 || matches!(
                     self.flow.screen(),
-                    Screen::Nearby | Screen::Restore | Screen::NoRecovery
+                    Screen::Nearby | Screen::Restore | Screen::RecoveryKey | Screen::NoRecovery
                 )
+                // Recovery explains what happened above its three ways back.
+                || (self.recovery_only && self.flow.screen() == Screen::Existing)
                 || (self.flow.screen() == Screen::Done
                     && (!self.identity_ready_page || self.codec_page)));
         // The scroll/footer budget must use the same preferred height as the
@@ -5231,7 +5274,7 @@ fn screen_order(screen: Screen) -> u8 {
     match screen {
         Screen::Intro => 0,
         Screen::Existing | Screen::NoRecovery => 1,
-        Screen::Nearby | Screen::Restore => 2,
+        Screen::Nearby | Screen::Restore | Screen::RecoveryKey => 2,
         Screen::Done => 3,
     }
 }
@@ -5926,7 +5969,7 @@ mod tests {
     use tilo_identity_ceremony::{IdentityRecord, SerializableIdentity};
     use winit::event::Modifiers;
 
-    fn view() -> (OnboardingView, Arc<AtomicUsize>) {
+    pub(super) fn view() -> (OnboardingView, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
         let v = OnboardingView::with_minter(Box::new(move || {
@@ -6214,7 +6257,7 @@ mod tests {
         })
     }
 
-    fn press(view: &OnboardingView, doc: &mut AutoCommit, key: &'static str) {
+    pub(super) fn press(view: &OnboardingView, doc: &mut AutoCommit, key: &'static str) {
         // Checkboxes are bound to the document; every other action is a
         // click on the view's button.
         if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
@@ -9103,18 +9146,19 @@ mod tests {
         reason = "one walk through every choice screen, its cards, and the flows they open"
     )]
     fn choices_open_separate_flows_from_pinned_focusable_cards() {
-        // Phase `each_choice_screen_offers_two_cards_that_stay_in_view`.
+        // Phase `each_choice_screen_offers_cards_that_stay_in_view`.
         for (keys, cards) in [
             (
                 &[][..],
-                ["onboarding.existing.card", "onboarding.begin.card"],
+                &["onboarding.existing.card", "onboarding.begin.card"][..],
             ),
             (
                 &[KEY_EXISTING][..],
-                [
+                &[
                     "onboarding.existing.nearby.card",
+                    "onboarding.existing.recovery-key.card",
                     "onboarding.existing.restore.card",
-                ],
+                ][..],
             ),
         ] {
             for (width, height, theme) in [

@@ -122,7 +122,11 @@ impl Page {
             .body()
             .all()
             .filter_map(|id| state.block(id))
-            .map(|view| tilo_rich_text::content_of(view))
+            .map(|view| {
+                #[cfg(test)]
+                tests::MATERIALIZED_BLOCKS.with(|count| count.set(count.get() + 1));
+                tilo_rich_text::content_of(view)
+            })
             .collect()
     }
 }
@@ -131,6 +135,13 @@ impl Page {
 #[must_use]
 pub fn page_id(page: PageId) -> Id {
     Id::from(page.to_string())
+}
+
+/// The id a note is stored under, from either form a reader meets it in:
+/// the stored id, or the resource the notebook's read lists it as
+/// (`notes.notebook/pages/<id>`).
+fn note_key(id: Id) -> Id {
+    crate::actions::page_of_resource(id.as_str()).map_or(id, page_id)
 }
 
 /// The note a stored id names, when it is one.
@@ -162,6 +173,7 @@ impl Notebook {
         #[param("Title")] title: String,
         #[param("The note it goes under; none for a top-level note")] parent: Option<Id>,
     ) -> Result<(), Refusal> {
+        let parent = parent.map(note_key);
         if let Some(parent) = &parent {
             self.pages
                 .get(parent)
@@ -205,7 +217,9 @@ impl Notebook {
         }
         note.title.clone_from(&title);
         if let Some(target) = page_of(page) {
-            self.relabel_links(target, &title);
+            ui::tilo_resource::profiling::measure("notes.rename.relabel", || {
+                self.relabel_links(target, &title);
+            });
         }
         Ok(())
     }
@@ -233,7 +247,7 @@ impl Notebook {
         #[param("The note it goes under; none for the top level")] parent: Option<Id>,
         #[param("The note it goes before; none to go last")] before: Option<Id>,
     ) -> Result<(), Refusal> {
-        self.place(page, parent, before.as_ref())
+        self.place(page, parent.map(note_key), before.map(note_key).as_ref())
     }
 
     /// Move note up
@@ -722,40 +736,64 @@ impl Notebook {
 
     /// Relabel every link and embed of note `target` to read `title`.
     fn relabel_links(&mut self, target: PageId, title: &str) {
-        let chars =
-            |text: &str, byte: usize| text.get(..byte).map_or(0, |head| head.chars().count());
-        for (_, page) in self.pages.iter_mut() {
-            for block in page.blocks() {
+        let mut edits = Vec::new();
+        for (id, page) in self.pages.iter() {
+            let Some(state) = page.body.state() else {
+                continue;
+            };
+            let mut ops = Vec::new();
+            // Read the shared paragraphs' marks, without copying every
+            // page's prose and formatting into editor blocks.
+            for block in state.blocks(0..usize::MAX) {
                 let mut ranges: Vec<_> = block
                     .marks
                     .iter()
-                    .filter(|span| {
-                        matches!(&span.mark, Mark::Link(linked) | Mark::Transclusion(linked) if *linked == target)
+                    .filter_map(|span| {
+                        let mark = tilo_rich_text::editor_mark(&span.name, &span.value)?;
+                        if !matches!(&mark, Mark::Link(linked) | Mark::Transclusion(linked) if *linked == target)
+                        {
+                            return None;
+                        }
+                        let byte = |at| {
+                            block
+                                .text
+                                .char_indices()
+                                .nth(at)
+                                .map_or(block.text.len(), |(byte, _)| byte)
+                        };
+                        let start = byte(span.start);
+                        let end = byte(span.end);
+                        let old = block.text.get(start..end)?;
+                        (start < end && old != title)
+                            .then(|| (span.start, old.chars().count(), mark))
                     })
-                    .filter(|span| block.text.get(span.range.clone()) != Some(title))
-                    .map(|span| (span.range.clone(), span.mark.clone()))
                     .collect();
                 // Last first, so each edit leaves the earlier ranges where
-                // they are.
-                ranges.sort_unstable_by_key(|(range, _)| std::cmp::Reverse(range.start));
-                for (range, mark) in ranges {
-                    let at = chars(&block.text, range.start);
-                    let del = block
-                        .text
-                        .get(range.clone())
-                        .map_or(0, |old| old.chars().count());
-                    page.body.perform(RichTextAction::SpliceText {
+                // they are. Stored marks already use character offsets.
+                ranges.sort_unstable_by_key(|(at, _, _)| std::cmp::Reverse(*at));
+                for (at, del, mark) in ranges {
+                    ops.push(RichTextAction::SpliceText {
                         region: RegionKind::Body,
                         block: block.id.clone(),
                         at,
                         del,
                         ins: title.to_owned(),
                     });
-                    page.body.perform(mark_op(
+                    ops.push(mark_op(
                         &block.id,
                         at..at.saturating_add(title.chars().count()),
                         &mark,
                     ));
+                }
+            }
+            if !ops.is_empty() {
+                edits.push((id.clone(), ops));
+            }
+        }
+        for (id, ops) in edits {
+            if let Some(page) = self.pages.get_mut(&id) {
+                for op in ops {
+                    page.body.perform(op);
                 }
             }
         }
@@ -830,9 +868,11 @@ impl Notebook {
     }
 
     /// One note, or the notebook, as a reader reads it: the notebook as its
-    /// notes and tags; a note (by its id) as its title and blocks, each with
-    /// the id edits of its body name it by; a note's body resource as those
-    /// blocks.
+    /// notes and tags, the notes in notebook order (so the notes under one
+    /// parent are listed in the order the sidebar shows them); a note (by its
+    /// id) as its title and blocks, one Markdown line per block in order,
+    /// each with the id edits of its body name it by; a note's body resource
+    /// as those blocks.
     fn read_note(
         &self,
         doc: &tilo_resource::Doc,

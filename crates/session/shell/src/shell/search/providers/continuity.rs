@@ -1924,6 +1924,7 @@ mod tests {
                     label: title.into(),
                     note: String::new(),
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,

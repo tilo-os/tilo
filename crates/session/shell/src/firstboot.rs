@@ -17,8 +17,8 @@ use std::time::Duration;
 use tilo_identity_host::provisioning::IdentityStorage;
 pub use tilo_identity_host::provisioning::{
     PRIMARY_IDENTITY_FILE, ProvisionOutcome, collaboration_identity_paths,
-    ensure_device_certificate_for_record, login_account_display_name, prepare_identity_directory,
-    verify_collaboration_identity,
+    device_certificate_clock_refusal, ensure_device_certificate_for_record,
+    login_account_display_name, prepare_identity_directory, verify_collaboration_identity,
 };
 use tilo_user_identity::IdentityPaths;
 
@@ -54,6 +54,27 @@ pub fn ensure_collaboration_identity(
         paths,
         IDENTITY_STORAGE,
     )
+}
+
+/// [`ensure_collaboration_identity`] for an identity that already exists,
+/// then whether this device's certificate is valid at the clock's reading.
+/// A certificate refused for the clock alone is reported as a
+/// [`tilo_user_identity::CertificateClockError`]: the identity is intact and
+/// the session waits for the clock, whether this device is the identity's
+/// first or one joined later.
+///
+/// # Errors
+///
+/// As [`ensure_collaboration_identity`], and the clock refusal.
+pub fn verify_existing_collaboration_identity(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+) -> Result<ProvisionOutcome, io::Error> {
+    let outcome = ensure_collaboration_identity(identity_dir, paths)?;
+    match device_certificate_clock_refusal(paths, tilo_clock::unix_now_ns()) {
+        Some(refusal) => Err(refusal.into_io()),
+        None => Ok(outcome),
+    }
 }
 
 /// Provision the native device with its authenticated installer name.

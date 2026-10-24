@@ -70,7 +70,7 @@ pub fn recalculate_in_book(book: &Book) -> HashMap<Addr, CellValue> {
     let mut engine = Engine::in_book(&raw, &sheets);
     raw.keys()
         .filter(|(col, _)| (base..base.saturating_add(SHEET_SPAN)).contains(col))
-        .map(|&(col, row)| ((col - base, row), engine.eval_cell((col, row))))
+        .map(|&(col, row)| ((col - base, row), engine.resolve((col, row))))
         .collect()
 }
 

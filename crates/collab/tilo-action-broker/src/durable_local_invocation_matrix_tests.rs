@@ -1088,7 +1088,7 @@ mod durable_local_matrix {
                     .host_workers
                     .lock()
                     .unwrap()
-                    .get(&903)
+                    .only(903)
                     .unwrap()
                     .clone();
                 let caller = admitted.caller(&env.route.cluster_id).in_new_execution();
@@ -1160,6 +1160,7 @@ mod durable_local_matrix {
     include!("certified_lifecycle_tests.rs");
     include!("dispatcher_receipt_tests.rs");
     include!("local_document_action_rpc_tests.rs");
+    include!("packaged_app_worker_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");
     include!("keyboard_map_read_authority_tests.rs");

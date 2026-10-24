@@ -72,6 +72,7 @@ fn network_tick_latency_while_the_desktop_changes() {
                     kind: AppKind::Other("so.tilo.notes".into()),
                     label: String::new(),
                 },
+                app_title: None,
             });
             tree.seed_doc_from_cache();
         }

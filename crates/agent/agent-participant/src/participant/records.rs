@@ -62,6 +62,21 @@ impl AgentParticipant {
     /// that written one: it is what another agent filled (the workbook it
     /// imported), where a new record would hold none of it.
     pub(super) fn unnamed_record(&mut self, step: &Step) -> Result<DocumentRoute, String> {
+        if let Some(route) = self.existing_record(step)? {
+            return Ok(route);
+        }
+        let route = self.open(&step.app, None)?;
+        if let Some(running) = self.running.as_mut()
+            && !running.made.contains(&route)
+        {
+            running.made.push(route.clone());
+        }
+        Ok(route)
+    }
+
+    /// The record of the room [`Self::unnamed_record`] finds for `step`
+    /// without making one: `None` where it would open a new record.
+    pub(super) fn existing_record(&mut self, step: &Step) -> Result<Option<DocumentRoute>, String> {
         let open: Vec<DocumentRoute> = self
             .apps
             .keys()
@@ -127,19 +142,10 @@ impl AgentParticipant {
                 }
             }
             if let Some(written) = self.only_written(known) {
-                return self.open(&step.app, Some(&written.record));
+                return self.open(&step.app, Some(&written.record)).map(Some);
             }
         }
-        if let Some(route) = found {
-            return Ok(route);
-        }
-        let route = self.open(&step.app, None)?;
-        if let Some(running) = self.running.as_mut()
-            && !running.made.contains(&route)
-        {
-            running.made.push(route.clone());
-        }
-        Ok(route)
+        Ok(found)
     }
 
     /// The one of `routes`, records of one app the agent has not opened,

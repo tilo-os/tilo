@@ -322,7 +322,10 @@ impl Slider {
         }
         let value = value.clamp(min, max);
         match self.step {
-            Some(step) => (min + ((value - min) / step).round() * step).clamp(min, max),
+            Some(step) => {
+                crate::num::snap_decimal(min + ((value - min) / step).round() * step, &[min, step])
+                    .clamp(min, max)
+            }
             None => value,
         }
     }
@@ -774,7 +777,7 @@ impl Slider {
         // The unfilled half is the raised well; the filled half is strong
         // neutral ink. A value is not an on state, and not the accent.
         let unfilled = theme.tokens.colors.surfaces.raised;
-        let filled = theme.tokens.colors.intent.neutral_fill;
+        let filled = theme.tokens.colors.intent.value_fill;
         let track_shape = RoundedRect::from_rect(track_rect, track_radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -834,8 +837,8 @@ impl Slider {
         let knob_shape = Circle::new(knob_center, knob_radius);
         // One thumb colour held across rest / hover / drag; hover and drag
         // read from the radius (above) and the halo. On a light material the
-        // thumb is a raised white object ringed in a tone that clears both
-        // halves of the track, never a dark disc; on a dark one it is the
+        // thumb is a raised white disc, ringed where it sits on the unfilled
+        // half and set off the filled half by its fill, never a dark disc; on a dark one it is the
         // primary ink (HIG §9.5), ringed in the ground so it stays a disc of
         // its own where it sits on the filled half, which is the same ink.
         let (fill_color, border_color) = thumb_colors(theme, filled, unfilled);
@@ -907,8 +910,9 @@ fn thumb_colors(
     let colors = &theme.tokens.colors;
     let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
     if crate::widget::toggle::light_material(colors) {
-        let ring =
-            crate::widget::toggle::ink_across(&[filled, unfilled], colors.text_tertiary, floor);
+        // The white disc stands off the filled half by its own fill; the
+        // ring is what parts it from the unfilled half, which is as light.
+        let ring = crate::widget::toggle::ink_across(&[unfilled], colors.text_tertiary, floor);
         (colors.surfaces.overlay, ring)
     } else {
         let ring = crate::widget::toggle::ink_across(&[filled], colors.surfaces.content, floor);
@@ -1412,17 +1416,11 @@ mod tests {
         );
         let colors = &theme.tokens.colors;
         let raised = colors.surfaces.overlay;
-        let ring = crate::widget::toggle::ink_across(
-            &[colors.intent.neutral_fill, colors.surfaces.raised],
-            colors.text_tertiary,
-            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-        );
-        for ground in [colors.intent.neutral_fill, colors.surfaces.raised] {
-            assert!(
-                crate::a11y::contrast_ratio(ring, ground)
-                    >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST
-            );
-        }
+        let (fill, ring) = thumb_colors(&theme, colors.intent.value_fill, colors.surfaces.raised);
+        assert_eq!(fill, raised);
+        let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+        assert!(crate::a11y::contrast_ratio(ring, colors.surfaces.raised) >= floor);
+        assert!(crate::a11y::contrast_ratio(fill, colors.intent.value_fill) >= floor);
         assert!(crate::a11y::relative_luminance(raised) > 0.9);
     }
 
@@ -1433,7 +1431,7 @@ mod tests {
     fn the_dark_thumb_is_primary_ink_and_ringed() {
         let theme = Theme::dark();
         let colors = &theme.tokens.colors;
-        let (filled, unfilled) = (colors.intent.neutral_fill, colors.surfaces.raised);
+        let (filled, unfilled) = (colors.intent.value_fill, colors.surfaces.raised);
         let (fill, ring) = thumb_colors(&theme, filled, unfilled);
         assert_eq!(fill, colors.text_primary);
         let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
@@ -1645,6 +1643,22 @@ mod tests {
             51.0,
             "fine movement still honors the step grid"
         );
+    }
+
+    #[test]
+    fn decimal_steps_land_on_the_grid_they_name() {
+        let state = crate::LocalState::new(0.0);
+        let mut slider = Slider::from_state(&state).step(0.1);
+        slider.set_focus(true);
+        let right = crate::synthetic_input::named_key(NamedKey::ArrowRight);
+        for _ in 0..3 {
+            dispatch(&mut slider, &right);
+        }
+        assert_eq!(state.get(), 0.3, "three tenths is 0.3");
+        for _ in 0..4 {
+            dispatch(&mut slider, &right);
+        }
+        assert_eq!(state.get(), 0.7, "seven tenths is 0.7");
     }
 
     #[test]

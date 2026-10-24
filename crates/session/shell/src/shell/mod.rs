@@ -282,6 +282,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
         id: 1,
         title: String::new(),
         tile: t.clone(),
+        app_title: None,
     };
     let request = tilo_desktop::resolver::TileRequest {
         room: state::RoomId::new(),

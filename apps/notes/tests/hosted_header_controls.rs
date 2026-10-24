@@ -80,6 +80,7 @@ fn hosted_header_plus_creates_a_page_in_a_desktop_tab_built_late() {
             label: "Notes".into(),
             note: String::new(),
         },
+        app_title: None,
     };
     let tab_id = tab.id;
     let tree = seed_tree(&mut minter, "Desk", vec![tab]);

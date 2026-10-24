@@ -253,6 +253,12 @@ struct State {
     reading_revision: u64,
     /// The picture tracks asked of this carrier's publication, by track.
     pictures_out: BTreeMap<String, PictureOut>,
+    /// Where a picture track asked for again numbers its groups, by track:
+    /// one past the last group of its earlier incarnation. The relay still
+    /// holds groups of that incarnation and drops a group whose sequence it
+    /// already has, so a track starting over at group 0 sent the reader who
+    /// showed a still window again nothing.
+    picture_groups: BTreeMap<String, u64>,
     /// Advances whenever `pictures_out` gains or loses a track.
     pictures_revision: u64,
     /// Picture tracks (call layers and windows) asked for afresh since last
@@ -290,7 +296,9 @@ impl State {
             self.reading_revision = self.reading_revision.saturating_add(1);
         }
         if !self.pictures_out.is_empty() {
-            self.pictures_out.clear();
+            for (name, out) in std::mem::take(&mut self.pictures_out) {
+                self.picture_groups.insert(name, out.next_group);
+            }
             self.pictures_revision = self.pictures_revision.saturating_add(1);
         }
         self.pictures_in.clear();
@@ -421,6 +429,7 @@ impl Client {
                 reading: BTreeMap::new(),
                 reading_revision: 0,
                 pictures_out: BTreeMap::new(),
+                picture_groups: BTreeMap::new(),
                 pictures_revision: 0,
                 keyframes: BTreeSet::new(),
                 shown: BTreeMap::new(),
@@ -1059,12 +1068,13 @@ fn accept_picture(shared: &Arc<Shared>, request: moq_net::track::Request) {
         state.keyframes.insert(track);
     }
     let unused = watch_unused(shared, name.clone(), track.clone());
+    let next_group = state.picture_groups.get(&name).copied().unwrap_or(0);
     state.pictures_out.insert(
         name,
         PictureOut {
             track,
             group: None,
-            next_group: 0,
+            next_group,
             in_group: 0,
             _unused: unused,
         },
@@ -1102,7 +1112,9 @@ fn watch_unused(
             if track.clone().abort_unused(moq_net::Error::Cancel).is_err() {
                 continue;
             }
-            state.pictures_out.remove(&name);
+            if let Some(out) = state.pictures_out.remove(&name) {
+                state.picture_groups.insert(name, out.next_group);
+            }
             state.pictures_revision = state.pictures_revision.saturating_add(1);
             drop(state);
             shared.wake();

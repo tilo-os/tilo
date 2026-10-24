@@ -439,4 +439,53 @@ mod tests {
             }
         }
     }
+
+    /// What can put this machine to sleep when "suspend when idle" is off
+    /// and the screen is set never to lock: idleness never, whatever the
+    /// profile, power source or stored timers; only the lid, the power key
+    /// and a critical battery, each as configured.
+    #[test]
+    fn with_idle_suspend_off_only_the_lid_the_power_key_and_a_critical_battery_suspend() {
+        let section: serde_json::Value = serde_json::from_str(
+            r#"{
+                "auto_suspend": false,
+                "lock_minutes": 0,
+                "suspend_minutes": 15,
+                "battery_suspend_minutes": 5,
+                "saver_suspend_minutes": 3,
+                "balanced_suspend_minutes": 10,
+                "performance_suspend_minutes": 30
+            }"#,
+        )
+        .unwrap();
+        for profile in [
+            None,
+            Some("power-saver"),
+            Some("balanced"),
+            Some("performance"),
+        ] {
+            for on_battery in [false, true] {
+                let policy = policy_from_section_for_profile(&section, profile, on_battery);
+                assert_eq!(
+                    policy.idle_suspend, None,
+                    "{profile:?} on battery {on_battery}"
+                );
+                assert_eq!(
+                    policy.idle_lock, None,
+                    "{profile:?} on battery {on_battery}"
+                );
+                assert_eq!(policy.on_lid(true), Some(PowerAction::Suspend));
+                assert_eq!(policy.on_power_key(), Some(PowerAction::Suspend));
+                assert_eq!(policy.critical_action, PowerAction::Suspend);
+            }
+        }
+        let ignored: serde_json::Value = serde_json::from_str(
+            r#"{"auto_suspend":false,"lid_close_action":"ignore","power_key_action":"lock","critical_action":"ignore"}"#,
+        )
+        .unwrap();
+        let policy = policy_from_section_for_profile(&ignored, None, true);
+        assert_eq!(policy.on_lid(true), None);
+        assert_eq!(policy.on_power_key(), Some(PowerAction::Lock));
+        assert_eq!(policy.critical_action, PowerAction::Ignore);
+    }
 }

@@ -212,10 +212,14 @@ test or one package's lints; it runs them on its warm builds, uncommitted
 changes included (docs/t.md):
 
 ```sh
-t test test/shell --test 'concept_parity_spec::overview_add_workspace::' --priority high
-t cargo check -p shell --tests --priority high
-t test clippy/shell --priority high
+t test test-x86_64/shell --test 'concept_parity_spec::overview_add_workspace::'
+t cargo check -p shell --tests
+t test clippy/shell
 ```
+
+Jobs someone waits for already run at high priority; `t cargo` takes no
+`--priority`. The shell's tests run on x86_64 alone (`test-x86_64/shell`);
+`t suggest --all` lists every check's name.
 
 `clippy/<package>` is CI's lint gate (all targets, `-D warnings`, the workspace
 lint table), including for the Linux-only code a Mac does not compile (`shell`,

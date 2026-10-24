@@ -10,6 +10,8 @@ use std::{collections::HashMap, rc::Rc};
 pub(super) const UNSAVED_RESOURCE: &str = "tilo.host.unsaved-changes";
 /// Its one operation: Retry.
 pub(super) const UNSAVED_OPERATION: &str = "tilo.host.unsaved-changes.retry";
+/// What the window says while its edits land where no report is admitted.
+const UNRECORDED: &str = "history-local-action-unrecorded";
 
 #[derive(Default)]
 pub(super) struct LocalInputCapture {
@@ -33,9 +35,14 @@ pub(super) struct LocalInputCapture {
     /// saved to their history. Nothing is said while it is still on its way.
     pub(super) failure: Option<String>,
     /// Routes whose connection the broker admits no local reports on (it
-    /// is not a host worker there). Edits on them are kept unreported, as
-    /// edits no publication observed are, until the connection is replaced.
+    /// is no worker there: no launcher vouched for this app, or the route
+    /// is another app's). Edits on them still land and are saved here, and
+    /// the person is told their history does not record them, until the
+    /// connection is replaced.
     reports_nothing: std::collections::HashSet<crate::collaboration::RouteSpec>,
+    /// Edits made under input whose every route reports nothing. Only a
+    /// recorded edit sets it.
+    unrecorded_edits: crate::local_document_action::UnsignedEdits,
     /// Changes the broker refused, kept for the person's Retry.
     refused: Vec<(
         crate::collaboration::RouteSpec,
@@ -206,7 +213,7 @@ impl App {
         // revision: they are recorded once the next published surface can
         // be pinned (`fill_pending_revisions`), quietly. While as many
         // surfaces as may be retained are held by changes on their way, the
-        // input's actions are refused before they edit anything.
+        // input's actions still edit and report nothing, and the gap is shown.
         let revision_pending = !matches!(
             pinned,
             Some(Ok(_) | Err(action_directory_snapshot::PinRefused::Full))
@@ -283,10 +290,10 @@ impl App {
         }
         if routes.is_empty() && reports_nothing {
             // The connection can carry no report: the edit is the person's,
-            // saved here, like one no publication observed.
+            // saved here, and the history will not show it.
             drop(background);
             return crate::local_document_action::enter_unsigned_input(
-                self.local_input_capture.unsigned_edits.clone(),
+                self.local_input_capture.unrecorded_edits.clone(),
             );
         }
         if routes.is_empty() {
@@ -318,6 +325,9 @@ impl App {
     pub(super) fn drain_local_input_capture(&mut self) {
         if self.local_input_capture.unsigned_edits.take() {
             self.note_local_input_unsigned();
+        }
+        if self.local_input_capture.unrecorded_edits.take() {
+            self.local_input_unrecorded();
         }
         if self.local_input_capture.unrouted_edits.take() {
             self.local_input_capture_failed("local input has no published action route");
@@ -399,6 +409,11 @@ impl App {
             }
             // A new connection may be one the broker admits reports on.
             self.local_input_capture.reports_nothing.clear();
+            let unrecorded = crate::i18n::I18nManager::lookup_plain(UNRECORDED);
+            if self.local_input_capture.failure.as_deref() == Some(unrecorded.as_str()) {
+                self.local_input_capture.failure = None;
+                self.needs_sync = true;
+            }
         }
         self.local_input_capture.transport_connected = connected;
         let mut rejected = Vec::new();
@@ -716,7 +731,19 @@ impl App {
         self.local_input_capture
             .reports_nothing
             .insert(pending.route);
-        self.note_local_input_unsigned();
+        self.local_input_unrecorded();
+    }
+
+    /// An edit landed on a connection whose reports the broker refuses: it
+    /// is saved here, and the person is told their history will not show
+    /// it. Retrying would be refused the same way, so none is offered.
+    fn local_input_unrecorded(&mut self) {
+        tracing::warn!("an edit was saved that this window's connection cannot record in history");
+        if self.local_input_capture.failure.is_none() {
+            self.local_input_capture.failure =
+                Some(crate::i18n::I18nManager::lookup_plain(UNRECORDED));
+            self.needs_sync = true;
+        }
     }
 
     fn retire_rejected_local_capture(&mut self, request_id: u64) {

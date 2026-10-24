@@ -28,6 +28,7 @@ use rustypipe::model::{
     AlbumItem, AlbumType, ArtistId, ArtistItem, AudioCodec, AudioFormat, AudioStream, MusicItem,
     MusicPlaylistItem, Thumbnail, TrackItem,
 };
+use tilo_innertube as innertube;
 
 use crate::backend::{
     AlbumHit, AlbumKind, AlbumPage, ArtistAlbum, ArtistHit, ArtistPage, BackendError, HomeContent,
@@ -440,7 +441,7 @@ impl MusicBackend for RustyPipeBackend {
 
     fn search_tracks(&self, query: &str) -> SearchOutcome {
         let q = self.rp.query();
-        let res = self.block("music search", async { q.music_search_tracks(query).await })?;
+        let res = self.block("music search", innertube::music_search_tracks(&q, query))?;
         Ok(res
             .items
             .items
@@ -455,22 +456,23 @@ impl MusicBackend for RustyPipeBackend {
         // it opens the TLS connection and fetches the client's version
         // before the first character is typed.
         let q = self.rp.query();
-        if let Err(error) = self.block("warm", async { q.music_search_suggestion("a").await }) {
+        if let Err(error) = self.block("warm", innertube::music_search_suggestion(&q, "a")) {
             tracing::debug!(%error, "music: warming the catalogue connection failed");
         }
     }
 
     fn search_quick(&self, query: &str) -> Result<SearchBundle, BackendError> {
         let q = self.rp.query();
-        let res = self.block("music suggestions", async {
-            q.music_search_suggestion(query).await
-        })?;
+        let res = self.block(
+            "music suggestions",
+            innertube::music_search_suggestion(&q, query),
+        )?;
         Ok(bundle_of(res.items))
     }
 
     fn search_all(&self, query: &str) -> Result<SearchBundle, BackendError> {
         let q = self.rp.query();
-        let res = self.block("music search", async { q.music_search_main(query).await })?;
+        let res = self.block("music search", innertube::music_search_main(&q, query))?;
         Ok(bundle_of(res.items.items))
     }
 
@@ -490,7 +492,7 @@ impl MusicBackend for RustyPipeBackend {
         // when the player endpoint accepts this client, but is PoToken/SABR-
         // gated and may only serve the first ~1-minute segment.
         let q = self.rp.query();
-        let player = self.block("player", async { q.player(video_id).await })?;
+        let player = self.block("player", innertube::player(&q, video_id))?;
         let best = best_audio(&player.audio_streams)
             .ok_or_else(|| BackendError("no playable audio streams".to_string()))?;
         if !crate::backend::trusted_googlevideo_url(&best.url) {
@@ -531,9 +533,9 @@ impl MusicBackend for RustyPipeBackend {
         // Charts drive the primary sections (top + trending songs, top artists,
         // genre playlists); new albums come from a second endpoint. Both are
         // real YouTube-Music browse responses.
-        let charts = self.block("music charts", async { q.music_charts(None).await })?;
+        let charts = self.block("music charts", innertube::music_charts(&q, None))?;
         let new_albums = self
-            .block("new albums", async { q.music_new_albums().await })
+            .block("new albums", innertube::music_new_albums(&q))
             .unwrap_or_default();
 
         let mut sections = Vec::new();
@@ -589,9 +591,10 @@ impl MusicBackend for RustyPipeBackend {
 
     fn artist(&self, artist_id: &str) -> Result<ArtistPage, BackendError> {
         let q = self.rp.query();
-        let a = self.block("music artist", async {
-            q.music_artist(artist_id, false).await
-        })?;
+        let a = self.block(
+            "music artist",
+            innertube::music_artist(&q, artist_id, false),
+        )?;
         let tracks = a
             .tracks
             .into_iter()
@@ -632,7 +635,7 @@ impl MusicBackend for RustyPipeBackend {
 
     fn album(&self, album_id: &str) -> Result<AlbumPage, BackendError> {
         let q = self.rp.query();
-        let al = self.block("music album", async { q.music_album(album_id).await })?;
+        let al = self.block("music album", innertube::music_album(&q, album_id))?;
         let artist_name = artists_name(&al.artists, al.by_va);
         let cover = cover_url(&al.cover, 400);
         let tracks = al
@@ -654,9 +657,7 @@ impl MusicBackend for RustyPipeBackend {
 
     fn playlist(&self, playlist_id: &str) -> Result<PlaylistPage, BackendError> {
         let q = self.rp.query();
-        let pl = self.block("music playlist", async {
-            q.music_playlist(playlist_id).await
-        })?;
+        let pl = self.block("music playlist", innertube::music_playlist(&q, playlist_id))?;
         let owner = pl.channel.as_ref().map_or_else(
             || {
                 if pl.from_ytm {

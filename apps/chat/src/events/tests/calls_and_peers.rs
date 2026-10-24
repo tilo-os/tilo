@@ -62,7 +62,7 @@ fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
             0,
             "no mute control outside a call"
         );
-        // Join a call → the sidebar identity bar now offers real toggles.
+        // Join a call → the window's bar offers the microphone.
         app.on_hit(
             Hit::Channel("c_standup".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -71,12 +71,12 @@ fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
         app.reload(&doc);
         assert!(app.call.active);
         render_frame(&mut app, 1280.0, 720.0);
-        let side = app.sidebar_rect();
         assert!(
-            app.hits
+            ui::window_toolbar::declared().is_some_and(|toolbar| toolbar
+                .actions
                 .iter()
-                .any(|(r, h)| matches!(h, Hit::CallMute) && r.x1 <= side.x1 + 1.0),
-            "in a call the sidebar shows a mute toggle"
+                .any(|action| action.id == "call-mute")),
+            "in a call the window's bar shows the microphone"
         );
     }
 
@@ -88,8 +88,17 @@ fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
             !buttons.iter().any(|(label, ..)| *label == "Follow host"),
             "the non-functional Follow-host toggle was removed"
         );
-        assert!(buttons.iter().any(|(l, ..)| *l == "Unmute"));
-        assert!(buttons.iter().any(|(l, ..)| *l == "Leave"));
+        assert!(
+            buttons
+                .iter()
+                .any(|(.., hit, _)| matches!(hit, Hit::CallCamera))
+        );
+        assert!(
+            !buttons
+                .iter()
+                .any(|(.., hit, _)| matches!(hit, Hit::CallMute | Hit::CallLeave)),
+            "the microphone and leaving are the window bar's, not the call's twice"
+        );
     }
 }
 
@@ -359,8 +368,6 @@ fn emoji_search_enter_picks_the_best_match() {
     );
     assert!(app.emoji_search.value().is_empty());
 }
-
-// --- swipe-to-delete gesture through the raw input path (test gap) --
 
 // --- category + reorder + thread + workspace via the hit path -------
 
@@ -720,65 +727,6 @@ fn two_peers_join_through_native_service_without_publishing_legacy_tickets() {
 }
 
 #[test]
-fn the_channel_list_scrolls_under_the_header_and_stops_above_the_call_footer() {
-    let (mut app, _doc) = app_with_doc();
-    app.call.join("c_huddle");
-    // A short window: the room's channels overflow the list.
-    render_frame(&mut app, 1280.0, 480.0);
-    let viewport = app.nav_viewport;
-    assert!(viewport.height() > 0.0, "the list has room to show");
-    assert!(
-        app.nav_content_h > viewport.height(),
-        "the fixture overflows the list"
-    );
-    let tree = |hit: &Hit| {
-        matches!(
-            hit,
-            Hit::Channel(_)
-                | Hit::VoiceChannel(_)
-                | Hit::CategoryToggle(_)
-                | Hit::AddChannel { .. }
-        )
-    };
-    for (rect, hit) in app.hits.iter().filter(|(_, hit)| tree(hit)) {
-        assert!(
-            viewport.contains_rect(*rect),
-            "{hit:?} at {rect:?} lies outside the list's {viewport:?}"
-        );
-    }
-    let footer_mute = app
-        .hits
-        .iter()
-        .find(|(rect, hit)| matches!(hit, Hit::CallMute) && rect.x1 <= viewport.x1)
-        .map(|(rect, _)| *rect)
-        .expect("the call footer's microphone");
-    assert!(
-        footer_mute.y0 >= viewport.y1,
-        "the footer sits below the list, never under it"
-    );
-
-    // The wheel over the list scrolls the list, not the conversation.
-    app.last_mouse = viewport.center();
-    let conversation = app.scroll;
-    app.handle_wheel(&MouseScrollDelta::LineDelta(0.0, -2.0), 1.0);
-    assert_eq!(app.scroll, conversation);
-    render_frame(&mut app, 1280.0, 480.0);
-    assert!(app.nav_scroll > 0.0, "the list scrolled");
-    app.handle_wheel(&MouseScrollDelta::LineDelta(0.0, -1000.0), 1.0);
-    render_frame(&mut app, 1280.0, 480.0);
-    assert!(
-        app.nav_scroll <= app.nav_content_h - app.nav_viewport.height() + 0.5,
-        "it stops at the end of the list"
-    );
-    for (rect, hit) in app.hits.iter().filter(|(_, hit)| tree(hit)) {
-        assert!(
-            app.nav_viewport.contains_rect(*rect),
-            "{hit:?} after scrolling"
-        );
-    }
-}
-
-#[test]
 fn in_a_call_the_window_bar_names_the_call_and_offers_leave() {
     let (mut app, _doc) = app_with_doc();
     render_frame(&mut app, 1280.0, 800.0);
@@ -803,6 +751,14 @@ fn in_a_call_the_window_bar_names_the_call_and_offers_leave() {
     let call = ids.iter().position(|id| id == "call").expect("the call");
     let leave = ids.iter().position(|id| id == "call-leave").expect("leave");
     assert!(leave > call, "leave follows the call it ends");
+    let destructive = |id: &str| {
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.actions.into_iter().find(|action| action.id == id))
+            .expect("in the bar")
+            .destructive
+    };
+    assert!(destructive("call-leave"), "leaving ends the call: danger");
+    assert!(!destructive("call-mute"), "muting is undone with a press");
 }
 
 #[test]
@@ -894,21 +850,19 @@ fn opening_the_voice_channel_of_the_call_one_is_in_shows_it_without_joining_agai
 
 #[test]
 fn a_muted_microphone_on_a_device_without_one_says_so() {
-    use ui::Widget as _;
     let (mut app, mut doc, live) = connected_call();
-    let mute_name = |app: &ChatApp| {
-        app.accessibility()
-            .expect("Chat's semantics")
-            .children
-            .into_iter()
-            .find(|node| {
-                node.action_target.as_deref() == Some(Hit::CallMute.semantic_id().as_str())
-            })
-            .and_then(|node| node.name)
+    let mute_name = |app: &mut ChatApp| {
+        render_frame(app, 1280.0, 720.0);
+        ui::window_toolbar::declared().and_then(|toolbar| {
+            toolbar
+                .actions
+                .into_iter()
+                .find(|action| action.id == "call-mute")
+                .map(|action| action.name)
+        })
     };
-    render_frame(&mut app, 1280.0, 720.0);
     assert_ne!(
-        mute_name(&app).as_deref(),
+        mute_name(&mut app).as_deref(),
         Some("No microphone"),
         "a device that has not tried its microphone offers to unmute"
     );
@@ -918,23 +872,10 @@ fn a_muted_microphone_on_a_device_without_one_says_so() {
     missing.issue = Some(ui::native_media::Issue::SourceLost);
     answer_voice(&mut app, &missing);
     assert!(app.call.active && app.call.muted);
-    render_frame(&mut app, 1280.0, 720.0);
     assert_eq!(
-        mute_name(&app).as_deref(),
+        mute_name(&mut app).as_deref(),
         Some("No microphone"),
-        "the muted microphone names why"
-    );
-    let (rect, _) = app
-        .hits
-        .iter()
-        .rev()
-        .find(|(_, hit)| matches!(hit, Hit::CallMute))
-        .cloned()
-        .expect("the call's microphone control");
-    assert_eq!(
-        app.hover_tooltip_target(rect.center()).map(|(_, tip)| tip),
-        Some("No microphone".to_owned()),
-        "and its tooltip says so"
+        "the window bar's microphone names why"
     );
 }
 
@@ -1022,5 +963,52 @@ fn a_call_that_ended_for_a_reason_no_longer_counts_you_in_it() {
     assert!(
         app.presence_payload().is_none(),
         "the others no longer see you in it"
+    );
+}
+
+#[test]
+fn the_sidebar_chooses_the_call_while_its_stage_fills_the_window() {
+    let (mut app, mut doc) = app_with_doc();
+    let chosen = |app: &ChatApp| app.places.shown().and_then(|(_, selected)| selected);
+    app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
+    app.call.expanded = true;
+    app.show_sidebar();
+    let call = crate::sidebar::channel_place(&app.call.channel);
+    assert_eq!(chosen(&app), Some(call));
+    let text = app
+        .channels
+        .iter()
+        .find(|c| c.kind == ChannelKind::Text)
+        .map(|c| c.id.clone())
+        .expect("a text channel");
+    app.on_hit(
+        Hit::Channel(text.clone()),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    app.show_sidebar();
+    assert!(app.call.active && !app.call.expanded, "the call floats on");
+    assert_eq!(chosen(&app), Some(crate::sidebar::channel_place(&text)));
+}
+
+#[test]
+fn the_window_bar_names_the_call_while_its_stage_fills_the_window() {
+    let (mut app, mut doc) = app_with_doc();
+    let location = |app: &mut ChatApp| {
+        render_frame(app, 1280.0, 720.0);
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.location)
+            .map(|location| location.label)
+    };
+    app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
+    let call = app
+        .channel(&app.call.channel)
+        .map(|channel| channel.name.clone());
+    app.call.expanded = true;
+    assert_eq!(location(&mut app), call);
+    app.call.expanded = false;
+    assert_ne!(
+        location(&mut app),
+        call,
+        "collapsed, the conversation is the place"
     );
 }

@@ -27,6 +27,14 @@ int main() {
   assert(!FrameSize(0,1)); assert(!FrameSize(8193,1)); assert(!FrameSize(8192,8192));
   assert(FrameSize(2,3)==24);
   { std::string body; AppendU32(body,2); AppendU32(body,3); body.append(24,'x'); assert(ValidFrame(body)); body.pop_back(); assert(!ValidFrame(body)); }
+  { std::string pixels(24,'p'); auto first=FramePacket(1,2,3,pixels.data(),pixels.size());
+    assert(first.size()==FramePixelOffset(1)+24 && U32(first.data())==first.size()-4 && first[4]==2);
+    assert(U32(first.data()+5)==2 && U32(first.data()+9)==3 && first.substr(13)==pixels);
+    std::istringstream in(first); Packet p; assert(ReadPacket(in,p)==ReadResult::Ok); assert(p.kind==2 && ValidFrame(p.data));
+    auto routed=FramePacket(7,2,3,pixels.data(),pixels.size());
+    assert(routed.size()==FramePixelOffset(7)+24 && U32(routed.data())==routed.size()-4 && routed[4]==3);
+    assert(U32(routed.data()+5)==7 && U32(routed.data()+9)==2 && U32(routed.data()+13)==3 && routed.substr(17)==pixels);
+    assert(FramePacket(1,2,3,pixels.data(),23).empty()); assert(FramePacket(0,2,3,pixels.data(),24).empty()); }
   { std::istringstream in(EncodePacket(99,"x")); Packet p; assert(ReadPacket(in,p)==ReadResult::Error); }
   {
     ViewGeometry geometry;

@@ -665,6 +665,11 @@ impl ShellDriver {
             );
         }
         let mut scene = self.fb.paint();
+        // As the compositor does after every paint (`compositor::native`):
+        // motion that steps once per presented frame (a window group's
+        // width spring) is told the frame turned, or it stops after its
+        // first step and a film shows it frozen.
+        self.fb.frame_presented();
         #[cfg(target_os = "linux")]
         if let Some(executor) = self.capture_executor.as_mut() {
             let _ = executor.execute_ready(&mut self.fb, &mut scene);
@@ -1115,6 +1120,7 @@ impl ShellDriver {
                         kind,
                         label: label.into(),
                     },
+                    app_title: None,
                 };
                 tabs.push(tab.id);
                 let mut strip = Strip::new(StripId::from(ids.mint_id()), name);
@@ -1292,27 +1298,8 @@ impl ShellDriver {
     /// this one, and three people here, one with a status line they wrote,
     /// one whose machine generated theirs, one with none, each on a window.
     pub fn seed_desk_for_shots(&mut self) {
-        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
         use shell::shell::state::Collaborator;
-        let player = PlayerSnapshot {
-            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
-            identity: "Spotify".to_string(),
-            status: PlaybackStatus::Playing,
-            title: Some("Teardrop".to_string()),
-            artist: Some("Massive Attack".to_string()),
-            artwork: None,
-            track_id: Some("/org/tilo/shots/track/1".to_string()),
-            length_us: Some(330_000_000),
-            position_us: 94_000_000,
-            can_play: true,
-            can_pause: true,
-            can_seek: true,
-            can_go_next: true,
-            can_go_previous: true,
-            observed_at: Instant::now(),
-        };
-        self.host_mut()
-            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
+        self.seed_now_playing_for_shots();
         let handle = self.chrome_handle();
         let room = {
             let st = handle.borrow();
@@ -1360,6 +1347,30 @@ impl ShellDriver {
                 );
             }
         }
+    }
+
+    /// A music player playing, as the now-playing card reads it.
+    pub fn seed_now_playing_for_shots(&mut self) {
+        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
+        let player = PlayerSnapshot {
+            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
+            identity: "Spotify".to_string(),
+            status: PlaybackStatus::Playing,
+            title: Some("Teardrop".to_string()),
+            artist: Some("Massive Attack".to_string()),
+            artwork: None,
+            track_id: Some("/org/tilo/shots/track/1".to_string()),
+            length_us: Some(330_000_000),
+            position_us: 94_000_000,
+            can_play: true,
+            can_pause: true,
+            can_seek: true,
+            can_go_next: true,
+            can_go_previous: true,
+            observed_at: Instant::now(),
+        };
+        self.host_mut()
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
     }
 
     /// Three people and an agent here, as the live shell folds them: Ada
@@ -1980,6 +1991,7 @@ impl ShellDriver {
                 self.scene_downloaded_add(downloaded_scene::AddScene::NoArtwork);
             }
             "quick-settings" => self.scene_quick_settings(),
+            "qs-muted" => self.scene_qs_muted(),
             "qs-edit" => self.scene_qs_edit(false),
             "qs-edit-drag" => self.scene_qs_edit(true),
             "qs-hardware-wired" => self.scene_qs_hardware_wired(),
@@ -2060,6 +2072,7 @@ impl ShellDriver {
             "desktop-control-menu" => self.scene_desktop_control_menu(),
             "workspace-menu" => self.scene_workspace_menu(),
             "window-menu" => self.scene_window_menu(),
+            "tab-rename" => self.scene_tab_rename(),
             "profile-card" => self.scene_profile_card(),
             "dictation-consent"
             | "dictation-listening"
@@ -2342,12 +2355,16 @@ impl ShellDriver {
             PowerProfile::Performance,
         ];
         qs.power_profile = PowerProfile::Balanced;
-        qs.battery = tilo_power_mgmt::BatterySnapshot {
+        qs.status.battery = Some(tilo_power_mgmt::BatterySnapshot {
             present: true,
             percent: 72,
             state: tilo_power_mgmt::BatteryState::Discharging,
-        };
-        qs.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(254));
+        });
+        qs.status.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(254));
+        qs.status.volume = Some(os_actions::VolumeState {
+            level: 0.45,
+            muted: false,
+        });
         let network =
             |ssid: &str, signal: u8, secure: bool, connected: bool, known: bool| WifiNetwork {
                 ssid: ssid.into(),
@@ -2400,6 +2417,19 @@ impl ShellDriver {
 
     fn scene_quick_settings(&mut self) {
         self.with_chrome(Self::seed_laptop_quick_settings);
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    /// The laptop's Quick Settings with its sound muted: the speaker shows
+    /// struck through and the volume track empty, as the top bar shows it.
+    fn scene_qs_muted(&mut self) {
+        self.with_chrome(|st| {
+            Self::seed_laptop_quick_settings(st);
+            st.quick_settings.status.volume = Some(os_actions::VolumeState {
+                level: 0.45,
+                muted: true,
+            });
+        });
         self.fb.host_mut().force_quick_settings_settled();
     }
 
@@ -2920,6 +2950,7 @@ impl ShellDriver {
                                 label: label.into(),
                                 note: note.into(),
                             },
+                            app_title: None,
                         };
                         strip.window_groups.push(WindowGroup {
                             id: ids.mint_id(),
@@ -3628,6 +3659,7 @@ impl ShellDriver {
                             kind: shell::shell::state::AppKind::Settings,
                             label: label.to_string(),
                         },
+                        app_title: None,
                     };
                     let group = WindowGroup {
                         id: gid,
@@ -3714,6 +3746,7 @@ impl ShellDriver {
                                     kind: AppKind::Settings,
                                     label: (*name).to_string(),
                                 },
+                                app_title: None,
                             }],
                             active_tab: tid,
                             width: WindowWidth::Normal,
@@ -3793,6 +3826,13 @@ impl ShellDriver {
         // out-of-process `compositor::test_control` and in-process
         // ShellDriver see exactly the same target set.
         self.fb.widget_registry()
+    }
+
+    /// Who asks for another animation frame at `now`: chrome sources by
+    /// label, widgets by path; empty once the loop may idle.
+    #[cfg(feature = "test-support")]
+    pub fn animation_owners_at(&self, now: Instant) -> Vec<String> {
+        self.fb.animation_owners_at(now)
     }
 
     /// Centre of a named rect — convenience for the scenario engine.

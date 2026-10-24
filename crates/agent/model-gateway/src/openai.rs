@@ -460,6 +460,37 @@ fn recognized_code(code: &str) -> bool {
             | "overloaded_error"
     )
 }
+
+/// A provider error body's `type`, `param` and `code`, each only when it is
+/// a short lowercase identifier: an API key or the provider's prose never
+/// passes. Empty when it names none.
+#[must_use]
+pub fn error_fields(body: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let parsed: Value = serde_json::from_slice(body).unwrap_or_default();
+    let error = parsed
+        .get("error")
+        .filter(|error| error.is_object())
+        .unwrap_or(&parsed);
+    let mut fields = String::new();
+    for name in ["type", "param", "code"] {
+        let Some(value) = error.get(name).and_then(Value::as_str) else {
+            continue;
+        };
+        if !value.is_empty()
+            && value.len() <= 64
+            && value.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'_' | b'.' | b'[' | b']')
+            })
+        {
+            let _ = write!(fields, " {name}={value}");
+        }
+    }
+    fields
+}
+
 fn billing_code(code: &str) -> bool {
     matches!(
         code,
@@ -510,6 +541,22 @@ pub fn backoff(retry: u32, asked_for: Option<Duration>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_provider_refusal_is_logged_by_its_identifiers_alone() {
+        let body = br#"{"error":{"message":"Function tools with reasoning_effort are not supported for sk-proj-SECRET","type":"invalid_request_error","param":"reasoning_effort","code":"unsupported_parameter"}}"#;
+        assert_eq!(
+            error_fields(body),
+            " type=invalid_request_error param=reasoning_effort code=unsupported_parameter"
+        );
+        let hostile = br#"{"error":{"type":"sk-proj-SECRET","param":"tools[0].function.name","code":"Bearer abc"}}"#;
+        assert_eq!(error_fields(hostile), " param=tools[0].function.name");
+        assert_eq!(error_fields(b"<html>"), "");
+        assert_eq!(
+            error_fields(br#"{"type":"error","code":"rate_limit"}"#),
+            " type=error code=rate_limit"
+        );
+    }
 
     #[test]
     fn a_key_is_a_uuid_and_the_same_for_the_same_request() {

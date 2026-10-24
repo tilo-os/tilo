@@ -162,9 +162,10 @@ impl CapnpBrokerState {
         self.local_turn.notify_one();
     }
 
-    /// `peer` published what it offers; the `open` that started it is done.
+    /// `peer` published what it offers; the `open` that started its
+    /// connection is done, opened at the route that published.
     pub(super) fn launch_published(&self, peer: u64) {
-        if let Some(opening) = self.workspace_opens.take_peer(peer) {
+        if let Some(opening) = self.workspace_opens.take_peer(self.connection_of(peer)) {
             self.complete_open(opening.opened(Some(peer)));
         }
     }

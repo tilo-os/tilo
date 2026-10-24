@@ -108,7 +108,6 @@ impl SlidesApp {
         if self.mode != Mode::Edit
             || self.editing_text
             || self.editing_notes
-            || self.editing_title
             || !self
                 .selected_element()
                 .is_some_and(|e| e.kind == ElementKind::Text)
@@ -510,8 +509,6 @@ impl SlidesApp {
             || self.ctx_menu.is_open()
             || self.layout_picker.is_open()
             || self.fill_picker_open
-            || self.toolbar_menu_open
-            || self.editing_title
             || self.page_sidebar.menu_open()
         {
             return false;
@@ -544,8 +541,6 @@ impl SlidesApp {
             || self.ctx_menu.is_open()
             || self.layout_picker.is_open()
             || self.fill_picker_open
-            || self.toolbar_menu_open
-            || self.editing_title
         {
             return false;
         }

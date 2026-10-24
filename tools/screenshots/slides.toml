@@ -14,7 +14,7 @@ invoke = { resource = "slides.deck", action = "add-slide", args = { title = "The
 invoke = { resource = "slides.deck", action = "add-slide", args = { title = "What we built", body = "Every tree on one map, with its history\nInspections recorded on site, offline\nReports shared with the parks office the moment they sync", layout = "title_content" } }
 
 [[situation.steps]]
-invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Pilot results", layout = "section" } }
+invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Pilot results", body = "312 trees inspected in six weeks\nInspection time down from 20 to 7 minutes per tree\nEvery storm report on the map within the hour", layout = "title_content" } }
 
 [[situation.steps]]
 invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Next steps", body = "Two more districts in spring\nOpen data export for researchers", layout = "title_content" } }
