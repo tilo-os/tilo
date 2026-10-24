@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Native link menu targets, white page background and oversized-link safety."""
+"""Native link menu targets, white page background, oversized-link safety, and a
+tab hidden, closed or shut down over its open menu."""
 import os, http.server, json, queue, struct, subprocess, sys, tempfile, threading, time
 class Page(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -63,18 +64,28 @@ with tempfile.TemporaryDirectory(prefix='tilo-tabs-') as profile:
         assert {26501,26502}.issubset({item.get('id') for item in menu['items']}), menu  # separators have none
         send(op='context_action',id=menu['id'],command=26501)
         until(lambda e:e['event']=='open_tab' and e['url']==base+'/modifier')
+        # An oversized link has no menu: the next menu is the one of the
+        # link right-clicked after it, which the page hears of in order.
         send(op='mouse_button',button='right',down=True,x=20,y=105)
         send(op='mouse_button',button='right',down=False,x=20,y=105)
+        send(op='mouse_button',button='right',down=True,x=20,y=65)
+        send(op='mouse_button',button='right',down=False,x=20,y=65)
+        menu=until(lambda e:e['event']=='context_menu')
+        assert menu['link']==base+'/modifier', menu
+        send(op='context_action',id=menu['id'],command=0)
+        until(lambda e:e['event']=='context_closed' and e['id']==menu['id'])
         send(op='zoom',level=1)
-        def still_alive(event):
-            assert event['event'] != 'context_menu', event
-            return event['event']=='zoom'
-        until(still_alive,timeout=5)
+        until(lambda e:e['event']=='zoom')
         # A tab closed with its menu still open: the host answers the menu,
         # and its other tab goes on.
         send(op='create_tab',tab=2)
         send(op='navigate',tab=2,url=base+'/two')
         until(lambda e:e['event']=='title' and e.get('tab')==2 and e['title'].startswith('/two|'))
+        # A tab hidden over its open menu: the host answers the menu, and
+        # the tab shown instead paints.
+        send(op='mouse_button',button='right',down=True,x=300,y=300)
+        send(op='mouse_button',button='right',down=False,x=300,y=300)
+        until(lambda e:e['event']=='context_menu' and e.get('tab',1)==1)
         send(op='visibility',tab=1,visible=False)
         send(op='visibility',tab=2,visible=True)
         until(lambda e:e['event']=='frame' and e['tab']==2)
