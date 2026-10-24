@@ -278,7 +278,7 @@ mod tests {
         state.remote_input_firewall.publish_view(ShellView::new(
             vec![(surface, Rect::new(0.0, 0.0, 1920.0, 1080.0))],
             Some(surface),
-            false,
+            crate::shell::input_policy::InputCapture::NONE,
             false,
         ));
     }

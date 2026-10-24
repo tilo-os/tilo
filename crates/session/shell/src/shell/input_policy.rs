@@ -684,13 +684,72 @@ fn v120_component(value: f64) -> i32 {
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
-/// Whether the shell chrome is currently claiming the keyboard: whenever it
-/// takes all input ([`chrome_takes_all_input`]), and while a file chooser's
-/// sheet types for the focused window that asked for it. That sheet takes
-/// the pointer only over its own window ([`chrome_captures_pointer`]): a
-/// click on another window reaches that window, as with no chooser up.
+/// Where the shell holds the pointer back from clients.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum PointerCapture {
+    /// The pointer is the windows' wherever it is.
+    #[default]
+    Nowhere,
+    /// The shell takes it wherever it is.
+    Everywhere,
+    /// The shell takes it within these rects (global, as drawn).
+    Within(Vec<Rect>),
+}
+
+impl PointerCapture {
+    /// Whether the shell takes the pointer at `point`.
+    #[must_use]
+    pub fn at(&self, point: KurboPoint) -> bool {
+        match self {
+            Self::Nowhere => false,
+            Self::Everywhere => true,
+            Self::Within(rects) => rects.iter().any(|rect| rect.contains(point)),
+        }
+    }
+}
+
+/// What the shell holds back from client windows this frame: the one
+/// decision local input ([`chrome_captures_input`], [`chrome_captures_pointer`])
+/// and input from other devices (the remote-input firewall's view) both
+/// follow.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InputCapture {
+    /// No window hears a key.
+    pub keyboard: bool,
+    /// Where no window gets the pointer.
+    pub pointer: PointerCapture,
+}
+
+impl InputCapture {
+    /// Nothing held back.
+    pub const NONE: Self = Self {
+        keyboard: false,
+        pointer: PointerCapture::Nowhere,
+    };
+    /// Everything held back.
+    pub const ALL: Self = Self {
+        keyboard: true,
+        pointer: PointerCapture::Everywhere,
+    };
+}
+
+/// What the shell holds back from client windows this frame. A modal
+/// overlay, the palette, a prompt and the like hold all input
+/// ([`chrome_takes_all_input`]); a file chooser's sheet holds the keyboard
+/// while the window that asked for it is focused and the pointer over
+/// itself and that window, so a click on another window reaches it.
+pub fn input_capture(fb: &FrameBuilder) -> InputCapture {
+    if chrome_takes_all_input(fb) {
+        InputCapture::ALL
+    } else {
+        fb.host().file_picker_capture()
+    }
+}
+
+/// Whether the shell chrome is currently claiming the keyboard
+/// ([`input_capture`]).
 pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
-    chrome_takes_all_input(fb) || fb.host().file_picker_takes_keyboard()
+    input_capture(fb).keyboard
 }
 
 /// Whether the shell chrome is currently claiming all input: an overlay,
@@ -772,14 +831,18 @@ fn chrome_takes_all_input(fb: &FrameBuilder) -> bool {
         || !chrome.pending_grants.is_empty()
 }
 
-/// Whether the shell takes the pointer: whenever it takes all input, and
-/// also while the pointer is on the bar a maximized window shows over its
-/// client, or on a notification banner over a window. That bar takes only the pointer — the client keeps the keyboard,
-/// so typing never stops because the pointer rests near the window's top.
-/// A file chooser's sheet takes it over the sheet and the window waiting on
-/// it, never over another window, whichever window has the keyboard.
+/// Whether the shell takes the pointer where it is: where [`input_capture`]
+/// holds it back, and also while the pointer is on the bar a maximized
+/// window shows over its client, or on a notification banner over a window.
+/// That bar takes only the pointer — the client keeps the keyboard, so
+/// typing never stops because the pointer rests near the window's top.
 pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
-    chrome_takes_all_input(fb) || fb.host().chrome_band_captures_pointer()
+    let capture = input_capture(fb).pointer;
+    let held = match fb.host().pointer_position() {
+        Some(at) => capture.at(at),
+        None => capture == PointerCapture::Everywhere,
+    };
+    held || fb.host().chrome_band_captures_pointer()
 }
 
 /// Whether the shell takes a finger landing at `point` (global, as drawn):
@@ -787,7 +850,7 @@ pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
 /// ([`chrome_captures_pointer`]). Touch equals pointer: a contact on an
 /// overlay is the overlay's, never also the window's beneath.
 pub fn chrome_captures_touch_at(fb: &FrameBuilder, point: vello::kurbo::Point) -> bool {
-    chrome_takes_all_input(fb) || fb.host().chrome_band_captures_pointer_at(Some(point))
+    input_capture(fb).pointer.at(point) || fb.host().chrome_band_captures_pointer_at(Some(point))
 }
 
 // Seat delivery — the actual `wl_keyboard`/`wl_pointer` traffic.

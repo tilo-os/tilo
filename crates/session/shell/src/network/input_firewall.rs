@@ -20,7 +20,7 @@ use vello::kurbo::{Point, Rect};
 
 use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
-use crate::shell::input_policy::{ChordMods, chord_key_for_evdev, shell_owns_chord};
+use crate::shell::input_policy::{ChordMods, InputCapture, chord_key_for_evdev, shell_owns_chord};
 
 /// How long local input keeps the remote side out — the host reaching for their own input is an unambiguous takeover.
 pub const PHYSICAL_PRIORITY_WINDOW: Duration = Duration::from_millis(500);
@@ -141,8 +141,10 @@ pub struct ShellView {
     /// Optional interactive bounds; the full tile remains the coordinate basis.
     input_regions: Vec<(SurfaceId, Rect)>,
     keyboard_focus: Option<SurfaceId>,
-    /// Shell chrome (overlay, palette, permission prompt) is drawn over the tiles and taking input.
-    chrome_captures: bool,
+    /// What shell chrome (an overlay, the palette, a prompt, a file
+    /// chooser's sheet) holds back from the tiles: the decision local input
+    /// follows ([`crate::shell::input_policy::input_capture`]).
+    capture: InputCapture,
     /// An overlay is open, so the shell grabs `Escape`.
     overlay_open: bool,
     /// The session lock is up; nothing on screen belongs to anyone until the host authenticates.
@@ -158,7 +160,7 @@ impl ShellView {
     pub fn new(
         tiles: Vec<(SurfaceId, Rect)>,
         keyboard_focus: Option<SurfaceId>,
-        chrome_captures: bool,
+        capture: InputCapture,
         overlay_open: bool,
     ) -> Self {
         Self {
@@ -166,7 +168,7 @@ impl ShellView {
             chrome_regions: Vec::new(),
             input_regions: Vec::new(),
             keyboard_focus,
-            chrome_captures,
+            capture,
             overlay_open,
             session_locked: false,
             observed: true,
@@ -212,10 +214,10 @@ impl ShellView {
         self.observed
     }
 
-    /// Whether trusted compositor chrome currently occludes client content
-    /// and owns the seat. Remote input must be denied while this is true.
-    pub fn chrome_captures_input(&self) -> bool {
-        self.chrome_captures
+    /// Whether shell chrome holds the keyboard: no key from another device
+    /// reaches a window, nor may one move the keyboard's focus.
+    pub fn captures_keyboard(&self) -> bool {
+        self.capture.keyboard
     }
 
     /// The on-screen rect of `surface`, if it is currently on screen.
@@ -574,7 +576,7 @@ impl RemoteInputFirewall {
         text: &str,
         now: Instant,
     ) -> Result<(), Denial> {
-        if self.view.chrome_captures || self.view.keyboard_focus != Some(surface) {
+        if self.view.capture.keyboard || self.view.keyboard_focus != Some(surface) {
             return Err(Denial::FocusMuted);
         }
         if text.is_empty() || text.len() > MAX_REMOTE_TEXT_BYTES {
@@ -594,8 +596,9 @@ impl RemoteInputFirewall {
             return Err(Denial::OutsideRegion);
         }
         let global = (rect.x0 + local.0, rect.y0 + local.1);
-        // Z-order: chrome drawn over the tiles takes the whole screen, so nothing beneath it is topmost anywhere.
-        if self.view.chrome_captures {
+        // Z-order: chrome holding the pointer here (a modal over the whole
+        // screen, a file chooser's sheet and its window) is on top of it.
+        if self.view.capture.pointer.at(Point::new(global.0, global.1)) {
             return Err(Denial::Occluded);
         }
         // Otherwise ask the live tile order — trusting the share record instead is
@@ -617,7 +620,7 @@ impl RemoteInputFirewall {
     ) -> Result<(), Denial> {
         let overlay_open = self.view.overlay_open;
         let focus = self.view.keyboard_focus;
-        let chrome_captures = self.view.chrome_captures;
+        let keyboard_held = self.view.capture.keyboard;
 
         let state = self.peer_mut(peer);
         // Track the peer's own modifier stream first, so a modifier this event presses counts towards its own chord.
@@ -629,7 +632,7 @@ impl RemoteInputFirewall {
 
         // Focus guard: a keystroke injects only while the shared surface holds
         // keyboard focus, checked before the chord table so a peer can't type into a private window.
-        if chrome_captures || focus != Some(surface) {
+        if keyboard_held || focus != Some(surface) {
             return Err(Denial::FocusMuted);
         }
 
@@ -732,7 +735,7 @@ mod tests {
         ShellView::new(
             vec![(SHARED, Rect::new(100.0, 50.0, 500.0, 350.0))],
             Some(SHARED),
-            false,
+            InputCapture::NONE,
             false,
         )
     }
@@ -791,7 +794,7 @@ mod tests {
                     (SHARED, Rect::new(100.0, 50.0, 500.0, 350.0)),
                 ],
                 Some(SHARED),
-                false,
+                InputCapture::NONE,
                 false,
             ));
             assert_eq!(
@@ -809,7 +812,7 @@ mod tests {
             fw.publish_view(ShellView::new(
                 vec![(SHARED, Rect::new(100.0, 50.0, 500.0, 350.0))],
                 Some(SHARED),
-                true,
+                InputCapture::ALL,
                 false,
             ));
             assert_eq!(
@@ -841,7 +844,7 @@ mod tests {
         unfocused.publish_view(ShellView::new(
             vec![(SHARED, Rect::new(100.0, 50.0, 500.0, 350.0))],
             Some(PRIVATE),
-            false,
+            InputCapture::NONE,
             false,
         ));
         assert_eq!(
@@ -994,7 +997,7 @@ mod tests {
             fw.publish_view(ShellView::new(
                 vec![(SHARED, Rect::new(100.0, 50.0, 500.0, 350.0))],
                 Some(PRIVATE),
-                false,
+                InputCapture::NONE,
                 false,
             ));
             assert_eq!(
@@ -1380,7 +1383,7 @@ mod production_path {
         state.remote_input_firewall.publish_view(ShellView::new(
             vec![(SHARED, TILE)],
             Some(SHARED),
-            false,
+            InputCapture::NONE,
             false,
         ));
         let _ = state.remote_seats.seat_mut(PEER).enter(SHARED);
@@ -1491,7 +1494,7 @@ mod production_path {
             state.remote_input_firewall.publish_view(ShellView::new(
                 vec![(PRIVATE, TILE), (SHARED, TILE)],
                 Some(SHARED),
-                false,
+                InputCapture::NONE,
                 false,
             ));
 
@@ -1592,7 +1595,7 @@ mod production_path {
                     (PRIVATE, Rect::new(600.0, 50.0, 900.0, 350.0)),
                 ],
                 Some(PRIVATE),
-                false,
+                InputCapture::NONE,
                 false,
             ));
 
@@ -1756,7 +1759,7 @@ mod production_path {
             state.remote_input_firewall.publish_view(ShellView::new(
                 vec![(SHARED, TILE)],
                 Some(SHARED),
-                false,
+                InputCapture::NONE,
                 false,
             ));
             assert_eq!(
@@ -1815,7 +1818,13 @@ mod production_path {
                 .expect("the same event is accepted while the session is unlocked");
 
             state.remote_input_firewall.publish_view(
-                ShellView::new(vec![(SHARED, TILE)], Some(SHARED), false, false).locked(true),
+                ShellView::new(
+                    vec![(SHARED, TILE)],
+                    Some(SHARED),
+                    InputCapture::NONE,
+                    false,
+                )
+                .locked(true),
             );
 
             let verdict = state.review_remote_input(
@@ -1963,7 +1972,13 @@ mod production_path {
     fn a_locally_held_pointer_refuses_peer_pointer_input_but_not_keys() {
         let mut state = staged();
         state.remote_input_firewall.publish_view(
-            ShellView::new(vec![(SHARED, TILE)], Some(SHARED), false, false).pointer_held(true),
+            ShellView::new(
+                vec![(SHARED, TILE)],
+                Some(SHARED),
+                InputCapture::NONE,
+                false,
+            )
+            .pointer_held(true),
         );
         for event in [
             InputEvent::PointerMotion { x: 10.0, y: 10.0 },
