@@ -641,11 +641,14 @@ class ExtensionTabs {
   void MenusChanged() {
     if (!hooks_.save_menus || saving_) return;
     saving_ = true;
-    CefPostDelayedTask(TID_UI, base::BindOnce([](ExtensionTabs* self) {
-      if (!self->saving_) return;
+    // The host may close first: the destructor keeps the items then, and
+    // this finds the tabs gone.
+    std::weak_ptr<bool> alive = alive_;
+    CefPostDelayedTask(TID_UI, base::BindOnce([](ExtensionTabs* self, std::weak_ptr<bool> alive) {
+      if (alive.expired() || !self->saving_) return;
       self->saving_ = false;
       self->hooks_.save_menus(self->menus_.Save());
-    }, this), 250);
+    }, this, alive), 250);
   }
   bool Listened(const std::string& event) const {
     for (const auto& [extension, events] : listening_) if (events.count(event)) return true;
@@ -1632,6 +1635,7 @@ class ExtensionTabs {
   uint64_t generation_ = 0;
   ExtensionMenus menus_;
   bool saving_ = false;
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };
 
 // A request to the bridge, read here and answered on the UI thread.

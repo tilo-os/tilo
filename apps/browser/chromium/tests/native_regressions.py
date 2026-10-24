@@ -105,7 +105,8 @@ class Host:
         try:
             self.send(op='shutdown')
             self.until(lambda e:e['event']=='closed')
-            assert self.p.wait(timeout=HANG_BOUND)==0
+            code = self.p.wait(timeout=HANG_BOUND)
+            assert code==0, f'the host exited with {code}'
         finally:
             if self.p.poll() is None:
                 self.p.kill()
