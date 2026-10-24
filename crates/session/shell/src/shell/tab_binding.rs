@@ -2729,6 +2729,7 @@ mod tests {
                         },
                     )],
                 },
+                &crate::shell::doc_open::DesktopContinuationLabels,
             );
             crate::shell::launcher::set_pending_placement(
                 "so.tilo.browser",

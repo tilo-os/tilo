@@ -128,12 +128,6 @@ IGNORED_PACKAGES = frozenset({"workspace-hack"})
 # each remaining edge is for, and what removes it.
 MODULE_GROUPS = (
     (
-        "src/shell/state",
-        "The workspace model asks the launcher for installed apps and action authority, "
-        "and doc_open for file labels. These go when those answers are handed to the "
-        "model, ahead of moving it into its own crate.",
-    ),
-    (
         "src/shell/persist",
         "Persistence reads launch keys from the launcher's process-wide table. This goes "
         "when the model records a window's launch key itself.",
