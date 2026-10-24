@@ -13,6 +13,9 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   a message comes from is one the tab APIs know.
 - A popup can open a tab, which the Browser is asked to open, and is given
   the tab once it opens.
+- A tab keeps the id an extension was told of it by on a blank page or the
+  extension's own page, once it shows a web page: the one Chromium gives
+  that page's messages.
 - A worker hears of a page that finished loading.
 - A click reaches a worker that went to sleep, which wakes for it.
 - A script a click injects where the extension has no content script of its
@@ -586,6 +589,26 @@ class ExtensionTabs(unittest.TestCase):
         self.panel(host, 3, f'chrome-extension://{ids["plain"]}/popup.html')
         plain = json.loads(self.title(host, 3, 'plain:')[len('plain:'):])
         self.assertEqual(plain, {'found': True, 'url': True})
+
+    def test_a_tab_keeps_its_id_from_a_blank_or_extension_page_to_a_web_page(self):
+        host, ids = self.start('keeper', access={'keeper': (['tabs', 'storage'], ['http://127.0.0.1/*'])})
+        host.navigate(self.url + '/first')
+        # A new tab, still blank, and the extension's welcome page in a tab of
+        # its own, as one opens on install: it keeps both tabs' ids.
+        for tab in (3, 4):
+            host.send(op='create_tab', tab=tab)
+            host.until(lambda e, tab=tab: e['event'] == 'tab_ready' and e.get('tab') == tab)
+        host.send(op='navigate', tab=4, url=f'chrome-extension://{ids["keeper"]}/welcome.html')
+        welcome = json.loads(self.title(host, 4, 'welcome:')[len('welcome:'):])
+        self.assertEqual(welcome, {'own': True, 'blank': True, 'distinct': True})
+        # Both go on to web pages, whose messages carry the id Chromium gives
+        # the tab: the one kept, which the tab APIs still know it by.
+        host.send(op='navigate', tab=3, url=self.url + '/was-blank')
+        host.send(op='navigate', tab=4, url=self.url + '/was-welcome')
+        blank = json.loads(self.title(host, 3, 'kept:')[len('kept:'):])
+        self.assertEqual(blank, {'welcome': False, 'blank': True, 'found': self.url + '/was-blank', 'listed': 1})
+        welcomed = json.loads(self.title(host, 4, 'kept:')[len('kept:'):])
+        self.assertEqual(welcomed, {'welcome': True, 'blank': False, 'found': self.url + '/was-welcome', 'listed': 1})
 
     def test_a_worker_and_its_content_script_talk_both_ways_by_tab(self):
         # Its content script's site is no host permission (the Browser sends
