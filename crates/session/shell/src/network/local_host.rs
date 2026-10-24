@@ -17,13 +17,11 @@
 //! process keeps no relay up and arms no timer.
 use std::sync::{Arc, Mutex, PoisonError};
 
-use iroh::protocol::DynProtocolHandler;
+/// The ALPN handlers a host serves, for the actor's router.
+pub use room_host::Protocols;
 use room_host::{HostSlot, RoomHost};
 /// Where the room host lives: the one place its path is named.
-pub(crate) use tilo_relay::host as room_host;
-
-/// The ALPN handlers a host serves, for the actor's router.
-pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
+pub(crate) use tilo_room_host::host as room_host;
 
 /// This device's room host, once it is open: shared by the network (which
 /// opens it) and the actor (which joins its rooms through it).
