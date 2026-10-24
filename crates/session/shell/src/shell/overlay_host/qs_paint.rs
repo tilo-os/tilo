@@ -123,18 +123,22 @@ impl ShellOverlayHost {
             let pose = self.quick_settings_pose(now);
             let in_flight = !pose.is_rest();
             let qs_rect = self.qs_motion.drawn_rect(self.quick_settings_rect(), now);
-            let card_rect = self
+            // Everything the panel paints, in its own coordinates: the card
+            // and the full reach of its `e4` shadow, and the now-playing card
+            // with its own. The pose's opacity layer clips to this, and the
+            // damage bounds are this where the pose draws it. A pose at full
+            // opacity that is still moving pushes no layer, so a tighter clip
+            // would bound the damage but not the shadow, which then stayed
+            // on screen outside it once the panel moved on.
+            let panel_reach = quick_settings_settled_bounds(qs_rect, theme, Affine::IDENTITY);
+            let reach = self
                 .now_playing_view()
-                .and_then(|view| self.now_playing_rect(&view));
-            let clip = Rect::new(
-                qs_rect.x0 - 8.0,
-                qs_rect.y0 - 16.0,
-                qs_rect.x1 + 8.0,
-                qs_rect.y1 + 8.0,
-            );
-            let clip = card_rect.map_or(clip, |card| clip.union(card.inflate(8.0, 8.0)));
+                .and_then(|view| self.now_playing_rect(&view))
+                .map_or(panel_reach, |card| {
+                    panel_reach.union(quick_settings_settled_bounds(card, theme, Affine::IDENTITY))
+                });
             let mut card_rect = None;
-            pose.paint(scene, transform, clip, |scene, qs_xform| {
+            pose.paint(scene, transform, reach, |scene, qs_xform| {
                 // A Panel casts `e4` (HIG §9.1) along the card's own outline
                 // (`ChromeRole::Panel.radius`, the radius
                 // `draw_quick_settings_card_background` paints); the pose's
@@ -149,10 +153,8 @@ impl ShellOverlayHost {
                 self.draw_quick_settings(scene, qs_xform, text_renderer, theme);
                 card_rect = self.draw_now_playing(scene, qs_xform, text_renderer, theme);
             });
-            // The in-flight layer clips every QS command to `clip`. Once
-            // settled, the damage bounds cover the `e4` shadow's reach.
             return Some(if in_flight {
-                transform.transform_rect_bbox(clip)
+                pose.applied_to(transform).transform_rect_bbox(reach)
             } else {
                 let settled = quick_settings_settled_bounds(qs_rect, theme, transform);
                 card_rect.map_or(settled, |card| {
