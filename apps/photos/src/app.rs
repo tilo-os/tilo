@@ -746,6 +746,10 @@ pub struct PhotosApp {
     /// A visible Clear command resolves the otherwise ambiguous empty mixed
     /// field without magic sentinel text.
     metadata_force_clear: [bool; 5],
+    /// The draft fields as the editor opened, in field order (folder,
+    /// people, tags, captured, place, latitude, longitude): Save has
+    /// something to save once a field differs from these.
+    metadata_seed: [String; 7],
     metadata_editor_section: MetadataEditorSection,
     /// Tab order within the active section plus Cancel and Save.
     metadata_editor_focus: usize,
@@ -1100,6 +1104,7 @@ impl PhotosApp {
             metadata_location_from_map: false,
             metadata_mixed: [false; 5],
             metadata_force_clear: [false; 5],
+            metadata_seed: Default::default(),
             metadata_editor_section: MetadataEditorSection::Organize,
             metadata_editor_focus: 0,
             metadata_editor_hits: Vec::new(),
