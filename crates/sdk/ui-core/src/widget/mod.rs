@@ -3204,6 +3204,11 @@ pub use native_view::{
 };
 pub mod modal_prompt;
 pub use modal_prompt::PromptBody;
+pub mod secret_prompt;
+pub use secret_prompt::{
+    FieldRole, FieldSpec, NoticeTone, Presentation, PromptOutcome, SecretAnswer, SecretKind,
+    SecretPrompt,
+};
 pub mod toolbar;
 pub use toolbar::Toolbar;
 pub mod undo_button;
