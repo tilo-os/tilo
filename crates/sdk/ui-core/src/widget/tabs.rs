@@ -8637,6 +8637,7 @@ mod tests {
                 items: Vec::new(),
                 navigates: false,
                 toggles: false,
+                destructive: false,
             }],
             ..WindowToolbar::default()
         }
@@ -8844,6 +8845,7 @@ mod tests {
                 items: Vec::new(),
                 navigates: false,
                 toggles: false,
+                destructive: false,
             });
         }
         slots

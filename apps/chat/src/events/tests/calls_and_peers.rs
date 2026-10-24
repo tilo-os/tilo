@@ -751,6 +751,14 @@ fn in_a_call_the_window_bar_names_the_call_and_offers_leave() {
     let call = ids.iter().position(|id| id == "call").expect("the call");
     let leave = ids.iter().position(|id| id == "call-leave").expect("leave");
     assert!(leave > call, "leave follows the call it ends");
+    let destructive = |id: &str| {
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.actions.into_iter().find(|action| action.id == id))
+            .expect("in the bar")
+            .destructive
+    };
+    assert!(destructive("call-leave"), "leaving ends the call: danger");
+    assert!(!destructive("call-mute"), "muting is undone with a press");
 }
 
 #[test]

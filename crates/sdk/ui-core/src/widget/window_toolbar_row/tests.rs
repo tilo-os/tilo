@@ -26,6 +26,7 @@ fn browser() -> WindowToolbar {
             items: Vec::new(),
             navigates: false,
             toggles: false,
+            destructive: false,
         }],
         ..WindowToolbar::default()
     }
@@ -875,6 +876,39 @@ fn a_menu_button_lists_its_items_and_the_overflow_menu_carries_them() {
             .any(|entry| *entry == MenuEntry::Item(0, 1)),
         "the overflow menu carries Format's items"
     );
+}
+
+#[test]
+fn a_destructive_action_folded_into_the_menu_keeps_its_danger_row() {
+    let toolbar = WindowToolbar {
+        actions: vec![
+            ToolbarAction::new("mute", "mic", "Mute").in_menu(),
+            ToolbarAction::new("leave", "phone-off", "Leave call")
+                .destructive()
+                .in_menu(),
+        ],
+        ..WindowToolbar::default()
+    }
+    .bounded();
+    let mut row = ToolbarRow::new();
+    row.show(
+        5,
+        Some(&toolbar),
+        Theme::dark().motion(),
+        crate::motion::frame_now(),
+    );
+    row.lay_out(Rect::new(0.0, 0.0, 800.0, 40.0));
+    assert!(row.open_overflow());
+    let danger: Vec<bool> = row
+        .menu
+        .items()
+        .iter()
+        .filter_map(|item| match item {
+            MenuItem::Action { destructive, .. } => Some(*destructive),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(danger, vec![false, true], "only Leave is a danger row");
 }
 
 #[test]

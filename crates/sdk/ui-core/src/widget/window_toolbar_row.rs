@@ -638,7 +638,12 @@ enum MenuEntry {
 
 /// A menu row for `action`: its name, icon and state.
 fn menu_item(action: &crate::window_toolbar::ToolbarAction) -> MenuItem {
-    let mut item = MenuItem::selection(action.name.clone()).with_enabled(action.enabled);
+    let mut item = if action.destructive {
+        MenuItem::destructive_selection(action.name.clone())
+    } else {
+        MenuItem::selection(action.name.clone())
+    }
+    .with_enabled(action.enabled);
     if let Some(icon) = Icon::from_name(&action.icon) {
         item = item.with_icon(icon);
     }
@@ -2539,6 +2544,7 @@ fn paint_slots(
         pressed: interaction.is_some_and(|i| i.pressed.as_ref() == Some(&slot)),
         on,
         enabled,
+        destructive: false,
     };
     if toolbar.sidebar.is_some() {
         paint_icon_button(
@@ -2652,6 +2658,7 @@ fn paint_slots(
                 shows_on(toolbar, &Slot::Action(i)),
             );
             lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Action(i)));
+            lifted.destructive = action.destructive;
             lifted
         });
     }

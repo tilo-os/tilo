@@ -62,7 +62,8 @@ impl ChatApp {
                         "call-leave",
                         "phone-off",
                         crate::i18n::t("chat-call-leave-action"),
-                    ),
+                    )
+                    .destructive(),
                     Hit::CallLeave,
                 ));
             }
