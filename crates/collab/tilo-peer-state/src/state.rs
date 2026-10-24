@@ -58,6 +58,7 @@ mod media_governance;
 mod native_publication;
 mod room_layout;
 mod room_name;
+mod room_settings;
 mod succession;
 use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
