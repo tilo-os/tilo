@@ -242,7 +242,7 @@ over its own network namespace, so `socket(AF_NETLINK, …)` with
 `setns`, `bpf`, io_uring, the keyrings, `userfaultfd`, `perf_event_open`,
 kexec and modules stay refused too. Such a job runs without Landlock, which
 refuses every mount to a process it confines. t selects the profile per check
-with `nested_sandboxes`. Such a job is uid 1000 (`NESTING_ID`) inside, not
+with `isolation = "nested"`. Such a job is uid 1000 (`NESTING_ID`) inside, not
 root: its root would hold no capability, and since Linux 5.12 mapping the
 parent namespace's uid 0 into a new user namespace (`unshare
 --map-root-user`, bubblewrap) takes `CAP_SETFCAP`, so writing `uid_map` fails
@@ -501,7 +501,7 @@ t's worker builds a `JobSpec` from a check:
 - **limits**: from the check's size: `memory.max`, `cpu.weight`, `pids.max`,
   `io.max`
 - **seccomp**: CI, or nested for checks that start sandboxes of their own
-- **micro-VM steps** (`vm = true`, or `privileged = true`): the check's image
+- **micro-VM steps** (`isolation = "vm"`): the check's image
   as the guest's root disk, made once per image and node; its sources, and the
   outputs of the checks it needs, as a read-only disk per step, copy-on-write
   in the guest; its outputs back through the output disk

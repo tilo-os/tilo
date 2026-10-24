@@ -773,7 +773,7 @@ run = "bash dist/ci/package-lane.sh {deb}"
 inputs = ["dist/**", "crates/**", "apps/**", "vendor/**", "os/dev/install-cached-cosign.sh", "os/dev/fetch-env-runtime.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/Containerfile.env-runtime", "flake.nix", "flake.lock", "Cargo.toml", "Cargo.lock"]
 outputs = ["dist/ci-output/**"]
 requires = ["{node}"]
-privileged = true
+isolation = "vm"
 writable_sources = true
 # Packages record their source commit and time; the Nix lane reads the tree through Git.
 git = true
@@ -816,7 +816,7 @@ outputs = ["target/host-session-e2e/**"]
 # source.json names the commit (T_COMMIT) in every run, not only dispatched ones.
 git = true
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-privileged = true
+isolation = "vm"
 writable_sources = true
 timeout_secs = 5400
 cost = "heavy"

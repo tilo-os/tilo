@@ -294,7 +294,7 @@ class PlanTests(unittest.TestCase):
 
     def vm(self, name: str) -> bool:
         check = self.checks.get(name, {})
-        return check.get("isolation") == "vm" or bool(check.get("vm") or check.get("privileged"))
+        return check.get("isolation") == "vm"
 
     def test_a_docs_only_commit_plans_no_vm_check(self):
         paths = ["docs/t.md", "docs/developers/getting-started.md", "docs/architecture/security.md"]

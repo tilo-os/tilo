@@ -64,7 +64,7 @@ OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secre
 # The order fields appear in, as the hand-written checks of t.toml have them.
 FIELD_ORDER = ["name", "image", "run", "inputs", "cargo_packages", "cargo_dev_dependencies", "needs",
                "optional_needs", "outputs", "pointers", "id_token", "env", "git", "requires",
-               "isolation", "privileged", "writable_sources", "cost", "requirement", "timeout_secs", "on",
+               "isolation", "writable_sources", "cost", "requirement", "timeout_secs", "on",
                "default"]
 
 
@@ -349,7 +349,7 @@ class Product:
             result["needs"] = needs
         if not result["image"]:
             del result["image"]  # `image = ""`: t.toml's default image, the CI builder
-        elif result["image"] == self.defaults["buildah"] and not result.get("privileged"):
+        elif result["image"] == self.defaults["buildah"] and "isolation" not in result:
             # buildah needs user namespaces and mounts the job sandbox's strict tier refuses.
             result["isolation"] = "vm"
         return result
@@ -373,7 +373,7 @@ class Product:
             "on": self.release_on,
             "default": False,
         }
-        if result["image"] == self.defaults["buildah"] and not result.get("privileged"):
+        if result["image"] == self.defaults["buildah"] and "isolation" not in result:
             result["isolation"] = "vm"
         return result
 

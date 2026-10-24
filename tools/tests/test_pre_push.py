@@ -46,7 +46,6 @@ class SelectTests(unittest.TestCase):
                     continue
                 check = checks[name]
                 self.assertNotEqual(check.get("isolation"), "vm")
-                self.assertFalse(check.get("vm") or check.get("privileged"))
                 self.assertFalse(check.get("cargo_packages"), "a push builds no package beyond clippy's")
                 self.assertNotIn(check.get("cost"), ("minutes", "heavy"))
                 self.assertTrue(name.startswith("policy/") or name in pre_push.GATES or name in pre_push.ALWAYS)
