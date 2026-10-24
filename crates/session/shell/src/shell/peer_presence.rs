@@ -200,7 +200,7 @@ pub struct PeerPresence {
     certified_people_inbound: CertifiedPeopleInbound,
     _certified_people_subscription:
         Option<Arc<tilo_action_broker::collab_broker::CertifiedPeopleSubscription>>,
-    projected_people: Mutex<(Option<String>, HashSet<ui::permissions::UserId>)>,
+    projected_people: Mutex<(Option<String>, HashSet<collab_types::presence::UserId>)>,
     departures: Arc<crate::shell::network::PeerDepartureHistory>,
     seen_departures: Mutex<HashSet<DepartureKey>>,
     /// The departure history's generation [`Self::pump`] last read it at.
@@ -364,7 +364,7 @@ fn fold_typed_presence(
         if let PresencePayload::Interaction(update) = payload {
             // The broker and the network's ingress deliver an actor they
             // vouch for under its own id; anything else is its sender.
-            let id = ui::permissions::UserId(user.clone());
+            let id = collab_types::presence::UserId(user.clone());
             let kind = match presence.participant_kind(&id) {
                 ui::presence::ParticipantKind::Person => tilo_actions::ActorKind::Person,
                 ui::presence::ParticipantKind::Agent => tilo_actions::ActorKind::Agent,
@@ -384,7 +384,7 @@ fn fold_typed_presence(
         {
             // Here Tab/Left is app lifecycle, not the legacy desktop
             // pointer leaving a viewport. Clear only this location.
-            presence.remove_presence(&key, &ui::permissions::UserId(user));
+            presence.remove_presence(&key, &collab_types::presence::UserId(user));
         } else {
             presence.apply_remote_presence(user, key, payload);
         }
@@ -909,7 +909,8 @@ impl PeerPresence {
         let colours = self.net.peer_colours_epoch();
         if self.colours_applied.swap(colours, Ordering::AcqRel) != colours {
             for (peer, hue) in self.net.peer_colours() {
-                presence.set_presence_hue(ui::permissions::UserId(format!("peer@{peer}")), hue);
+                presence
+                    .set_presence_hue(collab_types::presence::UserId(format!("peer@{peer}")), hue);
             }
         }
         let desk_pointers = self.net.take_live_desk_pointers();
@@ -970,7 +971,7 @@ impl PeerPresence {
         let mut cursor_changed = cursor_changed;
         for user in hidden {
             cursor_changed |= presence.clear_pointer(&user);
-            cursor_changed |= presence.chats.forget(&ui::permissions::UserId(user));
+            cursor_changed |= presence.chats.forget(&collab_types::presence::UserId(user));
         }
         drop(mine);
         let typed = self
@@ -1036,7 +1037,7 @@ impl PeerPresence {
         let current: HashSet<_> = rows
             .into_iter()
             .flatten()
-            .map(|participant| ui::permissions::UserId(participant.id.clone()))
+            .map(|participant| collab_types::presence::UserId(participant.id.clone()))
             .collect();
         let Ok(mut projected) = self.projected_people.lock() else {
             return false;
@@ -1046,7 +1047,7 @@ impl PeerPresence {
             presence.unregister_peer(&retired.0);
         }
         for participant in rows.into_iter().flatten() {
-            let id = ui::permissions::UserId(participant.id.clone());
+            let id = collab_types::presence::UserId(participant.id.clone());
             let kind = ui::presence::ParticipantKind::from(participant.is_agent);
             changed |= presence.participant_kind(&id) != kind
                 || presence.names.get(&id) != Some(&participant.name);
@@ -1238,7 +1239,7 @@ impl PeerPresence {
                 // A row named by the id its presence carries is that
                 // presence; only a row named otherwise is found by its name,
                 // which two people's devices can share.
-                let own = ui::permissions::UserId(row.id.clone());
+                let own = collab_types::presence::UserId(row.id.clone());
                 let presence_id = if presence.names.contains_key(&own)
                     || presence.here.values().any(|users| users.contains(&own))
                 {
@@ -1434,7 +1435,7 @@ pub fn fold_inbound(
         if let Some((_, known)) = &resolved
             && let Some(name) = known.get(&entry.peer)
         {
-            presence.set_display_name(ui::permissions::UserId(user.clone()), name.clone());
+            presence.set_display_name(collab_types::presence::UserId(user.clone()), name.clone());
         }
         let anchor = PointerAnchor {
             tab,
@@ -1467,7 +1468,7 @@ pub fn fold_live_chat(
             continue;
         }
         let user = format!("peer@{}", entry.peer);
-        let id = ui::permissions::UserId(user.clone());
+        let id = collab_types::presence::UserId(user.clone());
         changed |= presence.chats.say(
             &id,
             entry
@@ -1565,8 +1566,8 @@ pub fn room_roster(
 mod tests {
     use super::*;
     use crate::shell::network::InboundPresence;
+    use collab_types::presence::UserId;
     use std::time::SystemTime;
-    use ui::permissions::UserId;
 
     fn interaction(actor: &str) -> PresencePayload {
         PresencePayload::Interaction(Box::new(tilo_actions::SemanticInteraction {
@@ -2051,7 +2052,7 @@ mod tests {
         use vello::kurbo::Rect;
         let room = "3f2b1c00-0000-4000-8000-000000000002";
         let key = PresenceKey::Workspace { id: room.into() };
-        let bob = ui::permissions::UserId("peer@7".into());
+        let bob = collab_types::presence::UserId("peer@7".into());
         let mut presence = PresenceCtx::default();
         let mut anchored = AnchoredPointers::new();
         let here = [(TAB, Rect::new(100.0, 50.0, 700.0, 700.0))];
@@ -2593,7 +2594,7 @@ mod two_sessions {
         let network = Arc::new(network);
         let relay = PeerPresence::for_network(&network, rooms_of(&tree));
         let mut presence = PresenceCtx::default();
-        let id = ui::permissions::UserId("opaque-certified-software".into());
+        let id = collab_types::presence::UserId("opaque-certified-software".into());
         let row = collab_types::presence::Collaborator {
             id: id.0.clone(),
             name: "Tide".into(),
@@ -3931,7 +3932,7 @@ mod two_sessions {
         let dir = std::env::temp_dir().join(format!("tilo-roster-alike-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let (host, _host_net, _host_cmds) = session(&dir, "a.sock", &host_handle, &peer_id(60));
-        let id = |peer: &str| ui::permissions::UserId(format!("peer@{}", handle_of(peer)));
+        let id = |peer: &str| collab_types::presence::UserId(format!("peer@{}", handle_of(peer)));
         let mut presence = PresenceCtx::default();
         for peer in [&first, &second] {
             presence.names.insert(id(peer), "Primary device".into());
@@ -4020,7 +4021,7 @@ mod two_sessions {
             guest
         };
         over_the_wire(published(&mut guest_cmds), &host_net);
-        let user = ui::permissions::UserId(format!("peer@{}", handle_of(&guest_peer)));
+        let user = collab_types::presence::UserId(format!("peer@{}", handle_of(&guest_peer)));
         let worn = host_net
             .peer_colour(handle_of(&guest_peer))
             .expect("the guest's frame says what colour they wear");
@@ -4112,8 +4113,8 @@ mod two_sessions {
                 .as_bytes()
         }
 
-        fn guest_user(&self) -> ui::permissions::UserId {
-            ui::permissions::UserId(format!("peer@{}", handle_of(&self.guest_peer)))
+        fn guest_user(&self) -> collab_types::presence::UserId {
+            collab_types::presence::UserId(format!("peer@{}", handle_of(&self.guest_peer)))
         }
     }
 

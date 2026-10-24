@@ -14,7 +14,7 @@ pub use hue::{
     user_color,
 };
 pub use key::{
-    AppKind, DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange, ViewRect,
-    ViewSubset,
+    AppKind, DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange, UserId,
+    ViewRect, ViewSubset,
 };
 pub use payload::{Availability, Collaborator, IDLE_AFTER, PresencePayload};

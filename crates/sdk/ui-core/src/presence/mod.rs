@@ -323,12 +323,6 @@ impl From<bool> for ParticipantKind {
     }
 }
 
-impl AsRef<UserId> for UserId {
-    fn as_ref(&self) -> &UserId {
-        self
-    }
-}
-
 impl PresenceUser {
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         let id = id.into();
