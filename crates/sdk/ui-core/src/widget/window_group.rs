@@ -635,8 +635,7 @@ impl WindowGroup {
             self.fullscreen_presentation = fullscreen;
             self.style_dirty = true;
             if !fullscreen {
-                self.fullscreen_bar.revealed = false;
-                self.fullscreen_bar.fade.snap(false);
+                self.fullscreen_bar = fullscreen_bar::FullscreenBar::default();
             }
         }
     }
@@ -3979,9 +3978,7 @@ impl Widget for WindowGroup {
             }
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
-        if bar_over {
-            self.draw_bar_over_content(scene, transform, tr, theme, presence);
-        }
+        self.draw_bar_over_content(bar_over, scene, transform, tr, theme, presence);
         if self.navigation_bar_visible() {
             let band = self.bar.get_rect().inflate(0.0, 6.0);
             self.bar.draw_holder_chip(scene, transform, tr, theme, band);
@@ -4119,9 +4116,7 @@ impl Widget for WindowGroup {
         if self.maximized_chrome_live() && self.top_edge.settle(crate::time::now()) {
             self.top_edge_changed();
         }
-        if self.fullscreen_bar.laid_out != self.bar_over_content() {
-            self.style_dirty = true;
-        }
+        self.style_dirty |= self.fullscreen_bar.laid_out != self.bar_over_content();
         let bar = self.bar.take_structure_dirty();
         let active = self.bar.active_id();
         let mut active_host = false;
@@ -4254,11 +4249,9 @@ impl Widget for WindowGroup {
             .tab_fade
             .as_ref()
             .is_some_and(|fade| fade.is_moving(crate::motion::frame_now()));
-        let fullscreen_bar_fade =
-            self.fullscreen_presentation && self.fullscreen_bar.fade.is_moving(crate::time::now());
         spawn_in_flight
             || tab_fade
-            || fullscreen_bar_fade
+            || self.fullscreen_bar_fading()
             || top_slide
             || chrome_fade
             || close_in_flight
