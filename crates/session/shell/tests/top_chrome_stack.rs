@@ -552,6 +552,10 @@ impl Panel {
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn a_swipe_down_from_the_top_edge_reveals_the_bar() {
     use tilo_desktop::chrome::TopBarPresence;
 
@@ -596,6 +600,10 @@ impl Panel {
 /// after a short idle, and comes back over the window, which never moves,
 /// for a swipe down from the top edge, the Super key and the pointer.
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn a_fullscreen_windows_bar_collapses_when_idle_and_comes_back_over_it() {
     use vello::kurbo::Point;
 
