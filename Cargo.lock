@@ -16929,6 +16929,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-boot-signin"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-bot-directory"
 version = "0.1.0"
 dependencies = [

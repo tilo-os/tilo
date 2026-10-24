@@ -24,6 +24,12 @@ install() {
     # The initramfs keeps the old name on its PATH, for the unlock helper;
     # the image's /usr/bin/tilo-rollback is a link to `tilo`, which it lacks.
     inst_simple /usr/libexec/tilo/tilo-rollback /usr/bin/tilo-rollback
+    # The sign-in screen tilo-root-discover shows for a root people sign in
+    # to, and tilo-auth, which checks their secret and derives the volume's
+    # key. Without tilo-auth the screen finds nobody to sign in, and the root
+    # unlocks with the prompts below as on any other machine.
+    inst_simple /usr/libexec/tilo/tilo-boot-signin
+    [ -x /usr/libexec/tilo/tilo-auth ] && inst_simple /usr/libexec/tilo/tilo-auth /usr/bin/tilo-auth
     inst_simple /usr/libexec/tilo-rollback-initrd-unlock
     inst_simple /usr/libexec/tilo-root-discover
     inst_simple /usr/lib/systemd/system-generators/tilo-root-generator
