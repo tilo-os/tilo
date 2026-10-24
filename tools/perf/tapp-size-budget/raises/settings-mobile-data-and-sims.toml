@@ -1,0 +1,6 @@
+reason = "Settings gained mobile data and SIMs under Network (a8d2a57460, on the ModemManager client of 8e4b8f7447): the Mobile section's rows and code entry for PIN and PUK, per-SIM state, network modes, the data usage counter with its reset day, agent answers about the modem and its effects. Measured from app-binaries' symbol tables at f1876cf595 and a8d2a57460, Settings x86_64 grew +65 KB of .text and +36 KB of unwind tables, read-only data and relocations; the new symbols are the Mobile pane's own (sections 11 KB, answer 11 KB, its effect rows and decoding 6 KB, snapshot adoption and inspection 8 KB), while the toolkit's generic code grew under 3 KB and the ModemManager client is not in the app. Tapps grew from 3706368 to 3810816 bytes (x86_64) and 3353088 to 3443200 (aarch64). The amounts are each overage plus the budget's headroom, at the sizes pack-apps measured (aarch64 3441664, run r8969bc5497) and t run rb02f0dfe59 (x86_64 3804672)"
+run = "r8969bc5497"
+
+[apps."so.tilo.settings"]
+x86_64 = 65536
+aarch64 = 131072
