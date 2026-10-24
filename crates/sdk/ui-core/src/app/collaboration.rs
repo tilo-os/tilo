@@ -814,6 +814,7 @@ impl App {
                 | CollabEvent::NearbyTransferCommandResult { .. }
                 | CollabEvent::NearbyTransferChanged
                 | CollabEvent::SpeakersChanged
+                | CollabEvent::DrivesChanged
                 | CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::ActionDirectoryPage { .. }
                 | CollabEvent::PublishedActionResolution { .. }
@@ -945,6 +946,7 @@ impl App {
             | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged
+            | CollabEvent::DrivesChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_) => {}
         }
