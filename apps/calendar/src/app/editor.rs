@@ -285,7 +285,7 @@ fn apply_repeat(event: &mut Event, value: &str) {
     event.recurrence_interval = interval;
 }
 
-const ALERTS: [(i64, &str); 7] = [
+pub(super) const ALERTS: [(i64, &str); 7] = [
     (0, "At time of event"),
     (5, "5 minutes before"),
     (10, "10 minutes before"),
