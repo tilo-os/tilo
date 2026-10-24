@@ -46,6 +46,7 @@ impl ActionInterface {
     }
 
     fn do_action(&self, index: i32) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.0.do_action(index).map_err(self.map_error())
     }
 }

@@ -61,6 +61,7 @@ impl ComponentInterface {
     }
 
     fn grab_focus(&self) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.node.grab_focus().map_err(self.map_error())
     }
 

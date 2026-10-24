@@ -22,6 +22,7 @@ mod adapter;
 mod atspi;
 mod context;
 mod executor;
+mod read_only;
 mod util;
 
 pub use adapter::Adapter;
