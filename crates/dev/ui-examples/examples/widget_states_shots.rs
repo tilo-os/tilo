@@ -338,6 +338,21 @@ fn control_specs() -> Vec<Spec> {
                 .control_size(c.size),
             ),
         }),
+        // Past their room, tabs take their short labels before they scroll.
+        filling("Tabs, short labels", 56.0, |c, _| match c.st {
+            St::Error | St::Disabled => None,
+            _ => boxed(
+                ToggleGroup::new(
+                    [("Privacy & Security", "Privacy"), ("Apps & Files", "Apps")]
+                        .iter()
+                        .map(|(tab, short)| Segment::new(*tab).short(*short))
+                        .collect(),
+                    usize::from(c.st == St::Selected),
+                )
+                .with_style(SegmentedStyle::Tabs)
+                .control_size(c.size),
+            ),
+        }),
         widget("Chip", 56.0, |c, _| match c.st {
             St::Disabled | St::Error => None,
             st => boxed(
