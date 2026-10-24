@@ -46,6 +46,7 @@
 mod appearing;
 mod clock;
 mod disclosure;
+mod kept;
 mod named;
 mod pose;
 mod presence;
@@ -61,6 +62,8 @@ pub use appearing::Appearing;
 pub(crate) use clock::pin_frame;
 pub use clock::{frame_now, frames_until, frames_wanted, testing, want_frames_until};
 pub use disclosure::Disclosure;
+pub(crate) use kept::{frame_ended, laying_out_window};
+pub use kept::{keep, take_kept, take_kept_at, window_has_shown};
 pub use named::{
     Ambient, Appear, Attention, Breathe, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill,
     DrillDepth, Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reveal, Snap,

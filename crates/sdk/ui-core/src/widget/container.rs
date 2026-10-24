@@ -493,7 +493,26 @@ impl Widget for Container {
             && let Some(&child_node) = taffy.children(node).unwrap_or_default().first()
         {
             child.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+            // A band on its way stands out of the layout, at the top of the
+            // container's content.
+            crate::widget::place_bands(
+                std::iter::once(child),
+                crate::widget::content_box(taffy, node, self.rect),
+                |_| 0.0,
+            );
         }
+    }
+
+    /// A container sized by its content grows with a band moving in it, and
+    /// so moves what follows it.
+    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+        if self.fixed_height.is_some() || self.fill_height {
+            return None;
+        }
+        let moving = self.child.as_ref()?.disclosing()?;
+        Some(crate::widget::Disclosing::Grows(
+            moving.follower_offset(0.0),
+        ))
     }
 
     fn draw(

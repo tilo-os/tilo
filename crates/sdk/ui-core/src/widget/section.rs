@@ -924,6 +924,9 @@ pub struct Section {
     labels: crate::widget::property_list::PropertyColumn,
     /// The width the section's dropdowns share.
     choosers: crate::widget::dropdown::ChooserColumn,
+    /// The space laid out above each item: where a band on its way stands,
+    /// and how far what follows it moves (`widget::Disclosing`).
+    gaps: Vec<f64>,
 }
 
 impl Section {
@@ -936,7 +939,22 @@ impl Section {
             expanded: None,
             labels: crate::widget::property_list::PropertyColumn::new(),
             choosers: crate::widget::dropdown::ChooserColumn::default(),
+            gaps: Vec::new(),
         }
+    }
+
+    /// While a band moves in the section, how far below its laid-out place
+    /// each shown item is drawn, then how much taller the section is drawn.
+    fn follower_shifts(&self) -> Option<Vec<f64>> {
+        let gaps = &self.gaps;
+        crate::widget::follower_shifts(
+            self.parts
+                .children
+                .iter()
+                .take(self.shown())
+                .map(|child| &**child),
+            |index| gaps.get(index).copied().unwrap_or(0.0),
+        )
     }
 
     pub fn titled(title: impl Into<String>, items: Vec<Element>) -> Self {
@@ -1115,6 +1133,14 @@ impl Widget for Section {
     // A section paints nothing of its own: what changed is what its rows
     // changed, so a hover or a meter in one row does not repaint the group.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // A band on its way moves every item after it, and the section is
+        // drawn taller by as much.
+        if let Some(shifts) = self.follower_shifts() {
+            let mut rect = self.parts.rect;
+            rect.y1 += shifts.last().copied().unwrap_or(0.0).max(0.0);
+            regions.push(rect);
+            return;
+        }
         for child in &self.parts.children {
             child.collect_damage(regions);
         }
@@ -1184,6 +1210,7 @@ impl Widget for Section {
         }
         let rows = self.row_flags();
         let shown = self.shown();
+        self.gaps = vec![0.0; self.parts.nodes.len()];
         for (index, &node) in self.parts.nodes.iter().enumerate() {
             let Ok(style) = taffy.style(node) else {
                 continue;
@@ -1202,6 +1229,9 @@ impl Widget for Section {
                     rhythm.sibling
                 };
                 style.margin.top = length(gap);
+                if let Some(laid) = self.gaps.get_mut(index) {
+                    *laid = f64::from(gap);
+                }
             }
             let _ = taffy.set_style(node, style);
         }
@@ -1211,6 +1241,14 @@ impl Widget for Section {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(taffy, node, origin);
+        // A band on its way stands out of the layout, in its slot.
+        let shown = self.shown();
+        let gaps = &self.gaps;
+        crate::widget::place_bands(
+            self.parts.children.iter_mut().take(shown),
+            self.parts.rect,
+            |index| gaps.get(index).copied().unwrap_or(0.0),
+        );
     }
 
     fn draw(
@@ -1223,13 +1261,45 @@ impl Widget for Section {
     ) {
         self.sync_rows(text, theme);
         let shown = self.shown();
-        for child in self.parts.children.iter_mut().take(shown) {
-            child.draw(scene, transform, text, theme, presence);
+        // While a band moves, what follows it is drawn shifted by transform.
+        let shifts = self.follower_shifts();
+        for (index, child) in self.parts.children.iter_mut().take(shown).enumerate() {
+            let dy = shifts
+                .as_deref()
+                .and_then(|shifts| shifts.get(index).copied())
+                .unwrap_or(0.0);
+            child.draw(
+                scene,
+                transform * Affine::translate((0.0, dy)),
+                text,
+                theme,
+                presence,
+            );
         }
+    }
+
+    /// A section grows with a band moving in it, and so moves what follows
+    /// it.
+    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+        let shifts = self.follower_shifts()?;
+        Some(crate::widget::Disclosing::Grows(
+            shifts.last().copied().unwrap_or(0.0),
+        ))
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let shown = self.shown();
+        if let Some(shifts) = self.follower_shifts() {
+            let shown = shown.min(self.parts.nodes.len());
+            crate::widget::route_to_shifted_children(
+                &mut self.parts.children[..shown],
+                &self.parts.nodes[..shown],
+                Some(&shifts),
+                event,
+                ctx,
+            );
+            return;
+        }
         for (child, &node) in self
             .parts
             .children

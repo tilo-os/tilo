@@ -111,6 +111,15 @@ impl Disclosure {
         self.presence.is_moving(super::frame_now())
     }
 
+    /// Whether its height is on the way now (not reduced motion's fade):
+    /// while it is, the band stands out of its container's layout, which
+    /// keeps what follows where it is at the larger extent and moves it by
+    /// transform; the layout takes the band in once, at rest.
+    #[must_use]
+    pub fn is_sliding(&self) -> bool {
+        !self.fade_only && self.is_moving()
+    }
+
     /// When it rests; `None` at rest.
     #[must_use]
     pub fn settles_at(&self) -> Option<crate::time::Instant> {
