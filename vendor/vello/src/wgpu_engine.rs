@@ -1800,7 +1800,7 @@ impl WgpuEngine {
     /// pipeline creation (Tilo patch): every compile starts before the first
     /// is awaited, so a WebGPU browser compiles them in parallel off its GPU
     /// process's main thread. Elsewhere each is created synchronously.
-    pub async fn build_shaders_async(&mut self, device: &Device) {
+    pub async fn build_shaders_async(&mut self, device: &Device, built: &mut dyn FnMut()) {
         let Some(new_shaders) = self.shaders_to_initialise.take() else {
             return;
         };
@@ -1819,6 +1819,7 @@ impl WgpuEngine {
             .collect::<Vec<_>>();
         for (id, pipeline) in pending {
             self.shaders[id.0].wgpu = Some(pipeline.await);
+            built();
         }
     }
 
