@@ -651,7 +651,7 @@ fn lost_reasoning(response: &ModelResponse) -> Option<String> {
         .content
         .iter()
         .filter_map(|block| match block {
-            Content::Reasoning { text } => Some(text.as_str()),
+            Content::Reasoning { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();

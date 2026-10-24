@@ -1044,8 +1044,10 @@ fn log_owner_action(
 /// - `TILO_BENCH_SCENARIO`: the scenario file (`bench/campaign/scenarios/*.json`).
 /// - `TILO_BENCH_MODEL` (`gpt-6-astra`): a `claude-` model plans through
 ///   Anthropic's Messages API at `TILO_BENCH_ANTHROPIC_URL`
-///   (`https://api.anthropic.com`); any other through `OpenAI` chat
-///   completions at `TILO_BENCH_BASE_URL` (`https://api.openai.com/v1`), or at
+///   (`https://api.anthropic.com`); any other through `OpenAI`'s Responses
+///   API at `TILO_BENCH_BASE_URL` (`https://api.openai.com/v1`; another
+///   address takes chat completions unless `TILO_AGENT_OPENAI_API` is
+///   `responses`), or through chat completions at
 ///   `TILO_BENCH_OPENAI_COMPAT_URL` when set (a local server or a proxy);
 ///   `scripted` plans with no model and needs no key (written steps).
 /// - `TILO_AGENT_API_KEY_FILE`: the provider's key, read by the host's model
