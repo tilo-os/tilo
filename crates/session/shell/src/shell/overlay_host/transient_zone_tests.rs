@@ -28,6 +28,7 @@ fn tree() -> WorkspaceTree {
             tabs: vec![Tab {
                 id: tab_id,
                 title: "Terminal".into(),
+                app_title: None,
                 tile: TileContent::AppPlaceholder {
                     kind: AppKind::Terminal,
                     label: "Terminal".into(),
