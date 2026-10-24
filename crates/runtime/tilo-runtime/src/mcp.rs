@@ -5,6 +5,8 @@ mod agent;
 mod content;
 #[path = "mcp_page.rs"]
 mod page;
+#[path = "mcp_put.rs"]
+mod put;
 #[path = "mcp_schema.rs"]
 mod schema;
 use serde::Deserialize;
@@ -66,6 +68,9 @@ pub struct McpServer<H> {
     admitted: tokio::sync::Semaphore,
     /// Which tools the session offers.
     surface: Surface,
+    /// The content uploads this session has open; dropped with it, they
+    /// store nothing.
+    uploads: std::sync::Mutex<put::Uploads>,
 }
 
 /// The tools a session offers.
@@ -560,6 +565,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             working: tokio::sync::Semaphore::new(MAX_WORKING),
             admitted: tokio::sync::Semaphore::new(MAX_ADMITTED),
             surface: Surface::Classic,
+            uploads: std::sync::Mutex::default(),
         }
     }
     /// Offer the tools `surface` names.
@@ -963,6 +969,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Surface::Classic => tool_definitions().to_vec(),
             Surface::Agent => agent::tool_definitions().to_vec(),
         };
+        if self.host.content_puts().is_some() {
+            tools.extend(put::tool_definitions());
+        }
         if self.computer.is_some() {
             tools.extend(crate::computer::tool_definitions());
         }
@@ -1152,6 +1161,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     && matches!(call.name.as_str(), "computer" | "computer_batch") =>
             {
                 Ok(self.computer(&call.name, call.arguments).await)
+            }
+            Ok(call) if put::is_put_tool(&call.name) => {
+                Ok(self.put_call(&call.name, call.arguments).await)
             }
             Ok(call)
                 if self.surface == Surface::Agent
