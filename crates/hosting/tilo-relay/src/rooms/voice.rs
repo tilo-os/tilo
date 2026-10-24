@@ -208,6 +208,7 @@ impl Calls {
                 namespace: protocol::namespace(&participation.call, other),
                 publishes: participation.directions.publish,
                 showing: participation.shown(),
+                bridged: None,
             })
             .collect();
         participants.sort_by(|a, b| a.namespace.cmp(&b.namespace));
@@ -562,6 +563,7 @@ fn call_list(state: &State, policy: &Policy) -> Vec<CallSummary> {
                     namespace: protocol::namespace(call, id),
                     publishes: participation.directions.publish,
                     showing: participation.shown(),
+                    bridged: None,
                 })
                 .collect();
             participants.sort_by(|a, b| a.namespace.cmp(&b.namespace));
