@@ -38,6 +38,8 @@ fn a_room_being_joined_is_answered_once_it_is_ready() {
         change.poll_unpin(&mut context),
         std::task::Poll::Ready(RoomStatus::Ready)
     );
+    drop(change);
+    drop(rooms);
 }
 
 /// A room no host holds, with its workspace only here, is refused with the
@@ -47,9 +49,8 @@ fn a_room_on_this_device_only_is_refused_with_the_reason() {
     let mut tree = WorkspaceTree::default();
     let (_, room) = tree.create_hosted_workspace("Plans");
     assert!(tree.pending_placements.remove(&room));
-    let rooms = RoomStatusSource::new(tree.shared(), None);
     assert_eq!(
-        rooms.status(room),
+        RoomStatusSource::new(tree.shared(), None).status(room),
         RoomStatus::Refused(crate::shell::i18n::t(
             "workspace-on-this-device-only-no-documents"
         ))

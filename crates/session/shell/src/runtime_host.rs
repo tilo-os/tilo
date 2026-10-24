@@ -118,8 +118,8 @@ impl Session {
             .workspaces
             .first_mut()
             .ok_or_else(|| io::Error::other("runtime profile has no workspace"))?;
-        let room = workspace.room();
-        let room_id = room.to_string();
+        let workspace_room = workspace.room();
+        let room_id = workspace_room.to_string();
         let profile = crate::identity_registry::selected_identity_profile(&room_id)?
             .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
         let actor = profile.principal_id();
@@ -150,7 +150,7 @@ impl Session {
             tracing::warn!(%error, "the runtime's workspace owner did not open");
         }
         stage("hosting the workspace on this device");
-        peer_sync.host(room)?;
+        peer_sync.host(workspace_room)?;
         stage("starting the collaboration broker");
         let broker = collab_broker::spawn_native_offloading(
             root.join(COLLAB_SOCKET),
@@ -366,7 +366,9 @@ impl PeerSync {
     /// rather than serving nothing.
     fn host(&mut self, room: crate::shell::state::RoomId) -> io::Result<()> {
         use crate::shell::network::Placement;
-        let deadline = std::time::Instant::now() + hosting_bound();
+        let deadline = std::time::Instant::now()
+            .checked_add(hosting_bound())
+            .ok_or_else(|| io::Error::other("the hosting bound is past what this clock holds"))?;
         // The rooms this device hosted before are served again first: a
         // session reopening its workspace finds it held already.
         self.network.open_hosted_rooms();

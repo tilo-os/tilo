@@ -345,7 +345,7 @@ impl ShellNetwork {
                 token.to_owned(),
                 owner.clone(),
             ))
-            .and_then(|enrollment| self.install_enrollment(&owner, topic, enrollment));
+            .and_then(|enrollment| self.install_enrollment(&owner, topic, &enrollment));
         self.placement_enrollment_ended(room, result.as_ref().map(|_| ()));
         self.enrollment_ended(
             room,
@@ -401,7 +401,7 @@ impl ShellNetwork {
         &self,
         owner: &NativeWorkspaceOwner,
         identity_topic: u64,
-        enrollment: tilo_joined_room::VerifiedNativeEnrollment,
+        enrollment: &tilo_joined_room::VerifiedNativeEnrollment,
     ) -> Result<RoomId, String> {
         let identity = self
             .host_identity
@@ -425,7 +425,7 @@ impl ShellNetwork {
                 return Err("native room custody did not retain selected certificate".into());
             }
         }
-        owner.install(&enrollment, SystemTime::now())?;
+        owner.install(enrollment, SystemTime::now())?;
         self.check_native_custody(owner, room)?;
         if !self.join_topic(room_topic_id(room)) {
             return Err("native room committed; transport queue unavailable".into());
@@ -447,7 +447,7 @@ impl ShellNetwork {
             .cloned()
             .ok_or("native enrollment attempt no longer active")?;
         let result = attempt.finish(|enrollment| {
-            self.install_enrollment(attempt.owner(), attempt.identity_topic(), enrollment)
+            self.install_enrollment(attempt.owner(), attempt.identity_topic(), &enrollment)
         });
         let Some(result) = result else {
             return Ok(PeerSyncResponse::EnrollmentPending { id });

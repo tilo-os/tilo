@@ -120,7 +120,7 @@ pub(super) fn admit(
     }
     drop(rooms);
     if first {
-        wait_for(session.clone(), source, room, (status, let_go));
+        wait_for(session, source, room, (status, let_go));
     }
     Ok(())
 }
@@ -128,7 +128,7 @@ pub(super) fn admit(
 /// Wait for `room`, last seen as `seen`, on a thread of its own: woken by
 /// the room's changes only, it ends with the room's launches.
 fn wait_for(
-    session: LaunchSession,
+    session: &LaunchSession,
     source: RoomStatusSource,
     room: RoomId,
     (seen, let_go): (RoomStatus, Arc<Notify>),
@@ -146,7 +146,7 @@ fn wait_for(
         tracing::warn!(%room, %error, "no thread to wait for a room; its launches start now");
         let held = lock(&session.rooms.0).held.remove(&room);
         for (launch, start) in held.into_iter().flat_map(|held| held.launches) {
-            let _ = start(launch, &session);
+            let _ = start(launch, session);
         }
     }
 }
@@ -186,30 +186,33 @@ impl LaunchSession {
                 .map(|held| held.launches)
                 .unwrap_or_default();
             drop(rooms);
-            match now {
-                RoomStatus::Refused(reason) => {
-                    tracing::info!(%room, %reason, "launches waiting for a room are refused");
-                    for (launch, _) in launches {
-                        self.startup.fail(
-                            super::super::launch_readiness::command_token(&launch.command),
-                            reason.clone(),
-                        );
-                        self.push(super::room_refused(launch, &reason));
-                    }
+            if let RoomStatus::Refused(reason) = now {
+                tracing::info!(%room, %reason, "launches waiting for a room are refused");
+                for (launch, _) in launches {
+                    self.startup.fail(
+                        super::super::launch_readiness::command_token(&launch.command),
+                        reason.clone(),
+                    );
+                    self.push(super::room_refused(launch, &reason));
                 }
-                _ => {
-                    tracing::info!(%room, "launches waiting for a room start");
-                    for (launch, start) in launches {
-                        // Its window is due as any start's is, from now.
-                        super::hold_presentation_for(&launch.package_id, Duration::ZERO);
-                        // A failure to start is reported through the session.
-                        let _ = start(launch, self);
-                    }
+            } else {
+                tracing::info!(%room, "launches waiting for a room start");
+                for (launch, start) in launches {
+                    // Its window is due as any start's is, from now.
+                    super::hold_presentation_for(&launch.package_id, Duration::ZERO);
+                    // A failure to start is reported through the session.
+                    let _ = start(launch, self);
                 }
             }
             return;
         }
     }
+}
+
+/// Whether no launch of this session waits for its room.
+#[cfg(test)]
+pub(super) fn nothing_waits(session: &LaunchSession) -> bool {
+    lock(&session.rooms.0).held.is_empty()
 }
 
 /// Why `package_id`'s window waits for its room, when its launch does: the
@@ -241,9 +244,7 @@ pub fn hold_for_shots(
     package_id: &str,
     room: RoomId,
 ) {
-    fn started(_: HeldLaunch, _: &LaunchSession) -> Result<(), String> {
-        Ok(())
-    }
+    let started: Start = |_, _| Ok(());
     set_source(RoomStatusSource::new(tree, None));
     let launch = HeldLaunch {
         authority: None,

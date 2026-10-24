@@ -219,8 +219,8 @@ fn a_governance_change_asked_while_the_governor_is_away_is_made_when_it_is_back(
         }),
     );
     until(&[&second], "the rename to wait for the governor", || {
-        let waiting = second.net().governance_waiting.lock().unwrap().is_some();
-        (waiting && second.tree.read().governance_requests.len() == 1).then_some(())
+        let waiting = second.net().outbox_waiting.lock().unwrap().is_some();
+        (waiting && second.tree.read().room_outbox.len() == 1).then_some(())
     });
     assert!(
         !refused_on(&second),
@@ -237,7 +237,7 @@ fn a_governance_change_asked_while_the_governor_is_away_is_made_when_it_is_back(
             !refused_on(&second),
             "a governor out of reach refused nothing"
         );
-        (second.tree.read().governance_requests.is_empty()
+        (second.tree.read().room_outbox.is_empty()
             && name_on(&first).as_deref() == Some("Roadmap")
             && name_on(&second).as_deref() == Some("Roadmap")
             && first.note(room).as_deref() == Some("written while the desktop was off"))

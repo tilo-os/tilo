@@ -1937,10 +1937,9 @@ mod tests {
     /// Examine until the waiting window's app has been started: its record
     /// is kept here first, which reaches the disk on the store's thread.
     fn examine_until_started(tree: &mut WorkspaceTree) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
+        tilo_test_env::wait_until("the window to stop waiting for its record", || {
             let _ = examine(tree);
-            let waiting = tree
+            !tree
                 .desktop
                 .workspaces
                 .iter()
@@ -1949,16 +1948,8 @@ mod tests {
                 .flat_map(|group| &group.tabs)
                 .any(|tab| {
                     matches!(&tab.tile, TileContent::PeerWindow { note, .. } if note.is_empty())
-                });
-            if !waiting {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the window never stopped waiting for its record"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+                })
+        });
     }
 
     /// An id carrying a salt that isn't this process's, so tabs built
