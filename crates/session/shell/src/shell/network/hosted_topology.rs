@@ -1,12 +1,15 @@
-//! This session's legacy windows in a room another device governs.
+//! This session's windows in a room it holds as a member.
 //!
-//! Such a room's topology is written by its governor, so a window this
-//! session adopted itself (a legacy Wayland or X11 client) is in nobody's
-//! room document, and the room's other members, a browser viewer among
-//! them, have no tab to show it in. The room's registry lets a member own a
-//! topology namespace: once the governor registers this session's salt to
-//! this device, the session publishes its legacy tabs as its own entries,
-//! which the governor admits within that namespace and republishes.
+//! Such a room's topology is written by its governor. When the governor is
+//! a host (a relay, or the room host of the device the room is placed on,
+//! this one's included) it runs no apps, so nothing places this session's
+//! windows but this session; when it is another device that opens the
+//! apps launched in the room, only the windows this session adopted itself
+//! (a legacy Wayland or X11 client) are in nobody's room document. The
+//! room's registry lets a member own a topology namespace: once the
+//! governor registers this session's salt to this device, the session
+//! publishes those tabs as its own entries, which the governor admits
+//! within that namespace and republishes.
 use super::{NetCmd, ShellNetwork, room_topic_id};
 use crate::shell::state::{RoomId, Strip, TileContent};
 use std::collections::HashMap;
@@ -14,8 +17,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
 
-/// How often one room's legacy windows are looked at.
-const CHECK_EVERY: Duration = Duration::from_millis(500);
 /// A claim that did not answer is asked again after this long.
 const CLAIM_RETRY: Duration = Duration::from_secs(10);
 /// Entries the governor has not admitted yet are sent again after this long.
@@ -23,9 +24,10 @@ const RESEND_AFTER: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 struct Room {
-    checked: Option<Instant>,
     claimed_at: Option<Instant>,
+    /// When `sent` last went, and what it was.
     sent_at: Option<Instant>,
+    sent: Vec<Vec<u8>>,
     settled: Option<Settled>,
     /// The changes this session published that the governor has not
     /// admitted yet, oldest first ([`plan`]).
@@ -51,7 +53,8 @@ pub(super) struct State {
 }
 
 /// `strips` cut down to this session's own legacy tabs (and the groups and
-/// strips that hold them), the entries it publishes in a governed room.
+/// strips that hold them), the entries it publishes in a room whose
+/// governing device places its app windows.
 pub(crate) fn own_legacy_windows(strips: &[Strip], salt: u16) -> Vec<Strip> {
     let own = |id: u64| tilo_desktop_model::peer_salt_of(id) == salt;
     strips
@@ -112,10 +115,11 @@ impl ShellNetwork {
     }
 
     /// Keep `room`'s document showing this session's windows among its
-    /// workspace's layout in `tree`. When another device governs `room`,
-    /// that is this session's own legacy tabs ([`own_legacy_windows`]),
-    /// published for the governor to admit; the governor places the rest.
-    /// Nothing at all in a room whose layout is personal. Cheap when nothing changed: while neither those
+    /// workspace's layout in `tree`, published for the room's governor to
+    /// admit: every tab of this session's when a host governs `room`, only
+    /// its legacy tabs ([`own_legacy_windows`]) when another device that
+    /// places the rest does. Nothing at all in a room whose layout is
+    /// personal. Cheap when nothing changed: while neither those
     /// windows nor the admitted room document moved since a look found
     /// nothing to publish, the document is not copied. Call every tick.
     pub fn publish_hosted_legacy_windows(
@@ -124,31 +128,21 @@ impl ShellNetwork {
         tree: &crate::shell::state::WorkspaceTreeHandle,
     ) {
         let now = Instant::now();
-        {
-            let Ok(mut rooms) = self.hosted_topology.rooms.lock() else {
-                return;
-            };
-            let state = rooms.entry(room).or_default();
-            if state
-                .checked
-                .is_some_and(|at| now.saturating_duration_since(at) < CHECK_EVERY)
-            {
-                return;
-            }
-            state.checked = Some(now);
-        }
         // Only an owner already open: this runs on the frame loop.
         let Some(owner) = self.opened_native_owner() else {
             return;
         };
-        let personal = owner
-            .with_current(room, |view| {
-                Ok(view.peer().governance().room_layout().is_personal())
-            })
-            .unwrap_or(false);
-        if !self.governed_elsewhere_by(&owner, room) {
+        let Ok((personal, governor)) = owner.with_current(room, |view| {
+            Ok((
+                view.peer().governance().room_layout().is_personal(),
+                Governor::of(view, room),
+            ))
+        }) else {
             return;
-        }
+        };
+        let Some(kept) = governor.keeps() else {
+            return;
+        };
         // A room whose layout is personal takes no member's windows: none is
         // published into it, and nothing published before is sent again.
         // Its governor removes what it took in of them while it shared them.
@@ -156,7 +150,7 @@ impl ShellNetwork {
             self.keep_out_of_personal_room(room);
             return;
         }
-        let (salt, windows) = windows_to_publish(&tree.read(), room);
+        let (salt, windows) = windows_to_publish(&tree.read(), room, kept);
         if salt == 0 {
             return;
         }
@@ -258,24 +252,28 @@ impl ShellNetwork {
         });
     }
 
-    /// Whether changes not yet admitted in `room` are due to go again.
-    fn due_to_send(&self, room: RoomId, now: Instant) -> bool {
+    /// Whether `changes`, not yet admitted in `room`, go now: at once when
+    /// they hold a change not sent before, and the same again only once
+    /// they have waited a while.
+    fn due_to_send(&self, room: RoomId, changes: &[Vec<u8>], now: Instant) -> bool {
         let Ok(mut rooms) = self.hosted_topology.rooms.lock() else {
             return false;
         };
         let state = rooms.entry(room).or_default();
-        if state
-            .sent_at
-            .is_some_and(|at| now.saturating_duration_since(at) < RESEND_AFTER)
+        if state.sent == changes
+            && state
+                .sent_at
+                .is_some_and(|at| now.saturating_duration_since(at) < RESEND_AFTER)
         {
             return false;
         }
         state.sent_at = Some(now);
+        state.sent = changes.to_vec();
         true
     }
 
     fn send_topology(&self, room: RoomId, changes: Vec<Vec<u8>>, now: Instant) {
-        if !self.due_to_send(room, now) {
+        if !self.due_to_send(room, &changes, now) {
             return;
         }
         tracing::debug!(%room, changes = changes.len(), "publishing this session's windows to the room");
@@ -290,11 +288,55 @@ impl ShellNetwork {
     }
 }
 
-/// This session's salt, and the windows it keeps in `room`'s document: its
-/// own legacy tabs ([`own_legacy_windows`]).
+/// Which of this session's windows it publishes into a room itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kept {
+    /// Every one: the room's host runs no apps, so nobody else places this
+    /// session's app windows.
+    All,
+    /// Only its legacy tabs: the device governing the room opens the apps
+    /// launched there and places their windows.
+    Legacy,
+}
+
+/// Who governs a room, as far as publishing this session's windows into it
+/// goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Governor {
+    /// Another device than this one.
+    elsewhere: bool,
+    /// A host, which runs no apps: a relay, or the room host of the device
+    /// the room is placed on, this one's included.
+    host: bool,
+}
+
+impl Governor {
+    fn of(view: &tilo_joined_room::NativeCommittedView, room: RoomId) -> Self {
+        Self {
+            elsewhere: view.governor().device_public_key != view.device().device_public_key,
+            host: view.governor().capabilities.can_act_as_host
+                || super::relay_rooms::hosting_governor(view, room)
+                    .is_ok_and(|host| host.is_some()),
+        }
+    }
+
+    /// Which windows this session publishes into the room; `None` when this
+    /// device governs it itself and writes its windows there directly.
+    const fn keeps(self) -> Option<Kept> {
+        match (self.elsewhere, self.host) {
+            (_, true) => Some(Kept::All),
+            (true, false) => Some(Kept::Legacy),
+            (false, false) => None,
+        }
+    }
+}
+
+/// This session's salt, and the layout it keeps its windows in `room`'s
+/// document from: all of the workspace's, or only its own legacy tabs.
 fn windows_to_publish(
     tree: &crate::shell::state::WorkspaceTree,
     room: RoomId,
+    kept: Kept,
 ) -> (u16, Vec<Strip>) {
     let salt = tree.local_salt();
     let windows = tree
@@ -302,7 +344,14 @@ fn windows_to_publish(
         .workspaces
         .iter()
         .find(|workspace| workspace.room() == room)
-        .map(|workspace| own_legacy_windows(&workspace.strips, salt))
+        .map(|workspace| match kept {
+            // Whole: the projection writes only what this session minted,
+            // and a strip of its own that now holds only others' windows
+            // must still be seen as its own, or its windows closed here
+            // would never leave the room.
+            Kept::All => workspace.strips.clone(),
+            Kept::Legacy => own_legacy_windows(&workspace.strips, salt),
+        })
         .unwrap_or_default();
     (salt, windows)
 }
@@ -430,6 +479,28 @@ mod tests {
             tile,
             app_title: None,
         }
+    }
+
+    #[test]
+    fn a_member_publishes_every_window_where_a_host_governs_and_only_legacy_ones_where_a_device_opens_the_apps()
+     {
+        let keeps = |elsewhere, host| Governor { elsewhere, host }.keeps();
+        assert_eq!(
+            keeps(false, true),
+            Some(Kept::All),
+            "this device's own host"
+        );
+        assert_eq!(
+            keeps(true, true),
+            Some(Kept::All),
+            "another device's host or a relay"
+        );
+        assert_eq!(
+            keeps(true, false),
+            Some(Kept::Legacy),
+            "a device that opens the apps"
+        );
+        assert_eq!(keeps(false, false), None, "this device governing it itself");
     }
 
     /// A device host forwards a viewer's input with the relay's legacy-window
