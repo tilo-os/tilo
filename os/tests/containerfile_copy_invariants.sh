@@ -303,7 +303,10 @@ containerfile="$repo/os/Containerfile"
 # Signing in adds tilo-authd.service, the tilo-auth-legacy PAM service and the
 # sign-in component's tilo-authd, tilo-auth and pam_tilo.so: five payload rows.
 # The boot-signin component's tilo-boot-signin is one more.
-expected_contract=89ab31045929a953b0cbaf17a172b65a331858e4c752f9511beeaa072e0ed42a
+# tilo-clock-floor, its service, timer and shutdown service keep the clock
+# floor PID 1 starts from at chrony's authenticated time: four payload rows
+# riding existing COPY instructions.
+expected_contract=61c50071c9b6a110148bcb7f86f47c44f3cf179dde223f35ae1eefd8e3871d43
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

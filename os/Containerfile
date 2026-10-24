@@ -2230,6 +2230,7 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-firstboot-autologin-cleanup \
     os/usr/libexec/tilo-session-recovery \
     os/usr/libexec/tilo-cage-session \
+    os/usr/libexec/tilo-clock-floor \
     /usr/libexec/
 # The graphical-session user target. (`systemctl --global enable` further down
 # resolves each unit file at build time, so a unit that was never copied in
@@ -2474,16 +2475,14 @@ COPY \
     os/usr/lib/systemd/system/tilo-security-audit.service \
     os/usr/lib/systemd/system/tilo-security-audit.timer \
     os/usr/lib/systemd/system/tilo-pstore-console.service \
-    /usr/lib/systemd/system/
-# The clock floor PID 1 starts the clock from (/var/lib/systemd/timesync/clock),
-# kept from chrony's authenticated time: a real-time clock that comes up
-# behind never starts the system before the last recorded time.
-COPY \
     os/usr/lib/systemd/system/tilo-clock-floor.service \
     os/usr/lib/systemd/system/tilo-clock-floor.timer \
     os/usr/lib/systemd/system/tilo-clock-floor-shutdown.service \
     /usr/lib/systemd/system/
-COPY --chmod=0755 os/usr/libexec/tilo-clock-floor /usr/libexec/
+# tilo-clock-floor keeps the clock floor PID 1 starts the clock from
+# (/var/lib/systemd/timesync/clock) at chrony's authenticated time, so a
+# real-time clock that comes up behind never starts the system before the last
+# recorded time. Its units ride the COPY above, the helper the libexec COPY.
 # A reset leaves its kernel log in pstore on boards that reserve a ramoops
 # region (os/kernel/patches/0021); systemd-pstore moves it into the journal on
 # the next boot, and tilo-pstore-console.service makes the console log in it
