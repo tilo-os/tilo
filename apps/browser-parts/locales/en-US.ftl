@@ -130,5 +130,7 @@ browser-extension-debugger = Inspect and control the pages you open
 browser-extension-no-access = It needs no special access
 browser-extension-no-version = This extension no longer runs in Chrome. Many have a newer edition, such as uBlock Origin Lite for uBlock Origin.
 browser-extension-update-asks = { $name } asks for more access since its update. Turn it on to allow it.
+browser-extension-notification-progress = { $percent }% done
+browser-extension-notification-from = From { $name }
 browser-page-stopped = This page stopped working
 browser-popup-close = Close this window

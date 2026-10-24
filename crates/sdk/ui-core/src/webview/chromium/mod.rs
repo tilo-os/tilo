@@ -4,6 +4,7 @@
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
 mod audio;
+mod extension_notification;
 pub mod install;
 mod menus;
 mod protocol;
@@ -1919,9 +1920,10 @@ fn valid_site_event(value: &Value, event: &str) -> bool {
         }
 }
 
-/// An `extension_action`, `extension_open_popup` or `extension_execute_action`
-/// event, when every part of it is what the host sends: the extension's id,
-/// its own pages, bounded text and an icon of at most 128 pixels a side.
+/// An `extension_action`, `extension_open_popup`, `extension_execute_action`
+/// or `extension_notification` event, when every part of it is what the host
+/// sends: the extension's id, its own pages, bounded text and an icon of at
+/// most 128 pixels a side.
 fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
     // Absent: unchanged. Null: taken back. Otherwise a value `read` accepts,
     // or the event is refused.
@@ -1944,6 +1946,9 @@ fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
     };
     if value["event"] == "extension_execute_action" {
         return Some(WebViewEvent::ExtensionExecuteAction { id: id.into() });
+    }
+    if value["event"] == "extension_notification" {
+        return extension_notification::decode(id, value);
     }
     if value["event"] == "extension_open_popup" {
         let url = value["url"].as_str().filter(|url| own(url))?;
@@ -2117,9 +2122,10 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "credential_result" => super::CredentialReply::decode(value).is_some(),
         "service_session_result" => super::ServiceSessionReply::decode(value).is_some(),
         "site_status" | "site_result" => valid_site_event(value, event),
-        "extension_action" | "extension_open_popup" | "extension_execute_action" => {
-            decode_extension_event(value).is_some()
-        }
+        "extension_action"
+        | "extension_open_popup"
+        | "extension_execute_action"
+        | "extension_notification" => decode_extension_event(value).is_some(),
         "extension_menu" => decode_extension_menu(value).is_some(),
         "devtools_result" => {
             value["request_id"]
@@ -2400,6 +2406,13 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             extension_id(id) && !key.is_empty() && key.len() <= 1024
         }
         WebViewCommand::ExtensionPanel { action } => action.as_deref().is_none_or(extension_id),
+        WebViewCommand::ExtensionNotificationChosen {
+            id,
+            notification,
+            button,
+        } => {
+            extension_id(id) && notification.len() <= 500 && button.is_none_or(|button| button < 2)
+        }
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::PermissionDismissed { id }
         | WebViewCommand::DownloadDecision { id, .. }
@@ -2549,9 +2562,10 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
         "site_status" | "site_result" => decode_site_event(value, value["event"].as_str()?)?,
-        "extension_action" | "extension_open_popup" | "extension_execute_action" => {
-            decode_extension_event(value)?
-        }
+        "extension_action"
+        | "extension_open_popup"
+        | "extension_execute_action"
+        | "extension_notification" => decode_extension_event(value)?,
         "extension_action_reset" => WebViewEvent::ExtensionActionReset,
         "devtools_result" => WebViewEvent::DevToolsResult {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
@@ -2832,6 +2846,17 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::ExtensionMenuChoice { id, key } => {
             json!({"op":"extension_menu_action","id":id,"key":key})
         }
+        WebViewCommand::ExtensionNotificationChosen {
+            id,
+            notification,
+            button,
+        } => match button {
+            Some(button) => json!({"op":"extension_notification_chosen","id":id,
+                "notification":notification,"button":button}),
+            None => {
+                json!({"op":"extension_notification_chosen","id":id,"notification":notification})
+            }
+        },
         WebViewCommand::DevTools {
             request_id,
             method,

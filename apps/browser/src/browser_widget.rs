@@ -3084,7 +3084,8 @@ impl BrowserWidget {
                 | WebViewEvent::ExtensionActionReset
                 | WebViewEvent::ExtensionMenu { .. }
                 | WebViewEvent::ExtensionOpenPopup { .. }
-                | WebViewEvent::ExtensionExecuteAction { .. }) => {
+                | WebViewEvent::ExtensionExecuteAction { .. }
+                | WebViewEvent::ExtensionNotification { .. }) => {
                     self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
                 }
                 WebViewEvent::CredentialResult(reply) => {

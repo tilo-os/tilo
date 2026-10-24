@@ -410,8 +410,8 @@ content scripts (with `sender.tab`) work without help.
   makes the worker run it first, `extensions.rs` `prepare_tabs`, without
   moving the worker: extensions read their worker's address and load their
   helpers against it) and in its own pages (a document script). It answers
-  `tabs`, `windows`, `action.onClicked`, `contextMenus`, the button's look
-  for one tab and `scripting` by asking the host at
+  `tabs`, `windows`, `action.onClicked`, `contextMenus`, `notifications`,
+  the button's look for one tab and `scripting` by asking the host at
   `https://extension-bridge.tilo.invalid/`, which the host serves itself. A
   page of the extension is known by its frame's address, its worker by a token
   written into it; a page cannot show either. An extension whose security
@@ -535,6 +535,17 @@ content scripts (with `sender.tab`) work without help.
   `action.onClicked`. `commands.getAll` lists the button's command first,
   then the rest by name, each with its key as Chrome shows it ("Ctrl+Shift+Y"
   on Linux) or none, and its description localized.
+- `notifications` are kept by the host (`src/extension_notifications.h`),
+  which checks them as Chrome does (a type, an icon, a title and a message;
+  a progress from 0 to 100 only for a progress notification; at most two
+  buttons) and answers `update`, `clear` and `getAll`. The Browser is told
+  of each change through the page used last (`extension_notification`) and
+  shows it as its own notification, named for the extension
+  (`extension_notices.rs`). The person choosing it or one of its buttons
+  comes back as `extension_notification_chosen`: the worker, woken if it
+  sleeps, hears `onClicked` or `onButtonClicked`, then `onClosed` by the
+  person, since Tilo takes a chosen notification away; `clear` is heard as
+  `onClosed` not by the person.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
@@ -553,6 +564,10 @@ content scripts (with `sender.tab`) work without help.
   no checkmark and no submenu, and appear only in a page's menu, not the
   toolbar button's.
 - `tabs.setZoom` is not offered: the Browser owns a page's zoom.
+- An extension's notification shows the Browser's icon, not its own or its
+  image, and a notification the person dismisses without choosing it stays
+  in `getAll` until the extension clears it: Tilo's notification service
+  says nothing of a dismissal.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs

@@ -341,3 +341,79 @@ fn an_extensions_button_menu_arrives_and_a_choice_names_its_item() {
         assert!(!command_within_limits(&bad), "{bad:?}");
     }
 }
+
+#[test]
+fn an_extensions_notification_arrives_and_a_choice_goes_back() {
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    assert_eq!(
+        event(
+            json!({"event":"extension_notification","tab":2,"id":id,"notification":"copy",
+            "title":"Copying","message":"Two files","context":"","items":[{"title":"a","message":"b"}],
+            "buttons":["Pause","Stop"],"progress":40,"require_interaction":false,"silent":false})
+        ),
+        Some(WebViewEvent::ExtensionNotification {
+            id: id.into(),
+            notification: "copy".into(),
+            notice: Some(crate::webview::ExtensionNotice {
+                title: "Copying".into(),
+                message: "Two files".into(),
+                context: String::new(),
+                items: vec![("a".into(), "b".into())],
+                buttons: vec!["Pause".into(), "Stop".into()],
+                progress: Some(40),
+            }),
+        })
+    );
+    assert_eq!(
+        event(
+            json!({"event":"extension_notification","tab":2,"id":id,"notification":"copy","cleared":true})
+        ),
+        Some(WebViewEvent::ExtensionNotification {
+            id: id.into(),
+            notification: "copy".into(),
+            notice: None,
+        })
+    );
+    // Past the host's bounds, or not an extension's: refused.
+    let shown = |extra: Value| {
+        let mut value = json!({"event":"extension_notification","id":id,"notification":"n",
+            "title":"T","message":"M","context":"","items":[],"buttons":[]});
+        for (key, field) in extra.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        value
+    };
+    assert!(event(shown(json!({}))).is_some());
+    for bad in [
+        shown(json!({"progress":101})),
+        shown(json!({"buttons":["a","b","c"]})),
+        shown(json!({"title":"x".repeat(4097)})),
+        shown(json!({"notification":"n".repeat(501)})),
+        shown(json!({"id":"short"})),
+        shown(json!({"message":null})),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+
+    let chosen = |button| WebViewCommand::ExtensionNotificationChosen {
+        id: id.into(),
+        notification: "copy".into(),
+        button,
+    };
+    assert!(command_within_limits(&chosen(Some(1))));
+    assert_eq!(
+        encode_command(chosen(Some(1))),
+        Some(
+            json!({"op":"extension_notification_chosen","id":id,"notification":"copy","button":1})
+        )
+    );
+    assert_eq!(
+        encode_command(chosen(None)),
+        Some(json!({"op":"extension_notification_chosen","id":id,"notification":"copy"}))
+    );
+    assert!(!command_within_limits(&chosen(Some(2))));
+}

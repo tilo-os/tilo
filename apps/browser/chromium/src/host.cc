@@ -1506,6 +1506,11 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
     return;
   }
   if(op=="extension_forget") {if(extension_tabs)extension_tabs->Forget(d->GetString("id"));return;}
+  // The person chose an extension's notification, or one of its buttons.
+  if(op=="extension_notification_chosen") {
+    if(extension_tabs)extension_tabs->NotificationChosen(d->GetString("id"),d->GetString("notification"),d->HasKey("button")?std::optional<int>(d->GetInt("button")):std::nullopt);
+    return;
+  }
   // The Browser's own extension, which tells which tab a page is.
   if(op=="extension_identity") {if(extension_tabs)extension_tabs->SetIdentity(d->GetString("id"));return;}
   if(op=="download_start") {
@@ -1821,6 +1826,13 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   }
   if(op=="extension_click" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
   if(op=="extension_menu_action") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("key",VTYPE_STRING) && !d->GetString("key").empty() && d->GetString("key").length()<=tilo::ExtensionMenus::kMaxId;
+  if(op=="extension_notification_chosen") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="id" && key!="notification" && key!="button")return false;
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("notification",VTYPE_STRING) &&
+           d->GetString("notification").length()<=tilo::ExtensionNotifications::kMaxId &&
+           (!d->HasKey("button") || (type("button",VTYPE_INT) && d->GetInt("button")>=0 && d->GetInt("button")<(int)tilo::ExtensionNotifications::kMaxButtons));
+  }
   if(op=="extension_access") {
     auto strings=[&](const char* key){
       if(!type(key,VTYPE_LIST))return false;auto list=d->GetList(key);if(list->GetSize()>512)return false;

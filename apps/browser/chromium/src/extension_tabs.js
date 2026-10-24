@@ -2,8 +2,9 @@
 // an offscreen embedding: its tab registry holds only the tabs of its own
 // windows, and Tilo draws every page offscreen. Run in an extension's service
 // worker and its own pages, this answers the tab and window APIs, the toolbar
-// click, keyboard shortcuts, a tab's capture, context menu items and scripts
-// on a tab from the host's tabs instead, over a request the host answers
+// click, keyboard shortcuts, a tab's capture, context menu items,
+// notifications and scripts on a tab from the host's tabs instead, over a
+// request the host answers
 // itself. A page of the extension is known by its address; its worker,
 // which has none, by a token the Browser wrote with this script into the
 // worker it runs first (extensions.rs).
@@ -497,6 +498,33 @@
     replace(menus, 'remove', (id) => inOrder('contextMenus.remove', {id}));
     replace(menus, 'removeAll', () => inOrder('contextMenus.removeAll'));
     event(menus, 'onClicked', 'contextMenus.onClicked');
+  }
+
+  // Notifications: Tilo's notification service shows them, through the
+  // Browser, and the host keeps them (extension_notifications.h). A choice
+  // comes back as onClicked or onButtonClicked, then onClosed.
+  const notices = chrome.notifications;
+  if (notices) {
+    // What crosses to the host: plain data, so an icon given as pixels
+    // counts as given and a function is left out.
+    const plainOptions = (options) => {
+      const own = {...(options || {})};
+      for (const key of ['iconUrl', 'imageUrl', 'appIconMaskUrl']) {
+        if (own[key] !== undefined && typeof own[key] !== 'string') own[key] = {};
+      }
+      return JSON.parse(JSON.stringify(own));
+    };
+    // `create(options)` makes up the id.
+    replace(notices, 'create', (id, options) => {
+      if (options === undefined && id !== null && typeof id === 'object') [id, options] = ['', id];
+      return call('notifications.create', {id: typeof id === 'string' ? id : '', options: plainOptions(options)});
+    });
+    replace(notices, 'update', (id, options) => call('notifications.update', {id: String(id), options: plainOptions(options)}));
+    replace(notices, 'clear', (id) => call('notifications.clear', {id: String(id)}));
+    replace(notices, 'getAll', async () => (await call('notifications.getAll')) || {});
+    event(notices, 'onClicked', 'notifications.onClicked');
+    event(notices, 'onButtonClicked', 'notifications.onButtonClicked');
+    event(notices, 'onClosed', 'notifications.onClosed');
   }
 
   if (scripting) {
