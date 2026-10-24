@@ -83,7 +83,7 @@ pub enum OperatorCommand {
     /// Keep the request of someone who asked at the door of a persistent
     /// room that takes people by invitation, without one: the address
     /// `contact` ([`crate::rooms::contact_address`]) its answer goes to. The
-    /// room lists it with its join requests for whoever may invite. The
+    /// room keeps it on its wait list for whoever may invite. The
     /// child answers [`RoomEvent::WaitListed`] or
     /// [`RoomEvent::WaitListRefused`] for the same `request`.
     WaitList {
