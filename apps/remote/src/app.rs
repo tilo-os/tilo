@@ -361,6 +361,11 @@ struct SessionCore {
     fb_canvas: Option<Rect>,
     /// Current VNC pointer button mask (bit 0 = left, 1 = middle, 2 = right).
     vnc_buttons: u8,
+    /// The keys this pane pressed on the remote machine and has not released
+    /// there yet, by the physical key: the evdev keycode for a Tilo session,
+    /// the keysym for VNC. Released together when the pane loses the
+    /// keyboard, so no key stays held on the remote side.
+    held_keys: Vec<(PhysicalKey, u32)>,
     /// Whether the remote desktop is scaled to fit (vs. its own size).
     scale_to_fit: bool,
     /// Last pointer position over the pane.
@@ -379,6 +384,7 @@ impl Default for SessionCore {
             fb_image: None,
             fb_canvas: None,
             vnc_buttons: 0,
+            held_keys: Vec::new(),
             scale_to_fit: true,
             pointer: Point::ZERO,
             collab_outbox: Vec::new(),
@@ -449,6 +455,40 @@ impl SessionCore {
         let fy = ((p.y - canvas.y0) / canvas.height() * f64::from(h)).clamp(0.0, f64::from(h - 1))
             as u16;
         Some((fx, fy))
+    }
+
+    /// Release on the remote machine every key this pane still holds there:
+    /// the pane lost the keyboard, and the release will not reach it.
+    fn release_held_keys(&mut self) {
+        let held = std::mem::take(&mut self.held_keys);
+        if held.is_empty() {
+            return;
+        }
+        if let Some(s) = self.vnc_session() {
+            for (_, key) in held {
+                let _ = s.send_input(VncInput::Key { down: false, key });
+            }
+        } else {
+            for (_, keycode) in held {
+                self.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
+                    keycode,
+                    pressed: false,
+                    modifiers: 0,
+                });
+            }
+        }
+    }
+
+    /// Note that `key` was pressed (`Some`) or released on the remote
+    /// machine; a release answers with what its press sent.
+    fn track_key(&mut self, physical: PhysicalKey, pressed: Option<u32>) -> Option<u32> {
+        let at = self.held_keys.iter().position(|(key, _)| *key == physical);
+        let released = at.map(|at| self.held_keys.remove(at).1);
+        if let Some(sent) = pressed {
+            self.held_keys.push((physical, sent));
+            return Some(sent);
+        }
+        released
     }
 
     /// Send the current button mask at `p` to the live remote desktop, if
@@ -1281,6 +1321,7 @@ impl RemoteApp {
             session.fb_image = None;
             session.fb_canvas = None;
             session.vnc_buttons = 0;
+            session.held_keys.clear();
             session.live = None;
         }
         let readiness = connection_readiness(&c);
@@ -2763,52 +2804,56 @@ impl SessionPane {
             core.live.as_ref(),
             Some(LiveSession::Tilo(session)) if session.status == SessionStatus::Connected
         );
+        let pressed = event.state == ElementState::Pressed;
         if tilo_connected {
             if let PhysicalKey::Code(code) = event.physical_key
                 && let Some(keycode) = ui::evdev::from_key_code(code)
             {
+                core.track_key(event.physical_key, pressed.then_some(keycode));
                 core.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
                     keycode,
-                    pressed: event.state == ElementState::Pressed,
+                    pressed,
                     modifiers: 0,
                 });
                 return true;
             }
             return false;
         }
-        if event.state != ElementState::Pressed {
+        if core.vnc_session().is_some() {
+            // Down on the press and up on the release, modifiers included,
+            // so a held Ctrl or Shift reaches the remote desktop with the key
+            // it modifies.
+            let Some(key) = core.track_key(
+                event.physical_key,
+                pressed.then(|| vnc_keysym(&event.logical_key)).flatten(),
+            ) else {
+                return false;
+            };
+            if let Some(s) = core.vnc_session() {
+                let _ = s.send_input(VncInput::Key { down: pressed, key });
+            }
+            core.changed = true;
+            return true;
+        }
+        if !pressed {
             return false;
         }
         let text = event.text.as_ref().map(winit::keyboard::SmolStr::as_str);
-        match &core.live {
-            Some(LiveSession::Ssh(s)) if s.status() == SessionStatus::Connected => {
-                if let Some(bytes) = ssh_key_bytes(&event.logical_key, text, mods) {
-                    // Interactive key events are best-effort when the
-                    // bounded queue is full; the resource action path
-                    // reports that condition exactly to agents.
-                    let _ = s.send_input(bytes);
-                    core.changed = true;
-                    return true;
-                }
-                false
-            }
-            Some(LiveSession::Vnc(s)) if s.status() == SessionStatus::Connected => {
-                if let Some(sym) = vnc_keysym(&event.logical_key, text) {
-                    let _ = s.send_input(VncInput::Key {
-                        down: true,
-                        key: sym,
-                    });
-                    let _ = s.send_input(VncInput::Key {
-                        down: false,
-                        key: sym,
-                    });
-                    core.changed = true;
-                    return true;
-                }
-                false
-            }
-            _ => false,
+        let Some(LiveSession::Ssh(s)) = &core.live else {
+            return false;
+        };
+        if s.status() != SessionStatus::Connected {
+            return false;
         }
+        let Some(bytes) = ssh_key_bytes(&event.logical_key, text, mods) else {
+            return false;
+        };
+        // Interactive key events are best-effort when the bounded queue is
+        // full; the resource action path reports that condition exactly to
+        // agents.
+        let _ = s.send_input(bytes);
+        core.changed = true;
+        true
     }
 }
 
@@ -2855,12 +2900,19 @@ impl Widget for SessionPane {
                         ..
                     }
                 ) {
-                    self.focused = self.rect.contains(self.session.borrow().pointer);
+                    let focused = self.rect.contains(self.session.borrow().pointer);
+                    self.set_focus(focused);
                 }
                 self.handle_pointer(event, ctx.scale_factor)
             }
             WindowEvent::KeyboardInput { event, .. } if self.focused => {
                 self.handle_key(event, ctx.modifiers.state())
+            }
+            // The window lost the keyboard: what is held here is released
+            // somewhere else.
+            WindowEvent::Focused(false) => {
+                self.session.borrow_mut().release_held_keys();
+                false
             }
             _ => false,
         };
@@ -2878,6 +2930,9 @@ impl Widget for SessionPane {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        if !focused {
+            self.session.borrow_mut().release_held_keys();
+        }
         self.focused = focused;
     }
 
@@ -2950,20 +3005,60 @@ fn ssh_key_bytes(key: &Key, text: Option<&str>, mods: ModifiersState) -> Option<
 
 /// Map a key press to an X11 keysym for VNC `KeyEvent`s (ASCII + a few
 /// named keys — enough for basic remote typing).
-fn vnc_keysym(key: &Key, text: Option<&str>) -> Option<u32> {
-    match key {
-        Key::Named(NamedKey::Enter) => Some(0xff0d),
-        Key::Named(NamedKey::Backspace) => Some(0xff08),
-        Key::Named(NamedKey::Tab) => Some(0xff09),
-        Key::Named(NamedKey::Escape) => Some(0xff1b),
-        Key::Named(NamedKey::Space) => Some(0x20),
-        Key::Named(NamedKey::ArrowUp) => Some(0xff52),
-        Key::Named(NamedKey::ArrowDown) => Some(0xff54),
-        Key::Named(NamedKey::ArrowLeft) => Some(0xff51),
-        Key::Named(NamedKey::ArrowRight) => Some(0xff53),
-        Key::Named(NamedKey::Delete) => Some(0xffff),
-        _ => text.and_then(|t| t.chars().next()).map(|c| c as u32),
-    }
+fn vnc_keysym(key: &Key) -> Option<u32> {
+    let named = match key {
+        Key::Named(named) => named,
+        // A character's keysym is its Latin-1 code, or the Unicode keysym
+        // for anything past it (RFB 6143 §7.5.4, X11 keysym encoding). The
+        // logical key, not the text: Ctrl+C has the text of a control
+        // character but is the C key held with Ctrl.
+        Key::Character(text) => {
+            let mut chars = text.chars();
+            let c = u32::from(chars.next()?);
+            if chars.next().is_some() {
+                return None;
+            }
+            return Some(if c <= 0xff { c } else { 0x0100_0000 | c });
+        }
+        _ => return None,
+    };
+    let sym = match named {
+        NamedKey::Enter => 0xff0d,
+        NamedKey::Backspace => 0xff08,
+        NamedKey::Tab => 0xff09,
+        NamedKey::Escape => 0xff1b,
+        NamedKey::Space => 0x20,
+        NamedKey::ArrowUp => 0xff52,
+        NamedKey::ArrowDown => 0xff54,
+        NamedKey::ArrowLeft => 0xff51,
+        NamedKey::ArrowRight => 0xff53,
+        NamedKey::Delete => 0xffff,
+        NamedKey::Insert => 0xff63,
+        NamedKey::Home => 0xff50,
+        NamedKey::End => 0xff57,
+        NamedKey::PageUp => 0xff55,
+        NamedKey::PageDown => 0xff56,
+        NamedKey::Shift => 0xffe1,
+        NamedKey::Control => 0xffe3,
+        NamedKey::Alt => 0xffe9,
+        NamedKey::AltGraph => 0xfe03,
+        NamedKey::Super | NamedKey::Meta => 0xffeb,
+        NamedKey::CapsLock => 0xffe5,
+        NamedKey::F1 => 0xffbe,
+        NamedKey::F2 => 0xffbf,
+        NamedKey::F3 => 0xffc0,
+        NamedKey::F4 => 0xffc1,
+        NamedKey::F5 => 0xffc2,
+        NamedKey::F6 => 0xffc3,
+        NamedKey::F7 => 0xffc4,
+        NamedKey::F8 => 0xffc5,
+        NamedKey::F9 => 0xffc6,
+        NamedKey::F10 => 0xffc7,
+        NamedKey::F11 => 0xffc8,
+        NamedKey::F12 => 0xffc9,
+        _ => return None,
+    };
+    Some(sym)
 }
 
 // ===========================================================================
