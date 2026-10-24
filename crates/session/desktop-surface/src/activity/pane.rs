@@ -365,6 +365,30 @@ fn local_resume_snapshot(entries: &[HistoryEntry], local: &str) -> Option<Resume
         .max_by_key(|resume| resume.timestamp)
 }
 
+/// How strongly the resume card washes the sheet with primary ink.
+const RESUME_CARD_WASH: f32 = 0.13;
+
+/// The resume card's ground as it reaches the screen: its wash over the sheet.
+fn resume_card_ground(theme: &Theme) -> vello::peniko::Color {
+    let colors = &theme.tokens.colors;
+    let sheet = ui::chrome::shell::panel_ground(theme);
+    ui::tokens::colors::over(sheet, colors.text_primary, RESUME_CARD_WASH)
+}
+
+/// Accent-toned text on `ground`: the accent as ink, stepped out until it
+/// reads there as text. `intent.accent_hover` is a fill: on the dark theme
+/// it read at 1.9:1 on the resume card.
+fn accent_text_on(theme: &Theme, ground: vello::peniko::Color) -> vello::peniko::Color {
+    use ui::tokens::contrast::{BODY_TEXT_MIN_CONTRAST, HIGH_CONTRAST_TEXT_MIN_CONTRAST};
+    let colors = &theme.tokens.colors;
+    let floor = if colors.palette.high_contrast {
+        HIGH_CONTRAST_TEXT_MIN_CONTRAST
+    } else {
+        BODY_TEXT_MIN_CONTRAST
+    };
+    colors.ink_on(ground, colors.intent.accent_ink, floor)
+}
+
 fn draw_resume_card(
     scene: &mut Scene,
     transform: Affine,
@@ -378,7 +402,7 @@ fn draw_resume_card(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.text_primary.with_alpha_factor(0.13),
+        colors.text_primary.with_alpha_factor(RESUME_CARD_WASH),
         None,
         &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
     );
@@ -405,7 +429,7 @@ fn draw_resume_card(
     tr.draw_style(
         scene,
         &t("activity-resume-heading"),
-        colors.intent.accent_hover,
+        accent_text_on(theme, resume_card_ground(theme)),
         at(transform, rect.x0 + 46.0, rect.y0 + 8.0),
         None,
         &theme.text(TextRole::Caption),
@@ -3335,7 +3359,7 @@ impl RoomActivityPane {
         tr.draw_style(
             scene,
             &t("activity-agent-task"),
-            theme.tokens.colors.intent.accent_hover,
+            accent_text_on(theme, ui::chrome::shell::panel_ground(theme)),
             at(transform, x, y),
             None,
             &theme
@@ -6660,7 +6684,7 @@ fn draw_brief_card(
         scene,
         &affordance,
         if expanded {
-            theme.tokens.colors.intent.accent_hover
+            accent_text_on(theme, ui::chrome::shell::panel_ground(theme))
         } else {
             theme.tokens.colors.text_dim
         },
