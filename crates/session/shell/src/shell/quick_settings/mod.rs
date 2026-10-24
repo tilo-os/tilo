@@ -5,6 +5,7 @@
 //! handoff) through `nav_stack`.
 
 pub mod actions;
+mod device_status;
 pub mod hosted;
 pub mod now_playing;
 pub mod refresh;
