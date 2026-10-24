@@ -12,7 +12,7 @@ use crate::accounts::Account;
 use crate::lockout_store::Opener;
 use crate::luks::{self, SigninToken};
 use crate::protocol::{Refusal, Reply};
-use crate::record::{Attention, Record};
+use crate::record::{Attention, Record, SecretKind};
 use crate::secret::Secret;
 use crate::strength;
 use crate::tpm;
@@ -75,6 +75,7 @@ impl Daemon {
             bail!("the new wrapper does not open with the secret it was made from");
         }
         record.set_secret_wrapper(wrapper);
+        record.secret = Some(SecretKind::of(secret));
         record.attention = None;
         record.unlocks_system = self.accounts.is_admin(account)?;
         self.store.save(&record)?;

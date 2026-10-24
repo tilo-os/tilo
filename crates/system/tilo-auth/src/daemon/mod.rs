@@ -488,6 +488,7 @@ impl Daemon {
             );
         }
         record.set_secret_wrapper(wrapper);
+        record.secret = Some(record::SecretKind::of(new));
         self.store.save(&record)?;
         state.guard.succeeded(record.uid);
         self.mirror(&work, &record);

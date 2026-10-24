@@ -5,7 +5,7 @@
 //! Nothing here removes or rewrites a keyslot or token it did not create: the
 //! recovery key, the old disk passphrase and tilo-rollback's slots stay.
 
-use crate::record::{Factor, Record};
+use crate::record::{Factor, Record, SecretKind};
 use crate::wrapper::{Entry, Kind, Wrapper};
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,8 @@ pub struct SigninToken {
     pub name: String,
     pub display_name: String,
     pub wrappers: Vec<Entry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<SecretKind>,
 }
 
 impl SigninToken {
@@ -44,6 +46,7 @@ impl SigninToken {
             name: record.name.clone(),
             display_name: record.display_name.clone(),
             wrappers: record.wrappers.clone(),
+            secret: record.secret,
         }
     }
 

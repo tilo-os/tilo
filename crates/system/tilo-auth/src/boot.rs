@@ -5,7 +5,7 @@
 
 use crate::handoff::{self, Handoff};
 use crate::luks::{self, SigninToken};
-use crate::record::Factor;
+use crate::record::{Factor, SecretKind};
 use crate::recovery::RecoveryKey;
 use crate::secret::Secret;
 use crate::tpm::Tries;
@@ -46,6 +46,7 @@ pub struct Person {
     pub name: String,
     pub display_name: String,
     pub factors: Vec<Factor>,
+    pub secret: SecretKind,
 }
 
 pub fn people(runner: &dyn Runner, device: &Path) -> Result<Vec<Person>> {
@@ -54,6 +55,7 @@ pub fn people(runner: &dyn Runner, device: &Path) -> Result<Vec<Person>> {
         .map(|(_, token)| Person {
             uid: token.uid,
             factors: token.factors(),
+            secret: token.secret.unwrap_or(SecretKind::Password),
             name: token.name,
             display_name: token.display_name,
         })

@@ -29,6 +29,29 @@ pub struct Record {
     /// finish by itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention: Option<Attention>,
+    /// What the secret looks like, so a screen labels its field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<SecretKind>,
+}
+
+/// Whether a secret is a PIN (digits only) or a password. A screen asks for
+/// one or the other by name and offers a number pad for a PIN.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SecretKind {
+    Pin,
+    Password,
+}
+
+impl SecretKind {
+    pub fn of(secret: &crate::secret::Secret) -> Self {
+        let text = secret.as_str();
+        if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) {
+            Self::Pin
+        } else {
+            Self::Password
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +84,7 @@ impl Record {
             wrappers: Vec::new(),
             system_keyslot: None,
             attention: None,
+            secret: None,
         }
     }
 

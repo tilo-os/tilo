@@ -425,6 +425,7 @@ fn the_sign_in_keyslot_and_token_join_the_header_without_touching_the_rest() {
             "name": "ada",
             "display_name": "Ada King",
             "factors": ["password"],
+            "secret": "password",
         }])
     );
 }
