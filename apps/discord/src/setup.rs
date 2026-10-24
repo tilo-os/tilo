@@ -19,7 +19,7 @@ use ui::i18n::ArgValue;
 use ui::prelude::*;
 use ui::tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 use ui::tilo_actions::{InvocationId, InvocationUpdate};
-use ui::{InvocationCall, LocalState, RemoteCall};
+use ui::{Arrival, InvocationCall, LocalState};
 
 use crate::effects::DiscordEffect;
 use crate::locales::CATALOG;
@@ -182,7 +182,7 @@ pub struct Setup {
     /// The id of the server chosen.
     pub chosen: LocalState<String>,
     remote: ui::RemoteActions,
-    asked: Rc<RefCell<Vec<LocalState<InvocationCall>>>>,
+    asked: Rc<RefCell<Vec<InvocationCall>>>,
 }
 
 impl Setup {
@@ -249,8 +249,12 @@ impl Setup {
         let Step::Asking(server) = self.step.get() else {
             return false;
         };
-        let answers: Vec<InvocationCall> =
-            self.asked.borrow().iter().map(LocalState::get).collect();
+        let answers: Vec<Answer> = self
+            .asked
+            .borrow()
+            .iter()
+            .map(InvocationCall::get)
+            .collect();
         if let Some(failure) = answers.iter().find_map(failure) {
             self.asked.borrow_mut().clear();
             self.step.set(Step::Failed(failure));
@@ -258,7 +262,7 @@ impl Setup {
         }
         let done = answers
             .iter()
-            .all(|answer| matches!(answer, RemoteCall::Done(InvocationUpdate::Succeeded { .. })));
+            .all(|answer| matches!(answer, Arrival::Ready(InvocationUpdate::Succeeded { .. })));
         if done {
             self.asked.borrow_mut().clear();
             self.step.set(Step::Asked(server));
@@ -273,22 +277,25 @@ impl Default for Setup {
     }
 }
 
+/// Where one of the host's answers stands.
+type Answer = Arrival<InvocationUpdate, ui::tilo_actions::remote::ActionHostError>;
+
 /// What to tell the person when the host refused or the request failed.
-fn failure(answer: &InvocationCall) -> Option<String> {
+fn failure(answer: &Answer) -> Option<String> {
     use ui::tilo_actions::remote::ActionHostError;
     match answer {
-        RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => Some(error.message.clone()),
-        RemoteCall::Done(InvocationUpdate::Cancelled { .. }) => {
+        Arrival::Ready(InvocationUpdate::Failed { error, .. }) => Some(error.message.clone()),
+        Arrival::Ready(InvocationUpdate::Cancelled { .. }) => {
             Some(CATALOG.t("discord-setup-cancelled"))
         }
-        RemoteCall::Pending | RemoteCall::Done(_) => None,
-        RemoteCall::Refused(ActionHostError::Unavailable { .. }) => {
+        Arrival::Pending { .. } | Arrival::Ready(_) => None,
+        Arrival::Failed(ActionHostError::Unavailable { .. }) => {
             Some(CATALOG.t("discord-setup-host-unreachable"))
         }
-        RemoteCall::Refused(ActionHostError::UnknownAction | ActionHostError::NotPermitted) => {
+        Arrival::Failed(ActionHostError::UnknownAction | ActionHostError::NotPermitted) => {
             Some(CATALOG.t("discord-setup-not-allowed"))
         }
-        RemoteCall::Refused(error) => Some(CATALOG.t_args(
+        Arrival::Failed(error) => Some(CATALOG.t_args(
             "discord-setup-host-refused",
             &[("reason", ArgValue::Text(error.to_string()))],
         )),

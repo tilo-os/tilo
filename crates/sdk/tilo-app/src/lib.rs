@@ -220,6 +220,7 @@ pub mod prelude {
         OpenFile, PlaybackHandoff, PreparedComponentInputs, RestoreInput,
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
+    pub use ui_core::arriving::{Arrival, Arriving};
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordSaveStatus};
     pub use ui_core::storage::{DeviceClass, Scope, SettingsSchema};
@@ -228,13 +229,11 @@ pub mod prelude {
     pub use ui_core::tokens::TextRole;
     pub use ui_core::vello::kurbo::{Point, Rect, Size};
     pub use ui_core::widget::data_table::{
-        ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange, TableRowState,
+        ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange,
     };
     pub use ui_core::widget::resource_actions;
     pub use ui_core::widget::resource_actions::{ActionForm, ActionValue};
-    pub use ui_core::widget::virtual_list::{
-        ListModel, ListModelChange, ListRowState, VirtualList,
-    };
+    pub use ui_core::widget::virtual_list::{ListModel, ListModelChange, VirtualList};
     pub use ui_core::widget::{
         ActionEmitter, AudiencePresentationProvider, Banner, Button, Card, Checkbox, Collaborative,
         Column, CompleteContentProvider, Container, ContentKind, Continuable, ControlBindingKind,

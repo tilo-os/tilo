@@ -25,7 +25,7 @@ use super::{Element, FullscreenProvider, FullscreenWidgetExt as _, TaffyTreeExt,
 /// column), flex growth (a `Scrollable` under a fixed bar) and its basis,
 /// so the child sizes exactly as if the boundary were not there. A child
 /// out of the flow takes the boundary out too.
-fn boundary_style(child: Option<&Style>) -> Style {
+pub(crate) fn boundary_style(child: Option<&Style>) -> Style {
     let mut style = Style {
         display: taffy::Display::Flex,
         flex_direction: taffy::FlexDirection::Column,

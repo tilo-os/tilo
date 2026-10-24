@@ -78,10 +78,6 @@ impl ActivityModel {
             request: LatestRequest::new(),
         }
     }
-
-    fn is_loaded(&self, index: usize) -> bool {
-        self.cache.contains_key(&index)
-    }
 }
 
 impl ListModel for ActivityModel {
@@ -103,16 +99,28 @@ impl ListModel for ActivityModel {
             .filter(|index| *index < self.count)
     }
 
-    fn row_state(&self, index: usize) -> ListRowState<'_> {
+    // A row not loaded yet is on its way from this device's worker; the
+    // list keeps its slot and paints its placeholder until it is here.
+    fn row_state(&self, index: usize) -> Arrival<(), &str> {
         if self.cache.contains_key(&index) {
-            ListRowState::Ready
+            Arrival::Ready(())
         } else if self.requested.contains(&index)
             && let Some(error) = self.error.as_deref()
         {
-            ListRowState::Error(error)
+            Arrival::Failed(error)
         } else {
-            ListRowState::Loading
+            Arrival::local()
         }
+    }
+
+    fn can_retry(&self, _index: usize) -> bool {
+        self.error.is_some()
+    }
+
+    fn retry(&mut self, _index: usize) {
+        // Forget the failed window: the list asks for it again.
+        self.error = None;
+        self.requested = 0..0;
     }
 
     fn request_range(&mut self, range: Range<usize>) {
@@ -185,33 +193,25 @@ impl ResourceApp for App {
 
     fn view(cx: &mut ViewCx<Feed>) -> Element {
         let actions = cx.actions();
-        let list = VirtualList::new_async(
+        // The builder says only what a row shows once it is there.
+        let list = VirtualList::new(
             ActivityModel::new(ITEM_COUNT),
             48.0,
-            move |model, index, key, state| {
+            move |_, index, key| {
                 let height = if index % 5 == 0 { 72.0 } else { 44.0 };
-                match state {
-                    ListRowState::Ready if model.is_loaded(index) => {
-                        let label = I18nManager::format("list-row", &[("id", (*key).into())]);
-                        let open = actions.bind_invocation(
-                            Button::new(&format!("open-{key}"), "list-open"),
-                            Feed::OPEN_ACTIVITY.with(*key),
-                        );
-                        Box::new(Container::new().with_height(height).with_child(Box::new(
-                            ui::row![ui::column![Text::new(&label)].with_no_padding(), open,],
-                        )))
-                    }
-                    ListRowState::Ready | ListRowState::Loading => Box::new(
-                        Container::new()
-                            .with_height(height)
-                            .with_child(Box::new(Text::new("list-loading"))),
-                    ),
-                    ListRowState::Error(message) => Box::new(
-                        Container::new()
-                            .with_height(height)
-                            .with_child(Box::new(Text::new(message))),
-                    ),
-                }
+                let label = I18nManager::format("list-row", &[("id", (*key).into())]);
+                let open = actions.bind_invocation(
+                    Button::new(&format!("open-{key}"), "list-open"),
+                    Feed::OPEN_ACTIVITY.with(*key),
+                );
+                Box::new(
+                    Container::new()
+                        .with_height(height)
+                        .with_child(Box::new(ui::row![
+                            ui::column![Text::new(&label)].with_no_padding(),
+                            open,
+                        ])),
+                )
             },
         )
         .with_id("activity-list")

@@ -463,6 +463,26 @@ impl<K: Clone + PartialEq> CrossFade<K> {
             return;
         }
         let timing = Self::SPEC.timing(Direction::Enter, motion, source);
+        self.show_with(next, timing, now);
+    }
+
+    /// Show `next`, data that arrived (a read's answer replacing its
+    /// placeholder). No hand caused it, so it neither lands at once like a
+    /// shortcut's result nor waits on input: it fades at `fast`, under
+    /// reduced motion too. A no-op when it is already shown.
+    #[track_caller]
+    pub fn arrive(&mut self, next: K, motion: EffectiveMotion, now: Instant) {
+        if next == self.shown {
+            return;
+        }
+        let timing = Timing::Spring(SpringSpec::settling_within(
+            motion.tokens().durations.fast(),
+        ));
+        self.show_with(next, timing, now);
+    }
+
+    #[track_caller]
+    fn show_with(&mut self, next: K, timing: Timing, now: Instant) {
         if timing.is_instant() {
             self.shown = next;
             self.previous = None;

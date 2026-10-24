@@ -100,7 +100,7 @@ impl ListPane {
         let requests = Rc::clone(&self.requests);
         let follow = Rc::clone(&self.core);
         let activate = Rc::clone(&self.requests);
-        VirtualList::with_selection_delegate(rows, 72.0, move |rows, index, id, _, _| {
+        VirtualList::with_selection_delegate(rows, 72.0, move |rows, index, id, _| {
             rows.item(index).map_or_else(
                 || {
                     Box::new(ListRow::new(

@@ -21,7 +21,7 @@ use ui::background::Pumped;
 use ui::framework::page_part::PagePart;
 use ui::framework::views::{
     Chip, FacetMenu, FacetOffer, FieldDecl, FieldRole, FilterKind, Form, Item, KindDecl, OpenFacet,
-    QueryEngine, QuerySpec, RemoteSection, RemoteSource, RemoteState, ResultGroup, facet_bar,
+    QueryEngine, QuerySpec, RemoteError, RemoteSection, RemoteSource, ResultGroup, facet_bar,
 };
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -121,6 +121,9 @@ pub(super) struct BookQuery {
     pub(super) cursor: Option<usize>,
     /// The results laid out last frame, top down.
     rows: Vec<QueryRow>,
+    /// The store's placeholder steps as painted last: a deadline repaints
+    /// when one moves on.
+    painted_steps: Vec<Option<ui::arriving::Step>>,
     /// A search a capture staged, opened once the library's search entries
     /// are built: the view it is typed over, and what is typed.
     pub(super) staged: Option<(View, String)>,
@@ -208,6 +211,7 @@ impl BookQuery {
             offers: None,
             cursor: None,
             rows: Vec::new(),
+            painted_steps: Vec::new(),
             staged: None,
             pumped: None,
             covers: ui::ImageStore::new(covers),
@@ -566,6 +570,25 @@ impl BooksApp {
             self.query.offers = None;
             self.dirty = true;
         }
+        let steps = self
+            .query
+            .engine
+            .results()
+            .placeholder_steps(ui::motion::frame_now());
+        if steps != self.query.painted_steps {
+            self.dirty = true;
+        }
+    }
+
+    /// When the store's placeholder next moves on a step.
+    pub(super) fn next_query_placeholder_step(
+        &self,
+        now: ui::time::Instant,
+    ) -> Option<ui::time::Instant> {
+        if !self.query.open {
+            return None;
+        }
+        self.query.engine.results().next_placeholder_step(now)
     }
 
     /// Ask what the field and the chips say now.
@@ -785,8 +808,10 @@ impl BooksApp {
             for group in &results.local {
                 y = self.query_group(ctx, span, body, y, group) + section;
             }
+            let now = ui::motion::frame_now();
+            self.query.painted_steps = results.placeholder_steps(now);
             for remote in &results.remote {
-                y = self.query_remote(ctx, span, body, y, remote);
+                y = self.query_remote(ctx, span, body, y, remote, now);
             }
         }
         let content = y + self.query.scroll - body.y0 + gutter;
@@ -1099,8 +1124,10 @@ impl BooksApp {
         y + height
     }
 
-    /// The store's section: its heading, then its rows, or a quiet line
-    /// saying it is on the way, cannot be reached or found nothing.
+    /// The store's section: its heading, then its rows. While its answer
+    /// is on the way a row's place stands reserved for it (a skeleton after
+    /// the grace period, where the answer comes from after a while); once
+    /// in, a quiet line says when it could not be reached or found nothing.
     fn query_remote(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -1108,26 +1135,27 @@ impl BooksApp {
         body: Rect,
         y: f64,
         remote: &RemoteSection,
+        now: ui::time::Instant,
     ) -> f64 {
+        if remote.state.is_none() {
+            return y;
+        }
         let section = f64::from(ctx.theme.tokens.spacing.rhythm.section);
-        let note = match &remote.state {
-            RemoteState::Idle => return y,
-            RemoteState::Waiting if remote.groups.is_empty() => {
-                Some(format!("Searching {}\u{2026}", remote.label))
-            }
-            RemoteState::Unreachable(text) if text.is_empty() => Some(format!(
-                "{} can\u{2019}t be reached right now.",
-                remote.label
-            )),
-            RemoteState::Unreachable(text) => Some(text.clone()),
-            RemoteState::Loaded if remote.groups.is_empty() => {
-                Some(format!("No matches in {}.", remote.label))
-            }
-            _ => None,
-        };
         let mut y = Self::query_heading(ctx, span, y, &remote.label);
-        if let Some(note) = note {
+        if let Some(clock) = remote.placeholder() {
+            let face = ui::widget::ArrivalFace::new(ui::widget::SkeletonShape::Row, clock, now);
+            let h = face.height(ctx.text, ctx.theme, span.1 - span.0);
+            face.paint(ctx, Rect::new(span.0, y, span.1, y + h));
+            y += h;
+        } else if let Some(RemoteError(text)) = remote.failure() {
+            let note = if text.is_empty() {
+                format!("{} can\u{2019}t be reached right now.", remote.label)
+            } else {
+                text.clone()
+            };
             y = Self::query_note(ctx, span, y, &note);
+        } else if remote.is_answered() && remote.groups.is_empty() {
+            y = Self::query_note(ctx, span, y, &format!("No matches in {}.", remote.label));
         }
         for item in remote.rows() {
             y = self.query_row(ctx, span, body, y, item);

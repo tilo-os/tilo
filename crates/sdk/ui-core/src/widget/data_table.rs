@@ -24,6 +24,8 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 
+use crate::arriving::Arrival;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextKind, TextRenderer};
 use crate::theme::Theme;
@@ -33,7 +35,7 @@ use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
-use crate::widget::{Element, TaffyTreeExt, Widget};
+use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
 
 /// One line of `role` as the renderer will lay it out: the role's resolved
 /// size times its leading, so a band sized from this at layout time agrees
@@ -560,33 +562,6 @@ impl<Row: ?Sized> ColumnDef<Row> {
 
 pub type SortCmp<Row> = Box<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>;
 
-/// State of one logical row in a potentially paged or asynchronous table.
-/// Loading and error rows keep their geometry and stable key, so completing a
-/// fetch does not disturb the scroll anchor or selection.
-pub enum TableRowState<'a, Row: ?Sized> {
-    Ready(&'a Row),
-    Loading,
-    Error(&'a str),
-}
-
-impl<Row: ?Sized> Clone for TableRowState<'_, Row> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<Row: ?Sized> Copy for TableRowState<'_, Row> {}
-
-impl<Row: ?Sized> std::fmt::Debug for TableRowState<'_, Row> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ready(_) => f.write_str("Ready"),
-            Self::Loading => f.write_str("Loading"),
-            Self::Error(error) => f.debug_tuple("Error").field(error).finish(),
-        }
-    }
-}
-
 /// One model notification batch consumed after the backing data has changed.
 /// Structural variants preserve mounted controls by stable row key;
 /// [`Self::RowsChanged`] rebuilds controls only for the named rows.
@@ -632,8 +607,21 @@ pub trait TableModel {
     /// across inserts, removals, moves, and sort changes.
     fn index_of(&self, key: u64) -> Option<usize>;
 
-    /// Return resident data or an explicit placeholder state.
-    fn row_state(&self, index: usize) -> TableRowState<'_, Self::Row>;
+    /// Where row `index`'s data stands: resident, on its way (saying where
+    /// it comes from), or failed with the reason. A pending row keeps its
+    /// geometry and stable key, and the table paints its placeholder
+    /// ([`crate::widget::ArrivingRows`]); completing a fetch disturbs
+    /// neither the scroll anchor nor the selection.
+    fn row_state(&self, index: usize) -> Arrival<&Self::Row, &str>;
+
+    /// Whether failed row `index` can be asked for again: pressing it then
+    /// calls [`Self::retry`].
+    fn can_retry(&self, _index: usize) -> bool {
+        false
+    }
+
+    /// Ask again for row `index` after it failed.
+    fn retry(&mut self, _index: usize) {}
 
     /// Opportunity to enqueue a fetch for the visible range plus overscan.
     fn request_range(&mut self, _range: Range<usize>) {}
@@ -830,6 +818,8 @@ pub struct DataTableCore {
     /// ([`crate::widget::StructureChange::Described`]).
     remount: bool,
     reduce_motion: bool,
+    /// The placeholders of a model's rows on their way, by row key.
+    arrivals: crate::widget::ArrivingRows<u64>,
     /// Header band, resolved from the theme's label line at layout time
     /// (`HEADER_HEIGHT` at the default text scale, taller at 2×).
     header_h: f64,
@@ -1179,12 +1169,16 @@ where
         self.0.index_of(key)
     }
 
-    fn row_state(&self, index: usize) -> TableRowState<'_, AnyRow> {
-        match self.0.row_state(index) {
-            TableRowState::Ready(row) => TableRowState::Ready(row),
-            TableRowState::Loading => TableRowState::Loading,
-            TableRowState::Error(error) => TableRowState::Error(error),
-        }
+    fn row_state(&self, index: usize) -> Arrival<&AnyRow, &str> {
+        self.0.row_state(index).map(|row| -> &AnyRow { row })
+    }
+
+    fn can_retry(&self, index: usize) -> bool {
+        self.0.can_retry(index)
+    }
+
+    fn retry(&mut self, index: usize) {
+        self.0.retry(index);
     }
 
     fn request_range(&mut self, range: Range<usize>) {
@@ -1265,6 +1259,7 @@ impl DataTableCore {
             paint_damage: crate::widget::paint_damage::PaintDamage::default(),
             remount: false,
             reduce_motion: false,
+            arrivals: crate::widget::ArrivingRows::new(),
             header_h: HEADER_HEIGHT,
             authored_row_height: None,
             row_type: None,
@@ -1936,14 +1931,14 @@ impl DataTableCore {
             .map_or(self.view.len(), TableModel::len)
     }
 
-    fn row_state_at(&self, display_index: usize) -> Option<TableRowState<'_, AnyRow>> {
+    fn row_state_at(&self, display_index: usize) -> Option<Arrival<&AnyRow, &str>> {
         if let Some(model) = self.model.as_deref() {
             return (display_index < model.len()).then(|| model.row_state(display_index));
         }
         let source_index = *self.view.get(display_index)?;
         self.rows
             .get(source_index)
-            .map(|row| TableRowState::Ready(&**row))
+            .map(|row| Arrival::Ready(&**row))
     }
 
     fn model_key_at(&self, display_index: usize) -> Option<u64> {
@@ -2040,7 +2035,7 @@ impl DataTableCore {
                 .viewport
                 .visible_range()
                 .filter_map(|index| match self.row_state_at(index) {
-                    Some(TableRowState::Ready(row)) => Some(row),
+                    Some(Arrival::Ready(row)) => Some(row),
                     _ => None,
                 })
                 .collect();
@@ -2426,8 +2421,8 @@ impl DataTableCore {
             }
             let row = if let Some(model) = self.model.as_deref() {
                 match model.row_state(row_index) {
-                    TableRowState::Ready(row) => Some(row),
-                    TableRowState::Loading | TableRowState::Error(_) => None,
+                    Arrival::Ready(row) => Some(row),
+                    Arrival::Pending { .. } | Arrival::Failed(_) => None,
                 }
             } else {
                 self.view
@@ -2648,7 +2643,7 @@ impl DataTableCore {
     /// The chevron of tree row `index` in the first column, if it has one.
     fn tree_chevron(&self, index: usize, theme: &Theme) -> Option<Rect> {
         let tree = self.tree.as_ref()?;
-        let Some(TableRowState::Ready(row)) = self.row_state_at(index) else {
+        let Some(Arrival::Ready(row)) = self.row_state_at(index) else {
             return None;
         };
         if !(tree.has_children)(row) {
@@ -2674,9 +2669,7 @@ impl DataTableCore {
             return false;
         };
         let state = match self.row_state_at(index) {
-            Some(TableRowState::Ready(row)) => {
-                Some(((tree.has_children)(row), (tree.expanded)(row)))
-            }
+            Some(Arrival::Ready(row)) => Some(((tree.has_children)(row), (tree.expanded)(row))),
             _ => None,
         };
         let Some((has_children, expanded)) = state else {
@@ -2704,7 +2697,7 @@ impl DataTableCore {
 
     fn toggle_check(&mut self, row: usize, column: usize) -> bool {
         let checked = match (self.row_state_at(row), self.columns.get(column)) {
-            (Some(TableRowState::Ready(data)), Some(col)) => {
+            (Some(Arrival::Ready(data)), Some(col)) => {
                 col.checked.as_ref().map(|checked| checked(data))
             }
             _ => None,
@@ -2981,106 +2974,124 @@ impl DataTableCore {
                     &RoundedRect::from_rect(row_band, radius),
                 );
             }
-            match row_state {
-                TableRowState::Ready(row) => {
-                    let first = self.first_shown_column();
-                    for (i, col) in self.columns.iter().enumerate() {
-                        let mut cell_rect = match self.col_rects.get(i) {
-                            Some(cr) if cr.width() > 0.0 => Rect::new(cr.x0, y0, cr.x1, y1),
-                            _ => continue,
-                        };
-                        if first == Some(i)
-                            && let Some(tree) = &self.tree
-                        {
-                            let depth = (tree.depth)(row);
-                            if (tree.has_children)(row) {
-                                let icon = f64::from(tokens.metrics.icon_sm);
-                                let x = cell_rect.x0
-                                    + self.bleed
-                                    + f64::from(tokens.spacing.s4) * depth as f64;
-                                let glyph = Rect::new(
-                                    x,
-                                    cell_rect.center().y - icon / 2.0,
-                                    x + icon,
-                                    cell_rect.center().y + icon / 2.0,
-                                );
-                                let chevron = if (tree.expanded)(row) {
-                                    crate::icons::Icon::ChevronDown
-                                } else {
-                                    crate::icons::Icon::ChevronRight
-                                };
-                                chevron.draw(scene, transform, glyph, tokens.colors.text_dim);
+            // A row on its way paints its placeholder in its slot; one that
+            // landed fades in over it.
+            let slot = Rect::new(band.x0 + self.bleed, y0, band.x1 - self.bleed, y1);
+            let paint_row = |ctx: &mut PaintCtx<'_>| {
+                let scene = &mut *ctx.scene;
+                let text_renderer = &mut *ctx.text;
+                match row_state {
+                    Arrival::Ready(row) => {
+                        let first = self.first_shown_column();
+                        for (i, col) in self.columns.iter().enumerate() {
+                            let mut cell_rect = match self.col_rects.get(i) {
+                                Some(cr) if cr.width() > 0.0 => Rect::new(cr.x0, y0, cr.x1, y1),
+                                _ => continue,
+                            };
+                            if first == Some(i)
+                                && let Some(tree) = &self.tree
+                            {
+                                let depth = (tree.depth)(row);
+                                if (tree.has_children)(row) {
+                                    let icon = f64::from(tokens.metrics.icon_sm);
+                                    let x = cell_rect.x0
+                                        + self.bleed
+                                        + f64::from(tokens.spacing.s4) * depth as f64;
+                                    let glyph = Rect::new(
+                                        x,
+                                        cell_rect.center().y - icon / 2.0,
+                                        x + icon,
+                                        cell_rect.center().y + icon / 2.0,
+                                    );
+                                    let chevron = if (tree.expanded)(row) {
+                                        crate::icons::Icon::ChevronDown
+                                    } else {
+                                        crate::icons::Icon::ChevronRight
+                                    };
+                                    chevron.draw(scene, transform, glyph, tokens.colors.text_dim);
+                                }
+                                cell_rect.x0 += self.tree_indent(theme, depth);
                             }
-                            cell_rect.x0 += self.tree_indent(theme, depth);
-                        }
-                        (col.render_cell)(row, scene, transform, theme, text_renderer, cell_rect);
-                        if let Some(checked) = &col.checked {
-                            let side = f64::from(tokens.metrics.icon_md);
-                            crate::widget::Checkbox::paint(
-                                scene,
-                                transform,
-                                theme,
-                                &crate::widget::CheckboxFace::new(
-                                    Rect::from_center_size(cell_rect.center(), (side, side)),
-                                    checked(row),
-                                ),
-                            );
-                        }
-                        if let Some(badge) = &col.badge {
-                            let (label, tone) = badge(row);
-                            paint_cell_badge(
-                                scene,
-                                transform,
-                                text_renderer,
-                                theme,
-                                cell_rect,
-                                col.alignment(),
-                                &label,
-                                tone,
-                            );
-                        }
-                        if let Some(value) = &col.text {
-                            paint_cell_text(
-                                scene,
-                                transform,
-                                text_renderer,
-                                theme,
-                                cell_rect,
-                                col,
-                                value(row).as_deref(),
-                            );
-                        }
-                        if let Some(tr) = &col.text_render {
-                            tr(
+                            (col.render_cell)(
                                 row,
                                 scene,
                                 transform,
+                                theme,
                                 text_renderer,
                                 cell_rect,
-                                theme,
-                                CellState { selected, hovered },
                             );
+                            if let Some(checked) = &col.checked {
+                                let side = f64::from(tokens.metrics.icon_md);
+                                crate::widget::Checkbox::paint(
+                                    scene,
+                                    transform,
+                                    theme,
+                                    &crate::widget::CheckboxFace::new(
+                                        Rect::from_center_size(cell_rect.center(), (side, side)),
+                                        checked(row),
+                                    ),
+                                );
+                            }
+                            if let Some(badge) = &col.badge {
+                                let (label, tone) = badge(row);
+                                paint_cell_badge(
+                                    scene,
+                                    transform,
+                                    text_renderer,
+                                    theme,
+                                    cell_rect,
+                                    col.alignment(),
+                                    &label,
+                                    tone,
+                                );
+                            }
+                            if let Some(value) = &col.text {
+                                paint_cell_text(
+                                    scene,
+                                    transform,
+                                    text_renderer,
+                                    theme,
+                                    cell_rect,
+                                    col,
+                                    value(row).as_deref(),
+                                );
+                            }
+                            if let Some(tr) = &col.text_render {
+                                tr(
+                                    row,
+                                    scene,
+                                    transform,
+                                    text_renderer,
+                                    cell_rect,
+                                    theme,
+                                    CellState { selected, hovered },
+                                );
+                            }
                         }
                     }
-                }
-                TableRowState::Loading | TableRowState::Error(_) => {
-                    let (label, color) = match row_state {
-                        TableRowState::Error(message) => (message, tokens.colors.text_primary),
-                        _ => ("Loading…", tokens.colors.text_dim),
-                    };
-                    let style = tokens.typography.style(TextRole::Caption);
-                    let (_, text_h) = text_renderer.measure_style(label, None, &style);
-                    text_renderer.draw_style(
+                    // The placeholder of a row on its way is the arrivals'.
+                    Arrival::Pending { .. } => {}
+                    Arrival::Failed(message) => arrivals::paint_row_failure(
                         scene,
-                        label,
-                        color,
-                        transform.pre_translate(
-                            (band.x0 + self.bleed, centered_text_top(y0, row_h, text_h)).into(),
-                        ),
-                        None,
-                        &style,
-                    );
+                        transform,
+                        text_renderer,
+                        theme,
+                        &self.failure_label(ri, message),
+                        slot,
+                    ),
                 }
+            };
+            let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+            match self.model_key_at(ri) {
+                Some(key) => self.arrivals.paint(
+                    &key,
+                    SkeletonShape::Text { lines: 1 },
+                    &mut ctx,
+                    slot,
+                    now,
+                    paint_row,
+                ),
+                None => paint_row(&mut ctx),
             }
             if faded {
                 scene.pop_layer();
@@ -3298,7 +3309,7 @@ impl DataTableCore {
                 .is_some_and(|chevron| chevron.inflate(4.0, 4.0).contains(pt))
         {
             let expanded = match (self.tree.as_ref(), self.row_state_at(row)) {
-                (Some(tree), Some(TableRowState::Ready(data))) => (tree.expanded)(data),
+                (Some(tree), Some(Arrival::Ready(data))) => (tree.expanded)(data),
                 _ => false,
             };
             self.fold_tree_row(row, !expanded);
@@ -3342,6 +3353,12 @@ impl DataTableCore {
         node_id: NodeId,
     ) {
         let Some(pt) = self.last_cursor else { return };
+        if let Some(ri) = self.row_at(pt)
+            && self.retry_failed_row(ri)
+        {
+            *handled = true;
+            return;
+        }
         if self.selectable
             && let Some(ri) = self.row_at(pt)
         {
@@ -3585,6 +3602,9 @@ impl DataTableCore {
     }
 }
 
+#[path = "data_table_arrivals.rs"]
+mod arrivals;
+
 const HEADER_HEIGHT: f64 = 32.0;
 /// How far a press on a row travels before it becomes a row drag.
 const DRAG_SLOP: f64 = 4.0;
@@ -3716,12 +3736,14 @@ fn accessible_sort_description<Row: ?Sized>(
 }
 
 impl Widget for DataTableCore {
-    /// Rows fading in after a long reveal, or on their way after a sort or
-    /// a change, repaint the table; otherwise what its mounted cells say.
+    /// Rows fading in after a long reveal, on their way after a sort or a
+    /// change, or whose placeholder steps on, repaint the table; otherwise
+    /// what its mounted cells say.
     fn needs_redraw(&self) -> bool {
         self.fade_drawn < 1.0
             || self.fade_shown < 1.0
             || self.moving.rows.is_moving(crate::motion::frame_now())
+            || self.arrivals.needs_redraw(crate::motion::frame_now())
             || self
                 .mounted_cells
                 .iter()
@@ -3796,6 +3818,7 @@ impl Widget for DataTableCore {
             self.notify_model_changes(&model_changes);
         }
         let now = crate::time::now();
+        self.observe_arrivals(crate::motion::frame_now());
         let mut children_changed = false;
         for cell in &mut self.mounted_cells {
             children_changed |= cell.widget.update(state, path);
@@ -3837,6 +3860,7 @@ impl Widget for DataTableCore {
         self.take_up_row_motion();
         self.apply_type_metrics(theme);
         self.measure_theme = Some(theme.clone());
+        self.motion = theme.motion();
         self.reconcile_mounted_cells();
         let mut child_nodes = Vec::with_capacity(self.mounted_cells.len());
         for cell in &mut self.mounted_cells {
@@ -3960,7 +3984,7 @@ impl Widget for DataTableCore {
             }
             let style = cell_style(&theme, col.kind);
             for ri in start..end {
-                let Some(TableRowState::Ready(row)) = self.row_state_at(ri) else {
+                let Some(Arrival::Ready(row)) = self.row_state_at(ri) else {
                     continue;
                 };
                 let indent = match &self.tree {
@@ -4009,7 +4033,7 @@ impl Widget for DataTableCore {
             let line = f64::from(theme.text(TextRole::Caption).line_height_px());
             let pad_y = f64::from(tokens.spacing.s2);
             for ri in start..end {
-                let Some(TableRowState::Ready(row)) = self.row_state_at(ri) else {
+                let Some(Arrival::Ready(row)) = self.row_state_at(ri) else {
                     continue;
                 };
                 let mut lines = 1_usize;
@@ -4171,8 +4195,11 @@ impl Widget for DataTableCore {
         if self.reduce_motion {
             self.momentum.stop();
         }
+        let now = crate::motion::frame_now();
+        self.observe_arrivals(now);
+        self.arrivals.mark_drawn(now);
         // After a long reveal the rows fade in where they landed.
-        self.fade_drawn = self.scroll_to.opacity(crate::motion::frame_now());
+        self.fade_drawn = self.scroll_to.opacity(now);
         // What does not scroll with the rows: the header, the focus ring and
         // the sideways bar; compared frame to frame as one.
         let mut outside = Scene::new();
@@ -4350,11 +4377,22 @@ impl Widget for DataTableCore {
         self.momentum.is_active()
             || self.moving.rows.is_moving(crate::motion::frame_now())
             || self.reveal_in_progress()
+            || self.arrivals.is_moving(crate::motion::frame_now())
             || self.model.as_deref().is_some_and(TableModel::needs_poll)
             || self
                 .mounted_cells
                 .iter()
                 .any(|cell| cell.widget.needs_animation_frame())
+    }
+
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        self.arrivals
+            .next_wake_deadline(crate::time::now())
+            .into_iter()
+            .chain(super::defaults::next_wake_deadline(&|visit| {
+                self.for_each_child(visit);
+            }))
+            .min()
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -4508,12 +4546,12 @@ impl Widget for DataTableCore {
                                 identity.value, identity.occurrence, col.key
                             ));
                         }
-                        if let Some(TableRowState::Ready(row)) = row_state
+                        if let Some(Arrival::Ready(row)) = row_state
                             && let Some(checked) = &col.checked
                         {
                             cell = cell.with_state(AccessState::new().checked(checked(row)));
                         }
-                        if let Some(TableRowState::Ready(row)) = row_state
+                        if let Some(Arrival::Ready(row)) = row_state
                             && let Some(value) = &col.accessible_value
                         {
                             cell = cell.with_value(value(row));
@@ -4531,8 +4569,8 @@ impl Widget for DataTableCore {
                         focusable: self.selectable,
                         focused: cursor == Some(ri),
                         selected,
-                        busy: matches!(row_state, Some(TableRowState::Loading)),
-                        invalid: matches!(row_state, Some(TableRowState::Error(_))),
+                        busy: matches!(row_state, Some(Arrival::Pending { .. })),
+                        invalid: matches!(row_state, Some(Arrival::Failed(_))),
                         ..Default::default()
                     })
                     // Only a viewport slice is exported, so its ordinal is not
@@ -4541,11 +4579,13 @@ impl Widget for DataTableCore {
                     .with_key(ri as u64)
                     .with_children(cells);
                 row = match row_state {
-                    Some(TableRowState::Loading) => row.with_name("Loading"),
-                    Some(TableRowState::Error(message)) => row.with_name(message),
+                    Some(Arrival::Pending { .. }) => {
+                        row.with_name(crate::i18n::I18nManager::lookup_plain("arriving-loading"))
+                    }
+                    Some(Arrival::Failed(message)) => row.with_name(message),
                     // A ready row is named by its first column that has a
                     // value (its row header), as a person reads the table.
-                    Some(TableRowState::Ready(data)) => {
+                    Some(Arrival::Ready(data)) => {
                         match self
                             .columns
                             .iter()
@@ -4565,7 +4605,7 @@ impl Widget for DataTableCore {
                     row = row.with_bounds(bounds);
                 }
                 if let Some(tree) = &self.tree
-                    && let Some(TableRowState::Ready(data)) = row_state
+                    && let Some(Arrival::Ready(data)) = row_state
                 {
                     row = row.with_level((tree.depth)(data).saturating_add(1));
                     if (tree.has_children)(data) {
@@ -5628,8 +5668,8 @@ mod tests {
     use std::rc::Rc;
 
     #[derive(Clone)]
-    struct R {
-        name: String,
+    pub(super) struct R {
+        pub(super) name: String,
     }
 
     #[test]
@@ -5647,7 +5687,7 @@ mod tests {
         }
     }
 
-    fn sample_cols() -> Vec<ColumnDef<R>> {
+    pub(super) fn sample_cols() -> Vec<ColumnDef<R>> {
         vec![
             ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0)).sortable(true),
             ColumnDef::new("x", "X", ColumnWidth::Fixed(40.0)),
@@ -5679,22 +5719,22 @@ mod tests {
                 .filter(|index| *index < self.len())
         }
 
-        fn row_state(&self, index: usize) -> TableRowState<'_, Self::Row> {
+        fn row_state(&self, index: usize) -> Arrival<&Self::Row, &str> {
             self.row_queries
                 .set(self.row_queries.get().saturating_add(1));
             if index < self.len() {
-                TableRowState::Ready(&self.row)
+                Arrival::Ready(&self.row)
             } else {
-                TableRowState::Error("outside model")
+                Arrival::Failed("outside model")
             }
         }
     }
 
-    struct PagingModel {
-        row: R,
-        loaded: Rc<Cell<bool>>,
-        changed: Rc<Cell<bool>>,
-        requested: Rc<RefCell<Vec<Range<usize>>>>,
+    pub(super) struct PagingModel {
+        pub(super) row: R,
+        pub(super) loaded: Rc<Cell<bool>>,
+        pub(super) changed: Rc<Cell<bool>>,
+        pub(super) requested: Rc<RefCell<Vec<Range<usize>>>>,
     }
 
     struct InsertModel {
@@ -5731,8 +5771,8 @@ mod tests {
                 .position(|candidate| *candidate == key)
         }
 
-        fn row_state(&self, _index: usize) -> TableRowState<'_, Self::Row> {
-            TableRowState::Ready(&self.row)
+        fn row_state(&self, _index: usize) -> Arrival<&Self::Row, &str> {
+            Arrival::Ready(&self.row)
         }
 
         fn poll_changes(&mut self) -> Vec<TableModelChange> {
@@ -5765,8 +5805,8 @@ mod tests {
             order.iter().position(|candidate| *candidate == key)
         }
 
-        fn row_state(&self, _index: usize) -> TableRowState<'_, Self::Row> {
-            TableRowState::Ready(&self.row)
+        fn row_state(&self, _index: usize) -> Arrival<&Self::Row, &str> {
+            Arrival::Ready(&self.row)
         }
 
         fn sort_by(&mut self, column_key: &str, ascending: bool) -> bool {
@@ -5814,8 +5854,8 @@ mod tests {
             }
         }
 
-        fn row_state(&self, _index: usize) -> TableRowState<'_, Self::Row> {
-            TableRowState::Ready(&self.row)
+        fn row_state(&self, _index: usize) -> Arrival<&Self::Row, &str> {
+            Arrival::Ready(&self.row)
         }
     }
 
@@ -5840,13 +5880,13 @@ mod tests {
                 .filter(|index| *index < self.len())
         }
 
-        fn row_state(&self, index: usize) -> TableRowState<'_, Self::Row> {
+        fn row_state(&self, index: usize) -> Arrival<&Self::Row, &str> {
             if index == 3 {
-                TableRowState::Error("row failed to load")
+                Arrival::Failed("row failed to load")
             } else if self.loaded.get() {
-                TableRowState::Ready(&self.row)
+                Arrival::Ready(&self.row)
             } else {
-                TableRowState::Loading
+                Arrival::local()
             }
         }
 
@@ -6006,51 +6046,6 @@ mod tests {
             assert_eq!(table.model_selection().stored_keys().count(), 0);
         }
 
-        fn paged_model_requests_only_the_window_and_wakes_on_loaded_rows() {
-            let loaded = Rc::new(Cell::new(false));
-            let changed = Rc::new(Cell::new(false));
-            let requested = Rc::new(RefCell::new(Vec::new()));
-            let mut table = DataTable::from_model(
-                sample_cols(),
-                PagingModel {
-                    row: R {
-                        name: "loaded row".into(),
-                    },
-                    loaded: Rc::clone(&loaded),
-                    changed: Rc::clone(&changed),
-                    requested: Rc::clone(&requested),
-                },
-            );
-            table.set_viewport(96.0, 24.0);
-
-            let before = Widget::accessibility(&table).expect("loading semantics");
-            assert_eq!(before.children[0].name.as_deref(), Some("Loading"));
-            assert!(before.children[0].state.busy);
-            assert_eq!(
-                before.children[3].name.as_deref(),
-                Some("row failed to load")
-            );
-            assert!(before.children[3].state.invalid);
-            assert!(table.needs_animation_frame());
-
-            let _fills = table_color_fills(&mut table);
-            let requested = requested.borrow();
-            assert_eq!(requested.len(), 1);
-            assert!(requested[0].start == 0 && requested[0].end < 16);
-            drop(requested);
-
-            loaded.set(true);
-            changed.set(true);
-            assert!(Widget::update(
-                &mut table,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ));
-            let after = Widget::accessibility(&table).expect("loaded semantics");
-            assert_eq!(after.children[0].name, None);
-            assert!(!table.needs_animation_frame());
-        }
-
         fn model_insert_preserves_stable_anchor_and_key_selection() {
             let inserted = Rc::new(Cell::new(false));
             let mut table = DataTable::from_model(
@@ -6098,7 +6093,6 @@ mod tests {
 
         model_selection_builder_discards_absent_keys();
         model_table_virtualizes_a_hundred_million_rows_in_constant_space();
-        paged_model_requests_only_the_window_and_wakes_on_loaded_rows();
         model_insert_preserves_stable_anchor_and_key_selection();
         stable_row_keys_anchor_inserts_above_the_viewport();
     }
@@ -7412,7 +7406,7 @@ mod tests {
         reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay();
     }
 
-    fn table_color_fills(t: &mut DataTable<R>) -> usize {
+    pub(super) fn table_color_fills(t: &mut DataTable<R>) -> usize {
         use vello::Scene;
         use vello_encoding::DrawTag;
         let _laid = lay_out(t);
@@ -7539,6 +7533,9 @@ mod content_edge_tests;
 #[path = "data_table_row_motion.rs"]
 mod row_motion;
 
+#[cfg(test)]
+#[path = "data_table_arrivals_tests.rs"]
+mod arrivals_tests;
 #[cfg(test)]
 #[path = "data_table_motion_tests.rs"]
 mod motion_tests;

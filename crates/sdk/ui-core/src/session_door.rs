@@ -12,8 +12,8 @@
 use tilo_actions::remote::{ActionHostError, ApplicationLaunch, InvokeRequest};
 use tilo_actions::{ActionOutput, DoorError, InvocationId, InvocationUpdate};
 
-use crate::local_state::LocalState;
-use crate::remote_actions::{InvocationCall, RemoteActions, RemoteCall};
+use crate::arriving::Arrival;
+use crate::remote_actions::{InvocationCall, RemoteActions};
 use crate::widget::ResourceOperationStart;
 
 /// Where a host sends what an action asks of the session beyond its app.
@@ -131,18 +131,20 @@ pub fn door_error(error: &ActionHostError) -> DoorError {
 }
 
 /// How a finished call ended for the operation that made it.
-fn finished(call: &InvocationCall) -> Option<Result<ActionOutput, DoorError>> {
+fn finished(
+    call: &Arrival<InvocationUpdate, ActionHostError>,
+) -> Option<Result<ActionOutput, DoorError>> {
     match call {
-        RemoteCall::Refused(error) => Some(Err(door_error(error))),
-        RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => Some(Ok(output.clone())),
-        RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => {
+        Arrival::Failed(error) => Some(Err(door_error(error))),
+        Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => Some(Ok(output.clone())),
+        Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
             Some(Err(DoorError::Failed(error.message.clone())))
         }
-        RemoteCall::Done(InvocationUpdate::Cancelled { message, .. }) => Some(Err(
+        Arrival::Ready(InvocationUpdate::Cancelled { message, .. }) => Some(Err(
             DoorError::Failed(message.clone().unwrap_or_else(|| "It was cancelled".into())),
         )),
         // Still running: its end arrives later.
-        RemoteCall::Pending | RemoteCall::Done(_) => None,
+        Arrival::Pending { .. } | Arrival::Ready(_) => None,
     }
 }
 
@@ -151,7 +153,7 @@ fn finished(call: &InvocationCall) -> Option<Result<ActionOutput, DoorError>> {
 pub struct ClientDoor {
     client: RemoteActions,
     workspace: Option<String>,
-    running: Vec<(InvocationId, LocalState<InvocationCall>)>,
+    running: Vec<(InvocationId, InvocationCall)>,
 }
 
 impl ClientDoor {

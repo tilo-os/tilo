@@ -13,10 +13,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::InvokeArgument;
+use tilo_actions::remote::{ActionHostError, InvokeArgument};
 use tilo_reference::ResourceRef;
 use ui_core::widget::ChipLead;
-use ui_core::{InvocationCall, LocalState, RemoteActions, RemoteCall};
+use ui_core::{Arrival, InvocationCall, RemoteActions};
 
 /// The action a refused open is told as.
 pub(crate) const OPEN: &str = tilo_actions::remote::APPLICATION_OPEN_ACTION;
@@ -45,7 +45,7 @@ pub(crate) struct Opener(Rc<RefCell<Opening>>);
 struct Opening {
     door: Option<RemoteActions>,
     /// Each call, by the action it invokes.
-    calls: Vec<(String, LocalState<InvocationCall>)>,
+    calls: Vec<(String, InvocationCall)>,
     /// The reads views follow ([`super::query::Query`]), each kept while
     /// the scope that asked for it lives.
     reads: Vec<(std::rc::Weak<()>, Rc<dyn std::any::Any>)>,
@@ -103,7 +103,7 @@ impl Opener {
         &self,
         target: tilo_actions::remote::RemoteActionTarget,
         argument: InvokeArgument,
-        then: impl FnMut(&InvocationCall) + Send + 'static,
+        then: impl FnMut(&Arrival<InvocationUpdate, ActionHostError>) + Send + 'static,
     ) -> ui_core::Followed {
         self.0
             .borrow_mut()
@@ -123,21 +123,21 @@ impl Opener {
         let mut refusals = Vec::new();
         self.0.borrow_mut().calls.retain(|(action, call)| {
             call.with(|call| match call {
-                RemoteCall::Pending
-                | RemoteCall::Done(
+                Arrival::Pending { .. }
+                | Arrival::Ready(
                     InvocationUpdate::Accepted { .. }
                     | InvocationUpdate::Progress { .. }
                     | InvocationUpdate::Item { .. },
                 ) => true,
-                RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => {
+                Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
                     refusals.push((action.clone(), error.message.clone()));
                     false
                 }
-                RemoteCall::Refused(error) => {
+                Arrival::Failed(error) => {
                     refusals.push((action.clone(), error.to_string()));
                     false
                 }
-                RemoteCall::Done(_) => false,
+                Arrival::Ready(_) => false,
             })
         });
         refusals
