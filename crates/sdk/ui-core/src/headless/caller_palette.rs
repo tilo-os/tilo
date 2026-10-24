@@ -219,6 +219,14 @@ impl FrameHarness {
                 width,
                 &mut self.text,
             );
+            // A question the palette asks is the window's sheet, over the
+            // whole window.
+            let previous = self.presence.push_viewport(vello::kurbo::Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.viewport.0),
+                f64::from(self.viewport.1),
+            ));
             palette.draw(
                 &mut self.scene,
                 transform,
@@ -226,6 +234,7 @@ impl FrameHarness {
                 &self.theme,
                 &self.presence,
             );
+            self.presence.pop_viewport(previous);
         }
     }
 
@@ -372,6 +381,44 @@ mod tests {
         assert_eq!(intent.kind, tilo_actions::OperationKind::Effect);
         assert!(frame.take_caller_operation().is_none());
         assert_eq!(frame.state.doc.get_heads(), before);
+    }
+    /// The question the palette asks stands over the whole window, as the
+    /// window's sheet: the field for a name fits above the answers, never
+    /// squeezed into the palette's card and cut off.
+    #[test]
+    fn a_typed_confirmation_is_the_windows_sheet_with_its_field_shown() {
+        let mut frame = frame();
+        frame.set_caller_actions(resources(
+            tilo_actions::ConfirmationPolicy::Phrase {
+                phrase: "INSERT".into(),
+            },
+            vec![],
+        ));
+        open(&mut frame);
+        enter(&mut frame);
+        frame.relayout();
+        let palette = frame.caller_palette.palette.as_ref().expect("it asks");
+        assert!(palette.asking().is_some(), "inserting asks for the name");
+        assert_eq!(
+            palette.rect(),
+            vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0),
+            "the sheet stands over the whole window"
+        );
+        let node = crate::widget::Widget::accessibility(palette).unwrap();
+        let bounds = |name: &str| {
+            node.children
+                .iter()
+                .find(|child| child.name.as_deref() == Some(name))
+                .and_then(|child| child.bounds)
+                .unwrap_or_else(|| panic!("{name} is shown"))
+        };
+        let field = bounds("Type INSERT to confirm");
+        let cancel = bounds("Cancel");
+        assert!(field.y1 > field.y0, "the field has room: {field:?}");
+        assert!(
+            field.y1 <= cancel.y0,
+            "the field {field:?} stands above the answers {cancel:?}"
+        );
     }
     #[test]
     fn browser_ime_collects_typed_arguments_and_exact_confirmation_then_revocation_refuses() {

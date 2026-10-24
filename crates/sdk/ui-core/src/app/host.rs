@@ -234,6 +234,9 @@ fn draw_frame_content(
                 &mut app.text_renderer,
             ),
         }
+        // A question the palette asks is the window's sheet: it stands over
+        // the window that asked, not inside the palette's card.
+        let previous = app.presence_ctx.push_viewport(window);
         ap.draw(
             scene,
             transform,
@@ -241,6 +244,7 @@ fn draw_frame_content(
             &app.theme,
             &app.presence_ctx,
         );
+        app.presence_ctx.pop_viewport(previous);
     }
     painted(scene, "the action palette", &mut drawn);
     // The content zoom's level, in the window's bar after it changed.
