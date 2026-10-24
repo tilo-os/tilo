@@ -309,7 +309,7 @@ async fn a_detached_host_lets_the_room_go_and_serves_it_again_from_its_files() {
         "served again from what it kept"
     );
     tilo_test_env::within("the host to catch up", async {
-        while !retained().await.is_some_and(|bodies| bodies.len() > kept) {
+        while retained().await.is_none_or(|bodies| bodies.len() <= kept) {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
