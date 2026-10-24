@@ -40,6 +40,8 @@ mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
 mod native_replay_budget_tests;
+#[cfg(test)]
+pub(crate) mod one_host_tests;
 mod own_devices;
 #[cfg(test)]
 mod own_devices_tests;
