@@ -375,16 +375,16 @@ SHIELDED = (b'<!doctype html><title>loading</title><script src="/tracker/t.js"><
             b"<script>addEventListener('load', () => {"
             b"document.title = 'page:' + (window.tracked ? 'tracked' : 'untracked'); });</script>")
 # A page with two trackers, two scripts an ad blocker puts its own in place
-# of, and a beacon, which says what loaded. The stand-in at an address of
-# its own for the session counts, though it does not run here (README).
+# of (one at its address for the session), and a beacon, which says what
+# loaded.
 COUNTED = (b'<!doctype html><title>loading</title><script src="/tracker/a.js"></script>'
            b'<script src="/surrogate/s.js"></script><script src="/standin/s.js"></script><img src="/tracker/b.png">'
            b"<script>addEventListener('load', async () => { let beacon = 'sent';"
            b"try { await fetch('/beacon/c'); } catch (error) { beacon = 'stopped'; }"
            b"document.title = 'counted:' + JSON.stringify({tracked: !!window.tracked,"
-           b"standin: window.standin || 'none', beacon}); });</script>")
+           b"surrogate: window.surrogate || 'none', standin: window.standin || 'none', beacon}); });</script>")
 # The counted page as it loads with the ad blocker fixture.
-TALLIED = {'tracked': False, 'standin': 'extension', 'beacon': 'sent'}
+TALLIED = {'tracked': False, 'surrogate': 'extension', 'standin': 'extension', 'beacon': 'sent'}
 # What the ad blocker fixtures may do, as the Browser grants it.
 TALLY = (['declarativeNetRequest', 'activeTab', 'scripting'], ['<all_urls>'])
 SPOTTER = (['declarativeNetRequest', 'declarativeNetRequestFeedback'], ['<all_urls>'])
@@ -456,6 +456,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 time.sleep(0.05)
             return
         kind = 'text/html'
+        if self.path == '/awaited':
+            # A page whose document is idle only after a while, as a page
+            # still loading its parts is: its declared content scripts run
+            # well after it showed its address.
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.end_headers()
+            self.wfile.write(b'<!doctype html><title>awaited</title><body>')
+            self.wfile.flush()
+            time.sleep(0.6)
+            self.wfile.write(b'awaited</body>')
+            return
         if self.path.startswith('/authorize'):
             self.authorize()
             return
@@ -1228,6 +1240,18 @@ class ExtensionTabs(unittest.TestCase):
             # Read while the worker is still awake.
             self.fail(f"the worker heard {self.in_worker(host, ids['watcher'], 'JSON.stringify(heard)')}")
         self.assertRegex(title, r'^watched:\d+$')
+
+    def test_a_script_injected_before_the_declared_content_scripts_runs_in_their_world(self):
+        host, ids = self.start('awaiter', access={'awaiter': (['scripting'], ['http://127.0.0.1/*'], ['http://127.0.0.1/*'])})
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, ids['awaiter'], 'typeof listening') != 'boolean':
+            self.assertLess(time.monotonic(), deadline, 'the worker never started')
+            host.settle(0.25)
+        host.settle(1.0)
+        host.send(op='navigate', url=self.url + '/awaited')
+        # It waited for the world Chromium made for them, with Chromium's
+        # `chrome`, rather than run in one the host made.
+        self.assertEqual(self.report('awaiter'), {'connect': 'function', 'declared': True})
 
     def test_an_extension_follows_navigations_and_tab_events_by_the_tabs_ids(self):
         host, ids = self.start('navigator', access={'navigator': (['webNavigation', 'tabs'], [])})

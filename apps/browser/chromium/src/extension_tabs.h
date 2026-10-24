@@ -2204,9 +2204,10 @@ class ExtensionTabs {
     if (!inspector) { Fail(reply, "No tab with id: " + std::to_string(tab.id)); return; }
     const int key = tab.tab;
     const int tab_id = tab.id;
+    const ExtensionTab page = tab;
     FrameQuery wanted;
     if (auto refused = FramesOf(args->GetDictionary("target"), wanted)) { Fail(reply, *refused); return; }
-    Frames(extension, tab, wanted, [this, inspector, extension, caller, key, tab_id, content, sources, main_world, wanted, reply](std::vector<Frame> frames) {
+    Frames(extension, tab, wanted, [this, inspector, extension, caller, key, tab_id, page, content, sources, main_world, wanted, reply](std::vector<Frame> frames) {
       std::vector<Frame> chosen;
       for (int id : wanted.ids) {
         auto found = std::find_if(frames.begin(), frames.end(), [id](const Frame& frame) { return frame.id == id; });
@@ -2237,7 +2238,7 @@ class ExtensionTabs {
       // makes it.
       auto results = CefListValue::Create();
       auto next = std::make_shared<std::function<void(size_t)>>();
-      *next = [this, inspector, extension, caller, key, content, sources, main_world, chosen, results, reply, next](size_t index) {
+      *next = [this, inspector, extension, caller, key, page, content, sources, main_world, chosen, results, reply, next](size_t index) {
         if (index == chosen.size()) { Release(chosen); Succeed(reply, Wrap(results)); *next = nullptr; return; }
         const Frame frame = chosen[index];
         auto ran = [this, chosen, results, frame, reply, next, index](std::optional<std::string> error, CefRefPtr<CefValue> value) {
@@ -2251,12 +2252,50 @@ class ExtensionTabs {
         };
         if (!Runnable(frame, main_world)) { ran(std::string("The page could not run the script"), nullptr); return; }
         if (main_world || frame.world) { RunSources(inspector, frame.session, main_world ? frame.page : frame.world, sources, ran); return; }
-        ContentWorld(extension, caller, key, inspector, frame.devtools, content, [this, inspector, sources, ran](int context) {
-          if (!context) { ran(std::string("The page could not run the script"), nullptr); return; }
-          RunSources(inspector, "", context, sources, ran);
+        auto made = [this, inspector, extension, caller, key, frame, content, sources, ran] {
+          ContentWorld(extension, caller, key, inspector, frame.devtools, content, [this, inspector, sources, ran](int context) {
+            if (!context) { ran(std::string("The page could not run the script"), nullptr); return; }
+            RunSources(inspector, "", context, sources, ran);
+          });
+        };
+        // The extension's content scripts are declared for the page but
+        // have not run yet: their world, with Chromium's `chrome`, is
+        // about to be made, and the script runs there once it is.
+        if (!DeclaresScripts(extension, page.url)) { made(); return; }
+        DeclaredWorld(extension, page, std::chrono::steady_clock::now() + std::chrono::milliseconds(kDeclaredWorldWaitMs),
+                      [this, inspector, sources, ran, made](int world) {
+          if (world) RunSources(inspector, "", world, sources, ran); else made();
         });
       };
       (*next)(0);
+    });
+  }
+  // How long a script for a page waits for the world Chromium makes for
+  // the extension's content scripts declared for it, and how often it looks.
+  // Chromium makes the world as their first script runs, at the earliest as
+  // the document starts: AdGuard runs one on `tabs.onUpdated` as the page
+  // starts loading, before then, and it needs their `chrome`
+  // (`runtime.connect`), which the world the host makes has not.
+  static constexpr int kDeclaredWorldWaitMs = 1500;
+  static constexpr int kDeclaredWorldLookMs = 100;
+  // Whether the extension's manifest declares content scripts for `url`.
+  bool DeclaresScripts(const std::string& extension, const std::string& url) const {
+    auto found = access_.find(extension);
+    if (found == access_.end()) return false;
+    for (const auto& pattern : found->second.scriptable) if (MatchPattern(pattern, url)) return true;
+    return false;
+  }
+  // The extension's world in the tab's main frame once Chromium made it,
+  // or 0 when it has not by `until`.
+  void DeclaredWorld(const std::string& extension, const ExtensionTab& tab, std::chrono::steady_clock::time_point until, std::function<void(int)> then) {
+    World(extension, tab, [this, extension, tab, until, then](int world, std::string) {
+      if (world || std::chrono::steady_clock::now() >= until) { then(world); return; }
+      std::weak_ptr<bool> alive = alive_;
+      CefPostDelayedTask(TID_UI, base::BindOnce([](ExtensionTabs* self, std::weak_ptr<bool> alive, std::string extension, ExtensionTab tab,
+                                                   std::chrono::steady_clock::time_point until, std::function<void(int)> then) {
+        if (alive.expired()) return;
+        self->DeclaredWorld(extension, tab, until, then);
+      }, this, alive, extension, tab, until, then), kDeclaredWorldLookMs);
     });
   }
   // Run `sources` one after another in `context` (the page's own world when

@@ -1769,6 +1769,19 @@ class App final : public CefApp,public CefBrowserProcessHandler {
   }
   void OnContextInitialized() override {
     request_filter=new tilo::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); },sealed_documents);
+    // Where each extension's files are, as Chromium says, for an ad
+    // blocker's stand-ins at its address for the session.
+    request_filter->ServeStandIns(std::make_shared<tilo::StandIns>(std::make_shared<tilo::ExtensionDirectories>([](tilo::ExtensionDirectories::Answer answer) {
+      PipeCall("Extensions.getExtensions",nullptr,"",[answer](bool ok,CefRefPtr<CefDictionaryValue> result) {
+        std::map<std::string,std::string> directories;
+        auto list=ok && result && result->GetType("extensions")==VTYPE_LIST?result->GetList("extensions"):nullptr;
+        for(size_t i=0;list && i<list->GetSize();++i) {
+          auto extension=list->GetDictionary(i);
+          if(extension && extension->GetType("id")==VTYPE_STRING && extension->GetType("path")==VTYPE_STRING) directories[extension->GetString("id")]=extension->GetString("path");
+        }
+        answer(std::move(directories));
+      });
+    })));
     if(private_mode) {
       CefRequestContextSettings settings;
       // Empty cache_path is CEF's incognito request context. The separate

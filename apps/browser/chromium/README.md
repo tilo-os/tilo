@@ -508,7 +508,11 @@ content scripts (with `sender.tab`) work without help.
   the system's. `action.openPopup`, which finds no window here, opens the
   popup over the page in front (`extension_open_popup`).
 - `scripting.executeScript` runs in the extension's own world in the page,
-  where its content scripts run. Where it has none, the host makes a world
+  where its content scripts run. Where it has none yet but declares content
+  scripts for the page, the script waits up to one and a half seconds for
+  Chromium to make it, as their first script runs: AdGuard injects its
+  keep-alive on `tabs.onUpdated` as the page starts, before then, and it
+  needs their `chrome`. Where it has none, the host makes a world
   that gets a content script's `runtime`, `storage` and `i18n`
   (`src/extension_content.js`), through a binding only that world has:
   messages and ports both ways (`runtime.sendMessage` and `runtime.connect`
@@ -724,6 +728,16 @@ content scripts (with `sender.tab`) work without help.
   page; `onRuleMatchedDebug` reports what Chromium reports, tab id -1.
   Rules that only change a request (headers, an upgrade to https) and a
   blocked page itself are not counted.
+- A rule's redirect to an extension's file at its address for the session
+  (`use_dynamic_url`, as uBlock Origin Lite's stand-ins for ad and
+  analytics scripts are) runs in the page. Chromium answers that address
+  with a redirect to the extension's own and allows the file there because
+  it remembers where the request came from; CEF starts each redirected
+  request anew and Chromium forgets, so it would refuse the file. The host
+  (`src/extension_standins.h`) answers that second request itself, with the
+  file from where Chromium says the extension is
+  (`Extensions.getExtensions`), when the extension's manifest makes it web
+  accessible to the page that asked.
 - An extension signs in to its service with `identity.launchWebAuthFlow`.
   Chrome shows the page in a window of its own; here the host asks the
   Browser to show it in a panel over the page in front
@@ -779,9 +793,8 @@ content scripts (with `sender.tab`) work without help.
   image, and a notification the person dismisses without choosing it stays
   in `getAll` until the extension clears it: Tilo's notification service
   says nothing of a dismissal.
-- A rule's redirect to an extension's file at an address of its own for the
-  session (`use_dynamic_url`, as uBlock Origin Lite's stand-ins for ad
-  scripts are) is counted but does not run in the page.
+- A rule's redirect of a frame (not a script or image) to an extension's
+  file at its address for the session is still refused.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs
