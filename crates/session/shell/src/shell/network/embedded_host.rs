@@ -318,6 +318,8 @@ impl ShellNetwork {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             let waiting = waiting(&tree, &placing);
+            drop(tree);
+            drop(replica);
             placing.extend(waiting.iter().map(|(room, _, _)| *room));
             drop(placing);
             waiting
