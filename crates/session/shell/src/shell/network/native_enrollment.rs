@@ -83,6 +83,26 @@ impl ShellNetwork {
         Ok(self.retain_native_owner(retained, &tree, owner))
     }
 
+    /// Who stewards each room's channels, as the native owner, once open,
+    /// has the room: this device's enrolled device and the room's governor.
+    /// The same device when this one governs it.
+    pub(crate) fn room_stewards(
+        network: &std::sync::Arc<Self>,
+    ) -> crate::shell::channel_policy::Stewards {
+        let network = std::sync::Arc::clone(network);
+        Box::new(move |room| {
+            network
+                .opened_native_owner()?
+                .with_current(room, |view| {
+                    Ok((
+                        view.device().device_public_key,
+                        view.governor().device_public_key,
+                    ))
+                })
+                .ok()
+        })
+    }
+
     /// The native owner if it is already open, for the frame loop, which
     /// must never wait for the state file ([`Self::native_owner_status`]).
     pub(crate) fn opened_native_owner(&self) -> Option<NativeWorkspaceOwner> {
