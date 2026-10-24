@@ -564,6 +564,125 @@ fn layout(text: &str, width: f32) -> RichTextLayout {
     )
 }
 
+/// Visual motion as a scan of every row of the document: the reference the
+/// paragraph-scoped search must agree with.
+fn visual_motion_full_scan(
+    layout: &RichTextLayout,
+    position: TextPosition,
+    right: bool,
+) -> TextPosition {
+    let position =
+        TextPosition::with_affinity(position.byte.min(layout.text_len), position.affinity);
+    let rows: Vec<_> = layout
+        .buffer
+        .layout_runs()
+        .map(|run| layout.caret_stops(&run))
+        .collect();
+    let exact = rows.iter().find_map(|stops| {
+        let index = stops.iter().position(|(_, stop)| *stop == position)?;
+        Some((stops, index))
+    });
+    let found = exact.or_else(|| {
+        rows.iter().find_map(|stops| {
+            let index = stops
+                .iter()
+                .position(|(_, stop)| stop.byte == position.byte)?;
+            Some((stops, index))
+        })
+    });
+    found.map_or(position, |(stops, index)| {
+        stops
+            .get(RichTextLayout::visual_step(stops, index, right))
+            .map_or(position, |(_, stop)| *stop)
+    })
+}
+
+#[test]
+fn rows_of_a_line_are_the_rows_a_full_scan_places_there() {
+    let text = "a first paragraph that wraps onto more rows\n\nshort\nשלום and a wrapped mixed paragraph\nlast";
+    let mut shaped = layout(text, 120.0);
+    let row = |run: &cosmic_text::LayoutRun<'_>| {
+        (
+            run.line_i,
+            run.line_top,
+            run.line_y,
+            run.line_height,
+            run.glyphs.len(),
+        )
+    };
+    let lines = shaped.buffer.lines.len();
+    let all_rows = shaped.buffer.layout_runs().count();
+    assert!(all_rows > lines, "the fixture wraps");
+    for height in [None, Some(60.0)] {
+        // A height ends the runs early; the seek leaves them ended there too.
+        shaped.buffer.set_size(Some(120.0), height);
+        let rows = shaped.buffer.layout_runs().count();
+        assert_eq!(rows < all_rows, height.is_some(), "height {height:?}");
+        for start in 0..=lines {
+            let seeked: Vec<_> = shaped
+                .buffer
+                .layout_runs()
+                .skip_to_line(start)
+                .map(|run| row(&run))
+                .collect();
+            let scanned: Vec<_> = shaped
+                .buffer
+                .layout_runs()
+                .skip_while(|run| run.line_i < start)
+                .map(|run| row(&run))
+                .collect();
+            assert_eq!(seeked, scanned, "height {height:?}, line {start}");
+        }
+    }
+}
+
+#[test]
+fn visual_motion_reads_only_its_paragraph_and_matches_a_full_scan() {
+    for text in [
+        "",
+        "alpha beta gamma\nnext\n",
+        "a\r\nb\rc",
+        "שלום mixed العربية\n👩‍💻 é\n",
+        "ภาษาไทยทดสอบ\nខ្មែរ",
+        "soft\u{ad}hyphen word\n\n",
+    ] {
+        for width in [30.0, 180.0] {
+            let shaped = layout(text, width);
+            for byte in 0..=text.len() + 1 {
+                for affinity in [TextAffinity::Before, TextAffinity::After] {
+                    let position = TextPosition::with_affinity(byte, affinity);
+                    for right in [false, true] {
+                        assert_eq!(
+                            shaped.visual_motion_position(position, right),
+                            visual_motion_full_scan(&shaped, position, right),
+                            "text {text:?}, width {width}, byte {byte}, {affinity:?}, right {right}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // An arrow key in a long document builds the caret stops of its own
+    // paragraph's rows, never of the rows above it.
+    let text = "a paragraph that wraps onto a second row\n".repeat(1000);
+    let shaped = layout(&text, 200.0);
+    let last = text.len() - 2;
+    let rows = shaped.logical_line_bands(last).len();
+    assert!(rows >= 2, "the fixture paragraph wraps");
+    CARET_STOP_RUNS.with(|count| count.set(0));
+    let moved = shaped.visual_motion_position(TextPosition::new(last), false);
+    let visited = CARET_STOP_RUNS.with(std::cell::Cell::get);
+    assert!(
+        visited <= rows,
+        "one arrow key built the caret stops of {visited} rows; its paragraph has {rows}"
+    );
+    assert_eq!(
+        moved,
+        visual_motion_full_scan(&shaped, TextPosition::new(last), false)
+    );
+}
+
 #[test]
 fn bounded_selection_geometry_refuses_overflow_without_partial_rectangles() {
     let text = "first line\nsecond line\nthird line";
