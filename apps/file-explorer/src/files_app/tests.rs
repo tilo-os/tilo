@@ -5170,8 +5170,7 @@ mod responsive_body_tests {
                 .handled
         }
 
-        /// Paint the window's top layer: the notice, the status bubble and
-        /// open menus.
+        /// Paint the window's top layer: open menus.
         fn draw_overlay(&mut self) {
             let theme = Theme::dark();
             let presence = ui::presence::PresenceCtx::empty();
@@ -5187,7 +5186,7 @@ mod responsive_body_tests {
     }
 
     /// Feedback is quiet unless there is something to do about it: selecting
-    /// never pops the status bubble, a move to Trash is one notice whose Undo
+    /// says nothing in the bar, a move to Trash is one notice whose Undo
     /// asks the host for the window's Undo, and Ctrl+Z is the host's.
     #[test]
     fn changes_announce_once_with_the_windows_undo() {

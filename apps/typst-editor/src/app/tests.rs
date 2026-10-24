@@ -594,7 +594,13 @@ fn idle_and_pending_work_schedule_non_animation_deadlines() {
         work.run_pending();
         app.sync(&doc, &ROOT);
         assert!(app.io.is_none());
-        assert!(app.next_wake_deadline().is_none());
+        // What the dialog came to may be said in the window's bar; only
+        // that notice leaving wakes the editor, no polling.
+        assert_eq!(
+            app.next_wake_deadline(),
+            app.status.deadline(),
+            "nothing polls once the dialog is done"
+        );
     }
     // Case `pending_compile_has_a_non_animation_deadline`.
     {

@@ -4,8 +4,8 @@
 //! `App::surface_frame_with_damage` into a scene the host compares part by
 //! part (`ui::scene_parts`), exactly as the shell does.
 //!
-//! A keystroke repaints the line it edits, its caret and what else changed
-//! (the save status bubble), not the app; naming a note repaints its title,
+//! A keystroke repaints the line it edits, its caret and what else changed,
+//! not the app; naming a note repaints its title,
 //! not the page; a pointer resting on a toolbar button repaints the button.
 //! Every frame is presented sparsely over the frame before it and the result
 //! compared with a full render of the same scene, in dark, light and high

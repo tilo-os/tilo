@@ -264,7 +264,10 @@ impl FrameHarness {
     /// Press one of the app's own slots in the window's bar (a mode, an
     /// action, the sidebar toggle), as the desktop hands the press to the
     /// app. The press is a press on the app: it hands the app the keyboard
-    /// (`Self::hand_keyboard_to_app`), as in the native window.
+    /// (`Self::hand_keyboard_to_app`), as in the native window. What the
+    /// app asked of the host when its sync took the press (the Undo beside a
+    /// notice asks for an undo) is done and shown, as the live window's idle
+    /// service does after that sync.
     pub fn press_window_slot(&mut self, event: crate::window_toolbar::ToolbarEvent) {
         self.invalidate_local();
         let hands_keyboard = crate::window_toolbar::hands_keyboard_to_app(&event);
@@ -272,6 +275,9 @@ impl FrameHarness {
         if hands_keyboard {
             self.hand_keyboard_to_app();
         }
+        self.relayout();
+        self.host_tick();
+        self.invalidate_local();
         self.relayout();
     }
 

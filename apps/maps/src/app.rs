@@ -2571,7 +2571,7 @@ impl MapsApp {
     /// Chrome over the map: the places panel (docked, or a drawer over a
     /// scrim when narrow), the control column, the floating cards, the
     /// footer with the scale and the credit, the overflow menu, and the
-    /// transient status bubble and tooltip on top. Modal sheets paint in
+    /// tooltip on top. Modal sheets paint in
     /// the window's top layer (`draw_overlay`).
     fn draw_chrome(
         &mut self,

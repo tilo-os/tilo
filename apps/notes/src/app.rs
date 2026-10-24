@@ -323,11 +323,11 @@ pub struct NotesApp {
     /// The note's save + page/word status, surfaced on the save status
     /// surface (see `save_status`) instead of a permanent strip.
     status: StatusModel,
-    /// The framework's save status surface: autosave says nothing; a save
-    /// that stalls says "Couldn't save yet. Retrying…" in the note's header
-    /// row, and "Saved" once it lands; one that gives up says "Not saved" with "Try again" there; a failed save
-    /// is an error toast with "Try again", and the save that ends it a
-    /// one-time "Saved".
+    /// The framework's save status, said in the window's bar: autosave says
+    /// nothing; a save that stalls says "Couldn't save yet. Retrying…", and
+    /// "Saved" once it lands; one that gives up says "Not saved" and a
+    /// failed save says why, each with "Try again" beside it until a save
+    /// succeeds and says "Saved".
     save_surface: ui::SaveStatusSurface,
     /// The notification a save that gave up raises out of sight.
     save_notices: crate::save_notice::SaveNotices,
@@ -468,12 +468,6 @@ pub struct NotesApp {
     /// bodies changed, alongside the full-text catalogue; drawing a selected
     /// note therefore never scans a large notebook.
     backlink_index: HashMap<PageId, Vec<(PageId, u32)>>,
-    /// Last theme text scale, captured during layout. Responsive chrome uses
-    /// it for width/height reservations so 200% text switches to the drawer
-    /// before page labels or the title stack can collide.
-    /// Effective reduced-motion setting provided by the host. Notes owns one
-    /// small app-local animation (the transient save-status bubble), so it
-    /// retains the value instead of relying on the default child forwarding.
     prepared_local_focus: Option<crate::local_view::PreparedFocus>,
     // The first measured width resolves the saved drawer and Sidebar intent once.
     pending_responsive_view: Option<(bool, bool)>,
@@ -2585,14 +2579,13 @@ impl Widget for NotesApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        // A scheduled sync only presents when update reports a change. Mark
-        // the expired chip dirty so reduced motion still removes it; paint
-        // consumes its deadline, leaving an idle window asleep afterward.
+        // A scheduled sync only runs when update reports a change: the save's
+        // notice leaving the window's bar, or its next stage, is one. The
+        // sync takes up the deadline, leaving an idle window asleep after.
         let feedback_expired = self
             .save_surface
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= ui::time::now());
-        self.self_dirty |= feedback_expired;
         // A dragged block's pointer at the page's edge scrolls the page.
         let dragged = self.main.autoscroll_block_drag();
         // A lifted touchpad gesture glides the page on; only the view moves.
@@ -4312,23 +4305,30 @@ mod tests {
     }
 
     fn assert_expired_save_feedback_presents(app: &mut NotesApp, state: &ui::State) {
+        // The notice's lifetime runs on the window's clock: Saved landed a
+        // notice's lifetime and a second ago.
         let landed = ui::time::now()
-            .checked_sub(ui::time::Duration::from_secs(3))
-            .expect("the test clock can age the transient chip");
+            .checked_sub(ui::widget::toast::NOTICE_LIFETIME + ui::time::Duration::from_secs(1))
+            .expect("the test clock can age the notice");
         let began = landed
             .checked_sub(ui::SAVE_STALL)
             .expect("the test clock can age the save");
         app.save_surface = ui::SaveStatusSurface::new();
-        app.save_surface.set(ui::SaveState::Saving, began);
-        app.save_surface.advance(landed);
-        app.save_surface.set(ui::SaveState::Saved, landed);
+        ui::time::testing::with_monotonic_time(landed, || {
+            app.save_surface.set(ui::SaveState::Saving, began);
+            app.save_surface.advance(landed);
+            app.save_surface.set(ui::SaveState::Saved, landed);
+        });
         app.mark_drawn();
         assert!(!app.self_dirty);
         assert!(
             app.update(&state.doc, &state.root),
-            "deadline sync must request the chip-removal frame"
+            "the deadline's sync must run to take the notice down"
         );
-        assert!(app.self_dirty, "the native host must present the change");
+        assert!(
+            !app.self_dirty,
+            "the window's bar takes it down; the note does not repaint"
+        );
         app.sync(&state.doc, &state.root);
         assert!(
             app.save_surface.next_wake_deadline().is_none(),

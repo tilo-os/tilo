@@ -1,6 +1,6 @@
-//! The window chrome around the grid: the formula bar and the sheet tabs,
-//! plus the transient status bubble. The commands are the window bar's slots
-//! ([`super::window_bar`]).
+//! The window chrome around the grid: the formula bar and the sheet tabs.
+//! The commands are the window bar's slots ([`super::window_bar`]), and its
+//! notice says the sheet's status.
 //!
 //! Everything is laid out from measured role line boxes and spacing tokens,
 //! and painted through the toolkit's faces (`ButtonFace`, `SegmentedFace`,
