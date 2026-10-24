@@ -3211,6 +3211,17 @@ impl MusicApp {
         }
     }
 
+    /// A newer playback choice (Next pressed again, another song chosen)
+    /// settles the stream start still resolving as superseded: the newest
+    /// choice is the one that plays.
+    pub(super) fn supersede_pending_stream_start(&mut self) {
+        self.fail_resource_stream(
+            "music.stream_start_superseded",
+            "A newer playback choice superseded this stream start.",
+            None,
+        );
+    }
+
     /// Time out a hosted stream start if neither the resolver nor the audio
     /// backend has produced the advertised terminal evidence by its deadline.
     /// Late events are ignored because the active request is cleared first.
@@ -5453,6 +5464,9 @@ mod spotify;
 mod track_table;
 mod window_bar;
 
+#[cfg(test)]
+#[path = "app/stream_start_tests.rs"]
+mod stream_start_tests;
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests;

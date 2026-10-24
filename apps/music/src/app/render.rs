@@ -1588,9 +1588,7 @@ impl MusicApp {
             MusicEffect::OpenAlbum { album } => self.show(Place::Album(album)).map(|()| done),
             MusicEffect::OpenArtist { artist } => self.show(Place::Artist(artist)).map(|()| done),
             MusicEffect::Play { track, queued } => {
-                if self.resource_stream_invocation.is_some() {
-                    return Err("another Music stream-start operation is still resolving".into());
-                }
+                self.supersede_pending_stream_start();
                 let request = match queued {
                     None => self.apply_resource_play_track(&track)?,
                     Some(index) => self.apply_resource_play_queue_item(index, &track)?,

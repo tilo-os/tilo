@@ -2619,21 +2619,19 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             track: "tk_g2".into(),
             queued: None,
         });
+        // A newer start supersedes it: the old one settles once, as failed.
+        let newer = tilo_actions::InvocationId::new();
+        app.start_effect(newer, &competing).unwrap();
+        let failed = |update| matches!(update, Some(tilo_actions::InvocationUpdate::Failed { .. }));
+        assert!(failed(app.take_effect_result(invocation)));
+        app.apply_resolve_failure("tk_g1", request_id, "stale failure");
         assert!(
-            app.start_effect(tilo_actions::InvocationId::new(), &competing)
-                .is_err(),
-            "concurrent stream start is refused deterministically"
+            app.take_effect_result(newer).is_none(),
+            "a stale worker result cannot settle the newer invocation"
         );
-        app.apply_resolve_failure("tk_g1", request_id + 1, "stale failure");
-        assert!(
-            app.take_effect_result(invocation).is_none(),
-            "a stale worker result cannot settle this invocation"
-        );
-        app.apply_resolve_failure("tk_g1", request_id, "backend unavailable");
-        assert!(matches!(
-            app.take_effect_result(invocation),
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
-        ));
+        let newer_request = app.active_resolve_request.unwrap();
+        app.apply_resolve_failure("tk_g2", newer_request, "backend unavailable");
+        assert!(failed(app.take_effect_result(newer)));
     }
 
     // Phase `stream_operation_times_out_once_and_late_resolution_is_ignored`.
