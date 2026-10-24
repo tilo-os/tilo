@@ -207,14 +207,60 @@ fn word(index: usize) -> Option<&'static str> {
     WORDS.split(' ').nth(index)
 }
 
-/// The index of `word` on the list. The list is sorted, but a phrase is a
-/// few dozen lookups in a device's life: a scan is enough.
 /// Whether `word` is on the BIP39 English list, as written there (lowercase).
 #[must_use]
 pub fn is_word(word: &str) -> bool {
     index_of(word).is_some()
 }
 
+/// The listed word a mistyped lowercase `typed` most likely meant: the only
+/// one a single slip away (a letter wrong, missing, added or two swapped),
+/// or else the only one starting with its first four letters, which the
+/// list keeps unique. `None` when that is not one word.
+#[must_use]
+pub fn closest_word(typed: &str) -> Option<&'static str> {
+    let typed: Vec<char> = typed.chars().collect();
+    only(
+        WORDS
+            .split(' ')
+            .filter(|listed| one_slip_apart(&typed, &listed.chars().collect::<Vec<_>>())),
+    )
+    .or_else(|| {
+        let prefix: String = typed.get(..4)?.iter().collect();
+        only(
+            WORDS
+                .split(' ')
+                .filter(|listed| listed.starts_with(&prefix)),
+        )
+    })
+}
+
+/// The single item of `items`; `None` when there are none or several.
+fn only<T>(mut items: impl Iterator<Item = T>) -> Option<T> {
+    let first = items.next()?;
+    items.next().is_none().then_some(first)
+}
+
+/// Whether `typed` and `listed` differ by exactly one substitution,
+/// insertion, deletion or swap of neighbours.
+fn one_slip_apart(typed: &[char], listed: &[char]) -> bool {
+    let common = typed.iter().zip(listed).take_while(|(x, y)| x == y).count();
+    let typed = typed.get(common..).unwrap_or_default();
+    let listed = listed.get(common..).unwrap_or_default();
+    let tail = |chars: &[char], from: usize| chars.get(from..).map(<[char]>::to_vec);
+    let substituted = !typed.is_empty() && tail(typed, 1) == tail(listed, 1);
+    let added = tail(typed, 1).as_deref() == Some(listed);
+    let dropped = tail(listed, 1).as_deref() == Some(typed);
+    let swapped = matches!(
+        (typed, listed),
+        ([first, second, ..], [other_first, other_second, ..])
+            if first == other_second && second == other_first
+    ) && tail(typed, 2) == tail(listed, 2);
+    substituted || added || dropped || swapped
+}
+
+/// The index of `word` on the list. The list is sorted, but a phrase is a
+/// few dozen lookups in a device's life: a scan is enough.
 fn index_of(word: &str) -> Option<usize> {
     WORDS.split(' ').position(|listed| listed == word)
 }
@@ -315,6 +361,22 @@ pub fn decode(phrase: &str) -> Result<Zeroizing<Vec<u8>>, MnemonicError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_slip_or_a_unique_start_names_the_word_meant() {
+        assert_eq!(closest_word("abilty"), Some("ability"));
+        assert_eq!(
+            closest_word("abiltiy"),
+            Some("ability"),
+            "two letters swapped"
+        );
+        assert_eq!(closest_word("zzzz"), None);
+        assert_eq!(closest_word("abliity"), Some("ability"));
+        assert_eq!(closest_word("zeebra"), Some("zebra"));
+        assert_eq!(closest_word("sapcex"), None);
+        assert_eq!(closest_word("satoshix"), Some("satoshi"));
+        assert_eq!(closest_word("abstrakt"), Some("abstract"));
+    }
 
     #[test]
     fn the_wordlist_is_bip39s_and_phrases_round_trip_with_their_checksum() {
