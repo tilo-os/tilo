@@ -2189,6 +2189,7 @@ impl ActionPalette {
             .filter(|fa| {
                 fa.action.contract.availability.is_available()
                     && fa.action.reaches_people()
+                    && !shows_a_hit(fa.action)
                     && parsed.in_scope(fa.resource_id.as_str())
             })
             .collect();
@@ -2227,11 +2228,7 @@ impl ActionPalette {
                 fa.resource_id.as_str(),
                 fa.action.id.as_str(),
             ));
-            candidates.push((
-                r,
-                found_by(&row, &fa.resource_label, fa.action.description.as_deref()),
-                resolution,
-            ));
+            candidates.push((r, found_by(&row, &fa.resource_label), resolution));
         }
 
         for snapshot in &self.bound_resources {
@@ -2244,6 +2241,7 @@ impl ActionPalette {
                 for fa in flatten(&[resource]) {
                     if !fa.action.contract.availability.is_available()
                         || !fa.action.reaches_people()
+                        || shows_a_hit(fa.action)
                     {
                         continue;
                     }
@@ -2272,7 +2270,7 @@ impl ActionPalette {
                     }
                     candidates.push((
                         result,
-                        found_by(&row, &fa.resource_label, fa.action.description.as_deref()),
+                        found_by(&row, &fa.resource_label),
                         RowResolution::Bound(target),
                     ));
                 }
@@ -2449,6 +2447,12 @@ impl ActionPalette {
         if !self.facet_chips.is_empty() {
             top += FACET_H + GAP;
         }
+        // The card ends as far above the window's bottom as it starts below
+        // the window's top; rows past that scroll.
+        self.results.set_max_height(
+            self.scrim
+                .map(|window| (window.y1 - (origin.y - window.y0).max(0.0) - top).max(0.0)),
+        );
         let h = self.results.desired_height();
         self.results
             .set_rect(Rect::new(origin.x, top, origin.x + width, top + h));
@@ -3173,20 +3177,23 @@ fn without_token(text: &str, filter: &FacetFilter) -> String {
 }
 
 /// The words besides its title a row is found by: what it acts on (named
-/// under it or not: "Apply" of the open "Sealed" is found by "sealed"), and
-/// what it means.
-fn found_by(
-    row: &tilo_actions::ListedRow,
-    resource: &str,
-    description: Option<&str>,
-) -> Option<String> {
+/// under it or not: "Apply" of the open "Sealed" is found by "sealed"). Never
+/// its description, which is written for agents and would pull unrelated
+/// actions into a query.
+fn found_by(row: &tilo_actions::ListedRow, resource: &str) -> Option<String> {
     let resource = Some(resource).filter(|name| Some(*name) != row.subtitle.as_deref());
-    let words = [row.subtitle.as_deref(), resource, description]
+    let words = [row.subtitle.as_deref(), resource]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
         .join(" ");
     (!words.is_empty()).then_some(words)
+}
+
+/// Whether `action` only shows an item as picking its search hit does: the
+/// hit is the row for that, so the palette lists no second one.
+fn shows_a_hit(action: &tilo_actions::ActionSpec) -> bool {
+    action.operation_type.as_deref() == Some(tilo_actions::remote::APPLICATION_OPEN_TYPE)
 }
 
 /// Rank `rows` by fit against `query` and bucket by kind. Uses the shared
