@@ -4445,13 +4445,6 @@ fn native_app_open_access(
             .workspace()
             .check_workspace_administration(certificate.device_public_key, now)
             .is_ok();
-        let exists = view.peer().document(package, "").is_some();
-        if exists {
-            view.peer()
-                .check_document_read(certificate.device_public_key, package, "", now)?;
-        } else if !administrator {
-            return Err("creating an application requires governor-authorized authorship".into());
-        }
         let person_writes = member.allows(
             &member.policy.node().app(package),
             tilo_action_policy::ActionKind::Undoable,
@@ -4460,6 +4453,15 @@ fn native_app_open_access(
         let application_writes = member
             .policy
             .app_authors(package, &tilo_action_policy::Context::at_time(now));
+        // A member who just joined holds the room's governance before any of
+        // its app data: an app the governor lets write in the room opens
+        // before this device has its document.
+        if view.peer().document(package, "").is_some() {
+            view.peer()
+                .check_document_read(certificate.device_public_key, package, "", now)?;
+        } else if !administrator && !application_writes {
+            return Err("creating an application requires governor-authorized authorship".into());
+        }
         if person_writes && application_writes {
             return Ok(NativeAppOpenAccess::Author);
         }
