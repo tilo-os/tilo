@@ -6,9 +6,10 @@
   button is off on the first page, going back from it does nothing, and the
   back list never offers it.
 - A page that asks to be kept open (a `beforeunload` handler, armed by a click
-  on the page) still lets the person leave it and reload it, as closing its
-  tab does. There is no prompt to answer, so a refused navigation would leave
-  the page stuck.
+  on the page) still lets the person leave it and reload it in a tab that does
+  not answer page questions, as closing its tab does: nobody would see the
+  question, so a refused navigation would leave the page stuck. A tab that
+  answers them is asked (page_dialogs.py).
 """
 import argparse
 import http.server

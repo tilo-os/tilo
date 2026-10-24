@@ -69,6 +69,11 @@ struct Shared {
     popups_can: AtomicBool,
     popups_asked: AtomicBool,
     popups_told: AtomicBool,
+    /// Whether the host sends the page's own questions, whether this tab
+    /// asked for them, and whether the host was told.
+    dialogs_can: AtomicBool,
+    dialogs_asked: AtomicBool,
+    dialogs_told: AtomicBool,
     /// Popups the page opened, not yet taken.
     popups: Mutex<VecDeque<super::Popup>>,
     /// The endpoints of popups the page opened, not yet adopted: each is
@@ -580,6 +585,9 @@ impl UnavailableEngine {
                 popups_can: AtomicBool::default(),
                 popups_asked: AtomicBool::default(),
                 popups_told: AtomicBool::default(),
+                dialogs_can: AtomicBool::default(),
+                dialogs_asked: AtomicBool::default(),
+                dialogs_told: AtomicBool::default(),
                 popups: Mutex::default(),
                 unadopted: Mutex::default(),
                 cursor: Mutex::default(),
@@ -1339,6 +1347,25 @@ impl ChromiumEngine {
         }
     }
 
+    /// Tell the host this tab answers the page's questions, once it asked
+    /// and the host said it can.
+    fn tell_dialogs(&self) {
+        let shared = &self.shared;
+        if !shared.dialogs_asked.load(Ordering::Acquire)
+            || !shared.dialogs_can.load(Ordering::Acquire)
+            || shared.dialogs_told.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        if self
+            .tx
+            .push(json!({"op":"js_dialogs","tab":self.tab,"enabled":true}))
+            .is_err()
+        {
+            shared.dialogs_told.store(false, Ordering::Release);
+        }
+    }
+
     fn tell_document_size(&self) {
         let reports = &self.shared.document_size;
         let asked = reports.asked.load(Ordering::Acquire);
@@ -1485,6 +1512,11 @@ impl WebViewEngine for ChromiumEngine {
     fn accept_popups(&self) {
         self.shared.popups_asked.store(true, Ordering::Release);
         self.tell_popups();
+    }
+
+    fn accept_page_dialogs(&self) {
+        self.shared.dialogs_asked.store(true, Ordering::Release);
+        self.tell_dialogs();
     }
 
     fn take_popups(&self) -> Vec<super::Popup> {
@@ -1650,6 +1682,7 @@ impl WebViewEngine for ChromiumEngine {
     fn drain_events(&self) -> Vec<WebViewEvent> {
         self.tell_document_size();
         self.tell_popups();
+        self.tell_dialogs();
         self.shared
             .events
             .lock()
@@ -1768,6 +1801,10 @@ fn route_native_event(
             shared
                 .popups_can
                 .store(value["popups"].as_bool() == Some(true), Ordering::Release);
+            shared.dialogs_can.store(
+                value["js_dialogs"].as_bool() == Some(true),
+                Ordering::Release,
+            );
             shared.selection_text.store(
                 value["selection_text"].as_bool() == Some(true),
                 Ordering::Release,
@@ -2111,6 +2148,41 @@ fn extension_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
 }
 
+/// The longest text of a page's question the host sends, in bytes.
+const MAX_PAGE_DIALOG_TEXT: usize = 16 * 1024;
+
+/// A `js_dialog` event: the page's question, its texts within the host's
+/// bounds.
+fn decode_page_dialog(value: &Value) -> Option<super::PageDialog> {
+    let text = |key: &str| {
+        value[key]
+            .as_str()
+            .filter(|text| text.len() <= MAX_PAGE_DIALOG_TEXT)
+            .map(str::to_owned)
+    };
+    let kind = match value["kind"].as_str()? {
+        "alert" => super::PageDialogKind::Alert,
+        "confirm" => super::PageDialogKind::Confirm,
+        "prompt" => super::PageDialogKind::Prompt,
+        "beforeunload" => super::PageDialogKind::Leave {
+            reload: value["reload"].as_bool()?,
+        },
+        _ => return None,
+    };
+    Some(super::PageDialog {
+        id: u32::try_from(value["id"].as_u64()?)
+            .ok()
+            .filter(|_| valid_id(value))?,
+        kind,
+        origin: value["origin"]
+            .as_str()
+            .filter(|origin| origin.len() <= 8192)?
+            .to_owned(),
+        message: text("message")?,
+        default_text: text("default_text")?,
+    })
+}
+
 fn validate_event(value: &Value) -> Result<(), &'static str> {
     if value.get("tab").is_some_and(|tab| {
         !tab.as_u64()
@@ -2145,7 +2217,8 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .as_str()
                     .is_some_and(|body| body.len() <= 1024 * 1024)
         }
-        "context_closed" | "permission_closed" => valid_id(value),
+        "context_closed" | "permission_closed" | "js_dialog_closed" => valid_id(value),
+        "js_dialog" => decode_page_dialog(value).is_some(),
         "context_menu" => valid_context_menu(value),
         "find_result" => {
             valid_id(value)
@@ -2367,6 +2440,13 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         }
         WebViewCommand::Find { id, text, .. } => {
             *id > 0 && i32::try_from(*id).is_ok() && text.len() <= 4096
+        }
+        WebViewCommand::AnswerPageDialog { id, text, .. } => {
+            *id > 0
+                && i32::try_from(*id).is_ok()
+                && text
+                    .as_ref()
+                    .is_none_or(|text| text.len() <= super::MAX_PAGE_DIALOG_ANSWER)
         }
         WebViewCommand::SetZoomLevel(level) => level.is_finite() && (-5.0..=9.0).contains(level),
         WebViewCommand::RequestNavigationHistory { request_id, .. }
@@ -2609,6 +2689,10 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             body: value["body"].as_str()?.into(),
         },
         "context_closed" => WebViewEvent::ContextMenuClosed {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+        },
+        "js_dialog" => WebViewEvent::PageDialog(decode_page_dialog(value)?),
+        "js_dialog_closed" => WebViewEvent::PageDialogClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
         "context_menu" => WebViewEvent::ContextMenu {
@@ -2952,6 +3036,10 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::ContextMenuAction { id, command } => {
             json!({"op":"context_action","id":id,"command":command})
         }
+        WebViewCommand::AnswerPageDialog { id, accept, text } => match text {
+            Some(text) => json!({"op":"js_dialog_reply","id":id,"accept":accept,"text":text}),
+            None => json!({"op":"js_dialog_reply","id":id,"accept":accept}),
+        },
         WebViewCommand::StopFinding => json!({"op":"stop_find"}),
         WebViewCommand::SetZoomLevel(level) => json!({"op":"zoom","level":level}),
         WebViewCommand::ReportDocumentSize(enabled) => {

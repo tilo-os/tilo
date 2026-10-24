@@ -114,8 +114,25 @@ callbacks to a new action.
 Every tab starts on `about:blank` before its first address. That first entry is
 no page the person visited: `history` reports no `back` while it is all that is
 behind the page, `back` does not go to it, and `navigation_history` leaves it
-out. A page's `beforeunload` request to stay is let go, as closing its tab lets
-it go; there is no prompt to answer it.
+out.
+
+A page's own questions (`alert`, `confirm`, `prompt`, and "leave this page?"
+from a `beforeunload` handler) are the embedder's to show. `ready` /
+`tab_ready` advertise `js_dialogs: true`; a tab that then receives
+`js_dialogs` with a boolean `enabled` gets each question as a `js_dialog` event:
+a positive `id`, `kind` (`alert`, `confirm`, `prompt` or `beforeunload`), the
+asking page's http(s) `origin` (empty for any other page), its `message` and a
+prompt's `default_text` (each at most 16 KiB), and for `beforeunload` whether
+it is a `reload`. The page waits until `js_dialog_reply` with that `id`, a
+boolean `accept` (OK, or Leave) and a prompt's `text` (at most 64 KiB) answers
+it. `js_dialog_closed` with the `id` says the page no longer waits, answered or
+not (it navigated, or asked another question). A navigation the embedder sends
+declines the open question first, as Chromium holds it back while the page
+waits. Staying on a page cancels the
+navigation that asked to leave it: an owned navigation fails with "The page
+asked to stay". A tab that never asked for questions has each declined at once
+(a confirm is false, a prompt null) and its page left when it asks to stay, as
+closing a tab always leaves it; no page waits on a question nobody sees.
 
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
 only each tab's newest pending frame is kept, and tabs take turns, so a page

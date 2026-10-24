@@ -289,11 +289,57 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   CefRefPtr<CefDialogHandler> GetDialogHandler() override { return this; }
   CefRefPtr<CefJSDialogHandler> GetJSDialogHandler() override { return this; }
-  // A page asking to be kept open (`beforeunload`) lets the person go, as
-  // closing its tab does. There is no prompt to answer here: refusing would
-  // leave the address field, back and reload all doing nothing.
-  bool OnBeforeUnloadDialog(CefRefPtr<CefBrowser>,const CefString&,bool,CefRefPtr<CefJSDialogCallback> callback) override {
-    callback->Continue(true,CefString());return true;
+  // A page's own questions: alert, confirm, prompt and "leave this page?"
+  // (`beforeunload`). The embedder that asked for them (`js_dialogs`) shows
+  // each as a `js_dialog` and answers it with `js_dialog_reply`; for any
+  // other embedder a question is declined at once and the page may always be
+  // left, so a page never waits on a question nobody sees. A tab closing
+  // lets its page go unasked.
+  bool OnJSDialog(CefRefPtr<CefBrowser>,const CefString& origin_url,JSDialogType type,const CefString& message,const CefString& default_text,CefRefPtr<CefJSDialogCallback> callback,bool& suppress_message) override {
+    suppress_message=false;
+    if(!AsksDialogs()) {suppress_message=true;return false;}
+    auto d=CefDictionaryValue::Create();
+    d->SetString("kind",type==JSDIALOGTYPE_ALERT?"alert":type==JSDIALOGTYPE_CONFIRM?"confirm":"prompt");
+    d->SetString("origin",tilo::Origin(origin_url.ToString()));
+    d->SetString("message",tilo::BoundedText(message.ToString(),kMaxDialogText));
+    d->SetString("default_text",type==JSDIALOGTYPE_PROMPT?tilo::BoundedText(default_text.ToString(),kMaxDialogText):std::string());
+    AskDialog(callback,false,d);return true;
+  }
+  bool OnBeforeUnloadDialog(CefRefPtr<CefBrowser> browser,const CefString&,bool is_reload,CefRefPtr<CefJSDialogCallback> callback) override {
+    if(!AsksDialogs()) {callback->Continue(true,CefString());return true;}
+    // Chromium shows no text of the page's here: what it asks is fixed.
+    auto d=CefDictionaryValue::Create();d->SetString("kind","beforeunload");d->SetBool("reload",is_reload);
+    d->SetString("origin",tilo::Origin(browser->GetMainFrame()->GetURL().ToString()));d->SetString("message","");d->SetString("default_text","");
+    AskDialog(callback,true,d);return true;
+  }
+  // Chromium let the question go (the page navigated or closed): it no
+  // longer waits on an answer.
+  void OnResetDialogState(CefRefPtr<CefBrowser>) override { CloseDialog(); }
+  bool AsksDialogs() const { return js_dialogs_ && !transfer_owner_ && !native_closing_ && !closing; }
+  void AskDialog(CefRefPtr<CefJSDialogCallback> callback,bool unload,CefRefPtr<CefDictionaryValue> d) {
+    // Chromium asks one question of a page at a time; one still open is
+    // declined before the next.
+    if(dialog_callback_) {auto previous=dialog_callback_;const bool leave=dialog_unload_;CloseDialog();previous->Continue(leave,CefString());}
+    dialog_id_=dialog_id_%2147483647+1;dialog_callback_=callback;dialog_unload_=unload;
+    d->SetInt("id",dialog_id_);Event("js_dialog",d);
+  }
+  void CloseDialog() {
+    if(!dialog_callback_) return;
+    dialog_callback_=nullptr;auto d=CefDictionaryValue::Create();d->SetInt("id",dialog_id_);Event("js_dialog_closed",d);
+  }
+  // Cancel, and stay when the page asked to be left: the navigation that
+  // asked is superseded by the one declining it.
+  void DeclineDialog() {
+    if(!dialog_callback_) return;
+    auto callback=dialog_callback_;CloseDialog();callback->Continue(false,CefString());
+  }
+  void AnswerDialog(int id,bool accept,const CefString& text) {
+    if(!dialog_callback_ || id!=dialog_id_) return;
+    auto callback=dialog_callback_;const bool unload=dialog_unload_;CloseDialog();
+    callback->Continue(accept,text);
+    // Staying on the page cancels the navigation that asked: it never starts,
+    // so nothing else would settle it.
+    if(unload && !accept && navigation_dispatched_ && !navigation_started_) RefuseNavigation("The page asked to stay");
   }
   bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
 #if defined(OS_MAC)
@@ -523,7 +569,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     paint_snapshot_->Attach();
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("selection_text",true);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("selection_text",true);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     if(extension_tabs)extension_tabs->Introduce(id_);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
@@ -903,7 +949,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     if(op=="site_exceptions") {std::set<std::string> origins;auto list=d->GetList("origins");for(size_t i=0;i<list->GetSize();++i)origins.insert(list->GetString(i));request_filter->Exceptions(origins);PublishFilters();return;}
     if(op=="audio_muted") { browser_->GetHost()->SetAudioMuted(d->GetBool("muted"));auto state=CefDictionaryValue::Create();state->SetBool("muted",browser_->GetHost()->IsAudioMuted());Event("audio_muted",state);return; }
-    if((op=="scoped_navigation" || op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") && DeferNavigation(d))return;
+    if(op=="scoped_navigation" || op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") {
+      // Going elsewhere answers the page's open question: Chromium holds a
+      // navigation back while the page waits on it.
+      DeclineDialog();
+      if(DeferNavigation(d))return;
+    }
     auto host=browser_->GetHost();auto frame=browser_->GetMainFrame();
     if(op=="visibility") {
       const bool was_visible=visible_;
@@ -918,6 +969,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         if(!was_visible && !credential_identity_) OfferCredentialContext(browser_->GetMainFrame());
       } else {frame_.reset();popup_.clear();}
     }
+    else if(op=="js_dialogs") {
+      js_dialogs_=d->GetBool("enabled");
+      // An embedder that stops answering lets the open question go.
+      if(!js_dialogs_ && dialog_callback_) AnswerDialog(dialog_id_,dialog_unload_,CefString());
+    }
+    else if(op=="js_dialog_reply") AnswerDialog(d->GetInt("id"),d->GetBool("accept"),d->HasKey("text")?d->GetString("text"):CefString());
     else if(op=="context_action") {
       if(context_callback_ && d->GetInt("id")==context_id_) {
         int command=d->GetInt("command");auto callback=context_callback_;context_callback_=nullptr;
@@ -1487,6 +1544,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
   // Keys pressed for an extension's command, whose release is the command's too.
   std::set<std::string> commanded_keys_;
+  // The page's open question, if any, and whether the embedder answers them.
+  static constexpr size_t kMaxDialogText=16*1024;
+  CefRefPtr<CefJSDialogCallback> dialog_callback_;int dialog_id_=0;bool dialog_unload_=false,js_dialogs_=false;
   // The extensions' items in the open menu, by command from kFirstMenuOffer,
   // and where it opened.
   static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=200;
@@ -1775,6 +1835,8 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   }
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
   if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  if(op=="js_dialogs") return type("enabled",VTYPE_BOOL);
+  if(op=="js_dialog_reply") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("accept",VTYPE_BOOL) && (!d->HasKey("text") || (type("text",VTYPE_STRING) && d->GetString("text").ToString().size()<=64*1024));
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
   if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);
   if(op=="stop_find") return true;

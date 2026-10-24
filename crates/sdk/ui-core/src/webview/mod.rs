@@ -226,6 +226,37 @@ impl ExtensionPermissionSet {
         self.permissions.is_empty() && self.origins.is_empty()
     }
 }
+/// What a page asks with a dialog of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageDialogKind {
+    /// `alert`: a message to acknowledge.
+    Alert,
+    /// `confirm`: OK or Cancel.
+    Confirm,
+    /// `prompt`: a line of text, or Cancel.
+    Prompt,
+    /// "Leave this page?" from a `beforeunload` handler, or "Reload this
+    /// page?" when the person reloads it.
+    Leave { reload: bool },
+}
+
+/// A question the page waits on until it is answered with
+/// [`WebViewCommand::AnswerPageDialog`], or the engine says it no longer
+/// waits ([`WebViewEvent::PageDialogClosed`]). Everything but `id` and
+/// `kind` is the page's own text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageDialog {
+    pub id: u32,
+    pub kind: PageDialogKind,
+    /// The asking page's http(s) origin; empty for any other page.
+    pub origin: String,
+    pub message: String,
+    /// What a prompt suggests as its answer.
+    pub default_text: String,
+}
+
+/// The longest answer to a page's prompt an engine takes, in bytes.
+pub const MAX_PAGE_DIALOG_ANSWER: usize = 64 * 1024;
 
 /// What an extension changed of its toolbar button (`chrome.action`). Each
 /// field is `None` when it did not change; `Some(None)` takes back what it
@@ -371,6 +402,13 @@ pub enum WebViewCommand {
     ContextMenuAction {
         id: u32,
         command: u32,
+    },
+    /// Answer the page's question `id`: OK (or Leave) when `accept`, else
+    /// Cancel (or Stay), with a prompt's `text`.
+    AnswerPageDialog {
+        id: u32,
+        accept: bool,
+        text: Option<String>,
     },
     SetZoomLevel(f64),
     /// Report the document's size and scroll as [`WebViewEvent::DocumentSize`]
@@ -707,6 +745,13 @@ pub enum WebViewEvent {
     ContextMenuClosed {
         id: u32,
     },
+    /// The page asks a question of its own and waits for its answer.
+    PageDialog(PageDialog),
+    /// The page no longer waits on its question `id`: it was answered, or
+    /// the page navigated or asked another.
+    PageDialogClosed {
+        id: u32,
+    },
     FindResult {
         id: u32,
         count: i32,
@@ -931,6 +976,16 @@ pub trait WebViewEngine: Send + Sync {
     fn accept_popups(&self) {
         if let Some(engine) = self.wrapped() {
             engine.accept_popups();
+        }
+    }
+
+    /// Have the page's own questions (`alert`, `confirm`, `prompt`, "leave
+    /// this page?") sent as [`WebViewEvent::PageDialog`] for the embedder to
+    /// show and answer. Until then, and in an engine that cannot, each is
+    /// declined at once and a page may always be left.
+    fn accept_page_dialogs(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.accept_page_dialogs();
         }
     }
 
