@@ -47,7 +47,7 @@ fn a_picture_larger_than_inline_arguments_is_kept_by_reference() {
 
     app.call("keep-image", json!({ "bytes": reference }))
         .unwrap_or_else(|error| panic!("keep-image refused: {error:?}"));
-    assert_eq!(kept(&app), [digest.clone()]);
+    assert_eq!(kept(&app), std::slice::from_ref(&digest));
 
     app.call(
         "import-markdown",

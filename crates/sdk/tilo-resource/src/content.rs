@@ -270,7 +270,7 @@ mod tests {
         let missing = format!("tilo.content:{elsewhere}");
         let refused = decode(serde_json::json!({"bytes": missing})).unwrap_err();
         assert!(
-            refused.contains(&ContentRefusal::NotReadable(missing.clone()).to_string()),
+            refused.contains(&ContentRefusal::NotReadable(missing).to_string()),
             "{refused}"
         );
         assert!(
