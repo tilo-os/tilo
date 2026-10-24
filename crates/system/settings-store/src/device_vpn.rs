@@ -3,14 +3,17 @@
 //! one routes through (docs/device-vpn.md).
 //!
 //! The same helper holds the kill switch of the person's `NetworkManager` VPN
-//! profiles: which profiles have it ([`PROFILE_KILL_SWITCHES`]), and the
-//! profile the person last turned off on purpose ([`PROFILE_RELEASE`]).
+//! profiles: which profiles have it ([`PROFILE_KILL_SWITCHES`]), the
+//! profile the person last turned off on purpose ([`PROFILE_RELEASE`]), and
+//! which profiles are set to connect ([`PROFILE_INTENT`]).
 //!
-//! Settings and quick settings write these keys; the session's controller
+//! Settings and quick settings write the choices; the session's controller
+//! alone writes [`PROFILE_INTENT`], and
 //! follows them and publishes what it is doing as a [`DeviceVpnStatus`] in
 //! the private runtime directory, which Settings reads back. Every key is
 //! this device's own: another device is elsewhere, on another network.
 
+use core::net::IpAddr;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -44,6 +47,26 @@ pub const PROFILE_KILL_SWITCHES: Key<BTreeMap<String, ProfileKillSwitch>> =
 /// session acts on each id once.
 pub const PROFILE_RELEASE: Key<Option<ProfileRelease>> =
     Key::new(SECTION, "profile_release", || None);
+
+/// Which kill-switched VPN profiles are set to connect, as the session's
+/// controller last decided. It outlives the session: a shell that starts
+/// after one crashed adopts it and keeps their traffic blocked while they
+/// are down, lifting only what the person turned off meanwhile.
+pub const PROFILE_INTENT: Key<ProfileIntent> =
+    Key::new(SECTION, "profile_intent", ProfileIntent::default);
+
+/// The kept intent of the person's VPN profiles ([`PROFILE_INTENT`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfileIntent {
+    /// Each profile set to connect, with its servers' addresses as looked
+    /// up while traffic still flowed: a block taken over lets them through,
+    /// since nothing can be looked up while it holds.
+    pub connecting: BTreeMap<String, Vec<IpAddr>>,
+    /// The last [`ProfileRelease`] acted on: one written after it, while no
+    /// session followed, is acted on at the next start.
+    pub release_seen: Option<u64>,
+}
 
 /// A VPN profile's kill switch, while it is on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,6 +411,10 @@ mod tests {
         let document = serde_json::Map::new();
         assert!(PROFILE_KILL_SWITCHES.from_document(&document).is_empty());
         assert_eq!(PROFILE_RELEASE.from_document(&document), None);
+        assert_eq!(
+            PROFILE_INTENT.from_document(&document),
+            ProfileIntent::default()
+        );
         let mut section = serde_json::Map::new();
         section.insert(
             "profile_kill_switches".into(),
@@ -399,6 +426,20 @@ mod tests {
             Some(&ProfileKillSwitch { allow_local: true })
         );
         assert_eq!(switches.get("home"), Some(&ProfileKillSwitch::default()));
+        section.insert(
+            "profile_intent".into(),
+            serde_json::json!({"connecting": {"work": ["198.51.100.7"]}, "release_seen": 3}),
+        );
+        assert_eq!(
+            PROFILE_INTENT.from_section(&section),
+            ProfileIntent {
+                connecting: BTreeMap::from([(
+                    "work".to_owned(),
+                    vec!["198.51.100.7".parse().unwrap()]
+                )]),
+                release_seen: Some(3),
+            }
+        );
         let first = ProfileRelease::after(None, "work");
         assert_ne!(ProfileRelease::after(Some(&first), "work").id, first.id);
     }

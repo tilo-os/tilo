@@ -192,9 +192,13 @@ seat-peer check, record, housekeeping and reset:
   (administratively prohibited), so a program fails at once rather than
   waiting. The block is machine-wide: a VPN profile is the machine's.
 - `release_profile_block` deletes the table. Another account cannot lift or
-  replace a block while its owner is logged in; the block goes when the
-  owner's session ends, and `reset` (at boot and after a crash) lifts one an
-  earlier helper left. The unit restarts on failure.
+  replace a block while its owner is logged in. The block outlives the
+  owner's session, since a crashed shell ends it and the block exists for
+  that moment; once the owner is logged out the person at the seat may
+  lift it. Only `reset` at boot (`tilo-device-vpn-reset.service`) lifts a
+  block nobody released. The table needs no running process, so the helper
+  still exits when idle and a restarted helper takes the block over from
+  its record.
 
 In the session (`shell/device_vpn/profile_block.rs`) a controller follows
 the choices (`PROFILE_KILL_SWITCHES`, `PROFILE_RELEASE`) and, once any switch
@@ -204,8 +208,16 @@ what blocks; the servers of a profile are read from its settings (WireGuard
 peers' endpoints, a plugin's `remote`/`gateway`) and resolved when it starts
 connecting, while traffic still flows. A block the helper refused is asked
 for again with backoff, and `DeviceVpnStatus.profile_block` tells Settings
-what blocks and whether blocking failed. A new shell lifts a block the last
-one left unless its profile is up again.
+what blocks and whether blocking failed.
+
+The intent is durable. Before it asks the helper, the controller keeps
+which profiles are set to connect, each with its servers' addresses, and
+the last release it acted on, in the settings (`PROFILE_INTENT`, written
+by the session alone). A shell starting after one crashed adopts it: a
+profile still set to connect and down keeps blocking, with the servers
+looked up before (nothing can be looked up while the block holds), and the
+block is lifted only for a profile the person turned off meanwhile (a
+newer `PROFILE_RELEASE`) or whose kill switch they turned off.
 
 ## Tests
 
@@ -229,8 +241,11 @@ one left unless its profile is up again.
   the Linux backend (`tests/netns_profile_block.rs`, in
   `device-vpn-namespaces`), the block coming and going with the profile's
   state as checked by real sends, a caller other than the seat's shell
-  refused through the real socket server, and a block left by a helper that
-  aborted lifted by the next one's reset and by housekeeping. Settings tests
+  refused through the real socket server, a block left by a helper that
+  aborted kept by the next one (also once the owner's session is gone)
+  until reset or released from the seat, and a block held by a deciding
+  process that aborted still up, then taken over from its kept intent with
+  the server reachable and lifted only when turned off. Settings tests
   cover the switch, the `set-kill-switch` action, the blocking state and
   the release (`apps/settings/.../tests/vpn_kill_switch.rs`).
 

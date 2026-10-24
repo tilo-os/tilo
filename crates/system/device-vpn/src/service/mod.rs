@@ -65,11 +65,11 @@ impl<B: Backend> Service<B> {
         &self.record
     }
 
-    /// Whether nothing is open, so the process may exit.
+    /// Whether nothing is open, so the process may exit. A profile block
+    /// needs no process: its table stays in the kernel and its record in
+    /// the record file until it is released or the machine boots.
     pub fn is_idle(&self) -> bool {
-        self.record.client.is_none()
-            && self.record.exit.is_none()
-            && self.record.profile_block.is_none()
+        self.record.client.is_none() && self.record.exit.is_none()
     }
 
     /// Answer `request` from `caller`, with the TUN descriptor of a tunnel
@@ -338,9 +338,12 @@ impl<B: Backend> Service<B> {
         self.save();
     }
 
-    /// Undo what lost its reason: a tunnel or block whose owner's session
-    /// ended, an exit whose TUN is gone, a client whose TUN is gone and that
-    /// has no kill switch to keep.
+    /// Undo what lost its reason: a tunnel whose owner's session ended, an
+    /// exit whose TUN is gone, a client whose TUN is gone and that has no
+    /// kill switch to keep. A profile block stays when its owner's session
+    /// ends: a shell that crashed takes the session with it, and the block
+    /// exists for exactly that moment. Its owner's next shell adopts it,
+    /// and once the owner is logged out the person at the seat may lift it.
     pub fn housekeeping(&mut self) {
         if let Some(client) = &self.record.client {
             let owner_gone = !self.backend.has_session(client.owner);
@@ -355,15 +358,10 @@ impl<B: Backend> Service<B> {
         {
             self.undo_exit();
         }
-        if let Some(held) = &self.record.profile_block
-            && !self.backend.has_session(held.owner)
-        {
-            self.undo_profile_block();
-        }
     }
 
-    /// Undo everything, as at boot or after the helper died, when nobody is
-    /// left to want what it set up.
+    /// Undo everything an earlier boot left (`tilo-device-vpn-reset.service`),
+    /// when nobody is left to want what it set up.
     pub fn reset(&mut self) {
         self.undo_client();
         self.undo_exit();

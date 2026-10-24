@@ -341,7 +341,7 @@ fn profile_table_lines(service: &Service<Fake>) -> Vec<String> {
 fn a_profile_block_is_held_replaced_and_lifted() {
     let mut service = service();
     assert_eq!(hold(&mut service, PERSON, false), Response::Done);
-    assert!(!service.is_idle(), "the helper stays while a block holds");
+    assert!(service.is_idle(), "a block needs no running helper");
     let script = service
         .backend()
         .commands
@@ -432,16 +432,22 @@ fn a_profile_block_nftables_refuses_is_not_left_recorded() {
 }
 
 #[test]
-fn a_profile_block_goes_when_its_owners_session_ends() {
+fn a_profile_block_outlasts_its_owners_session_until_the_seat_lifts_it() {
     let mut service = service();
     hold(&mut service, PERSON, false);
-    service.housekeeping();
-    assert!(
-        service.record().profile_block.is_some(),
-        "kept while logged in"
-    );
+    let ran = service.backend().commands.len();
+    // The owner's shell crashed and took the session with it.
     service.backend.sessions.remove(&1000);
     service.housekeeping();
+    assert!(service.record().profile_block.is_some());
+    assert_eq!(service.backend().commands.len(), ran, "nothing ran");
+    assert!(service.is_idle(), "the block needs no running helper");
+    // Logged out, the owner no longer holds it against the person at the
+    // seat.
+    assert!(matches!(
+        service.handle(OTHER, Request::ReleaseProfileBlock).0,
+        Response::Done
+    ));
     assert!(service.record().profile_block.is_none());
     assert_eq!(
         service.backend().lines().last().map(String::as_str),
