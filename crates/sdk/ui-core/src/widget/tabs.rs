@@ -8638,6 +8638,7 @@ mod tests {
                 navigates: false,
                 toggles: false,
                 destructive: false,
+                labelled: false,
             }],
             ..WindowToolbar::default()
         }
@@ -8846,6 +8847,7 @@ mod tests {
                 navigates: false,
                 toggles: false,
                 destructive: false,
+                labelled: false,
             });
         }
         slots

@@ -5419,6 +5419,7 @@ fn browser_slots() -> ui::window_toolbar::WindowToolbar {
         navigates: false,
         toggles: false,
         destructive: false,
+        labelled: false,
     };
     WindowToolbar {
         sidebar: None,
@@ -5465,6 +5466,7 @@ fn files_slots() -> ui::window_toolbar::WindowToolbar {
         navigates: false,
         toggles: false,
         destructive: false,
+        labelled: false,
     };
     let segment = |label: &str, value: &str| LocationSegment {
         label: label.into(),
