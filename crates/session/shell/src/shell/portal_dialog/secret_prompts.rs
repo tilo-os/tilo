@@ -11,7 +11,8 @@ use winit::event::WindowEvent;
 
 use super::{
     AuthenticationRequest, DialogView, NetworkSecretsDecision, NetworkSecretsRequest,
-    PortalDialogController, SecretFieldRule, authentication_actions, forward_to_widget,
+    PortalDialogController, PukRefusal, SecretFieldRule, SimUnlock, SimUnlockStep,
+    authentication_actions, forward_to_widget,
 };
 use crate::shell::i18n::{t, t_args};
 
@@ -97,6 +98,21 @@ impl PortalDialogController {
                 };
                 self.answer_authentication(answer, identity)
             }
+            (
+                PromptOutcome::Submit(answer),
+                DialogView::NetworkSecrets {
+                    sim:
+                        Some(SimUnlock {
+                            step: SimUnlockStep::Puk,
+                            sim_path,
+                            ..
+                        }),
+                    ..
+                },
+            ) => {
+                self.send_puk(sim_path.as_deref(), answer);
+                false
+            }
             (PromptOutcome::Submit(answer), _) => {
                 self.answer_network_secrets(view.handle(), answer)
             }
@@ -123,6 +139,99 @@ impl PortalDialogController {
             .unwrap_or_default();
         self.forget_secret();
         self.queue.answer_authentication(&ticket, &offered, secret)
+    }
+
+    /// Hand the PUK and the new PIN to the modem off the compositor thread;
+    /// the sheet waits, busy, for its answer ([`Self::settle_puk_attempt`]).
+    fn send_puk(&mut self, sim_path: Option<&str>, mut answer: SecretAnswer) {
+        let Some(prompt) = &mut self.prompt else {
+            return;
+        };
+        let (Some(sim_path), Some(new_pin)) = (sim_path, answer.new_pin.take()) else {
+            prompt.reject(t("portal-sim-unlock-failed"));
+            return;
+        };
+        let puk = std::mem::take(&mut answer.secret);
+        drop(answer);
+        prompt.set_busy(Some(t("portal-sim-unlocking")));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.puk_attempt = Some(receiver);
+        let unlocker = std::sync::Arc::clone(&self.sim_unlocker);
+        let sim_path = sim_path.to_owned();
+        let spawned = std::thread::Builder::new()
+            .name("sim-puk".into())
+            .spawn(move || {
+                let _ = sender.send(unlocker.send_puk(&sim_path, puk, new_pin));
+                crate::shell::wake_compositor();
+            });
+        if spawned.is_err() {
+            self.puk_attempt = None;
+            if let Some(prompt) = &mut self.prompt {
+                prompt.reject(t("portal-sim-unlock-failed"));
+            }
+        }
+    }
+
+    /// Carry out the modem's answer to the PUK the sheet sent, once it has
+    /// one: the sheet closes on success and says why in place otherwise,
+    /// with the attempts the SIM has left. `true` when anything changed.
+    pub(super) fn settle_puk_attempt(&mut self) -> bool {
+        let Some(receiver) = &self.puk_attempt else {
+            return false;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(PukRefusal::Failed(t("portal-sim-unlock-failed")))
+            }
+        };
+        self.apply_puk_result(result)
+    }
+
+    /// Wait for the modem's answer to the PUK in flight, then carry it out.
+    /// `false` when none is in flight.
+    #[cfg(test)]
+    pub(crate) fn wait_for_puk_attempt(&mut self) -> bool {
+        let Some(receiver) = &self.puk_attempt else {
+            return false;
+        };
+        let result = receiver
+            .recv()
+            .unwrap_or_else(|_| Err(PukRefusal::Failed(t("portal-sim-unlock-failed"))));
+        self.apply_puk_result(result)
+    }
+
+    fn apply_puk_result(&mut self, result: Result<(), PukRefusal>) -> bool {
+        self.puk_attempt = None;
+        match result {
+            Ok(()) => {
+                let Some(view) = self.view() else {
+                    return false;
+                };
+                self.forget_secret();
+                if self
+                    .queue
+                    .finish_network_secrets(view.handle(), NetworkSecretsDecision::UnlockedWithPuk)
+                {
+                    self.active = None;
+                }
+                true
+            }
+            Err(refusal) => {
+                let Some(prompt) = &mut self.prompt else {
+                    return false;
+                };
+                match refusal {
+                    PukRefusal::Wrong { attempts_left } => {
+                        prompt.set_attempts_left(attempts_left);
+                        prompt.reject_at(0, t("portal-sim-puk-wrong"));
+                    }
+                    PukRefusal::Failed(reason) => prompt.reject_at(0, reason),
+                }
+                true
+            }
+        }
     }
 
     /// Check the answer against each field's rule; a refusal stays in the
@@ -244,19 +353,10 @@ pub(super) fn network_prompt(request: &NetworkSecretsRequest) -> SecretPrompt {
             || field.key == "psk"
             || field.key.starts_with("wep-key")
     });
-    // A SIM's PIN is asked as one: digits only, with a keypad on touch.
-    let sim_pin = match request.fields.as_slice() {
-        [field] if field.masked && field.key == "pin" => Some(field.label.clone()),
-        _ => None,
-    };
-    let prompt = match sim_pin {
-        Some(label) => SecretPrompt::new(SecretKind::SimPin {
-            attempts_left: None,
-        })
-        .with_label(FieldRole::Pin, label),
-        None => SecretPrompt::with_fields(fields),
-    };
-    let mut prompt = prompt
+    if let Some(sim) = &request.sim {
+        return sim_prompt(request, sim, resource, retried);
+    }
+    let mut prompt = SecretPrompt::with_fields(fields)
         .with_id("portal-network-secret")
         .with_icon(if wifi { Icon::Wifi } else { Icon::Lock })
         .with_title(request.title.clone())
@@ -273,6 +373,44 @@ pub(super) fn network_prompt(request: &NetworkSecretsRequest) -> SecretPrompt {
             .position(|field| field.masked)
             .unwrap_or(0);
         prompt.reject_at(index, retry);
+    }
+    Widget::set_focus(&mut prompt, true);
+    prompt
+}
+
+/// A SIM's PIN, or its PUK and a new PIN once wrong PINs locked it: digits
+/// only, a keypad while touch is in use, the attempts the SIM has left, and
+/// Unlock. The SIM keeps its PIN, so nothing offers to remember it.
+fn sim_prompt(
+    request: &NetworkSecretsRequest,
+    sim: &SimUnlock,
+    resource: String,
+    retried: bool,
+) -> SecretPrompt {
+    let prompt = match sim.step {
+        SimUnlockStep::Pin => {
+            let mut prompt = SecretPrompt::new(SecretKind::SimPin {
+                attempts_left: sim.attempts_left,
+            });
+            if let Some(field) = request.fields.first() {
+                prompt = prompt.with_label(FieldRole::Pin, field.label.clone());
+            }
+            prompt
+        }
+        SimUnlockStep::Puk => SecretPrompt::new(SecretKind::SimPuk {
+            attempts_left: sim.attempts_left,
+        }),
+    };
+    let mut prompt = prompt
+        .with_id("portal-network-secret")
+        .with_icon(Icon::Lock)
+        .with_title(request.title.clone())
+        .with_resource(resource)
+        .with_primary_label(t("portal-sim-unlock"))
+        .with_cancel_label(t("portal-cancel"));
+    // NetworkManager asks again after a wrong PIN; a PUK is refused in place.
+    if retried && sim.step == SimUnlockStep::Pin {
+        prompt.reject(t("portal-sim-pin-wrong"));
     }
     Widget::set_focus(&mut prompt, true);
     prompt

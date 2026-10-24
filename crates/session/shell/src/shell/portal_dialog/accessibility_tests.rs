@@ -165,6 +165,7 @@ fn portal_sheets_publish_their_parts_and_answer_through_accessibility_actions() 
                     masked("password", "Password"),
                 ],
                 remember: Some(false),
+                sim: None,
             })
             .expect("queued");
         let mut sheet = PortalDialogController::new(queue);
@@ -223,6 +224,7 @@ fn portal_sheets_publish_their_parts_and_answer_through_accessibility_actions() 
                     ..masked("psk", "Password")
                 }],
                 remember: None,
+                sim: None,
             })
             .expect("queued");
         let mut sheet = PortalDialogController::new(queue);

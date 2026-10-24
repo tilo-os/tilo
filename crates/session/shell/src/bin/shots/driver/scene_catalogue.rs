@@ -107,6 +107,7 @@ impl ShellDriver {
         "secret-prompt-wifi",
         "secret-prompt-sign-in",
         "secret-prompt-sim-pin",
+        "secret-prompt-sim-puk",
         "desktop-control-ask",
         "desktop-control-chip",
         "desktop-control-menu",

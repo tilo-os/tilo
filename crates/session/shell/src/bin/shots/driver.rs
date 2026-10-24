@@ -35,6 +35,7 @@ mod invite_scenes;
 mod now_playing_fixture;
 mod scene_catalogue;
 mod search_seed;
+mod secret_prompt_sim_scene;
 mod two_groups_scene;
 mod uninstall_scenes;
 mod window_menu_scene;
@@ -2110,6 +2111,9 @@ impl ShellDriver {
             "secret-prompt-sim-pin" => {
                 self.scene_secret_prompt_network(SecretPromptNetwork::SimPin);
             }
+            "secret-prompt-sim-puk" => {
+                self.scene_secret_prompt_network(SecretPromptNetwork::SimPuk);
+            }
             "desktop-control-ask" => self.scene_desktop_control_ask(),
             "desktop-control-chip" => self.scene_desktop_control_chip(),
             "desktop-control-menu" => self.scene_desktop_control_menu(),
@@ -3145,6 +3149,7 @@ impl ShellDriver {
                     ..field("psk", "Password", true, "")
                 }],
                 remember: Some(true),
+                sim: None,
             },
             SecretPromptNetwork::SignIn => NetworkSecretsRequest {
                 handle: "nm-secrets:shots/8021x".into(),
@@ -3164,14 +3169,14 @@ impl ShellDriver {
                     field("password", "Password", true, ""),
                 ],
                 remember: Some(true),
+                sim: None,
             },
-            SecretPromptNetwork::SimPin => NetworkSecretsRequest {
-                handle: "nm-secrets:shots/gsm".into(),
-                title: "SIM PIN required".into(),
-                detail: "Enter the PIN to unlock the SIM for \u{201c}Carrier\u{201d}.".into(),
-                fields: vec![field("pin", "SIM PIN", true, "")],
-                remember: Some(false),
-            },
+            SecretPromptNetwork::SimPin => {
+                return self.scene_secret_prompt_sim(os_actions::SimLock::Pin);
+            }
+            SecretPromptNetwork::SimPuk => {
+                return self.scene_secret_prompt_sim(os_actions::SimLock::Puk);
+            }
         };
         let queue = self.host_mut().portal_dialog_queue();
         if let Ok(reply) = queue.enqueue_network_secrets(request) {
@@ -4185,4 +4190,5 @@ enum SecretPromptNetwork {
     Wifi,
     SignIn,
     SimPin,
+    SimPuk,
 }
