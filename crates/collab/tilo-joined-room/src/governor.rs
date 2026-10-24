@@ -64,6 +64,7 @@ fn governed(view: &NativeCommittedView) -> Governed<'_> {
             .unwrap_or_default(),
         generation: view.record.generation,
         governance_messages: view,
+        hosts: &[],
     }
 }
 

@@ -59,7 +59,7 @@ use state::{
     steward_audience, steward_only_delta, unpublished,
 };
 pub use state::{Lag, StateSource};
-pub(crate) use state::{StateDelivery, StateSession};
+pub(crate) use state::{StateDelivery, StateSession, tell_governor};
 use test_hooks::test_point;
 
 use access::{
