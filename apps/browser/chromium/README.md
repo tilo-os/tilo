@@ -682,7 +682,10 @@ content scripts (with `sender.tab`) work without help.
   to a file by its extension's id counts for that extension; any other
   request counts for the one extension with network rules, or else for each
   whose own rules match it (`testMatchOutcome`, which Chromium offers here,
-  every extension being unpacked to it). The count reaches the Browser as
+  every extension being unpacked to it). An extension that starts showing
+  the count on a page, as its setting turns it on or as its first call
+  waits for the Browser to say whose worker it is, counts what its rules
+  did there so far, as Chrome does. The count reaches the Browser as
   the page's badge for that tab (`extension_action`), under text the
   extension set for the page; it changes as the extension says
   (`tabUpdate`) and goes with the page. The toolbar shows no badge for

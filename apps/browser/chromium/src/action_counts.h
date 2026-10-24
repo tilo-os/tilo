@@ -16,6 +16,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace tilo {
@@ -107,6 +108,15 @@ class ActionCounts {
     if (auto found = tabs_.find(tab); found != tabs_.end())
       for (const auto& entry : found->second.actions) actions.push_back(entry.action);
     return actions;
+  }
+
+  // The same, each with the key to count it by: what an extension that
+  // starts showing its count counts of the page so far.
+  std::vector<std::pair<uint64_t, RuleAction>> Keyed(int tab) const {
+    std::vector<std::pair<uint64_t, RuleAction>> keyed;
+    if (auto found = tabs_.find(tab); found != tabs_.end())
+      for (const auto& entry : found->second.actions) keyed.emplace_back(entry.key, entry.action);
+    return keyed;
   }
 
  private:

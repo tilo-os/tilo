@@ -7642,24 +7642,44 @@ default = false
 cache = false
 cost = "minutes"
 
-# crates/dev/workspace-unify is what tools/ci/workspace_unify.py writes for x86_64, and with it no
-# member builds as another unit whichever selection of packages pulls it in
-# (tools/ci/member_units.py). Run in a copy: both plan with cargo, which writes beside the tree.
+# crates/dev/workspace-unify is what tools/ci/workspace_unify.py writes for x86_64. The script
+# resolves in a copy of the tree, since cargo writes beside it.
 [[check]]
 name = "workspace-unify-x86_64"
 requires = ["arch=x86_64"]
 requirement = { cores = 8, memory = "8GiB" }
-run = "cp -a /src /tmp/tree && cd /tmp/tree && python3 tools/ci/workspace_unify.py --check && python3 tools/ci/member_units.py"
+run = "python3 tools/ci/workspace_unify.py --check"
 fix = "python3 tools/ci/workspace_unify.py --write"
 inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml", "tools/ci/member_units.py", "tools/ci/workspace_unify.py", "tools/ci/package_features.py"]
 
-# crates/dev/workspace-unify is what tools/ci/workspace_unify.py writes for aarch64, and with it no
-# member builds as another unit whichever selection of packages pulls it in
-# (tools/ci/member_units.py). Run in a copy: both plan with cargo, which writes beside the tree.
+# With crates/dev/workspace-unify, no member builds as another unit on x86_64 whichever selection
+# of packages pulls it in. It plans every selection, so it runs on main; workspace-unify-x86_64
+# keeps the anchor current before push. Run in a copy: cargo writes beside the tree.
+[[check]]
+name = "member-units-x86_64"
+requires = ["arch=x86_64"]
+requirement = { cores = 8, memory = "8GiB" }
+run = "cp -a /src /tmp/tree && cd /tmp/tree && python3 tools/ci/member_units.py"
+inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml", "tools/ci/member_units.py", "tools/ci/workspace_unify.py", "tools/ci/package_features.py"]
+on = ["main"]
+
+# crates/dev/workspace-unify is what tools/ci/workspace_unify.py writes for aarch64. The script
+# resolves in a copy of the tree, since cargo writes beside it.
 [[check]]
 name = "workspace-unify-aarch64"
 requires = ["arch=aarch64"]
 requirement = { cores = 8, memory = "8GiB" }
-run = "cp -a /src /tmp/tree && cd /tmp/tree && python3 tools/ci/workspace_unify.py --check && python3 tools/ci/member_units.py"
+run = "python3 tools/ci/workspace_unify.py --check"
 fix = "python3 tools/ci/workspace_unify.py --write"
 inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml", "tools/ci/member_units.py", "tools/ci/workspace_unify.py", "tools/ci/package_features.py"]
+
+# With crates/dev/workspace-unify, no member builds as another unit on aarch64 whichever selection
+# of packages pulls it in. It plans every selection, so it runs on main; workspace-unify-aarch64
+# keeps the anchor current before push. Run in a copy: cargo writes beside the tree.
+[[check]]
+name = "member-units-aarch64"
+requires = ["arch=aarch64"]
+requirement = { cores = 8, memory = "8GiB" }
+run = "cp -a /src /tmp/tree && cd /tmp/tree && python3 tools/ci/member_units.py"
+inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml", "tools/ci/member_units.py", "tools/ci/workspace_unify.py", "tools/ci/package_features.py"]
+on = ["main"]

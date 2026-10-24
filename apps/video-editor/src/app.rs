@@ -6380,6 +6380,8 @@ impl Widget for VideoEditorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        // A clip's switch asks the motion clock for its own frames
+        // (`FaceMotions`); the runner reads it.
         #[cfg(feature = "decode")]
         let decoding = self
             .frame_source
@@ -6398,8 +6400,6 @@ impl Widget for VideoEditorApp {
             // A meter that stopped mid-fall reads as a level that is still
             // there. Frames keep coming until the bars are down.
             || self.mix_meter_is_live()
-            // A clip's switch turning as a click turns it.
-            || self.faces.is_moving(ui::motion::frame_now())
     }
 
     fn build_layout(

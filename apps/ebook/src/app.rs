@@ -5361,8 +5361,8 @@ impl Widget for BooksApp {
     fn needs_redraw(&self) -> bool {
         self.dirty
             || self.flaps_animating()
-            || self.faces.is_moving(ui::motion::frame_now())
-            || self.shelf_controls.is_moving()
+            || self.faces.needs_redraw(ui::motion::frame_now())
+            || self.shelf_controls.needs_redraw()
     }
 
     /// "Try again" beside a failed fetch is pressed between events.
@@ -5380,13 +5380,12 @@ impl Widget for BooksApp {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the loop pumping while a flap is mid-slide or a page turn is
-        // easing in.
-        self.faces.is_moving(ui::motion::frame_now())
-            || self.shelf_controls.is_moving()
-            || (!self.reduce_motion
-                && (self.flaps_animating()
-                    || self.page_turn.is_some_and(|pt| !pt.done(ui::time::now()))
-                    || (self.view != View::Reader && self.awaiting_arrival())))
+        // easing in. The painted switches ask the motion clock for their own
+        // frames.
+        !self.reduce_motion
+            && (self.flaps_animating()
+                || self.page_turn.is_some_and(|pt| !pt.done(ui::time::now()))
+                || (self.view != View::Reader && self.awaiting_arrival()))
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {

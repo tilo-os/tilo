@@ -27,6 +27,8 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   page and frame opened which tab, which knows its opener. A change of zoom
   and a tab made active (highlighted, as the only one of its window) are
   told as well, and a tab is never said to move or to be replaced.
+- Tabs a page opens at once, which may show their pages in any order, are
+  each told of with the link that opened it.
 - A click reaches a worker that went to sleep, which wakes for it.
 - A script a click injects where the extension has no content script of its
   own gets a content script's storage, i18n and messaging, both ways.
@@ -408,6 +410,11 @@ OPENER_PAGE = (b'<!doctype html><title>opener</title><body style="margin:0">'
                b'<iframe src="/opener-frame" style="position:absolute;left:0;top:150px;width:400px;height:200px;border:0"></iframe>')
 OPENER_FRAME = (b'<!doctype html><title>frame</title><body style="margin:0">'
                 b'<a href="/from-frame" target="_blank" style="display:block;width:400px;height:200px">open</a>')
+# A page with two links that open new tabs, one above the other, the
+# second's address extending the first's.
+OPENERS_PAGE = (b'<!doctype html><title>openers</title><body style="margin:0">'
+                b'<a href="/opened" target="_blank" style="display:block;width:400px;height:100px">open</a>'
+                b'<a href="/opened/more" target="_blank" style="display:block;width:400px;height:100px">more</a>')
 IMAGE = b'<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="teal"/></svg>'
 # A file served under /download/, slowly enough to pause it on its way.
 DOWNLOAD = bytes(range(256)) * (4 * 4096)
@@ -461,6 +468,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = OPENER_PAGE
         elif self.path == '/opener-frame':
             body = OPENER_FRAME
+        elif self.path == '/openers':
+            body = OPENERS_PAGE
         else:
             # A page under /de says it is in Austrian German.
             lang = ' lang="de-AT"' if self.path.startswith('/de') else ''
@@ -1216,6 +1225,49 @@ class ExtensionTabs(unittest.TestCase):
         never = {'tabs.onReplaced', 'tabs.onAttached', 'tabs.onDetached', 'tabs.onMoved', 'webNavigation.onTabReplaced'}
         self.assertEqual([h for h in heard() if h['name'] in never], [])
 
+    def test_tabs_a_page_opens_at_once_are_each_told_of_with_the_link_it_opened(self):
+        # Two links clicked one after the other, the second's address
+        # extending the first's; each tab the Browser opens is a program of
+        # its own, so the second may show its page first, as here.
+        host, ids = self.start('navigator', access={'navigator': (['webNavigation', 'tabs'], [])})
+        heard = lambda: json.loads(self.in_worker(host, ids['navigator'], 'JSON.stringify(heard)'))
+        targets = lambda: [h['args'][0] for h in heard() if h['name'] == 'webNavigation.onCreatedNavigationTarget']
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, ids['navigator'], 'typeof heard') != 'object':
+            self.assertLess(time.monotonic(), deadline, 'the worker never started')
+            host.settle(0.25)
+        page = self.url + '/openers'
+        host.navigate(page)
+        [first] = json.loads(self.in_worker(host, ids['navigator'], 'chrome.tabs.query({}).then((tabs) => JSON.stringify(tabs))'))
+        host.settle(0.5)
+        asked = []
+        for y in (50, 150):
+            mark = len(host.seen)
+            host.send(op='mouse_button', button='left', down=True, x=40, y=y)
+            host.send(op='mouse_button', button='left', down=False, x=40, y=y)
+            asked.append((next((e for e in host.seen[mark:] if e['event'] == 'open_tab'), None)
+                          or host.until(lambda e: e['event'] == 'open_tab'))['url'])
+        self.assertEqual(asked, [self.url + '/opened', self.url + '/opened/more'])
+        for count, (new, path) in enumerate(((3, '/opened/more'), (4, '/opened')), start=1):
+            host.send(op='create_tab', tab=new)
+            host.until(lambda e, new=new: e['event'] == 'tab_ready' and e.get('tab') == new)
+            host.send(op='navigate', tab=new, url=self.url + path)
+            deadline = time.monotonic() + HANG_BOUND
+            while len(told := targets()) < count:
+                self.assertLess(time.monotonic(), deadline, f'no tab opened was told of after {path}: {told}')
+                host.settle(0.25)
+            # The tab told of shows the link it was told of, which the page opened.
+            target = told[-1]
+            self.assertEqual((target['url'], target['sourceTabId']), (self.url + path, first['id']))
+            committed = lambda: [h for h in heard() if h['name'] == 'webNavigation.onCommitted' and h['args'][0]['url'] == self.url + path]
+            while not (loaded := committed()):
+                self.assertLess(time.monotonic(), deadline, f'{path} never committed')
+                host.settle(0.25)
+            self.assertEqual(loaded[0]['args'][0]['tabId'], target['tabId'])
+            got = json.loads(self.in_worker(host, ids['navigator'], f"chrome.tabs.get({target['tabId']}).then(JSON.stringify)"))
+            self.assertEqual((got['url'], got['openerTabId']), (self.url + path, first['id']))
+        self.assertEqual(len(targets()), 2)
+
     def test_a_worker_hears_of_a_page_that_loaded_before_the_browser_said_whose_it_is(self):
         # As the Browser starts: the worker runs and listens, a page loads,
         # and only then does the Browser tell the engine whose worker it is.
@@ -1741,6 +1793,30 @@ class ExtensionTabs(unittest.TestCase):
         missing = self.in_worker(host, spotter, "chrome.declarativeNetRequest.getMatchedRules({tabId: 2000000000})"
                                  ".then(() => 'answered', (e) => e.message)")
         self.assertEqual(missing, 'No tab with id: 2000000000.')
+
+        # Asked to show no count, each still counts; asked again on the same
+        # page, as uBlock Origin Lite's setting does or its first call once
+        # the Browser says whose worker it is, each shows what its own rules
+        # did there so far, as in Chrome.
+        show = ("chrome.declarativeNetRequest.setExtensionActionOptions({displayActionCountAsBadgeText: %s})"
+                ".then(() => 'done', (e) => e.message)")
+        for extension in (tally, spotter):
+            self.assertEqual(self.in_worker(host, extension, show % 'false'), 'done')
+        mark = self.counted(host, 'hidden', {**TALLIED, 'beacon': 'stopped'})
+        # The beacon is the page's last request: once the host knows of it,
+        # it knows of them all.
+        heard = f"(async () => (await chrome.declarativeNetRequest.getMatchedRules({{tabId: {tab}}})).rulesMatchedInfo.length)()"
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, spotter, heard) != 1:
+            self.assertLess(time.monotonic(), deadline, 'the blocked beacon never reached the host')
+            host.settle(0.25)
+        self.assertFalse([e for e in host.seen[mark:] if e['event'] == 'extension_action' and e['id'] in (tally, spotter)
+                          and e['change'].get('badge')], 'a button asked to show no count shows none')
+        mark = len(host.seen)
+        for extension in (tally, spotter):
+            self.assertEqual(self.in_worker(host, extension, show % 'true'), 'done')
+        self.badge(host, mark, tally, '4')
+        self.badge(host, mark, spotter, '1')
 
     def test_an_extensions_download_is_the_browsers_and_the_extension_follows_it(self):
         host, ids = self.start('downloader', access={'downloader': (['downloads', 'downloads.open'], [])})

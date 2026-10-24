@@ -4422,7 +4422,7 @@ impl Widget for CalendarApp {
 
     fn needs_redraw(&self) -> bool {
         self.dirty
-            || self.faces.is_moving(ui::motion::frame_now())
+            || self.faces.needs_redraw(ui::motion::frame_now())
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
@@ -4483,12 +4483,11 @@ impl Widget for CalendarApp {
     fn needs_animation_frame(&self) -> bool {
         // A background CalDAV pull wakes the app when it replies
         // (`waking_channel`); frames are only for a scroll container still
-        // settling momentum or fading its bar.
+        // settling momentum or fading its bar. The editor's switch and boxes
+        // ask the motion clock for their own frames (`FaceMotions`).
         self.timeline.needs_animation_frame()
             || self.agenda.needs_animation_frame()
             || self.tasks.needs_animation_frame()
-            // The editor's switch and boxes, turning as a click turns them.
-            || self.faces.is_moving(ui::motion::frame_now())
     }
 
     fn is_layout_dirty(&self) -> bool {

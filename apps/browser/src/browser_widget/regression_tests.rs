@@ -437,6 +437,27 @@ fn a_page_a_web_app_moves_to_is_named_in_history_once_its_title_comes() {
     assert_eq!(title("https://app.test/next").as_deref(), Some(""));
 }
 
+/// An engine that says only what a test does: the page's answer to a click
+/// stays with the page, which is stopped on its question.
+struct Asking(
+    std::sync::Mutex<Vec<WebViewEvent>>,
+    std::sync::Arc<TestEngine>,
+);
+impl WebViewEngine for Asking {
+    fn send(&self, command: WebViewCommand) {
+        self.1.send(command);
+    }
+    fn frames(&self) -> ui::webview::FrameSlot {
+        self.1.frames()
+    }
+    fn drain_events(&self) -> Vec<WebViewEvent> {
+        std::mem::take(&mut *self.0.lock().unwrap())
+    }
+    fn accept_page_dialogs(&self) {
+        self.1.accept_page_dialogs();
+    }
+}
+
 /// A page that asks waits on its question: the person answers it in the
 /// dialog over the page (Escape cancels, Enter takes the default, which is
 /// staying when the page asks to be left), and an agent's page action the
@@ -444,26 +465,6 @@ fn a_page_a_web_app_moves_to_is_named_in_history_once_its_title_comes() {
 #[test]
 fn a_question_the_page_asks_is_answered_from_its_dialog() {
     use ui::webview::{PageDialog, PageDialogKind};
-    /// The engine says only what the test does: the page's answer to the
-    /// click stays with the page, which is stopped on its question.
-    struct Asking(
-        std::sync::Mutex<Vec<WebViewEvent>>,
-        std::sync::Arc<TestEngine>,
-    );
-    impl WebViewEngine for Asking {
-        fn send(&self, command: WebViewCommand) {
-            self.1.send(command);
-        }
-        fn frames(&self) -> ui::webview::FrameSlot {
-            self.1.frames()
-        }
-        fn drain_events(&self) -> Vec<WebViewEvent> {
-            std::mem::take(&mut *self.0.lock().unwrap())
-        }
-        fn accept_page_dialogs(&self) {
-            self.1.accept_page_dialogs();
-        }
-    }
     let engine = std::sync::Arc::new(Asking(std::sync::Mutex::new(Vec::new()), TestEngine::new()));
     let mut widget = BrowserWidget::with_engine(engine.clone(), true);
     let theme = Theme::dark();
@@ -587,4 +588,74 @@ fn a_question_the_page_asks_is_answered_from_its_dialog() {
     tests::layout_keeping_tree(&mut widget, 1000.0, 700.0, &theme);
     assert!(widget.page_dialogs.current().is_none());
     assert_eq!(answers().len(), 4);
+}
+
+/// A page waiting on its question runs nothing, so an agent's page action
+/// started then is refused at once with the question to answer, rather than
+/// sent to the page to time out 45 seconds later as retryable; once the
+/// question is answered, the page takes actions again.
+#[test]
+fn a_page_action_while_the_page_waits_on_its_question_answers_at_once() {
+    use ui::webview::{PageDialog, PageDialogKind};
+    let engine = std::sync::Arc::new(Asking(std::sync::Mutex::new(Vec::new()), TestEngine::new()));
+    let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+    let theme = Theme::dark();
+    tests::layout_keeping_tree(&mut widget, 1000.0, 700.0, &theme);
+    engine
+        .0
+        .lock()
+        .unwrap()
+        .push(WebViewEvent::PageDialog(PageDialog {
+            id: 4,
+            kind: PageDialogKind::Confirm,
+            origin: "https://shop.example".into(),
+            message: "Empty the basket?".into(),
+            default_text: String::new(),
+        }));
+    tests::layout_keeping_tree(&mut widget, 1000.0, 700.0, &theme);
+    assert!(widget.page_dialogs.current().is_some());
+    let sent = || {
+        engine
+            .1
+            .commands()
+            .into_iter()
+            .filter(|command| matches!(command, WebViewCommand::Page { .. }))
+            .count()
+    };
+    let click = |element: &str| {
+        BrowserOperation::Page(PageRequest::Click {
+            element: element.into(),
+        })
+    };
+
+    let refused = ui::tilo_actions::InvocationId::new();
+    widget.admit(refused, click("d1e5")).unwrap();
+    let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+        widget.poll_invocation(refused)
+    else {
+        panic!("a page action while the page waits on its question answers at once");
+    };
+    assert_eq!(error.code, "browser.page.question");
+    assert!(
+        !error.retryable,
+        "trying again changes nothing until it is answered"
+    );
+    assert_eq!(sent(), 0, "nothing is sent to a page that runs nothing");
+
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            BrowserOperation::AnswerPageDialog {
+                dialog: 4,
+                accept: false,
+                text: None,
+            },
+        )
+        .unwrap();
+    let next = ui::tilo_actions::InvocationId::new();
+    widget.admit(next, click("d1e5")).unwrap();
+    assert!(
+        widget.poll_invocation(next).is_none(),
+        "answered, the page takes the action"
+    );
 }

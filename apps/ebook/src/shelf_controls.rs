@@ -50,10 +50,10 @@ impl Default for ShelfControls {
 }
 
 impl ShelfControls {
-    /// Whether its switch is still on its way: the app draws frames until
-    /// it has settled.
-    pub(super) fn is_moving(&self) -> bool {
-        self.faces.is_moving(ui::motion::frame_now())
+    /// Whether its switch must be painted again: on its way, or not yet
+    /// painted at rest. Its frames come from the motion clock.
+    pub(super) fn needs_redraw(&self) -> bool {
+        self.faces.needs_redraw(ui::motion::frame_now())
     }
 
     pub(super) fn accessibility_nodes(

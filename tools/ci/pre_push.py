@@ -9,7 +9,7 @@ release"). So a push runs only what is cheap to catch and annoying to break, in 
   * the `policy/*` steps whose inputs the change touches (the policy suite's own tests,
     `policy/tests/*`, only when the change touches tools/policy/);
   * the generated-file and manifest checks whose inputs it touches (lockfile, deny, hakari,
-    t-toml, codemap, sdk-policy, workspace-layout);
+    t-toml, codemap, sdk-policy, workspace-layout, workspace-unify-x86_64);
   * `changes`, the diff gates (allow reasons, commit policy, interfaces);
   * clippy of the packages whose files it changes, not of their dependents;
   * the aarch64 size check of each app whose files it changes, when t has that commit's
@@ -60,7 +60,10 @@ ROOT = Path(__file__).resolve().parents[2]
 ALWAYS = ("fmt-changed", "changes")
 # Whole-tree checks of generated files, manifests and repository policy, each seconds long and
 # keyed by narrow inputs, so `t scope` names them only when the change touches what they read.
-GATES = frozenset({"lockfile", "deny", "hakari", "t-toml", "codemap", "sdk-policy", "workspace-layout"})
+GATES = frozenset({
+    "lockfile", "deny", "hakari", "t-toml", "codemap", "sdk-policy", "workspace-layout",
+    "workspace-unify-x86_64",
+})
 # Replaced before a push by fmt-changed.
 REPLACED = frozenset({"fmt"})
 POLICY = "policy/"

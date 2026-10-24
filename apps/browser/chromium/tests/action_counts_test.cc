@@ -27,6 +27,16 @@ int main() {
   assert(counts.Of(2, blocker) == 0);
   assert(counts.Actions(1).size() == 2);
 
+  // An extension that starts showing its count counts the page so far by
+  // the keys kept with it, each once.
+  const std::string newcomer(32, 'c');
+  auto keyed = counts.Keyed(1);
+  assert(keyed.size() == 2 && keyed[0].first == *first && keyed[1].first == *second && keyed[1].second.time == 1400);
+  for (const auto& entry : keyed) assert(counts.Count(1, entry.first, newcomer));
+  assert(counts.Of(1, newcomer) == 2 && !counts.Count(1, *first, newcomer));
+  assert(counts.Keyed(2).empty());
+  counts.Forget(newcomer);
+
   // The extension adjusts its own count, never below zero.
   counts.Increment(1, blocker, 3);
   assert(counts.Of(1, blocker) == 5);
