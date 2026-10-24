@@ -700,6 +700,7 @@ impl Device {
             ));
             let heads = document.get_heads();
             document.put(automerge::ROOT, NOTE_TEXT, text).unwrap();
+            document.commit_with(typed());
             document.save_after(&heads)
         };
         let room_id = room.to_string();
@@ -755,6 +756,7 @@ impl Device {
                 document
                     .put(automerge::ROOT, NOTE_TEXT, text)
                     .map_err(|error| error.to_string())?;
+                document.commit_with(typed());
                 Ok(document.save_after(&heads))
             })
             .unwrap_or_else(|error| panic!("{} edits the note: {error}", self.label));
@@ -995,6 +997,13 @@ impl Device {
             .try_send(NetCmd::Connect { addr })
             .unwrap();
     }
+}
+
+/// How the notes app commits what a person typed: a direct edit of the
+/// record that names no finer action.
+fn typed() -> automerge::transaction::CommitOptions {
+    automerge::transaction::CommitOptions::default()
+        .with_message(tilo_actions::FrameworkChange::Native.change_message())
 }
 
 /// The signed change `changes` to the note in `room` by `key`, as the notes
