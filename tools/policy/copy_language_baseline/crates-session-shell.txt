@@ -2,7 +2,6 @@
 # Fix a message and delete its line; nothing may be added.
 # These are search row titles and subtitles, rewritten with the search row work.
 de-DE search-action-quick-settings-devices-subtitle implementation
-de-DE search-app-action-launches chain
 de-DE search-continuity-audio-forward-subtitle implementation
 de-DE search-continuity-calibration-revert-subtitle implementation
 de-DE search-continuity-call-move-subtitle implementation
@@ -12,7 +11,6 @@ de-DE search-continuity-place-subtitle implementation
 en-US search-action-quick-settings-devices-subtitle implementation
 en-US search-action-shared-display-include-subtitle implementation
 en-US search-action-shared-display-inspect-subtitle implementation
-en-US search-app-action-launches chain
 en-US search-app-job implementation
 en-US search-app-job-cancel implementation
 en-US search-continuity-audio-forward-subtitle implementation
@@ -37,9 +35,7 @@ de-DE qs-clipboard-mime-bytes glyph
 de-DE qs-devices-mic-level glyph
 de-DE qs-devices-mic-muted glyph
 de-DE search-answer-money-stale glyph
-de-DE search-app-action-launches glyph
 de-DE search-app-job-reported-counts glyph
-de-DE search-app-resource-contains glyph
 de-DE state-notice-newer-detail glyph
 de-DE window-transfer-choice-copy glyph
 de-DE window-transfer-choice-move glyph
@@ -59,9 +55,7 @@ en-US qs-clipboard-mime-bytes glyph
 en-US qs-devices-mic-level glyph
 en-US qs-devices-mic-muted glyph
 en-US search-answer-money-stale glyph
-en-US search-app-action-launches glyph
 en-US search-app-job-reported-counts glyph
-en-US search-app-resource-contains glyph
 en-US state-notice-newer-detail glyph
 en-US window-transfer-choice-copy glyph
 en-US window-transfer-choice-move glyph
