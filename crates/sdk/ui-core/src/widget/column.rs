@@ -210,6 +210,7 @@ impl Widget for Column {
         // gap included.
         self.flow.vertical = true;
         self.flow.laid_gap = f64::from(self.flow.gap(theme));
+        self.flow.content_sized = self.intrinsic_height;
 
         let style = Style {
             // Intrinsic-height columns use a one-column implicit Grid.
@@ -298,9 +299,15 @@ impl Widget for Column {
     }
 
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        // A band disclosing moves every widget after it.
-        if self.flow.follower_shifts().is_some() {
-            regions.push(self.flow.rect);
+        // A band on its way moves every widget after it; a content-sized
+        // column is drawn that much taller.
+        if let Some(shifts) = self.flow.follower_shifts() {
+            let grows = shifts.last().copied().unwrap_or(0.0).max(0.0);
+            let mut rect = self.flow.rect;
+            if self.flow.content_sized {
+                rect.y1 += grows;
+            }
+            regions.push(rect);
             return;
         }
         for child in &self.flow.children {
@@ -310,6 +317,12 @@ impl Widget for Column {
 
     fn name(&self) -> &'static str {
         "Column"
+    }
+
+    /// A content-sized column a band moves in grows with it, and so moves
+    /// what follows it in its own container.
+    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+        self.flow.disclosing()
     }
 }
 

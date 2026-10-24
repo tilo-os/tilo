@@ -1346,9 +1346,10 @@ pub fn with_findable<R>(
 /// top of the content, driving the first [`Findable`] inside it.
 ///
 /// Opened from a menu or by a pointer, the band discloses
-/// (`motion::Disclosure`): the content is laid out once, at its place under
-/// the open band, and moves with the band's edge by transform. Ctrl+F and
-/// Escape land at once; the close button collapses the band.
+/// (`motion::Disclosure`): while it moves it stands over the content, which
+/// keeps the whole scope (its larger extent) and moves with the band's edge
+/// by transform; the content is laid out under the band once, at rest.
+/// Ctrl+F and Escape land at once; the close button collapses the band.
 pub struct FindScope {
     bar: FindBar,
     content: Element,
@@ -1357,6 +1358,9 @@ pub struct FindScope {
     disclosure: crate::motion::Disclosure,
     /// The motion the person allows, from the last theme seen.
     motion: crate::tokens::EffectiveMotion,
+    /// The layout was built with the band on its way: over the content,
+    /// which keeps the whole scope. Built again once it rests.
+    laid_sliding: bool,
     structure_dirty: bool,
     rect: Rect,
     /// The pointer, for which side of the band a press lands on.
@@ -1377,6 +1381,7 @@ impl FindScope {
             open: false,
             disclosure: crate::motion::Disclosure::closed(),
             motion: crate::tokens::EffectiveMotion::default(),
+            laid_sliding: false,
             structure_dirty: false,
             rect: Rect::ZERO,
             pointer: Point::ZERO,
@@ -1482,16 +1487,19 @@ impl FindScope {
         }
     }
 
-    /// How far below its laid-out place the content is drawn now: the band
-    /// is drawn `reveal` tall while the layout gives it its full height
-    /// (opening) or none (closing). Zero at rest.
+    /// How far below its laid-out place the content is drawn now: as far
+    /// as the band shows while the layout keeps the content at the top of
+    /// the scope. Zero at rest.
     fn content_offset(&self) -> f64 {
-        if !self.disclosure.is_moving() {
+        if !self.laid_sliding {
             return 0.0;
         }
-        let full = self.bar.get_rect().height();
-        let laid = if self.bar_node.is_some() { full } else { 0.0 };
-        self.disclosure.reveal(full).height - laid
+        self.disclosure.reveal(self.bar.get_rect().height()).height
+    }
+
+    /// The layout no longer matches the band: it started or stopped moving.
+    fn layout_stale(&self) -> bool {
+        self.laid_sliding != self.disclosure.is_sliding()
     }
 
     fn is_find_shortcut(&self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
@@ -1543,8 +1551,24 @@ impl Widget for FindScope {
     ) -> NodeId {
         self.motion = theme.motion();
         let mut children = Vec::new();
-        self.bar_node = if self.open {
+        // On its way the band stands over the content, out of the layout:
+        // the content keeps the whole scope and moves by transform.
+        self.laid_sliding = self.disclosure.is_sliding();
+        self.bar_node = if self.open || self.laid_sliding {
             let node = self.bar.build_layout(taffy, theme, node_map);
+            if self.laid_sliding
+                && let Ok(style) = taffy.style(node)
+            {
+                let mut style = style.clone();
+                style.position = taffy::Position::Absolute;
+                style.inset = taffy::Rect {
+                    left: length(0.0_f32),
+                    right: length(0.0_f32),
+                    top: length(0.0_f32),
+                    bottom: taffy::LengthPercentageAuto::auto(),
+                };
+                let _ = taffy.set_style(node, style);
+            }
             children.push(node);
             Some(node)
         } else {
@@ -1585,13 +1609,13 @@ impl Widget for FindScope {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
+        let own = std::mem::take(&mut self.structure_dirty) || self.layout_stale();
         let content = self.content.take_structure_dirty();
         own || content
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.structure_dirty || self.content.is_layout_dirty()
+        self.structure_dirty || self.layout_stale() || self.content.is_layout_dirty()
     }
 
     fn draw(
@@ -1603,7 +1627,7 @@ impl Widget for FindScope {
         presence: &PresenceCtx,
     ) {
         self.motion = theme.motion();
-        if !self.disclosure.is_moving() {
+        if !self.laid_sliding {
             self.content.draw(scene, transform, text, theme, presence);
             if self.open {
                 self.bar.draw(scene, transform, text, theme, presence);
@@ -1611,8 +1635,9 @@ impl Widget for FindScope {
             return;
         }
         // The band opens or closes from the top: the content, laid out once
-        // where it rests, follows the band's edge by transform, clipped to
-        // the scope; the band's controls fade in over the second half.
+        // over the whole scope, follows the band's edge by transform,
+        // clipped to the scope; the band's controls fade in over the second
+        // half.
         let reveal = self.disclosure.reveal(self.bar.get_rect().height());
         let offset = self.content_offset();
         scene.push_layer(
@@ -1644,14 +1669,17 @@ impl Widget for FindScope {
         scene.pop_layer();
     }
 
-    /// Frames while the band opens or closes; none once it rests.
+    /// Frames while the band opens or closes, and one more to lay it out
+    /// at rest; none after.
     fn needs_animation_frame(&self) -> bool {
         self.disclosure.is_moving()
+            || self.layout_stale()
             || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 
     fn needs_redraw(&self) -> bool {
         self.disclosure.is_moving()
+            || self.layout_stale()
             || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
@@ -2044,7 +2072,7 @@ mod tests {
     }
 
     #[test]
-    fn opened_from_a_menu_the_band_discloses_and_the_content_moves_by_transform() {
+    fn opened_from_a_menu_the_band_discloses_over_content_laid_out_at_its_larger_extent() {
         let mut scope = page_scope();
         lay_out(&mut scope);
         // A menu item clicked: the host opens the bar. The frame's instant
@@ -2057,12 +2085,13 @@ mod tests {
         assert!(Widget::needs_animation_frame(&scope));
         let band = scope.bar.get_rect();
         let laid = scope.content.get_rect();
+        assert!(band.height() > 0.0, "the band is laid out at its height");
         assert!(
-            laid.y0 >= band.y1 - 0.5,
-            "the content is laid out once, where it rests under the band"
+            (laid.y0 - scope.rect.y0).abs() < 0.5 && (laid.y1 - scope.rect.y1).abs() < 0.5,
+            "the content keeps the whole scope while the band moves, so nothing under it is bare"
         );
         assert!(
-            (scope.content_offset() + band.height()).abs() < 0.5,
+            scope.content_offset().abs() < 0.5,
             "and is drawn where it stood, moving down with the band's edge"
         );
         // A frame of the motion moves only the drawing: nothing asks for a
@@ -2079,11 +2108,20 @@ mod tests {
         assert!(!scope.structure_dirty);
         assert_eq!(scope.content.get_rect(), laid);
 
-        // At rest it costs nothing.
+        // Once it rests, one more frame lays the content out under the
+        // band; then it costs nothing.
         let _settled = crate::motion::testing::settled();
         assert!(!scope.disclosure.is_moving());
+        assert!(
+            Widget::needs_animation_frame(&scope) && Widget::is_layout_dirty(&scope),
+            "the layout takes the band in once, at rest"
+        );
+        lay_out(&mut scope);
+        let band = scope.bar.get_rect();
+        assert!(scope.content.get_rect().y0 >= band.y1 - 0.5);
         assert!(scope.content_offset().abs() < f64::EPSILON);
         assert!(!Widget::needs_animation_frame(&scope));
+        assert!(!scope.layout_stale(), "and lays out nothing more");
     }
 
     #[test]
@@ -2120,6 +2158,10 @@ mod tests {
         assert!(
             (scope.content_offset() - full).abs() < 0.5,
             "the content, laid out at the top, is drawn under the closing band"
+        );
+        assert!(
+            scope.content.get_rect().y0 - scope.rect.y0 < 0.5,
+            "laid out once over the whole scope"
         );
         assert!(Widget::needs_animation_frame(&scope));
     }
