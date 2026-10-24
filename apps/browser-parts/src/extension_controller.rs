@@ -117,6 +117,23 @@ struct Profile {
     icons: Vec<(String, Option<vello::peniko::ImageData>)>,
 }
 
+/// The extensions as the toolbar knows them, beside their records, paired
+/// so the Library's row for each shows its own buttons: one Chromium could
+/// not name (a broken `key`) is left out of both.
+fn paired(infos: Vec<ExtensionInfo>) -> (Vec<ExtensionInfo>, Vec<Installed>) {
+    infos
+        .into_iter()
+        .filter_map(|info| {
+            let installed = Installed::read(
+                &info,
+                extensions::is_approved(&info),
+                extensions::is_pinned(&extensions::chrome_id(&info)?),
+            )?;
+            Some((info, installed))
+        })
+        .unzip()
+}
+
 /// Read the profile, with the icons of the extensions not in `known`.
 fn read_profile(known: &HashSet<String>) -> Profile {
     let infos = extensions::list_installed();
@@ -124,16 +141,7 @@ fn read_profile(known: &HashSet<String>) -> Profile {
     for info in &infos {
         extensions::prepare_tabs(&info.path);
     }
-    let installed: Vec<Installed> = infos
-        .iter()
-        .filter_map(|info| {
-            Installed::read(
-                info,
-                extensions::is_approved(info),
-                extensions::is_pinned(&extensions::chrome_id(info)?),
-            )
-        })
-        .collect();
+    let (infos, installed) = paired(infos);
     let wanted = installed
         .iter()
         .filter(|extension| extension.enabled)
@@ -346,17 +354,10 @@ impl ExtensionController {
                         extensions::set_approved(&info, true).map_err(|error| error.to_string())
                     });
                 }
-                Outcome::Updated(extensions::Updated::Installed(info)) => {
-                    // The engine runs the new version once it loads it again.
-                    if let Some(id) = extensions::chrome_id(&info) {
-                        self.host.forget(&id);
-                    }
-                }
-                Outcome::Updated(extensions::Updated::AwaitsApproval(info)) => {
-                    if let Some(id) = extensions::chrome_id(&info) {
-                        self.host.forget(&id);
-                    }
-                    self.awaiting.push(info.name);
+                Outcome::Updated(updated) => {
+                    self.on_updated(updated);
+                    // An update is no add: one still downloading stays busy.
+                    continue;
                 }
                 Outcome::Staged(Err(error)) | Outcome::Installed(Err(error)) => {
                     self.panel = Some(Panel::Message(format!(
@@ -482,6 +483,23 @@ impl ExtensionController {
         self.icons.extend(profile.icons);
         self.installed = profile.installed;
         self.infos = profile.infos;
+    }
+
+    /// An extension the daily check brought up to date: the engine runs the
+    /// new version once it loads it again, which the next read of the
+    /// profile asks of it, and the Library shows the new version.
+    fn on_updated(&mut self, updated: extensions::Updated) {
+        let (info, awaits) = match updated {
+            extensions::Updated::Installed(info) => (info, false),
+            extensions::Updated::AwaitsApproval(info) => (info, true),
+        };
+        if let Some(id) = extensions::chrome_id(&info) {
+            self.host.forget(&id);
+        }
+        if awaits {
+            self.awaiting.push(info.name);
+        }
+        self.refresh = true;
     }
 
     /// Ask the Web Store for newer versions of its extensions, on a worker,
@@ -1301,6 +1319,71 @@ mod tests {
                 id: "reader".into()
             })
         );
+    }
+
+    #[test]
+    fn each_library_row_acts_on_its_own_extension() {
+        let profile = tempfile::tempdir().unwrap();
+        let record = |name: &str, manifest: &str| {
+            let path = profile.path().join(name);
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("manifest.json"), manifest).unwrap();
+            ExtensionInfo {
+                id: name.into(),
+                name: name.into(),
+                version: "1".into(),
+                manifest_version: 3,
+                description: String::new(),
+                permissions: Vec::new(),
+                path,
+            }
+        };
+        let infos = vec![
+            record(
+                "broken",
+                r#"{"manifest_version":3,"name":"broken","version":"1","key":"not base64!"}"#,
+            ),
+            record(
+                "kept",
+                r#"{"manifest_version":3,"name":"kept","version":"1"}"#,
+            ),
+        ];
+        let (infos, installed) = paired(infos);
+        assert_eq!(infos.len(), installed.len());
+        assert_eq!(infos[0].name, "kept");
+        assert_eq!(
+            Some(installed[0].id.clone()),
+            extensions::chrome_id(&infos[0]),
+            "the row's buttons are the kept extension's"
+        );
+    }
+
+    #[test]
+    fn an_updated_extension_is_read_again_so_its_new_version_runs() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Lite","version":"2"}"#,
+        )
+        .unwrap();
+        let info = ExtensionInfo {
+            id: "lite".into(),
+            name: "Lite".into(),
+            version: "2".into(),
+            manifest_version: 3,
+            description: String::new(),
+            permissions: Vec::new(),
+            path: root.path().to_owned(),
+        };
+        let mut controller = ExtensionController::new(true);
+        controller.refresh = false;
+        controller.on_updated(extensions::Updated::Installed(info.clone()));
+        assert!(controller.refresh, "the profile is read again");
+        assert!(controller.awaiting.is_empty());
+        controller.refresh = false;
+        controller.on_updated(extensions::Updated::AwaitsApproval(info));
+        assert!(controller.refresh);
+        assert_eq!(controller.awaiting, ["Lite"]);
     }
 
     #[test]

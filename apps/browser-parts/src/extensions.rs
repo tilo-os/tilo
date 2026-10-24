@@ -772,13 +772,19 @@ mod approval_tests {
 }
 
 fn approval_path(extension: &ExtensionInfo) -> Option<PathBuf> {
-    let path = extension.path.canonicalize().ok()?;
+    approval_path_of(&extension.path)
+}
+fn approval_path_of(root: &Path) -> Option<PathBuf> {
+    let path = root.canonicalize().ok()?;
     let key = blake3::hash(path.to_str()?.as_bytes()).to_hex();
     Some(path.parent()?.join(format!(".tilo-approval-{key}.json")))
 }
 fn manifest_digest(extension: &ExtensionInfo) -> Result<String, ExtensionError> {
     let text = read_manifest(&extension.path.join("manifest.json"))?;
-    Ok(blake3::hash(text.as_bytes()).to_hex().to_string())
+    Ok(digest_of(&text))
+}
+fn digest_of(manifest: &str) -> String {
+    blake3::hash(manifest.as_bytes()).to_hex().to_string()
 }
 pub fn is_approved(extension: &ExtensionInfo) -> bool {
     extension.manifest_version == 3
@@ -927,8 +933,8 @@ const WORKER_MARK: &str = "// The extension's own worker: ";
 /// by their address.
 pub fn prepare_tabs(root: &Path) -> Option<String> {
     let manifest_path = root.join("manifest.json");
-    let mut manifest: serde_json::Value =
-        serde_json::from_str(&read_manifest(&manifest_path).ok()?).ok()?;
+    let shipped = read_manifest(&manifest_path).ok()?;
+    let mut manifest: serde_json::Value = serde_json::from_str(&shipped).ok()?;
     let background = manifest.get_mut("background")?.as_object_mut()?;
     let worker = background.get("service_worker")?.as_str()?.to_owned();
     let module = background.get("type").and_then(serde_json::Value::as_str) == Some("module");
@@ -967,7 +973,19 @@ pub fn prepare_tabs(root: &Path) -> Option<String> {
     }
     if worker != WORKER_FILE {
         background.insert("service_worker".into(), WORKER_FILE.into());
-        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).ok()?).ok()?;
+        let prepared = serde_json::to_string_pretty(&manifest).ok()?;
+        // The person agreed to the manifest as it shipped; wrapping its
+        // worker asks for nothing more, so that agreement holds for the
+        // wrapped one. Without this an extension turned on is off again
+        // at its next read: just after it is added, after each update.
+        let approval = approval_path_of(root);
+        let approved = approval.as_ref().is_some_and(|path| {
+            std::fs::read_to_string(path).is_ok_and(|digest| digest == digest_of(&shipped))
+        });
+        std::fs::write(&manifest_path, &prepared).ok()?;
+        if approved && let Some(path) = approval {
+            std::fs::write(path, digest_of(&prepared)).ok()?;
+        }
     }
     Some(token)
 }
@@ -1364,6 +1382,48 @@ mod tabs_tests {
             std::fs::read_to_string(root.path().join(WORKER_FILE)).unwrap(),
             wrapper
         );
+    }
+
+    #[test]
+    fn an_extension_turned_on_stays_on_once_its_worker_is_wrapped() {
+        // As the Browser adds one from the store: unpacked into the
+        // profile, turned on, then read, which wraps its worker.
+        let profile = tempfile::tempdir().unwrap();
+        let root = profile.path().join("blocker");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Blocker","version":"1",
+            "background":{"service_worker":"worker.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("worker.js"), "self.mine = 1;").unwrap();
+        let added = list_in(profile.path()).pop().unwrap();
+        set_approved(&added, true).unwrap();
+        assert!(prepare_tabs(&root).is_some());
+        let read = list_in(profile.path()).pop().unwrap();
+        assert!(is_approved(&read), "the person turned it on");
+        assert_eq!(approved_in(profile.path()), [root.canonicalize().unwrap()]);
+        // Read again at the next start: still on.
+        assert!(prepare_tabs(&root).is_some());
+        assert!(is_approved(&read));
+
+        // One the person never turned on is not turned on by the wrap.
+        let other = profile.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(
+            other.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Other","version":"1",
+            "background":{"service_worker":"worker.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(other.join("worker.js"), "").unwrap();
+        assert!(prepare_tabs(&other).is_some());
+        let other = list_in(profile.path())
+            .into_iter()
+            .find(|info| info.name == "Other")
+            .unwrap();
+        assert!(!is_approved(&other));
     }
 
     #[test]
