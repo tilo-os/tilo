@@ -434,6 +434,11 @@ content scripts (with `sender.tab`) work without help.
   with Chrome's info and the tab, and grants `activeTab`. The items and their
   checked state are kept in the profile (`Extension Menus.json`, never for a
   private window), since an extension makes them once, when installed.
+- A call from an extension's page is a request the page cancels as it
+  closes, where Chrome has sent it already. A popup that acts and closes at
+  once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
+  this site" and uBlock Origin Lite's element zapper do) closes once its
+  calls are answered, or after two seconds.
 - A click or a tab event reaches a worker through the DevTools pipe, which
   wakes it if it sleeps; the host attaches only while it delivers, so an idle
   worker still sleeps. `tests/extension_tabs.py` covers each of these.

@@ -28,10 +28,18 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   contexts say (page, selection, link, image); choosing one tells the
   extension with the tab, which it may then script (activeTab), and the
   items and their state outlast a restart.
+- A privacy blocker (as Privacy Badger, DuckDuckGo Privacy Essentials,
+  Ghostery and AdGuard are) counts what it blocked in a tab by the id
+  webRequest reports, and its popup finds that count, and the site, from the
+  page it was opened over. Turned off for the site from the popup, it reloads
+  the page and closes at once, and the page loads its trackers.
+- A popup that starts a script on the page and closes at once still starts
+  it, as uBlock Origin Lite's element zapper does.
 """
 import base64
 import hashlib
 import http.server
+import itertools
 import json
 from pathlib import Path
 import secrets
@@ -154,6 +162,12 @@ def image(url, kind):
     prefix = f'data:image/{kind};base64,'
     assert url.startswith(prefix), url[:40]
     return base64.b64decode(url[len(prefix):])
+# A page with a tracker, which says whether the tracker ran.
+SHIELDED = (b'<!doctype html><title>loading</title><script src="/tracker/t.js"></script>'
+            b"<script>addEventListener('load', () => {"
+            b"document.title = 'page:' + (window.tracked ? 'tracked' : 'untracked'); });</script>")
+# What the privacy blocker fixture may do, as the Browser grants it.
+SHIELD = (['declarativeNetRequest', 'webRequest', 'tabs', 'scripting'], ['<all_urls>'])
 
 
 # A page with a link, an image and words, each where the test right-clicks
@@ -180,6 +194,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(204)
         self.end_headers()
 
+    def handle(self):
+        # A page left before its response was read closes the connection.
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_GET(self):
         kind = 'text/html'
         if self.path == '/shot':
@@ -190,6 +211,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body, kind = IMAGE, 'image/svg+xml'
         else:
             body = f'<!doctype html><title>page {self.path}</title><body>page</body>'.encode()
+        if self.path.startswith('/tracker/'):
+            kind, body = 'text/javascript', b'window.tracked = true;'
+        elif self.path.startswith('/shielded'):
+            body = SHIELDED
         self.send_response(200)
         self.send_header('Content-Type', kind)
         self.send_header('Content-Length', str(len(body)))
@@ -382,6 +407,38 @@ class ExtensionTabs(unittest.TestCase):
         host.send(op='resize', tab=2, width=360, height=200, scale_factor=1.0)
         host.send(op='navigate', tab=2, url=f'chrome-extension://{ids["pager"]}/popup.html')
         self.assertEqual(self.title(host, 1, ('paged:', 'failed:')), 'paged:page:true|port:hi')
+    def shielded(self, host, page, expected):
+        """The tracker page in tab 1 as it loads once the blocker's rules
+        are in, which the engine applies a moment after it loads it."""
+        deadline = time.monotonic() + HANG_BOUND
+        for attempt in itertools.count():
+            host.send(op='navigate', url=f'{page}?{attempt}')
+            title = host.until(lambda e: e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'].startswith('page:'))['title']
+            if title == expected or time.monotonic() > deadline:
+                return title
+            host.settle(0.5)
+
+    def test_a_privacy_blocker_counts_what_it_blocked_in_the_tab_and_turns_off_for_the_site(self):
+        host, ids = self.start('shield', access={'shield': SHIELD})
+        page = self.url + '/shielded'
+        self.assertEqual(self.shielded(host, page, 'page:untracked'), 'page:untracked')
+        self.panel(host, 2, f'chrome-extension://{ids["shield"]}/popup.html')
+        shown = json.loads(self.title(host, 2, 'shield:')[len('shield:'):])
+        self.assertEqual(shown, {'site': self.url, 'blocked': 1})
+        # Off for the site: the popup reloads the page and closes at once.
+        mark = len(host.seen)
+        self.panel(host, 3, f'chrome-extension://{ids["shield"]}/popup.html?allow')
+        closed = host.until(lambda e: e.get('tab') == 3 and (e['event'] == 'closed' or (e['event'] == 'title' and e['title'].startswith('failed:'))))
+        self.assertEqual(closed['event'], 'closed', closed)
+        reloaded = lambda e: e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'].startswith('page:')
+        title = next((e for e in host.seen[mark:] if reloaded(e)), None) or host.until(reloaded)
+        self.assertEqual(title['title'], 'page:tracked', 'the page reloaded without the blocker')
+
+    def test_a_popup_that_starts_a_script_and_closes_at_once_still_starts_it(self):
+        host, ids = self.start('shield', access={'shield': SHIELD})
+        host.navigate(self.url + '/zapped')
+        self.panel(host, 2, f'chrome-extension://{ids["shield"]}/popup.html?mark')
+        self.assertEqual(self.title(host, 1, 'marked'), 'marked')
 
     def test_a_worker_hears_of_a_page_that_finished_loading(self):
         host, ids = self.start('watcher', access={'watcher': (['scripting'], ['http://127.0.0.1/*'])})
