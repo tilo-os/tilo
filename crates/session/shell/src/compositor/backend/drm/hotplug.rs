@@ -225,12 +225,21 @@ pub fn clamp_pointer_to_outputs(
         }
         let min_x = f64::from(x);
         let min_y = f64::from(y);
+        // On the output is its whole half-open extent, the last pixel's
+        // fraction included: judged by the last pixel's left edge instead, a
+        // pointer moving slower than half a pixel per event was snapped back
+        // from that fraction each time and never crossed onto the output
+        // beside it.
+        if pointer.0 >= min_x
+            && pointer.1 >= min_y
+            && pointer.0 < min_x + f64::from(width)
+            && pointer.1 < min_y + f64::from(height)
+        {
+            return pointer;
+        }
         let max_x = min_x + f64::from(width.saturating_sub(1));
         let max_y = min_y + f64::from(height.saturating_sub(1));
         let candidate = (pointer.0.clamp(min_x, max_x), pointer.1.clamp(min_y, max_y));
-        if candidate == pointer {
-            return pointer;
-        }
         let dx = pointer.0 - candidate.0;
         let dy = pointer.1 - candidate.1;
         let distance_squared = dx.mul_add(dx, dy * dy);
