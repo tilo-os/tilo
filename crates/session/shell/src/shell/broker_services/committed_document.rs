@@ -270,16 +270,10 @@ impl NativeOwnerCommitService {
     /// Whether another device governs `room` and it is a host (a home
     /// relay), which creates the room's records on a member's request.
     fn host_governs(&self, room: super::super::state::RoomId) -> bool {
-        self.network
-            .as_ref()
-            .is_some_and(|network| network.governed_elsewhere(room))
-            && self.opened_owner("").is_ok_and(|owner| {
-                owner
-                    .with_current(room, |view| {
-                        Ok(view.governor().capabilities.can_act_as_host)
-                    })
-                    .unwrap_or(false)
-            })
+        self.network.as_ref().is_some_and(|network| {
+            self.opened_owner("")
+                .is_ok_and(|owner| network.host_creates_records(&owner, room))
+        })
     }
     /// Say why an app's first read of a record its room does not hold
     /// failed: whether its launch carried the signed original's creation

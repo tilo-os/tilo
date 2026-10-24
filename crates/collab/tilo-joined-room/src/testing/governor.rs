@@ -560,6 +560,7 @@ impl TestGovernor {
             records: self.peer.rows(),
             governance_messages: self.outgoing.clone(),
             generation: self.generation,
+            hosts: Vec::new(),
         };
         self.completions.insert(request_id, bootstrap.clone());
         Ok(bootstrap)

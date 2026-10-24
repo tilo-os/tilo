@@ -189,7 +189,7 @@ impl CapnpBrokerState {
     }
 
     /// Record the grant "Allow for the issue" gives, when `answer` gave it.
-    fn record_answer(
+    async fn record_answer(
         &self,
         request: &AppActionConsentRequest,
         grant: Option<Grant>,
@@ -197,9 +197,9 @@ impl CapnpBrokerState {
     ) {
         if answer == AppActionConsent::Always
             && let (Some(grant), Some(grants)) = (grant, self.services.app_action_grants.as_ref())
-            && grants.record(request, grant, answer).is_none()
+            && let Err(error) = grants.record(request, grant, answer).await
         {
-            tracing::warn!("the grant for the issue could not be recorded");
+            tracing::warn!(%error, "the grant for the issue could not be recorded");
         }
     }
 
@@ -270,7 +270,7 @@ impl CapnpBrokerState {
         let issue = issue.to_owned();
         runtime.spawn(async move {
             let answer = answer.await.unwrap_or(AppActionConsent::Deny);
-            self.record_answer(&request, grant, answer);
+            self.record_answer(&request, grant, answer).await;
             let Some(invoke) = self.tracker_answer(&request.room, &issue, answer) else {
                 tracing::warn!("the tracker that asked is no longer published");
                 return;
@@ -356,7 +356,7 @@ pub(super) fn serve_answered(
             answer,
         } = *pending;
         let answer = answer.await.unwrap_or(AppActionConsent::Deny);
-        state.record_answer(&request, grant, answer);
+        state.record_answer(&request, grant, answer).await;
         let message = match message {
             RemoteActionMessage::Invoke(mut request) => {
                 if let InvokeArgument::Json(arguments) = &mut request.argument {
