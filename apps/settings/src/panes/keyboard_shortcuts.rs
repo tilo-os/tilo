@@ -241,6 +241,7 @@ fn chord_caps(chords: &[KeyChord]) -> Box<dyn Widget> {
             .iter()
             .map(|chord| ui::widget::KeyHint {
                 keys: caps.chord_keys(chord.modifiers.iter().map(String::as_str), &chord.key),
+                alternatives: Vec::new(),
                 label: String::new(),
             })
             .collect(),

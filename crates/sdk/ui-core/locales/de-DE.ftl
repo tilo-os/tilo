@@ -712,6 +712,8 @@ host-native-page-history-scope = Rückgängig und Wiederholen gelten für den Be
 display-arrangement-name = Bildschirmanordnung
 display-arrangement-description = Drück auf einen Bildschirm, um ihn auszuwählen, und zieh ihn neben einen anderen, um ihn dort zu platzieren. Per Tastatur wählt die Bildschirmauswahl einen aus, und die Pfeiltasten verschieben ihn.
 display-arrangement-empty = Keine Bildschirme zum Anordnen
+# Between two key chords that do the same thing: "Alt F4 or Super W".
+key-hint-or = oder
 display-arrangement-item = Bildschirm { $number }: { $name }
 display-arrangement-item-primary = Bildschirm { $number }: { $name }, Hauptbildschirm
 display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }

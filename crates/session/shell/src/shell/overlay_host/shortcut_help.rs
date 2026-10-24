@@ -23,12 +23,12 @@ impl ShellOverlayHost {
                 shortcut_action_summary(&self.shortcut_config).is_some(),
                 self.desktop_controls.config().vim_mode,
             );
-            98.0 + shortcut_guide_content_height(
+            shortcut_guide_height(
                 width - 48.0,
                 SHORTCUT_GUIDE_ROWS.len(),
                 note_lines,
-                self.shortcut_navigation_step,
-            ) + 22.0
+                self.shortcut_guide_rhythm,
+            )
         } else {
             600.0
         };
@@ -225,23 +225,19 @@ impl ShellOverlayHost {
             &title_style,
         );
         let (title_width, _) = text_renderer.measure_style(&title, None, &title_style);
-        let f1_hint = Rect::new(
-            panel.x0 + 34.0 + f64::from(title_width),
-            panel.y0 + 22.0,
-            panel.x0 + 68.0 + f64::from(title_width),
-            panel.y0 + 46.0,
-        );
-        // The key that reopens the guide, as every keycap is drawn.
-        InputHint::paint_keycap_labels_at(
-            scene,
-            transform,
-            Point::new(
-                f1_hint.x0,
-                f1_hint.center().y - InputHint::keycap_height(theme) / 2.0,
+        // The key that reopens the guide.
+        let reopen = [ui::widget::KeyHint::new(["F1"], String::new())];
+        let reopen = ui::widget::KeyHintsFace::new(&reopen);
+        let reopen_x = panel.x0 + 34.0 + f64::from(title_width);
+        let reopen_width = reopen.width(text_renderer, theme) + 1.0;
+        reopen.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            Rect::new(
+                reopen_x,
+                panel.y0 + 22.0,
+                reopen_x + reopen_width,
+                panel.y0 + 46.0,
             ),
-            &["F1".to_owned()],
-            text_renderer,
-            theme,
         );
         text_renderer.draw_style(
             scene,
@@ -272,7 +268,9 @@ impl ShellOverlayHost {
             ControllerBinding, ControllerButton, InputBinding, KeyLegend, KeyboardBinding,
             KeyboardModifier, TouchGesture,
         };
-        use ui::widget::{InputDeviceGlyph, InputHint, LegendConventions};
+        use ui::widget::{
+            InputDeviceGlyph, InputHint, KeyHintsFace, LegendConventions, SectionHeaderFace,
+        };
         let platform = ui::PlatformConventions::default();
         let family = self
             .interaction
@@ -518,7 +516,7 @@ impl ShellOverlayHost {
                     body.width(),
                     rows.len(),
                     note_lines,
-                    self.shortcut_navigation_step,
+                    self.shortcut_guide_rhythm,
                 );
                 self.shortcut_guide_max_scroll = (content_height - body.height()).max(0.0);
                 let scroll = self
@@ -536,11 +534,8 @@ impl ShellOverlayHost {
                     &visible,
                 );
                 let nav_columns = shortcut_navigation_columns(body.width());
-                let navigation_height = shortcut_navigation_height(
-                    rows.len(),
-                    nav_columns,
-                    self.shortcut_navigation_step,
-                );
+                let rhythm = self.shortcut_guide_rhythm;
+                let navigation_height = shortcut_navigation_height(rows.len(), nav_columns, rhythm);
                 let navigation_surface =
                     Rect::new(body.x0, body.y0, body.x1, body.y0 + navigation_height);
                 // The navigation chords sit on a recessed card in the panel.
@@ -552,15 +547,16 @@ impl ShellOverlayHost {
                     f64::from(theme.tokens.radii.detail),
                     navigation_ground,
                 );
-                text_renderer.draw_style(
-                    scene,
-                    &t("guide-navigation-heading"),
-                    colors.text_dim,
-                    transform.pre_translate((body.x0 + 14.0, body.y0 + 11.0).into()),
-                    None,
-                    &theme
-                        .text(TextRole::Caption)
-                        .with_weight(TextWeight::Semibold),
+                let rows_top = shortcut_group_rows_top(rhythm);
+                SectionHeaderFace::group(&t("guide-navigation-heading")).paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    Rect::new(
+                        navigation_surface.x0 + 14.0,
+                        navigation_surface.y0 + rhythm.inset,
+                        navigation_surface.x1 - 14.0,
+                        navigation_surface.y0 + rhythm.inset + rhythm.header,
+                    ),
+                    ui::widget::Interaction::default(),
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index.checked_rem(nav_columns).unwrap_or_default();
@@ -572,8 +568,8 @@ impl ShellOverlayHost {
                     let x =
                         navigation_surface.x0 + 14.0 + f64_of_usize(column) * (column_width + 8.0);
                     let y = navigation_surface.y0
-                        + 31.0
-                        + f64_of_usize(row) * self.shortcut_navigation_step;
+                        + rows_top
+                        + f64_of_usize(row) * rhythm.navigation_step;
                     text_renderer.draw_style(
                         scene,
                         &t(label),
@@ -632,11 +628,13 @@ impl ShellOverlayHost {
                         }
                     }
 
+                    let reset_side = ui::widget::ControlSize::Small.height(theme);
+                    let caps_cy = y + 18.0 + InputHint::keycap_height(theme) / 2.0;
                     let reset = Rect::new(
-                        hit_rects[1].x1 + 12.0,
-                        y + 18.0,
-                        hit_rects[1].x1 + 34.0,
-                        y + 40.0,
+                        hit_rects[1].x1 + 8.0,
+                        caps_cy - reset_side / 2.0,
+                        hit_rects[1].x1 + 8.0 + reset_side,
+                        caps_cy + reset_side / 2.0,
                     );
                     let changed = actions.into_iter().any(|action| {
                         shortcuts.bindings.get(&action) != defaults.bindings.get(&action)
@@ -649,43 +647,16 @@ impl ShellOverlayHost {
                             .is_some_and(|point| screen_reset.contains(point));
                         let focused = self.shortcut_guide_focus
                             == Some(ShortcutGuideFocus::Reset(*previous, *next));
-                        // A Control (HIG §9.1/§9.5): the shared lift floor
-                        // with a derived edge, the hover tier under the
-                        // pointer or focus — never a ramp slot at an
-                        // off-scale radius.
-                        qs::paint_control(
+                        let name =
+                            t_args("keyboard-shortcut-reset", &[("shortcut", t(label).into())]);
+                        ui::widget::Button::paint(
                             scene,
                             transform,
+                            text_renderer,
                             theme,
-                            reset,
-                            hovered || focused,
-                            false,
-                        );
-                        if focused {
-                            ui::widget::paint_focus_ring(
-                                scene,
-                                transform,
-                                reset,
-                                f64::from(theme.tokens.radii.control),
-                                theme,
-                            );
-                        }
-                        let reset_style = theme.text(TextRole::Body);
-                        let (reset_w, reset_h) =
-                            text_renderer.measure_style("↶", None, &reset_style);
-                        text_renderer.draw_style(
-                            scene,
-                            "↶",
-                            colors.text_primary,
-                            transform.pre_translate(
-                                (
-                                    reset.center().x - f64::from(reset_w) / 2.0,
-                                    reset.center().y - f64::from(reset_h) / 2.0,
-                                )
-                                    .into(),
-                            ),
-                            None,
-                            &reset_style,
+                            &ui::widget::IconButton::face(reset, ui::icons::Icon::Undo2, &name)
+                                .hovered(hovered)
+                                .focused(focused),
                         );
                         if screen_reset.intersect(body).area() > 0.0 {
                             self.shortcut_reset_rects
@@ -693,25 +664,20 @@ impl ShellOverlayHost {
                         }
                     }
                 }
-                let essentials_y = navigation_surface.y1 + 12.0;
-                text_renderer.draw_style(
-                    scene,
-                    &t("guide-essentials-heading"),
-                    colors.text_dim,
-                    transform.pre_translate((body.x0, essentials_y).into()),
-                    None,
-                    &theme
-                        .text(TextRole::Caption)
-                        .with_weight(TextWeight::Semibold),
+                let essentials_y = navigation_surface.y1;
+                SectionHeaderFace::group(&t("guide-essentials-heading")).paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    Rect::new(body.x0, essentials_y, body.x1, essentials_y + rhythm.header),
+                    ui::widget::Interaction::default(),
                 );
                 let reference_columns = shortcut_reference_columns(body.width());
                 let reference_step = shortcut_reference_step();
-                let reference_top = essentials_y + 18.0;
+                let reference_top = essentials_y + rhythm.header;
                 let reference_gap = 12.0;
                 let reference_width = (body.width()
                     - reference_gap * f64_of_usize(reference_columns.saturating_sub(1)))
                     / f64_of_usize(reference_columns);
-                let reference_height = shortcut_reference_group_height();
+                let reference_height = shortcut_reference_group_height(rhythm);
                 let group_titles = [
                     "guide-group-windows",
                     "guide-group-search",
@@ -720,6 +686,7 @@ impl ShellOverlayHost {
                 let chord_style = theme.text(TextRole::Caption);
                 let label_gap =
                     f64::from(text_renderer.measure_style("Ag", None, &chord_style).1) + 4.0;
+                let cap_h = KeyHintsFace::height(theme);
                 let mut groups_bottom = reference_top;
                 for (group_index, group_rows) in references.iter().enumerate() {
                     let column = group_index
@@ -740,18 +707,20 @@ impl ShellOverlayHost {
                         qs::control_fill(theme, false),
                     );
                     let group_title = group_titles.get(group_index).copied().unwrap_or_default();
-                    text_renderer.draw_style(
-                        scene,
-                        &t(group_title),
-                        colors.text_dim,
-                        transform.pre_translate((group.x0 + 12.0, group.y0 + 10.0).into()),
-                        Some(f32_of_f64(group.width() - 24.0)),
-                        &theme
-                            .text(TextRole::Caption)
-                            .with_weight(TextWeight::Semibold),
+                    SectionHeaderFace::group(&t(group_title)).paint(
+                        &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                        Rect::new(
+                            group.x0 + 12.0,
+                            group.y0 + rhythm.inset,
+                            group.x1 - 12.0,
+                            group.y0 + rhythm.inset + rhythm.header,
+                        ),
+                        ui::widget::Interaction::default(),
                     );
                     for (row_index, (label, chord)) in group_rows.iter().enumerate() {
-                        let entry_y = group.y0 + 29.0 + f64_of_usize(row_index) * reference_step;
+                        let entry_y = group.y0
+                            + shortcut_group_rows_top(rhythm)
+                            + f64_of_usize(row_index) * reference_step;
                         text_renderer.draw_style(
                             scene,
                             label,
@@ -760,31 +729,12 @@ impl ShellOverlayHost {
                             Some(f32_of_f64(group.width() - 24.0)),
                             &chord_style,
                         );
-                        // Real keycaps from the same component as the
-                        // navigation rows; alternatives are split by a slash.
-                        let mut cap_x = group.x0 + 12.0;
+                        // Alternative chords are one hint, joined by "or".
                         let cap_y = entry_y + label_gap;
-                        for (alt_index, keys) in shortcut_chord_keycaps(chord).iter().enumerate() {
-                            if alt_index > 0 {
-                                text_renderer.draw_style(
-                                    scene,
-                                    "/",
-                                    colors.text_dim,
-                                    transform.pre_translate((cap_x + 6.0, cap_y + 4.0).into()),
-                                    None,
-                                    &chord_style,
-                                );
-                                cap_x += 20.0;
-                            }
-                            cap_x += InputHint::paint_keycap_labels_at(
-                                scene,
-                                transform,
-                                Point::new(cap_x, cap_y),
-                                keys,
-                                text_renderer,
-                                theme,
-                            );
-                        }
+                        KeyHintsFace::new(&shortcut_chord_hints(chord)).paint(
+                            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                            Rect::new(group.x0 + 12.0, cap_y, group.x1 - 12.0, cap_y + cap_h),
+                        );
                     }
                 }
                 let pointer_y = groups_bottom + 4.0;

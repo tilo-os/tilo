@@ -1078,7 +1078,8 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         assert_eq!(shortcut_reference_columns(912.0), 3);
         assert_eq!(shortcut_reference_columns(520.0), 2);
         assert!(
-            shortcut_reference_group_height() >= 6.0 * shortcut_reference_step(),
+            shortcut_reference_group_height(shortcut_guide_rhythm(&Theme::dark()))
+                >= 6.0 * shortcut_reference_step(),
             "a group must hold its six rows"
         );
     }
@@ -1107,13 +1108,11 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         // The narrowest three-column body is 640 wide.
         let cell = (640.0 - 12.0 * 2.0) / 3.0 - 24.0;
         for (_, chord) in rows {
-            let mut width = 0.0;
-            for (index, keys) in shortcut_chord_keycaps(&chord).iter().enumerate() {
-                if index > 0 {
-                    width += 20.0;
-                }
-                width += ui::widget::InputHint::measure_keycap_labels(keys, &mut renderer, &theme);
-            }
+            let hints = shortcut_chord_hints(&chord);
+            let chords = shortcut_chord_keycaps(&chord);
+            assert_eq!(hints.len(), 1, "{chord:?}");
+            assert_eq!(hints[0].alternatives.len() + 1, chords.len(), "{chord:?}");
+            let width = ui::widget::KeyHintsFace::new(&hints).width(&mut renderer, &theme);
             assert!(width <= cell, "{chord:?} is {width}px, cell is {cell}px");
         }
     }

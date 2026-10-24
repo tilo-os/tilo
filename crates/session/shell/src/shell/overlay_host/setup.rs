@@ -459,7 +459,7 @@ impl ShellOverlayHost {
             overview_panel_cache_fills: 0,
             overview_metrics: OverviewMetrics::default(),
             overview_layout_theme: Theme::default(),
-            shortcut_navigation_step: shortcut_navigation_step(&Theme::default()),
+            shortcut_guide_rhythm: shortcut_guide_rhythm(&Theme::default()),
             overview_layout_viewport: Rect::ZERO,
             qs_motion: qs_motion::QsMotion::closed(),
             input_source: ui::tokens::MotionSource::default(),

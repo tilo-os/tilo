@@ -2564,7 +2564,7 @@ fn compact_shortcut_help_fits_the_window_and_scrolls_its_body() {
         panel.width() - 48.0,
         SHORTCUT_GUIDE_ROWS.len(),
         note_lines,
-        h.host.shortcut_navigation_step,
+        h.host.shortcut_guide_rhythm,
     );
     assert!(
         (h.host.shortcut_guide_max_scroll - (content_h - body_h)).abs() < 1e-6,

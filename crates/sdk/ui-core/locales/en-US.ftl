@@ -715,6 +715,8 @@ host-native-page-history-scope = Undo and redo apply to this page’s editing hi
 display-arrangement-name = Display arrangement
 display-arrangement-description = Press a display to choose it and drag it to place it beside another. From the keyboard, the display picker chooses one and the arrow keys move it.
 display-arrangement-empty = No displays to arrange
+# Between two key chords that do the same thing: "Alt F4 or Super W".
+key-hint-or = or
 display-arrangement-item = Display { $number }: { $name }
 display-arrangement-item-primary = Display { $number }: { $name }, main display
 display-arrangement-item-position = { $width } × { $height } at { $x }, { $y }

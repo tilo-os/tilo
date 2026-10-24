@@ -498,6 +498,22 @@ fn rows(theme: &Theme, out: &Path) {
     let rect = Rect::new(x, p.y, x + 700.0, p.y + h);
     KeyHintsFace::new(&hints).paint(&mut p.ctx(), rect);
     p.y += h + 24.0;
+    let close = |keys: &[&str]| keys.iter().map(|k| (*k).to_owned()).collect();
+    let either: Vec<KeyHint> = KeyHint::any_of(
+        vec![close(&["Alt", "F4"]), close(&["Super", "W"])],
+        "Close tab",
+    )
+    .into_iter()
+    .collect();
+    p.text(
+        "Key hints, either chord",
+        TextRole::Label,
+        ink,
+        Point::new(MARGIN, p.y),
+    );
+    let rect = Rect::new(x, p.y, x + 700.0, p.y + h);
+    KeyHintsFace::new(&either).paint(&mut p.ctx(), rect);
+    p.y += h + 24.0;
 
     let props = [
         PropertyRow::new("Kind", "Spreadsheet"),

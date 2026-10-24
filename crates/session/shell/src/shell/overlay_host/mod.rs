@@ -101,17 +101,18 @@ use history::{
     HistoryTargetAddress, clipboard_history_matches_query, clipboard_history_relative_time,
     clipboard_history_source_label, history_target_address,
 };
-#[cfg(test)]
-use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
     configured_shortcut_action, shortcut_action_label, shortcut_action_rows,
     shortcut_action_summary, shortcut_app_tab_note, shortcut_chord_from_event,
-    shortcut_chord_keycaps, shortcut_guide_chord, shortcut_guide_content_height,
-    shortcut_navigation_columns, shortcut_navigation_height, shortcut_navigation_step,
-    shortcut_note_lines, shortcut_reference_columns, shortcut_reference_group_height,
-    shortcut_reference_groups, shortcut_reference_rows, shortcut_reference_step,
+    shortcut_chord_hints, shortcut_group_rows_top, shortcut_guide_chord,
+    shortcut_guide_content_height, shortcut_guide_height, shortcut_guide_rhythm,
+    shortcut_navigation_columns, shortcut_navigation_height, shortcut_note_lines,
+    shortcut_reference_columns, shortcut_reference_group_height, shortcut_reference_groups,
+    shortcut_reference_rows, shortcut_reference_step,
 };
+#[cfg(test)]
+use shortcuts::{configured_shortcut_matches, shortcut_chord_keycaps};
 #[cfg(test)]
 use std::path::PathBuf;
 
@@ -654,9 +655,9 @@ pub struct ShellOverlayHost {
     overview_metrics: OverviewMetrics,
     /// Layout-only theme snapshot for the shared compact-modal rule.
     overview_layout_theme: Theme,
-    /// The keyboard guide's navigation row step for the theme of the last
-    /// layout pass, so the guide's hit-testing and paint share one answer.
-    shortcut_navigation_step: f64,
+    /// The keyboard guide's steps for the theme of the last layout pass,
+    /// so the guide's hit-testing and paint share one answer.
+    shortcut_guide_rhythm: shortcuts::GuideRhythm,
     overview_layout_viewport: Rect,
     /// Quick Settings' appear, drill and height motion (`ui::motion`).
     qs_motion: qs_motion::QsMotion,
