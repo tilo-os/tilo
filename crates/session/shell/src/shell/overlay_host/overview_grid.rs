@@ -684,7 +684,8 @@ impl ShellOverlayHost {
                 );
                 self.overview_window_source(tile.window.address.group, painted)
             })
-            .flatten();
+            .flatten()
+            .filter(|&from| Self::flies_from(from, self.overview_output_rect()));
         // A window that stands on its strip flies from there, its picture
         // exactly over it at the start; one that is not laid out (or under
         // reduced motion) fades in where it rests.
