@@ -1542,7 +1542,22 @@ mod tests {
         .reaching_broker(Rc::new(move |app, room| {
             session_connector(collab.clone(), identity.clone(), app, room)
         }));
-        let mut notes = Shown::mount(&mut apps, notes::definition(), &session.room, 93, |_| {});
+        // The Notes tab opens a note, which it keeps as its record.
+        let (file, _receipt) = ui::application::OpenFile::new(
+            "Harbour plan.md",
+            "text/markdown",
+            b"Moor at the quayside before the tide turns.".to_vec(),
+        )
+        .unwrap();
+        let mut notes = Shown::mount(
+            &mut apps,
+            notes::definition(),
+            &session.room,
+            93,
+            |context| {
+                context.provide_open_file(file);
+            },
+        );
         let owner = network.native_owner().unwrap();
         let record = RecordId::for_tab(93).to_string();
         until(
