@@ -20,6 +20,10 @@ fn paint(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme, rect: Rect) 
     let facts = format!("{} · {}", who, when);
     let mark = "✓ Done";
     tracing::info!("synced {} — {}", a, b);
+    crate::stderr_guard::write_line(format_args!(
+        "paint-stats: wakes {} | owner {:?}",
+        a, b,
+    ));
 }
 
 #[cfg(test)]
