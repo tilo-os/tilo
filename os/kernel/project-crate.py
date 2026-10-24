@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Project registry-only dependencies, then verify Cargo's private lock pruning.
 
-Path/git dependencies (including reachable workspace patches) are unsupported
-and rejected. Unused workspace patches do not affect this standalone crate.
+The crate is projected as the kernel builds it, without default features: its
+optional dependencies and the features naming them are left out, so only what
+that build links is resolved. Path/git dependencies (including reachable
+workspace patches) are unsupported and rejected. Unused workspace patches, such
+as one behind an optional dependency, do not affect this standalone crate.
 The root lockfile is never modified or regenerated.
 """
 import argparse
@@ -41,6 +44,14 @@ def project_manifest(root, member):
                 selected=table[group][name]
                 if isinstance(selected,dict) and ('path' in selected or 'git' in selected):
                     raise ValueError('standalone projection requires registry dependencies')
+    def required(table):
+        for group in ('dependencies','dev-dependencies','build-dependencies'):
+            if group in table:
+                table[group]={name:value for name,value in table[group].items()
+                              if not (isinstance(value,dict) and value.get('optional'))}
+    result.pop('features',None)
+    required(result)
+    for table in result.get('target',{}).values():required(table)
     dependencies(result)
     for table in result.get('target',{}).values():dependencies(table)
     if result.get('lints',{}).get('workspace'):result['lints']=copy.deepcopy(workspace['lints'])
@@ -52,8 +63,11 @@ def project(root_manifest, member_manifest, lockfile, output):
     root=tomllib.loads(root_manifest.read_text());member=tomllib.loads(member_manifest.read_text())
     result=project_manifest(root,member)
     packages=tomllib.loads(lockfile.read_text())['package']
-    pending=[resolve(result['package']['name']+' '+result['package']['version'],packages)]
-    root_identity=identity(pending[0]);seen=set()
+    member_package=resolve(result['package']['name']+' '+result['package']['version'],packages)
+    root_identity=identity(member_package);seen={root_identity}
+    declared=dependency_names(result)
+    pending=[resolve(d,packages) for d in member_package.get('dependencies',[])
+             if d.split(' ',1)[0] in declared]
     while pending:
         package=pending.pop();key=identity(package)
         if key in seen:continue
@@ -64,6 +78,15 @@ def project(root_manifest, member_manifest, lockfile, output):
     output.mkdir(parents=True,exist_ok=True)
     (output/'Cargo.toml').write_text('\n'.join(toml(k)+' = '+toml(v) for k,v in result.items())+'\n')
     shutil.copyfile(lockfile,output/'Cargo.lock')
+
+
+def dependency_names(manifest):
+    """Package names the projected manifest depends on, aliases resolved."""
+    tables=[manifest,*manifest.get('target',{}).values()]
+    return {value.get('package',name) if isinstance(value,dict) else name
+            for table in tables
+            for group in ('dependencies','dev-dependencies','build-dependencies')
+            for name,value in table.get(group,{}).items()}
 
 
 def identity(package):
