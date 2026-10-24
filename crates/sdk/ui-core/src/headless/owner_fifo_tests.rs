@@ -16,6 +16,8 @@ struct Seen {
     drain_close_gate: Rc<RefCell<Option<Rc<Cell<bool>>>>>,
     drained: Rc<Cell<bool>>,
     saves: Rc<Cell<usize>>,
+    /// Whether the last save status the owner heard is Saved.
+    saved: Rc<Cell<bool>>,
     write_next: Rc<Cell<bool>>,
     body: Rc<RefCell<String>>,
     wake: Rc<RefCell<Option<crate::WakeHandle>>>,
@@ -106,8 +108,11 @@ impl AppWidget for OwnerProbe {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("Q")
     }
-    fn record_save_status(&mut self, _: crate::record::RecordSaveStatus) {
+    fn record_save_status(&mut self, status: crate::record::RecordSaveStatus) {
         self.seen.saves.set(self.seen.saves.get() + 1);
+        self.seen
+            .saved
+            .set(status == crate::record::RecordSaveStatus::Saved);
     }
 }
 thread_local! { static ORDER: RefCell<Rc<RefCell<Vec<u64>>>> = RefCell::new(Rc::new(RefCell::new(Vec::new()))); }
@@ -256,9 +261,22 @@ fn one_dirty_hidden_owner_of_110_enters_only_its_actual_model_and_save_service_w
     );
     // Every owner's first write lands on the store's thread, which then wakes
     // that owner to show it saved. Land them all and take those wakes up
-    // before the one wake under test, however slowly the writer runs.
+    // before the one wake under test, however slowly the writer runs: a
+    // write the store made durable on its own thread wakes its owner from
+    // there after the flush returns, so wait until every owner has heard
+    // its write saved.
     host.records.try_flush().unwrap();
-    frame.service_pending_owner_models().unwrap();
+    let deadline = crate::time::now() + tilo_test_env::hang_bound();
+    loop {
+        frame.service_pending_owner_models().unwrap();
+        if seen.iter().all(|s| s.saved.get()) && !frame.has_pending_owner_models() {
+            break;
+        }
+        assert!(
+            frame.park_until(deadline),
+            "every owner hears its first write saved"
+        );
+    }
     let counts = seen
         .iter()
         .map(|s| (s.syncs.get(), s.saves.get()))
