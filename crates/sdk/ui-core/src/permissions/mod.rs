@@ -14,7 +14,6 @@
 //! The host installs both via [`PermissionContext::new`]; nothing here decides
 //! anything itself.
 
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -72,19 +71,7 @@ pub const LOCAL_ROOM: &str = "local";
 pub use collab_types::presence::AppKind;
 
 /// A person's stable id, as apps and presence spell it.
-///
-/// Interchangeable with [`Principal::Person`] — see
-/// [`UserId::principal`]. Kept as a distinct newtype since presence and
-/// app code pass a bare user string around and gain nothing from a
-/// tagged enum.
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct UserId(pub String);
-
-impl UserId {
-    pub fn principal(&self) -> Principal {
-        Principal::Person(self.0.clone())
-    }
-}
+pub use collab_types::presence::UserId;
 
 /// What a widget or a launch asks permission for.
 #[derive(Clone, Debug, PartialEq, Eq)]

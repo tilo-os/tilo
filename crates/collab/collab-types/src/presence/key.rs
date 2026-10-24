@@ -278,6 +278,27 @@ impl AppKind {
     }
 }
 
+/// A person's stable id, as apps and presence spell it.
+///
+/// Interchangeable with [`Principal::Person`](crate::Principal::Person) — see
+/// [`UserId::principal`]. Kept as a distinct newtype since presence and
+/// app code pass a bare user string around and gain nothing from a
+/// tagged enum.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct UserId(pub String);
+
+impl UserId {
+    pub fn principal(&self) -> crate::Principal {
+        crate::Principal::Person(self.0.clone())
+    }
+}
+
+impl AsRef<UserId> for UserId {
+    fn as_ref(&self) -> &UserId {
+        self
+    }
+}
+
 /// A rectangle in physical pixels — the app's viewport at capture time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewRect {
