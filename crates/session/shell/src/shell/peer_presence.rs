@@ -2742,8 +2742,7 @@ mod two_sessions {
         fn a_pointer_crosses_between_two_sessions_both_ways() {
             let guest_peer = peer_id(9);
             let host_peer = peer_id(11);
-            let (mut host_tree, room) =
-                host_naming(&[(&guest_peer, "bob"), (&host_peer, "ada")]);
+            let (host_tree, room) = host_naming(&[(&guest_peer, "bob"), (&host_peer, "ada")]);
 
             let guest_tree = guest_joining(&host_tree, room);
 
@@ -2825,7 +2824,7 @@ mod two_sessions {
         /// that then moves it says something, over the real wire.
         fn a_session_is_silent_until_its_pointer_has_been_somewhere() {
             let guest_peer = peer_id(21);
-            let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+            let (host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
             let guest_tree = guest_joining(&host_tree, room);
 
             let host_handle = host_tree.shared();
@@ -2882,7 +2881,7 @@ mod two_sessions {
         /// `native.rs` does, rather than writing `None` by hand.
         fn the_frame_loop_publishes_nothing_for_a_pointer_that_has_never_moved() {
             let guest_peer = peer_id(23);
-            let (mut host_tree, room) = host_naming(&[(&guest_peer, "Claude")]);
+            let (host_tree, room) = host_naming(&[(&guest_peer, "Claude")]);
             let guest_tree = guest_joining(&host_tree, room);
 
             let host_handle = host_tree.shared();
@@ -3010,7 +3009,7 @@ mod two_sessions {
     fn hosted_and_native_publish_the_same_key_shape_and_see_each_other() {
         let hosted_peer = peer_id(31);
         let native_peer = peer_id(33);
-        let (mut native_tree, room) =
+        let (native_tree, room) =
             host_naming(&[(&hosted_peer, "bob"), (&native_peer, "ada")]);
         let hosted_tree = guest_joining(&native_tree, room);
         let native_handle = native_tree.shared();
@@ -3079,8 +3078,7 @@ mod two_sessions {
         use vello::kurbo::Rect;
         let hosted_peer = peer_id(41);
         let other_peer = peer_id(43);
-        let (mut other_tree, room) =
-            host_naming(&[(&hosted_peer, "bob"), (&other_peer, "ada")]);
+        let (other_tree, room) = host_naming(&[(&hosted_peer, "bob"), (&other_peer, "ada")]);
         let mut hosted_tree = guest_joining(&other_tree, room);
         looking_at_its_room(&mut hosted_tree);
         let hosted_handle = hosted_tree.shared();
@@ -3223,7 +3221,7 @@ mod two_sessions {
     fn a_pointer_over_a_window_lands_over_that_window_on_a_differently_arranged_desk() {
         let guest_peer = peer_id(41);
         let host_peer = peer_id(43);
-        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob"), (&host_peer, "ada")]);
+        let (host_tree, room) = host_naming(&[(&guest_peer, "bob"), (&host_peer, "ada")]);
         let guest_tree = guest_joining(&host_tree, room);
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();
@@ -3506,7 +3504,7 @@ mod two_sessions {
         fn a_named_peer_who_has_not_arrived_reads_as_invited() {
             let host_peer = peer_id(51);
             let guest_peer = peer_id(52);
-            let (mut host_tree, room) = host_naming(&[(&host_peer, OWNER)]);
+            let (host_tree, room) = host_naming(&[(&host_peer, OWNER)]);
             let mut guest_tree = guest_joining(&host_tree, room);
             looking_at_its_room(&mut guest_tree);
             let guest_handle = guest_tree.shared();
@@ -4011,7 +4009,7 @@ mod two_sessions {
     fn pair(tag: &str) -> Pair {
         let guest_peer = peer_id(41);
         let host_peer = peer_id(43);
-        let (mut host_tree, room) = host_naming(&[(&guest_peer, "Ada"), (&host_peer, "ada")]);
+        let (host_tree, room) = host_naming(&[(&guest_peer, "Ada"), (&host_peer, "ada")]);
         let guest_tree = guest_joining(&host_tree, room);
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();
