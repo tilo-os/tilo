@@ -350,6 +350,10 @@ impl ActionHost for BrokerActionHost {
             }
         })
     }
+
+    fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        self.broker.state().content_puts()
+    }
 }
 
 #[cfg(test)]
