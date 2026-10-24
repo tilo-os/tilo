@@ -7,9 +7,18 @@ use std::time::{Duration, Instant};
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::DeviceCapabilities;
 
-use super::idle_quiet_tests::device_reaching;
+#[cfg(target_os = "linux")]
+use super::idle_quiet_tests::in_a_process_of_its_own;
+use super::idle_quiet_tests::{
+    LONE_CPU_BUDGET, LONE_IDLE, LONE_SETTLE, device_reaching, session_threads,
+};
 use super::{NetCmd, Reach, ShellNetwork, host_identity_for_key, needs_reachability};
-use crate::shell::state::{RoomId, WorkspaceTree, WorkspaceTreeHandle};
+use crate::network::actor::gossip_caches_drain_within;
+use crate::shell::state::{GovernanceRequest, RoomId, WorkspaceTree, WorkspaceTreeHandle};
+
+/// How often a desktop whose relays rest may block, every thread of the
+/// process counted: what a desktop that never collaborated wakes.
+const RESTED_WAKEUP_BUDGET: f64 = 0.1;
 
 /// How long a test desktop's relays stay up once nothing needs them: long
 /// enough that a pair still converging keeps them, short enough to watch
@@ -87,6 +96,16 @@ fn until<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
     }
 }
 
+/// The person whose root key is `root`.
+fn person_of(root: &SigningKey) -> String {
+    match collab_types::caps::Principal::person_from_key(
+        collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) {
+        collab_types::caps::Principal::Person(id) => id,
+        other => panic!("a root key names a person: {other:?}"),
+    }
+}
+
 fn workspace_name(tree: &WorkspaceTreeHandle, room: RoomId) -> Option<String> {
     tree.read()
         .desktop
@@ -106,12 +125,7 @@ fn two_desktops_holding_their_relays_back_still_sync_and_then_wake_them() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[45; 32]);
-    let person = match collab_types::caps::Principal::person_from_key(
-        collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-    ) {
-        collab_types::caps::Principal::Person(id) => id,
-        other => panic!("a root key names a person: {other:?}"),
-    };
+    let person = person_of(&root);
     home.env().set("TILO_USER_ID", &person);
 
     let mut first_tree = WorkspaceTree::default();
@@ -168,6 +182,144 @@ fn two_desktops_holding_their_relays_back_still_sync_and_then_wake_them() {
         (!first.reachability.is_dormant() && !second.reachability.is_dormant()).then_some(())
     });
     drop((first, second));
+}
+
+/// Two desktops collaborate, then one leaves: its session ends and the room's
+/// owner takes its person out of the room at the room's host. While they are
+/// still a member they could come back and dial, so the relays stay up; once
+/// their membership lapses, nobody else is a member and the delay passes, the
+/// desktop left alone rests its relays, and from then on it wakes no more
+/// than one that never collaborated ([`RESTED_WAKEUP_BUDGET`]). Gossip sweeps
+/// the topics the pair linked until their last messages expire
+/// ([`gossip_caches_drain_within`], 100 s), long before a real desktop rests
+/// its relays five minutes after the last collaborator; this one rests them
+/// after [`REST_AFTER`], so it waits that out before it is measured.
+#[test]
+#[serial_test::serial]
+fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
+    // Every thread of the process counts below, so it measures alone.
+    #[cfg(target_os = "linux")]
+    if in_a_process_of_its_own(concat!(
+        module_path!(),
+        "::after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps"
+    )) {
+        return;
+    }
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = SigningKey::from_bytes(&[46; 32]);
+    let person = person_of(&root);
+    home.env().set("TILO_USER_ID", &person);
+
+    let mut first_tree = WorkspaceTree::default();
+    // A new workspace waits to be placed on this device's host.
+    let (home_workspace, room) = first_tree.create_hosted_workspace("Home");
+    first_tree.persist_path = Some(dir.path().join("first/workspaces.json"));
+    let first_tree = first_tree.shared();
+    let first = device_reaching(
+        first_tree.clone(),
+        &dir.path().join("first"),
+        &root,
+        DeviceCapabilities::primary(),
+        Reach::LoopbackHoldingRelays,
+    );
+    assert!(first.join_default_workspace());
+    until("the first device to host its workspace", || {
+        first.tick();
+        first.administered_room(room)
+    });
+    let second_tree = WorkspaceTree {
+        persist_path: Some(dir.path().join("second/workspaces.json")),
+        ..WorkspaceTree::default()
+    }
+    .shared();
+    // A collaborator: another person, invited into the room by its host.
+    let collaborator_root = SigningKey::from_bytes(&[47; 32]);
+    let collaborator = person_of(&collaborator_root);
+    let second = device_reaching(
+        second_tree.clone(),
+        &dir.path().join("second"),
+        &collaborator_root,
+        DeviceCapabilities::member(),
+        Reach::LoopbackHoldingRelays,
+    );
+    assert!(second.join_default_workspace());
+    let first_addr = until("the first device to listen", || first.dial_addr());
+    second
+        .cmd_tx
+        .try_send(NetCmd::Connect { addr: first_addr })
+        .unwrap();
+    let invitation = first.issue_invite(home_workspace, 3600).unwrap();
+    second.accept_peer_invitation(&invitation).unwrap();
+    until("the two desktops to converge with their relays up", || {
+        first.tick();
+        second.tick();
+        // The room's state can reach the collaborator before its host's
+        // owner sees them as a member. Keep the collaborator until it does.
+        (workspace_name(&second_tree, room).as_deref() == Some("Home")
+            && second_tree.read().native_authority.holds(room)
+            && first.hosts_other_members()
+            && !first.reachability.is_dormant()
+            && !second.reachability.is_dormant())
+        .then_some(())
+    });
+
+    // The collaborator leaves: its session ends, and the owner takes them
+    // out of the room at its host.
+    drop(second);
+    first_tree.write().request_governance(
+        room,
+        GovernanceRequest::Policy(tilo_action_policy::Change::RemoveMember {
+            person: collaborator,
+        }),
+    );
+    let deadline = tilo_test_env::hang_deadline();
+    while !first.reachability.is_dormant() {
+        assert!(
+            Instant::now() < deadline,
+            "the desktop left alone never rested its relays; held up by (transport, session) {:?}",
+            first.reachability.holders()
+        );
+        first.tick();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !first.hosts_other_members(),
+        "the removed collaborator is still a member of the room hosted here"
+    );
+    let rested = Instant::now();
+    std::thread::sleep(LONE_SETTLE.max(gossip_caches_drain_within()));
+    eprintln!(
+        "a desktop whose collaborator left is measured {} s after it rested its relays",
+        rested.elapsed().as_secs()
+    );
+
+    // Nothing drives this desktop now, so every thread of the process counts.
+    let before = session_threads(None);
+    let started = Instant::now();
+    std::thread::sleep(LONE_IDLE);
+    let measured = started.elapsed();
+    let wakeups = tilo_test_env::idle::Wakeups::between(before, session_threads(None), measured);
+    eprintln!(
+        "a desktop whose collaborator left, its threads {wakeups}  blocked {:.2} times a second",
+        wakeups.blocking_per_second()
+    );
+    assert!(
+        wakeups.blocking_per_second() <= RESTED_WAKEUP_BUDGET,
+        "a desktop whose collaborator left woke {:.2} times a second, over \
+         {RESTED_WAKEUP_BUDGET}/s:\n{wakeups}",
+        wakeups.blocking_per_second(),
+    );
+    assert!(
+        wakeups.total_cpu_percent() <= LONE_CPU_BUDGET,
+        "a desktop whose collaborator left used {:.2} % of a core, over {LONE_CPU_BUDGET} %:\n{wakeups}",
+        wakeups.total_cpu_percent(),
+    );
+    assert!(
+        first.reachability.is_dormant(),
+        "the relays started again with nobody to reach this desktop"
+    );
+    drop(first);
 }
 
 /// A desktop hosting its own room, its relays held back, has its host issue
