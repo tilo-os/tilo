@@ -241,6 +241,11 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         })
     }
 
+    fn room_unavailable(&self, room: &str) -> Option<String> {
+        super::state::RoomId::parse(room)
+            .is_some_and(|room| self.tree.read().on_this_device_only(room))
+            .then(|| super::i18n::t("workspace-on-this-device-only-no-documents"))
+    }
     fn requires_room(&self, room: &str) -> bool {
         tilo_owner_commit::OwnerCommitService::requires_room(self, room)
     }

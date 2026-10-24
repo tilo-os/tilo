@@ -30,6 +30,8 @@ workspace-joined-name = Shared workspace
 workspace-needs-join-again = Join again to take part
 # A workspace that was being joined when Tilo last closed.
 workspace-not-joined-yet = Not joined yet
+workspace-on-this-device-only = On this device only
+workspace-on-this-device-only-no-documents = This workspace is on this device only: apps can't open documents in it.
 workspace-join-again-needs-invitation = Ask for a new invitation to join this workspace
 # A workspace kept for what was opened in it before it was joined to its room.
 workspace-kept-before-joining = { $name } before joining
@@ -1642,6 +1644,10 @@ search-action-member-role-set = Change a member's role
 search-action-member-role-set-subtitle = Make a workspace member a viewer, commenter, or editor
 search-action-member-remove = Remove a member
 search-action-member-remove-subtitle = Take a member out of this workspace and revoke everything they could do here
+governance-change-members = Change a member's standing
+governance-change-access = Change access to this workspace
+governance-change-presets = Change this workspace's presets
+governance-change-settings = Change this workspace's settings
 search-action-invitation-issue = Create an invitation
 search-action-invitation-issue-subtitle = Mint an invitation to this workspace with a role and a lifetime
 search-action-invitation-list = List pending invitations

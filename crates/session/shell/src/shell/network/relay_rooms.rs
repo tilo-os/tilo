@@ -750,10 +750,24 @@ impl ShellNetwork {
         name: &str,
     ) -> Result<(), String> {
         let tree = self.tree.clone();
-        let (held, first) = {
+        let (held, through_hosts) = {
             let tree = tree.read();
-            (tree.holds_room(room), tree.desktop.workspaces.is_empty())
+            let through_hosts: Vec<RoomId> = tree
+                .desktop
+                .workspaces
+                .iter()
+                .map(crate::shell::state::Workspace::room)
+                .filter(|room| {
+                    (tree.holds_room(*room) || tree.is_joining(*room))
+                        && !tree.pending_placements.contains(room)
+                })
+                .collect();
+            (tree.holds_room(room), through_hosts)
         };
+        // The first room this session holds through another device's host:
+        // until then it has only rooms of its own, waiting for or placed on
+        // this device's host.
+        let first = through_hosts.into_iter().all(|room| self.hosted_here(room));
         if held {
             return Ok(());
         }
