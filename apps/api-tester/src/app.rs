@@ -1621,12 +1621,12 @@ impl ApiTesterApp {
                             status: response.status,
                             duration_ms: response.duration_ms,
                         }));
+                        let answer = Effected::value(http::answer(&response));
                         app.response = Some(response);
                         app.response_view = ResponseView::Pretty;
                         app.stale.response = true;
                         app.stale.response_body = true;
-
-                        Ok(Effected::done())
+                        Ok(answer)
                     }
                     Err(error) => {
                         app.error = Some(error.clone());

@@ -226,6 +226,28 @@ pub async fn send(out: &Outgoing) -> Result<ResponseData, String> {
     })
 }
 
+/// What a sent request answers whoever sent it: the response as the pane
+/// shows it, with its headers by name.
+#[must_use]
+pub fn answer(response: &ResponseData) -> serde_json::Value {
+    serde_json::json!({
+        "status": response.status,
+        "status_text": response.status_text,
+        "duration_ms": response.duration_ms,
+        "content_type": response.content_type,
+        "headers": response
+            .headers
+            .iter()
+            .map(|header| serde_json::json!({"name": header.key, "value": header.value}))
+            .collect::<Vec<_>>(),
+        "size_bytes": response.size_bytes,
+        "size_exact": response.size_exact,
+        "shown_bytes": response.shown_bytes,
+        "binary": response.binary,
+        "body": response.body,
+    })
+}
+
 /// The most of a response body the app downloads to show (2 MiB): the
 /// response pane lays its text out line by line, so a download of gigabytes
 /// would hold all of it in memory and freeze the window. The rest is never
