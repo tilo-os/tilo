@@ -873,7 +873,7 @@ impl StructureChange {
 ///
 /// Continuation is deliberately separate from [`Widget`]: ordinary controls
 /// have no resumable app state, while roots that do can expose this capability
-/// through [`Widget::continuable`] without weakening their UI integration.
+/// through [`Widget::provide`] without weakening their UI integration.
 pub trait Continuable {
     /// Return a compact, path-free projection of state that may be resumed on
     /// another device owned by the same person.
@@ -1295,7 +1295,7 @@ impl EventCtx<'_> {
 pub struct ParticipantPresence {
     pub participant: tilo_actions::ParticipantId,
     /// Name to show beside the caret, when the host set one
-    /// ([`Widget::set_participant_label`]).
+    /// ([`crate::collaboration::participants::Participants::set_participant_label`]).
     pub label: Option<String>,
     pub key: PresenceKey,
     pub payload: crate::collaboration::PresencePayload,
@@ -1384,7 +1384,7 @@ pub trait Widget {
     /// runner's outer State. This is a compatibility check, never identity
     /// or authority for history access or restore.
     ///
-    /// A [`Self::record_intent`] alone does not qualify: the runner (or the
+    /// A [`crate::record::capability::RecordScoped::record_intent`] alone does not qualify: the runner (or the
     /// enclosing [`TileHost`], which reports its own binding) checks that
     /// record out as the very State this widget reads.
     fn has_separate_document_owner(&self) -> bool {
@@ -2179,11 +2179,11 @@ pub trait Widget {
         defaults::take_accessibility_request(self.children_mut())
     }
 
-    /// Route history when this widget, or one it contains, is a [`Router`](router::Router).
+    /// Route history when this widget, or one it contains, is a [`Router`].
     ///
     /// Dev reload writes this beside the document so the same screen is showing
     /// after the process is replaced. Containers forward to the first child
-    /// that has one. A [`Router`](router::Router) reports its own stack and
+    /// that has one. A [`Router`] reports its own stack and
     /// does not look inside the current screen.
     fn dev_route(&self) -> Option<router::RouteSnapshot> {
         defaults::dev_route(self.children())

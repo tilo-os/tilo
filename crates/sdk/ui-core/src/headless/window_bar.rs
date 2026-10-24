@@ -31,7 +31,7 @@ impl FrameHarness {
     /// Show the app as a desktop window shows it: its slots, search and
     /// History in the window's bar, its frame under the bar. The window
     /// keeps the size it had; the app gets the part under the bar, and a
-    /// capture ([`super::write_capture`]) names the whole window.
+    /// capture (`super::write_capture`) names the whole window.
     pub fn present_in_window_bar(&mut self) {
         self.invalidate_local();
         if self.window_bar {
@@ -264,7 +264,7 @@ impl FrameHarness {
     /// Press one of the app's own slots in the window's bar (a mode, an
     /// action, the sidebar toggle), as the desktop hands the press to the
     /// app. The press is a press on the app: it hands the app the keyboard
-    /// ([`Self::hand_keyboard_to_app`]), as in the native window.
+    /// (`Self::hand_keyboard_to_app`), as in the native window.
     pub fn press_window_slot(&mut self, event: crate::window_toolbar::ToolbarEvent) {
         self.invalidate_local();
         let hands_keyboard = crate::window_toolbar::hands_keyboard_to_app(&event);

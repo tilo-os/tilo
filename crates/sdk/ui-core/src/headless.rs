@@ -228,7 +228,7 @@ use crate::history_mode::frame::FrameworkInputFrame;
 /// Both screenshot rendering and [`FrameHarness`] input scenarios use this type, so
 /// they cannot drift into subtly different sync/layout/draw implementations.
 /// Live [`crate::App`] additionally owns the window and event loop, but follows
-/// the same pass ordering documented by [`Self::relayout`].
+/// the same pass ordering documented by [`FrameHarness::relayout`].
 /// Borrowed renderer input plus semantic output from the same real widget frame.
 /// Cheap wake demand; deliberately excludes accessibility and inspection trees.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2302,7 +2302,7 @@ impl FrameHarness {
         self.local_epoch = self.local_epoch.wrapping_add(1);
     }
 
-    /// Frames that found nothing new to sync or publish ([`FrameWitness`])
+    /// Frames that found nothing new to sync or publish (`FrameWitness`)
     /// since construction.
     #[must_use]
     pub fn quiet_frames(&self) -> u64 {
