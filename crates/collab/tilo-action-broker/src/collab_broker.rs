@@ -849,10 +849,13 @@ impl AppActionBroker {
             .unwrap_or_default()
     }
 
-    /// Request cooperative cancellation for an owned invocation.
+    /// Request cooperative cancellation for an owned invocation, answered
+    /// once the request is durable. Blocks the calling thread for that
+    /// write, so never call it on the broker's loop.
     pub fn cancel(&self, id: u64, actor: &str) -> Result<(), String> {
         self.state
-            .while_live(|state| state.request_cancellation(id, actor))
+            .while_live(|state| state.request_cancellation(id, actor))?
+            .wait_blocking()
     }
 
     pub fn can_cancel(&self, id: u64, actor: &str) -> bool {

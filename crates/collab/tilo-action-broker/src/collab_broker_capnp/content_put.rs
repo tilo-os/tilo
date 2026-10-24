@@ -77,24 +77,32 @@ impl CapnpBrokerState {
         (hash, len): (&str, u64),
     ) -> Result<(), ActionHostError> {
         let unavailable = |reason: String| ActionHostError::Unavailable { reason };
-        let journal = self
-            .journal
-            .lock()
-            .map_err(|_| unavailable("invocation journal unavailable".into()))?;
-        match &*journal {
-            Err(error) => Err(unavailable(error.clone())),
-            // A broker keeping no durable records keeps none of this either.
-            Ok(None) => Ok(()),
-            Ok(Some(journal)) => journal
-                .record_content_put(&ContentPutRecord {
-                    at,
-                    actor: self.caller_actor(caller, room).id,
-                    room: room.to_owned(),
-                    hash: hash.to_owned(),
-                    len,
-                })
-                .map_err(unavailable),
-        }
+        let actor = self.caller_actor(caller, room).id;
+        let durable = {
+            let mut journal = self
+                .journal
+                .lock()
+                .map_err(|_| unavailable("invocation journal unavailable".into()))?;
+            match &mut *journal {
+                Err(error) => return Err(unavailable(error.clone())),
+                // A broker keeping no durable records keeps none of this either.
+                Ok(None) => return Ok(()),
+                Ok(Some(journal)) => journal
+                    .record_content_put(&ContentPutRecord {
+                        at,
+                        actor,
+                        room: room.to_owned(),
+                        hash: hash.to_owned(),
+                        len,
+                    })
+                    .map_err(unavailable)?,
+            }
+        };
+        // The journal is free for others while the line reaches the disk;
+        // an upload finishes on a blocking thread, never the broker's loop.
+        durable
+            .wait_blocking()
+            .map_err(|error| unavailable(format!("content put attribution not durable: {error}")))
     }
 }
 

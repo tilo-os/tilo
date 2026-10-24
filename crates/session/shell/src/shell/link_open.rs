@@ -538,8 +538,8 @@ mod tests {
             &self,
             _: &Caller,
             _: &tilo_actions::InvocationId,
-        ) -> Result<(), ActionHostError> {
-            Err(ActionHostError::UnknownInvocation)
+        ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+            tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
         }
     }
 

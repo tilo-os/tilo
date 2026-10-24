@@ -554,8 +554,9 @@ mod tests {
             &self,
             _caller: &tilo_actions::remote::Caller,
             _id: &tilo_actions::InvocationId,
-        ) -> Result<(), tilo_actions::remote::ActionHostError> {
-            Ok(())
+        ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>>
+        {
+            tilo_actions::remote::Pending::ready(Ok(()))
         }
     }
 
