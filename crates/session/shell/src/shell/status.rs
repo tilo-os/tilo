@@ -2,10 +2,11 @@
 //! these facts; the top bar and Quick Settings both draw from it.
 //!
 //! Each is followed, not polled: `NetworkManager`'s signals
-//! ([`tilo_nm::watch`]), `UPower`'s battery changes and `PipeWire`'s output
-//! level and mute ([`media::audio_watch::watch_output_levels`]) each ask for
-//! a fresh reading of their fact, and the compositor is woken when a reading
-//! changes what is shown. A reading can still cost a subprocess (`wpctl`),
+//! ([`tilo_nm::watch`]), `UPower`'s battery changes, and `PipeWire`'s output
+//! level and mute and its running capture streams (one connection,
+//! [`media::audio_watch::watch_output_levels_and_capture`]) each ask for a
+//! fresh reading of their fact, and the compositor is woken when a reading
+//! changes what is shown. Drawing a frame reads nothing and starts nothing. A reading can still cost a subprocess (`wpctl`),
 //! and the frame loop must never wait on one — a 200ms `fork`/`exec` is a
 //! dropped frame. So reads happen on a plain OS thread (not a tokio task,
 //! which would stall the session services behind the blocking
@@ -17,8 +18,8 @@
 //! so with no poller the readings stay `None`, rendered as *nothing*.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::shell::i18n::{t, t_args};
@@ -35,11 +36,6 @@ use ui::floating_surface::HostNetworkStatus;
 /// (the system bus, `UPower`, `PipeWire`) is asked again once its socket is
 /// created ([`wait_for_socket`]), or on this interval when the socket is
 /// there but refused, or cannot be watched.
-///
-/// `pw-dump --monitor` never wakes the poller: `PipeWire` reprints the graph
-/// on client and parameter churn, so a line-oriented watch never goes quiet.
-/// The privacy worker owns the only `pw-dump --monitor`, and it exits once
-/// the device graph is unchanged.
 const FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Which fact a change asks the poller to read again.
@@ -48,6 +44,38 @@ enum Read {
     Link,
     Battery,
     Volume,
+    /// The number of running capture streams changed; whether any run.
+    Media {
+        capturing: bool,
+    },
+}
+
+/// Where the poller's readings come from: the host in a session, a stand-in
+/// in tests, so that what each one starts can be counted.
+struct Readers {
+    wifi_quality: Box<dyn Fn() -> Option<u8> + Send>,
+    battery: Box<dyn Fn() -> (BatterySnapshot, Option<tilo_power_mgmt::BatteryTime>) + Send>,
+    /// `wpctl`, on a change `PipeWire` reported.
+    volume: Box<dyn Fn() -> Result<VolumeState, String> + Send>,
+    /// `pw-dump`, which attributes capture streams to executables. Only
+    /// started while one runs, and once per change in how many do.
+    media: Box<dyn Fn() -> Result<Vec<os_actions::ActiveMediaUse>, String> + Send>,
+}
+
+impl Readers {
+    fn host() -> Self {
+        Self {
+            wifi_quality: Box::new(os_actions::wireless_link_quality_pct),
+            battery: Box::new(|| {
+                (
+                    tilo_power_mgmt::sysfs_battery_snapshot(),
+                    tilo_power_mgmt::sysfs_battery_time(),
+                )
+            }),
+            volume: Box::new(os_actions::get_volume_state),
+            media: Box::new(os_actions::active_media_uses),
+        }
+    }
 }
 
 /// The latest `NetworkManager` reading: written by the follower on the
@@ -66,9 +94,9 @@ pub struct SystemStatus {
     pub link: Option<LinkStatus>,
     pub volume: Option<VolumeState>,
     /// Active capture streams, attributed from `PipeWire`'s server security
-    /// PID to the kernel executable. The monitor runs only while the device
-    /// graph is still changing; an idle desktop does not keep `pw-dump`
-    /// running, and it is not restarted until a frame is requested.
+    /// PID to the kernel executable. Read again only when the number of
+    /// running capture streams changes, and without a process while none
+    /// runs.
     pub media: Vec<os_actions::ActiveMediaUse>,
 }
 
@@ -164,9 +192,6 @@ pub struct StatusBridge {
     network: Arc<NetworkStatusSource>,
     /// So a second `spawn` is a no-op, not a second thread racing the first.
     polling: Arc<AtomicBool>,
-    /// Set on the rising edge of a requested frame. The privacy worker
-    /// parks on it instead of arming its own timer.
-    frame_interest: Arc<FrameInterest>,
     /// Wakes the compositor when a followed reading changes what is shown.
     wake: Arc<Mutex<Option<CompositorWake>>>,
 }
@@ -187,13 +212,6 @@ impl Default for NetworkStatusSource {
     fn default() -> Self {
         Self(tokio::sync::watch::channel(HostNetworkStatus::default()).0)
     }
-}
-
-#[derive(Debug, Default)]
-struct FrameInterest {
-    requested: AtomicBool,
-    lock: Mutex<()>,
-    cv: Condvar,
 }
 
 impl StatusBridge {
@@ -282,10 +300,10 @@ impl StatusBridge {
         self.update(|status| status.volume = volume);
     }
 
+    /// Wakes the compositor when it changes, so the indicator appears
+    /// while an app records even on a desktop nobody is touching.
     pub fn set_media(&self, media: Vec<os_actions::ActiveMediaUse>) {
-        if let Ok(mut g) = self.inner.lock() {
-            g.media = media;
-        }
+        self.update(|status| status.media = media);
     }
 
     pub fn is_polling(&self) -> bool {
@@ -306,142 +324,91 @@ impl StatusBridge {
             Arc::clone(&self.network),
         );
         spawn_battery_follower(wake_tx.clone());
-        spawn_output_level_follower(wake_tx.clone());
+        spawn_audio_follower(wake_tx.clone());
         let bridge = self.clone();
         let spawned = std::thread::Builder::new()
             .name("tilo-status".to_string())
             .spawn(move || {
                 // Held so a follower that never started cannot disconnect the
-                // channel and turn the wait below into a spin.
+                // channel and turn the wait in `poll` into a spin.
                 let _wake_tx = wake_tx;
-                let mut reads = vec![Read::Link, Read::Battery, Read::Volume];
-                loop {
-                    for read in std::mem::take(&mut reads) {
-                        match read {
-                            Read::Link => {
-                                let reading = network.lock().ok().and_then(|slot| slot.clone());
-                                bridge.set_link(link_from_network_state(
-                                    reading.as_ref(),
-                                    os_actions::wireless_link_quality_pct(),
-                                ));
-                            }
-                            Read::Battery => bridge.set_battery(
-                                tilo_power_mgmt::sysfs_battery_snapshot(),
-                                tilo_power_mgmt::sysfs_battery_time(),
-                            ),
-                            Read::Volume => {
-                                bridge.set_volume_reading(os_actions::get_volume_state().ok());
-                            }
-                        }
-                    }
-                    // Only the Wi-Fi bars are read on the interval, and only
-                    // while there are bars to read.
-                    let on_wifi = bridge
-                        .snapshot()
-                        .link
-                        .is_some_and(|link| link.kind == LinkKind::Wifi);
-                    let first = if on_wifi {
-                        wake_rx
-                            .recv_timeout(FALLBACK_INTERVAL)
-                            .unwrap_or(Read::Link)
-                    } else {
-                        match wake_rx.recv() {
-                            Ok(read) => read,
-                            // Every follower is gone and `_wake_tx` is held:
-                            // unreachable, but never spin.
-                            Err(_) => return,
-                        }
-                    };
-                    reads.push(first);
-                    // A burst (a headset brings a sink, a default switch and
-                    // a level) is read once.
-                    while let Ok(read) = wake_rx.recv_timeout(Duration::from_millis(50)) {
-                        if !reads.contains(&read) {
-                            reads.push(read);
-                        }
-                    }
-                }
+                poll(&bridge, &network, &wake_rx, &Readers::host());
             });
         if let Err(e) = spawned {
             tracing::warn!(target: "tilo::status", error = %e, "status poller not started");
             self.polling.store(false, Ordering::SeqCst);
-            return;
         }
-        let media_bridge = self.clone();
-        let _ = std::thread::Builder::new()
-            .name("tilo-media-privacy".to_string())
-            .spawn(move || {
-                loop {
-                    let bridge = media_bridge.clone();
-                    // Returns when the device graph is unchanged (the
-                    // `pw-dump --monitor` process is gone) or when PipeWire
-                    // exits. Frames requested while that watch was running
-                    // already had a chance to publish; they must not restart
-                    // the monitor by themselves.
-                    let _ = os_actions::monitor_media_usage(|media| bridge.set_media(media));
-                    bridge.acknowledge_frame_requests();
-                    let frame_requested = bridge.frame_is_requested();
-                    if privacy_watch_followup(frame_requested) == PrivacyWatchFollowup::Park {
-                        bridge.wait_for_frame_request();
-                    }
-                }
-            });
     }
+}
 
-    /// The compositor calls this on the edge from an idle loop to a
-    /// requested frame. It does not start a timer.
-    pub fn notify_frame_requested(&self) {
-        self.frame_interest.requested.store(true, Ordering::Release);
-        self.frame_interest.cv.notify_one();
-    }
-
-    fn frame_is_requested(&self) -> bool {
-        self.frame_interest.requested.load(Ordering::Acquire)
-    }
-
-    fn acknowledge_frame_requests(&self) {
-        self.frame_interest
-            .requested
-            .store(false, Ordering::Release);
-    }
-
-    fn wait_for_frame_request(&self) {
-        let mut guard = self.frame_interest.lock.lock_recover();
-        while !self.frame_interest.requested.swap(false, Ordering::AcqRel) {
-            guard = self
-                .frame_interest
-                .cv
-                .wait(guard)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+/// Read every fact once, then each fact a follower asks for, until every
+/// sender of `wake` is gone.
+fn poll(bridge: &StatusBridge, network: &NetworkSlot, wake: &Receiver<Read>, readers: &Readers) {
+    let mut reads = vec![Read::Link, Read::Battery, Read::Volume];
+    loop {
+        for read in std::mem::take(&mut reads) {
+            apply_read(bridge, network, read, readers);
         }
-        drop(guard);
+        // Only the Wi-Fi bars are read on the interval, and only while
+        // there are bars to read.
+        let on_wifi = bridge
+            .snapshot()
+            .link
+            .is_some_and(|link| link.kind == LinkKind::Wifi);
+        let first = if on_wifi {
+            match wake.recv_timeout(FALLBACK_INTERVAL) {
+                Ok(read) => read,
+                Err(mpsc::RecvTimeoutError::Timeout) => Read::Link,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        } else {
+            match wake.recv() {
+                Ok(read) => read,
+                Err(_) => return,
+            }
+        };
+        queue_read(&mut reads, first);
+        // A burst (a headset brings a sink, a default switch and a level)
+        // is read once.
+        while let Ok(read) = wake.recv_timeout(Duration::from_millis(50)) {
+            queue_read(&mut reads, read);
+        }
     }
 }
 
-/// What the privacy worker does after `pw-dump --monitor` has stopped.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PrivacyWatchFollowup {
-    /// A frame was requested after the graph settled. Look once more.
-    Watch,
-    /// No frame is requested. Park. Do not arm a timer.
-    Park,
-}
-
-/// Recurring privacy work is scheduled only when a frame is requested.
-/// An idle compositor has nothing to draw the indicator onto, and a timer
-/// here is what kept `pw-dump` in the session after the device graph was still.
-pub(crate) fn privacy_watch_followup(frame_requested: bool) -> PrivacyWatchFollowup {
-    if frame_requested {
-        PrivacyWatchFollowup::Watch
-    } else {
-        PrivacyWatchFollowup::Park
+/// Queue `read` once; of capture changes, only the latest counts.
+fn queue_read(reads: &mut Vec<Read>, read: Read) {
+    if matches!(read, Read::Media { .. }) {
+        reads.retain(|queued| !matches!(queued, Read::Media { .. }));
+    }
+    if !reads.contains(&read) {
+        reads.push(read);
     }
 }
 
-/// Rising edge of "a frame is requested". Holding the request across later
-/// frames must not schedule another watch per frame.
-pub(crate) fn privacy_frame_interest(was_requested: bool, frame_requested: bool) -> (bool, bool) {
-    (frame_requested, frame_requested && !was_requested)
+fn apply_read(bridge: &StatusBridge, network: &NetworkSlot, read: Read, readers: &Readers) {
+    match read {
+        Read::Link => {
+            let reading = network.lock().ok().and_then(|slot| slot.clone());
+            bridge.set_link(link_from_network_state(
+                reading.as_ref(),
+                (readers.wifi_quality)(),
+            ));
+        }
+        Read::Battery => {
+            let (battery, time) = (readers.battery)();
+            bridge.set_battery(battery, time);
+        }
+        Read::Volume => bridge.set_volume_reading((readers.volume)().ok()),
+        // Nothing records: nothing to attribute, and no process to start.
+        Read::Media { capturing: false } => bridge.set_media(Vec::new()),
+        Read::Media { capturing: true } => match (readers.media)() {
+            Ok(media) => bridge.set_media(media),
+            Err(error) => {
+                tracing::debug!(target: "tilo::status", %error, "capture streams not attributed");
+            }
+        },
+    }
 }
 
 /// Follow `UPower`'s battery changes on the session runtime and ask the
@@ -481,18 +448,27 @@ async fn follow_battery(wake: Sender<Read>) {
     }
 }
 
-/// Follow every output's level and mute in `PipeWire` on a thread of its
-/// own, and ask the poller to read the volume on each change, whoever made
-/// it.
-fn spawn_output_level_follower(wake: Sender<Read>) {
+/// Follow every output's level and mute, and the running capture streams,
+/// in `PipeWire` on a thread of its own: ask the poller to read the volume
+/// on each level change, whoever made it, and the capture streams' owners
+/// each time the number running changes.
+fn spawn_audio_follower(wake: Sender<Read>) {
     let spawned = std::thread::Builder::new()
         .name("tilo-status-audio".to_string())
         .spawn(move || {
             loop {
                 let (events, changes) = mpsc::channel();
-                match media::audio_watch::watch_output_levels(move |event| {
-                    let _ = events.send(event);
-                }) {
+                let capture = wake.clone();
+                match media::audio_watch::watch_output_levels_and_capture(
+                    move |event| {
+                        let _ = events.send(event);
+                    },
+                    move |running| {
+                        let _ = capture.send(Read::Media {
+                            capturing: running > 0,
+                        });
+                    },
+                ) {
                     Ok(watch) => {
                         for event in changes {
                             if event == media::audio_watch::GraphWatchEvent::Lost {
@@ -509,9 +485,11 @@ fn spawn_output_level_follower(wake: Sender<Read>) {
                     }
                 }
                 // PipeWire went away or never answered: read what is there
-                // (nothing, drawn as no glyph), then ask again once it can
-                // answer.
-                if wake.send(Read::Volume).is_err() {
+                // (nothing, drawn as no glyph; no stream records), then ask
+                // again once it can answer.
+                if wake.send(Read::Volume).is_err()
+                    || wake.send(Read::Media { capturing: false }).is_err()
+                {
                     return;
                 }
                 wait_for_socket(crate::shell::session_audio_policy::pipewire_socket().as_deref());
@@ -1029,34 +1007,76 @@ mod tests {
         drop(wake_tx);
     }
 
+    /// Readers that start nothing, and a `pw-dump` stand-in that counts
+    /// each process it would have started.
+    fn counting_readers(started: &Arc<std::sync::atomic::AtomicUsize>) -> Readers {
+        let started = Arc::clone(started);
+        Readers {
+            wifi_quality: Box::new(|| None),
+            battery: Box::new(|| (battery(80, BatteryState::Discharging), None)),
+            volume: Box::new(|| Err("no PipeWire".into())),
+            media: Box::new(move || {
+                started.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![os_actions::ActiveMediaUse {
+                    client_id: 41,
+                    pid: 4100,
+                    app_id: "org.example.Recorder".into(),
+                    label: "Recorder".into(),
+                    binary: "/usr/bin/recorder".into(),
+                    kind: os_actions::MediaKind::Microphone,
+                }])
+            }),
+        }
+    }
+
     #[test]
-    fn idle_graph_stops_the_pw_dump_monitor_without_scheduling_work() {
-        let graph = r#"[{"id":1,"type":"PipeWire:Interface:Device","info":{"props":{"device.name":"alsa_card.pci"}}},{"id":2,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"alsa_output.pci.analog-stereo"}}}]"#;
-        let mut watch = os_actions::DeviceGraphWatch::default();
+    fn frames_on_an_idle_desktop_start_no_process_for_the_privacy_indicator() {
+        let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let readers = counting_readers(&started);
+        let bridge = StatusBridge::new();
+        let network = NetworkSlot::default();
+        let (wake, reads) = mpsc::channel();
+        let poller = {
+            let bridge = bridge.clone();
+            let network = Arc::clone(&network);
+            std::thread::spawn(move || poll(&bridge, &network, &reads, &readers))
+        };
+        // The watch's baseline on an idle desktop: nothing records.
+        wake.send(Read::Media { capturing: false }).unwrap();
+        // The compositor goes from idle to drawing, again and again (the
+        // clock's minute turn, a hover): each frame reads the status.
+        for _ in 0..120 {
+            assert!(bridge.snapshot().media.is_empty());
+        }
+        // An app starts recording, as the watch reports it.
+        wake.send(Read::Media { capturing: true }).unwrap();
+        tilo_test_env::wait_until("the recording app to be attributed", || {
+            !bridge.snapshot().media.is_empty()
+        });
+        for _ in 0..120 {
+            assert_eq!(bridge.snapshot().media.len(), 1);
+        }
+        // It stops: the indicator clears without a process.
+        wake.send(Read::Media { capturing: false }).unwrap();
+        tilo_test_env::wait_until("the indicator to clear", || {
+            bridge.snapshot().media.is_empty()
+        });
+        drop(wake);
+        poller.join().unwrap();
         assert_eq!(
-            watch.observe_document(graph),
-            os_actions::MonitorDisposition::Keep
+            started.load(Ordering::SeqCst),
+            1,
+            "only an app starting to record may start pw-dump; idle frames and the stop must not"
         );
-        let dump_stream = r#"[{"id":99,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Stream/Output/Audio","node.name":"pw-dump","application.name":"pw-dump"}}}]"#;
-        assert_eq!(
-            watch.observe_document(dump_stream),
-            os_actions::MonitorDisposition::Stop,
-            "the shell must not keep a pw-dump monitor running once the device graph is unchanged"
-        );
-        assert_eq!(
-            privacy_watch_followup(false),
-            PrivacyWatchFollowup::Park,
-            "the shell must not schedule recurring work while no frame is requested"
-        );
-        assert_eq!(privacy_watch_followup(true), PrivacyWatchFollowup::Watch);
-        let (open, notify) = privacy_frame_interest(false, false);
-        assert!(!open && !notify);
-        let (open, notify) = privacy_frame_interest(false, true);
-        assert!(open && notify);
-        let (_open, notify) = privacy_frame_interest(true, true);
-        assert!(
-            !notify,
-            "frames that are already requested must not schedule another watch"
-        );
+    }
+
+    #[test]
+    fn a_burst_of_capture_changes_is_attributed_once_at_its_latest() {
+        let mut reads = Vec::new();
+        queue_read(&mut reads, Read::Media { capturing: true });
+        queue_read(&mut reads, Read::Volume);
+        queue_read(&mut reads, Read::Media { capturing: false });
+        queue_read(&mut reads, Read::Volume);
+        assert_eq!(reads, [Read::Volume, Read::Media { capturing: false }]);
     }
 }
