@@ -393,6 +393,8 @@ struct Mount {
     hidden: bool,
     generation: u64,
     frames: u64,
+    /// Redraws the browser delivered ([`first_frame::Driver`]).
+    redraws: u32,
     /// How many of the harness's refused or failed invocations the page's
     /// log has been told about.
     failures_logged: usize,
@@ -1045,6 +1047,7 @@ impl ApplicationHandler<u64> for Runner {
         let handle = |m: &mut Mount| {
             match event {
                 WindowEvent::RedrawRequested => {
+                    m.redraws = m.redraws.wrapping_add(1);
                     if let Err(e) = m.draw() {
                         m.error = Some(e);
                         m.publish(id);
@@ -1717,6 +1720,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hidden: false,
         generation: 1,
         frames: 0,
+        redraws: 0,
         failures_logged: 0,
         presented_capture_protected: true,
         presentation: std::cell::Cell::new(false),
@@ -1745,9 +1749,6 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     Ok(())
 }
 
-/// How often [`watch_first_frame`] looks.
-const FIRST_FRAME_TICK_MS: u32 = 1_000;
-
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_name = setTimeout)]
@@ -1765,18 +1766,38 @@ pub(crate) async fn sleep_ms(ms: u32) {
 /// say each step graphics start-up moves to (`gpuStep`), say when it stays
 /// visible on one step without a frame or a pipeline compiled for
 /// [`first_frame::STALL_MS`] (`gpuStalled`), so the page offers to try
-/// again while it keeps waiting, and ask for the first frame again while it
-/// is late.
+/// again while it keeps waiting, and draw the first frame when the redraws
+/// it asks for do not arrive ([`first_frame::Driver`]), through the same
+/// draw a redraw runs.
 async fn watch_first_frame(id: u64) {
-    let mut watch = first_frame::Watch::new(FIRST_FRAME_TICK_MS);
+    let mut watch = first_frame::Watch::new(first_frame::DRIVE_MS);
+    let mut driver = first_frame::Driver::default();
     loop {
-        sleep_ms(FIRST_FRAME_TICK_MS).await;
+        sleep_ms(first_frame::DRIVE_MS).await;
         if !await_runtime_admission().await {
             return;
         }
         let watching = with_mount_quietly(id, |m| {
-            if m.frames > 0 || m.error.is_some() {
+            if m.error.is_some() {
                 return Ok(false);
+            }
+            if m.gpu.is_some() {
+                let visible = page_visible() && !m.hidden && !m.viewport.suspended();
+                let wants_frame = m.pending || m.viewport.needs_present();
+                match driver.tick(m.redraws, m.frames, visible, wants_frame) {
+                    first_frame::Drive::Done => return Ok(false),
+                    first_frame::Drive::Wait => {}
+                    first_frame::Drive::Draw => {
+                        if let Err(e) = m.draw() {
+                            m.error = Some(e);
+                            m.publish(id);
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+            if m.frames > 0 {
+                return Ok(true);
             }
             let step = if m.gpu.is_some() {
                 GpuStep::FirstFrame
@@ -1798,10 +1819,6 @@ async fn watch_first_frame(id: u64) {
                     &m.status,
                     &serde_json::json!({"phase":"gpu-pending","id":id,"gpuStep":step.name(),"gpuStalled":stalled}),
                 );
-            }
-            if tick.redraw {
-                m.pending = true;
-                m.window.request_redraw();
             }
             Ok(true)
         });
@@ -2104,6 +2121,17 @@ async fn set_up_gpu(setup: GpuSetup) {
     if installed && let Ok(wake) = proxy() {
         let _ = wake.send_event(id);
     }
+}
+
+/// Whether the page is shown (`document.visibilityState`): a hidden one
+/// pauses its animation frames on purpose, and draws nothing.
+fn page_visible() -> bool {
+    let document = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("document"));
+    document
+        .and_then(|d| js_sys::Reflect::get(&d, &JsValue::from_str("visibilityState")))
+        .ok()
+        .and_then(|state| state.as_string())
+        .is_none_or(|state| state == "visible")
 }
 
 impl Mount {
