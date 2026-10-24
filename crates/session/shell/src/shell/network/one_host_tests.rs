@@ -730,11 +730,14 @@ impl Device {
             .encode_frames()
             .unwrap();
         assert_eq!(frames.len(), 1, "a note's edit is one frame");
+        let frame = frames.remove(0);
+        // Sealed under the storage class its frame is, as every app's
+        // collaboration seals it: an edit is a delta, never a checkpoint.
         let (metadata, sealed) = keys
             .seal_content(
                 artifact,
-                collab_types::ContentRetention::Checkpoint,
-                &frames.remove(0),
+                collab_types::ContentRetention::of_frame(&frame),
+                &frame,
             )
             .unwrap();
         let now = SystemTime::now();

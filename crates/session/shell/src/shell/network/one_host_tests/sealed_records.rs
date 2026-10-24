@@ -164,11 +164,22 @@ fn a_removed_member_opens_what_was_written_before_its_removal_and_nothing_after(
 
     // What was written after: the remaining member opens both writes, the
     // removed device's keys open neither.
-    let after: Vec<_> = first.note_writes(room)[on_host..]
+    // A device's log also takes a write its host replays to it again, so
+    // what was written after is what neither log held before the removal.
+    let (host_log, laptop_log) = (first.note_writes(room), second.note_writes(room));
+    let earlier: std::collections::BTreeSet<_> = host_log[..on_host]
         .iter()
-        .chain(&second.note_writes(room)[on_laptop..])
-        .cloned()
+        .chain(&laptop_log[..on_laptop])
+        .map(|write| write.payload.clone())
         .collect();
+    let mut after: Vec<collab_types::SignedOp> = Vec::new();
+    for write in host_log[on_host..].iter().chain(&laptop_log[on_laptop..]) {
+        if !earlier.contains(&write.payload)
+            && !after.iter().any(|seen| seen.payload == write.payload)
+        {
+            after.push(write.clone());
+        }
+    }
     let authors: std::collections::BTreeSet<_> = after
         .iter()
         .map(|write| write.author.as_bytes().to_owned())
@@ -184,13 +195,19 @@ fn a_removed_member_opens_what_was_written_before_its_removal_and_nothing_after(
     );
     let laptop = current_keys(&second, room).expect("Ada's laptop holds the note's channel");
     for write in &after {
+        let sealed = (
+            hex::encode(write.author.as_bytes()),
+            write.encryption.map(|encryption| encryption.epoch),
+        );
         assert!(
             opens(&laptop, write),
-            "the remaining member opens every write after the removal"
+            "the remaining member (keys at epoch {}) opens every write after the removal: {sealed:?}",
+            laptop.epoch()
         );
         assert!(
             !opens(&kept, write),
-            "the removed device opens no write after its removal"
+            "the removed device (keys up to epoch {}) opens no write after its removal: {sealed:?}",
+            kept.epoch()
         );
     }
     // What was written before: the removed device still opens it.
