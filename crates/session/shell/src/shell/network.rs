@@ -40,6 +40,8 @@ mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
 mod native_replay_budget_tests;
+#[cfg(test)]
+pub(crate) mod one_host_tests;
 mod own_devices;
 #[cfg(test)]
 mod own_devices_tests;
@@ -73,6 +75,8 @@ pub(crate) mod directory;
 #[cfg(test)]
 mod directory_tests;
 mod embedded_host;
+#[cfg(test)]
+mod enrollment_resume_tests;
 pub(crate) mod join_field;
 mod joining;
 #[cfg(test)]
