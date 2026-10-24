@@ -210,6 +210,55 @@ fn a_change_resolved_with_text_leaves_the_others_open() {
     assert_eq!(session.state().unwrap().merged, "a\nB1\nc\nD2\ne\n");
 }
 
+/// A merge of Windows files without a final newline keeps their bytes from
+/// opening to the last resolution, so the result shows in git as the lines
+/// that changed and nothing else; the record still composes, so every
+/// change stays open to a side.
+#[test]
+fn a_windows_merge_keeps_its_line_endings_through_every_resolution() {
+    let mut session = Replica::<Session>::new();
+    session
+        .apply(Session::OPEN_MERGE.with(session::OpenMerge {
+            base_label: "base".into(),
+            base: "a\r\nb\r\nc\r\nd\r\ne".into(),
+            ours_label: "ours".into(),
+            ours: "a\r\nB1\r\nc\r\nD1\r\ne".into(),
+            theirs_label: "theirs".into(),
+            theirs: "a\r\nB2\r\nc\r\nD2\r\ne".into(),
+        }))
+        .unwrap();
+    let state = session.state().unwrap();
+    assert_eq!(state.merged, "a\r\nB1\r\nc\r\nD1\r\ne");
+    let conflicts: Vec<u64> = state
+        .merge_model()
+        .hunks
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.resolution.is_conflict())
+        .map(|(index, _)| u64::try_from(index).unwrap())
+        .collect();
+    let [first, second] = conflicts[..] else {
+        panic!("two conflicts: {conflicts:?}");
+    };
+
+    session
+        .apply(Session::TAKE_BOTH.with(session::TakeBoth { hunk: first }))
+        .unwrap();
+    assert_eq!(
+        session.state().unwrap().merged,
+        "a\r\nB1\r\nB2\r\nc\r\nD1\r\ne"
+    );
+    session
+        .apply(Session::RESOLVE.with(session::Resolve {
+            hunk: second,
+            text: "D\nD'".into(),
+        }))
+        .expect("the other change still takes text");
+    let state = session.state().unwrap();
+    assert_eq!(state.merged, "a\r\nB1\r\nB2\r\nc\r\nD\r\nD'\r\ne");
+    assert!(state.composed(&state.merge_model()), "{:?}", state.merged);
+}
+
 /// Two people typing in the merged result converge character by
 /// character; inputs opened at once end as one of the two, never a mix.
 #[test]

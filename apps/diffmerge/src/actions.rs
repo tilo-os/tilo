@@ -12,7 +12,7 @@ use ui::prelude::Effect;
 use ui::tilo_resource;
 
 use crate::doc::HunkChoice;
-use crate::model::{BlockKind, ChangeBlock, DiffModel, MergeHunk, MergeModel};
+use crate::model::{BlockKind, ChangeBlock, DiffModel, MergeHunk, MergeModel, Resolution};
 
 /// Keep global search/contextual expansion bounded even for enormous diffs.
 pub const CONTEXTUAL_CHILD_LIMIT: usize = 64;
@@ -61,50 +61,15 @@ pub enum DiffmergeEffect {
 /// Compose the merged output with `hunk`'s contribution forced to `choice`,
 /// every other hunk keeping its current resolution.
 pub fn compose_choice(model: &MergeModel, hunk: usize, choice: HunkChoice) -> String {
-    compose(model, hunk, choice_lines(model.hunks.get(hunk), choice))
+    model.merged_text_with(hunk, choice.to_resolution(), &[])
 }
 
 /// Compose the merged output with `hunk` replaced by the user's typed `text`,
 /// every other hunk keeping its current resolution. Backs the per-hunk
 /// "resolve with custom text" affordance.
 pub fn compose_custom(model: &MergeModel, hunk: usize, text: &str) -> String {
-    compose(
-        model,
-        hunk,
-        text.lines().map(std::string::ToString::to_string).collect(),
-    )
-}
-
-fn compose(model: &MergeModel, hunk: usize, replacement: Vec<String>) -> String {
-    let mut out = String::new();
-    let mut replacement = Some(replacement);
-    for (i, h) in model.hunks.iter().enumerate() {
-        let lines = if i == hunk {
-            replacement.take().unwrap_or_default()
-        } else {
-            h.resolved_lines()
-        };
-        for l in lines {
-            out.push_str(&l);
-            out.push('\n');
-        }
-    }
-    out
-}
-
-fn choice_lines(h: Option<&MergeHunk>, choice: HunkChoice) -> Vec<String> {
-    let Some(h) = h else {
-        return Vec::new();
-    };
-    match choice {
-        HunkChoice::Ours => h.ours.clone(),
-        HunkChoice::Theirs => h.theirs.clone(),
-        HunkChoice::Both => {
-            let mut v = h.ours.clone();
-            v.extend(h.theirs.clone());
-            v
-        }
-    }
+    let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    model.merged_text_with(hunk, Resolution::Written, &lines)
 }
 
 /// Stable digest of the exact aligned rows addressed by a change block.
