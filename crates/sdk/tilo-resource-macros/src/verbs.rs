@@ -1400,7 +1400,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     // The record's own fields that hold resources (`#[model(resource)]`),
     // then its derived places, published again only when they changed.
     let published = options.children.as_ref().map_or_else(
-        || quote!(#krate::derived::published::<Self>(::std::vec::Vec::new())),
+        || quote!(#krate::derived::published_nested::<Self>()),
         |path| quote!(#krate::derived::published::<Self>(#path(state))),
     );
     let derived_child = quote! {
@@ -1445,11 +1445,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         }
     };
     let children = quote! {{
-        let mut children: ::std::vec::Vec<#krate::__private::Resource> = (#published)
-            .resources()
-            .iter()
-            .map(|child| ::core::clone::Clone::clone(&**child))
-            .collect();
+        let mut children: ::std::vec::Vec<#krate::__private::Resource> =
+            (#published).to_resources();
         children.extend(#krate::items::item_children::<Self>(
             &<Self as #krate::Fields>::item_collections(state),
             &[#(#item_actions),*],
