@@ -51,18 +51,7 @@ pub const APP_DOCUMENT_KIND: &str = "tilo.app-document";
 pub(super) const RETIRED: &str = "retired";
 
 /// Where a moved record went and who moved it, as its retirement records.
-/// Anyone who can read the old record learns only these ids; whether they
-/// can see the destination is for their own desktop to say.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Successor {
-    /// The room the record now lives in.
-    pub room: String,
-    /// Its id there.
-    pub record: String,
-    /// The person who moved it.
-    pub by: String,
-}
+pub use collab_types::handoff::Successor;
 
 /// Why a record is retired, as stamped into its last change.
 #[derive(Clone, Debug, PartialEq, Eq)]
