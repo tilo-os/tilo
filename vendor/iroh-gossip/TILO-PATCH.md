@@ -67,6 +67,16 @@ long after. With no neighbour, `broadcast` now does nothing
 `crates/system/fs/tests/iroh_idle.rs`). Tilo restates what a new neighbour
 needs when it joins.
 
+## The address lookup sweeps only while it holds addresses (`src/net/address_lookup.rs`)
+
+`GossipAddressLookup`, which keeps the addresses learned from `Join` and
+`ForwardJoin` for five minutes, swept them on a 30 s interval for the life of
+the endpoint, empty or not: every endpoint with gossip woke every 30 s. Its
+task now sleeps until the oldest address expires (at least 30 s after the
+last sweep, as before), and while it holds none waits for `add` to wake it.
+Addresses are kept and evicted as before; the lone idle hosting device's
+gate in the shell (`one_host_tests::idle_host`) holds it.
+
 ## Built as an rlib only (`Cargo.toml`)
 
 Upstream also builds a `cdylib`, and Cargo leaves the hash out of
@@ -82,6 +92,10 @@ the cdylib, so the `[lib]` builds `rlib` only.
 Prepared for an upstream issue/PR against `n0-computer/iroh-gossip` (not
 opened):
 
+> **`GossipAddressLookup` sweeps every 30 s for the life of the endpoint.**
+> Proposed: sleep until the oldest entry's retention ends, and wait for the
+> next `add` while the map is empty.
+>
 > **Plumtree's `EvictCache` timer re-arms forever, even with empty caches.**
 > `State::handle` arms it on the first event and `on_evict_cache_timer`
 > always re-arms it, so an idle topic wakes every `cache_evict_interval` for

@@ -58,7 +58,8 @@ checksum-verified registry releases in the lock, each with small patches
 so an idle endpoint wakes for nothing: no re-STUN tick and no home relay
 while the relay map is empty, no 15 s wall-clock poll on Linux (a timerfd the
 kernel cancels on resume or a clock step replaces it), and no gossip cache
-sweep once a topic's caches are empty or membership shuffle without an active
+sweep once a topic's caches are empty, no address-lookup sweep while it holds
+no addresses, and no membership shuffle without an active
 neighbor. A returning neighbor rearms the shuffle once. With relays, a net
 report that keeps finding the same addresses waits longer before the next, up
 to five minutes, and paths may keep alive less often than every 5 s, which

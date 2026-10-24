@@ -11,7 +11,9 @@
 - Vendored: 2026-10-10 (`94d5a803a4`)
 
 Local changes: plumtree sweeps a topic's message cache only while it holds
-messages (`src/proto/plumtree.rs`, marked `TILO PATCH`), and the `[lib]`
+messages (`src/proto/plumtree.rs`, marked `TILO PATCH`), its address lookup
+sweeps only while it holds addresses (`src/net/address_lookup.rs`, marked
+`TILO PATCH`), and the `[lib]`
 builds an `rlib` only. `TILO-PATCH.md` has the details and an upstream-ready
 description; `vendor/PATCHES.md`, "iroh idle timers", the summary. The
 archive's `Cargo.lock` is omitted.
