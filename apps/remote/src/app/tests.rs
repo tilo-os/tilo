@@ -761,6 +761,76 @@ fn a_tilo_stream_gap_asks_the_target_for_a_keyframe() {
     );
 }
 
+/// A key held on the remote machine when the session pane loses the
+/// keyboard (a click elsewhere, another window) is released there: its
+/// release goes to whatever has the keyboard now, and the remote side would
+/// hold the key, repeating it, until the person pressed it again.
+#[test]
+fn a_key_held_when_the_pane_loses_the_keyboard_is_released_on_the_remote_machine() {
+    let mut app = demo();
+    let target = SecretKey::generate().public();
+    let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
+    app.workspace.get_mut(id).unwrap().host = Atom(target.to_string());
+    app.open_session(id);
+    let session_id = match app.session.borrow().live.as_ref() {
+        Some(LiveSession::Tilo(session)) => session.id,
+        _ => panic!("Tilo session"),
+    };
+    app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
+        session_id,
+        event: runtime_collab::WorkspaceControlEvent::StreamStarted {
+            surface: 4,
+            width: 1280,
+            height: 720,
+        },
+    });
+    let _ = app.take_collab_requests();
+    let keys = |app: &mut RemoteApp| {
+        app.take_collab_requests()
+            .into_iter()
+            .filter_map(|request| match request {
+                ui::collaboration::CollabRequest::WorkspaceControlInput {
+                    event:
+                        runtime_collab::WorkspaceControlInput::Key {
+                            keycode, pressed, ..
+                        },
+                    ..
+                } => Some((keycode, pressed)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let key = |code, state| {
+        let mut event = ui::synthetic_input::key_event(Key::Named(NamedKey::Control), None, state);
+        event.physical_key = PhysicalKey::Code(code);
+        event
+    };
+    let mut pane = SessionPane::new(Rc::clone(&app.session));
+    let ctrl = winit::keyboard::KeyCode::ControlLeft;
+    let pressed = ElementState::Pressed;
+    assert!(pane.handle_key(&key(ctrl, pressed), ModifiersState::empty()));
+    assert_eq!(keys(&mut app), [(29, true)], "Ctrl goes down there");
+
+    pane.set_focus(false);
+    assert_eq!(
+        keys(&mut app),
+        [(29, false)],
+        "and comes up when the pane lets go"
+    );
+    pane.set_focus(false);
+    assert!(keys(&mut app).is_empty(), "once");
+
+    pane.set_focus(true);
+    assert!(pane.handle_key(&key(ctrl, pressed), ModifiersState::empty()));
+    assert!(pane.handle_key(&key(ctrl, ElementState::Released), ModifiersState::empty()));
+    assert_eq!(keys(&mut app), [(29, true), (29, false)]);
+    pane.set_focus(false);
+    assert!(
+        keys(&mut app).is_empty(),
+        "a key released already is not released again"
+    );
+}
+
 #[test]
 fn resource_operations_settle_only_their_own_session() {
     let mut app = demo();
@@ -856,13 +926,20 @@ fn keys_map_to_the_remote_machine() {
         ),
         Some(vec![3])
     );
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::Escape)), Some(0xff1b));
+    assert_eq!(vnc_keysym(&Key::Character("a".into())), Some(0x61));
+    // Ctrl+C is the Control key held, then C: both reach a VNC desktop.
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::Control)), Some(0xffe3));
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::Shift)), Some(0xffe1));
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::Alt)), Some(0xffe9));
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::Home)), Some(0xff50));
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::PageDown)), Some(0xff56));
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::F5)), Some(0xffc2));
+    assert_eq!(vnc_keysym(&Key::Character("é".into())), Some(0xe9));
     assert_eq!(
-        vnc_keysym(&Key::Named(NamedKey::Escape), None),
-        Some(0xff1b)
-    );
-    assert_eq!(
-        vnc_keysym(&Key::Character("a".into()), Some("a")),
-        Some(0x61)
+        vnc_keysym(&Key::Character("ł".into())),
+        Some(0x0100_0142),
+        "past Latin-1 a character is its Unicode keysym"
     );
     assert_eq!(
         ui::evdev::from_key_code(winit::keyboard::KeyCode::KeyA),
