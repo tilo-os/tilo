@@ -30,6 +30,8 @@ workspace-joined-name = Shared workspace
 workspace-needs-join-again = Join again to take part
 # A workspace that was being joined when Tilo last closed.
 workspace-not-joined-yet = Not joined yet
+workspace-on-this-device-only = On this device only
+workspace-on-this-device-only-no-documents = This workspace is on this device only: apps can't open documents in it.
 workspace-join-again-needs-invitation = Ask for a new invitation to join this workspace
 # A workspace kept for what was opened in it before it was joined to its room.
 workspace-kept-before-joining = { $name } before joining

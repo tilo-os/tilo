@@ -30,6 +30,8 @@ workspace-left-toast = { $name } verlassen
 workspace-joined-name = Geteilter Arbeitsbereich
 workspace-needs-join-again = Erneut beitreten, um teilzunehmen
 workspace-not-joined-yet = Noch nicht beigetreten
+workspace-on-this-device-only = Nur auf diesem Gerät
+workspace-on-this-device-only-no-documents = Dieser Arbeitsbereich ist nur auf diesem Gerät: Apps können darin keine Dokumente öffnen.
 workspace-join-again-needs-invitation = Bitte um eine neue Einladung, um diesem Arbeitsbereich beizutreten
 workspace-kept-before-joining = { $name } vor dem Beitritt
 
