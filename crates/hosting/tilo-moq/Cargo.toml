@@ -65,5 +65,9 @@ required-features = ["relay"]
 name = "relay_goaway"
 required-features = ["relay"]
 
+[[test]]
+name = "window_tracks"
+required-features = ["relay"]
+
 [lints]
 workspace = true
