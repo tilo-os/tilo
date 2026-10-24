@@ -1011,6 +1011,9 @@ pub struct ShellOverlayHost {
     /// The question about one of the person's apps on screen, "Uninstall
     /// <name>?" or "Add <name> to apps?" ([`app_sheets`]).
     app_sheet: Option<app_sheets::AppSheet>,
+    /// The question just answered, drawn leaving until it has gone; it
+    /// takes no input.
+    app_sheet_leaving: Option<app_sheets::AppSheet>,
     /// The sheet's window node and its own, while it is laid out.
     app_sheet_nodes: Option<(NodeId, NodeId)>,
     /// The sheet opened or closed since the tree was last built.

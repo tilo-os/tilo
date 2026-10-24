@@ -1639,6 +1639,20 @@ impl<C: Widget + ?Sized> ModalDialog<C> {
         self.open
     }
 
+    /// Whether anything of it is drawn now: open, arriving, or closed and
+    /// still leaving. A host that stops holding a closed dialog drops it
+    /// once this is false.
+    #[must_use]
+    pub fn is_drawn(&self) -> bool {
+        self.appear.is_drawn()
+    }
+
+    /// How far it has arrived now, `0..=1` (`motion::Appear`).
+    #[must_use]
+    pub fn appear_progress(&self) -> f64 {
+        self.appear.progress()
+    }
+
     fn slot_rect(&self, slot: Slot) -> Rect {
         let Some(layout) = &self.layout else {
             return Rect::ZERO;
