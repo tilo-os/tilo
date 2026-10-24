@@ -8,3 +8,11 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
   chrome.scripting.executeScript({target: {tabId}, files: ['kept.js']})
     .then((results) => report(results[0].result), (error) => report({failed: error.message}));
 });
+// The same script injected into the tab as it is now, with how long the
+// injection took.
+globalThis.timed = async () => {
+  const [tab] = await chrome.tabs.query({});
+  const start = performance.now();
+  const [ran] = await chrome.scripting.executeScript({target: {tabId: tab.id}, files: ['kept.js']});
+  return JSON.stringify({...ran.result, ms: performance.now() - start});
+};

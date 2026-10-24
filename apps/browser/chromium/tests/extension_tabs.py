@@ -1279,6 +1279,26 @@ class ExtensionTabs(unittest.TestCase):
         # `chrome`, rather than run in one the host made.
         self.assertEqual(self.report('awaiter'), {'connect': 'function', 'declared': True})
 
+    def test_a_script_injected_into_a_loaded_page_its_content_scripts_left_out_does_not_wait(self):
+        host, ids = self.start('awaiter', access={'awaiter': (['scripting'], ['http://127.0.0.1/*'], ['http://127.0.0.1/*'])})
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, ids['awaiter'], 'typeof timed') != 'function':
+            self.assertLess(time.monotonic(), deadline, 'the worker never started')
+            host.settle(0.25)
+        # Declared for the site, but their `exclude_matches` leave this page
+        # out: Chromium makes their world in it neither now nor later.
+        host.navigate(self.url + '/unscripted')
+        self.title(host, 1, 'page /unscripted')
+        status = "chrome.tabs.query({}).then((tabs) => tabs[0].status)"
+        while self.in_worker(host, ids['awaiter'], status) != 'complete':
+            self.assertLess(time.monotonic(), deadline, 'the page never finished loading')
+            host.settle(0.1)
+        found = json.loads(self.in_worker(host, ids['awaiter'], 'timed()'))
+        self.assertEqual({key: found[key] for key in ('connect', 'declared')}, {'connect': 'function', 'declared': False})
+        # It ran at once in a world the host made, without the wait for one
+        # of theirs that a page still loading gets (kDeclaredWorldWaitMs).
+        self.assertLess(found['ms'], 1500, found)
+
     def test_an_extension_follows_navigations_and_tab_events_by_the_tabs_ids(self):
         host, ids = self.start('navigator', access={'navigator': (['webNavigation', 'tabs'], [])})
         heard = lambda: json.loads(self.in_worker(host, ids['navigator'], 'JSON.stringify(heard)'))

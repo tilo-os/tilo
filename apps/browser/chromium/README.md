@@ -640,7 +640,9 @@ content scripts (with `sender.tab`) work without help.
   scripts for the page, the script waits up to one and a half seconds for
   Chromium to make it, as their first script runs: AdGuard injects its
   keep-alive on `tabs.onUpdated` as the page starts, before then, and it
-  needs their `chrome`. Where it has none, the host makes a world, in the
+  needs their `chrome`. A page that finished loading without it (open before
+  the extension came, or left out by `exclude_matches`) gets no wait. Where
+  it has none, the host makes a world, in the
   main frame and in each frame of the page's process it injects into
   (`allFrames` reaches those the extension may script: a host permission for
   the frame's address, or `activeTab` for the page's origin), that gets a
