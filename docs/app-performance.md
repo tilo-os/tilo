@@ -613,14 +613,58 @@ What changed:
 - VirtualList measures an entering row once.
 - Every scroller glides on the shared momentum, in whole device pixels.
 
-What is left:
+In release builds, which is what people feel, the same test measures the
+numbers below. They are CPU per frame in µs, p50, from one run on each t
+worker. "Before" is 97792cb4de. "After" is 24037e3efc, which adds:
 
-- The VirtualList still relays out the list as each row enters
-  (`frame.layout` about 12 ms).
-- The code editor's draw spends about 11 ms on its text rows, all of them
-  and not only the strip that entered.
-- The Scrollable still walks its 2,000 rows to plan damage
-  (`frame.damage` about 4 ms).
+- one scroll-copy mechanism;
+- damage planned near the view;
+- rows mounted in place;
+- the rubber band;
+- the terminal and the code editor on the shared glide.
+
+| Scroller | Fingers x86, before | after | Glide x86, before | after | Fingers arm, before | after | Glide arm, before | after |
+|---|---|---|---|---|---|---|---|---|
+| Scrollable, 2,000 text rows | 2,102 | 1,014 | 714 | 772 | 1,481 | 1,311 | 855 | 1,076 |
+| VirtualList, 100,000 rows | 481 | 255 | 39 | 106 | 721 | 460 | 65 | 182 |
+| DataTable, 100,000 rows | 199 | 176 | 122 | 109 | 307 | 305 | 175 | 171 |
+| TreeView, 10,000 rows | 150 | 124 | 111 | 92 | 191 | 185 | 146 | 142 |
+| ScrollRegion, 10,000 rows | 110 | 97 | 35 | 29 | 174 | 176 | 55 | 54 |
+| Code editor, 3,000 lines | 549 | 500 | 512 | 416 | 715 | 887 | 629 | 745 |
+
+Every frame fits well inside a 120 Hz frame (8.3 ms). The worst is the
+Scrollable, at about 1 ms. The pixel counts did not change, apart from the
+DataTable and TreeView repainting less under the fingers (231,536 to
+201,200 px and 123,282 to 119,460 px).
+
+What the release numbers show:
+
+- **Scrollable damage.** Damage planning is now proportional to what is
+  visible. `frame.damage` fell from 258 to 12 µs on x86 and from 238 to
+  21 µs on arm.
+- **Scrollable placement.** Every scroll frame still places all 2,000 rows
+  (`frame.layout` about 200 µs on x86). Three things walk every row:
+  - `Flow::apply_layout` places every child.
+  - `Scrollable::apply_layout` walks every row for `max_bottom_edge`.
+  - The column measures its paint reach over every row.
+- **Glide frames got slower.** Glides now pay that placement too: on x86
+  the Scrollable went from 714 to 772 µs and the VirtualList from 39 to
+  106 µs. Before, a glide moved the pixels without moving the rows, so
+  hit testing and the copy plan saw the rows where they no longer were.
+  Placing only the rows near the view, on a scroll that changes only the
+  offset, would remove the cost for both fingers and glides.
+- **VirtualList.** Entering rows now mount in place without rebuilding the
+  tree, and under the fingers `frame.layout` fell from 400 to 190 µs on
+  x86. The pass still visits the whole mounted list.
+- **Code editor.** Each frame still re-encodes every visible row: 396 draw
+  tags, about 420 µs of draw on x86. The copy saves only the GPU raster.
+  Drawing only the strip that entered needs the frame to know its damage
+  before it draws, but `surface_frame_with_damage` plans damage after
+  `draw_frame_content`.
+  - On arm the editor measured slower after than before (715 to 887 µs).
+    This rests on one run each on a shared worker, and is not explained.
+- **Scrollable draw.** The Scrollable appends its column's cached
+  encoding, 2,003 draw tags, every frame.
 
 ### Notes input latency on a 27-note notebook
 
