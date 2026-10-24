@@ -1906,12 +1906,12 @@ mod tests {
     const DESK_TILES: [(u64, vello::kurbo::Rect); 1] =
         [(TAB, vello::kurbo::Rect::new(0.0, 0.0, 2000.0, 2000.0))];
 
-    /// A frame as it arrives off the wire. `user` is the sender's own
-    /// (untrusted) claimed name — tests below pass a wrong one on purpose.
-    fn arrived(user: &str, peer: u64, room: &str, at: (f64, f64)) -> InboundPresence {
+    /// A frame as the network queues it: the sender's session and nothing
+    /// it said about who it is (`presence_identity_tests` sends that claim
+    /// over the wire and proves it goes no further).
+    fn arrived(peer: u64, room: &str, at: (f64, f64)) -> InboundPresence {
         InboundPresence {
             peer,
-            user: user.into(),
             key: serde_json::to_string(&PresenceKey::tile_pointer(room, TAB))
                 .expect("a tile pointer key serialises"),
             point: at,
@@ -1972,7 +1972,6 @@ mod tests {
             let mut presence = PresenceCtx::default();
             let entry = InboundPresence {
                 peer: 7,
-                user: "bob".into(),
                 key: serde_json::to_string(&PresenceKey::Workspace { id: room.into() })
                     .expect("a workspace key serialises"),
                 point: (120.0, 240.0),
@@ -1992,7 +1991,7 @@ mod tests {
             let mut anchored = AnchoredPointers::new();
             let now = Instant::now();
             let fresh = fold_inbound(
-                vec![arrived("bob", 7, room, (30.0, 20.0))],
+                vec![arrived(7, room, (30.0, 20.0))],
                 &mut anchored,
                 &mut presence,
                 &unnamed,
@@ -2058,7 +2057,7 @@ mod tests {
         let here = [(TAB, Rect::new(100.0, 50.0, 700.0, 700.0))];
         let heard = |anchored: &mut AnchoredPointers, presence: &mut PresenceCtx, at| {
             fold_inbound(
-                vec![arrived("bob", 7, room, (30.0, 20.0))],
+                vec![arrived(7, room, (30.0, 20.0))],
                 anchored,
                 presence,
                 &unnamed,
@@ -2106,7 +2105,7 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
             assert!(fold(
-                vec![arrived("bob", 7, room, (120.0, 240.0))],
+                vec![arrived(7, room, (120.0, 240.0))],
                 &mut presence,
                 &unnamed,
                 &any_room,
@@ -2129,7 +2128,7 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
             fold(
-                vec![arrived("bob", 7, room, (120.0, 240.0))],
+                vec![arrived(7, room, (120.0, 240.0))],
                 &mut presence,
                 &named(&[(7, "bob")]),
                 &any_room,
@@ -2177,8 +2176,8 @@ mod tests {
 
             fold(
                 vec![
-                    arrived("bob", 7, mine, (10.0, 20.0)),
-                    arrived("bob", 7, theirs, (30.0, 40.0)),
+                    arrived(7, mine, (10.0, 20.0)),
+                    arrived(7, theirs, (30.0, 40.0)),
                 ],
                 &mut presence,
                 &unnamed,
@@ -2208,7 +2207,7 @@ mod tests {
             let mut presence = PresenceCtx::default();
 
             let any = fold(
-                vec![arrived("bob", 7, elsewhere, (10.0, 10.0))],
+                vec![arrived(7, elsewhere, (10.0, 10.0))],
                 &mut presence,
                 &unnamed,
                 &|_room| false,
@@ -2230,8 +2229,8 @@ mod tests {
             let mut presence = PresenceCtx::default();
             fold(
                 vec![
-                    arrived("bob", 7, room, (100.0, 100.0)),
-                    arrived("bob", 7, room, (600.0, 300.0)),
+                    arrived(7, room, (100.0, 100.0)),
+                    arrived(7, room, (600.0, 300.0)),
                 ],
                 &mut presence,
                 &unnamed,
@@ -2258,8 +2257,8 @@ mod tests {
             let mut presence = PresenceCtx::default();
             fold(
                 vec![
-                    arrived("bob", 7, here, (10.0, 10.0)),
-                    arrived("carol", 8, there, (20.0, 20.0)),
+                    arrived(7, here, (10.0, 10.0)),
+                    arrived(8, there, (20.0, 20.0)),
                 ],
                 &mut presence,
                 &unnamed,
@@ -2277,7 +2276,7 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
             let any = fold(
-                vec![arrived("bob", 7, room, (1.0, 2.0))],
+                vec![arrived(7, room, (1.0, 2.0))],
                 &mut presence,
                 &unnamed,
                 &any_room,
@@ -2299,7 +2298,6 @@ mod tests {
             let mut presence = PresenceCtx::default();
             let entry = InboundPresence {
                 peer: 9,
-                user: "carol".into(),
                 key: serde_json::to_string(&PresenceKey::Tab { id: "2a".into() })
                     .expect("a tab key serialises"),
                 point: (3.0, 4.0),
@@ -2335,7 +2333,7 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
             fold(
-                vec![arrived("bob", 7, room, (10.0, 10.0))],
+                vec![arrived(7, room, (10.0, 10.0))],
                 &mut presence,
                 &named(&[(7, "bob")]),
                 &any_room,
@@ -2354,8 +2352,12 @@ mod tests {
         fn a_sender_cannot_name_itself() {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
+            // What the sender's frame said about who it is never reaches
+            // this fold (`InboundPresence` has no field for it; the network's
+            // `presence_identity_tests` sends that claim over the wire): an
+            // unnamed sender is its session.
             fold(
-                vec![arrived("ada", 7, room, (10.0, 10.0))],
+                vec![arrived(7, room, (10.0, 10.0))],
                 &mut presence,
                 &unnamed,
                 &any_room,
@@ -2375,14 +2377,14 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut before = PresenceCtx::default();
             fold(
-                vec![arrived("", 7, room, (10.0, 10.0))],
+                vec![arrived(7, room, (10.0, 10.0))],
                 &mut before,
                 &unnamed,
                 &any_room,
             );
             let mut after = PresenceCtx::default();
             fold(
-                vec![arrived("", 7, room, (10.0, 10.0))],
+                vec![arrived(7, room, (10.0, 10.0))],
                 &mut after,
                 &named(&[(7, "bob")]),
                 &any_room,
@@ -2420,7 +2422,7 @@ mod tests {
             let room = "3f2b1c00-0000-4000-8000-000000000001";
             let mut presence = PresenceCtx::default();
             fold(
-                vec![arrived("", 0x2a, room, (5.0, 5.0))],
+                vec![arrived(0x2a, room, (5.0, 5.0))],
                 &mut presence,
                 &unnamed,
                 &any_room,
@@ -2727,14 +2729,14 @@ mod two_sessions {
         match msg {
             NeighbourMsg::PresenceMoved {
                 peer,
-                user,
+                user: _,
                 key,
                 point,
                 ts,
                 colour,
             } => {
                 to.note_peer_colour(peer, colour.as_deref());
-                to.handle_presence_message(peer, user, key, point, ts);
+                to.handle_presence_message(peer, key, point, ts);
             }
             other => panic!("expected PresenceMoved, got {other:?}"),
         }
@@ -3143,7 +3145,6 @@ mod two_sessions {
 
         hosted_net.handle_presence_message(
             handle_of(&other_peer),
-            "anyone at all".into(),
             serde_json::to_string(&PresenceKey::tile_pointer(room.to_string(), DESK_TAB))
                 .expect("a tile pointer key serialises"),
             (5.0, 6.0),

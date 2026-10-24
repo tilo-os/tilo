@@ -47,6 +47,8 @@ mod own_devices_tests;
 mod paired_continuity_tests;
 mod peer_sync_worker;
 mod personal_device_peers;
+#[cfg(test)]
+mod presence_identity_tests;
 mod private_chat;
 #[cfg(test)]
 mod surface_update_tests;
@@ -1920,12 +1922,14 @@ pub struct InboundScrollbackResponse {
 
 /// One received cursor-presence update, merged by the shell's
 /// frame drainer into `PresenceCtx`.
+///
+/// It carries no name: who sent it is `peer`, bound to the authenticated
+/// transport before it is queued, and what that sender is called is the
+/// room's to say ([`ShellNetwork::peer_labels`]). The wire frame's own
+/// `user` field is a claim anybody can make, so it never gets this far.
 #[derive(Debug, Clone)]
 pub struct InboundPresence {
     pub peer: u64,
-    /// Who the publishing session says is sitting at it. Empty when it
-    /// did not say; the drainer falls back to the session handle.
-    pub user: String,
     /// Presence channel key (workspace, tab, widget path, …), JSON so
     /// the wire format stays opaque to the bridge.
     pub key: String,
@@ -3023,14 +3027,7 @@ impl ShellNetwork {
 
     /// Queue a received presence move; public so tests can inject one
     /// without going through gossip.
-    pub fn handle_presence_message(
-        &self,
-        peer: u64,
-        user: String,
-        key: String,
-        point: (f64, f64),
-        ts: u64,
-    ) {
+    pub fn handle_presence_message(&self, peer: u64, key: String, point: (f64, f64), ts: u64) {
         // A session does not paint its own cursor from the network: the
         // pointer it would draw is the one already under the user's hand.
         if peer == self.local_peer_hash {
@@ -3039,7 +3036,6 @@ impl ShellNetwork {
         if let Ok(mut buf) = self.inbound_presence.lock() {
             buf.push(InboundPresence {
                 peer,
-                user,
                 key,
                 point,
                 ts,
@@ -3057,7 +3053,6 @@ impl ShellNetwork {
         if let Ok(mut buf) = self.inbound_presence.lock() {
             buf.push(InboundPresence {
                 peer,
-                user: String::new(),
                 key,
                 point: (0.0, 0.0),
                 ts: tilo_clock::unix_now_ms(),
@@ -7928,14 +7923,17 @@ impl ShellNetwork {
             // Ephemeral overlay state, not CRDT state — skips the replica entirely.
             NeighbourMsg::PresenceMoved {
                 peer: peer_hash,
-                user,
+                // Who the sender says it is: older peers still send it, and
+                // nothing here reads it. A peer naming itself could name
+                // anybody; `peer_hash` is bound to the transport above.
+                user: _,
                 key,
                 point,
                 ts,
                 colour,
             } => {
                 self.note_peer_colour(peer_hash, colour.as_deref());
-                self.handle_presence_message(peer_hash, user, key, point, ts);
+                self.handle_presence_message(peer_hash, key, point, ts);
             }
             NeighbourMsg::PresenceCleared {
                 peer: peer_hash,
@@ -16026,17 +16024,10 @@ mod tests {
             let tree = WorkspaceTree::bootstrap_demo().shared();
             let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
             let buf_handle = net.inbound_presence_handle();
-            net.handle_presence_message(
-                7u64,
-                "bob".into(),
-                "ws/0".into(),
-                (10.0, 20.0),
-                1_700_000_000,
-            );
+            net.handle_presence_message(7u64, "ws/0".into(), (10.0, 20.0), 1_700_000_000);
             let buf = buf_handle.lock().unwrap().clone();
             assert_eq!(buf.len(), 1);
             assert_eq!(buf[0].peer, 7u64);
-            assert_eq!(buf[0].user, "bob");
             assert_eq!(buf[0].key, "ws/0");
             assert_eq!(buf[0].point, (10.0, 20.0));
             assert_eq!(buf[0].ts, 1_700_000_000);
@@ -16048,24 +16039,12 @@ mod tests {
             let tree = WorkspaceTree::bootstrap_default().shared();
             let (net, _cmd_rx) = shell_network_for_test(tree, 99u64);
             let buf_handle = net.inbound_presence_handle();
-            net.handle_presence_message(
-                99u64,
-                "me".into(),
-                "ws/0".into(),
-                (10.0, 20.0),
-                1_700_000_000,
-            );
+            net.handle_presence_message(99u64, "ws/0".into(), (10.0, 20.0), 1_700_000_000);
             assert!(
                 buf_handle.lock().unwrap().is_empty(),
                 "a session's own presence must not be drained back into its overlay"
             );
-            net.handle_presence_message(
-                7u64,
-                "bob".into(),
-                "ws/0".into(),
-                (30.0, 40.0),
-                1_700_000_001,
-            );
+            net.handle_presence_message(7u64, "ws/0".into(), (30.0, 40.0), 1_700_000_001);
             assert_eq!(
                 buf_handle.lock().unwrap().len(),
                 1,
