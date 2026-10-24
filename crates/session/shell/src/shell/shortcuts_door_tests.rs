@@ -168,7 +168,7 @@ impl HostedRoom {
             room,
         };
         let fixture = hosted.workspace_node().app(FIXTURE);
-        hosted.grant(tilo_action_policy::Grant::new(
+        hosted.grant(&tilo_action_policy::Grant::new(
             "fixture-surface",
             tilo_action_policy::Subject::agent(FIXTURE_HANDLE),
             fixture,
@@ -242,7 +242,7 @@ impl HostedRoom {
     }
 
     /// Grant `grant` in the room, as its owner gives it.
-    fn grant(&self, grant: tilo_action_policy::Grant) {
+    fn grant(&self, grant: &tilo_action_policy::Grant) {
         let id = grant.id.clone();
         self.govern(
             tilo_action_policy::roles::governance::GRANT,
@@ -257,8 +257,10 @@ impl HostedRoom {
     fn open_first(&self, app: &str, record: &str) {
         self.device
             .open_app_first(self.room, app, record, RECORD_KIND);
-        let net = self.network();
-        let owner = net.native_owner().expect("the room's native owner");
+        let owner = self
+            .network()
+            .native_owner()
+            .expect("the room's native owner");
         until(
             &[&self.device],
             "the app's record to reach the room",
@@ -695,6 +697,10 @@ impl Door {
 
     /// Save `shortcut` from Bob's own device, as the room's member who
     /// may edit it; he joins the room on it first.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "Bob's device turns its loop until his shortcut reaches the room"
+    )]
     fn save_from_bobs_device(&mut self, shortcut: &Shortcut) {
         if self.bob.is_none() {
             self.bob = Some(self.hosted.bob_joins(&self.dir.path().join("bob")));
@@ -1876,7 +1882,7 @@ fn an_app_that_may_invoke_still_needs_the_workspace_to_grant_it() {
     assert!(door.app.served.is_empty(), "nothing ran");
 
     let node = door.hosted.workspace_node().app(FIXTURE);
-    door.hosted.grant(tilo_action_policy::Grant::new(
+    door.hosted.grant(&tilo_action_policy::Grant::new(
         "invoker-fixture",
         tilo_action_policy::Subject::app(INVOKER_APP),
         node,
@@ -2041,7 +2047,7 @@ fn a_grant_that_asks_first_runs_each_call_on_the_persons_confirmation() {
         None,
         "draft",
     );
-    door.hosted.grant(tilo_action_policy::Grant::new(
+    door.hosted.grant(&tilo_action_policy::Grant::new(
         "invoker-drafts-when-asked",
         tilo_action_policy::Subject::app(INVOKER_APP),
         node,
