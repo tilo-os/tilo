@@ -278,6 +278,10 @@ fn checked(
     }
     if !governs {
         personal_layout_kept(before, candidate)?;
+        if before.map_or_else(Vec::new, crate::room_hosts_of) != crate::room_hosts_of(candidate) {
+            // The room's hosts are its governor's to name.
+            return Err(RoomRefusal::GovernanceWriter);
+        }
     }
     // Every writer, the governor included: it relays and merges what members
     // write, so who sent a batch says nothing about who saved a shortcut.

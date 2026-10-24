@@ -57,6 +57,8 @@ pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod held;
 mod media_governance;
 mod native_publication;
+mod room_hosts;
+pub use room_hosts::{ROOM_HOSTS_KEY, room_hosts_of};
 mod room_layout;
 mod room_name;
 mod room_settings;
