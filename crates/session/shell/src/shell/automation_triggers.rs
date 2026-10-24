@@ -1410,7 +1410,7 @@ mod tests {
 
     /// Carry `from`'s copy of the personal room to `to`: its shortcuts and
     /// schedule claims, as the room's host serves them to every member.
-    fn sync(from: &mut Device, to: &mut Device) {
+    fn sync(from: &Device, to: &mut Device) {
         let source = &from.tree.desktop.workspaces[0];
         let (shortcuts, claims) = (source.shortcuts.clone(), source.schedule_claims.clone());
         let target = &mut to.tree.desktop.workspaces[0];
@@ -1430,7 +1430,7 @@ mod tests {
                 catch_up: CatchUp::Skip,
             })
         ));
-        sync(&mut laptop, &mut desktop);
+        sync(&laptop, &mut desktop);
         assert_eq!(
             desktop.tree.desktop.workspaces[0].shortcuts.len(),
             1,
@@ -1467,9 +1467,9 @@ mod tests {
             clock.set(due - ChronoDuration::seconds(15));
             for _ in 0..21 {
                 laptop.tick();
-                sync(&mut laptop, &mut desktop);
+                sync(&laptop, &mut desktop);
                 desktop.tick();
-                sync(&mut desktop, &mut laptop);
+                sync(&desktop, &mut laptop);
                 clock.advance(ChronoDuration::seconds(15));
             }
             let runs: Vec<&Firing> = laptop.ran.iter().chain(&desktop.ran).collect();

@@ -151,7 +151,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
         // The person's own workspace, as a signed-in session adopts it: only
         // a person who may administer it is offered the invite action.
         let mut tree = WorkspaceTree::bootstrap_demo();
-        tree.own_workspaces_for_test(|_| shell::shell::state::local_user_id().clone());
+        tree.own_workspaces_for_test(|_| shell::shell::state::local_user_id());
 
         let (baseline_scene, _baseline_chrome) = render_overlay_host(&tree);
         let baseline_fills = collect_solid_colors(&baseline_scene);

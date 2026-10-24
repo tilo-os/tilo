@@ -955,7 +955,7 @@ fn native_uncertain_new_pending_proof_remains_required_without_send_receipt() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let (tree, local, _) = fresh_slot(&path);
-    let owner = open(tree.clone()).unwrap();
+    let owner = open(tree).unwrap();
     let (intent, _, _, _, now) = raw_fixture();
     let room = intent.room();
     assert!(

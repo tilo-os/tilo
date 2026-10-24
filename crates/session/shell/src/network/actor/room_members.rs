@@ -158,7 +158,7 @@ mod tests {
     fn minting() -> impl FnMut() -> MembershipEpoch {
         let mut next = 0;
         move || {
-            next += 1;
+            next = next.saturating_add(1);
             MembershipEpoch(next)
         }
     }
