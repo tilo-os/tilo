@@ -482,25 +482,33 @@ fn fail_routes(routes: &Routes, message: &str) {
 fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
     routes.lock().ok()?.get(&id)?.upgrade()
 }
-fn deliver_frame(routes: &Routes, tab: u32, frame: super::Frame) {
+/// A client tab's frame goes on to its process as the host sent it; only a
+/// frame drawn here is converted.
+fn deliver_frame(routes: &Routes, tab: u32, frame: protocol::WireFrame) {
     if let Some(shared) = route(routes, tab) {
         if let Some(outbox) = &shared.remote {
             outbox.frame(tab, frame);
             return;
         }
-        if let Ok(mut slot) = shared.frames.lock() {
-            if let Some(previous) = slot.as_ref()
-                && previous.width == frame.width
-                && previous.height == frame.height
-                && previous.rgba == frame.rgba
-            {
-                super::frame_trace::unchanged(tab, frame.trace_id, previous.trace_id);
-                return;
-            }
-            *slot = Some(frame);
-        }
-        shared.wake();
+        present_frame(&shared, tab, frame.into_frame(tab));
     }
+}
+
+/// Makes `frame` the tab's newest and wakes the view, unless it shows exactly
+/// what the tab already has.
+fn present_frame(shared: &Shared, tab: u32, frame: super::Frame) {
+    if let Ok(mut slot) = shared.frames.lock() {
+        if let Some(previous) = slot.as_ref()
+            && previous.width == frame.width
+            && previous.height == frame.height
+            && previous.rgba == frame.rgba
+        {
+            super::frame_trace::unchanged(tab, frame.trace_id, previous.trace_id);
+            return;
+        }
+        *slot = Some(frame);
+    }
+    shared.wake();
 }
 
 /// Error-only surface used when the engine is not installed or cannot start.
@@ -2768,6 +2776,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
 
 #[cfg(test)]
 mod extension_tests;
+#[cfg(test)]
+mod frame_tests;
 #[cfg(test)]
 mod popup_tests;
 #[cfg(test)]

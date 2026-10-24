@@ -28,7 +28,7 @@ use super::{
     queue_download_event, route_native_event, spawn_named,
 };
 use crate::time::Duration;
-use crate::webview::{Frame, WebViewEvent};
+use crate::webview::WebViewEvent;
 use tilo_lock::MutexRecover as _;
 
 /// Events a client has not read yet. Beyond this, a slow client loses its
@@ -74,13 +74,13 @@ pub(super) struct Outbox {
 #[derive(Default)]
 struct OutboxState {
     events: VecDeque<Value>,
-    frames: BTreeMap<u32, Frame>,
+    frames: BTreeMap<u32, protocol::WireFrame>,
     closed: bool,
 }
 
 enum Outgoing {
     Json(Value),
-    Frame(u32, Frame),
+    Frame(u32, protocol::WireFrame),
 }
 
 impl Outbox {
@@ -117,7 +117,7 @@ impl Outbox {
         self.ready.notify_one();
     }
 
-    pub(super) fn frame(&self, tab: u32, frame: Frame) {
+    pub(super) fn frame(&self, tab: u32, frame: protocol::WireFrame) {
         let mut state = self.state.lock_recover();
         if state.closed {
             return;
@@ -125,6 +125,12 @@ impl Outbox {
         state.frames.insert(tab, frame);
         drop(state);
         self.ready.notify_one();
+    }
+
+    /// The next queued frame, without waiting.
+    #[cfg(test)]
+    pub(super) fn take_frame(&self) -> Option<(u32, protocol::WireFrame)> {
+        self.state.lock_recover().frames.pop_first()
     }
 
     fn close(&self) {

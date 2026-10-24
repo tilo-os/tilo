@@ -13,8 +13,37 @@ const FRAMING: Framing = Framing::little_endian(MAX_PACKET as usize).reject_empt
 
 pub(super) enum Packet {
     Json(serde_json::Value),
-    Frame(Frame),
-    TabFrame(u32, Frame),
+    Frame(WireFrame),
+    TabFrame(u32, WireFrame),
+}
+
+/// A frame as the host sends it: BGRA, as it came off the wire. The owner of a
+/// shared host passes a client tab's frames on exactly so; only the process
+/// that draws one converts it, in place (`into_frame`).
+pub(super) struct WireFrame {
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) bgra: Vec<u8>,
+}
+
+impl WireFrame {
+    /// The frame to draw: its pixels turned to RGBA in their own buffer.
+    pub(super) fn into_frame(self, tab: u32) -> Frame {
+        let Self {
+            width,
+            height,
+            bgra: mut pixels,
+        } = self;
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        Frame {
+            trace_id: crate::webview::frame_trace::received(tab, &pixels, width, height),
+            width,
+            height,
+            rgba: Arc::new(pixels),
+        }
+    }
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -34,17 +63,22 @@ pub(super) fn write_json(writer: &mut impl Write, value: &serde_json::Value) -> 
     writer.flush()
 }
 
-/// Writes `frame` as the host would: a routed frame packet carrying BGRA.
-pub(super) fn write_tab_frame(writer: &mut impl Write, tab: u32, frame: &Frame) -> io::Result<()> {
+/// Writes `frame` as the host would: a routed frame packet carrying its BGRA
+/// pixels as they are.
+pub(super) fn write_tab_frame(
+    writer: &mut impl Write,
+    tab: u32,
+    frame: &WireFrame,
+) -> io::Result<()> {
     let size = frame
         .width
         .checked_mul(frame.height)
         .and_then(|pixels| pixels.checked_mul(4));
-    if size.and_then(|size| usize::try_from(size).ok()) != Some(frame.rgba.len()) {
+    if size.and_then(|size| usize::try_from(size).ok()) != Some(frame.bgra.len()) {
         return Err(invalid("Frame size does not match its dimensions"));
     }
     let prefix = frame
-        .rgba
+        .bgra
         .len()
         .checked_add(13)
         .and_then(|len| FRAMING.encode_prefix(len).ok())
@@ -54,13 +88,7 @@ pub(super) fn write_tab_frame(writer: &mut impl Write, tab: u32, frame: &Frame) 
     writer.write_all(&tab.to_le_bytes())?;
     writer.write_all(&frame.width.to_le_bytes())?;
     writer.write_all(&frame.height.to_le_bytes())?;
-    let mut bgra = Vec::with_capacity(frame.rgba.len());
-    for pixel in frame.rgba.chunks_exact(4) {
-        if let &[red, green, blue, alpha] = pixel {
-            bgra.extend_from_slice(&[blue, green, red, alpha]);
-        }
-    }
-    writer.write_all(&bgra)?;
+    writer.write_all(&frame.bgra)?;
     writer.flush()
 }
 
@@ -111,21 +139,12 @@ pub(super) fn read_packet(reader: &mut impl Read) -> io::Result<Option<Packet>> 
             {
                 return Err(invalid("Invalid Chromium frame dimensions"));
             }
-            let mut pixels = vec![0; payload_size as usize];
-            reader.read_exact(&mut pixels)?;
-            for pixel in pixels.chunks_exact_mut(4) {
-                pixel.swap(0, 2);
-            }
-            let frame = Frame {
-                trace_id: crate::webview::frame_trace::received(
-                    tab.unwrap_or(1),
-                    &pixels,
-                    width,
-                    height,
-                ),
+            let mut bgra = vec![0; payload_size as usize];
+            reader.read_exact(&mut bgra)?;
+            let frame = WireFrame {
                 width,
                 height,
-                rgba: Arc::new(pixels),
+                bgra,
             };
             Ok(Some(match tab {
                 Some(id) => Packet::TabFrame(id, frame),
@@ -192,6 +211,8 @@ mod tests {
             let Some(Packet::Frame(frame)) = read_packet(&mut Cursor::new(&bytes)).unwrap() else {
                 panic!("expected frame")
             };
+            assert_eq!(frame.bgra, [10, 20, 30, 255], "read as sent");
+            let frame = frame.into_frame(1);
             assert_eq!((frame.width, frame.height), (1, 1));
             assert_eq!(&*frame.rgba, &[30, 20, 10, 255]);
             bytes[5..9].copy_from_slice(&8193u32.to_le_bytes());

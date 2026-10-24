@@ -118,10 +118,18 @@ out. A page's `beforeunload` request to stay is let go, as closing its tab lets
 it go; there is no prompt to answer it.
 
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
-only the newest pending CPU frame is kept. Frames are copied during OnPaint;
-no CEF-owned pixel pointer or GPU handle survives the callback. Dropdown popup
-pixels are composited into the main image before emission. A blocked consumer
-cannot stall the CEF UI thread; a closed pipe triggers browser shutdown.
+only each tab's newest pending frame is kept, and tabs take turns, so a page
+painting every frame never drops another tab's last frame. A paint's pixels are
+copied once, during OnPaint, straight into the packet that is sent, which the
+tab keeps to send again; no CEF-owned pixel pointer or GPU handle survives the
+callback. Dropdown popup pixels are composited into a copy of the main image
+before emission. A blocked consumer cannot stall the CEF UI thread; a closed
+pipe triggers browser shutdown. In a shared host the owning process passes a
+client tab's frame on as it arrived, BGRA in the buffer it was read into; only
+the process that draws a frame converts it. `tests/frame_transport.py` prints
+what the host's process spends per frame of a full-screen animation, for the
+first tab and a routed one, and checks that every change of a still tab beside
+it arrives.
 
 ## macOS packaging and sandbox
 
