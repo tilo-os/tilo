@@ -174,9 +174,10 @@ fn read_profile(known: &HashSet<String>) -> Profile {
     }
 }
 
-/// How often the Web Store is asked for newer versions: an ad blocker's
-/// rules come with its updates.
-const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+/// How often a window asks for the day's update check, which one Browser
+/// on the profile is given each day: an ad blocker's rules come with its
+/// updates, and the one that checked may since have closed.
+const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 /// What the anchored panel shows.
 enum Panel {
@@ -506,7 +507,7 @@ impl ExtensionController {
     }
 
     /// Ask the Web Store for newer versions of its extensions, on a worker,
-    /// once a day.
+    /// when this Browser is given the day's check.
     fn check_for_updates(&mut self, now: ui::time::Instant) {
         if self.busy
             || self.infos.is_empty()
@@ -522,6 +523,9 @@ impl ExtensionController {
         let outcomes = self.outcomes.clone();
         std::thread::spawn(move || {
             let root = extensions::extensions_dir();
+            if !extensions::claim_update_check(&root, ui::time::unix_now()) {
+                return;
+            }
             for info in infos {
                 match extensions::update_from_store(&info, &version, &root) {
                     Ok(Some(updated)) => {
