@@ -1982,6 +1982,7 @@ impl ShellDriver {
                 self.scene_downloaded_add(downloaded_scene::AddScene::NoArtwork);
             }
             "quick-settings" => self.scene_quick_settings(),
+            "qs-muted" => self.scene_qs_muted(),
             "qs-edit" => self.scene_qs_edit(false),
             "qs-edit-drag" => self.scene_qs_edit(true),
             "qs-hardware-wired" => self.scene_qs_hardware_wired(),
@@ -2344,12 +2345,16 @@ impl ShellDriver {
             PowerProfile::Performance,
         ];
         qs.power_profile = PowerProfile::Balanced;
-        qs.battery = tilo_power_mgmt::BatterySnapshot {
+        qs.status.battery = Some(tilo_power_mgmt::BatterySnapshot {
             present: true,
             percent: 72,
             state: tilo_power_mgmt::BatteryState::Discharging,
-        };
-        qs.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(254));
+        });
+        qs.status.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(254));
+        qs.status.volume = Some(os_actions::VolumeState {
+            level: 0.45,
+            muted: false,
+        });
         let network =
             |ssid: &str, signal: u8, secure: bool, connected: bool, known: bool| WifiNetwork {
                 ssid: ssid.into(),
@@ -2402,6 +2407,19 @@ impl ShellDriver {
 
     fn scene_quick_settings(&mut self) {
         self.with_chrome(Self::seed_laptop_quick_settings);
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    /// The laptop's Quick Settings with its sound muted: the speaker shows
+    /// struck through and the volume track empty, as the top bar shows it.
+    fn scene_qs_muted(&mut self) {
+        self.with_chrome(|st| {
+            Self::seed_laptop_quick_settings(st);
+            st.quick_settings.status.volume = Some(os_actions::VolumeState {
+                level: 0.45,
+                muted: true,
+            });
+        });
         self.fb.host_mut().force_quick_settings_settled();
     }
 

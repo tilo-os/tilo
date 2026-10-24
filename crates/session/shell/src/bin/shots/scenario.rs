@@ -1798,7 +1798,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
         Action::SeedStatus(preset) => {
             let status = status_preset(preset);
             driver.with_chrome(|st: &mut ChromeState| {
-                st.status = status.clone();
+                st.quick_settings.status = status.clone();
                 st.bump();
             });
         }
@@ -2249,42 +2249,49 @@ fn status_preset(name: &str) -> shell::shell::status::SystemStatus {
     match name {
         "healthy" => SystemStatus {
             battery: Some(batt(72, BatteryState::Discharging)),
+            battery_time: None,
             link: Some(wifi(4)),
             volume: Some(vol(0.45, false)),
             media: Vec::new(),
         },
         "charging" => SystemStatus {
             battery: Some(batt(38, BatteryState::Charging)),
+            battery_time: None,
             link: Some(wifi(3)),
             volume: Some(vol(0.45, false)),
             media: Vec::new(),
         },
         "low" => SystemStatus {
             battery: Some(batt(14, BatteryState::Discharging)),
+            battery_time: None,
             link: Some(wifi(2)),
             volume: Some(vol(0.20, false)),
             media: Vec::new(),
         },
         "critical" => SystemStatus {
             battery: Some(batt(3, BatteryState::Discharging)),
+            battery_time: None,
             link: Some(wifi(1)),
             volume: Some(vol(0.20, false)),
             media: Vec::new(),
         },
         "muted" => SystemStatus {
             battery: Some(batt(88, BatteryState::Full)),
+            battery_time: None,
             link: Some(wifi(4)),
             volume: Some(vol(0.6, true)),
             media: Vec::new(),
         },
         "offline" => SystemStatus {
             battery: Some(batt(64, BatteryState::Discharging)),
+            battery_time: None,
             link: Some(LinkStatus::offline()),
             volume: Some(vol(0.45, false)),
             media: Vec::new(),
         },
         "wired" => SystemStatus {
             battery: None,
+            battery_time: None,
             link: Some(LinkStatus {
                 kind: LinkKind::Wired,
                 name: Some("Wired connection 1".to_string()),

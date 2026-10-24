@@ -4642,7 +4642,9 @@ impl ActionsProvider {
                             }
                         }
                         QS_VOLUME_ID => {
-                            state.quick_settings.volume = validated_percent(args) / 100.0;
+                            state
+                                .quick_settings
+                                .set_volume_level(validated_percent(args) / 100.0);
                         }
                         QS_WIFI_ID => {
                             state.quick_settings.wifi = args.boolean("enabled") == Some(true);
@@ -5282,7 +5284,7 @@ fn focused_brightness(
 /// for brightness, the level of the display the person works on.
 fn level_percent(state: &ChromeState, level: &str) -> f32 {
     let share = if level == QS_VOLUME_ID {
-        state.quick_settings.volume
+        state.quick_settings.volume_level()
     } else {
         focused_brightness(state).map_or(state.quick_settings.brightness, |display| display.level)
     };

@@ -923,6 +923,10 @@ pub struct ShellOverlayHost {
     /// pixels don't depend on host hardware. See
     /// [`crate::shell::status`].
     status_bridge: Option<crate::shell::status::StatusBridge>,
+    /// The bridge's status as last copied into the chrome, so a frame copies
+    /// only what the bridge changed and a slider being dragged keeps the
+    /// level it shows until it commits.
+    status_copied: std::cell::RefCell<crate::shell::status::SystemStatus>,
     /// Single session-lifetime owner for persistent balance/mono transforms.
     /// Present only in compositor sessions; omitted from shots and unit tests.
     session_audio_policy: Option<crate::shell::session_audio_policy::SessionAudioPolicyOwner>,
