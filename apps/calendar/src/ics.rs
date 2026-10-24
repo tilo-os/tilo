@@ -742,12 +742,20 @@ fn parse_cal_date(val: &str) -> Option<NaiveDate> {
 /// RFC 5545 event durations are positive weeks, days or time spans, not
 /// calendar months. Checked arithmetic keeps an untrusted file from overflowing.
 fn parse_event_duration(value: &str) -> Option<(i64, chrono::Duration)> {
+    duration_parts(value).filter(|(days, time)| *days > 0 || *time > chrono::Duration::zero())
+}
+
+/// An RFC 5545 duration's nominal days and its elapsed time, zero included.
+fn duration_parts(value: &str) -> Option<(i64, chrono::Duration)> {
     let value = value.trim();
     let value = value.strip_prefix('+').unwrap_or(value);
     let mut rest = value.strip_prefix('P')?;
     if let Some(weeks) = rest.strip_suffix('W') {
+        if !weeks.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
         let days = weeks.parse::<i64>().ok()?.checked_mul(7)?;
-        return (days > 0).then_some((days, chrono::Duration::zero()));
+        return Some((days, chrono::Duration::zero()));
     }
     let mut days = 0_i64;
     let mut seconds = 0_i64;
@@ -785,9 +793,6 @@ fn parse_event_duration(value: &str) -> Option<(i64, chrono::Duration)> {
         }
         rest = rest.get(digits + 1..)?;
     }
-    if days == 0 && seconds == 0 {
-        return None;
-    }
     Some((days, chrono::Duration::try_seconds(seconds)?))
 }
 
@@ -812,16 +817,18 @@ fn duration_span(
     Some((end_wall, later_fold))
 }
 
+/// Minutes before the start a VALARM's relative TRIGGER rings: `-PT15M`,
+/// `-PT1H30M`, `-P1D`, or `PT0S` at the start itself. A trigger after the
+/// start is no reminder Calendar can hold.
 fn parse_trigger_minutes(v: &str) -> Option<i64> {
-    // e.g. "-PT15M", "-PT1H", "-PT720M".
-    let s = v.trim().trim_start_matches('-').trim_start_matches("PT");
-    if let Some(num) = s.strip_suffix('M') {
-        num.parse::<i64>().ok()
-    } else if let Some(num) = s.strip_suffix('H') {
-        num.parse::<i64>().ok().map(|h| h * 60)
-    } else {
-        None
-    }
+    let v = v.trim();
+    let (before, duration) = match v.strip_prefix('-') {
+        Some(duration) => (true, duration),
+        None => (false, v.strip_prefix('+').unwrap_or(v)),
+    };
+    let (days, time) = duration_parts(duration)?;
+    let minutes = days.checked_mul(24 * 60)?.checked_add(time.num_minutes())?;
+    (before || minutes == 0).then_some(minutes)
 }
 
 fn color_from_name(name: &str) -> Palette {
@@ -1163,6 +1170,31 @@ mod tests {
             let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:bad@example\r\nSUMMARY:Broken\r\nDTSTART:not-a-date\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
             assert!(parse(payload).0.is_empty());
         }
+    }
+
+    /// Alarms as other calendars write them keep their time before the start,
+    /// through the import an action makes of them.
+    #[test]
+    fn imported_alarms_keep_their_time_before_the_start() {
+        let reminder = |trigger: &str| {
+            let payload = format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:alarm@example.com\r\n\
+                 DTSTART:20261020T090000\r\nDTEND:20261020T100000\r\nSUMMARY:Dentist\r\n\
+                 BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:{trigger}\r\nEND:VALARM\r\n\
+                 END:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            let parsed = parse(&payload).0[0].reminder_min;
+            let (events, _) = crate::actions::import_payload(&payload).expect("one event");
+            (parsed, events[0].reminder)
+        };
+        assert_eq!(reminder("-PT15M"), (Some(15), 15));
+        assert_eq!(reminder("-PT1H"), (Some(60), 60));
+        assert_eq!(reminder("-P1D"), (Some(1440), 1440));
+        assert_eq!(reminder("PT0S"), (Some(0), 0));
+        // Parsed, but no alert Calendar offers: the event comes without one.
+        assert_eq!(reminder("-PT1H30M"), (Some(90), -1));
+        // After the start is not a reminder before it.
+        assert_eq!(reminder("PT15M"), (None, -1));
     }
 
     /// What a `CalDAV` server or an emailed invite sends for a timed series:
