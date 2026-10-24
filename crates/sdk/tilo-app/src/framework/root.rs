@@ -37,6 +37,7 @@ use super::stage::Stages;
 use super::surface::SurfacePublication;
 use super::view::ViewCx;
 
+mod facts;
 mod live_head;
 mod shared_tree;
 mod typed;
@@ -237,7 +238,7 @@ fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut tilo_actions::Resou
 
 /// The ids of the actions the framework publishes on every app's resource
 /// beside the app's own: the generic `apply`, `group` and `field-edit`, the
-/// views `open` and `read`, history, and the presentation operations. An app
+/// views `open`, `read` and `facts`, history, and the presentation operations. An app
 /// verb, effect or view under one of these ids shadows the framework's or is
 /// shadowed by it, so `tilo-app check` refuses it.
 #[must_use]
@@ -252,6 +253,7 @@ pub fn reserved_action_ids() -> Vec<String> {
     .collect();
     ids.push(open_spec().id);
     ids.push(read_spec().id);
+    ids.push(facts::FACTS.to_owned());
     ids.push(tilo_resource::share::SHARE_LINK.to_owned());
     ids.push(tilo_resource::share::SHARE_INVITE_LINK.to_owned());
     ids.extend(super::history::specs().into_iter().map(|spec| spec.id));
@@ -1069,8 +1071,9 @@ impl ResourceRoot {
     fn with_framework_specs(&self, mut resource: tilo_actions::Resource) -> tilo_actions::Resource {
         let specs = framework_specs();
         let read = self.resource.readable.then_some(&specs.read);
+        let facts = self.resource.facts.then_some(&specs.facts);
         let history = specs.history.iter().filter(|_| self.history);
-        for spec in specs.native.iter().chain(read).chain(history) {
+        for spec in specs.native.iter().chain(read).chain(facts).chain(history) {
             if !resource
                 .actions
                 .iter()
@@ -1180,6 +1183,7 @@ struct BindingBase {
 struct FrameworkSpecs {
     native: Vec<tilo_actions::ActionSpec>,
     read: tilo_actions::ActionSpec,
+    facts: tilo_actions::ActionSpec,
     history: Vec<tilo_actions::ActionSpec>,
 }
 
@@ -1201,6 +1205,7 @@ fn framework_specs() -> Rc<FrameworkSpecs> {
         let specs = Rc::new(FrameworkSpecs {
             native: with_native_presentations(tilo_actions::Resource::new("", "", "")).actions,
             read: read_spec(),
+            facts: facts::facts_spec(),
             history: super::history::specs(),
         });
         *kept = Some((locale, Rc::clone(&specs)));
@@ -2134,6 +2139,9 @@ impl RootModel for ResourceRoot {
         if self.resource.readable {
             handlers.insert(READ_TYPE.to_owned());
         }
+        if self.resource.facts {
+            handlers.insert(facts::FACTS_TYPE.to_owned());
+        }
         handlers.extend(
             self.typed
                 .effect_operations()
@@ -2199,6 +2207,20 @@ impl RootModel for ResourceRoot {
             && request.type_id == READ_TYPE
         {
             let output = read(
+                self.typed.as_ref(),
+                &*self.typed.state(),
+                doc,
+                request.payload,
+            )?;
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
+        }
+        if self.resource.facts
+            && let Some(request) = op.unscoped()
+            && request.type_id == facts::FACTS_TYPE
+        {
+            let output = facts::answer(
                 self.typed.as_ref(),
                 &*self.typed.state(),
                 doc,

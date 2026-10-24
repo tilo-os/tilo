@@ -36,6 +36,8 @@ pub(crate) struct ResourceType {
     pub(crate) label: &'static str,
     /// [`Resource::READABLE`].
     pub(crate) readable: bool,
+    /// [`Resource::HAS_FACTS`].
+    pub(crate) facts: bool,
     /// [`Resource::local_operations`].
     pub(crate) local_operations: fn() -> Vec<tilo_actions::ActionSpec>,
     /// Whether a resource id names one of the resource's items.
@@ -53,6 +55,7 @@ impl ResourceType {
             kind: R::KIND,
             label: R::LABEL,
             readable: R::READABLE,
+            facts: R::HAS_FACTS,
             local_operations: R::local_operations,
             item_of: |id| tilo_resource::items::item_of_resource::<R>(id).is_some(),
             items: tilo_resource::items::for_each_item_child::<R>,
@@ -172,6 +175,12 @@ pub(crate) trait TypedRoot {
         doc: &AutoCommit,
         item: Option<&str>,
     ) -> Result<serde_json::Value, String>;
+
+    /// [`Resource::facts`].
+    ///
+    /// # Errors
+    /// As [`Resource::facts`].
+    fn facts(&self, state: &dyn Any, doc: &AutoCommit) -> Result<serde_json::Value, String>;
 
     /// [`tilo_resource::child_by_id`] of `state`.
     fn child(&self, state: &dyn Any, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource>;
@@ -456,6 +465,12 @@ impl<R: Resource> TypedRoot for Typed<R> {
         let state =
             state_of::<R>(state).ok_or_else(|| "the resource is not readable here".to_owned())?;
         R::read_content(state, doc, item)
+    }
+
+    fn facts(&self, state: &dyn Any, doc: &AutoCommit) -> Result<serde_json::Value, String> {
+        let state =
+            state_of::<R>(state).ok_or_else(|| "the resource states no facts here".to_owned())?;
+        R::facts(state, doc)
     }
 
     fn child(&self, state: &dyn Any, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
