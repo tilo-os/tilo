@@ -306,6 +306,17 @@ impl Wake {
         self.ready.notify_all();
     }
 
+    /// Block until woken or `deadline` passes: whether it was woken.
+    fn wait_until(&self, deadline: std::time::Instant) -> bool {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let (mut state, timeout) = self
+            .ready
+            .wait_timeout_while(self.lock(), left, |state| !state.woken && !state.stopping)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.woken = false;
+        !timeout.timed_out()
+    }
+
     /// Block until woken; `false` once the session stops.
     fn wait(&self) -> bool {
         let mut state = self
@@ -350,28 +361,39 @@ impl PeerSync {
 
     /// Place `room`, the session's workspace, on this device's host and wait,
     /// turning the network as it wakes, until the native owner holds it; then
-    /// leave the network to the pump.
+    /// leave the network to the pump. A session whose room is not served
+    /// within [`hosting_bound`] fails to start, naming the step it stopped at,
+    /// rather than serving nothing.
     fn host(&mut self, room: crate::shell::state::RoomId) -> io::Result<()> {
         use crate::shell::network::Placement;
+        let deadline = std::time::Instant::now() + hosting_bound();
         // The rooms this device hosted before are served again first: a
         // session reopening its workspace finds it held already.
         self.network.open_hosted_rooms();
-        self.network.place_pending_workspaces();
-        // A pass that could not place it leaves it waiting: nothing would
-        // place it later without a desktop to make another workspace.
-        if self.network.waits_for_placement(room) {
-            return Err(io::Error::other(
-                "the session's workspace was not placed on this device's host",
-            ));
-        }
         loop {
+            // A turn places what waits to be placed and installs what
+            // enrolled, as the desktop's frame does.
             self.network.tick();
-            match self.network.placement(room) {
+            let placement = self.network.placement(room);
+            match &placement {
                 Placement::Held => break,
-                Placement::Underway => {}
-                Placement::Failed(error) => return Err(io::Error::other(error)),
+                Placement::Placing | Placement::Enrolling => {}
+                Placement::NotInstalled(error) => {
+                    return Err(io::Error::other(format!(
+                        "the session's workspace is not hosted: stopped at {}: {error}",
+                        placement.step()
+                    )));
+                }
             }
-            self.wake.wait();
+            if !self.wake.wait_until(deadline) {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "the session's workspace is not hosted: still waiting on {}",
+                        placement.step()
+                    ),
+                ));
+            }
         }
         let network = Arc::clone(&self.network);
         let wake = Arc::clone(&self.wake);
@@ -385,6 +407,19 @@ impl PeerSync {
                 })?,
         );
         Ok(())
+    }
+}
+
+/// How long a starting session waits for its workspace to be served by this
+/// device's host before it reports where it stopped.
+fn hosting_bound() -> Duration {
+    #[cfg(test)]
+    {
+        tilo_test_env::hang_bound()
+    }
+    #[cfg(not(test))]
+    {
+        Duration::from_secs(60)
     }
 }
 
