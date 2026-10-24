@@ -39,6 +39,7 @@ use crate::shell::state::{
 // and take it away again, which the network has no call for yet, and
 // `channels` reads a relay's retained state through `home_relay`: they join
 // the suite with that call.
+mod adopted_fields;
 #[cfg(target_os = "linux")]
 mod idle_host;
 mod invite_join;

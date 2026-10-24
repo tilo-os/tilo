@@ -153,15 +153,19 @@ fn governed_grant(
 /// Say each governance change made here that its room's governor refused,
 /// as a failed action is said once its palette row is gone: a warning
 /// naming the change, with the governor's reason. What the change showed
-/// ahead of the answer is already undone
-/// ([`WorkspaceTree::refuse_governance`]). Answers whether any was said.
+/// ahead of the answer is already undone, but for a sandbox capability
+/// taken back, which stays taken back
+/// ([`WorkspaceTree::refuse_room_change`]). Answers whether any was said.
 pub(crate) fn report_governance_refusals(st: &mut crate::shell::chrome_state::ChromeState) -> bool {
     if st.tree().governance_refusals.is_empty() {
         return false;
     }
     let refusals = st.tree_mut().take_governance_refusals();
     for refusal in refusals {
-        let title = crate::shell::i18n::t(refused_change_label(&refusal.request));
+        let title = crate::shell::i18n::t(match &refusal.change {
+            crate::shell::state::RoomChange::Governance(request) => refused_change_label(request),
+            crate::shell::state::RoomChange::Receipt(_) => "governance-change-history",
+        });
         st.push_warning_notification(
             crate::shell::i18n::t_args("host-action-cannot-run", &[("title", title.into())]),
             refusal.reason,
