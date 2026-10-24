@@ -2,7 +2,7 @@
 // an offscreen embedding: its tab registry holds only the tabs of its own
 // windows, and Tilo draws every page offscreen. Run in an extension's service
 // worker and its own pages, this answers the tab and window APIs, the toolbar
-// click and scripts on a tab from the host's tabs instead, over a request the
+// click, a tab's capture and scripts on a tab from the host's tabs instead, over a request the
 // host answers itself. A page of the extension is known by its address; its
 // worker, which has none, by a token the Browser wrote with this script into
 // the worker it runs first (extensions.rs).
@@ -99,6 +99,10 @@
   });
   replace(tabs, 'reload', (tabId, options) => call('tabs.reload', {tabId, options}));
   replace(tabs, 'remove', (tabIds) => call('tabs.remove', {tabIds: [].concat(tabIds)}));
+  replace(tabs, 'captureVisibleTab', (windowId, options) => {
+    if (typeof windowId === 'object' && windowId !== null) [windowId, options] = [undefined, windowId];
+    return call('tabs.captureVisibleTab', {windowId: windowId ?? null, options: options || {}});
+  });
   replace(tabs, 'sendMessage', (tabId, message, options) =>
     call('tabs.sendMessage', {tabId, message, frameId: options && options.frameId}));
   replace(windows, 'get', (windowId, query) => call('windows.get', {windowId, query}));

@@ -16,15 +16,18 @@
 // either. The host
 // answers from its own tabs, within the access the extension was granted, and
 // runs scripts in the extension's own isolated world of a page, where content
-// scripts run, through the page's inspector. Events (a click, a tab loading)
+// scripts run, through the page's inspector, and captures a tab from the frame
+// the host last painted of it. Events (a click, a tab loading)
 // reach a service worker through the DevTools pipe, which wakes it if it
 // sleeps; the host attaches only for as long as that takes, so an extension's
 // worker still sleeps when idle.
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -37,6 +40,7 @@
 #include "include/base/cef_callback.h"
 #include "include/cef_browser.h"
 #include "include/cef_devtools_message_observer.h"
+#include "include/cef_image.h"
 #include "include/cef_parser.h"
 #include "include/cef_resource_handler.h"
 #include "include/cef_scheme.h"
@@ -219,6 +223,29 @@ struct ExtensionTab {
   int opener = 0;
 };
 
+// The frame the host last painted of a tab: BGRA, premultiplied, top row
+// first, `width` by `height` device pixels.
+struct ExtensionFrame {
+  std::string pixels;
+  int width = 0, height = 0;
+};
+
+// A captured tab as an image's data URL (`tabs.captureVisibleTab`), or empty
+// when the frame cannot be encoded. Encoding a large frame takes a while:
+// call it off the UI thread.
+inline std::string EncodeFrame(const ExtensionFrame& frame, bool png, int quality) {
+  auto image = CefImage::CreateImage();
+  if (!image->AddBitmap(1.0f, frame.width, frame.height, CEF_COLOR_TYPE_BGRA_8888, CEF_ALPHA_TYPE_PREMULTIPLIED, frame.pixels.data(), frame.pixels.size()))
+    return {};
+  int width = 0, height = 0;
+  // A tab is captured as it shows, opaque, as in Chrome.
+  auto bytes = png ? image->GetAsPNG(1.0f, false, width, height) : image->GetAsJPEG(1.0f, quality, width, height);
+  if (!bytes || !bytes->GetSize()) return {};
+  std::string data(bytes->GetSize(), '\0');
+  bytes->GetData(data.data(), data.size(), 0);
+  return std::string(png ? "data:image/png;base64," : "data:image/jpeg;base64,") + CefBase64Encode(data.data(), data.size()).ToString();
+}
+
 class ExtensionTabs {
  public:
   using Reply = std::function<void(const std::string&)>;
@@ -235,6 +262,8 @@ class ExtensionTabs {
     std::function<void(int, bool)> reload;
     std::function<void(int, const std::string&, bool)> open;
     std::function<void(int)> close;
+    // A copy of the frame the tab shows, null when it shows none (hidden).
+    std::function<std::shared_ptr<ExtensionFrame>(int)> frame;
     // A DevTools call on the browser's pipe, `session` empty for the browser.
     std::function<void(const std::string&, CefRefPtr<CefDictionaryValue>, const std::string&, PipeDone)> pipe;
     bool private_mode = false;
@@ -266,6 +295,7 @@ class ExtensionTabs {
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
     listening_.erase(id);
     for (auto it = granted_.begin(); it != granted_.end();) it = it->first == id ? granted_.erase(it) : std::next(it);
+    captures_.erase(id);
   }
 
   // A request to the bridge from `frame` of the host tab `caller`, or with
@@ -360,6 +390,8 @@ class ExtensionTabs {
       if (!MayScript(extension, *tab)) { Fail(reply, "Cannot access contents of the page. Extension manifest must request permission to access the respective host."); return; }
       if (method == "scripting.insertCSS") InsertCss(extension, *tab, StringOf(args, "css"), reply);
       else ExecuteScript(extension, *tab, args, reply);
+    } else if (method == "tabs.captureVisibleTab") {
+      Capture(extension, tabs, from, args, reply);
     } else if (method == "windows.get" || method == "windows.getCurrent" || method == "windows.getLastFocused") {
       const ExtensionTab* tab = nullptr;
       if (method == "windows.get") tab = ByExtensionId(tabs, IntOf(args, "windowId"));
@@ -639,6 +671,73 @@ class ExtensionTabs {
   }
   bool MayScript(const std::string& extension, const ExtensionTab& tab) const {
     return HostAccess(extension, tab.url) || Granted(extension, tab);
+  }
+  // Access to every site (`<all_urls>`, or any host of a scheme), which
+  // with `activeTab` is what Chrome asks of an extension to capture a tab.
+  bool AllSites(const std::string& extension) const {
+    auto found = access_.find(extension);
+    if (found == access_.end()) return false;
+    if (found->second.permissions.count("<all_urls>")) return true;
+    for (const auto& pattern : found->second.hosts) {
+      if (pattern == "<all_urls>") return true;
+      const auto separator = pattern.find("://");
+      if (separator == std::string::npos) continue;
+      const auto slash = pattern.find('/', separator + 3);
+      if (pattern.substr(separator + 3, slash == std::string::npos ? std::string::npos : slash - separator - 3) == "*") return true;
+    }
+    return false;
+  }
+
+  // `tabs.captureVisibleTab`: the frame the window's tab shows, as Chrome
+  // allows it, to an extension the person gave the tab by a click
+  // (`activeTab`) or one with access to every site. Encoded off the UI
+  // thread; at most twice a second for each extension, Chrome's quota, so
+  // an extension cannot keep the host encoding.
+  void Capture(const std::string& extension, const std::vector<ExtensionTab>& tabs, const ExtensionTab* from, CefRefPtr<CefDictionaryValue> args, Reply reply) {
+    const auto window = IntOf(args, "windowId");
+    if (args->HasKey("windowId") && args->GetType("windowId") != VTYPE_NULL && !window) { Fail(reply, "Invalid value for argument 1."); return; }
+    // WINDOW_ID_CURRENT, or none: the caller's window.
+    const auto* tab = window && *window != -2 ? ByExtensionId(tabs, window) : Current(tabs, from);
+    if (!tab) { Fail(reply, "No window with id: " + std::to_string(window.value_or(-2)) + "."); return; }
+    auto options = args->GetType("options") == VTYPE_DICTIONARY ? args->GetDictionary("options") : CefDictionaryValue::Create();
+    bool png = false;
+    if (options->GetType("format") == VTYPE_STRING) {
+      const auto format = options->GetString("format").ToString();
+      if (format != "png" && format != "jpeg") { Fail(reply, "Invalid value for argument 2. Property 'format': Value must be one of jpeg, png."); return; }
+      png = format == "png";
+    } else if (options->HasKey("format") && options->GetType("format") != VTYPE_NULL) {
+      Fail(reply, "Invalid value for argument 2. Property 'format': Invalid type: expected string."); return;
+    }
+    int quality = 90;
+    if (options->HasKey("quality") && options->GetType("quality") != VTYPE_NULL) {
+      const auto given = IntOf(options, "quality");
+      if (!given || *given < 0 || *given > 100) { Fail(reply, "Invalid value for argument 2. Property 'quality': Value must be an integer from 0 to 100."); return; }
+      quality = *given;
+    }
+    const bool active = Has(extension, "activeTab") && Granted(extension, *tab);
+    if (!active && !AllSites(extension)) { Fail(reply, "Either the '<all_urls>' or 'activeTab' permission is required."); return; }
+    const bool own = tab->url.rfind("chrome-extension://" + extension + "/", 0) == 0;
+    if (!active && !own && !HostAccess(extension, tab->url)) {
+      Fail(reply, "Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
+      return;
+    }
+    auto& calls = captures_[extension];
+    const auto now = std::chrono::steady_clock::now();
+    while (!calls.empty() && now - calls.front() >= std::chrono::seconds(1)) calls.pop_front();
+    if (calls.size() >= 2) { Fail(reply, "This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota."); return; }
+    calls.push_back(now);
+    auto frame = hooks_.frame ? hooks_.frame(tab->tab) : nullptr;
+    if (!frame || frame->pixels.empty()) { Fail(reply, "Failed to capture tab: view is invisible"); return; }
+    CefPostTask(TID_FILE_USER_BLOCKING, base::BindOnce([](std::shared_ptr<ExtensionFrame> frame, bool png, int quality, Reply reply) {
+      auto url = EncodeFrame(*frame, png, quality);
+      frame.reset();
+      CefPostTask(TID_UI, base::BindOnce([](std::string url, Reply reply) {
+        if (url.empty()) { Fail(reply, "Failed to capture tab: unknown error"); return; }
+        auto value = CefValue::Create();
+        value->SetString(url);
+        Succeed(reply, value);
+      }, std::move(url), std::move(reply)));
+    }, std::move(frame), png, quality, std::move(reply)));
   }
 
   CefRefPtr<CefDictionaryValue> TabObject(const std::string& extension, const ExtensionTab& tab) const {
@@ -1146,6 +1245,8 @@ class ExtensionTabs {
   std::map<int, std::vector<std::function<void()>>> identifying_;
   // The worlds the host made for extensions' scripts, by tab and extension.
   std::map<std::pair<int, std::string>, int> content_worlds_;
+  // When each extension last captured a tab, within the last second.
+  std::map<std::string, std::deque<std::chrono::steady_clock::time_point>> captures_;
   uint64_t generation_ = 0;
 };
 

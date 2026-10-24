@@ -409,14 +409,19 @@ content scripts (with `sender.tab`) work without help.
   where its content scripts run. Where it has none, the host makes a world
   that gets a content script's `runtime`, `storage` and `i18n`
   (`src/extension_content.js`), through a binding only that world has.
+- `tabs.captureVisibleTab` encodes the frame the host last painted of the
+  tab, PNG or JPEG at the quality asked for (90 by default), off the UI
+  thread. As in Chrome it needs a click on the extension's button over the
+  tab (`activeTab`) or access to every site (`<all_urls>`), and answers each
+  extension at most twice a second. A hidden tab has no frame to capture.
 - A click or a tab event reaches a worker through the DevTools pipe, which
   wakes it if it sleeps; the host attaches only while it delivers, so an idle
   worker still sleeps. `tests/extension_tabs.py` covers each of these.
 
 ## Remaining integration work
 
-- Extensions' context menu items, keyboard shortcuts (`commands`), side panels
-  and `tabs.captureVisibleTab` are not offered.
+- Extensions' context menu items, keyboard shortcuts (`commands`) and side
+  panels are not offered.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs

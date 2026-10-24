@@ -987,6 +987,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     tab.panel=extension_panel_;tab.opener=panel_opener_;return tab;
   }
   CefRefPtr<tilo::TabInspector> inspector() const {return inspector_;}
+  // The page as this tab last painted it, for an extension that captures it.
+  std::shared_ptr<tilo::ExtensionFrame> PaintedFrame() const {
+    if(!visible_ || pixels_.empty())return nullptr;
+    auto frame=std::make_shared<tilo::ExtensionFrame>();frame->pixels=pixels_;frame->width=pixel_width_;frame->height=pixel_height_;return frame;
+  }
   bool records_agent() const {return agent_log_ && agent_log_->active();}
   void LoadUrl(const std::string& url) {if(browser_)browser_->GetMainFrame()->LoadURL(url);}
   void ReloadPage(bool bypass) {if(!browser_)return;if(bypass)browser_->ReloadIgnoreCache();else browser_->Reload();}
@@ -1501,6 +1506,7 @@ void StartExtensionTabs() {
     if(client)client->OpenTab(url,background);
   };
   hooks.close=[](int tab) {if(auto client=ClientOf(tab))client->CloseNative();};
+  hooks.frame=[](int tab)->std::shared_ptr<tilo::ExtensionFrame> {auto client=ClientOf(tab);return client?client->PaintedFrame():nullptr;};
   hooks.pipe=&PipeCall;
   hooks.private_mode=private_mode;
   extension_tabs=std::make_unique<tilo::ExtensionTabs>(std::move(hooks));
