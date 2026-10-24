@@ -70,6 +70,9 @@ impl Film {
     /// Record at least `frames` frames.
     pub const fn at_least(mut self, frames: u32) -> Self {
         self.min_frames = frames;
+        if self.max_frames < frames {
+            self.max_frames = frames;
+        }
         self
     }
 }
@@ -118,6 +121,17 @@ pub enum Step {
     PeerPointer {
         who: &'static str,
         at: vello::kurbo::Point,
+    },
+    /// Another member's terminal opens as a stream tile whose pictures have
+    /// not come yet.
+    PeerWindowOpens,
+    /// The terminal [`Step::PeerWindowOpens`] opened sends its first picture.
+    PeerWindowFirstPicture,
+    /// The start of `app_id`, whose place a launch holds, fails with
+    /// `detail`, as a start that exits or misses its deadline does.
+    LaunchFails {
+        app_id: &'static str,
+        detail: &'static str,
     },
 }
 
@@ -206,6 +220,14 @@ fn apply_step(driver: &mut ShellDriver, step: &Step) {
             }
         }
         Step::PeerPointer { who, at } => driver.peer_pointer_for_shots(who, *at),
+        Step::PeerWindowOpens => driver.open_room_member_window(),
+        Step::PeerWindowFirstPicture => driver.show_room_member_picture(),
+        Step::LaunchFails { app_id, detail } => driver.with_chrome(|st| {
+            if shell::shell::peer_windows::fail_launch_for_shots(&mut st.tree_mut(), app_id, detail)
+            {
+                st.bump();
+            }
+        }),
         Step::LogTargets(label) => {
             let mut targets: Vec<_> = driver.widget_registry().into_iter().collect();
             targets.sort_by(|a, b| a.0.cmp(&b.0));

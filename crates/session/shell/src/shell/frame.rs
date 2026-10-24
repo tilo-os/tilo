@@ -4675,6 +4675,15 @@ impl FrameBuilder {
 
     /// Earliest one-shot widget deadline. Unlike animation demand this lets
     /// the compositor sleep until the visual state can actually change.
+    /// Until when the next frame waits for a window's first frame that may
+    /// still land inside its frame budget ([`ui::arriving`]): shown then, it
+    /// opens with no placeholder at all. The hold's end is a wake deadline
+    /// ([`Self::next_wake_deadline`]), so the frame is made then at the
+    /// latest.
+    pub fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
+        Widget::holds_frame_until(&*self.host, now).filter(|until| *until > now)
+    }
+
     pub fn next_wake_deadline(&self) -> Option<Instant> {
         [
             self.host.next_wake_deadline(),
@@ -4735,12 +4744,12 @@ impl FrameBuilder {
         .flatten()
     }
 
-    /// Whether any tab is still holding a place for an app that hasn't drawn
-    /// yet. The opening card's spinner keeps [`Self::needs_animation_frame`]
-    /// true for the wait's duration, so a caller waiting for quiet has to
-    /// distinguish "still starting" from "animation wedged".
-    pub fn any_tile_opening(&mut self) -> bool {
-        self.host.any_tile_opening()
+    /// Whether any tab is still holding a place for a window whose first
+    /// frame hasn't arrived yet. Asking also latches a client frame that was
+    /// published as presented, so a caller waiting for a client to show asks
+    /// this every frame.
+    pub fn any_tile_arriving(&mut self) -> bool {
+        self.host.any_tile_arriving()
     }
 
     /// The chrome's monotonic revision counter. Bumps whenever chrome
@@ -9902,13 +9911,13 @@ mod tests {
                 .take_pending_configure(SURFACE)
                 .expect("layout must make the initial client configure available without input");
             assert!(
-                fb.needs_animation_frame(),
+                fb.needs_animation_frame() || fb.next_wake_deadline().is_some(),
                 "the opening window must keep progressing"
             );
             assert!(!store.is_presented(SURFACE));
             assert!(
-                fb.any_tile_opening(),
-                "the visible notice must become an opening card, not an unresponsive-app error"
+                fb.any_tile_arriving(),
+                "the visible notice must become the window's arrival, not an unresponsive-app error"
             );
             let _ = fb.paint();
 

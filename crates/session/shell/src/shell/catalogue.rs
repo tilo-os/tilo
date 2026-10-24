@@ -65,8 +65,8 @@ static DISK_CACHE_LOADED: AtomicBool = AtomicBool::new(false);
 /// it protects, so a poisoned lock is treated the same as a healthy
 /// one rather than wedging every future caller in this process.
 /// What an install under way has done so far, as `app install
-/// --progress-lines` reports it, for the card standing in the place its
-/// window will open in.
+/// --progress-lines` reports it, for the window waiting on it to say how
+/// much has arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InstallProgress {
     Downloading { received: u64, total: Option<u64> },
@@ -92,13 +92,22 @@ pub(crate) fn install_progress(package_id: &str) -> Option<InstallProgress> {
     })
 }
 
+/// Record what `package_id`'s install has done, waking the compositor when
+/// that changed: the window waiting on the install says how much arrived.
 pub(crate) fn set_install_progress(package_id: &str, progress: Option<InstallProgress>) {
-    with_install_progress(|all| {
-        all.retain(|(package, _)| package != package_id);
+    let changed = with_install_progress(|all| {
+        let before = all
+            .iter()
+            .position(|(package, _)| package == package_id)
+            .map(|at| all.remove(at).1);
         if let Some(progress) = progress {
             all.push((package_id.to_owned(), progress));
         }
+        before != progress
     });
+    if changed {
+        crate::shell::wake_compositor();
+    }
 }
 
 /// One `--progress-lines` line; anything else is not progress.

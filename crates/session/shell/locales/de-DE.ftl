@@ -2288,16 +2288,6 @@ overview-items-shared = { $count ->
 }
 
 # Fenster und Dokumente, die die Shell anzeigt
-shell-window-restoring = Dieses Fenster wird wiederhergestellt …
-shell-window-opening = Wird geöffnet …
-shell-window-opening-slow = { $app } wird geöffnet … dauert länger als üblich
-shell-window-installing-slow = { $app } wird installiert … dauert länger als üblich
-shell-window-installing-of = { $app } wird installiert … { $received } von { $total }
-shell-window-installing-received = { $app } wird installiert … { $received }
-shell-window-updating = { $app } wird aktualisiert …
-shell-window-updating-slow = { $app } wird aktualisiert … dauert länger als üblich
-shell-window-updating-of = { $app } wird aktualisiert … { $received } von { $total }
-shell-window-updating-received = { $app } wird aktualisiert … { $received }
 peer-window-not-installed = Auf diesem Gerät nicht installiert.
 peer-window-install = { $app } installieren
 peer-window-installing = { $app } wird installiert …
@@ -2450,7 +2440,6 @@ pad-map-dial-brightness = Helligkeit
 
 # Gerätefremde Ansichten, Dokumente öffnen, Identitätssicherung und Einladungen
 peer-view-surface-title = Entfernte Oberfläche #{ $id }
-peer-view-awaiting = Warte auf die entfernte Oberfläche …
 doc-open-no-handler = Keine App auf diesem Desktop öffnet .{ $ext }-Dateien ({ $name })
 doc-open-no-file-type = { $name } hat keinen Dateityp, mit dem es sich öffnen lässt
 doc-open-no-workspace = Es gibt keinen aktiven Arbeitsbereich, in dem es sich öffnen lässt
@@ -2846,6 +2835,7 @@ shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht ve
 shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.
 
 shell-window-restore-interrupted = Dieses gespeicherte Fenster wurde nicht vollständig wieder geöffnet.
+shell-window-open-failed = Dieses Fenster wurde nicht geöffnet
 shell-window-retry = Erneut öffnen
 shell-window-app-missing = { $app } ist nicht auf diesem Computer
 shell-window-get-app = { $app } holen

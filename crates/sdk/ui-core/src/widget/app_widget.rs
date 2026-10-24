@@ -1207,8 +1207,16 @@ mod component_adapter {
         fn presented(&self) -> bool {
             self.in_root(|root| root.presented()).unwrap_or_default()
         }
-        fn opening(&self) -> bool {
-            self.in_root(|root| root.opening()).unwrap_or_default()
+        fn arrives_from(&self) -> crate::arriving::Source {
+            self.in_root(|root| root.arrives_from())
+                .unwrap_or(crate::arriving::Source::Local)
+        }
+        fn arrival_progress(&self) -> Option<crate::arriving::Progress> {
+            self.in_root(|root| root.arrival_progress()).flatten()
+        }
+        fn arrival_shape(&self) -> crate::widget::SkeletonShape {
+            self.in_root(|root| root.arrival_shape())
+                .unwrap_or(crate::widget::SkeletonShape::Ground)
         }
         fn text_review(&self) -> Option<(usize, String)> {
             self.in_root(|root| root.text_review()).flatten()

@@ -696,6 +696,9 @@ pub struct Banner {
     painted: Scene,
     /// Where it stands in its column.
     placement: Option<crate::widget::Placement>,
+    /// It is shown at rest from its first frame: what it stands in brings
+    /// it in ([`Banner::arrives_in_place`]).
+    arrives_in_place: bool,
 }
 
 /// How far a banner is in taking up the motion of the banner a rebuild
@@ -782,6 +785,7 @@ impl Banner {
             structure_dirty: false,
             painted: Scene::new(),
             placement: None,
+            arrives_in_place: false,
         }
     }
 
@@ -846,6 +850,15 @@ impl Banner {
     #[must_use]
     pub fn with_secondary_action(mut self, button: Button) -> Self {
         self.secondary = Some(button.control_size(ControlSize::Small));
+        self
+    }
+
+    /// Show the banner at rest from its first frame, for a banner that is
+    /// the whole of what arrives: the place it stands in brings it in (a
+    /// window's arrival cross-fades it), so it does not open on its own.
+    #[must_use]
+    pub fn arrives_in_place(mut self) -> Self {
+        self.arrives_in_place = true;
         self
     }
 
@@ -955,7 +968,7 @@ impl Banner {
     /// Nothing was here before: a shown banner moves in, unless its window
     /// is showing its first frame.
     fn arrive(&mut self) {
-        if self.visible() && crate::motion::window_has_shown() {
+        if self.visible() && !self.arrives_in_place && crate::motion::window_has_shown() {
             self.disclosure = crate::motion::Disclosure::closed();
             self.disclosure.show_change(true, self.motion);
         }
