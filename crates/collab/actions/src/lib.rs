@@ -150,7 +150,8 @@ pub mod surface;
 pub mod task_step;
 
 pub use action::{
-    Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
+    Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,
+    undo_takes_back,
 };
 pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{

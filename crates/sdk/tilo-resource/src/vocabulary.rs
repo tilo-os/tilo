@@ -64,9 +64,11 @@ impl<R: Resource> AnyAction for Typed<R> {
     }
 
     fn undoable(&self) -> bool {
-        tilo_actions::Action::action_kind(&self.0) == tilo_actions::ActionKind::Undoable
-            && tilo_actions::Action::change_kind(&self.0).is_step()
-            && !tilo_actions::Action::irreversible(&self.0)
+        tilo_actions::undo_takes_back(
+            tilo_actions::Action::action_kind(&self.0),
+            tilo_actions::Action::change_kind(&self.0),
+            tilo_actions::Action::irreversible(&self.0),
+        )
     }
 
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
