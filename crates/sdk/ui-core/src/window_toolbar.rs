@@ -405,6 +405,11 @@ pub struct ToolbarAction {
     /// views have gone into the overflow menu.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub navigates: bool,
+    /// It ends, removes or discards something (leaving a call, deleting):
+    /// its button has the destructive role's danger ink, as every other
+    /// destructive button does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub destructive: bool,
 }
 
 fn enabled() -> bool {
@@ -427,7 +432,15 @@ impl ToolbarAction {
             items: Vec::new(),
             navigates: false,
             toggles: false,
+            destructive: false,
         }
+    }
+
+    /// It ends, removes or discards something ([`Self::destructive`]).
+    #[must_use]
+    pub fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
     }
 
     /// A menu button listing `items`.
@@ -1068,6 +1081,7 @@ mod tests {
                 items: Vec::new(),
                 navigates: false,
                 toggles: false,
+                destructive: false,
             }],
             ..WindowToolbar::default()
         }
@@ -1148,6 +1162,7 @@ mod tests {
                 items: Vec::new(),
                 navigates: false,
                 toggles: false,
+                destructive: false,
             });
         }
         many.actions.push(ToolbarAction {
@@ -1160,6 +1175,7 @@ mod tests {
             items: Vec::new(),
             navigates: false,
             toggles: false,
+            destructive: false,
         });
         for n in 6..20 {
             many.actions.push(ToolbarAction {
@@ -1172,6 +1188,7 @@ mod tests {
                 items: Vec::new(),
                 navigates: false,
                 toggles: false,
+                destructive: false,
             });
         }
         let bounded = many.clone().bounded();
