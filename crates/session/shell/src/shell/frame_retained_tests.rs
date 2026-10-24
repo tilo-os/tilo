@@ -1391,6 +1391,10 @@ fn one_line_of_client_damage_repaints_only_that_line() {
 }
 
 #[cfg(target_os = "linux")]
+#[path = "frame_offscreen_damage_tests.rs"]
+mod offscreen_damage_tests;
+
+#[cfg(target_os = "linux")]
 fn render_cpu(scene: &Scene, (width, height): (u32, u32)) -> Vec<u8> {
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
     let mut target =
