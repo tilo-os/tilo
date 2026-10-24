@@ -1134,6 +1134,22 @@ pub trait SpeakerServices: Send + Sync {
 /// A wait for the speaker groups' next change, as [`SpeakerServices::changed`]
 /// returns it.
 pub type SpeakerChange = NearbyTransferChange;
+
+/// The host's drives, as the tools service lists them to Files. The broker
+/// admits only the certified Files route to wait on them; the list itself
+/// is asked of the tools service, which answers as it always does.
+pub trait DriveServices: Send + Sync {
+    /// Resolves once the drive list may have changed since `after` (0 at
+    /// first, then the value the previous wait returned), with the value to
+    /// wait from next. It names nothing: Files asks for the list again.
+    /// `None` when the host cannot say when its drives change; the broker
+    /// then answers unimplemented.
+    fn changed(&self, after: u64) -> Option<DriveChange>;
+}
+
+/// A wait for the drive list's next change, as [`DriveServices::changed`]
+/// returns it.
+pub type DriveChange = NearbyTransferChange;
 /// The host's Wi-Fi credential continuity across the person's devices: the
 /// broker admits only the certified Settings route, bounds and validates the
 /// command, and hands it here. A host without Wi-Fi radios installs none.
@@ -1622,6 +1638,10 @@ pub struct HostServices {
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
     pub speakers: Option<Arc<dyn SpeakerServices>>,
+    /// The drives the tools service lists to Files, which tell the certified
+    /// Files route when they change (`drivesChanged`). Without it Files is
+    /// never told, and lists no drives.
+    pub drives: Option<Arc<dyn DriveServices>>,
     /// The session's settings, of which each app reaches its own entries
     /// and the shared sections (`settings_store::app_scope`). Without it
     /// apps have no settings beyond their own process.
