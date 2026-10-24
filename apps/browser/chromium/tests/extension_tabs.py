@@ -929,6 +929,16 @@ class ExtensionTabs(unittest.TestCase):
                          {'permissions': ['scripting', 'storage', 'tabs'], 'origins': ['http://127.0.0.1/*']})
         self.assertEqual(self.in_worker(host, permit, 'urls()'), [page])
         self.assertEqual(self.in_worker(host, permit, 'script()'), '/granted-before')
+        # A site granted on a port of its own, part of the manifest's site on
+        # every port, reaches the pages on that port and no other.
+        port = self.server.server_port
+        other = port + 1 if port < 65535 else port - 1
+        self.grants(host, permit, (['tabs'], ['http://127.0.0.1/*']), (['tabs'], [f'http://127.0.0.1:{other}/*']))
+        self.assertTrue(self.in_worker(host, permit, 'script()').startswith('refused: '))
+        self.grants(host, permit, (['tabs'], ['http://127.0.0.1/*']), (['tabs'], [f'http://127.0.0.1:{port}/*']))
+        self.assertEqual(self.in_worker(host, permit, 'chrome.permissions.getAll()'),
+                         {'permissions': ['scripting', 'storage', 'tabs'], 'origins': [f'http://127.0.0.1:{port}/*']})
+        self.assertEqual(self.in_worker(host, permit, 'script()'), '/granted-before')
 
     def test_a_worker_and_its_content_script_talk_both_ways_by_tab(self):
         # Its content script's site is no host permission (the Browser sends
