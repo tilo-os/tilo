@@ -927,6 +927,10 @@ pub struct Section {
     /// The space laid out above each item: where a band on its way stands,
     /// and how far what follows it moves (`widget::Disclosing`).
     gaps: Vec<f64>,
+    /// Bands its view stopped building, drawn leaving.
+    ghosts: crate::widget::Ghosts,
+    /// The motion the person allows, from the last theme seen.
+    motion: crate::tokens::EffectiveMotion,
 }
 
 impl Section {
@@ -940,6 +944,8 @@ impl Section {
             labels: crate::widget::property_list::PropertyColumn::new(),
             choosers: crate::widget::dropdown::ChooserColumn::default(),
             gaps: Vec::new(),
+            ghosts: crate::widget::Ghosts::default(),
+            motion: crate::tokens::EffectiveMotion::default(),
         }
     }
 
@@ -947,14 +953,14 @@ impl Section {
     /// each shown item is drawn, then how much taller the section is drawn.
     fn follower_shifts(&self) -> Option<Vec<f64>> {
         let gaps = &self.gaps;
-        crate::widget::follower_shifts(
-            self.parts
-                .children
-                .iter()
-                .take(self.shown())
-                .map(|child| &**child),
+        let shown = self.shown();
+        let shifts = crate::widget::follower_shifts(
+            self.parts.children.iter().take(shown).map(|child| &**child),
             |index| gaps.get(index).copied().unwrap_or(0.0),
-        )
+        );
+        // A band its view stopped building moves what followed it up.
+        self.ghosts
+            .shift(shifts, shown.min(self.parts.children.len()))
     }
 
     pub fn titled(title: impl Into<String>, items: Vec<Element>) -> Self {
@@ -1164,6 +1170,7 @@ impl Widget for Section {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
         let rhythm = &theme.tokens.spacing.rhythm;
         let node = self.parts.build(
             Style {
@@ -1249,6 +1256,21 @@ impl Widget for Section {
             self.parts.rect,
             |index| gaps.get(index).copied().unwrap_or(0.0),
         );
+        // A band its view stopped building leaves where it stood.
+        let shown = shown.min(self.parts.children.len());
+        // The room a band leaving gives back: its own space above it, or,
+        // first, the space above the item after it, which then comes first
+        // and has none.
+        self.ghosts.find(
+            "Section",
+            &mut self.parts.children[..shown],
+            self.parts.rect,
+            |index| {
+                let above = if index == 0 { 1 } else { index };
+                gaps.get(above).copied().unwrap_or(0.0)
+            },
+            self.motion,
+        );
     }
 
     fn draw(
@@ -1276,6 +1298,20 @@ impl Widget for Section {
                 presence,
             );
         }
+        self.ghosts.retain_drawn();
+        self.ghosts.draw(scene, transform, shifts.as_deref());
+    }
+
+    /// Frames while a band its view stopped building leaves, and one more
+    /// to draw it gone.
+    fn needs_animation_frame(&self) -> bool {
+        !self.ghosts.is_empty()
+            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+    }
+
+    fn needs_redraw(&self) -> bool {
+        !self.ghosts.is_empty()
+            || crate::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
     /// A section grows with a band moving in it, and so moves what follows

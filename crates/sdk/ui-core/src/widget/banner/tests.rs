@@ -549,3 +549,122 @@ fn nothing_leaves_when_the_whole_view_is_replaced() {
         assert!(!d.root_widget().needs_animation_frame());
     });
 }
+
+/// How far the column's child `index` is drawn below its place.
+fn offset_of(d: &FrameHarness, index: usize) -> f64 {
+    d.root::<Column>()
+        .drawn_offsets()
+        .and_then(|offsets| offsets.get(index).copied())
+        .unwrap_or(0.0)
+}
+
+fn grouped(nest: &str, banner: Option<Banner>) -> Vec<Box<dyn Widget>> {
+    let group: Box<dyn Widget> = if nest == "section" {
+        let mut items: Vec<Box<dyn Widget>> = Vec::new();
+        if let Some(banner) = banner {
+            items.push(Box::new(banner));
+        }
+        items.push(Box::new(
+            crate::widget::Text::new("Inside").with_id("inside"),
+        ));
+        Box::new(crate::widget::Section::new(items))
+    } else {
+        let container = crate::widget::Container::new();
+        Box::new(match banner {
+            Some(banner) => container.with_child(Box::new(banner)),
+            None => container,
+        })
+    };
+    vec![
+        group,
+        Box::new(crate::widget::Text::new("After").with_id("after")),
+    ]
+}
+
+#[test]
+fn a_banner_its_view_stops_building_in_a_section_or_a_container_leaves_too() {
+    use crate::time::testing::with_monotonic_time;
+    for nest in ["section", "container"] {
+        let start = crate::time::now();
+        let mut column = Column::new().with_intrinsic_height();
+        column.set_children(grouped(
+            nest,
+            Some(Banner::warning(format!("Offline {nest}"))),
+        ));
+        let mut d = with_monotonic_time(start, || rooted(column));
+        let shown_after = d.targets()["after"].y0;
+
+        with_monotonic_time(start, || {
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            d.root_mut::<Column>().set_children(grouped(nest, None));
+            d.relayout();
+        });
+        let empty_after = d.targets()["after"].y0;
+        assert!(
+            empty_after < shown_after - 30.0,
+            "{nest}: laid out once where it rests"
+        );
+        let at_start = with_monotonic_time(start, || offset_of(&d, 1));
+        assert!(
+            (empty_after + at_start - shown_after).abs() < 0.5,
+            "{nest}: what follows the group is drawn where it stood"
+        );
+        let midway = with_monotonic_time(start + crate::time::Duration::from_millis(50), || {
+            offset_of(&d, 1)
+        });
+        assert!(
+            midway > 0.5 && midway < at_start - 0.5,
+            "{nest}: and moves up with the banner's edge: {midway} of {at_start}"
+        );
+        if nest == "section" {
+            let inside = d.targets()["inside"].y0;
+            assert!(inside < d.targets()["after"].y0);
+        }
+
+        let later = start + crate::time::Duration::from_secs(2);
+        with_monotonic_time(later, || {
+            d.relayout();
+            assert!(d.root::<Column>().drawn_offsets().is_none());
+            assert!(
+                !d.root_widget().needs_animation_frame(),
+                "{nest}: it settles"
+            );
+        });
+    }
+}
+
+#[test]
+fn a_banner_dropped_while_opening_leaves_from_where_it_is_drawn() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut d = with_monotonic_time(start, || rooted(Column::new()));
+    with_monotonic_time(start, || rebuild(&mut d, None));
+    let empty_y = d.targets()["below"].y0;
+    with_monotonic_time(start, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        rebuild(&mut d, Some(Banner::warning("Reconnecting")));
+    });
+    let midway = start + crate::time::Duration::from_millis(90);
+    let opened = with_monotonic_time(midway, || {
+        d.relayout();
+        offset_of(&d, 1)
+    });
+    assert!(opened > 1.0, "it is on its way in: {opened}");
+
+    // Its view drops it mid-way: it leaves from there, with its paint.
+    with_monotonic_time(midway, || rebuild(&mut d, None));
+    assert!((d.targets()["below"].y0 - empty_y).abs() < 0.5);
+    let leaving = with_monotonic_time(midway, || first_offset(&d));
+    assert!(
+        (leaving - opened).abs() < 1.0,
+        "what follows goes on from where it was drawn: {leaving} against {opened}"
+    );
+    let later = with_monotonic_time(midway + crate::time::Duration::from_millis(60), || {
+        first_offset(&d)
+    });
+    assert!(later < leaving, "and moves up");
+    with_monotonic_time(start + crate::time::Duration::from_secs(2), || {
+        d.relayout();
+        assert!(!d.root_widget().needs_animation_frame());
+    });
+}

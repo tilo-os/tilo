@@ -1261,19 +1261,27 @@ impl Widget for Banner {
         // The box opens or closes from the top over its contents, which
         // fade in over the second half.
         let band = self.laid_rect;
-        let reveal = self.disclosure.reveal(band.height());
-        if band.width() <= 0.0 || reveal.height <= 0.0 || reveal.opacity <= 0.0 {
+        if band.width() <= 0.0 {
             return;
         }
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            reveal.opacity,
-            transform,
-            &Rect::new(band.x0, band.y0, band.x1, band.y0 + reveal.height),
-        );
-        self.draw_contents(scene, transform, text, theme, presence);
-        scene.pop_layer();
+        // Its contents at their full height, kept: dropped on its way, it
+        // leaves from where it is drawn with this paint, never blank.
+        let mut painted = std::mem::take(&mut self.painted);
+        painted.reset();
+        self.draw_contents(&mut painted, Affine::IDENTITY, text, theme, presence);
+        let reveal = self.disclosure.reveal(band.height());
+        if reveal.height > 0.0 && reveal.opacity > 0.0 {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                reveal.opacity,
+                transform,
+                &Rect::new(band.x0, band.y0, band.x1, band.y0 + reveal.height),
+            );
+            scene.append(&painted, Some(transform));
+            scene.pop_layer();
+        }
+        self.painted = painted;
     }
 
     /// Frames while it moves, and one more to take it into the layout at
