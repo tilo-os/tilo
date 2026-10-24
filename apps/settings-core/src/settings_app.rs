@@ -137,6 +137,9 @@ pub struct SettingsApp {
     /// The revision of the pages the panes drilled into
     /// ([`crate::pages::PanePages`]) the content was last built for.
     pages_seen: u64,
+    /// The password prompt a pane asked for, shown over the window
+    /// ([`crate::secrets`]).
+    secret: Option<crate::secrets::ShownPrompt>,
 }
 
 impl Default for SettingsApp {
@@ -199,6 +202,7 @@ impl SettingsApp {
             found_over: None,
             value_follows: crate::setting::Follows::default(),
             pages_seen: 0,
+            secret: None,
         }
     }
 
@@ -1003,8 +1007,16 @@ impl Widget for SettingsApp {
             self.refresh_shell_children();
         }
 
+        // A pane asked for a secret, or is done with the one it asked.
+        if crate::secrets::ShownPrompt::follow(&mut self.secret, self.cx.secrets()) {
+            self.structure_dirty = true;
+        }
+
         if let Some(shell) = &mut self.shell {
             shell.sync(state, path);
+        }
+        if let Some(shown) = &mut self.secret {
+            shown.dialog.sync(state, path);
         }
     }
 
@@ -1152,6 +1164,21 @@ impl Widget for SettingsApp {
                 observe_map(child, event);
             }
         }
+        // The password prompt takes every event while it is open.
+        if let Some(shown) = &mut self.secret {
+            shown.dialog.handle_detached(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                &mut ctx.state,
+                ctx.path,
+            );
+            *ctx.handled = true;
+            if crate::secrets::ShownPrompt::answered(&mut self.secret, self.cx.secrets()) {
+                self.structure_dirty = true;
+            }
+            return;
+        }
         if self.selected == Category::Keyboard
             && let Some(shell) = &mut self.shell
         {
@@ -1164,18 +1191,59 @@ impl Widget for SettingsApp {
         }
     }
 
+    /// The window's shell, or while it is open the password prompt alone:
+    /// nothing under it is reachable.
     fn children(&self) -> Vec<&dyn Widget> {
+        if let Some(shown) = &self.secret {
+            return vec![&shown.dialog as &dyn Widget];
+        }
         self.shell
             .as_ref()
             .map(|s| vec![s as &dyn Widget])
             .unwrap_or_default()
     }
 
+    /// The shell, laid out under the prompt too: the prompt is drawn over
+    /// it, outside the layout.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        if let Some(shell) = &self.shell {
+            visitor(shell);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if let Some(shown) = &mut self.secret {
+            return vec![&mut shown.dialog as &mut (dyn Widget + '_)];
+        }
         self.shell
             .as_mut()
             .map(|s| vec![s as &mut (dyn Widget + '_)])
             .unwrap_or_default()
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if let Some(shell) = &mut self.shell {
+            shell.draw_overlay(scene, transform, text, theme, presence);
+        }
+        if let Some(shown) = &mut self.secret {
+            shown
+                .dialog
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
+    }
+
+    fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
+        self.secret
+            .as_ref()
+            .and_then(|shown| shown.dialog.modal_capture())
     }
 
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
@@ -1223,7 +1291,10 @@ impl Widget for SettingsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.highlight.is_some()
+        self.secret
+            .as_ref()
+            .is_some_and(|shown| shown.dialog.needs_animation_frame())
+            || self.highlight.is_some()
             || self.areas.iter().any(crate::area::PaneArea::busy)
             || self
                 .shell

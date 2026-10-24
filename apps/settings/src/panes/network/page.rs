@@ -18,7 +18,7 @@ use super::{
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, Item, SettingsSection, block, card, error_caption, field_row, note, row, rows, setting_row,
+    El, Item, SettingsSection, block, card, error_caption, note, row, rows, setting_row,
     setting_row_described, value_row,
 };
 
@@ -87,30 +87,6 @@ impl NetworkModel {
                 &[("count", self.networks.len().into())],
             ),
             rows(content),
-        )]
-    }
-
-    /// Joining a network that does not broadcast its name.
-    pub(super) fn hidden_page(&self) -> Vec<SettingsSection> {
-        vec![card(
-            &t("net-hidden-title"),
-            rows(vec![
-                note(&t("net-hidden-caption")),
-                Self::text_field(&self.hidden.ssid, "network.hidden.ssid", &t("net-ssid")),
-                Self::secret_field(
-                    &self.hidden.password,
-                    "network.hidden.password",
-                    &t("net-password-optional"),
-                ),
-                self.button_row(
-                    "settings.network.hidden.join",
-                    &t("net-join"),
-                    NetworkEffect::JoinHiddenNetwork {
-                        ssid: None,
-                        password: None,
-                    },
-                ),
-            ]),
         )]
     }
 
@@ -496,21 +472,6 @@ impl NetworkModel {
             ))
             .trailing(Box::new(show)),
         ))];
-        let initial = self.new_password.lock().map_or_else(
-            |_| zeroize::Zeroizing::new(String::new()),
-            |value| zeroize::Zeroizing::new(value.clone()),
-        );
-        out.push(field_row(
-            &t("net-new-password"),
-            Box::new(
-                TextInput::local()
-                    .with_id(&format!("network.profile.password.new.{}", profile.uuid))
-                    .with_external_buffer(std::sync::Arc::clone(&self.new_password))
-                    .with_initial_value(&initial)
-                    .with_secret(true)
-                    .with_placeholder(t("net-new-password")),
-            ),
-        ));
         out.push(row(Box::new(
             ui::widget::Row::new()
                 .push(Box::new(self.cx.bind_row(

@@ -227,15 +227,13 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
         categories: &[Category::Network],
         build: |app, _| {
             let network = network::area(app).map(network::NetworkArea::model);
-            // The Mobile section sits under the first page; a page opened
-            // from it (a network, the VPNs) is that page alone.
-            if network.is_some_and(|model| model.borrow().page_key().is_some()) {
-                return model_pane(network);
+            // The modem's card and page are the network pane's.
+            if let Some(network) = network
+                && let Some(mobile) = network::mobile::area(app)
+            {
+                network.borrow_mut().host_mobile(mobile.model());
             }
-            network::mobile::with_mobile(
-                model_pane(network),
-                model_pane(network::mobile::area(app).map(network::mobile::MobileArea::model)),
-            )
+            model_pane(network)
         },
     },
     crate::area::PaneEntry {

@@ -1,6 +1,6 @@
 //! Network: Wi-Fi, wired, VPN, hotspot and the saved connection profiles
-//! of this device, as `NetworkManager` reports them; mobile data is its
-//! own section under the first page ([`mobile`]).
+//! of this device, as `NetworkManager` reports them, and mobile data
+//! ([`mobile`]), whose card sits next to Wi-Fi.
 //!
 //! The pane opens on the Wi-Fi list ([`order`] says which networks it shows
 //! and in what order) with the controls under it, and drills into pages
@@ -54,6 +54,7 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 
+mod asking;
 pub(crate) mod mobile;
 mod order;
 mod page;
@@ -89,9 +90,10 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NetworkArea> {
 /// The pages the pane drills into, by their key in the window's trail.
 pub(crate) const PAGE_ALL: &str = "all";
 pub(crate) const PAGE_KNOWN: &str = "known";
-pub(crate) const PAGE_HIDDEN: &str = "hidden";
 pub(crate) const PAGE_HOTSPOT: &str = "hotspot";
 pub(crate) const PAGE_ADVANCED: &str = "advanced";
+/// The modem's page: mobile data and the SIM.
+pub(crate) const PAGE_MOBILE: &str = "mobile";
 /// A network's page: `wifi:<ssid>`.
 const PAGE_WIFI: &str = "wifi:";
 
@@ -172,8 +174,8 @@ pub enum NetworkEffect {
     #[effect(job, idempotent, label = "Hotspot")]
     SetHotspot { on: bool },
     /// Connect to a Wi-Fi network. Without a password a secure network uses
-    /// one the person's devices share, else asks for it; while its password
-    /// prompt is open, the password typed there.
+    /// one the person's devices share, else asks for it with the password
+    /// prompt.
     #[effect(job, row, label = "Connect")]
     ConnectNetwork {
         #[param("The network's name (SSID)")]
@@ -199,11 +201,15 @@ pub enum NetworkEffect {
     /// Show every network this device knows, in range or not.
     #[effect(view, label = "Known networks")]
     ShowKnownNetworks,
-    /// Show where a network that does not broadcast its name is joined.
+    /// Show mobile data and the SIM: the modem's whole page.
+    #[effect(view, label = "Mobile")]
+    ShowMobile,
+    /// Ask for the name and password of a network that does not broadcast
+    /// its name, to join it.
     #[effect(view, label = "Other network")]
     ShowHiddenNetwork,
-    /// Join a network that does not broadcast its name; what is omitted is
-    /// what its form holds.
+    /// Join a network that does not broadcast its name; without its name,
+    /// ask for it with the password prompt.
     #[effect(job, label = "Join other network")]
     JoinHiddenNetwork {
         #[param("The network's name (SSID)")]
@@ -313,7 +319,8 @@ pub enum NetworkEffect {
         #[param("The saved network's id")]
         profile: String,
     },
-    /// Change a saved network's password; without one, what its form holds.
+    /// Change a saved network's password; without one, ask for it with the
+    /// password prompt.
     #[effect(job, row, label = "Change password")]
     SetNetworkPassword {
         #[param("The saved network's id")]
@@ -369,6 +376,9 @@ pub enum NetworkEffect {
     /// Show the hotspot's setup: its name, password and band.
     #[effect(view, label = "Hotspot setup")]
     ShowHotspotSetup,
+    /// Ask for the hotspot's password with the password prompt.
+    #[effect(view, label = "Hotspot password")]
+    AskHotspotPassword,
     /// Show the advanced network settings: work or school networks,
     /// diagnostics.
     #[effect(view, label = "Advanced network settings")]
@@ -380,7 +390,8 @@ pub enum NetworkEffect {
     #[effect(label = "Choose CA certificate")]
     ChooseCaCertificate,
     /// Save an enterprise (802.1X) Wi-Fi network and connect; what is
-    /// omitted is what the setup form holds.
+    /// omitted is what the setup form holds, and a password omitted is asked
+    /// for with the password prompt.
     #[effect(job, label = "Save and connect")]
     ConnectEnterpriseNetwork {
         #[param("The profile's name")]
@@ -1451,6 +1462,7 @@ struct IdentityForm {
 }
 
 /// What an enterprise connection was given; the setup form fills the rest.
+#[derive(Clone)]
 struct EnterpriseGiven {
     profile: Option<String>,
     ssid: Option<String>,
@@ -1461,7 +1473,6 @@ struct EnterpriseGiven {
     inner_auth: Option<String>,
     client_certificate: Option<String>,
     private_key: Option<String>,
-    password: Option<String>,
 }
 
 /// The enterprise network setup form.
@@ -1475,7 +1486,6 @@ struct EnterpriseForm {
     private_key: LocalState<String>,
     method: LocalState<String>,
     inner_auth: LocalState<String>,
-    password: Arc<Mutex<String>>,
 }
 
 impl EnterpriseForm {
@@ -1490,17 +1500,11 @@ impl EnterpriseForm {
             private_key: LocalState::new(String::new()),
             method: LocalState::new("PEAP".into()),
             inner_auth: LocalState::new("MSCHAPv2".into()),
-            password: Arc::new(Mutex::new(String::new())),
         }
     }
 }
 
 /// The form that joins a network that does not broadcast its name.
-struct HiddenForm {
-    ssid: LocalState<String>,
-    password: Arc<Mutex<String>>,
-}
-
 /// A secret shown on a network's page, for the profile or network it
 /// belongs to; zeroed when it goes.
 struct Shown {
@@ -1711,16 +1715,9 @@ pub struct NetworkModel {
     /// Networks being joined.
     connecting: Vec<String>,
     notice: Option<String>,
-    /// The secure network whose password prompt is open.
-    expanded: Option<String>,
-    /// The password typed into each open prompt.
-    join_passwords: HashMap<String, Arc<Mutex<String>>>,
-    /// The rows of the networks in range, keyed by name: a password prompt
-    /// opens under its network and stays open while the page is rebuilt.
-    prompts: ui::widget::DisclosureGroup,
-    /// The prompt the rows were last opened for, so a row the person
-    /// closed is not opened again by the next rebuild.
-    prompt_shown: RefCell<Option<String>>,
+    /// What the window's password prompt asks for Network, while it is
+    /// open.
+    asking: Option<asking::Asking>,
     /// Whether the pointer is over the Wi-Fi list of the first page, and of
     /// the page of every network.
     held_short: Rc<Cell<bool>>,
@@ -1744,8 +1741,6 @@ pub struct NetworkModel {
     revealed: Option<Shown>,
     /// The QR code shown on a network's page, by network.
     code: Option<Shown>,
-    /// The new password typed on a network's page.
-    new_password: Arc<Mutex<String>>,
     /// The wired profile being edited, by label.
     wired_profile: LocalState<String>,
     seen_selection: String,
@@ -1756,28 +1751,23 @@ pub struct NetworkModel {
     ipv6_forms: HashMap<String, Ipv6Form>,
     proxy_forms: HashMap<String, ProxyForm>,
     identity_forms: HashMap<String, IdentityForm>,
-    hidden: HiddenForm,
     enterprise: EnterpriseForm,
     ca_picker: Option<ui::portal::PortalChannel>,
     vpn: vpn::VpnState,
     /// Work started by the pane itself (an import a picker answered), not
     /// by an effect: it lands here when done.
     jobs: Vec<crate::channel::Receiver<Landed>>,
+    /// The modem's model, whose card the first page shows next to Wi-Fi
+    /// and whose page is one of this pane's: the window's [`mobile::MobileArea`]
+    /// keeps it, the pane composes and polls it.
+    mobile: Option<Shared<mobile::MobileModel>>,
     changed: bool,
 }
 
 impl Drop for NetworkModel {
     fn drop(&mut self) {
-        let secrets = [
-            &self.hotspot_password,
-            &self.enterprise.password,
-            &self.new_password,
-            &self.hidden.password,
-        ];
-        for buffer in secrets.into_iter().chain(self.join_passwords.values()) {
-            if let Ok(mut secret) = buffer.lock() {
-                secret.zeroize();
-            }
+        if let Ok(mut secret) = self.hotspot_password.lock() {
+            secret.zeroize();
         }
     }
 }
@@ -1953,10 +1943,7 @@ impl NetworkModel {
             refreshes_pending: 0,
             connecting: Vec::new(),
             notice: None,
-            expanded: None,
-            join_passwords: HashMap::new(),
-            prompts: ui::widget::DisclosureGroup::new(),
-            prompt_shown: RefCell::new(None),
+            asking: None,
             held_short: Rc::new(Cell::new(false)),
             held_all: Rc::new(Cell::new(false)),
             held_seen: false,
@@ -1969,7 +1956,6 @@ impl NetworkModel {
             hotspot_code_shown: false,
             revealed: None,
             code: None,
-            new_password: Arc::new(Mutex::new(String::new())),
             wired_profile: LocalState::new(String::new()),
             seen_selection: String::new(),
             hotspot_name: LocalState::new(DEFAULT_HOTSPOT_NAME.into()),
@@ -1979,15 +1965,24 @@ impl NetworkModel {
             ipv6_forms: HashMap::new(),
             proxy_forms: HashMap::new(),
             identity_forms: HashMap::new(),
-            hidden: HiddenForm {
-                ssid: LocalState::new(String::new()),
-                password: Arc::new(Mutex::new(String::new())),
-            },
             enterprise: EnterpriseForm::new(),
             ca_picker: None,
             vpn: vpn::VpnState::default(),
             jobs: Vec::new(),
+            mobile: None,
             changed: false,
+        }
+    }
+
+    /// Show the modem `mobile` describes on the first page and its own page.
+    pub(crate) fn host_mobile(&mut self, mobile: &Shared<mobile::MobileModel>) {
+        if !self
+            .mobile
+            .as_ref()
+            .is_some_and(|hosted| Rc::ptr_eq(hosted, mobile))
+        {
+            self.mobile = Some(Rc::clone(mobile));
+            self.changed = true;
         }
     }
 
@@ -2370,27 +2365,6 @@ impl NetworkModel {
         row
     }
 
-    /// Open the password prompt of `ssid`, or close it; the previous
-    /// prompt's password is zeroed.
-    fn set_expanded(&mut self, ssid: Option<String>) {
-        if self.expanded == ssid {
-            return;
-        }
-        if let Some(old) = self.expanded.take()
-            && let Some(buffer) = self.join_passwords.remove(&old)
-            && let Ok(mut secret) = buffer.lock()
-        {
-            secret.zeroize();
-        }
-        if let Some(ssid) = &ssid {
-            self.join_passwords
-                .entry(ssid.clone())
-                .or_insert_with(|| Arc::new(Mutex::new(String::new())));
-        }
-        self.expanded = ssid;
-        self.changed = true;
-    }
-
     /// Start `change` on a worker, showing `notice` meanwhile.
     fn change(&mut self, change: NetworkChange, notice: Option<String>) -> Begun {
         if notice.is_some() {
@@ -2462,10 +2436,12 @@ impl NetworkModel {
             }
             NetworkEffect::SetAirplaneMode { on } => self.switch(Radio::Airplane, on)?,
             NetworkEffect::SetHotspot { on } => self.switch(Radio::Hotspot, on)?,
-            NetworkEffect::ConnectNetwork { ssid, password } => self.connect(ssid, password)?,
+            NetworkEffect::ConnectNetwork { ssid, password } => {
+                self.connect(ssid, password.map(Zeroizing::new))?
+            }
             NetworkEffect::CancelConnect { ssid } => {
-                if self.expanded.as_deref() == Some(ssid.as_str()) {
-                    self.set_expanded(None);
+                if self.asking_to_join(&ssid) {
+                    self.close_prompt();
                 }
                 Begun::Done
             }
@@ -2484,30 +2460,24 @@ impl NetworkModel {
                 self.open_page(PAGE_KNOWN, t("net-known"));
                 Begun::Done
             }
+            NetworkEffect::ShowMobile => {
+                self.open_page(PAGE_MOBILE, t("net-mobile"));
+                Begun::Done
+            }
             NetworkEffect::ShowHiddenNetwork => {
-                self.open_page(PAGE_HIDDEN, t("net-hidden-title"));
+                self.ask_hidden();
                 Begun::Done
             }
             NetworkEffect::JoinHiddenNetwork { ssid, password } => {
-                let ssid = ssid
-                    .or_else(|| non_blank(self.hidden.ssid.get()))
-                    .ok_or_else(|| t("net-hidden-needs-name"))?;
-                let typed = take_secret(&self.hidden.password);
-                let password = password
-                    .map(Zeroizing::new)
-                    .or(Some(typed))
-                    .filter(|password| !password.is_empty());
-                self.connecting.push(ssid.clone());
-                self.change(
-                    NetworkChange::JoinHidden {
-                        ssid: ssid.clone(),
-                        password,
-                    },
-                    Some(t_args(
-                        "net-notice-connecting",
-                        &[("ssid", ssid.as_str().into())],
-                    )),
-                )
+                if let Some(ssid) = ssid.and_then(non_blank) {
+                    let password = password
+                        .map(Zeroizing::new)
+                        .filter(|password| !password.is_empty());
+                    self.join_hidden(ssid, password)
+                } else {
+                    self.ask_hidden();
+                    Begun::Done
+                }
             }
             NetworkEffect::SetAutoconnect { profile, on } => {
                 let profile = self.profile(&profile)?;
@@ -2760,8 +2730,10 @@ impl NetworkModel {
             }
             NetworkEffect::SetNetworkPassword { profile, password } => {
                 let profile = self.profile(&profile)?;
-                let typed = take_secret(&self.new_password);
-                let password = password.map_or(typed, Zeroizing::new);
+                let Some(password) = password.map(Zeroizing::new) else {
+                    self.ask_new_password(profile.uuid, profile.name);
+                    return Ok(Begun::Done);
+                };
                 if password.is_empty() {
                     return Err(t("net-password-needed"));
                 }
@@ -2889,6 +2861,10 @@ impl NetworkModel {
                 self.open_page(PAGE_HOTSPOT, t("net-hotspot"));
                 Begun::Done
             }
+            NetworkEffect::AskHotspotPassword => {
+                self.ask_hotspot_password();
+                Begun::Done
+            }
             NetworkEffect::ShowAdvancedNetworkSettings => {
                 self.open_page(PAGE_ADVANCED, t("net-advanced"));
                 Begun::Done
@@ -2919,7 +2895,7 @@ impl NetworkModel {
                 private_key,
                 password,
             } => {
-                let (config, password) = self.enterprise_config(EnterpriseGiven {
+                let given = EnterpriseGiven {
                     profile,
                     ssid,
                     identity,
@@ -2929,12 +2905,14 @@ impl NetworkModel {
                     inner_auth,
                     client_certificate,
                     private_key,
-                    password,
-                });
-                self.change(
-                    NetworkChange::Enterprise { config, password },
-                    Some(t("net-notice-enterprise-connecting")),
-                )
+                };
+                if let Some(password) = password.map(Zeroizing::new) {
+                    self.connect_enterprise(given, password)
+                } else {
+                    let config = self.enterprise_config(given.clone());
+                    self.ask_enterprise(given, &config.ssid, &config.identity);
+                    Begun::Done
+                }
             }
         })
     }
@@ -2956,7 +2934,11 @@ impl NetworkModel {
 
     /// Join `ssid`: with `password`, else with what its open prompt holds,
     /// else (a secure network) with a password the person's devices share.
-    fn connect(&mut self, ssid: String, password: Option<String>) -> Result<Begun, String> {
+    fn connect(
+        &mut self,
+        ssid: String,
+        password: Option<Zeroizing<String>>,
+    ) -> Result<Begun, String> {
         let network = self
             .in_range(&ssid)
             .cloned()
@@ -2964,24 +2946,10 @@ impl NetworkModel {
         if self.connecting.contains(&ssid) {
             return Err(format!("Already connecting to {ssid}."));
         }
-        let prompt_open = self.expanded.as_deref() == Some(ssid.as_str());
-        let typed = prompt_open
-            .then(|| {
-                self.join_passwords
-                    .get(&ssid)
-                    .map(|buffer| take_secret(buffer))
-            })
-            .flatten();
-        let password = password
-            .map(Zeroizing::new)
-            .or(typed)
-            .filter(|password| !password.is_empty());
+        let password = password.filter(|password| !password.is_empty());
         // A known network joins with what this device saved for it.
-        let saved = self.knows(&network) && password.is_none() && !prompt_open;
-        let lookup_shared = network.secure && password.is_none() && !prompt_open && !saved;
-        if !lookup_shared {
-            self.set_expanded(None);
-        }
+        let saved = self.knows(&network) && password.is_none();
+        let lookup_shared = network.secure && password.is_none() && !saved;
         self.connecting.push(ssid.clone());
         self.notice = Some(t_args(
             "net-notice-connecting",
@@ -3027,12 +2995,26 @@ impl NetworkModel {
         Ok(config)
     }
 
+    /// Save the enterprise network `given` asks for and connect with
+    /// `password`.
+    fn connect_enterprise(&mut self, given: EnterpriseGiven, password: Zeroizing<String>) -> Begun {
+        let config = self.enterprise_config(given);
+        self.change(
+            NetworkChange::Enterprise { config, password },
+            Some(t("net-notice-enterprise-connecting")),
+        )
+    }
+
+    /// Join `ssid`, a network that does not broadcast its name.
+    fn join_hidden(&mut self, ssid: String, password: Option<Zeroizing<String>>) -> Begun {
+        let notice = t_args("net-notice-connecting", &[("ssid", ssid.as_str().into())]);
+        self.connecting.push(ssid.clone());
+        self.change(NetworkChange::JoinHidden { ssid, password }, Some(notice))
+    }
+
     /// The enterprise network `given` asks for, completed from the setup
-    /// form, and its password; the form's password is zeroed.
-    fn enterprise_config(
-        &self,
-        given: EnterpriseGiven,
-    ) -> (EnterpriseWifiConfiguration, Zeroizing<String>) {
+    /// form.
+    fn enterprise_config(&self, given: EnterpriseGiven) -> EnterpriseWifiConfiguration {
         let EnterpriseGiven {
             profile,
             ssid,
@@ -3043,11 +3025,9 @@ impl NetworkModel {
             inner_auth,
             client_certificate,
             private_key,
-            password,
         } = given;
         let form = &self.enterprise;
-        let typed = take_secret(&form.password);
-        let config = EnterpriseWifiConfiguration {
+        EnterpriseWifiConfiguration {
             profile_name: profile.unwrap_or_else(|| form.profile.get()),
             ssid: ssid.unwrap_or_else(|| form.ssid.get()),
             identity: identity.unwrap_or_else(|| form.identity.get()),
@@ -3071,8 +3051,37 @@ impl NetworkModel {
             private_key: private_key
                 .or_else(|| Some(form.private_key.get()))
                 .and_then(non_blank),
-        };
-        (config, password.map_or(typed, Zeroizing::new))
+        }
+    }
+
+    /// A saved network's password, read to show it or its code.
+    fn password_read(
+        &mut self,
+        uuid: String,
+        purpose: PasswordFor,
+        result: Result<Zeroizing<String>, String>,
+    ) -> Result<String, String> {
+        match (purpose, result) {
+            (PasswordFor::Reveal, Ok(secret)) => {
+                self.revealed = Some(Shown { of: uuid, secret });
+                Ok(String::new())
+            }
+            (PasswordFor::Code { ssid, hidden }, Ok(secret)) => {
+                self.code = Some(Shown {
+                    secret: os_actions::network_settings::wifi_qr_payload(
+                        &ssid,
+                        Some(&secret),
+                        hidden,
+                    ),
+                    of: ssid,
+                });
+                Ok(String::new())
+            }
+            (_, Err(error)) => Err(t_args(
+                "net-notice-password-err",
+                &[("error", error.into())],
+            )),
+        }
     }
 
     /// Take in work that landed; what the effect answers.
@@ -3098,9 +3107,14 @@ impl NetworkModel {
                 if self.in_flight == 0 {
                     self.start_snapshot();
                 }
+                self.settle_prompt(&reported);
                 reported
             }
-            Landed::Connected { ssid, result } => self.joined(&ssid, result),
+            Landed::Connected { ssid, result } => {
+                let reported = self.joined(&ssid, result);
+                self.settle_prompt(&reported);
+                reported
+            }
             Landed::Shared(result) => match result {
                 Ok(ssid) => Ok(t_args(
                     "net-notice-sealed-profile",
@@ -3131,27 +3145,7 @@ impl NetworkModel {
                 uuid,
                 purpose,
                 result,
-            } => match (purpose, result) {
-                (PasswordFor::Reveal, Ok(secret)) => {
-                    self.revealed = Some(Shown { of: uuid, secret });
-                    Ok(String::new())
-                }
-                (PasswordFor::Code { ssid, hidden }, Ok(secret)) => {
-                    self.code = Some(Shown {
-                        secret: os_actions::network_settings::wifi_qr_payload(
-                            &ssid,
-                            Some(&secret),
-                            hidden,
-                        ),
-                        of: ssid,
-                    });
-                    Ok(String::new())
-                }
-                (_, Err(error)) => Err(t_args(
-                    "net-notice-password-err",
-                    &[("error", error.into())],
-                )),
-            },
+            } => self.password_read(uuid, purpose, result),
             Landed::VpnRead { uuid, result } => match result {
                 Ok(settings) => {
                     self.adopt_vpn_settings(&uuid, settings);
@@ -3304,14 +3298,10 @@ impl NetworkModel {
             (NetworkChange::JoinHidden { ssid, .. }, result) => {
                 self.connecting.retain(|pending| pending != ssid);
                 match result {
-                    Ok(()) => {
-                        self.hidden.ssid.set(String::new());
-                        self.cx.pages().close(Category::Network, PAGE_HIDDEN);
-                        Ok(t_args(
-                            "net-notice-connected",
-                            &[("subject", ssid.as_str().into())],
-                        ))
-                    }
+                    Ok(()) => Ok(t_args(
+                        "net-notice-connected",
+                        &[("subject", ssid.as_str().into())],
+                    )),
                     Err(error) => Err(t_args(
                         "net-notice-configure-err",
                         &[("subject", ssid.as_str().into()), ("error", error.into())],
@@ -3342,7 +3332,6 @@ impl NetworkModel {
         self.connecting.retain(|pending| pending != ssid);
         match result {
             Ok(Joined::Connected { continuity_notice }) => {
-                self.set_expanded(None);
                 self.start_snapshot();
                 Ok(continuity_notice.map_or_else(
                     || t_args("net-notice-connected", &[("subject", ssid.into())]),
@@ -3355,7 +3344,11 @@ impl NetworkModel {
                 ))
             }
             Ok(Joined::PasswordRequired { continuity_warning }) => {
-                self.set_expanded(Some(ssid.to_owned()));
+                let security = self
+                    .in_range(ssid)
+                    .map(|network| security_shown(network.security))
+                    .unwrap_or_default();
+                self.ask_join(ssid, &security);
                 Ok(continuity_warning.map_or_else(
                     || t_args("net-notice-enter-password", &[("ssid", ssid.into())]),
                     |warning| {
@@ -3501,9 +3494,14 @@ impl PaneModel for NetworkModel {
 
     fn poll(&mut self) -> bool {
         self.poll_background();
+        self.poll_prompt();
         self.poll_device_vpn();
+        if let Some(mobile) = &self.mobile
+            && let Ok(mut mobile) = mobile.try_borrow_mut()
+        {
+            self.changed |= mobile.poll();
+        }
         self.scan_when_due(ui::time::now());
-        self.follow_rows();
         let selection = self.wired_profile.get();
         if selection != self.seen_selection {
             self.seen_selection = selection;
@@ -3531,9 +3529,15 @@ impl PaneModel for NetworkModel {
     }
 
     fn next_wake(&self) -> Option<ui::time::Instant> {
-        self.scans_networks()
+        let scan = self
+            .scans_networks()
             .then(|| self.scanned_at?.checked_add(SCAN_EVERY))
-            .flatten()
+            .flatten();
+        let mobile = self
+            .mobile
+            .as_ref()
+            .and_then(|mobile| mobile.try_borrow().ok()?.next_wake());
+        scan.into_iter().chain(mobile).min()
     }
 
     fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
@@ -3578,11 +3582,6 @@ impl NetworkModel {
         }
         if !showing(PAGE_ALL.to_owned()) {
             self.filter.clear();
-        }
-        if let Ok(mut password) = self.new_password.lock()
-            && !trail.iter().any(|key| key.starts_with(PAGE_WIFI))
-        {
-            password.zeroize();
         }
     }
 
