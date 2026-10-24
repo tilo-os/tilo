@@ -126,7 +126,7 @@ impl VideoEditorApp {
             }
             Err(e) => {
                 self.save_then_open = None;
-                self.project_notice = Some(Notice::failed(e.to_string()));
+                self.hold_save_failure(e.to_string());
             }
         }
     }
@@ -142,7 +142,8 @@ impl VideoEditorApp {
             return; // one chooser at a time
         }
         let suggested = crate::project_file::with_extension(&self.project_label());
-        self.project_notice = Some(Notice::ok("Choose where to save…"));
+        self.project_notice
+            .show_progress(Notice::ok("Choose where to save…"));
         self.project_rx = Some(portal::request_save_project(&suggested));
     }
 
@@ -151,7 +152,7 @@ impl VideoEditorApp {
         if self.project_rx.is_some() {
             return;
         }
-        self.project_notice = None;
+        self.show_save_failure_or_nothing();
         self.project_rx = Some(portal::request_open_project());
     }
 
@@ -166,7 +167,7 @@ impl VideoEditorApp {
                 self.recents = crate::project_file::recents::remember(&self.recents, &path);
                 // The location's edited state clears; saving says
                 // nothing more.
-                self.project_notice = None;
+                self.project_notice.dismiss();
                 // Save As can move the project; relative media follows it.
                 crate::media::set_project_anchor(path.parent().map(std::path::Path::to_path_buf));
                 self.project_path = Some(path);
@@ -180,7 +181,7 @@ impl VideoEditorApp {
             }
             Err(e) => {
                 self.save_then_open = None;
-                self.project_notice = Some(Notice::failed(e.to_string()));
+                self.hold_save_failure(e.to_string());
             }
         }
     }
@@ -195,6 +196,7 @@ impl VideoEditorApp {
         // instant after it was written. A write that finished later stamps
         // the heads it wrote, so an edit made meanwhile stays unsaved.
         self.doc_heads = doc.committed_heads();
+        self.save_failure = None;
         self.saved_heads = Some(
             self.saving_heads
                 .take()
@@ -239,7 +241,7 @@ impl VideoEditorApp {
         let mut project = match read {
             Ok(p) => p,
             Err(e) => {
-                self.project_notice = Some(Notice::failed(e.to_string()));
+                self.project_notice.show(Notice::failed(e.to_string()));
                 return;
             }
         };
@@ -271,7 +273,9 @@ impl VideoEditorApp {
         if replaced {
             notice.text.push_str(". Undo to go back");
         }
-        self.project_notice = Some(notice);
+        self.project_notice.show(notice);
+        // A failed save of the project this replaces is about it, not this one.
+        self.save_failure = None;
 
         self.submit(vec![crate::resource::load_project(&project)]);
         // The host applies the open after this event; the document it leaves
@@ -334,6 +338,10 @@ impl VideoEditorApp {
     pub(super) fn drain_project_portal(&mut self, doc: &AutoCommit) {
         let mut outcome = None;
         let mut clear = false;
+        let saving = self
+            .project_rx
+            .as_ref()
+            .is_some_and(portal::ProjectChannel::is_save);
         if let Some(rx) = self.project_rx.as_ref() {
             match rx.try_recv() {
                 Ok(o) => {
@@ -352,7 +360,7 @@ impl VideoEditorApp {
             Some(portal::ProjectOutcome::SaveTo(destination)) => {
                 // Kept: the next Save writes here without asking.
                 self.project_destination = Some(destination);
-                self.project_notice = None;
+                self.show_save_failure_or_nothing();
                 self.write_project_to_destination(doc);
             }
             Some(portal::ProjectOutcome::Open(path)) => self.begin_open(path, None),
@@ -360,7 +368,7 @@ impl VideoEditorApp {
                 self.begin_open(PathBuf::from(name), Some(bytes));
             }
             Some(portal::ProjectOutcome::Saved) => {
-                self.project_notice = None;
+                self.project_notice.dismiss();
                 // The project now lives where it was saved, not at the path
                 // of a file it may have been opened from.
                 self.project_path = None;
@@ -368,7 +376,7 @@ impl VideoEditorApp {
             }
             Some(portal::ProjectOutcome::Cancelled) => {
                 self.save_then_open = None;
-                self.project_notice = None;
+                self.show_save_failure_or_nothing();
                 if self.resource_reply.is_some() {
                     self.settle_resource_job(Err("project file selection was cancelled".into()));
                 }
@@ -380,7 +388,11 @@ impl VideoEditorApp {
                 // names no English the old substring test looked for, so this
                 // used to paint in the success tint.
                 self.save_then_open = None;
-                self.project_notice = Some(Notice::failed(reason));
+                if saving {
+                    self.hold_save_failure(reason);
+                } else {
+                    self.project_notice.show(Notice::failed(reason));
+                }
             }
             None => {}
         }
