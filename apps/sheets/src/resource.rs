@@ -46,7 +46,9 @@ pub const MAX_IMPORTED_SHEETS: usize = 64;
 pub struct CellWrite {
     /// The cell, e.g. `B3`.
     pub cell: String,
-    /// What to type into it: a value, or a formula starting with `=`.
+    /// What to type into it: a value, or a formula starting with `=`; an
+    /// ISO date such as `2026-10-22` (or `2026-10-22T09:30`) becomes a real
+    /// date, and a leading apostrophe (`'007`) marks text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
     /// How it shows.
@@ -197,6 +199,28 @@ fn first_writes(new: &SheetSpec) -> Result<Option<Vec<CellWrite>>, Refusal> {
         }
         (None, None, None) => Ok(None),
     }
+}
+
+/// `write` with its input read as `set-cells` reads a value: an ISO date
+/// a real date, an apostrophe text. A format the write names wins, and one
+/// naming text keeps the input as typed.
+fn typed_write(write: CellWrite) -> Result<CellWrite, Refusal> {
+    let Some(input) = write.input.as_deref() else {
+        return Ok(write);
+    };
+    if write.format == Some(CellFormat::Text) {
+        return Ok(write);
+    }
+    let Some((input, format)) =
+        crate::cell_actions::cell_input(&serde_json::Value::String(input.to_owned()))?
+    else {
+        return Ok(write);
+    };
+    Ok(CellWrite {
+        input: Some(input),
+        format: write.format.or(format),
+        ..write
+    })
 }
 
 fn cell_of(reference: &str) -> Result<Addr, Refusal> {
@@ -634,6 +658,10 @@ impl Workbook {
             return Err(Refusal::new("name at least one cell"));
         }
         let sheet = &self.sheet_key(sheet)?;
+        let cells = cells
+            .into_iter()
+            .map(typed_write)
+            .collect::<Result<Vec<_>, _>>()?;
         write_into(self.sheet_mut(sheet)?, &cells)
     }
 
