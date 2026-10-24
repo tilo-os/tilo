@@ -23,7 +23,6 @@ use channel_crypto::ChannelContentKeys;
 use tilo_browser_peer::DocumentRoute;
 
 use super::Rooms;
-use crate::room_access::{self, Decision, RelayTrust, RoomOperation};
 
 impl Rooms {
     /// The content keys of `route`'s channel, for this relay's own room
@@ -50,36 +49,6 @@ impl Rooms {
         )
     }
 
-    /// The content keys of `channel`, one of `room`'s channels, for the
-    /// device that governs and stewards the room here and runs in this
-    /// process beside it: a device hosting its own rooms, whose session
-    /// opens their records under the steward's own leaf. `route` is the
-    /// channel's record when the device names it; `create` opens the channel
-    /// when it has none yet, else only an existing channel is read. `None`
-    /// when this host does not govern and steward the room.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the room stays locked from the decision until its keys are read"
-    )]
-    pub async fn steward_channel_keys(
-        &self,
-        room: &str,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
-        create: bool,
-    ) -> Option<Result<ChannelContentKeys, String>> {
-        let state = self.room(room).await.ok()?;
-        let governed = state.lock().await;
-        governed.stewardship.as_ref()?;
-        if route.is_some_and(|route| !route.proves(room, channel)) {
-            return Some(Err("the record is not this channel's".into()));
-        }
-        Some(
-            self.stewarded_keys_locked(&governed, channel, route, create)
-                .await,
-        )
-    }
-
     async fn steward_endpoint_keys_locked(
         &self,
         room: &super::GovernedRoom,
@@ -96,66 +65,5 @@ impl Rooms {
         let route = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
         self.stewarded_keys_locked(room, channel, Some(&route), create)
             .await
-    }
-
-    /// The steward's keys of `channel` in `room`, after the one admission
-    /// decision that hands them out ([`RoomOperation::StewardedChannelKeys`]).
-    async fn stewarded_keys_locked(
-        &self,
-        room: &super::GovernedRoom,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
-        create: bool,
-    ) -> Result<ChannelContentKeys, String> {
-        let workspace_id = room.workspace_id();
-        let workspace = self
-            .inner
-            .host
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned()
-            .ok_or("this relay does not hold the room")?;
-        let own = crate::auth::AuthenticatedPeer {
-            cert: self.inner.host.cert.clone(),
-            user_public_key: self.inner.host.cert.user_public_key,
-            device_public_key: self.inner.host.cert.device_public_key,
-            role: crate::auth::PeerRole::from_cert(&self.inner.host.cert),
-        };
-        let trust = RelayTrust {
-            revocations: &self.inner.host.revocations,
-            policy: &self.inner.host.trust_policy,
-            own_user: &self.inner.host.cert.user_public_key,
-            agents: &self.inner.host.agents,
-        };
-        let decision = room_access::decide(
-            &*workspace.lock().await,
-            &trust,
-            &own,
-            RoomOperation::StewardedChannelKeys,
-        );
-        if let Decision::Deny(reason) = decision {
-            tracing::warn!(room = %room.room(), reason = reason.reason(),
-                "the steward's channel keys refused");
-            return Err(reason.reason().into());
-        }
-        let steward = room
-            .stewardship
-            .clone()
-            .ok_or("this relay does not steward the room's channels")?;
-        if let Some(route) = route {
-            steward.learn_route(channel, route);
-        }
-        let mut stewardship = steward.channels.lock().await;
-        if create {
-            self.open_record_channel(room, &steward, &mut stewardship, channel)
-                .await?;
-        }
-        let keys = stewardship.existing_keys(channel)?;
-        drop(stewardship);
-        tracing::debug!(room = %room.room(), epoch = keys.epoch(),
-            "handed the steward's channel keys");
-        Ok(keys)
     }
 }
