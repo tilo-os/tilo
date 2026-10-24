@@ -324,6 +324,31 @@ test('worklet mixes simultaneous publishers additively without capture input or 
   assert(channel.subarray(64).every(sample => sample === 0.75), '0.25 + 0.5 is mixed; mic input is neither looped nor used to normalize output');
 });
 
+test('worklet plays each publisher at its own gain and reports its level as it arrives', async t => {
+  const previousProcessor = globalThis.AudioWorkletProcessor;
+  const previousRegister = globalThis.registerProcessor;
+  let Processor;
+  class Port extends EventTarget {
+    sent = [];
+    postMessage(message) { this.sent.push(message); }
+    receive(data) { this.dispatchEvent(Object.assign(new Event('message'), {data})); }
+  }
+  globalThis.AudioWorkletProcessor = class { constructor() { this.port = new Port(); } };
+  globalThis.registerProcessor = (_name, implementation) => { Processor = implementation; };
+  t.after(() => { globalThis.AudioWorkletProcessor = previousProcessor; globalThis.registerProcessor = previousRegister; });
+  await import(`./voice-audio-worklet.mjs?gain-contract=${Date.now()}`);
+  const processor = new Processor({processorOptions: {muted: true}});
+  processor.port.receive({type: 'play', publisherId: PUB_A, generation: 1, samples: new Float32Array(960).fill(0.25).buffer, timestamp: 0n, duration: 960, reservedSamples: 960, gain: 0});
+  processor.port.receive({type: 'play', publisherId: PUB_B, generation: 2, samples: new Float32Array(960).fill(0.5).buffer, timestamp: 0n, duration: 960, reservedSamples: 960, gain: 0.5});
+  for (let index = 0; index < 22; index++) processor.process([], [[new Float32Array(128)]]);
+  const channel = new Float32Array(128);
+  processor.process([], [[channel]]);
+  assert(channel.subarray(64).every(sample => sample === 0.25), 'a silenced publisher adds nothing, a halved one half');
+  for (let index = 0; index < 20; index++) processor.process([], [[new Float32Array(128)]]);
+  const levels = processor.port.sent.filter(message => message.type === 'levels').flatMap(message => message.publishers);
+  assert(levels.some(([id, level]) => id === PUB_A && level > 0), 'a silenced publisher still shows them speaking');
+});
+
 test('worklet removal expires queued publisher audio and stale packets cannot replay', async t => {
   const previousProcessor = globalThis.AudioWorkletProcessor;
   const previousRegister = globalThis.registerProcessor;

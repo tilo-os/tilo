@@ -290,6 +290,7 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
             timestamp: message.timestamp,
             duration: message.duration,
             reservedSamples: message.reservedSamples ?? message.duration,
+            gain: publisher.gain,
           }, [message.samples]);
           return;
         }
@@ -540,7 +541,8 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
             }
             return attachInput(requestedInputId);
           },
-          play({publisherId, timestamp, duration, payload}) {
+          /** `gain` is how loud this device plays the publisher (0 to 2). */
+          play({publisherId, timestamp, duration, payload, gain = 1}) {
             if (stopped) return false;
             if (!PUBLISHER_ID.test(publisherId)
               || typeof timestamp !== 'bigint'
@@ -569,6 +571,7 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
               return false;
             }
             publisher.reservedSamples += duration;
+            publisher.gain = gain;
             const bytes = payload.slice();
             try {
               worker.postMessage({

@@ -675,6 +675,10 @@ impl ChatApp {
     /// shell ([`crate::sidebar`]).
     fn on_right_click(&mut self, hit: Hit) {
         let menu = match hit {
+            Hit::CallParticipant(id) => {
+                self.open_participant_menu(id);
+                return;
+            }
             // One of your own messages — offer the message actions (Edit).
             Hit::MessageMenu { msg } => {
                 let mine = self.message(&msg).is_some_and(|m| self.is_me(&m.author));
@@ -700,6 +704,16 @@ impl ChatApp {
             _ => None,
         };
         self.menu = menu;
+    }
+
+    /// How loud someone else in the call plays here: silenced, or at one of
+    /// a few levels, on this device only.
+    pub(crate) fn open_participant_menu(&mut self, id: String) {
+        self.menu = Some(self.context_menu(
+            MenuTarget::CallParticipant(id),
+            self.last_mouse,
+            MenuAction::for_call_participant().to_vec(),
+        ));
     }
 
     /// Top-most matching region (regions are recorded back-to-front, so a
@@ -812,6 +826,7 @@ impl ChatApp {
             Hit::CallParticipantsToggle => {
                 self.call.participants_expanded = !self.call.participants_expanded;
             }
+            Hit::CallParticipant(id) => self.open_participant_menu(id),
             Hit::CallMute => {
                 let channel = self
                     .native_voice
@@ -1186,6 +1201,18 @@ impl ChatApp {
         doc: &mut ui::widget::Edits<'_>,
     ) {
         match target {
+            MenuTarget::CallParticipant(id) => {
+                let mut listening = self.call_listening(&id);
+                match action {
+                    MenuAction::Silence => listening.silenced = !listening.silenced,
+                    MenuAction::Volume(percent) => {
+                        listening.percent = percent;
+                        listening.silenced = false;
+                    }
+                    _ => return,
+                }
+                self.set_call_listening(&id, listening);
+            }
             MenuTarget::Channel(id) => self.apply_channel_action(&id, action, doc),
             MenuTarget::Category(id) => self.apply_category_action(&id, action, doc),
             MenuTarget::Message(id) => match action {
@@ -1354,7 +1381,7 @@ impl ChatApp {
         self.sidebar_rename = match target {
             MenuTarget::Channel(id) => Some(crate::sidebar::channel_place(&id)),
             MenuTarget::Category(id) => Some(crate::sidebar::category_place(&id)),
-            MenuTarget::Message(_) | MenuTarget::Room => None,
+            MenuTarget::Message(_) | MenuTarget::Room | MenuTarget::CallParticipant(_) => None,
         };
     }
 
@@ -1388,7 +1415,7 @@ impl ChatApp {
                     }),
                 );
             }
-            MenuTarget::Message(_) | MenuTarget::Room => {}
+            MenuTarget::Message(_) | MenuTarget::Room | MenuTarget::CallParticipant(_) => {}
         }
         self.reload(doc);
     }

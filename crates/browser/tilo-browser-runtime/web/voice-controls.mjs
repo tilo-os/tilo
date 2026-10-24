@@ -43,14 +43,39 @@ export function revisionOf(status) {
   return hash || 1;
 }
 
+/** Who a call participant is to the app: its person (hex), or for a person
+ * a bridge carries in from another service `<service>:<account>`; null for
+ * a bridge's own participation, which only listens to carry the call out.
+ * A bridge's participations are held by the bridge's person, never by the
+ * one they carry, so they are never that person. */
+export function callIdOf(participant) {
+  const bridged = participant?.bridged;
+  if (bridged) return bridged.account ? `${bridged.service}:${bridged.account}` : null;
+  return participant?.user || null;
+}
+
 /** Who is in each active call of `app`'s `record`, one roster per voice
- * channel with anyone in it, sorted by channel; each person once. */
+ * channel with anyone in it or a bridge on it, sorted by channel; each
+ * person once. People a bridge carries in are its guests, by id, and the
+ * services bridging it its `bridges`. */
 export function rostersOf(calls, app, record) {
   const channels = new Map();
   for (const call of calls ?? []) {
     if (!call.active || call.app !== app || call.record !== record) continue;
-    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set()};
+    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set(), guests: new Map(), bridges: new Set()};
     for (const participant of call.participants ?? []) {
+      const bridged = participant.bridged;
+      if (bridged) {
+        roster.bridges.add(bridged.service);
+        const id = callIdOf(participant);
+        if (id && !roster.guests.has(id)) {
+          const guest = {id, name: bridged.name, service: bridged.service};
+          if (bridged.avatar) guest.avatar = bridged.avatar;
+          if (bridged.linked) guest.linked = bridged.linked;
+          roster.guests.set(id, guest);
+        }
+        continue;
+      }
       if (!participant.user) continue;
       roster.people.add(participant.user);
       if (participant.camera) roster.cameras.add(participant.user);
@@ -59,15 +84,23 @@ export function rostersOf(calls, app, record) {
     channels.set(call.channel, roster);
   }
   const sorted = set => [...set].sort();
-  return [...channels].filter(([, roster]) => roster.people.size > 0)
+  return [...channels].filter(([, roster]) => roster.people.size > 0 || roster.guests.size > 0 || roster.bridges.size > 0)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([channel_id, roster]) => {
       const out = {channel_id, people: sorted(roster.people)};
-      // Written only when someone shows something, as the native service does.
+      // Written only when someone shows something or a bridge carries the
+      // call, as the native service does.
       if (roster.cameras.size) out.cameras = sorted(roster.cameras);
       if (roster.screens.size) out.screens = sorted(roster.screens);
+      if (roster.guests.size) out.guests = [...roster.guests.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      if (roster.bridges.size) out.bridges = sorted(roster.bridges);
       return out;
     });
+}
+
+/** Who the call hears talking now, by id (`callIdOf`), sorted and distinct. */
+export function speakingOf(participants) {
+  return [...new Set(participants.filter(participant => participant.speaking).map(callIdOf).filter(Boolean))].sort();
 }
 
 export function createVoiceControls({voice, room, gesture = () => globalThis.navigator?.userActivation?.isActive === true, clock = Date, wait = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
@@ -98,7 +131,7 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       muted: state.muted || !live, capture_active: live && !state.muted && voice.call.stats().captureActive === true,
       input_id: live ? input : null, inputs,
       issue: state.phase === 'ended' ? endedIssue(state) : null,
-      inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: [], revision: 0};
+      inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: live ? speakingOf(state.participants) : [], revision: 0};
     if (live && state.camera) status.camera = true;
     if (live && state.screen) status.screen = true;
     if (live && state.micIssue) status.issue = state.micIssue;
@@ -186,6 +219,9 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
         if (command.on && (voice.call.state.phase !== 'live' || !voice.call.state.canPublish)) throw new Error('pictures require a live publishing grant');
         if (!voice.call.setVideo) throw new Error('this browser cannot show pictures');
         await voice.call.setVideo(command.op === 'set_camera' ? 'camera' : 'screen', command.on);
+      } else if (command.op === 'set_volume') {
+        voice.call.setVolume?.(command.participant, command.percent / 100);
+        return stamped({...snapshot(), rosters: rosters()});
       } else if (command.op === 'show') {
         voice.call.showPictures?.(command.pictures ?? []);
         return stamped({...snapshot(), rosters: rosters()});

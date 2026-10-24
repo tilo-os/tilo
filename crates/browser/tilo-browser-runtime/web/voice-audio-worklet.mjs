@@ -141,6 +141,8 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
       };
       this.publishers.set(message.publisherId, publisher);
     }
+    // How loud this device plays them; their speaking level stays theirs.
+    publisher.gain = Number.isFinite(message.gain) ? Math.max(0, Math.min(2, message.gain)) : 1;
     if ((publisher.lastRenderedTimestamp !== null && message.timestamp <= publisher.lastRenderedTimestamp)
       || publisher.queue.some(entry => entry.timestamp === message.timestamp)) {
       this.drop(message, 'playback-replay', reservedSamples);
@@ -268,7 +270,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
       for (let position = from; position < end; position++) {
         // Backwards first: the noise continues from the last played sample.
         const cycle = Number(position - publisher.lastEnd) % (2 * length);
-        output[Number(position - blockStart)] += frame[cycle < length ? length - 1 - cycle : cycle - length];
+        output[Number(position - blockStart)] += frame[cycle < length ? length - 1 - cycle : cycle - length] * publisher.gain;
       }
       return;
     }
@@ -277,7 +279,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
     for (let position = from; position < end; position++) {
       const since = Number(position - publisher.lastEnd);
       const gain = 1 - since / (PLC_MAX_FRAMES * this.frameSamples);
-      output[Number(position - blockStart)] += frame[since % frame.length] * gain * 0.8;
+      output[Number(position - blockStart)] += frame[since % frame.length] * gain * 0.8 * publisher.gain;
     }
   }
 
@@ -392,7 +394,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
         const count = Math.min(output.length - outputOffset, entry.samples.length - sourceOffset);
         for (let index = 0; index < count; index++) {
           const sample = entry.samples[sourceOffset + index];
-          output[outputOffset + index] += sample;
+          output[outputOffset + index] += sample * publisher.gain;
           publisher.energy += sample * sample;
         }
         entry.releasedSamples += count;
