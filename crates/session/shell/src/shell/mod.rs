@@ -96,6 +96,7 @@ pub mod hdr_tonemap;
 pub mod heap_trim;
 pub(crate) mod held_layers;
 pub mod history_narrative;
+pub(crate) mod home_relay_hosting;
 pub mod host_apps;
 pub mod host_shell_allow;
 pub mod hosted_inputs;
