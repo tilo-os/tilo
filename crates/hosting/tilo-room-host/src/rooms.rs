@@ -39,6 +39,7 @@ pub(crate) use desktop_writes::writes_desktop;
 mod listing;
 mod member_records;
 pub use member_records::PreparedRecord;
+mod hosts;
 mod layout_scope;
 mod owner_commands;
 pub use owner_commands::{AppAction, OwnerCommand, app_action_lifetime};
@@ -60,6 +61,7 @@ pub use sealed_records::fixtures as sealed_fixtures;
 mod spectator_keys;
 #[cfg(feature = "agents")]
 mod steward_endpoint;
+mod steward_keys;
 mod stewardship;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -89,13 +91,14 @@ pub use pages::PreAdmitRequest;
 // The administration vocabulary (the actions' names and answers, and the
 // wire door's) and the device's client, under the daemon's historic paths.
 pub use tilo_relay_session::rooms::{
-    ActionInvitation, CLAIM_TOPOLOGY_NAMESPACE, CREATE_ROOM, CancelInvitationRequest, CreatedRoom,
-    ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest,
-    HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssueInvitationRequest, IssuedInvitation,
-    LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD,
-    PendingInvitation, RECORD_EFFECT_RECEIPT, ROOM_ADMIN_ALPN, RemoveMemberRequest,
-    RoomAdminClient, RoomAdminError, RoomCommand, RoomListing, RoomReply, RoomSummary,
-    SAVE_SHORTCUT, SetMemberRoleRequest, member_resource,
+    ATTACH_HOST, ActionInvitation, CLAIM_TOPOLOGY_NAMESPACE, CREATE_ROOM, CancelInvitationRequest,
+    CreatedRoom, DETACH_HOST, ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP,
+    GrantAppAuthorshipRequest, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom,
+    IssueInvitationRequest, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
+    MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT,
+    ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand,
+    RoomListing, RoomReply, RoomSummary, SAVE_SHORTCUT, SetMemberRoleRequest, UNHOST_ROOM,
+    member_resource,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -171,14 +174,15 @@ fn readers(
 }
 
 /// The stewards of `room`'s channels, under `dir`, when `authority` (this
-/// relay) may own workspaces.
+/// host, a relay or a person's device) stewards the channels of the rooms
+/// it governs ([`tilo_user_identity::DeviceCapabilities::stewards_room_channels`]).
 fn stewardship(
     dir: &Path,
     room: &str,
     authority: &DeviceCert,
     key: &SigningKey,
 ) -> Option<Arc<stewardship::Steward>> {
-    authority.capabilities.can_own_workspaces.then(|| {
+    authority.capabilities.stewards_room_channels().then(|| {
         Arc::new(stewardship::Steward::new(stewardship::Stewardship::new(
             room,
             dir.join(format!("{room}.channels")),
@@ -233,6 +237,15 @@ struct GovernedRoom {
     /// what the relay retains of it from before is still to be archived,
     /// ahead of the base's publication ([`Rooms::settle`]).
     rebased: bool,
+    /// Every host of the room, each its own signed address, this host's
+    /// first ([`Rooms::refresh_hosts`]): what its join answers carry.
+    hosts: Vec<tilo_peer_state::join::TransportHint>,
+    /// The hosts of this host's person serving the room as well, as
+    /// recorded beside it ([`hosts`]).
+    member_hosts: Vec<tilo_peer_state::join::TransportHint>,
+    /// The session each of those hosts last opened here that this host
+    /// answered ([`Rooms::answer_host`]), by the host's device.
+    answered: HashMap<[u8; 32], hosts::Answer>,
 }
 
 impl RoomRecord {
@@ -335,6 +348,9 @@ impl GovernedRoom {
             unkept: false,
             keeping: false,
             rebased: false,
+            hosts: Vec::new(),
+            member_hosts: Vec::new(),
+            answered: HashMap::new(),
         };
         this.persist()?;
         Ok(this)
@@ -371,6 +387,7 @@ impl GovernedRoom {
         }
         // Parts an interrupted write left behind.
         parts.collect(&record.peer);
+        let member_hosts = hosts::load_hosts(&path)?;
         let stewardship = path
             .parent()
             .and_then(|dir| stewardship(dir, &record.room, authority, key));
@@ -389,6 +406,9 @@ impl GovernedRoom {
             unkept: false,
             keeping: false,
             rebased: false,
+            hosts: Vec::new(),
+            member_hosts,
+            answered: HashMap::new(),
         })
     }
 
@@ -719,10 +739,11 @@ pub(crate) struct RoomServices {
     pub(crate) cert: DeviceCert,
     pub(crate) key: SigningKey,
     pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
+    /// The host's metrics, which the sessions it dials count in too.
+    pub(crate) metrics: Arc<crate::metrics::Metrics>,
     /// Pre-admissions each room keeps, spent ones included.
     pub(crate) max_pre_admissions: usize,
     /// The live handshake trust policy, for [`crate::room_access::decide`].
-    #[cfg(feature = "agents")]
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// Agent delegations, for [`crate::room_access::decide`] and for
     /// refusing an agent the administration only a person holds.
@@ -768,6 +789,9 @@ struct RoomsInner {
     /// the host's operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]
     resealing: std::sync::atomic::AtomicBool,
+    /// The rooms this host serves for the device of its person that governs
+    /// them ([`crate::hosted`]).
+    hosting: crate::hosted::Hosting,
 }
 
 /// What a member sent a room's channel steward.
@@ -882,7 +906,6 @@ impl Rooms {
         let listings = listing::Listings::open(&dir);
         let this = Self {
             inner: Arc::new(RoomsInner {
-                host,
                 dir,
                 rooms: AsyncMutex::new(rooms),
                 calls: Arc::default(),
@@ -897,6 +920,8 @@ impl Rooms {
                 layouts: layout_scope::Layouts::default(),
                 #[cfg(feature = "agents")]
                 resealing: std::sync::atomic::AtomicBool::new(false),
+                hosting: crate::hosted::Hosting::new(host.clone()),
+                host,
             }),
         };
         this.learn_layouts().await;
@@ -911,6 +936,8 @@ impl Rooms {
         for room in rooms {
             let mut room = room.lock().await;
             this.bind(&room).await?;
+            this.refresh_hosts(&mut room)
+                .map_err(|error| error.to_string())?;
             this.settle(&mut room).await?;
             this.recall(&mut room).await?;
             // What the relay's log revoked while the room was closed.
@@ -918,6 +945,7 @@ impl Rooms {
         }
         this.settle_layouts().await;
         this.follow_activity();
+        this.inner.hosting.resume().await;
         Ok(this)
     }
 
@@ -965,7 +993,10 @@ impl Rooms {
                 SystemTime::now(),
             )?,
         };
+        let mut room = room;
         self.bind(&room).await?;
+        self.refresh_hosts(&mut room)
+            .map_err(|error| error.to_string())?;
         let summary = room.summary();
         let room = Arc::new(AsyncMutex::new(room));
         self.inner
@@ -1514,17 +1545,21 @@ impl Rooms {
         // actions it runs for members (a visitor linking their Discord
         // account) are committed as that device, and the governor's copy,
         // which the room's bots read, must take them in like any member's.
-        // Its notices it made itself, so it has them already.
-        let message = if author == host.cert.device_public_key {
-            if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
-                return Ok(());
-            }
-            message
-        } else {
-            let Some(message) = self.absorb_notice(room, author, message).await? else {
-                return Ok(());
-            };
-            message
+        // Its notices it made itself, so it has them already. A device
+        // hosting its own rooms is also their member under the same key, and
+        // that member's windows (its topology) are its own to send: those
+        // are taken in like any member's.
+        if author == host.cert.device_public_key
+            && !matches!(
+                message,
+                neighbour_wire::NeighbourMsg::AppDocument { .. }
+                    | neighbour_wire::NeighbourMsg::SyncResp { .. }
+            )
+        {
+            return Ok(());
+        }
+        let Some(message) = self.absorb_notice(room, author, message).await? else {
+            return Ok(());
         };
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
@@ -1783,7 +1818,6 @@ impl Rooms {
     }
 
     /// Retain channel governance messages as this relay's own.
-    #[cfg(feature = "agents")]
     async fn publish_channel_governance(
         &self,
         workspace_id: u64,
@@ -1915,11 +1949,15 @@ impl Rooms {
     ) {
         let (mut changed, mut again) = (false, false);
         for retained in retained {
+            // What the relay's device wrote is retained under its key, the
+            // governor's own commits and its sessions' writes alike: the
+            // first are the governor's copy already, the second it took in
+            // as they came (`absorb`). Neither is replayed into it.
             if retained.author == self.inner.host.cert.device_public_key {
                 continue;
             }
             if let Ok(message) = postcard::from_bytes(&retained.body)
-                && self.recalls(room, retained.author, &message)
+                && self.recalls(room, &message)
             {
                 let followed = room.follow(retained.author, message);
                 changed |= followed.changed;

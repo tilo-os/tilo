@@ -31,9 +31,13 @@ use super::{
 };
 use crate::network::actor::room_governance::{Addressee, Request};
 use crate::network::invite::InviteRole;
+use crate::network::invite::enrollment_driver;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::{RoomId, WorkspaceId};
-use std::sync::Mutex;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
@@ -67,7 +71,12 @@ const ROOM_NAME_CHARS: usize = 80;
 pub(super) struct State {
     /// Enrollments of this device into the rooms it shared, installed as
     /// they complete.
-    shared: Mutex<Vec<u64>>,
+    shared: Arc<Mutex<Vec<u64>>>,
+    /// One of `shared` has landed since the last pass installing them.
+    shared_due: Arc<AtomicBool>,
+    /// The passes over `shared` run so far.
+    #[cfg(test)]
+    shared_passes: std::sync::atomic::AtomicU64,
     /// Host rooms this device is enrolling into, by enrollment.
     joining: Mutex<std::collections::HashMap<RoomId, u64>>,
 }
@@ -224,6 +233,53 @@ pub(super) fn answer_of<T: serde::de::DeserializeOwned>(
 }
 
 /// What an invocation's receipt comes to.
+/// Why a host asked on a room's session gave no result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HostAskError {
+    /// The host could not be reached: no session with it and none being
+    /// established, the session closed before it answered, or the network
+    /// could not take the ask. Worth asking again once a room's state
+    /// changes.
+    Unreachable(String),
+    /// The host answered, and refused.
+    Refused(String),
+}
+
+impl From<HostAskError> for String {
+    fn from(error: HostAskError) -> Self {
+        match error {
+            HostAskError::Unreachable(reason) | HostAskError::Refused(reason) => reason,
+        }
+    }
+}
+
+/// What a host answered on `answer`, or that it could not be reached: the
+/// actor fails what waits on a workspace that has no session left.
+fn held_answer(
+    answer: &std::sync::mpsc::Receiver<Result<ReceiptStatus, String>>,
+) -> Result<serde_json::Value, HostAskError> {
+    let status = answer
+        .recv()
+        .map_err(|_| HostAskError::Unreachable(SESSIONS_CLOSED.into()))?
+        .map_err(HostAskError::Unreachable)?;
+    receipt_value(status).map_err(HostAskError::Refused)
+}
+
+/// Why a host's answer that was waited for never came.
+const SESSIONS_CLOSED: &str = "the connection to the room's host was lost";
+
+/// The arguments of the member's own `RECORD_EFFECT_RECEIPT` for `receipt`:
+/// its invocation and its exact encoding, which the host checks.
+pub(super) fn receipt_arguments(
+    receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let redacted = serde_json::to_string(receipt).map_err(|error| error.to_string())?;
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("invocation".into(), receipt.invocation.0.to_string().into());
+    arguments.insert("redacted".into(), redacted.into());
+    Ok(arguments)
+}
+
 pub(super) fn receipt_value(status: ReceiptStatus) -> Result<serde_json::Value, String> {
     match status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
@@ -338,6 +394,50 @@ impl ShellNetwork {
             invoke,
             ADMIN_TIMEOUT,
         )
+    }
+
+    /// [`Self::govern`], answered whenever the host answers: while the
+    /// room's sessions last, never on a clock. For a caller whose own wait
+    /// ends with the room's sessions too, on a worker.
+    pub(super) fn govern_held(
+        &self,
+        target: &HeldRoom,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, HostAskError> {
+        let invoke = invocation(
+            ROOM_GOVERNANCE_PROVIDER,
+            room_governance_resource(&target.room.to_string()),
+            action,
+            arguments,
+        );
+        let answer = self
+            .ask_relay(
+                room_topic_id(target.room),
+                Addressee::Device(target.host),
+                invoke,
+            )
+            .map_err(HostAskError::Unreachable)?;
+        held_answer(&answer)
+    }
+
+    /// Have the host governing `room` record `receipt`, the member's own
+    /// terminal receipt, answered whenever the host answers: while the
+    /// room's sessions last. For a worker.
+    pub(super) fn record_receipt_held(
+        &self,
+        room: RoomId,
+        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
+    ) -> Result<(), HostAskError> {
+        let host = self
+            .host_governor(room)
+            .map_err(HostAskError::Refused)?
+            .ok_or_else(|| HostAskError::Refused("no host governs the room".into()))?;
+        let arguments = receipt_arguments(receipt).map_err(HostAskError::Refused)?;
+        let answer = self
+            .ask_as_member(room, host, RECORD_EFFECT_RECEIPT, arguments)
+            .map_err(HostAskError::Unreachable)?;
+        held_answer(&answer).map(drop)
     }
 
     /// Invoke the host operation `action` with `arguments` at the host at
@@ -807,16 +907,7 @@ impl ShellNetwork {
             &own,
             crate::network::invite::enrollment_driver::Via::Iroh,
         )? {
-            self.relay_rooms
-                .joining
-                .lock()
-                .map_err(|_| "host room enrollments are unavailable")?
-                .insert(room, id);
-            self.relay_rooms
-                .shared
-                .lock()
-                .map_err(|_| "shared room enrollments are unavailable")?
-                .push(id);
+            self.finish_when_enrolled(room, id, true)?;
         }
         tracing::info!(%room, %name, "joining a room of this person's list at its host");
         Ok(())
@@ -844,7 +935,48 @@ impl ShellNetwork {
             .lock()
             .map_err(|_| "shared room enrollments are unavailable")?
             .push(id);
+        // One that landed before it was listed here was not told to the loop.
+        let landed = self
+            .native_enrollment
+            .attempts
+            .lock()
+            .ok()
+            .and_then(|attempts| {
+                attempts
+                    .get(&id)
+                    .map(enrollment_driver::Attempt::has_landed)
+            });
+        if landed == Some(true) {
+            self.shared_room_landed();
+        }
         Ok(())
+    }
+
+    /// What an enrollment calls once its result is stored: a shared room's
+    /// is due to be installed, and the frame loop is woken to install it.
+    pub(super) fn enrollment_landed(&self) -> enrollment_driver::Landed {
+        let shared = Arc::clone(&self.relay_rooms.shared);
+        let due = Arc::clone(&self.relay_rooms.shared_due);
+        let wake = self.loop_waker();
+        Arc::new(move |id| {
+            if shared.lock().is_ok_and(|shared| shared.contains(&id)) {
+                due.store(true, Ordering::Release);
+                wake();
+            }
+        })
+    }
+
+    /// A listed shared room's enrollment landed: wake the loop to install it.
+    fn shared_room_landed(&self) {
+        self.relay_rooms.shared_due.store(true, Ordering::Release);
+        (self.loop_waker())();
+    }
+
+    /// Whether a pass installing shared rooms is due, taking the ask: one
+    /// landed since the last pass. A pass in progress holds the list, and
+    /// the ask stays for the next.
+    pub(super) fn take_shared_rooms_due(&self) -> bool {
+        self.shared_rooms_pending() && self.relay_rooms.shared_due.swap(false, Ordering::AcqRel)
     }
 
     /// The enrollment into `room` still running, if any.
@@ -869,16 +1001,32 @@ impl ShellNetwork {
 
     /// Install every shared room whose enrollment completed. How each that
     /// ended went is said where it is polled ([`Self::poll_enrollment`]).
-    pub(super) fn finish_shared_rooms(&self) {
+    ///
+    /// Answers whether any finished: finishing one changes more than the
+    /// tree (a site join's progress, the room's enrollment), which the
+    /// frame loop shows.
+    pub(super) fn finish_shared_rooms(&self) -> bool {
         let Ok(mut shared) = self.relay_rooms.shared.lock() else {
-            return;
+            return false;
         };
+        #[cfg(test)]
+        self.relay_rooms
+            .shared_passes
+            .fetch_add(1, Ordering::Relaxed);
+        let before = shared.len();
         shared.retain(|id| {
             matches!(
                 self.poll_enrollment(*id),
                 Ok(PeerSyncResponse::EnrollmentPending { .. })
             )
         });
+        shared.len() != before
+    }
+
+    /// The passes installing shared rooms run so far.
+    #[cfg(test)]
+    pub(super) fn shared_room_passes(&self) -> u64 {
+        self.relay_rooms.shared_passes.load(Ordering::Relaxed)
     }
 
     /// The room and slot the running enrollment `id` is for.

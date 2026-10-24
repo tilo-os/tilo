@@ -8,8 +8,8 @@ impl crate::services::AppActionGrants for LocalReportGrants {
         _request: &crate::app_actions::AppActionConsentRequest,
         _grant: tilo_action_policy::Grant,
         _answer: crate::app_actions::AppActionConsent,
-    ) -> Option<String> {
-        None
+    ) -> crate::services::GrantRecording {
+        Box::pin(std::future::ready(Err("nothing is granted here".into())))
     }
     fn revoke(&self, room: &str, grant: &str) {
         let mut tree = self.0.write();

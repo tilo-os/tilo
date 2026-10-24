@@ -5,7 +5,9 @@
 //! A relay runs one as a certified host ([`HostMode::CertifiedHost`]); a
 //! person's device runs the same one for the rooms placed on it
 //! ([`HostMode::Device`]). [`RoomHost::open`] spawns nothing periodic: with
-//! no peers connected the host wakes only on I/O. Its embedder registers
+//! no peers connected the host wakes only on I/O, and a connected peer's
+//! session is audited when its rooms' membership files change, which the
+//! host watches. Its embedder registers
 //! [`RoomHost::protocols`] on its own router, or, when the router is built
 //! before any room is placed here, [`deferred_protocols`], which refuse
 //! connections until [`HostSlot::install`] gives them a host.
@@ -154,6 +156,10 @@ pub struct HostSessions {
     pub handler: RelayProtocol,
     /// Ends the in-process sessions when the host shuts down.
     closing: Arc<tokio::sync::watch::Sender<bool>>,
+    /// The watch that lets its rooms' membership be read from memory until
+    /// a file changes, so a live session is audited when something changed
+    /// rather than every second.
+    membership_watch: Arc<crate::membership_watch::WatchTask>,
 }
 
 /// A host's rooms, when it governs them: the governance and the plane
@@ -190,6 +196,7 @@ impl HostSessions {
                 "device certificate is not host-capable".into(),
             ));
         }
+        say_when_unsealed(governs, &identity.device_cert);
         std::fs::create_dir_all(&cfg.state_root)?;
         let workspaces: WorkspaceRegistry =
             Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
@@ -248,6 +255,7 @@ impl HostSessions {
             shell_payloads: cfg.shell_payloads.clone(),
             handler,
             closing: Arc::new(tokio::sync::watch::channel(false).0),
+            membership_watch: Arc::new(crate::membership_watch::WatchTask::spawn(&cfg.state_root)),
         };
         let (Some(governance), Some(actions)) = (governance, own_plane) else {
             return Ok((sessions, None));
@@ -261,10 +269,10 @@ impl HostSessions {
                 cert: identity.device_cert.clone(),
                 key: identity.device_signing_key.clone(),
                 revocations,
+                metrics: metrics.clone(),
                 max_pre_admissions: cfg
                     .max_room_grants
                     .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
-                #[cfg(feature = "agents")]
                 trust_policy: sessions.handler.trust_policy.clone(),
                 agents: sessions.handler.agents.clone(),
                 mode: cfg.mode.join_hint_mode(),
@@ -385,7 +393,21 @@ impl HostSessions {
     /// End every in-process session and stop compacting.
     pub async fn shutdown(&self) {
         self.closing.send_replace(true);
+        self.membership_watch.stop();
         self.handler.compactor.stop().await;
+    }
+}
+
+/// Say loudly when a host that `governs` rooms under `cert` stewards no
+/// channels: its certificate may not own workspaces, so the rooms it governs
+/// keep their records in the clear in the room document instead of sealed
+/// channels.
+fn say_when_unsealed(governs: bool, cert: &DeviceCert) {
+    if governs && !cert.capabilities.stewards_room_channels() {
+        tracing::error!(
+            device = %cert.device_label,
+            "this host's certificate cannot own workspaces, so the rooms it governs are not sealed; re-enroll it with the own capability"
+        );
     }
 }
 
@@ -601,6 +623,12 @@ impl RoomHost {
     /// Whether this host counts `device` as subscribed to `workspace_id`.
     pub async fn is_subscribed(&self, workspace_id: u64, device: &[u8; 32]) -> bool {
         self.sessions.is_subscribed(workspace_id, device).await
+    }
+
+    /// Every counter of this host's sessions now.
+    #[must_use]
+    pub fn metrics(&self) -> crate::metrics::MetricsSnapshot {
+        self.sessions.metrics.snapshot()
     }
 
     /// End the in-process sessions and stop the host's work. The embedder

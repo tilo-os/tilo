@@ -266,11 +266,12 @@ fn add_and_reorder(tree: &mut WorkspaceTree, authority: &Authority, witness: &Sa
     caps.reverse();
     Export::of(tree).publish();
     let published = lock(&authority.published);
+    let sandboxes = published.sandboxes.len();
+    let status = witness.authorization_status(&published);
+    drop(published);
     assert_eq!(
-        published.sandboxes.len(),
-        1,
-        "additions are not withdrawal; the published policy rejects the sandbox with {:?}",
-        witness.authorization_status(&published)
+        sandboxes, 1,
+        "additions are not withdrawal; the published policy rejects the sandbox with {status:?}"
     );
 }
 

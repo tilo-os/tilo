@@ -586,7 +586,7 @@ pub(super) async fn handle_delta(
 /// a different record than everyone else. A governor that has fallen
 /// behind holds the author back until it takes the change in. Nothing is
 /// sent once the governor stopped following (the room closed).
-pub(super) async fn tell_governor(
+pub(crate) async fn tell_governor(
     tap: &tokio::sync::mpsc::Sender<([u8; 32], Vec<u8>)>,
     author: [u8; 32],
     body: Vec<u8>,

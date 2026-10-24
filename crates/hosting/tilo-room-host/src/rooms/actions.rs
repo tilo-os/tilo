@@ -637,6 +637,19 @@ impl Args {
         }
     }
 
+    /// The argument `name`, an object read as `T`.
+    fn object<T: serde::de::DeserializeOwned>(
+        &self,
+        name: &str,
+    ) -> Result<Option<T>, ActionHostError> {
+        match self.0.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => serde_json::from_value(value.clone())
+                .map(Some)
+                .map_err(|error| invalid(format!("`{name}`: {error}"))),
+        }
+    }
+
     fn required_text(&self, name: &str) -> Result<&str, ActionHostError> {
         self.text(name)?
             .ok_or_else(|| invalid(format!("`{name}` is required")))
