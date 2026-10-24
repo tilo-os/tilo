@@ -38,6 +38,24 @@ impl Widget for PhotosApp {
             .collect()
     }
 
+    /// Every widget the canvas may give a layout node: the empty state, the
+    /// photograph, and the People surface's name field and buttons. The
+    /// buttons live outside this widget, in a list, so the retained layout
+    /// check reaches them only through this walk.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        if let Some(empty) = &self.empty_state {
+            visitor(empty);
+        }
+        if let Some(viewer) = &self.viewer {
+            visitor(viewer);
+        }
+        visitor(&self.people_name_input);
+        for control in &self.people_controls {
+            visitor(&control.button);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
         children.extend(
