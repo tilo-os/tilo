@@ -222,8 +222,11 @@ pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), 
         let next = new
             .get(&key)
             .ok_or("checkpoint coverage cannot be erased")?;
-        if next.sequence < prior.sequence
-            || next.author != prior.author
+        // A handoff moves the covering to the new governor, which counts
+        // its own sequence.
+        let handed = next.author != prior.author
+            && crate::handoff::handed_between(after, &prior.author, &next.author);
+        if ((next.sequence < prior.sequence || next.author != prior.author) && !handed)
             || next.room != prior.room
             || next.app != prior.app
             || next.record != prior.record
@@ -238,7 +241,7 @@ pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), 
         {
             return Err("checkpoint coverage regression".into());
         }
-        if next.sequence == prior.sequence && *next != prior {
+        if !handed && next.sequence == prior.sequence && *next != prior {
             return Err("checkpoint coverage changed without a new sequence".into());
         }
     }

@@ -205,9 +205,14 @@ pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), 
     let new = entries(after)?;
     for (key, prior) in old {
         let next = new.get(&key).ok_or("durable receipt cannot be erased")?;
+        // A handoff moves the covering to the new governor, which counts
+        // its own sequence.
+        let handed = next.coverage.author != prior.coverage.author
+            && crate::handoff::handed_between(after, &prior.coverage.author, &next.coverage.author);
         if next.generation < prior.generation
-            || next.coverage.sequence < prior.coverage.sequence
-            || next.coverage.author != prior.coverage.author
+            || ((next.coverage.sequence < prior.coverage.sequence
+                || next.coverage.author != prior.coverage.author)
+                && !handed)
             || next.coverage.room != prior.coverage.room
             || next.coverage.app != prior.coverage.app
             || next.coverage.record != prior.coverage.record

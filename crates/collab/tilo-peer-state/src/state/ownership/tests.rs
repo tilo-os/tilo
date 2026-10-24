@@ -292,17 +292,13 @@ fn a_handed_off_governor_records_no_more_offers_or_handoffs() {
         governor
             .governance_mut()
             .commit_handoff(&handoff, &parties.governor.key, now),
-        Err(super::OwnershipWriteError::Handoff(
-            HandoffError::NotCurrentGovernor
-        ))
+        Err(super::OwnershipWriteError::Handoff(HandoffError::Moved))
     ));
     assert!(matches!(
         governor
             .governance_mut()
             .offer_ownership(&parties.offer(3), &parties.governor.key, now),
-        Err(super::OwnershipWriteError::Handoff(
-            HandoffError::NotCurrentGovernor
-        ))
+        Err(super::OwnershipWriteError::Handoff(HandoffError::Moved))
     ));
 }
 
@@ -323,4 +319,31 @@ fn nobody_but_the_governor_writes_an_offer_or_a_handoff() {
             .offer_ownership(&parties.offer(1), &parties.member.key, now)
             .is_err()
     );
+}
+
+#[test]
+fn a_record_is_covered_by_the_new_governor_only_along_the_handoff_log() {
+    let now = SystemTime::now();
+    let parties = Parties::new();
+    let (mut governor, _) = room(&parties, now);
+    let offer = parties.offer(1);
+    governor
+        .governance_mut()
+        .offer_ownership(&offer, &parties.governor.key, now)
+        .unwrap();
+    governor
+        .governance_mut()
+        .commit_handoff(&parties.handoff(&offer, 2), &parties.governor.key, now)
+        .unwrap();
+    let doc = governor.admitted_room().unwrap();
+    let key = |cert: &DeviceCert| cert.device_public_key;
+    let (old, new, member) = (
+        key(&parties.governor.cert),
+        key(&parties.successor.cert),
+        key(&parties.member.cert),
+    );
+    assert!(crate::handoff::handed_between(doc, &old, &new));
+    assert!(!crate::handoff::handed_between(doc, &new, &old));
+    assert!(!crate::handoff::handed_between(doc, &member, &new));
+    assert!(!crate::handoff::handed_between(doc, &old, &member));
 }

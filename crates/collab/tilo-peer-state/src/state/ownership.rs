@@ -80,7 +80,7 @@ impl PeerGovernanceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, OwnershipWriteError> {
         if self.peer.governance().handed_on().is_some() {
-            return Err(HandoffError::NotCurrentGovernor.into());
+            return Err(HandoffError::Moved.into());
         }
         handoff::check_offer(&self.peer.core.room, &self.peer.core.authority, offer)?;
         let bytes = postcard::to_stdvec(offer)
@@ -132,7 +132,7 @@ impl PeerGovernanceMut<'_> {
     ) -> Result<bool, OwnershipWriteError> {
         let governance = self.peer.governance();
         if governance.handed_on().is_some() {
-            return Err(HandoffError::NotCurrentGovernor.into());
+            return Err(HandoffError::Moved.into());
         }
         let logged = governance.governor_handoffs();
         let offer_id = hex::encode(handoff.offer.offer_id);

@@ -59,6 +59,9 @@ pub enum HandoffError {
     HintMismatch,
     RoomMismatch,
     UnsupportedVersion,
+    /// The room was handed to another device, which governs it now: the
+    /// device it was handed from changes nothing in it any more.
+    Moved,
     Encoding(String),
 }
 
@@ -100,6 +103,7 @@ impl std::fmt::Display for HandoffError {
             }
             Self::RoomMismatch => f.write_str("the statement is about another room"),
             Self::UnsupportedVersion => f.write_str("unsupported handoff version"),
+            Self::Moved => f.write_str("the room moved to its new owner's device"),
             Self::Encoding(error) => write!(f, "the statement does not encode: {error}"),
         }
     }
@@ -281,7 +285,7 @@ pub fn check_offer(
 ) -> Result<(), HandoffError> {
     offer.check(room, governor.user_public_key)?;
     if offer.expires_at_ns <= offer.offered_at_ns
-        || offer.expires_at_ns - offer.offered_at_ns > MAX_OFFER_NS
+        || offer.expires_at_ns.saturating_sub(offer.offered_at_ns) > MAX_OFFER_NS
     {
         return Err(HandoffError::Expired);
     }
@@ -507,6 +511,24 @@ pub fn follow(
 #[must_use]
 pub fn pending_steps(room: &str, doc: &AutoCommit, authority: &DeviceCert) -> Vec<GovernorHandoff> {
     follow(room, authority, &logged(doc))
+}
+
+/// Whether `doc`'s handoff log moves the room's governance from the device
+/// `from` on to the device `to`, through one handoff or several: `to` then
+/// covers the room's records in `from`'s place, under its own sequence.
+/// Read from the log alone: only the governor writes it, and a member
+/// follows only handoffs that verify.
+pub(crate) fn handed_between(doc: &AutoCommit, from: &[u8; 32], to: &[u8; 32]) -> bool {
+    let mut governor = *from;
+    for handoff in logged(doc) {
+        if handoff.previous.device_public_key == governor {
+            governor = handoff.successor().device_public_key;
+            if governor == *to {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The bytes of every handoff statement `doc` holds, for "unchanged"

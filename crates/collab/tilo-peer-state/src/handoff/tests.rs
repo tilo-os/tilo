@@ -295,7 +295,7 @@ fn an_old_handoff_is_not_followed_again() {
         Err(HandoffError::Replayed)
     );
     // Followed once: from its successor, nothing more to follow.
-    let log = vec![handoff.clone()];
+    let log = vec![handoff];
     assert_eq!(follow(ROOM, &parties.governor.cert, &log), log);
     assert!(follow(ROOM, &parties.successor.cert, &log).is_empty());
 }

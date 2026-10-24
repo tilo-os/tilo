@@ -3067,10 +3067,15 @@ impl StatePeer {
             return Ok(None);
         };
         let coverage = &receipt.coverage;
+        let governor = self.core.authority.device_public_key;
+        // Covered by the governor, or by one that handed the room on to it
+        // and whose receipt stands until the record's next checkpoint.
+        let covering = coverage.author == governor
+            || crate::handoff::handed_between(room, &coverage.author, &governor);
         if coverage.room != self.core.room
             || coverage.app != app
             || coverage.record != record
-            || coverage.author != self.core.authority.device_public_key
+            || !covering
             || self.core.revocations.is_revoked(&coverage.author)
         {
             return Err("durable receipt authority/route mismatch".into());
