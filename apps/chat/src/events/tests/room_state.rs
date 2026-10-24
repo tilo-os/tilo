@@ -891,3 +891,43 @@ fn a_kept_message_names_its_author_as_the_record_kept_them_and_never_by_their_id
     .unwrap();
     assert!(read.to_string().contains("first") && read.to_string().contains("second"));
 }
+
+#[test]
+fn a_read_receipt_the_door_refused_is_not_sent_again_until_the_person_reads_further() {
+    let (mut app, mut doc) = app_with_doc();
+    // Only receipts are submitted here.
+    app.dispatched.borrow_mut().clear();
+    let marks = |app: &ChatApp| app.dispatched.borrow().len();
+    app.mark_active_read(&doc);
+    assert_eq!(marks(&app), 1, "the channel in view is marked read");
+    // The door does not offer this person the receipt (a viewer): it says so
+    // and nothing lands.
+    app.dispatch
+        .as_ref()
+        .expect("the window has its dispatcher")
+        .refused()
+        .set(Some(ui::framework::Refused {
+            action: crate::resource::Chat::MARK_READ.id.into(),
+            item: None,
+            reason: "That didn't run. It isn't available to you here.".into(),
+            by_room: false,
+        }));
+    for _ in 0..3 {
+        app.mark_active_read(&doc);
+    }
+    assert_eq!(
+        marks(&app),
+        1,
+        "a refused receipt is not sent again on every frame"
+    );
+    crate::testing::apply_part_at(
+        &mut doc,
+        "u_aria",
+        (crate::demo::NOW + 1) * 1000,
+        crate::testing::post(&app.active_channel, "Something new to read", None),
+    )
+    .unwrap();
+    app.reload(&doc);
+    app.mark_active_read(&doc);
+    assert_eq!(marks(&app), 2, "reading further asks the door again");
+}

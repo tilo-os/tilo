@@ -755,6 +755,12 @@ pub struct ChatApp {
     // window's person, recorded in history and replicated. See
     // [`crate::record`].
     pub(crate) dispatch: Option<ui::framework::Dispatcher<crate::resource::Chat>>,
+    /// The read receipt last sent on its own and not answered yet, by
+    /// channel, and the one the door refused: a receipt the door does not
+    /// offer this person (a viewer) is not sent again until they read
+    /// further.
+    pub(crate) read_asked: Option<(String, crate::parts::ReadMark)>,
+    pub(crate) read_refused: Option<(String, crate::parts::ReadMark)>,
     /// The chat's messages, kept in parts beside the record
     /// ([`crate::parts`]): what the window reads them from and posts, edits
     /// and reacts through. `None` where the window has none (a past
@@ -1087,6 +1093,8 @@ impl ChatApp {
             host_model: crate::host_model::HostModel::default(),
             expanded_reasoning: std::collections::HashSet::new(),
             dispatch: None,
+            read_asked: None,
+            read_refused: None,
             chain: None,
             chain_seen: None,
             kept_messages: None,
@@ -1215,6 +1223,37 @@ impl ChatApp {
         };
         if let Some(dispatch) = &self.dispatch {
             dispatch.submit(invoke);
+        }
+    }
+
+    /// `submit` what Chat does on its own, for nobody's gesture (a read
+    /// receipt): a refusal is Chat's to handle, never said over the window.
+    fn submit_on_its_own(&self, submit: impl ui::framework::Submit<crate::resource::Chat>) {
+        let Some(invoke) = self.dispatched(submit) else {
+            return;
+        };
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.submit_on_its_own(invoke);
+        }
+    }
+
+    /// Whether the door refused the read receipt last sent: it then is not
+    /// offered to this person, and the same receipt is not sent again.
+    fn note_refused_read(&mut self) {
+        let Some(dispatch) = &self.dispatch else {
+            return;
+        };
+        let refused = dispatch.refused();
+        let read_refused = refused.with(|refused| {
+            refused
+                .as_ref()
+                .is_some_and(|refused| refused.action == crate::resource::Chat::MARK_READ.id)
+        });
+        if read_refused {
+            refused.set(None);
+            if let Some(asked) = self.read_asked.take() {
+                self.read_refused = Some(asked);
+            }
         }
     }
 
@@ -3089,17 +3128,27 @@ impl ChatApp {
         if read <= chat.read_mark(&self.active_channel, &self.me.id) {
             return;
         }
+        self.note_refused_read();
+        if self
+            .read_refused
+            .as_ref()
+            .is_some_and(|(channel, refused)| *channel == self.active_channel && read <= *refused)
+        {
+            return;
+        }
         // Read state is a durable collaboration fact.  It is authored through
         // the same door as the palette's "Mark as read", not a side write
         // that peers/history cannot account for.  The carried position keeps
-        // a message that arrives meanwhile unread.
-        self.submit(
-            crate::resource::Chat::MARK_READ.with(crate::record::chat::MarkRead {
+        // a message that arrives meanwhile unread.  Nobody pressed anything
+        // for it, so a refusal is not said over the window.
+        self.read_asked = Some((self.active_channel.clone(), read));
+        self.submit_on_its_own(crate::resource::Chat::MARK_READ.with(
+            crate::record::chat::MarkRead {
                 channel: ui::tilo_resource::Id::from_raw(self.active_channel.clone()),
                 part: u64::try_from(read.part).unwrap_or_default(),
                 seen: u32::try_from(read.seen).unwrap_or(u32::MAX),
-            }),
-        );
+            },
+        ));
         if let Some(channel) = self
             .channels
             .iter_mut()

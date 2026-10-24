@@ -3248,6 +3248,7 @@ impl App {
         target: &crate::bound_dispatch::BoundActionTarget,
         intent: &tilo_actions::ControlInvocation,
         on_behalf_of: Option<tilo_actions::InvocationId>,
+        origin: crate::bound_dispatch::Origin,
     ) -> bool {
         let argument = format!(
             "{}{}",
@@ -3347,8 +3348,11 @@ impl App {
                 true
             }
             Err(error) => {
-                tracing::warn!(%error, "bound control invocation refused");
-                if acting.is_none() {
+                tracing::warn!(%error, ?origin, "bound control invocation refused");
+                // Only what the person asked for is refused over the window;
+                // the app hears of its own invocation's refusal through the
+                // feedback above.
+                if acting.is_none() && origin == crate::bound_dispatch::Origin::Person {
                     self.refuse_visibly(&error);
                 }
                 false
@@ -3662,10 +3666,10 @@ impl App {
                 "control traversal incomplete; delivering already drained intents"
             );
         }
-        for (target, intent, on_behalf_of) in registered
+        for (target, intent, on_behalf_of, origin) in registered
             .components
             .into_iter()
-            .map(|(target, intent)| (target, intent, None))
+            .map(|(target, intent)| (target, intent, None, crate::bound_dispatch::Origin::Person))
             .chain(bound.pending)
         {
             if on_behalf_of.is_none()
@@ -3688,22 +3692,24 @@ impl App {
                 dispatched = dispatched.saturating_add(1);
                 continue;
             }
-            if self.dispatch_bound_control_invocation(&target, &intent, on_behalf_of) {
+            if self.dispatch_bound_control_invocation(&target, &intent, on_behalf_of, origin) {
                 dispatched = dispatched.saturating_add(1);
             }
         }
         dispatched =
             dispatched.saturating_add(self.dispatch_legacy_control_invocations(registered.legacy));
-        while let Some((intent, on_behalf_of)) = registered
+        while let Some((intent, on_behalf_of, origin)) = registered
             .outer
             .pop_front()
-            .map(|intent| (intent, None))
+            .map(|intent| (intent, None, crate::bound_dispatch::Origin::Person))
             .or_else(|| {
-                crate::widget::controls::take_attributed_control_invocation(
-                    self.root_widget.as_mut(),
-                )
+                crate::bound_dispatch::take_attributed_with_origin(self.root_widget.as_mut())
             })
         {
+            // Only what the person asked for is refused over the window; the
+            // app hears of its own invocation's refusal through the feedback.
+            let says_refusal =
+                on_behalf_of.is_none() && origin == crate::bound_dispatch::Origin::Person;
             if on_behalf_of.is_none() && self.take_history_invocation(&intent, None) {
                 dispatched = dispatched.saturating_add(1);
                 continue;
@@ -3732,7 +3738,7 @@ impl App {
                     "action-bound control is unavailable to the local actor"
                 );
                 let error = tilo_actions::DoorError::Unknown(intent.address.clone());
-                if on_behalf_of.is_none() {
+                if says_refusal {
                     self.refuse_visibly(&error);
                 }
                 let refused = Err(error);
@@ -3835,8 +3841,8 @@ impl App {
             match result {
                 Ok(_) => dispatched = dispatched.saturating_add(1),
                 Err(error) => {
-                    tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, %error, "action-bound control invocation refused");
-                    if acting.is_none() {
+                    tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, %error, ?origin, "action-bound control invocation refused");
+                    if acting.is_none() && says_refusal {
                         self.refuse_visibly(&error);
                     }
                 }
