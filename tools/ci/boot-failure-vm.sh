@@ -144,11 +144,13 @@ stop() {
   qemu-img commit -q "$overlay"
 }
 serial() { tr -d '\000\r' < "$TILO_RUN/serial.log" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'; }
-# The screen's record reaches the console at a critical level.
+# The screen's record reaches the console at a critical level, more than one
+# line of it per start: starts are told apart by the boot id they name.
+screens() { serial | grep -ao 'tilo-boot-failure: .*boot=[0-9a-f]*' | sed 's/.*boot=//' | sort -u | wc -l; }
 await_screen() {  # COUNT [SECONDS]
   local n=$1 deadline=$((SECONDS + ${2:-420}))
   while (( SECONDS < deadline )); do
-    (( $(serial | grep -c 'tilo-boot-failure: step=') >= n )) && { sleep 4; return 0; }
+    (( $(screens) >= n )) && { sleep 4; return 0; }
     vm status >/dev/null 2>&1 || return 1
     sleep 3
   done
@@ -232,7 +234,7 @@ check "with its tries used up the entry is passed over: the boot loader starts R
   grep -q 'tilo.mode=repair' "$out/3-fallback-cmdline.txt"
 # Back to a start a person would choose from the boot menu after the repair.
 attach; mount_esp
-for f in "$mnt/esp/loader/entries"/bootc*+*.conf; do mv "$f" "${f%%+*}+2.conf"; done
+for f in "$mnt/esp/loader/entries"/bootc*+*.conf; do [[ $f == "${f%%+*}+2.conf" ]] || mv "$f" "${f%%+*}+2.conf"; done
 mount_root; sed -i 's/^LANG=.*/LANG=de_DE.UTF-8/' "$(deploy_etc)/locale.conf"
 detach
 
