@@ -35,3 +35,8 @@ de = { use = "Hauptbildschirm", avoid = ["Primärbildschirm", "primär"], keys =
 [[term]]
 reason = "The warm evening colour is one setting, in Displays and Quick Settings alike; it is written as ordinary words, so a sentence never reads it as a second, branded feature."
 en = { use = "Night light", avoid = ["Night Light"], case_sensitive = true }
+
+[[term]]
+reason = "The largest packet a VPN sends is its packet size, as its row and its action name it; the abbreviation is network jargon a person did not see on the page."
+en = { use = "Packet size", avoid = ["MTU"], case_sensitive = true }
+de = { use = "Paketgröße", avoid = ["MTU"], case_sensitive = true }
