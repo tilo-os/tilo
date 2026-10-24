@@ -75,6 +75,8 @@ pub mod extension_controller;
 #[cfg(not(test))]
 pub mod extension_host;
 #[cfg(not(test))]
+pub mod extension_notices;
+#[cfg(not(test))]
 pub mod extension_toolbar;
 #[cfg(not(test))]
 pub mod extensions;
@@ -84,6 +86,8 @@ pub mod library;
 pub mod native_blocker;
 #[cfg(not(test))]
 pub mod notice;
+#[cfg(not(test))]
+pub mod page_dialogs;
 #[cfg(not(test))]
 pub mod page_menu;
 #[cfg(not(test))]

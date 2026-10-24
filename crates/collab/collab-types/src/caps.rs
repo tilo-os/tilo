@@ -259,7 +259,7 @@ impl Scope {
 /// room's members, as its policy names them.
 ///
 /// Written as an object. It also reads the bare capability array that
-/// preceded it ([`fs_authority_v1`]): that file persists on a machine across
+/// preceded it (`fs_authority_v1`): that file persists on a machine across
 /// image updates, and failing to read it leaves the filesystem unmounted.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct FsAuthority {

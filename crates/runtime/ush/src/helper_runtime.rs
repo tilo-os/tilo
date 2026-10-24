@@ -57,7 +57,7 @@ impl HelperRuntime {
         ]
     }
 
-    /// Command shims run after confinement. Keep their original argv[0] for
+    /// Command shims run after confinement. Keep their original `argv[0]` for
     /// typed broker dispatch; this library path belongs only to this exec.
     ///
     /// # Errors

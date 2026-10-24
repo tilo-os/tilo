@@ -116,7 +116,7 @@ impl EngineSession {
     /// decoded for the old position, and the seek's own bookkeeping counts it
     /// as new; served, it would be a repeated frame in an export. So the
     /// picture has to land on `time_ms` by its own timestamp, measured from
-    /// the stream's start ([`Self::lands_on`]), or else be the picture a
+    /// the stream's start (`Self::lands_on`), or else be the picture a
     /// second seek lands on too (a frame rate the bucket does not describe
     /// closely). Anything else is sought again until `timeout`, and only the
     /// picture that landed is cached.

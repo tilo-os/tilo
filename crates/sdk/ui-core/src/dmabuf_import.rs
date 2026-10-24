@@ -39,6 +39,8 @@
 //!
 //! [`ImportError::NotVulkan`]: crate::dmabuf_import::ImportError::NotVulkan
 //! [`ImportError::StrideMismatch`]: crate::dmabuf_import::ImportError::StrideMismatch
+//!
+//! [`explicit_layout_available`]: crate::dmabuf_import::explicit_layout_available
 
 use std::os::fd::{AsRawFd, BorrowedFd, IntoRawFd};
 use std::sync::Arc;
@@ -619,7 +621,7 @@ fn has_modifier_extension(hal_device: &vulkan::Device) -> bool {
 
 /// The DRM modifiers `device` can sample for a single-plane dma-buf of
 /// `fourcc`: each one the driver lists for the format and confirms
-/// ([`VulkanImporter::check_modifier`], the check every import repeats at its
+/// (`VulkanImporter::check_modifier`, the check every import repeats at its
 /// real size) can be imported and sampled. Empty when the device is not
 /// Vulkan, lacks `VK_EXT_image_drm_format_modifier`, or has no such format.
 ///

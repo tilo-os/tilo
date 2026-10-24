@@ -21,7 +21,7 @@ use ui::icons::Icon;
 use ui::tilo_resource::Effect as _;
 use ui::widget::{Button, ListRow, Toggle};
 
-use super::super::{Begun, NetworkModel};
+use super::super::{Begun, Landed, NetworkModel};
 use super::VpnEffect;
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
@@ -337,6 +337,11 @@ impl NetworkModel {
         if next != previous {
             self.write_device_vpn(THROUGH.name(), serde_json::to_value(&next))?;
         }
+        // A route through a device carries everything, so the VPNs that do
+        // too turn off.
+        let carries_all = next
+            .as_ref()
+            .is_some_and(|through| through.routes == device_vpn::Routes::All);
         // Shown as asked until the session publishes where it stands.
         if let Some(status) = &mut self.vpn.devices.status {
             if let Some(client) = status.client.take()
@@ -362,7 +367,73 @@ impl NetworkModel {
             });
         }
         self.changed = true;
+        let active = self.active_vpns(None);
+        if !on || !carries_all || active.is_empty() {
+            return Ok(Begun::Done);
+        }
+        self.in_flight += 1;
+        let service = Arc::clone(&self.service);
+        Ok(Begun::work(move || {
+            Landed::TunnelsLeft(super::full_tunnels_off(&*service, &active))
+        }))
+    }
+
+    /// Stop routing everything through a device: a VPN that carries all
+    /// traffic turned on.
+    pub(crate) fn leave_device_route(&mut self) {
+        let document = self.cx.storage().settings_document();
+        let Some(through) = THROUGH
+            .from_section(&document.section(device_vpn::SECTION))
+            .filter(|through| through.routes == device_vpn::Routes::All)
+        else {
+            return;
+        };
+        if let Err(error) = self.route_through_device(&through.device, false) {
+            tracing::warn!(target: "tilo::settings", %error, "the route through a device stayed on");
+        }
+    }
+
+    /// Block this device's traffic while the tunnel to the device it routes
+    /// through is down, or let it go out directly.
+    pub(super) fn set_device_kill_switch(&mut self, on: bool) -> Result<Begun, String> {
+        let document = self.cx.storage().settings_document();
+        let through = THROUGH
+            .from_section(&document.section(device_vpn::SECTION))
+            .ok_or_else(|| t("net-device-vpn-no-route"))?;
+        let next = Through {
+            kill_switch: on,
+            ..through
+        };
+        self.write_device_vpn(THROUGH.name(), serde_json::to_value(Some(&next)))?;
+        if let Some(client) = self
+            .vpn
+            .devices
+            .status
+            .as_mut()
+            .and_then(|status| status.client.as_mut())
+        {
+            client.kill_switch = on;
+        }
+        self.changed = true;
         Ok(Begun::Done)
+    }
+
+    /// The route through a device in use, and whether its traffic is
+    /// blocked while the tunnel is down.
+    pub(super) fn kill_switch_row(&self) -> Option<crate::widgets::Item> {
+        let client = self.vpn.devices.status.as_ref()?.client.as_ref()?;
+        let label = t("net-device-vpn-kill-switch");
+        let toggle = self.cx.bind(
+            Toggle::from_state(&LocalState::new(client.kill_switch))
+                .with_id("settings.network.vpn.device.kill-switch")
+                .with_accessible_name(&label),
+            effect(VpnEffect::SET_DEVICE_VPN_KILL_SWITCH),
+        );
+        Some(setting_row_described(
+            &label,
+            &t("net-device-vpn-kill-switch-caption"),
+            Box::new(toggle),
+        ))
     }
 
     /// Let the person's other devices use this one as a VPN, or not.

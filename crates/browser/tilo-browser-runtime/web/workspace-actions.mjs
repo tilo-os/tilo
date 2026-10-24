@@ -17,10 +17,10 @@
  *   else the host lets see who asks (whoever it lets invite). While they
  *   are in the room, each new request is also offered on a banner to let
  *   them in. A room that takes people by invitation also lists the
- *   addresses people left at its door (its wait list, `contact`): each is
+ *   addresses people left at its door (`membership.waitList`): each is
  *   answered with an invitation of the inviter's own, a link they send to
- *   that address, or taken off the list. Nobody is online to let in there,
- *   so those get no banner.
+ *   that address, or taken off the list (`unlist`). They are nobody to let
+ *   in, so they get no banner.
  *
  * Every step is the host's decision: a refusal is said, never worked
  * around.
@@ -53,8 +53,9 @@ export const ownHost = peer => Boolean(peer?.userPublicKey) && hex(peer.host?.ho
  * `ui` draws what the page shows: `askWorkspaceName(save)`,
  * `chooseMachine(origins)`, `share({title, body, link})`, `copy(text)`
  * (resolves whether it reached the clipboard),
- * `waitingList({load, admit, decline, invite})` (`invite(person)` makes
- * the invitation for a wait-list address and shares it) and `fail(text)`. `publicLink()` is
+ * `waitingList({load, admit, decline, invite, unlist})` (`load()` resolves
+ * to `{people, waitList}`; `invite(entry)` makes the invitation for a
+ * wait-list address and shares it) and `fail(text)`. `publicLink()` is
  * the link anyone joins the room in front with when it is a public
  * workspace, else `null`. Attach the desktop with `attach(mount)`; route its
  * host actions to `perform`.
@@ -89,8 +90,7 @@ export function createWorkspaceActions({
     for (const id of offered) if (!now.has(id)) offered.delete(id);
     for (const person of people) {
       waiting.set(person.requestId, person);
-      // A wait-list address: nobody there to let in now.
-      if (person.contact || offered.has(person.requestId)) continue;
+      if (offered.has(person.requestId)) continue;
       offered.add(person.requestId);
       mount?.offerHostAction?.({action: {id: `${ADMIT}${person.requestId}`, title: `Let ${person.name} in`},
         title: `${person.name} asks to join`,
@@ -155,13 +155,13 @@ export function createWorkspaceActions({
     });
   };
 
-  /** An invitation for the address `person` left at the door, shared for
+  /** An invitation for the address `entry` left at the door, shared for
    * the inviter to send there. It stays on the list until they take it off. */
-  const inviteContact = async person => {
+  const inviteContact = async entry => {
     const text = await peer.createInvitation({role: 'editor'});
     await ui.share({
-      title: `Invite ${person.contact}`,
-      body: `Send this link to ${person.contact}. They join ${workspaceName ? `“${workspaceName}”` : 'this workspace'} with it, and you let them in here. Take them off the wait list once you have sent it.`,
+      title: `Invite ${entry.contact}`,
+      body: `Send this link to ${entry.contact}. They join ${workspaceName ? `“${workspaceName}”` : 'this workspace'} with it, and you let them in here. Take them off the wait list once you have sent it.`,
       link: inviteLink(text),
     });
   };
@@ -208,8 +208,14 @@ export function createWorkspaceActions({
         if (id === NEW_WORKSPACE.id) await newWorkspace();
         else if (id === INVITE.id) await invite();
         else if (id === WAITING.id && lettingIn) {
-          await ui.waitingList({load: () => peer.membership.requests(), admit, decline: requestId => peer.membership.decline(requestId),
-            invite: inviteContact});
+          // The wait list beside them, where the room keeps one: a room
+          // without one, or a host that keeps it from this person, lists none.
+          const load = async () => {
+            const [people, waitList] = await Promise.all([peer.membership.requests(), peer.membership.waitList().catch(() => [])]);
+            return {people, waitList};
+          };
+          await ui.waitingList({load, admit, decline: requestId => peer.membership.decline(requestId),
+            invite: inviteContact, unlist: requestId => peer.membership.unlist(requestId)});
         } else if (id.startsWith(ADMIT) && lettingIn) await admit(id.slice(ADMIT.length));
       } catch (error) {
         say(error, 'That did not work');

@@ -4,7 +4,7 @@
 //!
 //! Every field is a toolkit control in a [`Form`]: names are [`TextInput`]s,
 //! the catalog choices are [`Dropdown`]s that filter while open. Each edit is
-//! reported to the wizard as a [`Command::Profile`], which submits the field
+//! reported to the wizard as a `Command::Profile`, which submits the field
 //! edit at the profile's path — one undo boundary, replicated to
 //! collaborators and the same edit the palette or an agent would make. The form
 //! holds no profile of its own: it is composed from an [`InstallProfile`]

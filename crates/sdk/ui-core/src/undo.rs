@@ -13,13 +13,13 @@
 //!
 //! * **Host → widget.** Once per frame the host publishes an [`UndoStatus`] to
 //!   every laid-out widget via
-//!   [`UndoControl::set_undo_status`](crate::undo::UndoControl::set_undo_status). A
+//!   [`UndoControl::set_undo_status`]. A
 //!   widget stores it (embed an [`UndoAccess`]) and reads it from `draw` and —
 //!   the part that matters for assistive technology — from `accessibility`,
 //!   which only gets `&self`.
 //! * **Widget → host.** A widget records an [`UndoRequest`], and the host
 //!   drains it via
-//!   [`UndoControl::take_undo_request`](crate::undo::UndoControl::take_undo_request)
+//!   [`UndoControl::take_undo_request`]
 //!   and performs it through `App::perform_undo`
 //!   — the *same* method the Ctrl+Z key handler calls. There is one undo
 //!   implementation, so a button and the shortcut cannot drift apart.
@@ -33,7 +33,7 @@
 //! There is a third channel in the same family, one step earlier: an app whose
 //! edits are dispatched [`tilo_actions`](crate::action_host) actions reports the
 //! bracket around them through
-//! [`CommittedActions::take_committed_action`](crate::undo::CommittedActions::take_committed_action),
+//! [`CommittedActions::take_committed_action`],
 //! and [`record_dispatched_action`] is where a host turns that into the undo
 //! entry the two halves above then see. It sweeps `node_map` for the same
 //! reason they do.

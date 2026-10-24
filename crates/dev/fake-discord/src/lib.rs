@@ -12,6 +12,13 @@
 //! The REST side mutates the guild the way Discord does and dispatches the
 //! events Discord would (a webhook message comes back as `MESSAGE_CREATE`),
 //! so echo suppression is exercised for real.
+//!
+//! Voice is faked too: a voice gateway and a UDP media path on loopback,
+//! with transport encryption and DAVE for real (see [`voice`]'s notes in
+//! the source). Fake users join, mute, leave and say Opus frames through
+//! [`FakeDiscord::voice_join`] and friends; what the bot said is decrypted
+//! and kept for [`FakeDiscord::voice_heard`]. [`tone`] makes and tells
+//! tones.
 
 #![allow(
     clippy::indexing_slicing,
@@ -20,7 +27,10 @@
 
 mod gateway;
 mod rest;
+mod rtp;
 mod time;
+pub mod tone;
+mod voice;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -32,6 +42,8 @@ use tilo_lock::MutexRecover as _;
 use tokio::sync::mpsc;
 
 pub use rest::Recorded;
+pub use time::now_ms;
+pub use voice::Heard;
 
 /// The bot token the fake accepts until [`FakeDiscord::revoke_token`].
 pub const TOKEN: &str = "fake.bot.token";
@@ -56,6 +68,9 @@ pub struct User {
     pub name: String,
     pub avatar: Option<String>,
 }
+
+/// Discord's permission bits for joining a voice channel and speaking.
+pub const CONNECT_AND_SPEAK: u64 = (1 << 20) | (1 << 21);
 
 impl User {
     #[must_use]
@@ -151,7 +166,7 @@ struct Gateway {
     intents: Option<u64>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct State {
     token: String,
     rest_origin: String,
@@ -172,6 +187,7 @@ struct State {
     interaction_replies: Vec<Value>,
     last_id: u64,
     gateway: Gateway,
+    voice: voice::Voice,
 }
 
 impl State {
@@ -217,6 +233,7 @@ impl State {
             .channels
             .iter()
             .partition(|c| matches!(c["type"].as_u64(), Some(10..=12)));
+        let (voice_states, members) = self.voice_guild_parts();
         json!({
             "id": GUILD,
             "name": "Fake Guild",
@@ -224,7 +241,8 @@ impl State {
             "channels": channels,
             "threads": threads,
             "roles": self.roles,
-            "members": [],
+            "members": members,
+            "voice_states": voice_states,
             "member_count": 3,
             "unavailable": false,
         })
@@ -283,6 +301,7 @@ pub struct FakeDiscord {
     shared: Arc<Shared>,
     rest: SocketAddr,
     gateway: SocketAddr,
+    voice: SocketAddr,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -338,6 +357,13 @@ impl FakeDiscord {
         let gateway_listener = tokio::net::TcpListener::bind(gateway).await?;
         let rest = rest_listener.local_addr()?;
         let gateway = gateway_listener.local_addr()?;
+        let voice_listener = tokio::net::TcpListener::bind((gateway.ip(), 0)).await?;
+        let voice = voice_listener.local_addr()?;
+        let udp = std::net::UdpSocket::bind((gateway.ip(), 0))?;
+        udp.set_nonblocking(true)?;
+        let udp_port = udp.local_addr()?.port();
+        let udp_send = Arc::new(udp.try_clone()?);
+        let udp = tokio::net::UdpSocket::from_std(udp)?;
         let state = State {
             token: TOKEN.to_owned(),
             rest_origin: format!("http://{rest}"),
@@ -348,6 +374,13 @@ impl FakeDiscord {
                 json!({"id": "1200", "name": "Tilo Bridge", "permissions": "8", "color": 0, "position": 1, "managed": true}),
             ],
             commands: json!([]),
+            // The bot has the bridge's managed role, which has Administrator.
+            voice: voice::Voice::new(
+                voice.to_string(),
+                udp_port,
+                udp_send,
+                vec!["1200".to_owned()],
+            ),
             ..State::default()
         };
         let shared = Arc::new(Shared {
@@ -356,11 +389,13 @@ impl FakeDiscord {
         let tasks = vec![
             tokio::spawn(rest::serve(Arc::clone(&shared), rest_listener)),
             tokio::spawn(gateway::serve(Arc::clone(&shared), gateway_listener)),
+            tokio::spawn(voice::serve(Arc::clone(&shared), voice_listener, udp)),
         ];
         Ok(Self {
             shared,
             rest,
             gateway,
+            voice,
             tasks,
         })
     }
@@ -381,6 +416,12 @@ impl FakeDiscord {
     #[must_use]
     pub fn gateway_url(&self) -> String {
         format!("ws://{}", self.gateway)
+    }
+
+    /// The voice server's endpoint, as `VOICE_SERVER_UPDATE` names it.
+    #[must_use]
+    pub fn voice_endpoint(&self) -> String {
+        self.voice.to_string()
     }
 
     /// `author` posts `content` in `channel`; returns the message id.
@@ -832,6 +873,190 @@ impl FakeDiscord {
     pub fn connected(&self) -> bool {
         let state = self.shared.lock();
         state.gateway.live.is_some() && state.gateway.session.is_some()
+    }
+
+    /// `user` enters voice channel `channel` (dispatching their voice
+    /// state); in the bot's channel they join its call as a DAVE client.
+    pub fn voice_join(&self, user: &User, channel: &str) {
+        self.shared.lock().user_joins_voice(user, channel);
+    }
+
+    /// `user` leaves voice.
+    pub fn voice_leave(&self, user: &str) {
+        self.shared.lock().user_leaves_voice(user);
+    }
+
+    /// `user` mutes or unmutes themselves.
+    pub fn voice_mute(&self, user: &str, muted: bool) {
+        self.shared.lock().user_mutes(user, muted);
+    }
+
+    /// `user`, in the bot's call, says `frames` (20 ms Opus frames) in real
+    /// time, end-to-end and transport encrypted to the bot.
+    pub async fn voice_say(&self, user: &str, frames: &[Vec<u8>]) {
+        let mut tick = tokio::time::interval(Duration::from_millis(20));
+        for frame in frames {
+            tick.tick().await;
+            self.shared.lock().say(user, frame);
+        }
+    }
+
+    /// The Opus frames the bot sent (silence left out), decrypted.
+    #[must_use]
+    pub fn voice_heard(&self) -> Vec<Vec<u8>> {
+        self.voice_heard_frames()
+            .into_iter()
+            .map(|heard| heard.opus)
+            .collect()
+    }
+
+    /// [`Self::voice_heard`] with whether each came end-to-end encrypted
+    /// and when.
+    #[must_use]
+    pub fn voice_heard_frames(&self) -> Vec<Heard> {
+        self.shared.lock().voice.heard.clone()
+    }
+
+    /// Opus silence frames the bot sent.
+    #[must_use]
+    pub fn voice_silence(&self) -> usize {
+        self.shared.lock().voice.silence
+    }
+
+    /// The speaking flags the bot sent (op 5), oldest first.
+    #[must_use]
+    pub fn voice_speaking(&self) -> Vec<u64> {
+        self.shared.lock().voice.speaking.clone()
+    }
+
+    /// The voice channel the bot is in.
+    #[must_use]
+    pub fn voice_bot_channel(&self) -> Option<String> {
+        self.shared.lock().voice.bot_channel.clone()
+    }
+
+    /// Whether the bot holds a live voice connection.
+    #[must_use]
+    pub fn voice_connected(&self) -> bool {
+        self.shared.lock().voice.connected()
+    }
+
+    /// Whether DAVE is established: the bot and every fake user in its
+    /// call share the group's epoch, no transition in flight.
+    #[must_use]
+    pub fn voice_dave_ready(&self) -> bool {
+        self.shared.lock().voice.dave_ready()
+    }
+
+    /// The DAVE protocol version of the bot's call (0: transport only).
+    #[must_use]
+    pub fn voice_dave_version(&self) -> u16 {
+        self.shared.lock().voice.dave_version
+    }
+
+    /// The voice privacy codes the fake users see, one per user in the
+    /// group: all equal once DAVE is established.
+    #[must_use]
+    pub fn voice_privacy_codes(&self) -> Vec<String> {
+        self.shared.lock().voice.privacy_codes()
+    }
+
+    /// Identifies and resumes on the voice gateway.
+    #[must_use]
+    pub fn voice_handshakes(&self) -> (u32, u32) {
+        let state = self.shared.lock();
+        (state.voice.identifies, state.voice.resumes)
+    }
+
+    /// The status the bot set on `channel` (`PUT .../voice-status`).
+    #[must_use]
+    pub fn voice_status(&self, channel: &str) -> Option<String> {
+        self.shared
+            .lock()
+            .voice
+            .statuses
+            .get(channel)
+            .cloned()
+            .flatten()
+    }
+
+    /// The bot's nickname in the guild.
+    #[must_use]
+    pub fn bot_nick(&self) -> Option<String> {
+        self.shared.lock().voice.nick.clone()
+    }
+
+    /// The bot's voice side as JSON, for the control endpoint.
+    #[must_use]
+    pub fn voice_state_json(&self) -> Value {
+        let state = self.shared.lock();
+        let voice = &state.voice;
+        let people: Vec<Value> = voice
+            .present
+            .iter()
+            .map(|(id, p)| json!({"user": id, "name": p.user.name, "channel": p.channel, "muted": p.self_mute}))
+            .collect();
+        let state_json = json!({
+            "bot_channel": voice.bot_channel,
+            "connected": voice.connected(),
+            "dave_version": voice.dave_version,
+            "dave_ready": voice.dave_ready(),
+            "speaking": voice.speaking.last(),
+            "speaking_flags": voice.speaking,
+            "statuses": voice.statuses,
+            "nick": voice.nick,
+            "heard_frames": voice.heard.len(),
+            "identifies": voice.identifies,
+            "resumes": voice.resumes,
+            "seq_ack": voice.seq_ack(),
+            "people": people,
+        });
+        drop(state);
+        state_json
+    }
+
+    /// From now on the voice server negotiates no DAVE (version 0), as for
+    /// a call with a client that lacks it.
+    pub fn voice_without_dave(&self) {
+        self.shared.lock().voice.no_dave = true;
+    }
+
+    /// Close the bot's voice connection as a network failure would; its
+    /// session stays resumable.
+    pub fn drop_voice(&self) {
+        self.shared
+            .lock()
+            .voice
+            .drop_connection(4015, "Voice server crashed.");
+    }
+
+    /// The bot's roles become `roles` (dispatching `GUILD_MEMBER_UPDATE`).
+    pub fn set_bot_roles(&self, roles: &[&str]) {
+        let mut state = self.shared.lock();
+        state.voice.bot_roles = roles.iter().map(|r| (*r).to_owned()).collect();
+        let event = json!({
+            "guild_id": GUILD, "roles": roles, "nick": state.voice.nick,
+            "user": {"id": BOT_USER, "username": "tilo-bridge", "bot": true},
+        });
+        state.dispatch("GUILD_MEMBER_UPDATE", event);
+        drop(state);
+    }
+
+    /// `@everyone` loses `perms` in `channel` through an overwrite
+    /// (dispatching `CHANNEL_UPDATE`).
+    pub fn deny_everyone(&self, channel: &str, perms: u64) {
+        let mut state = self.shared.lock();
+        let Some(stored) = state.channel_mut(channel) else {
+            return;
+        };
+        let overwrite = json!({"id": GUILD, "type": 0, "allow": "0", "deny": perms.to_string()});
+        match stored["permission_overwrites"].as_array_mut() {
+            Some(list) => list.push(overwrite),
+            None => stored["permission_overwrites"] = json!([overwrite]),
+        }
+        let event = stored.clone();
+        state.dispatch("CHANNEL_UPDATE", event);
+        drop(state);
     }
 
     /// Poll `check` every 10 ms until it answers, for at most `timeout`.

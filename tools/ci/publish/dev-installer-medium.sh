@@ -47,7 +47,7 @@ case $rootfs in
 esac
 
 # Root's tools in the guest: podman for the image and the installer layer, and what the
-# canonical disk step installs with (os-image-smoke.sh's list, plus mtools for the ESP fallback).
+# canonical disk step installs with (os-release.sh's list, plus mtools for the ESP fallback).
 dnf install -y --setopt=install_weak_deps=False podman skopeo fuse-overlayfs e2fsprogs \
   util-linux jq python3 dosfstools btrfs-progs systemd mtools qemu-img sudo curl tar gzip zstd \
   shadow-utils >/dev/null

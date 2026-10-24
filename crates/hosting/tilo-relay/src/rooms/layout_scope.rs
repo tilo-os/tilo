@@ -197,7 +197,7 @@ impl Rooms {
     /// Set `room`'s layout scope to `layout`, as its governor: written into
     /// its governance for every member's device to read, and held to here.
     /// Making it personal removes what the room holds of its members'
-    /// windows ([`Self::keep_personal`]); what could not be removed now is
+    /// windows (`Self::keep_personal`); what could not be removed now is
     /// reported, and removed when the relay next opens the room.
     ///
     /// A room made personal is held to it here at once, even when its

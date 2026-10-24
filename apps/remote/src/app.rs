@@ -5,12 +5,12 @@
 //! [`Screen`], the add / edit draft and the live session. The
 //! window is a [`NavShell`]: a docked rail of destinations beside the
 //! current screen; the screen's name and actions are the window bar's
-//! ([`window_bar`]).
+//! (`window_bar`).
 //! The list and the form are toolkit widgets rebuilt from this state
-//! ([`crate::view`]); a connected session is [`SessionPane`], which paints
+//! (`crate::view`); a connected session is `SessionPane`, which paints
 //! the remote terminal grid or framebuffer.
 //!
-//! Controls report through one queue of [`Action`]s, drained after every
+//! Controls report through one queue of `Action`s, drained after every
 //! event, so the pointer, the keyboard, assistive technology and the
 //! resource actions agents call share one path. Saved connections change
 //! only through the resource's dispatcher; a connection's password or key

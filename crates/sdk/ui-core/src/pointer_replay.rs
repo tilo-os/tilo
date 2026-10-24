@@ -16,7 +16,7 @@
 //!
 //! The release half needs the press too. Every shared control that runs on
 //! a completed click (a button, a row, a disclosure, a copy action) keeps
-//! its press in a [`HeldPress`], which records what the control was when it
+//! its press in a `HeldPress`, which records what the control was when it
 //! took the press: a key naming it and where it was. A fresh control with
 //! the same key at the same place accepts the release that ends that press.
 //! The host forgets the press before every press and after every release

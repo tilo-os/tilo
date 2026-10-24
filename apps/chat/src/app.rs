@@ -78,13 +78,15 @@ pub(crate) struct ContextMenu {
 
 impl ContextMenu {
     /// A menu whose rows are named by `label`, so a row can say what it will
-    /// do to this target ("Collapse category", "Unpin message").
+    /// do to this target ("Collapse category", "Unpin message"), and whose
+    /// rows `checked` says name a state, checked while it holds.
     pub(crate) fn labelled(
         target: MenuTarget,
         anchor: Point,
         items: Vec<MenuAction>,
         viewport: Rect,
         label: impl Fn(MenuAction) -> String,
+        checked: impl Fn(MenuAction) -> Option<bool>,
     ) -> Self {
         let mut widget = SharedContextMenu::new();
         for action in &items {
@@ -109,6 +111,12 @@ impl ContextMenu {
                 MenuAction::AddReaction => Icon::SmilePlus,
                 MenuAction::ReplyInThread => Icon::Reply,
                 MenuAction::ReportMessage | MenuAction::ReportAuthor => Icon::Flag,
+                MenuAction::Silence => Icon::VolumeX,
+                MenuAction::Volume(_) => Icon::Volume2,
+            };
+            let item = match checked(*action) {
+                Some(on) => item.with_checked(on),
+                None => item,
             };
             widget.push(item.with_icon(icon));
         }
@@ -134,6 +142,9 @@ pub(crate) enum MenuTarget {
     Message(Id),
     /// The room itself: what can be made in it.
     Room,
+    /// Someone else in the call, by person or guest id: how loud they play
+    /// on this device.
+    CallParticipant(String),
 }
 
 /// The structural actions reachable from a context menu.
@@ -171,6 +182,12 @@ pub(crate) enum MenuAction {
     ReportAuthor,
     /// As a moderator, ban a message's author from the room.
     BanAuthor,
+    /// Stop hearing someone in the call, on this device only, or hear them
+    /// again.
+    Silence,
+    /// Play someone in the call at this percent of as they arrive, on this
+    /// device only.
+    Volume(u16),
 }
 
 impl MenuAction {
@@ -194,6 +211,8 @@ impl MenuAction {
             MenuAction::ReportMessage => "Report message",
             MenuAction::ReportAuthor => "Report sender",
             MenuAction::BanAuthor => "Ban from the room",
+            MenuAction::Silence => "Mute for me",
+            MenuAction::Volume(_) => "Volume",
         }
     }
     pub fn is_destructive(self) -> bool {
@@ -236,6 +255,17 @@ impl MenuAction {
             MenuAction::EditMessage,
             MenuAction::PinMessage,
             MenuAction::DeleteMessage,
+        ]
+    }
+    /// Menu items for someone else in the call: how loud they play here,
+    /// silenced or at one of a few levels, on this device only.
+    pub fn for_call_participant() -> [MenuAction; 5] {
+        [
+            MenuAction::Silence,
+            MenuAction::Volume(50),
+            MenuAction::Volume(100),
+            MenuAction::Volume(150),
+            MenuAction::Volume(200),
         ]
     }
     /// Menu items for someone else's message: reporting it or its sender,
@@ -368,6 +398,9 @@ pub(crate) enum Hit {
     CallScreen,
     CallExpand,
     CallLeave,
+    /// Someone else in the call, by person or guest id: opens how loud
+    /// they play here.
+    CallParticipant(String),
     /// Toggle the right flap (members / thread).
     ToggleRightFlap,
     /// Show or hide the open channel's pinned messages in the detail drawer.
@@ -422,6 +455,7 @@ impl Hit {
             Self::CallParticipantsToggle => "chat.call-participants".into(),
             Self::CallExpand => "chat.call-expand".into(),
             Self::CallLeave => "chat.call-leave".into(),
+            Self::CallParticipant(id) => format!("chat.call-participant:{id}"),
             other => format!("chat.control:{other:?}"),
         }
     }
@@ -1625,7 +1659,7 @@ impl ChatApp {
                 }];
                 self.refresh_native_streams();
             }
-            "lounge" | "lounge-call" | "lounge-video" | "lounge-share" => {
+            "lounge" | "lounge-call" | "lounge-video" | "lounge-share" | "lounge-bridged" => {
                 // A shared room with people in its voice channels: this
                 // person in the Design Huddle with their microphone on, three
                 // others beside them and two in the standup, as the room's
@@ -1647,7 +1681,7 @@ impl ChatApp {
                     huddle.push("u_devon".to_owned());
                 }
                 // Cameras on, and Sora sharing her screen, as the room says.
-                let video = scenario != "lounge" && scenario != "lounge-call";
+                let video = !matches!(scenario, "lounge" | "lounge-call" | "lounge-bridged");
                 let cameras: Vec<String> = if video {
                     vec![
                         "u_aria".to_owned(),
@@ -1668,7 +1702,7 @@ impl ChatApp {
                         people: huddle,
                         cameras: cameras.clone(),
                         screens: screens.clone(),
-                        muted: Vec::new(),
+                        ..Default::default()
                     },
                     ui::native_media::Roster {
                         channel_id: "c_standup".into(),
@@ -1682,6 +1716,9 @@ impl ChatApp {
                 ];
                 // Aria is talking: her face rings wherever it shows.
                 self.native_voice.snapshot.speaking = vec!["u_aria".to_owned()];
+                if scenario == "lounge-bridged" {
+                    self.stage_bridged_call();
+                }
                 self.refresh_native_streams();
                 // Their pictures: a moving test picture each, coded and
                 // decoded exactly as a call's pictures are, so the tiles show
@@ -3449,7 +3486,25 @@ impl ChatApp {
             _ => false,
         };
         let channel = matches!(target, MenuTarget::Channel(_));
+        let listening = match &target {
+            MenuTarget::CallParticipant(id) => Some(self.call_listening(id)),
+            _ => None,
+        };
+        let checked = move |action: MenuAction| {
+            let listening = listening?;
+            match action {
+                MenuAction::Silence => Some(listening.silenced),
+                MenuAction::Volume(percent) => {
+                    Some(!listening.silenced && listening.percent == percent)
+                }
+                _ => None,
+            }
+        };
         let label = move |action: MenuAction| match action {
+            MenuAction::Silence => crate::i18n::t("chat-call-silence"),
+            MenuAction::Volume(percent) => {
+                crate::i18n::t_args("chat-call-volume", &[("percent", percent.into())])
+            }
             MenuAction::ToggleCollapse if collapsed => "Expand category".to_owned(),
             MenuAction::PinMessage if pinned => "Unpin message".to_owned(),
             MenuAction::Delete if channel => "Delete channel".to_owned(),
@@ -3458,7 +3513,7 @@ impl ChatApp {
             MenuAction::Rename => "Rename category".to_owned(),
             other => other.label().to_owned(),
         };
-        ContextMenu::labelled(target, anchor, items, self.menu_bounds(), label)
+        ContextMenu::labelled(target, anchor, items, self.menu_bounds(), label, checked)
     }
 
     /// Where a menu may open: the conversation, and the sidebar beside it
@@ -3492,6 +3547,33 @@ impl ChatApp {
             }
         }
         channel_changed
+    }
+
+    /// The Design Huddle bridged to a Discord voice channel: two people
+    /// there in the call beside the room's, one of them talking.
+    fn stage_bridged_call(&mut self) {
+        let guest = |account: &str, name: &str, avatar: Option<&str>| ui::native_media::Guest {
+            id: ui::native_media::Guest::id_of("discord", account),
+            name: name.into(),
+            avatar: avatar.map(str::to_owned),
+            service: "discord".into(),
+            linked: None,
+            muted: false,
+        };
+        if let Some(huddle) = self
+            .native_voice
+            .snapshot
+            .rosters
+            .iter_mut()
+            .find(|roster| roster.channel_id == "c_huddle")
+        {
+            huddle.guests = vec![
+                guest("80351110224678912", "Bo", Some("tilo-demo://avatar-bo")),
+                guest("90351110224678912", "Kai", None),
+            ];
+            huddle.bridges = vec!["discord".into()];
+        }
+        self.native_voice.snapshot.speaking = vec!["discord:80351110224678912".to_owned()];
     }
 
     /// The decoded avatar `m`'s bot showed for it, requesting it from the
@@ -3751,6 +3833,14 @@ impl ChatApp {
                         self.call.expanded,
                     ),
                     Hit::CallLeave => ("Leave call".into(), Role::Button, false),
+                    Hit::CallParticipant(id) => (
+                        crate::i18n::t_args(
+                            "chat-call-participant",
+                            &[("name", self.call_name(id).into())],
+                        ),
+                        Role::Button,
+                        false,
+                    ),
                     _ => return None,
                 };
                 // The composer's pointer target is the whole box (clicking

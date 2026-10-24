@@ -48,6 +48,7 @@ mod logs;
 mod parts;
 mod planning;
 mod records;
+mod room_content;
 mod running;
 pub(crate) mod unopened;
 mod waits;
@@ -275,6 +276,9 @@ pub struct AgentParticipant {
     /// The records the current task's plans read while they were made: a
     /// follow-up plan is offered them, as it is the records it touched.
     task_read: Vec<DocumentRoute>,
+    /// The current task's budget for asking a model call lost to the
+    /// network again, shared by all of its plans.
+    task_retries: crate::planner::TurnRetries,
     /// When others' changes last merged into an open record.
     last_merge: Option<Instant>,
     /// Message records ([`MESSAGE_APPS`]) others changed since the running
@@ -408,6 +412,7 @@ impl AgentParticipant {
             task_touched: Vec::new(),
             previous_touched: Vec::new(),
             task_read: Vec::new(),
+            task_retries: crate::planner::TurnRetries::default(),
             last_merge: None,
             news: Vec::new(),
             news_from: BTreeMap::new(),
@@ -448,7 +453,7 @@ impl AgentParticipant {
 
     /// Take in what the session delivered, answer remote actions, then take
     /// the current task's steps: local ones back to back for up to
-    /// [`STEP_SLICE`], at most one that plans. Says when to pump again.
+    /// `STEP_SLICE`, at most one that plans. Says when to pump again.
     pub fn pump(&mut self) -> Next {
         let now = tilo_clock::unix_now_ms();
         for event in self.events.drain() {
@@ -645,6 +650,13 @@ impl AgentParticipant {
                 active,
             } if workspace_id == self.workspace_id => {
                 self.live.member(device, active);
+            }
+            PeerEvent::ContentWanted {
+                workspace_id,
+                from,
+                request,
+            } if workspace_id == self.workspace_id && from != self.device() => {
+                self.content_wanted(from, &request);
             }
             _ => {}
         }
@@ -863,6 +875,7 @@ impl AgentParticipant {
         self.previous_touched = std::mem::take(&mut self.task_touched);
         self.task_read.clear();
         self.task_made.clear();
+        self.task_retries = crate::planner::TurnRetries::default();
         // What arrived before the task began is in the room it is planned on.
         self.news.clear();
         self.news_from.clear();

@@ -26,6 +26,47 @@ pub(crate) struct LocalVoice {
     unmute_requested: bool,
     /// The call's pictures.
     pub(crate) video: CallVideo,
+    /// How loud each participant plays on this device.
+    pub(crate) volumes: CallVolumes,
+}
+
+/// How loud this person hears each participant, by person or guest id:
+/// kept for as long as the window, and told to the service whenever a call
+/// is live, so a new call plays everyone as they were last set.
+#[derive(Default)]
+pub(crate) struct CallVolumes {
+    /// What the person set: each participant's level, and whether they
+    /// silenced them, which keeps the level for when they hear them again.
+    pub(crate) set: BTreeMap<String, Listening>,
+    /// What the service was last told, in percent.
+    told: BTreeMap<String, u16>,
+    /// The one change in flight: its request, participant and percent.
+    telling: Option<(u64, String, u16)>,
+}
+
+/// How loud one participant plays here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Listening {
+    /// In percent of as they arrive.
+    pub(crate) percent: u16,
+    /// Not heard at all, whatever the level.
+    pub(crate) silenced: bool,
+}
+
+impl Default for Listening {
+    fn default() -> Self {
+        Self {
+            percent: 100,
+            silenced: false,
+        }
+    }
+}
+
+impl Listening {
+    /// What the service plays them at.
+    pub(crate) const fn played(self) -> u16 {
+        if self.silenced { 0 } else { self.percent }
+    }
 }
 
 /// Which pictures of the call this window shows, and their collection: the
@@ -96,6 +137,7 @@ impl Default for LocalVoice {
             pending_since: None,
             unmute_requested: false,
             video: CallVideo::default(),
+            volumes: CallVolumes::default(),
         }
     }
 }
@@ -172,6 +214,7 @@ impl LocalVoice {
             | Command::SetCamera { .. }
             | Command::SetScreen { .. }
             | Command::Show { .. }
+            | Command::SetVolume { .. }
             | Command::Pictures { .. } => {}
         }
         self.pending.insert(id, command);
@@ -247,7 +290,60 @@ impl LocalVoice {
             });
         }
         self.video_requests(now);
+        self.volume_requests();
         std::mem::take(&mut self.queued)
+    }
+
+    /// Tell the service, one at a time, how loud each participant whose
+    /// level differs from what it was told plays, while the call is live.
+    fn volume_requests(&mut self) {
+        let volumes = &mut self.volumes;
+        if self.channel.is_none() || self.snapshot.state != State::Live {
+            // A new call plays everyone as they arrive until told.
+            volumes.told.clear();
+            volumes.telling = None;
+            return;
+        }
+        if volumes.telling.is_some() {
+            return;
+        }
+        let Some((participant, percent)) = volumes
+            .set
+            .iter()
+            .map(|(participant, listening)| (participant, listening.played()))
+            .find(|(participant, percent)| {
+                volumes.told.get(*participant).copied().unwrap_or(100) != *percent
+            })
+            .map(|(participant, percent)| (participant.clone(), percent))
+        else {
+            return;
+        };
+        let Some(id) = self.next_request.checked_add(1) else {
+            return;
+        };
+        self.next_request = id;
+        volumes.telling = Some((id, participant.clone(), percent));
+        self.queued.push(CollabRequest::NativeMediaCommand {
+            request_id: id,
+            command: Request::new(Command::SetVolume {
+                participant,
+                percent,
+            }),
+        });
+    }
+
+    /// The answer to a volume change, if `request_id` was one. A refused
+    /// one is not asked again: the call plays them as it can.
+    fn complete_volume(&mut self, request_id: u64) -> bool {
+        let volumes = &mut self.volumes;
+        let Some((_, participant, percent)) = volumes
+            .telling
+            .take_if(|(telling, ..)| *telling == request_id)
+        else {
+            return false;
+        };
+        volumes.told.insert(participant, percent);
+        true
     }
 
     /// Tell the service what the tiles show when that changed, and keep one
@@ -367,7 +463,7 @@ impl LocalVoice {
     }
 
     pub(crate) fn complete(&mut self, request_id: u64, result: &Result<Snapshot, String>) -> bool {
-        if self.complete_video(request_id, result) {
+        if self.complete_video(request_id, result) || self.complete_volume(request_id) {
             return false;
         }
         if self.watch.is_some_and(|(watch, _)| watch == request_id) {
@@ -529,6 +625,7 @@ impl crate::app::ChatApp {
             | Command::Status
             | Command::Watch { .. }
             | Command::Show { .. }
+            | Command::SetVolume { .. }
             | Command::Pictures { .. } => CallAction::Join,
         };
         if !self.call_allows(action) {
@@ -824,10 +921,125 @@ impl crate::app::ChatApp {
                     .collect();
                 // A person's devices are one person; the service sorted them.
                 members.dedup_by(|a, b| a.user == b.user);
+                // The people a bridge carries in, each as themselves.
+                members.extend(
+                    roster
+                        .guests
+                        .iter()
+                        .map(|guest| member(&guest.id, guest.muted)),
+                );
                 self.voice_members
                     .insert(roster.channel_id.clone(), members);
             }
         }
+    }
+
+    /// The person a bridge carries into a call from another service, if
+    /// `id` names one.
+    pub(crate) fn call_guest(&self, id: &str) -> Option<&ui::native_media::Guest> {
+        self.native_voice
+            .snapshot
+            .rosters
+            .iter()
+            .flat_map(|roster| &roster.guests)
+            .find(|guest| guest.id == id)
+    }
+
+    /// The services bridging `channel`'s call, as words (`Discord`): empty
+    /// for a call only Tilo people hear.
+    pub(crate) fn call_bridges(&self, channel: &str) -> Vec<String> {
+        self.native_voice
+            .snapshot
+            .rosters
+            .iter()
+            .filter(|roster| roster.channel_id == channel)
+            .flat_map(|roster| &roster.bridges)
+            .map(|service| ui::author::service_label(service))
+            .filter(|label| !label.is_empty())
+            .collect()
+    }
+
+    /// "This call is bridged to Discord": where everyone's voice in
+    /// `channel`'s call also goes, or `None` when it stays in Tilo.
+    pub(crate) fn call_bridged_note(&self, channel: &str) -> Option<String> {
+        let services = self.call_bridges(channel);
+        (!services.is_empty()).then(|| {
+            crate::i18n::t_args(
+                "chat-call-bridged",
+                &[("services", services.join(", ").into())],
+            )
+        })
+    }
+
+    /// Who `id` is in a call: the name their face shows, and the service a
+    /// bridge reaches them through. A guest linked to a room member is
+    /// that member; otherwise they are who the bridge says.
+    fn call_person(&self, id: &str) -> (String, Option<String>) {
+        match self.call_guest(id) {
+            Some(guest) => {
+                let name = guest
+                    .linked
+                    .as_deref()
+                    .filter(|linked| self.users.iter().any(|user| user.id == *linked))
+                    .map_or_else(|| guest.name.clone(), |linked| self.user_name(linked));
+                let service = ui::author::service_label(&guest.service);
+                (name, (!service.is_empty()).then_some(service))
+            }
+            None => (self.user_name(id), None),
+        }
+    }
+
+    /// The name `id`'s face in a call takes its initials from.
+    pub(crate) fn call_face_name(&self, id: &str) -> String {
+        self.call_person(id).0
+    }
+
+    /// What a call names `id` by: their name, and for someone a bridge
+    /// carries in where they are, as their bridged messages read ("Dana
+    /// (via Discord)").
+    pub(crate) fn call_name(&self, id: &str) -> String {
+        match self.call_person(id) {
+            (name, Some(service)) => crate::i18n::t_args(
+                "chat-via-attribution",
+                &[("name", name.into()), ("service", service.into())],
+            ),
+            (name, None) => name,
+        }
+    }
+
+    /// The colour `id` wears in a call: a linked guest their member's.
+    pub(crate) fn call_colour(&self, id: &str) -> vello::peniko::Color {
+        let linked = self
+            .call_guest(id)
+            .and_then(|guest| guest.linked.as_deref());
+        self.identity_colour(linked.unwrap_or(id))
+    }
+
+    /// The picture a guest's bridge shows for them, requested from the
+    /// room's content store until it is there.
+    pub(crate) fn call_picture(&self, id: &str) -> Option<vello::peniko::ImageData> {
+        let avatar = self.call_guest(id)?.avatar.as_deref()?;
+        self.images.get(&crate::images::blob_key(avatar))
+    }
+
+    /// How loud `id` plays on this device.
+    pub(crate) fn call_listening(&self, id: &str) -> Listening {
+        self.native_voice
+            .volumes
+            .set
+            .get(id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Set how loud `id` plays on this device; the service hears it with
+    /// the next request round.
+    pub(crate) fn set_call_listening(&mut self, id: &str, listening: Listening) {
+        self.native_voice
+            .volumes
+            .set
+            .insert(id.to_owned(), listening);
+        self.canonical_dirty = true;
     }
 }
 
@@ -1641,7 +1853,7 @@ mod tests {
             people: vec![person(1), person(2), person(3)],
             cameras: vec![person(1), person(3)],
             screens: vec![person(3)],
-            muted: Vec::new(),
+            ..Default::default()
         }];
         {
             let mut tiles = app.picture_tiles.borrow_mut();
@@ -1736,5 +1948,166 @@ mod tests {
                 .iter()
                 .all(|request| !matches!(command(request), Command::Pictures { .. }))
         );
+    }
+
+    /// The Standup's call with Ana in it and Dana and Ben, two people on
+    /// Discord a bridge carries in, Ben linked to Ana's room member.
+    fn bridged_standup() -> crate::app::ChatApp {
+        use ui::native_media::{Guest, Roster};
+        let mut doc = automerge::AutoCommit::new();
+        crate::demo::seed(&mut doc).unwrap();
+        let mut app = crate::app::ChatApp::new_ephemeral();
+        app.reload(&doc);
+        app.native_voice.snapshot.rosters = vec![Roster {
+            channel_id: "c_standup".into(),
+            people: vec!["u_aria".into()],
+            guests: vec![
+                Guest {
+                    id: "discord:1".into(),
+                    name: "Dana".into(),
+                    avatar: Some("ab".repeat(32)),
+                    service: "discord".into(),
+                    linked: None,
+                    muted: false,
+                },
+                Guest {
+                    id: "discord:2".into(),
+                    name: "benji".into(),
+                    avatar: None,
+                    service: "discord".into(),
+                    linked: Some("u_milo".into()),
+                    muted: false,
+                },
+            ],
+            bridges: vec!["discord".into()],
+            ..Default::default()
+        }];
+        app.native_voice.snapshot.speaking = vec!["discord:1".into()];
+        app.refresh_native_streams();
+        app
+    }
+
+    #[test]
+    fn a_bridged_call_shows_each_guest_as_themselves_via_their_service() {
+        let mut app = bridged_standup();
+        let members: Vec<(&str, bool)> = app
+            .voice_in("c_standup")
+            .iter()
+            .map(|member| (member.user.as_str(), member.talking))
+            .collect();
+        assert_eq!(
+            members,
+            [("u_aria", false), ("discord:1", true), ("discord:2", false)],
+            "each guest is their own participant, talking on their own"
+        );
+        assert_eq!(app.call_name("discord:1"), "Dana (via Discord)");
+        assert_eq!(app.call_face_name("discord:1"), "Dana");
+        assert_eq!(
+            app.call_name("discord:2"),
+            "benji (via Discord)",
+            "linked to a member this window does not know: as the bridge says"
+        );
+        app.users.push(crate::model::User {
+            id: "u_milo".into(),
+            name: "Milo".into(),
+            initials: "M".into(),
+            color_idx: 0,
+            status: crate::model::Presence::Online,
+            is_agent: false,
+        });
+        assert_eq!(
+            app.call_name("discord:2"),
+            "Milo (via Discord)",
+            "a linked guest is their member, reached through Discord"
+        );
+        assert_eq!(app.call_colour("discord:2"), app.identity_colour("u_milo"));
+        assert_eq!(app.call_name("u_aria"), app.user_name("u_aria"));
+        assert_eq!(
+            app.call_bridged_note("c_standup").as_deref(),
+            Some("This call is bridged to Discord")
+        );
+        assert_eq!(app.call_bridged_note("c_huddle"), None);
+    }
+
+    #[test]
+    fn the_sidebar_names_guests_in_the_voice_channel_and_says_it_is_bridged() {
+        let app = bridged_standup();
+        let sections = app.sidebar_sections();
+        let standup = sections
+            .iter()
+            .flat_map(|section| &section.items)
+            .find(|item| item.id.ends_with("c_standup"))
+            .expect("the standup row");
+        assert_eq!(standup.secondary.as_deref(), Some("Bridged to Discord"));
+        let dana = standup
+            .children
+            .iter()
+            .find(|child| child.id.ends_with("/discord:1"))
+            .expect("Dana sits in the call");
+        assert_eq!(dana.label, "Dana (via Discord)");
+        let face = dana.person.as_ref().expect("her face");
+        assert_eq!(face.name.as_deref(), Some("Dana"));
+    }
+
+    #[test]
+    fn a_participants_volume_is_told_once_the_call_is_live_and_again_in_the_next() {
+        let now = ui::time::now();
+        let mut app = bridged_standup();
+        app.set_call_listening(
+            "discord:1",
+            Listening {
+                percent: 150,
+                silenced: true,
+            },
+        );
+        let volume = |requests: &[CollabRequest]| {
+            requests.iter().find_map(|request| match request {
+                CollabRequest::NativeMediaCommand {
+                    request_id,
+                    command:
+                        Request {
+                            command:
+                                Command::SetVolume {
+                                    participant,
+                                    percent,
+                                },
+                            intent,
+                            ..
+                        },
+                } => Some((*request_id, participant.clone(), *percent, *intent)),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            volume(&app.native_voice.take_requests(now)),
+            None,
+            "not outside a call"
+        );
+        app.native_voice
+            .submit(Command::Join {
+                channel_id: "c_standup".into(),
+            })
+            .unwrap();
+        let join = app.native_voice.take_requests(now);
+        app.native_voice.complete(request_id(&join[0]), &Ok(live()));
+        let (id, participant, percent, intent) =
+            volume(&app.native_voice.take_requests(now)).expect("told once live");
+        assert_eq!((participant.as_str(), percent, intent), ("discord:1", 0, 0));
+        assert_eq!(
+            volume(&app.native_voice.take_requests(now)),
+            None,
+            "one at a time"
+        );
+        app.native_voice.complete(id, &Ok(live()));
+        assert_eq!(volume(&app.native_voice.take_requests(now)), None, "told");
+        app.set_call_listening(
+            "discord:1",
+            Listening {
+                percent: 150,
+                silenced: false,
+            },
+        );
+        let (_, _, percent, _) = volume(&app.native_voice.take_requests(now)).expect("heard again");
+        assert_eq!(percent, 150);
     }
 }

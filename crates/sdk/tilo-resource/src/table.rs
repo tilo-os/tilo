@@ -1512,7 +1512,16 @@ pub fn edit_fields(
     match path.split_first() {
         Some((Segment::Field(key), rest)) => {
             let Some(field) = record.fields.iter().find(|field| field.key == key) else {
-                return Err(ModelError::invalid(format!("no field `{key}`")));
+                let editable: Vec<&str> = record
+                    .fields
+                    .iter()
+                    .filter(|field| !field.readonly)
+                    .map(|field| field.key)
+                    .collect();
+                return Err(ModelError::invalid(format!(
+                    "no field `{key}`; the fields here are {}",
+                    editable.join(", ")
+                )));
             };
             // The outside settling an outbox entry, or forgetting a settled
             // one, is no edit of the field's content: a read-only outbox
@@ -2528,7 +2537,7 @@ pub struct JsonDesc {
     /// The value's JSON form.
     pub to_value: fn(&dyn Any) -> serde_json::Value,
     /// The value's JSON form, or why it has none: what its stored text is
-    /// written from ([`json_text`]).
+    /// written from (`json_text`).
     pub try_value: fn(&dyn Any) -> Result<serde_json::Value, ModelError>,
     /// The value serialised, as compact JSON text: equal texts are equal
     /// JSON forms, so two values compare without building either form.
@@ -2539,7 +2548,7 @@ pub struct JsonDesc {
     /// such equality; unequal values are still compared by their forms.
     pub equal: Option<fn(&dyn Any, &dyn Any) -> bool>,
     /// Put the value of a JSON form into `out`, an `Option` of the type. The
-    /// stored text is read through it too ([`json_text`]).
+    /// stored text is read through it too (`json_text`).
     pub from_value: fn(&serde_json::Value, &mut dyn Any) -> Result<(), ModelError>,
     /// Put the type's default into `out`.
     pub default: fn(&mut dyn Any) -> Result<(), ModelError>,

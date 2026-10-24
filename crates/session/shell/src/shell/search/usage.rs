@@ -167,7 +167,7 @@ pub fn share(provider_id: &str, id: &str) -> f32 {
 
 /// `0.0..=1.0`: how often and how recently the row was chosen after typing
 /// `query` (or a text it starts the same way as, up to
-/// [`CHOICE_PREFIX_SCALARS`]).
+/// `CHOICE_PREFIX_SCALARS`).
 #[must_use]
 pub fn choice_share(query: &str, provider_id: &str, id: &str) -> f32 {
     let Some(text) = choice_texts(query).pop() else {

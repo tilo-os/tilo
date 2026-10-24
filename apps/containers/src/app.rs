@@ -2,8 +2,8 @@
 //!
 //! [`ContainersApp`] owns the engine snapshot (containers, images, volumes
 //! and distroboxes mirrored from rootless podman) and presents it in a
-//! [`NavShell`]: the sections are the sidebar, the container list is the
-//! overview and the chosen container is the content (see [`crate::view`]).
+//! [`NavShell`](ui::widget::NavShell): the sections are the sidebar, the container list is the
+//! overview and the chosen container is the content (see `crate::view`).
 //! Dialogs (confirming a removal, asking for a name, the new-container form,
 //! pull progress) are [`ModalDialog`]s mounted beside the shell.
 //!

@@ -562,25 +562,14 @@ start_registry() {
   return 1
 }
 
-if [ -n "$SEALED_SOURCE_IMGREF" ]; then
-  RUNREF="${SEALED_SOURCE_IMGREF#docker://}"
-  SRC_REF="docker://$RUNREF"
-  REG="${RUNREF%%/*}"
-  TLS_ARGS=(--tls-verify=false)
-  REGCONF="$OUTDIR/.registries.conf"
-  if [ "$DIRECT_SEALED_SOURCE" = 1 ]; then
-    TLS_ARGS=()
-    printf '[[registry]]\nlocation = "%s"\ninsecure = false\n' "$REG" > "$REGCONF"
-  else
-  printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
-  # The image's runtime policy correctly trusts its signed authoritative
-  # repository, not an unsigned transport mirror. bootc evaluates the running
-  # mirror reference against that policy before install, so give this one
-  # invocation a policy that rejects everything except the digest-verified
-  # mirror repository. This file is bind-mounted over the running container's
-  # policy only; the installed system retains the policy shipped in the image.
+# A policy for the install's own run of the image that admits REPOSITORY alone. The image's
+# runtime policy trusts its signed authoritative repository, not the transport the install
+# reads it from, and bootc evaluates the running reference against it before installing; the
+# file is bind-mounted over the running container's policy only, so the installed system keeps
+# the policy shipped in the image.
+source_policy() {
   SOURCE_POLICY="$OUTDIR/.source-policy.json"
-  python3 - "$SOURCE_POLICY" "$source_repository" <<'PY'
+  python3 - "$SOURCE_POLICY" "$1" <<'PY'
 import json
 import sys
 
@@ -597,6 +586,21 @@ with open(path, "w", encoding="utf-8") as output:
     json.dump(policy, output, separators=(",", ":"))
     output.write("\n")
 PY
+}
+
+if [ -n "$SEALED_SOURCE_IMGREF" ]; then
+  RUNREF="${SEALED_SOURCE_IMGREF#docker://}"
+  SRC_REF="docker://$RUNREF"
+  REG="${RUNREF%%/*}"
+  TLS_ARGS=(--tls-verify=false)
+  REGCONF="$OUTDIR/.registries.conf"
+  if [ "$DIRECT_SEALED_SOURCE" = 1 ]; then
+    TLS_ARGS=()
+    printf '[[registry]]\nlocation = "%s"\ninsecure = false\n' "$REG" > "$REGCONF"
+  else
+  printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
+  # The digest-verified, unsigned mirror is the one repository the install's run admits.
+  source_policy "$source_repository"
   fi
   msg "using verified sealed registry source $SRC_REF (no local import or republish)"
 elif [ "$COMPOSEFS" = yes ]; then
@@ -623,6 +627,8 @@ elif [ "$COMPOSEFS" = yes ]; then
   # transfer that breaks the composefs pull — and makes one reference serve as
   # both the container to run and the install source.
   RUNREF="$REG/$repo:disk-install"
+  # A dev image's policy admits only its published repository, not this scratch one.
+  source_policy "$REG/$repo"
   TLS_ARGS=(--tls-verify=false)
   REGCONF="$OUTDIR/.registries.conf"
   printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"

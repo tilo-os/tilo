@@ -6,7 +6,7 @@
 //! (device) pixels. A pan then changes only where each strip reads its canvas
 //! ([`StripBlit::scroll_x`]); the layers' scenes stay byte for byte the same.
 //!
-//! [`StripLayers`] keeps the backdrop, the strips and the chrome rasterised in
+//! `StripLayers` keeps the backdrop, the strips and the chrome rasterised in
 //! textures of the output's size. The strips texture holds the strips as the
 //! screen shows them ([`append_panned`]). On a pure pan, a pixel whose strips all moved by the
 //! same distance is copied from where it was, and only the rest is
@@ -57,7 +57,7 @@ pub fn append_panned(scene: &mut Scene, layers: &FrameLayers, strips: &[StripBli
 }
 
 /// The frame `cache` holds as one scene: its layers over each other, as
-/// [`StripLayers`] composites them.
+/// `StripLayers` composites them.
 pub fn compose(cache: &FrameCache) -> Scene {
     let mut scene = cache.layers.backdrop.clone();
     append_panned(&mut scene, &cache.layers, &cache.strips);

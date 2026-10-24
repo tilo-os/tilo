@@ -148,6 +148,8 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
       };
       this.publishers.set(message.publisherId, publisher);
     }
+    // How loud this device plays them; their speaking level stays theirs.
+    publisher.gain = Number.isFinite(message.gain) ? Math.max(0, Math.min(2, message.gain)) : 1;
     if ((publisher.lastRenderedTimestamp !== null && message.timestamp <= publisher.lastRenderedTimestamp)
       || publisher.queue.some(entry => entry.timestamp === message.timestamp)) {
       this.drop(message, 'playback-replay', reservedSamples);
@@ -255,15 +257,31 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
       const deviation = Math.abs((arrival - publisher.lastArrival) - (remote - publisher.lastRemote));
       if (deviation < 48_000) publisher.jitter += (deviation - publisher.jitter) / 16;
     }
+    const together = publisher.lastArrival === arrival;
     publisher.lastArrival = arrival;
     publisher.lastRemote = remote;
     const delay = arrival - remote;
     if (publisher.delayCount > 0) {
-      // A sender clock discontinuity (restart, long mute) moves every delay at
-      // once: shift the window so its learned spread survives the jump.
-      const previous = publisher.delays[(publisher.delayIndex + DELAY_WINDOW - 1) % DELAY_WINDOW];
+      const newest = (publisher.delayIndex + DELAY_WINDOW - 1) % DELAY_WINDOW;
+      const previous = publisher.delays[newest];
+      // Frames that arrive together, each sent later than the one before, are
+      // a backlog let through at once (this page or the link stalled, then
+      // flushed): only the newest says how late audio arrives now. Kept one
+      // by one, a backlog longer than the window would make its own stale
+      // delays the floor, and the buffer would play the stall's backlog out
+      // as lasting latency.
+      if (together && delay < previous) {
+        publisher.delays[newest] = delay;
+        return;
+      }
+      // A sender clock that jumped ahead (restart, long mute) makes every
+      // delay smaller at once: shift the window so its learned spread
+      // survives the jump. Frames that come later than they should are never
+      // shifted to: a stall's first late frame is not the new normal, and a
+      // sender whose clock fell behind is resynchronised once its frames
+      // keep arriving too late (lateTimeline).
       const jump = delay - previous;
-      if (Math.abs(jump) > 24_000) {
+      if (jump < -24_000) {
         for (let index = 0; index < publisher.delayCount; index++) publisher.delays[index] += jump;
       }
     }
@@ -299,7 +317,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
       for (let position = from; position < end; position++) {
         // Backwards first: the noise continues from the last played sample.
         const cycle = Number(position - publisher.lastEnd) % (2 * length);
-        output[Number(position - blockStart)] += frame[cycle < length ? length - 1 - cycle : cycle - length];
+        output[Number(position - blockStart)] += frame[cycle < length ? length - 1 - cycle : cycle - length] * publisher.gain;
       }
       return;
     }
@@ -308,7 +326,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
     for (let position = from; position < end; position++) {
       const since = Number(position - publisher.lastEnd);
       const gain = 1 - since / (PLC_MAX_FRAMES * this.frameSamples);
-      output[Number(position - blockStart)] += frame[since % frame.length] * gain * 0.8;
+      output[Number(position - blockStart)] += frame[since % frame.length] * gain * 0.8 * publisher.gain;
     }
   }
 
@@ -430,7 +448,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
         const count = Math.min(output.length - outputOffset, entry.samples.length - sourceOffset);
         for (let index = 0; index < count; index++) {
           const sample = entry.samples[sourceOffset + index];
-          output[outputOffset + index] += sample;
+          output[outputOffset + index] += sample * publisher.gain;
           publisher.energy += sample * sample;
         }
         entry.releasedSamples += count;

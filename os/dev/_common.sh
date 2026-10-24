@@ -113,8 +113,10 @@ TILO_SMP="${TILO_SMP:-4}"
 # `hvf` is Apple's Hypervisor.framework: a Homebrew QEMU on an Apple silicon Mac
 # running an aarch64 guest (set TILO_AAVMF_DIRS to its edk2 firmware).
 TILO_ACCEL="${TILO_ACCEL:-auto}"
-TILO_BOOT_WAIT_ATTEMPTS="${TILO_BOOT_WAIT_ATTEMPTS:-90}"
-TILO_QEMU_START_ATTEMPTS="${TILO_QEMU_START_ATTEMPTS:-100}"
+# How long a boot may take to reach the greeter (or the installer) before
+# `vm.sh wait` fails it, and how long QEMU may take to open its monitor.
+TILO_BOOT_WAIT_SECS="${TILO_BOOT_WAIT_SECS:-300}"
+TILO_QEMU_START_SECS="${TILO_QEMU_START_SECS:-120}"
 
 # Architecture of the guest and its release medium. Native runners leave this
 # unset; cross-architecture diagnostic boots may select a guest explicitly and
@@ -301,14 +303,16 @@ hmp() {
 # Keep the distrobox command scope alive until QEMU has finished its cold-start
 # work and published the monitor socket. Returning immediately after `disown`
 # races distrobox's scope cleanup on large, cold images and can kill a healthy
-# QEMU before the caller's separate one-second probe sees it.
+# QEMU before the caller's separate one-second probe sees it. A QEMU that has
+# not opened its monitor within TILO_QEMU_START_SECS is stopped: the boot failed.
 start_qemu() {
   local args="$1"
   inenv "setsid nohup '$TILO_QEMU_SYSTEM' $args >'$TILO_QEMU_LOG' 2>&1 &
     qemu_pid=\$!
-    for _ in \$(seq 1 '$TILO_QEMU_START_ATTEMPTS'); do
+    deadline=\$((SECONDS + $TILO_QEMU_START_SECS))
+    while kill -0 \$qemu_pid 2>/dev/null; do
       test -S '$TILO_MON' && exit 0
-      kill -0 \$qemu_pid 2>/dev/null || break
+      [ \$SECONDS -lt \$deadline ] || { echo 'no monitor after ${TILO_QEMU_START_SECS}s' >>'$TILO_QEMU_LOG'; kill -KILL \$qemu_pid; break; }
       sleep 0.1
     done
     wait \$qemu_pid 2>/dev/null || true
@@ -322,10 +326,15 @@ gssh() {
   # helper. sshpass owns the one permitted password prompt; if it cannot
   # answer, fail the test instead of disrupting the physical session.
   command -v sshpass >/dev/null 2>&1 || die "sshpass is required for unattended VM access"
+  # A probe sets TILO_SSH_BOUND to the seconds it may take: a guest that
+  # accepts the connection and then stalls holds ssh in its key exchange,
+  # where neither timeout below applies.
   env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE DISPLAY= WAYLAND_DISPLAY= \
+    ${TILO_SSH_BOUND:+timeout -k 2 "$TILO_SSH_BOUND"} \
     sshpass -p "$TILO_PASS" ssh -F /dev/null -p "$TILO_SSH_PORT" \
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout=5 -o LogLevel=ERROR -o BatchMode=no \
+    -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 \
+    -o LogLevel=ERROR -o BatchMode=no \
     -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password \
     -o PubkeyAuthentication=no -o KbdInteractiveAuthentication=no \
     "$TILO_USER@127.0.0.1" "$@"

@@ -126,7 +126,7 @@ pub fn stage_access_handoff(
 /// image, as key-only owner login for the account it creates. A production
 /// install refuses it instead of opening SSH. A disk that already carries
 /// its account gets the same login from the write
-/// ([`crate::installed_root`]).
+/// ([`block_devices::installed_root`]).
 pub const BRINGUP_SSH_KEY: &str = "etc/tilo/bringup-ssh.pub";
 
 /// The hostname the operator chose, or `None` while the profile still has

@@ -601,7 +601,7 @@ fn encode_durable(durable: &DurableTree) -> std::io::Result<EncodedTree> {
 /// of the fields `state.json` holds, and the tree document's changes since
 /// the previous save, cut from it (see `doc_log`). No document is copied;
 /// encoding, the size checks and every write happen in
-/// [`TreeSnapshot::write_to`].
+/// `TreeSnapshot::write_to`.
 pub struct TreeSnapshot {
     durable: DurableTree,
     runtime: super::native_workspace_owner::NativeStateRuntime,

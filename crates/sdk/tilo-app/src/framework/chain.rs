@@ -70,7 +70,7 @@ pub(crate) const CHAIN_ACTION_TYPE: &str = "tilo.app.chain-action";
 const LOOK_EVERY: ui_core::time::Duration = ui_core::time::Duration::from_secs(1);
 
 /// A resource whose records are the parts of a chain kept beside the app's
-/// own record ([`RecordId::part`]). See the [module docs](self).
+/// own record ([`RecordId::part`]). See the module docs.
 pub trait Chained: Resource {
     /// The app's own resource: what [`Self::prepare`] reads where an action
     /// is invoked.
@@ -695,7 +695,7 @@ impl<P: Chained> RecordDoor for ChainState<P> {
 }
 
 /// A chain of records the app keeps beside its own, held for a view or
-/// surface. See the [module docs](self).
+/// surface. See the module docs.
 pub struct Chain<P: Chained> {
     state: Rc<ChainState<P>>,
     dispatch: Dispatcher<P>,

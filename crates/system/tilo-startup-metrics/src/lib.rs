@@ -634,7 +634,7 @@ pub fn init() {
 /// The file is replaced with every mark so far — a checkpoint, since startup failures
 /// often end in a forced reboot and an exit-only dump is least useful exactly then. Once
 /// [`start_writer`] ran, a background thread does that, at most once per
-/// [`WRITE_SPACING`], so the marking thread never waits for the disk or for another
+/// `WRITE_SPACING`, so the marking thread never waits for the disk or for another
 /// thread's write; before, the marking thread writes.
 #[inline]
 pub fn mark(name: &str) {

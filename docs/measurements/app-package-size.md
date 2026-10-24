@@ -7,7 +7,7 @@ budget in `tools/perf/tapp-size-budget/budget.toml`, set at its measured size
 plus 1 % headroom, rounded up to 64 KiB. `tools/perf/tapp_size_ratchet.py`
 enforces the budgets in these places:
 
-- **One app's size, when a change concerns it** (`app-size/<app>-<arch>` in t, for example
+- **One app's size, on each main commit that changes it** (`app-size/<app>-<arch>` in t, for example
   `t test app-size/notes-aarch64`): compiles that app in the default collection's graph as a
   release does, packages it with throwaway keys (`tools/apps/t-release.sh app-size`) and holds
   its tapp to its budget. What every app's check builds alike, the shared runtime, its engines
@@ -18,9 +18,10 @@ enforces the budgets in these places:
   scripts, and the key of `thin-runtime-<arch>` (the runtime, its engines and the packing
   tools; the tapp names the signed runtime bundle, which covers them). A change elsewhere,
   another app's code included, leaves its result standing. `runtime-size-<arch>` does the same for the shared
-  runtime (docs/measurements/runtime-size.md). None of these runs on main's commits by default:
-  run the ones for the apps your change touches, before you push. `tools/ci/t_toml.py`
-  generates one per app of the default collection, so a new app has its own.
+  runtime (docs/measurements/runtime-size.md). Each `app-size` check runs on main for the
+  commits that change its app or what it is built from, so t names the commit that crosses a
+  budget. None runs on pre-push: run the ones for the apps your change touches before you push.
+  `tools/ci/t_toml.py` generates one per app of the default collection, so a new app has its own.
 - **The whole collection** (`app-sizes-x86_64`, `app-sizes-aarch64` in t) compiles the
   default collection as a release does, packages it with throwaway keys
   (`tools/apps/t-release.sh sizes`) and holds every tapp and the runtime to its budget. It reads

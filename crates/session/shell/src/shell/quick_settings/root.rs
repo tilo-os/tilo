@@ -710,15 +710,10 @@ impl QuickSettingsRoot {
         }
     }
 
-    /// Whether a section is still opening or closing.
+    /// Whether a section is still opening or closing. Its switches,
+    /// boxes and slider thumbs ask the motion clock for their own frames.
     pub fn is_animating(&self, now: Instant) -> bool {
         self.reveal.values().any(|extent| extent.is_moving(now))
-            || self.faces.is_moving(now)
-            || self
-                .slider_thumbs
-                .borrow()
-                .values()
-                .any(|thumb| thumb.is_moving(now))
     }
 
     /// How much of `section` shows at `now`: its full height when it is

@@ -2398,6 +2398,9 @@ mod tests {
 
     #[test]
     fn dropdown_language_mounted_settings_flow_is_clear_and_keyboard_operable() {
+        // The pane follows the identity the process has bound, which the
+        // dictionary test swaps: a swap mid-test rebuilds the page under it.
+        let _env = tilo_test_env::lock();
         let mut failures = Vec::new();
         for (name, viewport, theme) in [
             ("light-wide", (1472, 920), Theme::light()),
@@ -2938,6 +2941,9 @@ mod tests {
     #[test]
     fn keyboard_preview_actions_are_published_and_do_not_apply_until_requested() {
         use ui::tilo_resource::Effect as _;
+        // The pane follows the identity the process has bound, which the
+        // dictionary test swaps: a swap mid-test rebuilds the page under it.
+        let _env = tilo_test_env::lock();
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let before = app.settings::<InputPrefs>().get();
         let preview = InputEffect::PreviewLayout {
@@ -3007,6 +3013,9 @@ mod tests {
     #[test]
     fn keyboard_map_read_is_published_as_a_read_and_never_changes_preferences() {
         use ui::tilo_resource::Effect as _;
+        // The pane follows the identity the process has bound, which the
+        // dictionary test swaps: a swap mid-test rebuilds the page under it.
+        let _env = tilo_test_env::lock();
         let mut app = TestApp::<SettingsShell>::with_role(ui::permissions::Role::Viewer).unwrap();
         let effect = InputEffect::InspectKeyboardMap;
         let actions = app.actions().unwrap();
@@ -3029,6 +3038,9 @@ mod tests {
     #[test]
     fn keyboard_map_read_uses_the_mounted_preview_and_live_key_release_state() {
         use ui::tilo_resource::Effect as _;
+        // The pane follows the identity the process has bound, which the
+        // dictionary test swaps: a swap mid-test rebuilds the page under it.
+        let _env = tilo_test_env::lock();
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let read = |app: &mut TestApp<SettingsShell>| {
             app.call_on(
@@ -3123,6 +3135,9 @@ mod tests {
     #[test]
     fn physical_key_inspection_is_published_validated_and_never_applies_layout() {
         use ui::tilo_resource::Effect as _;
+        // The pane follows the identity the process has bound, which the
+        // dictionary test swaps: a swap mid-test rebuilds the page under it.
+        let _env = tilo_test_env::lock();
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let before = app.settings::<InputPrefs>().get();
         let inspect = InputEffect::InspectKeyboardKey { key: "AD06".into() };
@@ -3180,6 +3195,9 @@ mod tests {
     /// `text_assistance` section; a value outside the offered ones is refused.
     #[test]
     fn input_effects_write_the_input_section() {
+        // The pane follows the identity the process has bound, which the
+        // dictionary test swaps: a swap mid-test rebuilds the page under it.
+        let _env = tilo_test_env::lock();
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         edit_field(&mut app, INPUT, "touchpad_pointer_speed", 0.9).unwrap();
         edit_field(&mut app, INPUT, "mouse_natural_scroll", true).unwrap();
@@ -3236,6 +3254,9 @@ mod tests {
     /// last one stays.
     #[test]
     fn input_sources_are_added_ordered_and_removed() {
+        // The pane follows the identity the process has bound, which the
+        // dictionary test swaps: a swap mid-test rebuilds the page under it.
+        let _env = tilo_test_env::lock();
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let sources = |app: &TestApp<SettingsShell>| {
             let input = app.settings::<InputPrefs>().get();
@@ -3286,6 +3307,9 @@ mod tests {
     /// button and dial.
     #[test]
     fn tablet_effects_keep_each_device_apart() {
+        // The pane follows the identity the process has bound, which the
+        // dictionary test swaps: a swap mid-test rebuilds the page under it.
+        let _env = tilo_test_env::lock();
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         assert!(set(
             &mut app,
@@ -3337,6 +3361,9 @@ mod input_inspection_tests {
 
     #[test]
     fn installed_input_sources_have_a_bounded_device_read_without_mutating_preferences() {
+        // The pane follows the identity the process has bound, which the
+        // dictionary test swaps: a swap mid-test rebuilds the page under it.
+        let _env = tilo_test_env::lock();
         let mut app = TestApp::<SettingsShell>::with_role(ui::permissions::Role::Viewer).unwrap();
         let action = app.actions().unwrap().into_iter()
             .find(|action| action.address.action.ends_with("inspect-input-sources"))
@@ -3367,6 +3394,9 @@ mod input_inspection_tests {
     }
     #[test]
     fn input_inspection_tracks_the_actual_unselected_open_shared_picker() {
+        // The pane follows the identity the process has bound, which the
+        // dictionary test swaps: a swap mid-test rebuilds the page under it.
+        let _env = tilo_test_env::lock();
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         super::tests::show_add_source(&mut app, (900, 700));
         let address = app

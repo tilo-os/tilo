@@ -2971,7 +2971,7 @@ impl CapnpBrokerState {
         Some(change)
     }
 
-    /// [`Self::action_next_change`] counting only changes after this call:
+    /// `Self::action_next_change` counting only changes after this call:
     /// the `next_change` of a host whose waiter asks before it observes, so a
     /// change between the two still wakes it. Authorized exactly as
     /// [`Self::action_observe`]: `None` for an invocation `caller` did not

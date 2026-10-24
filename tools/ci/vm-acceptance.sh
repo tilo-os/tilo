@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The OS image's acceptance scenarios in tilo-vm, as t's vm-acceptance checks
-# run them on a privileged x86-64 node with KVM (t.toml). The disk is this
+# run them in a micro-VM on an x86-64 node with KVM (t.toml). The disk is this
 # tree's own dev image (os-dev-image-x86_64, which the check needs), installed
 # as Release / Dev VM disk installs one; scripts/vm-acceptance/run.py then
 # drives the checks.
@@ -150,7 +150,9 @@ uid=$(id -u "$run_user")
 install -d -m 0700 -o "$run_user" -g "$run_user" "/run/user/$uid"
 chmod 0666 /dev/kvm
 install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config/libvirt"
-echo 'max_core = 0' | install -m 0644 -o "$run_user" -g "$run_user" /dev/stdin "/home/$run_user/.config/libvirt/qemu.conf"
+# The micro-VM's /dev has no /dev/stdin to install from.
+printf 'max_core = 0\n' > "/home/$run_user/.config/libvirt/qemu.conf"
+chown "$run_user:" "/home/$run_user/.config/libvirt/qemu.conf"
 mkdir -p "$src/target/dev-runs"
 chown -R "$run_user:" "$work" "$report"
 chown -R "$run_user:" "$CARGO_HOME" "$RUSTUP_HOME"

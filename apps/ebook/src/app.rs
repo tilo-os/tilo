@@ -11,7 +11,7 @@
 //! hit-tests them on the next click; a frame always precedes input so
 //! regions are never stale.
 //!
-//! State: the library record ([`Ebook`](crate::resource::Ebook)) holds the
+//! State: the library record ([`Ebook`]) holds the
 //! shelf, settings, progress and annotations, changed through its field
 //! edits and verbs. Ephemeral widget caches (open book, page index,
 //! selection, layout cache) are per-peer view state kept out of the document

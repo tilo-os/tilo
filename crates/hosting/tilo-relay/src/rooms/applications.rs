@@ -95,7 +95,7 @@ impl Rooms {
     /// trusted host code. This host-local API accepts no incoming member
     /// snapshot or factory. It keeps the existing graph and publishes only
     /// its admitted incremental changes, sealed for a record members write
-    /// sealed ([`super::sealed_records`]).
+    /// sealed (`super::sealed_records`).
     ///
     /// # Errors
     /// Refuses other certificates, stale custody, undeclared apps, a primary

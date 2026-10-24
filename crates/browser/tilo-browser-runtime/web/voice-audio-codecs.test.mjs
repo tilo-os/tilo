@@ -324,6 +324,31 @@ test('worklet mixes simultaneous publishers additively without capture input or 
   assert(channel.subarray(64).every(sample => sample === 0.75), '0.25 + 0.5 is mixed; mic input is neither looped nor used to normalize output');
 });
 
+test('worklet plays each publisher at its own gain and reports its level as it arrives', async t => {
+  const previousProcessor = globalThis.AudioWorkletProcessor;
+  const previousRegister = globalThis.registerProcessor;
+  let Processor;
+  class Port extends EventTarget {
+    sent = [];
+    postMessage(message) { this.sent.push(message); }
+    receive(data) { this.dispatchEvent(Object.assign(new Event('message'), {data})); }
+  }
+  globalThis.AudioWorkletProcessor = class { constructor() { this.port = new Port(); } };
+  globalThis.registerProcessor = (_name, implementation) => { Processor = implementation; };
+  t.after(() => { globalThis.AudioWorkletProcessor = previousProcessor; globalThis.registerProcessor = previousRegister; });
+  await import(`./voice-audio-worklet.mjs?gain-contract=${Date.now()}`);
+  const processor = new Processor({processorOptions: {muted: true}});
+  processor.port.receive({type: 'play', publisherId: PUB_A, generation: 1, samples: new Float32Array(960).fill(0.25).buffer, timestamp: 0n, duration: 960, reservedSamples: 960, gain: 0});
+  processor.port.receive({type: 'play', publisherId: PUB_B, generation: 2, samples: new Float32Array(960).fill(0.5).buffer, timestamp: 0n, duration: 960, reservedSamples: 960, gain: 0.5});
+  for (let index = 0; index < 22; index++) processor.process([], [[new Float32Array(128)]]);
+  const channel = new Float32Array(128);
+  processor.process([], [[channel]]);
+  assert(channel.subarray(64).every(sample => sample === 0.25), 'a silenced publisher adds nothing, a halved one half');
+  for (let index = 0; index < 20; index++) processor.process([], [[new Float32Array(128)]]);
+  const levels = processor.port.sent.filter(message => message.type === 'levels').flatMap(message => message.publishers);
+  assert(levels.some(([id, level]) => id === PUB_A && level > 0), 'a silenced publisher still shows them speaking');
+});
+
 test('worklet removal expires queued publisher audio and stale packets cannot replay', async t => {
   const previousProcessor = globalThis.AudioWorkletProcessor;
   const previousRegister = globalThis.registerProcessor;
@@ -724,5 +749,44 @@ for (const adaptive of [true, false]) {
     assert.ok(expired >= 50, `the backlog is dropped (${expired} frames)`);
     const first = loud.find(at => at >= 125 * 960);
     assert.ok(first !== undefined && first < 140 * 960, `the frames after it are heard (first at frame ${first / 960})`);
+  });
+}
+
+for (const stallMs of [1000, 3000]) {
+  test(`adaptive worklet playout drops a ${stallMs / 1000} s receive stall's backlog and keeps its delay, not the backlog's`, async t => {
+    const Processor = await worklet(t, `receive-stall-${stallMs}`);
+    const processor = new Processor({processorOptions: {muted: true, jitter: {adaptive: true, initial: 1920, min: 960, max: 7680}}});
+    const tone = () => Float32Array.from({length: 960}, (_, index) => 0.5 * Math.sin(2 * Math.PI * 1000 * index / 48_000));
+    let quanta = 0;
+    let heard = 0;
+    const advanceTo = sample => {
+      while (quanta * 128 < sample) {
+        const block = new Float32Array(128);
+        processor.process([], [[block]]);
+        if (block.some(value => Math.abs(value) > 0.1)) heard = quanta * 128;
+        quanta++;
+      }
+    };
+    // How far ahead of now frame `index` is set to play, right as it arrives.
+    const play = index => {
+      processor.port.receive({type: 'play', publisherId: PUB_A, generation: 1, samples: tone().buffer, timestamp: BigInt(index * 960), duration: 960, reservedSamples: 960});
+      const entry = processor.publishers.get(PUB_A).queue.find(queued => queued.timestamp === BigInt(index * 960));
+      return entry ? Number(entry.localTimestamp - processor.renderTimestamp) : null;
+    };
+    let index = 1;
+    let before;
+    for (; index < 250; index++) { advanceTo(index * 960); before = play(index); }
+    // Nothing arrives while this page (or its link) stalls; then everything
+    // sent meanwhile arrives at once, and the stream goes on on time.
+    const resumed = index + stallMs / 20;
+    advanceTo(resumed * 960);
+    for (; index < resumed; index++) play(index);
+    const delays = [];
+    for (; index < resumed + 100; index++) { advanceTo(index * 960); delays.push(play(index)); }
+    advanceTo(index * 960);
+    // A second on, frames play as soon after they arrive as before the stall.
+    const settled = delays.slice(50);
+    assert.ok(settled.every(delay => delay !== null && delay <= before + 960), `the delay is back to ${before} samples (${Math.max(...settled)})`);
+    assert.ok(heard >= (resumed + 95) * 960, `the publisher is heard throughout (last heard at frame ${heard / 960})`);
   });
 }

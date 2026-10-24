@@ -79,7 +79,7 @@ pub struct ShortcutMenuState {
 
 impl ShortcutMenuState {
     /// Ask for the shortcuts again when the list is older than
-    /// [`REFRESH_AFTER`] and no answer is outstanding.
+    /// `REFRESH_AFTER` and no answer is outstanding.
     pub fn poll_if_due(&mut self, now: Instant) {
         let stale = self
             .refreshed

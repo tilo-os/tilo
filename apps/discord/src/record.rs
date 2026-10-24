@@ -70,6 +70,9 @@ pub struct Guild {
     /// Tilo side was deleted, so they are not imported again.
     pub discord_only: Set<String>,
     pub outbox: Outbox<Queued, DiscordResult>,
+    /// Why the bridge cannot carry a voice channel's call now, as Discord
+    /// refused it (a permission the bot lacks there); none while it can.
+    pub voice_problem: Option<String>,
 }
 
 #[derive(
@@ -1073,7 +1076,32 @@ impl Guild {
         }
         Ok(())
     }
+
+    /// Say why the bridge cannot carry voice now, or that it can again.
+    ///
+    /// The room's host reports what Discord answered when the bridge
+    /// joined a voice channel, so people see why a call is not carried.
+    #[action(housekeeping)]
+    pub fn report_voice(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("What Discord refused, as it said it; none once voice is carried")] problem: Option<
+            String,
+        >,
+    ) -> Result<(), Refusal> {
+        bot_or_person(cx)?;
+        if problem.as_deref().is_some_and(|problem| {
+            problem.is_empty() || problem.chars().count() > MAX_PROBLEM_CHARS
+        }) {
+            return Err(Refusal::new("a voice problem is 1 to 300 characters"));
+        }
+        self.voice_problem = problem;
+        Ok(())
+    }
 }
+
+/// The longest voice problem a guild keeps, in characters.
+pub const MAX_PROBLEM_CHARS: usize = 300;
 
 /// Discord's limit for a bot's or webhook's upload.
 pub const MAX_UPLOAD_BYTES: u64 = 10 * 1024 * 1024;

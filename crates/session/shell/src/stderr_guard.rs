@@ -70,6 +70,19 @@ pub fn write_final(text: &str) {
     }
 }
 
+/// Write one line, `line` and a newline, to stderr in a single write.
+///
+/// `eprintln!` writes each piece of its format on its own, and through the
+/// relay every write is a wakeup of the relay thread: one diagnostic line
+/// of thirty fields woke it thirty times. One write is one wakeup, and a
+/// line no longer than the pipe's atomic size never interleaves with
+/// another thread's.
+pub fn write_line(line: std::fmt::Arguments<'_>) {
+    let mut text = line.to_string();
+    text.push('\n');
+    let _ = std::io::stderr().lock().write_all(text.as_bytes());
+}
+
 fn relay(mut from: std::fs::File, mut to: std::fs::File) {
     let mut buffer = [0_u8; 16 * 1024];
     loop {

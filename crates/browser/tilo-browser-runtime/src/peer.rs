@@ -1172,6 +1172,19 @@ struct JsVoiceParticipant {
     screen: bool,
     /// Its microphone is off, or it may not publish.
     muted: bool,
+    /// Who a bridge's participation stands for; absent for everyone else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bridged: Option<JsBridged>,
+}
+
+/// `tilo_relay_protocol::voice::Bridged`, the linked member as hex.
+#[derive(Serialize)]
+struct JsBridged {
+    service: String,
+    account: Option<String>,
+    name: String,
+    avatar: Option<String>,
+    linked: Option<String>,
 }
 
 fn voice_participants(
@@ -1187,6 +1200,13 @@ fn voice_participants(
             camera: participant.showing.camera,
             screen: participant.showing.screen,
             muted: participant.showing.muted,
+            bridged: participant.bridged.map(|bridged| JsBridged {
+                service: bridged.service,
+                account: bridged.account,
+                name: bridged.name,
+                avatar: bridged.avatar,
+                linked: bridged.linked.map(hex::encode),
+            }),
         })
         .collect()
 }

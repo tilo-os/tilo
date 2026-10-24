@@ -47,9 +47,9 @@ class OrchestratorContract(unittest.TestCase):
             path.write_text(key, encoding="utf-8")
             self.inputs[key] = str(path)
         self.inputs.update({
-            "schema": "tilo.windows-direct-install.v1",
+            "schema": "tilo.windows-direct-install.v2",
             "source_revision": "a" * 40,
-            "imager_run": 101, "generic_os_run": 102, "lenovo_os_run": 103,
+            "imager_run": 101,
             "generic_image": module.PUBLIC + "b" * 64,
             "lenovo_image": module.BOARD + "c" * 64,
             "source_raw": str(self.work / "source.raw"),

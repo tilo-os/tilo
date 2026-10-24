@@ -191,13 +191,13 @@ impl State {
 /// commit or, when much changed, a bulk rebuild. Searches read the last
 /// commit.
 ///
-/// Every field is found by substring, folded (see [`fold`](crate::fold)):
+/// Every field is found by substring, folded (see [`fold()`](crate::fold())):
 /// the query as a phrase of grams. The best field and tier rank a hit
 /// (see [`MatchTier`](crate::MatchTier)); hits of equal rank come in key
 /// order, and body hits follow by BM25.
 ///
 /// A small index without body text is answered by reading its records
-/// ([`Direct`]), ranked and ordered as the engine would.
+/// (`Direct`), ranked and ordered as the engine would.
 ///
 /// Where the engine's code is fetched on demand (the `lazy-engine`
 /// feature), such an index never needs it. A larger index's commit before

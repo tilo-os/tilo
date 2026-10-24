@@ -5,11 +5,11 @@
 //! desktop. The desktop session hosts the same brokers with its native
 //! adapters (launcher, governance, durable owner, peer network). Here the
 //! profile launches its installed apps through the platform launcher
-//! ([`crate::apps`]), records the grants people give apps for other apps'
+//! (`crate::apps`), records the grants people give apps for other apps'
 //! actions in its own workspace, owns its room's documents durably
-//! ([`owner`]), local to this machine, joins rooms a Tilo device or cloud
-//! host governs ([`joined`]), serves route keys for both
-//! ([`channels`]) and routes offloadable actions through the person's home
+//! (`owner`), local to this machine, joins rooms a Tilo device or cloud
+//! host governs (`joined`), serves route keys for both
+//! (`channels`) and routes offloadable actions through the person's home
 //! relay when one retains its room ([`crate::offload`]); every other host
 //! service is absent,
 //! and the broker answers as it does for any host that does not provide one.

@@ -10,7 +10,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-/// A switch: a [`BoolControl`] drawn as a pill whose knob slides to the
+/// A switch: a `BoolControl` drawn as a pill whose knob slides to the
 /// checked side.
 ///
 /// A click or a tap slides the knob and turns the track (a second click

@@ -91,6 +91,7 @@ pub mod pane_model;
 pub mod prefs;
 pub mod radios;
 pub mod search;
+pub mod secrets;
 pub mod setting;
 pub mod settings_app;
 #[cfg(test)]

@@ -25,6 +25,33 @@ mod tests {
     use tilo_automerge::ApplyIncoming as _;
 
     #[test]
+    fn accent_captions_read_as_text_on_their_ground_in_every_theme() {
+        use ui::theme::Preset;
+        use ui::tokens::contrast::{BODY_TEXT_MIN_CONTRAST, HIGH_CONTRAST_TEXT_MIN_CONTRAST};
+        for preset in Preset::ALL {
+            let theme = Theme::preset(preset);
+            let floor = if theme.tokens.colors.palette.high_contrast {
+                HIGH_CONTRAST_TEXT_MIN_CONTRAST
+            } else {
+                BODY_TEXT_MIN_CONTRAST
+            };
+            // The resume heading on its washed card; the agent task heading
+            // and the brief's open affordance on the sheet itself.
+            for (what, ground) in [
+                ("resume heading", resume_card_ground(&theme)),
+                ("sheet caption", ui::chrome::shell::panel_ground(&theme)),
+            ] {
+                let ratio = ui::a11y::contrast_ratio(accent_text_on(&theme, ground), ground);
+                assert!(
+                    ratio >= floor,
+                    "{}: {what} reads at {ratio:.2}:1, needs {floor}:1",
+                    preset.id()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn sheet_and_card_edges_register_on_every_palette() {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let colors = &theme.tokens.colors;

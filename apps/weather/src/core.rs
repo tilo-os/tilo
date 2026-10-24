@@ -6,7 +6,7 @@
 //! * the **overview** is a *contentful* city list (each row carries quick
 //!   per-city info — the current condition and temperature); and
 //! * the **detail** is the full forecast for the selected city
-//!   ([`detail`]).
+//!   (`detail`).
 //!
 //! The window shell ([`ui::widget::NavShell`]) owns the
 //! breakpoint, the side-by-side↔push transition and the Back button. This
