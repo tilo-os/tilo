@@ -6,8 +6,9 @@
 //! file. The compositor's overlay host hands each such request here
 //! ([`ShellNetwork::run_off_loop`], [`ShellNetwork::peer_sync_request`])
 //! and applies its outcome once the worker wakes the loop. Shared rooms
-//! whose enrollment completed are installed here too, at the frame loop's
-//! prompting ([`ShellNetwork::frame_tick`]), and every sync round, whose
+//! whose enrollment completed are installed here too, once one lands
+//! ([`ShellNetwork::frame_tick`] on the wake it raises), and every sync
+//! round, whose
 //! requests carry identity material read from the disk
 //! ([`ShellNetwork::publish_sync_requests`]), and the governance changes
 //! made here, each of which waits for its room's governor
@@ -20,15 +21,10 @@ use crate::shell::{
     state::{RoomId, WorkspaceId},
 };
 use std::sync::{
-    Arc, Mutex, OnceLock, PoisonError,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
-use std::time::{Duration, Instant};
-
-/// How often the frame loop asks for completed shared-room enrollments to
-/// be installed, while any is pending.
-const SHARED_ROOMS_EVERY: Duration = Duration::from_millis(200);
 
 /// How long an invite minted from the invitation card stays valid.
 const INVITE_EXPIRY_SECONDS: u64 = crate::shell::peer_sync_overlay::INVITE_EXPIRES_IN_SECONDS;
@@ -53,7 +49,6 @@ pub(super) struct State {
     worker: OnceLock<mpsc::Sender<Work>>,
     /// A shared-room pass is queued and has not run yet.
     shared_rooms_queued: Arc<AtomicBool>,
-    shared_rooms_asked: Mutex<Option<Instant>>,
     /// A sync round is queued and has not run yet: one covers every ask
     /// made before it runs.
     sync_round_queued: Arc<AtomicBool>,
@@ -333,37 +328,27 @@ impl ShellNetwork {
     }
 
     /// Install the shared rooms whose enrollment completed, for the frame
-    /// loop: installing one publishes the state file, so it runs on the
-    /// peer-sync worker, asked at most every [`SHARED_ROOMS_EVERY`]. A
-    /// network the session started no worker for installs them in place.
+    /// loop, once one landed: installing one publishes the state file, so
+    /// it runs on the peer-sync worker. A network the session started no
+    /// worker for installs them in place.
     pub(super) fn finish_shared_rooms_off_loop(&self) {
+        if self
+            .peer_sync_worker
+            .shared_rooms_queued
+            .load(Ordering::Acquire)
+            || !self.take_shared_rooms_due()
+        {
+            return;
+        }
         let Some(worker) = self.peer_sync_worker.worker.get() else {
             self.finish_shared_rooms();
             return;
         };
-        if !self.shared_rooms_pending()
-            || self
-                .peer_sync_worker
-                .shared_rooms_queued
-                .load(Ordering::Acquire)
-        {
-            return;
-        }
-        let now = Instant::now();
-        {
-            let mut asked = self
-                .peer_sync_worker
-                .shared_rooms_asked
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if asked.is_some_and(|last| now.saturating_duration_since(last) < SHARED_ROOMS_EVERY) {
-                return;
-            }
-            *asked = Some(now);
-        }
         self.peer_sync_worker
             .shared_rooms_queued
             .store(true, Ordering::Release);
+        // The channel is unbounded: a send fails only once the worker, the
+        // one receiver, is gone with the network, and no pass is due then.
         if worker.send(Work::FinishSharedRooms).is_err() {
             self.peer_sync_worker
                 .shared_rooms_queued
