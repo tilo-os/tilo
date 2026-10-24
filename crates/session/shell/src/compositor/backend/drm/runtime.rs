@@ -1958,14 +1958,41 @@ impl DrmDispatchState {
     /// and bring the pointer and cursor planes back onto a live output.
     /// Called after any change to the connector set or display plan.
     fn relayout_outputs(&mut self) {
-        let config = settings_store::hardware::DisplayConfig::load_effective(&self.display_set);
-        self.relayout_with(&config);
+        let (config, last_shown) =
+            settings_store::hardware::DisplayConfig::load_effective_remembering(&self.display_set);
+        self.relayout_recalling(&config, &last_shown);
+    }
+
+    /// [`Self::relayout_with`], after an output `config` does not name that
+    /// keeps nothing yet — a monitor that just arrived in a set never
+    /// arranged before, or was lit at startup in one — takes the scale and
+    /// rotation its monitor was last shown at (`last_shown`), so a 1.25x
+    /// panel does not snap to its density's default the first time it is
+    /// docked. Once kept, a later scale override or set change governs it
+    /// like any survivor (see [`hotplug::retained_presentation`]).
+    fn relayout_recalling(
+        &mut self,
+        config: &settings_store::hardware::DisplayConfig,
+        last_shown: &BTreeMap<String, settings_store::hardware::MonitorLast>,
+    ) {
+        for entry in &mut self.live {
+            if entry.kept.is_none() && !config.outputs.contains_key(&entry.config_key) {
+                entry.kept = last_shown
+                    .get(&entry.config_key)
+                    .map(|last| hotplug::Presentation {
+                        scale: last.scale,
+                        transform: last.transform,
+                    });
+            }
+        }
+        self.relayout_with(config);
     }
 
     /// Lay out the live outputs from `config`. An output it does not
     /// mention — every output of a set never arranged before — is placed
     /// side by side, built-in panel first on the left and externals to its
-    /// right, at the scale its pixel density calls for.
+    /// right, at the scale and rotation it keeps (`LiveEntry::kept`) or,
+    /// keeping none, at the scale its pixel density calls for.
     fn relayout_with(&mut self, config: &settings_store::hardware::DisplayConfig) {
         self.live.sort_by_key(|l| {
             (
@@ -7926,6 +7953,49 @@ pub(super) mod tests {
             state.relayout_with(&settings_store::hardware::DisplayConfig::default());
             assert_eq!(state.live[0].scale, 1.25);
             assert_eq!(state.output_table()[0].logical_size(), (1024, 640));
+        }
+        // Phase `a_monitor_lit_in_a_set_never_arranged_keeps_its_last_scale`.
+        {
+            // Two outputs arranged with the 1280x800 one at 1.25x; the
+            // session starts (or the monitor arrives) with only that one
+            // attached. Nothing live kept a scale, yet its monitor was last
+            // shown at 1.25x, and a virtual connector reports no size.
+            use settings_store::hardware::{
+                AttachedOutput, DisplayConfig, DisplayProfiles, DisplaySet, OutputConfig,
+            };
+            let attached = |connector| AttachedOutput {
+                connector,
+                connector_label: connector,
+                monitor: None,
+            };
+            let mut arranged = DisplayConfig::default();
+            arranged
+                .outputs
+                .insert("Virtual-3".into(), OutputConfig::default());
+            arranged
+                .outputs
+                .insert("Virtual-4".into(), OutputConfig::at_scale(1.25));
+            let mut profiles = DisplayProfiles::default();
+            profiles.remember(
+                &DisplaySet::of([attached("Virtual-3"), attached("Virtual-4")]),
+                &arranged,
+            );
+            let alone = DisplaySet::of([attached("Virtual-4")]);
+            let config = profiles.layout_for(&alone).unwrap_or_default();
+
+            let (mut state, _rx) = dispatch_with_channel();
+            state.live = vec![named(entry(1, 11, (1280, 800), None), "Virtual-4")];
+            state.relayout_recalling(&config, &profiles.last_shown_in(&alone));
+            assert_eq!(state.live[0].scale, 1.25);
+            assert_eq!(state.output_table()[0].logical_size(), (1024, 640));
+
+            // A layout saved for exactly this set still wins.
+            let mut chosen = DisplayConfig::default();
+            chosen
+                .outputs
+                .insert("Virtual-4".into(), OutputConfig::at_scale(2.0));
+            state.relayout_recalling(&chosen, &profiles.last_shown_in(&alone));
+            assert_eq!(state.live[0].scale, 2.0);
         }
         // Phase `synthesize_for_tests_publishes_its_outputs`.
         {

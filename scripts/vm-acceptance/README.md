@@ -490,8 +490,9 @@ unobservable, not passed. The trace reading is unit-tested beside the app checks
 
 Touchpad gestures (W15) are driven through the control socket's `swipe` and `pinch`, which
 feed the shell's gesture tracker; libinput's own touchpad decoding needs a uinput touchpad
-`tilo device input` does not have yet. Not yet drivable, so failing as unobservable: output
-hotplug (B06; a slot's outputs are fixed at creation).
+`tilo device input` does not have yet. Output hotplug (B06) is driven by forcing one
+connector's sysfs status off and back to `detect`, each followed by the card's change uevent, which is
+the notification the compositor listens for.
 
 ## Terminal after a userspace cohort update
 
