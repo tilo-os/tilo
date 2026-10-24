@@ -111,6 +111,11 @@ requests. Navigation waits for document-start script registration and the prior
 native lifecycle, and replacements stop the prior load without crediting its
 callbacks to a new action.
 
+Every tab starts on `about:blank` before its first address. That first entry is
+no page the person visited: `history` reports no `back` while it is all that is
+behind the page, `back` does not go to it, and `navigation_history` leaves it
+out.
+
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
 only the newest pending CPU frame is kept. Frames are copied during OnPaint;
 no CEF-owned pixel pointer or GPU handle survives the callback. Dropdown popup
