@@ -252,6 +252,16 @@ impl DeviceCapabilities {
         self.can_own_workspaces && !self.can_act_as_host && !self.foreign
     }
 
+    /// Whether a room governed by a device with these capabilities has its
+    /// channels stewarded by that governor, wherever it runs (a person's
+    /// device or a relay): the room's records are then sealed channels each
+    /// member opens itself, never documents the governor commits in the
+    /// clear. The room host and every member decide this the same way.
+    #[must_use]
+    pub const fn stewards_room_channels(&self) -> bool {
+        self.can_own_workspaces
+    }
+
     /// Capability set for the user's primary device (holds root
     /// private key, admits new devices, reads everything).
     pub fn primary() -> Self {

@@ -29,28 +29,12 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             context.revalidate()?;
             return Ok(None);
         }
-        let evidence = context
-            .application_creation()
-            .filter(|evidence| evidence.valid())
-            .ok_or("application creation requires original signed launch declarations")?;
-        let declared = tilo_joined_room::ApplicationRecord::declared(
-            &route.app_id,
-            &route.record_id,
-            context
-                .record_kind()
-                .ok_or("application creation requires SDK resource kind")?,
-            &evidence.declared_kinds,
-        )?;
-        let created = self
-            .network
-            .as_ref()
-            .ok_or("native selected custody unavailable")?
-            .prepare_native_application(owner, room, context.certificate(), &declared)?;
-        context.revalidate()?;
-        if !created {
-            return Ok(None);
-        }
-        Ok(Some(creation_workspace(&self.tree, room)))
+        // A missing record is made by the host that governs the room
+        // ([`Self::prepare_application_elsewhere`]). This device never signs
+        // a record's genesis into a room document itself: a room hosted on
+        // a device, this one included, keeps its records in sealed
+        // channels each app opens itself.
+        Err("this room's records are sealed channels its apps open themselves".into())
     }
     fn prepare_application_elsewhere(
         &self,

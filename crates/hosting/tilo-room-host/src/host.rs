@@ -196,6 +196,15 @@ impl HostSessions {
                 "device certificate is not host-capable".into(),
             ));
         }
+        if governs && !identity.device_cert.capabilities.stewards_room_channels() {
+            // A host whose certificate may not own workspaces stewards no
+            // channels: the rooms it governs keep their records in the clear
+            // in the room document instead of sealed channels.
+            tracing::error!(
+                device = %identity.device_cert.device_label,
+                "this host's certificate cannot own workspaces, so the rooms it governs are not sealed; re-enroll it with the own capability"
+            );
+        }
         std::fs::create_dir_all(&cfg.state_root)?;
         let workspaces: WorkspaceRegistry =
             Arc::new(AsyncMutex::new(std::collections::HashMap::new()));

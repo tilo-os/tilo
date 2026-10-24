@@ -23,32 +23,6 @@ impl ShellNetwork {
             Ok((view.device().clone(), view.governor().clone()))
         })
     }
-    pub(crate) fn prepare_native_application(
-        &self,
-        owner: &NativeWorkspaceOwner,
-        room: RoomId,
-        creator: &tilo_user_identity::DeviceCert,
-        route: &tilo_joined_room::ApplicationRecord,
-    ) -> Result<bool, String> {
-        let identity = self
-            .host_identity
-            .as_ref()
-            .ok_or("native custody unavailable")?;
-        let (certificate, _) = owner.with_current(room, |view| {
-            identity.current_native_material(view.workspace())
-        })?;
-        if &certificate != creator {
-            return Err("application creator differs from selected native custody".into());
-        }
-        owner.prepare_application_record(
-            room,
-            &certificate,
-            &identity.device_signing_key,
-            route,
-            SystemTime::now(),
-        )
-    }
-
     pub(crate) fn initialize_native_application(
         &self,
         owner: &NativeWorkspaceOwner,
@@ -66,27 +40,23 @@ impl ShellNetwork {
         if &certificate != creator {
             return Err("application initialization creator custody changed".into());
         }
-        if self.governed_elsewhere(room) {
-            // The host governing the room created the empty record for this
-            // device; the bootstrap is this member's own change to it, which
-            // the host admits like any other.
-            let revision = owner.initialize_application_record_as_member(
-                room,
-                &certificate,
-                &identity.device_signing_key,
-                initialization,
-                SystemTime::now(),
-            )?;
-            self.schedule_native_owner_publication(room);
-            return Ok(revision);
+        if !self.governed_elsewhere(room) {
+            // A room hosted on this device keeps its records in sealed
+            // channels: nothing here commits an app's record in the clear.
+            return Err("this room's records are sealed channels its apps open themselves".into());
         }
-        owner.initialize_application_record(
+        // The host governing the room created the empty record for this
+        // device; the bootstrap is this member's own change to it, which
+        // the host admits like any other.
+        let revision = owner.initialize_application_record_as_member(
             room,
             &certificate,
             &identity.device_signing_key,
             initialization,
             SystemTime::now(),
-        )
+        )?;
+        self.schedule_native_owner_publication(room);
+        Ok(revision)
     }
 
     pub(crate) fn check_native_custody(

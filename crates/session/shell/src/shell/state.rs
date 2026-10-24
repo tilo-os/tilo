@@ -744,9 +744,10 @@ pub struct WorkspaceTree {
     pub native_authority: super::native_workspace_owner::NativeAuthorityStorage,
     #[serde(skip)]
     pub native_runtime: super::native_workspace_owner::NativeStateRuntime,
-    /// Enrolled rooms whose governor stewards their channels: a node (a
-    /// host its person's root let own workspaces). Their records are sealed channels
-    /// every member opens itself, never documents the governor commits.
+    /// Enrolled rooms whose governor stewards their channels: every hosted
+    /// room, whether a person's device or a relay hosts it. Their records
+    /// are sealed channels every member opens itself, never documents the
+    /// governor commits.
     /// Projected from the owner, so not persisted.
     #[serde(skip)]
     pub stewarded_rooms: BTreeSet<RoomId>,
@@ -1199,10 +1200,10 @@ impl WorkspaceTree {
         let Some(document) = peer.admitted_room() else {
             return;
         };
-        // A node: an always-on host its person's root let own workspaces.
-        // The relay it runs stewards the channels of the rooms it governs.
-        let governor = &peer.authority().capabilities;
-        if governor.can_own_workspaces && governor.can_act_as_host && !governor.foreign {
+        // Whoever hosts the room, a person's device or a relay, its host
+        // stewards the channels of the rooms it governs exactly as the host
+        // decides it (`tilo_room_host`'s stewardship): the room is sealed.
+        if peer.authority().capabilities.stewards_room_channels() {
             self.stewarded_rooms.insert(room);
         } else {
             self.stewarded_rooms.remove(&room);
