@@ -49,6 +49,23 @@ struct Notes {
     /// Lines in each of the two pages the Todo note reads in, when it is a
     /// long one: the notebook's read then takes a cursor.
     long: Arc<Mutex<Option<usize>>>,
+    /// What the workspace says of its installed apps.
+    workspace: Arc<Mutex<Installed>>,
+    /// Why the session cannot say which apps run, when it cannot.
+    unreachable: Arc<Mutex<Option<String>>>,
+}
+
+/// What a workspace answers about its installed apps.
+#[derive(Clone, Copy, PartialEq)]
+enum Installed {
+    /// Notes and Sheets, both for this agent to open.
+    Openable,
+    /// Notes to open; Sheets named only, this agent may not open it.
+    SheetsClosedToAgent,
+    /// None at all.
+    Nothing,
+    /// It cannot be read.
+    Unreadable,
 }
 
 /// A directory answer that is never given.
@@ -65,7 +82,14 @@ impl Notes {
             asked: Arc::default(),
             silent: Arc::default(),
             long: Arc::default(),
+            workspace: Arc::new(Mutex::new(Installed::Openable)),
+            unreachable: Arc::default(),
         }
+    }
+
+    fn installed(self, installed: Installed) -> Self {
+        *self.workspace.lock().unwrap() = installed;
+        self
     }
 
     fn restarted(&self) -> Self {
@@ -189,7 +213,15 @@ impl Notes {
                 has_children: false,
                 visibility: None,
             };
-            return vec![open(APP, "Notes"), open("so.tilo.sheets", "Sheets")];
+            return match *self.workspace.lock().unwrap() {
+                Installed::Openable => vec![open(APP, "Notes"), open("so.tilo.sheets", "Sheets")],
+                Installed::SheetsClosedToAgent => {
+                    let mut sheets = open("so.tilo.sheets", "Sheets");
+                    sheets.action = None;
+                    vec![open(APP, "Notes"), sheets]
+                }
+                Installed::Nothing | Installed::Unreadable => Vec::new(),
+            };
         }
         let text = |name: &'static str, required: bool| {
             if required {
@@ -350,6 +382,16 @@ impl ActionHost for Notes {
                 ));
         }
         let silent = self.silent.lock().unwrap().is_some();
+        if let Some(reason) = self.unreachable.lock().unwrap().clone() {
+            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
+        }
+        if query.provider.as_deref() == Some(WORKSPACE)
+            && *self.workspace.lock().unwrap() == Installed::Unreadable
+        {
+            return Pending::ready(Err(ActionHostError::Unavailable {
+                reason: "this session's workspaces cannot be read".into(),
+            }));
+        }
         let Some(provider) = query.provider.clone() else {
             let instance = |provider: &str, app_id: &str| CatalogueProvider {
                 provider: provider.into(),
@@ -677,6 +719,90 @@ fn the_apps_are_listed_by_name_running_first() {
         assert_eq!(
             text,
             "apps\nnotes  Notes  running\nsheets  Sheets  installed"
+        );
+    });
+}
+
+/// An empty list and one that could not be read are different answers: the
+/// first says there are no apps, the second says why the agent cannot know.
+#[test]
+fn no_apps_and_an_unreachable_session_are_told_apart() {
+    run(async {
+        let empty = Notes::new(false).installed(Installed::Nothing);
+        let (text, failed) = tool(&agent(&empty), "tilo_ls", json!({})).await;
+        assert!(!failed, "{text}");
+        assert_eq!(
+            text,
+            "apps\nnone: no app runs in this workspace and none is installed"
+        );
+        let (text, failed) = tool(&agent(&empty), "tilo_do", json!({"path": "notes#open"})).await;
+        assert!(
+            failed && text == "no app notes: running none; installed none",
+            "{text}"
+        );
+
+        // The session's actions do not answer for this agent: it is told
+        // why, not handed an empty list.
+        let unreachable = Notes::new(true);
+        *unreachable.unreachable.lock().unwrap() = Some(
+            "agent claude-code is no longer a member of workspace Home who may read it".into(),
+        );
+        let (text, failed) = tool(&agent(&unreachable), "tilo_ls", json!({})).await;
+        assert!(
+            failed && text.contains("no longer a member of workspace Home"),
+            "{text}"
+        );
+        let (text, failed) =
+            tool(&agent(&unreachable), "tilo_find", json!({"query": "notes"})).await;
+        assert!(failed && text.contains("no longer a member"), "{text}");
+
+        // The running apps answer and the installed list does not: what runs
+        // is listed, and the missing list says why.
+        let unreadable = Notes::new(true).installed(Installed::Unreadable);
+        let (text, failed) = tool(&agent(&unreadable), "tilo_ls", json!({})).await;
+        assert!(!failed, "{text}");
+        assert_eq!(
+            text,
+            "apps\nnotes    running\nthe installed apps could not be read: remote actions are unavailable: this session's workspaces cannot be read"
+        );
+        let (text, failed) = tool(&agent(&unreadable), "tilo_ls", json!({"path": "sheets"})).await;
+        assert!(
+            failed
+                && text.contains("no running app is named sheets")
+                && text.contains("installed apps could not be read"),
+            "{text}"
+        );
+    });
+}
+
+/// An installed app the agent may not open is still listed, saying so, and
+/// opening it says who decides rather than that there is no such app.
+#[test]
+fn an_app_the_agent_may_not_open_is_listed_and_says_who_decides() {
+    let host = Notes::new(true).installed(Installed::SheetsClosedToAgent);
+    run(async {
+        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({})).await;
+        assert!(!failed, "{text}");
+        assert_eq!(
+            text,
+            "apps\nnotes  Notes  running\nsheets  Sheets  installed, not yours to open\nthe person decides which apps an agent may open in this workspace"
+        );
+        let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
+        assert!(
+            failed && text.contains("this agent may not open sheets"),
+            "{text}"
+        );
+        assert!(
+            !host
+                .invoked()
+                .iter()
+                .any(|(resource, _, _)| resource.contains("sheets")),
+            "nothing was asked of the workspace on the agent's behalf"
+        );
+        let (text, _) = tool(&agent(&host), "tilo_ls", json!({"path": "sheets"})).await;
+        assert!(
+            text.contains("installed but not running") && text.contains("may not open"),
+            "{text}"
         );
     });
 }

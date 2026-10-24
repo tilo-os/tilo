@@ -1,8 +1,8 @@
 //! The session's agent door on a live headless compositor: a client that
 //! says `initialize` is served nothing until the person answers through the
 //! `permission-prompts` decision; refused, it reads a JSON-RPC error; admitted,
-//! it is an agent member of the workspace and lists the session's live apps
-//! over the broker as that agent.
+//! it is an agent member of the workspace and lists the session's live and
+//! installed apps over the broker as that agent.
 //!
 //! Spawns a real headless compositor child, like the other headless shell
 //! tests, and runs in the normal `it` target:
@@ -119,6 +119,23 @@ impl Client {
         (self.replies.read_line(&mut line).unwrap() > 0)
             .then(|| serde_json::from_str(&line).unwrap())
     }
+    /// One tool call as request `id`: the text the agent reads, and whether
+    /// it is an error.
+    fn tool(&mut self, id: u64, name: &str, arguments: &serde_json::Value) -> (String, bool) {
+        self.send(
+            &serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+            "params":{"name":name,"arguments":arguments}}),
+        );
+        let reply = self.reply().expect("the door answers");
+        assert_eq!(reply["id"], id, "{reply}");
+        (
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no text in {reply}"))
+                .to_owned(),
+            reply["result"]["isError"] == true,
+        )
+    }
 }
 
 fn initialize() -> serde_json::Value {
@@ -164,17 +181,56 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
         !names.iter().any(|name| name.starts_with("computer")),
         "{names:?}"
     );
-    agent.send(
-        &serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
-        "params":{"name":"tilo_ls","arguments":{}}}),
-    );
-    let listed = agent.reply().unwrap();
-    assert_eq!(listed["result"]["isError"], false, "{listed}");
+    // Admitted as an observer, with no grant of its own, it is told the
+    // Notes that runs and every app installed, each one it may not open
+    // saying so, never an empty list.
+    let deadline = tilo_test_env::hang_deadline();
+    let mut id = 2;
+    let listed = loop {
+        id = id.checked_add(1).expect("request ids left");
+        let (text, failed) = agent.tool(id, "tilo_ls", &serde_json::json!({}));
+        assert!(!failed, "{text}");
+        assert!(text.starts_with("apps"), "{text}");
+        if text
+            .lines()
+            .any(|line| line.starts_with("notes  ") && line.ends_with("  running"))
+        {
+            break text;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the running Notes was never listed: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let installed: Vec<&str> = listed
+        .lines()
+        .filter(|line| line.contains("  installed"))
+        .collect();
     assert!(
-        listed["result"]["content"][0]["text"]
-            .as_str()
-            .is_some_and(|text| text.starts_with("apps")),
+        !installed.is_empty(),
+        "no installed app was listed: {listed}"
+    );
+    assert!(
+        installed
+            .iter()
+            .all(|line| line.ends_with("  installed, not yours to open")),
+        "an observer was offered to open an app: {listed}"
+    );
+    assert!(
+        listed.contains("the person decides which apps an agent may open"),
         "{listed}"
+    );
+    // Opening one is refused with who decides, not with "no such app".
+    let closed = installed[0].split("  ").next().expect("the app's name");
+    let (refused, failed) = agent.tool(
+        id.checked_add(1).expect("request ids left"),
+        "tilo_do",
+        &serde_json::json!({"path": format!("{closed}#open")}),
+    );
+    assert!(
+        failed && refused.contains("may not open"),
+        "opening {closed}: {refused}"
     );
 
     // The admitted agent is an ordinary, revocable member of the workspace.

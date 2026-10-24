@@ -13,12 +13,12 @@ use std::sync::Arc;
 use tilo_desktop_model::Workspace;
 
 use tilo_actions::remote::{
-    APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
-    ActionHostError, CONFIRMED_ACTION_NEEDS_REVISION, Caller, CallerPrincipal, CataloguePage,
-    CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, Completer, Confirmation,
-    InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus,
-    Reservation, application_provider, application_provider_record, pending, workspace_provider,
-    workspace_provider_room,
+    APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND,
+    APPLICATION_RESOURCE_PREFIX, ActionHostError, CONFIRMED_ACTION_NEEDS_REVISION, Caller,
+    CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
+    CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState, InvokeRequest,
+    OWN_PROVIDER, Pending, ReceiptStatus, Reservation, application_provider,
+    application_provider_record, pending, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
@@ -34,6 +34,9 @@ use crate::collab_broker::CrdtRoute;
 use crate::services::LaunchPlace;
 use tilo_automation::SHORTCUTS_APP_ID;
 
+#[cfg(test)]
+#[path = "agent_app_list_tests.rs"]
+mod agent_app_list_tests;
 #[cfg(test)]
 #[path = "governance_witness_tests.rs"]
 mod governance_witness_tests;
@@ -337,7 +340,7 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
         )
     } else {
         (
-            "applications.app",
+            APPLICATION_RESOURCE_KIND,
             "Launch this application into the current workspace",
         )
     };
@@ -368,6 +371,15 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
     }
 }
 
+/// Installed application `app` named to a caller that may not open it: its
+/// resource with no action, so the caller learns the app is there and that
+/// opening it is not theirs to do.
+fn app_named_row(provider: &str, app: &crate::services::LaunchableApplication) -> CatalogueRow {
+    let mut row = CatalogueRow::for_action(provider, &app.package_id, app_open_descriptor(app));
+    row.action = None;
+    row
+}
+
 fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
     ActionDescriptor {
         semantic_identity: None,
@@ -375,7 +387,7 @@ fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescripto
             format!("{APPLICATION_RESOURCE_PREFIX}{package_id}"),
             APPLICATION_CLOSE_ACTION,
         ),
-        resource_kind: "applications.app".into(),
+        resource_kind: APPLICATION_RESOURCE_KIND.into(),
         resource_label: display_name.to_string(),
         action_label: format!("Close {display_name}"),
         description: Some(
@@ -687,6 +699,46 @@ impl CapnpBrokerState {
                     BrokerActor::for_caller(caller).reads_in(workspace, now)
                 }
             },
+        }
+    }
+
+    /// Why an agent confined to a room is served nothing there when the
+    /// reason is not that the room holds nothing: this session's workspaces
+    /// are not attached, the policy clock cannot be read, the workspace is
+    /// gone, or the agent may no longer read in it. `None` for any other
+    /// caller, and for an agent that may act in its room.
+    fn agent_room_unreachable(&self, caller: &Caller) -> Option<String> {
+        let room = caller.room()?;
+        let CallerPrincipal::Agent(agent) = caller.principal() else {
+            return None;
+        };
+        let Some(membership) = self.membership.as_ref() else {
+            return Some("this session's workspaces are not attached to its actions".into());
+        };
+        let now = match self.policy_now_ns() {
+            Ok(now) => now / 1_000_000_000,
+            Err(error) => return Some(format!("the policy clock cannot be read: {error}")),
+        };
+        let found = membership.decide_in_tree(|tree| {
+            tree.workspaces
+                .iter()
+                .find(|workspace| workspace.room().to_string() == room)
+                .map(|workspace| {
+                    (
+                        workspace.name.clone(),
+                        Self::may_act_in(caller, workspace, now),
+                    )
+                })
+        });
+        match found {
+            Err(error) => Some(format!("this session's workspaces cannot be read: {error}")),
+            Ok(None) => Some(format!(
+                "the workspace agent {agent} was admitted to is no longer on this device"
+            )),
+            Ok(Some((name, false))) => Some(format!(
+                "agent {agent} is no longer a member of workspace {name} who may read it"
+            )),
+            Ok(Some((_, true))) => None,
         }
     }
 
@@ -1062,26 +1114,32 @@ impl CapnpBrokerState {
                     (launcher.applications(), launcher.closes_applications())
                 });
                 let (applications, closes_applications) = (&applications.0, applications.1);
-                rows.extend(
-                    applications
-                        .iter()
-                        .filter(|app| !live_apps.contains(&app.package_id))
-                        .filter(|app| {
-                            policy.may_in(
-                                &workspace,
-                                &app_node(&workspace, &app.package_id),
-                                tilo_action_policy::ActionKind::Undoable,
-                                now,
-                            )
-                        })
-                        .map(|app| {
-                            CatalogueRow::for_action(
-                                provider.clone(),
-                                &app.package_id,
-                                app_open_descriptor(app),
-                            )
-                        }),
-                );
+                // An agent of this machine is told every installed app, one
+                // it may not open by name alone: an empty list would tell it
+                // there are none, and it could only guess why. Its own
+                // process reads the same list from disk; a remote caller is
+                // told only what it may open.
+                let names_unopened = matches!(caller.principal(), CallerPrincipal::Agent(_))
+                    && caller.device_public_key().is_none();
+                for app in applications
+                    .iter()
+                    .filter(|app| !live_apps.contains(&app.package_id))
+                {
+                    if policy.may_in(
+                        &workspace,
+                        &app_node(&workspace, &app.package_id),
+                        tilo_action_policy::ActionKind::Undoable,
+                        now,
+                    ) {
+                        rows.push(CatalogueRow::for_action(
+                            provider.clone(),
+                            &app.package_id,
+                            app_open_descriptor(app),
+                        ));
+                    } else if names_unopened {
+                        rows.push(app_named_row(&provider, app));
+                    }
+                }
                 rows.extend(
                     applications
                         .iter()
@@ -1398,6 +1456,14 @@ impl CapnpBrokerState {
             None => RowScope::All,
         };
         let (rows, providers) = self.eager_catalogue_with_origin(caller, origin, scope);
+        // Nothing at all may mean the room holds nothing, or that this
+        // agent cannot reach it: only the first is an empty page.
+        if rows.is_empty()
+            && providers.is_empty()
+            && let Some(reason) = self.agent_room_unreachable(caller)
+        {
+            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
+        }
         let revision = format!(
             "{}.{}",
             self.published_surfaces_generation(),
