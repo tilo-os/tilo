@@ -11,7 +11,7 @@
 //!
 //! Settings → Appearance edits the choices; the compositor reads them
 //! through [`DeskWidgetPrefs::from_document`], and dragging a widget to
-//! another edge writes [`WidgetPrefs::edge`] back through [`PREFS`].
+//! another edge writes [`WidgetPrefs::edge`] back through `PREFS`.
 //!
 //! ```json
 //! "desk_widgets": {

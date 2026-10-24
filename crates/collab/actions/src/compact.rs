@@ -10,7 +10,7 @@
 //! | `u` *n* / `i` *n* | the integer *n* / −1 − *n* |
 //! | `d` *len* *text* | any other number, as its JSON text |
 //! | `s` *len* *bytes* | a string, UTF-8 |
-//! | `k` *n* | the *n*th of [`WORDS`] (keys and values every entry uses) |
+//! | `k` *n* | the *n*th of `WORDS` (keys and values every entry uses) |
 //! | `r` *n* | the *n*th string written with `s`, `U` or `H` before it |
 //! | `U` 22 digits | a lowercase hyphenated UUID |
 //! | `H` 22 digits | 32 lowercase hex digits (a gesture) |
@@ -24,7 +24,7 @@
 //! keep their order; a value decodes to exactly the tree it was written
 //! from.
 //!
-//! [`WORDS`] only grows: a word's index is part of every stored entry.
+//! `WORDS` only grows: a word's index is part of every stored entry.
 
 use serde_json::Value;
 

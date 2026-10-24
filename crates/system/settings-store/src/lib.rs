@@ -171,7 +171,7 @@ pub const SESSION_SETTINGS_ENV: &str = "TILO_SESSION_SETTINGS";
 ///
 /// The document used to live at `<config root>/settings.json`. Resolving the
 /// path moves a document still there into place, once
-/// ([`adopt_legacy_document`]), so neither the session nor a reader started
+/// (`adopt_legacy_document`), so neither the session nor a reader started
 /// before the session loses the person's settings.
 pub fn settings_path() -> Option<PathBuf> {
     match std::env::var_os(SESSION_SETTINGS_ENV) {

@@ -126,7 +126,7 @@ const fn decode_base64<const N: usize>(mut text: &[u8]) -> [u8; N] {
 static WORLD_LAND_BYTES: [u8; decoded_len(WORLD_LAND.as_bytes())] =
     decode_base64(WORLD_LAND.as_bytes());
 
-/// Walk [`WORLD_LAND`]: each ring is a little-endian `u16` point count, its
+/// Walk `WORLD_LAND`: each ring is a little-endian `u16` point count, its
 /// first point as two `i16` (longitude, latitude) in tenths of a degree,
 /// then one `i8` pair per further point, the step from the point before.
 /// `visit` gets each point in degrees and whether it starts a ring.

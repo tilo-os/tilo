@@ -213,7 +213,7 @@ pub trait NativeDocumentReads: Send + Sync {
     /// # Errors
     ///
     /// The default, and any implementation that cannot tell: a held wait
-    /// then re-checks every [`UNANNOUNCED_RECHECK`], the cadence readers
+    /// then re-checks every `UNANNOUNCED_RECHECK`, the cadence readers
     /// polled at, so an unknown expiry is never enforced later than before.
     fn next_change(
         &self,

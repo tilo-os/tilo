@@ -461,7 +461,7 @@ impl Selection {
 /// Pick an encoder for `codec`, trying each candidate against `available`.
 ///
 /// `available` answers "is this element factory installed", which in a real
-/// build is [`registry_has`]. Kept as a parameter so the preference order is
+/// build is `registry_has`. Kept as a parameter so the preference order is
 /// unit-testable against a fabricated registry — including registries this
 /// machine cannot have, which is the only way to prove the hardware branch.
 pub fn select_video(

@@ -14,7 +14,7 @@
 //! subscriber asks for it, so a publisher sends, and the relay forwards, only
 //! the layers someone shows.
 //! Every session is served from its own host-owned view of the shared origin
-//! ([`crate::mirror`]), which revocation drops before anything else.
+//! (`crate::mirror`), which revocation drops before anything else.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{

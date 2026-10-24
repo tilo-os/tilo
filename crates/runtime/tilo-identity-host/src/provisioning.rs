@@ -1450,7 +1450,7 @@ fn read_claimed_owner(path: &Path) -> io::Result<[u8; 32]> {
 /// Whether the identity this account signs in with owns the device.
 ///
 /// The owner is the identity that claimed the machine at its first login
-/// ([`claim_device_owner`]) and holds the device's primary certificate; the
+/// (`claim_device_owner`) and holds the device's primary certificate; the
 /// account that signs in with it is the device admin. Another account on the
 /// same machine has its own identity and a shared-device certificate, and an
 /// account that has not finished first login has no identity at all: both

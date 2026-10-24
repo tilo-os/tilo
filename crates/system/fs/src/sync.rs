@@ -13,7 +13,7 @@
 //! Every request names the workspace it is for, and every namespace
 //! payload either side sends is bound to that workspace by the sender's
 //! device signature ([`crate::namespace_binding`]). A receiver applies
-//! nothing that [`accept_namespace_payload`] refuses: another workspace's
+//! nothing that `accept_namespace_payload` refuses: another workspace's
 //! tree, bytes that are not the ones signed, or a device whose holder may
 //! not serve this workspace's namespace.
 
@@ -457,7 +457,7 @@ pub async fn bind_ephemeral_endpoint() -> Result<(Endpoint, MemoryLookup)> {
 /// the bootstrap ALPN, bounded by a timeout so a stalled host can't hang
 /// the caller. The document is returned only when `policy` lets the peer
 /// read the whole workspace and the peer bound these exact bytes to
-/// `workspace_id` ([`accept_namespace_payload`]).
+/// `workspace_id` (`accept_namespace_payload`).
 ///
 /// # Errors
 ///

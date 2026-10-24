@@ -109,7 +109,7 @@ pub(crate) fn infix_allowed(query: &[char]) -> bool {
     letters >= MIN_INFIX_SCALARS || query.iter().copied().any(unspaced_script)
 }
 
-/// [`infix_allowed`] for typed text: whether `query` may match inside a word
+/// `infix_allowed` for typed text: whether `query` may match inside a word
 /// ([`MatchTier::Contains`]) rather than only at word starts.
 #[must_use]
 pub fn matches_inside_words(query: &str) -> bool {

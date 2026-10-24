@@ -1070,7 +1070,7 @@ impl<R> Edit<R> {
     /// the same gesture: one undo step. Setting one path again (dragging a
     /// slider), typing on at the end of the previous splice (a word) and a
     /// text field's whole-text replacements that type or erase within one
-    /// word ([`replace_continues`]) continue; an edit in a type's own vocabulary continues as that type
+    /// word (`replace_continues`) continue; an edit in a type's own vocabulary continues as that type
     /// says ([`Operations::coalesces`]); anything else starts a new step.
     #[must_use]
     pub fn coalesces(&self, next: &Self) -> bool

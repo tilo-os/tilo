@@ -185,7 +185,7 @@ pub mod feedback_composer;
 /// would fail on the web.
 pub use tilo_files as files;
 
-/// What a hand-written [`Widget`](ui_core::widget::Widget) draws and lays
+/// What a hand-written [`Widget`] draws and lays
 /// out with: the renderer's scene and transforms, the layout tree and the
 /// windowing events. Views built from [`framework::ViewCx`] never name them.
 pub mod advanced {

@@ -7,7 +7,7 @@
 //! keeps thousands of changes. Retained growth on a channel schedules its
 //! upkeep here once the channel has been quiet for [`QUIET`]:
 //!
-//! - **Cleartext entries** the host folds itself ([`fold`]). It verifies
+//! - **Cleartext entries** the host folds itself (`fold`). It verifies
 //!   each frame the way a receiving device does, merges every unit it can
 //!   read into one Automerge document and signs that snapshot as the host
 //!   device, framed exactly as a device publishes one. Only entries whose
@@ -22,7 +22,7 @@
 //!
 //! Admission authenticates the device that sent a delta, not the document
 //! signature inside it, so compaction verifies every entry it relies on
-//! itself, once per process for the same bytes ([`verified`] holds the
+//! itself, once per process for the same bytes (`verified` holds the
 //! trust argument).
 //!
 //! The host's snapshot is retained, never fanned out: connected devices

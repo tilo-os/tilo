@@ -464,7 +464,7 @@ impl ChannelState {
 /// signature against an authorised signer; 3. verify the op's signature
 /// against the author; 4. `op.author == attestation.subject`; 5.
 /// `role_permits(role, kind, kind)`; 5a. capability overrides narrow
-/// or extend the role baseline (fail-closed, see [`crate::caps::decide`]);
+/// or extend the role baseline (fail-closed, see [`crate::caps::decide_capability`]);
 /// 5b. if `Redact`, parse the payload and reject recursive redaction; 6.
 /// timestamp inside the attestation's validity window; 7. monotonic seq;
 /// 8. clearance gate; 9. redaction-aware filter for late arrivals.

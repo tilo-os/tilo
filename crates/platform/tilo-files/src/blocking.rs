@@ -3,7 +3,7 @@
 //! finishes on the calling thread.
 //!
 //! On the web they work on memory trees and on the app locations the host
-//! mirrored ([`web::mirror`](crate::web::mirror)): an app's `data`, `config`
+//! mirrored (`web::mirror`): an app's `data`, `config`
 //! and `state`. Changes there are written through to the browser's storage
 //! in order, after the call returns. Anywhere else, and for locks, they
 //! return [`FsError::Unsupported`] with

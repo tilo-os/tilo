@@ -3,10 +3,10 @@
 //!
 //! It is another door to the steps onboarding, Settings and the shell's
 //! `identity.*` actions take, never a second implementation: `create` mints
-//! through [`provisioning::ensure_collaboration_identity`] and writes the
+//! through [`provisioning::ensure_collaboration_identity`](tilo_identity_host::provisioning::ensure_collaboration_identity) and writes the
 //! backup onboarding writes; `pair` runs `tilo-enroll pair-device` as
 //! first-use onboarding does; `approve` discovers and admits a device with
-//! the programs and arguments of [`device_admin`]; `asking`, `approve` and
+//! the programs and arguments of [`device_admin`](tilo_identity_host::device_admin); `asking`, `approve` and
 //! `decline` answer a device another of the person's devices found through
 //! the session's `identity.device.pair.asking` and `.answer` actions, as its
 //! notification does; `devices` and `revoke` are the shell's identity steps.

@@ -1756,10 +1756,10 @@ fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot) -> Option<&mu
 
 /// A dispatcher outside any host, for a unit test of a surface (or of the
 /// model behind it) that edits through one: each immediate action
-/// ([`Dispatcher::apply_now`]) applies to the document handed to it,
+/// ([`Dispatcher::apply_now`](super::Dispatcher::apply_now)) applies to the document handed to it,
 /// attributed to `author`, through the same executor as a hosted one, so
 /// the test exercises the surface's real write path. Queued invocations
-/// ([`Dispatcher::apply`]) are not taken by anyone: drive those through
+/// ([`Dispatcher::apply`](super::Dispatcher::apply)) are not taken by anyone: drive those through
 /// [`TestApp`].
 pub fn detached_dispatcher<R: Resource>(author: &str) -> super::Dispatcher<R> {
     super::Dispatcher::new("test", R::KIND, false, Some(author))
@@ -1844,7 +1844,7 @@ pub fn window_record<A: ResourceApp>(
 /// scene, as the shell shows an in-process app: the real app in a
 /// [`ui_core::app::EmbeddedApp`], which the drive lays out, draws into its
 /// own scene and feeds input through
-/// [`ui_core::app::EmbeddedApp::input_for_test`].
+/// `ui_core::app::EmbeddedApp::input_for_test`.
 #[cfg(feature = "native")]
 pub fn drive_live_embedded<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::app::EmbeddedApp) -> T,
@@ -1875,7 +1875,7 @@ pub fn drive_live_embedded<A: ResourceApp, T>(
 }
 
 /// A dispatcher of `R` for testing a surface's own methods without a host:
-/// the edits it applies now ([`Dispatcher::apply_now`]) go through the same
+/// the edits it applies now ([`Dispatcher::apply_now`](super::Dispatcher::apply_now)) go through the same
 /// replayable executor a hosted surface's do, attributed to a test author,
 /// onto the document the test hands the surface. Invocations it queues are
 /// resolved by a host only; test those through [`TestApp`].
@@ -1887,7 +1887,7 @@ pub fn dispatcher<R: Resource>(app_id: &'static str) -> super::Dispatcher<R> {
 /// its actions, typed values and groups — onto `doc` as a host does after an
 /// event, as confirmed: each invocation one step, attributed to the test
 /// author. An action its resource refuses (its clip is gone) changes
-/// nothing and is reported through [`Dispatcher::refused`], as the host
+/// nothing and is reported through [`Dispatcher::refused`](super::Dispatcher::refused), as the host
 /// reports it. Returns what each applied invocation applied, in order: one
 /// entry per undo step (a group's entry holds all of its actions).
 pub fn resolve<R: Resource>(

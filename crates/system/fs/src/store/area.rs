@@ -678,7 +678,7 @@ impl FileArea {
     /// Records `ranges` of `key` (bytes already written to its file) as
     /// resident. They are readable at once. The record reaches disk after
     /// the file's data has been synced: with `durable` now, otherwise once
-    /// [`SYNC_BATCH`] bytes have accumulated or the entry is complete, so a
+    /// `SYNC_BATCH` bytes have accumulated or the entry is complete, so a
     /// recorded range is never one whose bytes a crash could lose.
     pub fn mark_resident(
         &self,
