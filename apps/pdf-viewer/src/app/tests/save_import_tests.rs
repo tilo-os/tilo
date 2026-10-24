@@ -216,6 +216,7 @@ fn save_to_a_destination_without_a_path_hands_the_host_the_pdf() {
     let Some((mut app, mut st)) = open_laid_out_sample() else {
         return;
     };
+    let name = app.suggested_save_name();
     let written = std::sync::Arc::new(std::sync::Mutex::new(None));
     let services = ui::host::HostServices::null().with_files(std::sync::Arc::new(KeptSaves(
         std::sync::Arc::clone(&written),
@@ -233,8 +234,40 @@ fn save_to_a_destination_without_a_path_hands_the_host_the_pdf() {
         .clone()
         .unwrap_or_else(|| panic!("the host received no PDF ({note})"));
     assert!(bytes.starts_with(b"%PDF"), "the saved bytes are a PDF");
-    assert!(note.starts_with("Saved annotated PDF to "), "{note}");
+    assert_eq!(
+        note,
+        crate::t_args("pdf-note-saved", &[("name", name.into())]),
+        "the note names the copy saved"
+    );
     assert!(!note.contains("browser"), "{note}");
+}
+
+/// A save that cannot be written names the copy and says what to do next,
+/// in the catalogue's words, never the engine's error.
+#[test]
+#[serial(pdfium)]
+fn a_save_that_cannot_be_written_says_what_to_do() {
+    let Some((mut app, _st)) = open_laid_out_sample() else {
+        return;
+    };
+    let missing = std::env::temp_dir().join("tilo_pdf_no_such_folder");
+    let _ = std::fs::remove_dir_all(&missing);
+    let out = missing.join("kept.pdf");
+    assert!(
+        !save_settled(&mut app, &out),
+        "nothing is saved into a folder that is not there"
+    );
+    assert!(!out.exists());
+    assert_eq!(
+        app.status_note.as_deref(),
+        Some(crate::app::save_failed_note("kept.pdf").as_str()),
+        "the note names the copy and what to try"
+    );
+    assert_eq!(
+        crate::app::save_failed_note("kept.pdf"),
+        "kept.pdf wasn't saved. Try another folder or name.",
+        "the source copy, so a catalogue that lost the message cannot pass as its key"
+    );
 }
 
 /// Prepare an opened raster sample for page-editing tests: its record
@@ -363,7 +396,11 @@ fn imported_images_and_pdfs_add_pages_and_regions_crop_the_bitmap() {
         });
         let note = app.status_note.as_deref().unwrap_or_default().to_owned();
         assert!(
-            note.starts_with("Copied") || note.contains("clipboard"),
+            [
+                crate::t("pdf-note-copied-area"),
+                crate::t("pdf-note-area-not-copied")
+            ]
+            .contains(&note),
             "the arrived render is cropped and copied, and the note says so: {note:?}"
         );
         assert!(!app.status_note.is_progress(), "{note:?}");
