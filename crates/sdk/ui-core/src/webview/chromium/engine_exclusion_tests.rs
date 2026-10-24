@@ -119,7 +119,9 @@ fn dedicated_service_factory_binds_import_and_confirms_child_exit_before_cleanup
         .tempdir()
         .unwrap();
     let helper = root.path().join("protocol-host");
-    std::fs::write(&helper, r#"#!/usr/bin/python3
+    crate::testing::write_executable(
+        &helper,
+        r#"#!/usr/bin/python3
 import json,struct,sys,pathlib,os
 profile=next(a[10:] for a in sys.argv[1:] if a.startswith('--profile='))
 pathlib.Path(profile,'host-args.json').write_text(json.dumps(sys.argv[1:]))
@@ -138,8 +140,8 @@ while True:
     if command['op']=='service_session_import':
         send({'event':'service_session_result','tab':1,'request_id':command['request_id'],
             'session_id':command['session_id'],'service':command['service'],'imported':False,'cookie_count':0})
-"#).unwrap();
-    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+"#,
+    );
     let profile = root.path().join("selected");
     std::fs::DirBuilder::new()
         .mode(0o700)
