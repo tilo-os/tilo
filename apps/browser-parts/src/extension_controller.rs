@@ -170,6 +170,16 @@ fn sign_in_site(url: &str) -> Option<String> {
         .and_then(|url| url.host_str().map(str::to_owned))
 }
 
+/// What an extension's page in the panel opens (its dashboard, a help page)
+/// opens beside the window, as Chrome opens it in a tab.
+fn open_beside(page: &SharedEngine) {
+    for (url, background) in page.take_new_tab_requests() {
+        if url.starts_with("https://") || url.starts_with("http://") {
+            ui::shell_tabs::open_beside(Some(url), background);
+        }
+    }
+}
+
 /// An icon an extension gave its button through `chrome.action.setIcon`.
 #[derive(Clone)]
 enum ActionIcon {
@@ -292,6 +302,10 @@ enum Panel {
         size: Option<(f32, f32)>,
         /// For a sign-in page, the site it is on now.
         site: Option<String>,
+        /// Under a sign-in page, the extension's own page that asked for it
+        /// (its settings, its popup): it goes on out of sight to hear how
+        /// the sign-in ended, and shows again once the sign-in page closes.
+        beneath: Option<Box<Panel>>,
     },
 }
 
@@ -819,6 +833,7 @@ impl ExtensionController {
             engine: popup,
             size,
             site: shown_site,
+            beneath,
             ..
         }) = &mut self.panel
         {
@@ -857,15 +872,27 @@ impl ExtensionController {
                     _ => {}
                 }
             }
-            // What it opens (its dashboard, a help page) opens beside the
-            // window, as Chrome opens it in a tab.
-            for (url, background) in popup.take_new_tab_requests() {
-                if url.starts_with("https://") || url.starts_with("http://") {
-                    ui::shell_tabs::open_beside(Some(url), background);
+            open_beside(popup);
+            // The page under a sign-in asks the window for what it needs,
+            // and is gone once it closes itself.
+            if let Some(Panel::Popup { engine: under, .. }) = beneath.as_deref() {
+                let mut gone = false;
+                for event in under.drain_events() {
+                    match event {
+                        event @ (WebViewEvent::ExtensionPermissionRequest { .. }
+                        | WebViewEvent::ExtensionPermissions { .. }) => permissions.push(event),
+                        WebViewEvent::TabClosed => gone = true,
+                        _ => {}
+                    }
+                }
+                open_beside(under);
+                if gone {
+                    *beneath = None;
                 }
             }
             if closed {
-                self.panel = None;
+                let under = beneath.take();
+                self.panel = under.map(|page| *page);
                 changed = true;
             }
         }
@@ -1341,6 +1368,11 @@ impl ExtensionController {
         match engine.create_tab() {
             Ok(page) => {
                 let sign_in = heading.is_some();
+                let beneath = if sign_in {
+                    self.asked_from(panel_owner(&key))
+                } else {
+                    None
+                };
                 page.send(mark);
                 if !sign_in {
                     page.send(WebViewCommand::ReportDocumentSize(true));
@@ -1351,10 +1383,41 @@ impl ExtensionController {
                     engine: page,
                     size,
                     site: heading,
+                    beneath,
                 });
             }
             Err(error) => self.panel = Some(Panel::Message(error)),
         }
+    }
+
+    /// The page in the panel that extension `asker`'s sign-in shows over,
+    /// to keep beneath it: the extension's own page, which asked for it
+    /// and waits to hear how it ends, or the page under its earlier
+    /// sign-in. Another extension's page closes, as Chrome's popup closes.
+    fn asked_from(&mut self, asker: &str) -> Option<Box<Panel>> {
+        let Some(Panel::Popup {
+            id,
+            engine,
+            size,
+            site,
+            beneath,
+        }) = self.panel.take()
+        else {
+            return None;
+        };
+        if panel_owner(&id) != asker {
+            return None;
+        }
+        if site.is_some() {
+            return beneath;
+        }
+        Some(Box::new(Panel::Popup {
+            id,
+            engine,
+            size,
+            site,
+            beneath,
+        }))
     }
 
     /// The width an open extension page asks for, within `room`; `None`
@@ -1657,6 +1720,7 @@ impl ExtensionController {
                 engine,
                 size,
                 site: heading,
+                ..
             } => {
                 let view = ui::widget::WebView::new(engine.clone())
                     .with_test_id("browser.extension.popup");
@@ -2094,6 +2158,7 @@ mod tests {
             engine: page.clone(),
             size: None,
             site: None,
+            beneath: None,
         });
         let shown = |controller: &ExtensionController| match &controller.panel {
             Some(Panel::Popup { size, .. }) => *size,
@@ -2697,6 +2762,7 @@ mod tests {
             engine: ui::webview::test_engine::TestEngine::new(),
             size: None,
             site: None,
+            beneath: None,
         });
         controller.awaiting = vec!["abc".into()];
         let profile = |installed: Vec<Installed>| Profile {

@@ -696,7 +696,9 @@ content scripts (with `sender.tab`) work without help.
   Chrome shows the page in a window of its own; here the host asks the
   Browser to show it in a panel over the page in front
   (`extension_sign_in`), as a popup shows, under the name of the site it is
-  on. The Browser marks the panel's tab as that sign-in's
+  on. The extension's own page that asked (its settings, its popup) goes on
+  beneath it, so its call hears the outcome, and shows again once the
+  sign-in page closes. The Browser marks the panel's tab as that sign-in's
   (`extension_sign_in_panel`), and the host watches where it goes
   (`src/extension_sign_in.h`): once the page goes to the extension's own
   address, `https://<id>.chromiumapp.org/`, by a redirect, a link or a
