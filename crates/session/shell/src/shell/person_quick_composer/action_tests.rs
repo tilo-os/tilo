@@ -122,8 +122,12 @@ impl ActionHost for ChatHost {
     fn observe(&self, _: &Caller, _: &InvocationId) -> Option<InvocationState> {
         None
     }
-    fn cancel(&self, _: &Caller, _: &InvocationId) -> Result<(), ActionHostError> {
-        Err(ActionHostError::NotPermitted)
+    fn cancel(
+        &self,
+        _: &Caller,
+        _: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionHostError::NotPermitted))
     }
 }
 

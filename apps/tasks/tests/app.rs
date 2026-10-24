@@ -193,8 +193,9 @@ impl ui::tilo_actions::remote::ActionHost for Door {
         &self,
         _: &ui::tilo_actions::remote::Caller,
         _: &ui::tilo_actions::InvocationId,
-    ) -> Result<(), ui::tilo_actions::remote::ActionHostError> {
-        Ok(())
+    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+    {
+        ui::tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 

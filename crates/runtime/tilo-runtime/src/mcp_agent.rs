@@ -1380,7 +1380,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Err(error) => Err(error),
             },
             "tilo_status" => match parse(args) {
-                Ok(args) => self.agent_status(&args),
+                Ok(args) => self.agent_status(&args).await,
                 Err(error) => Err(error),
             },
             _ => Err("Unknown tool".to_owned()),
@@ -1799,11 +1799,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(reply)
     }
 
-    fn agent_status(&self, args: &AgentStatusArgs) -> Result<Reply, String> {
+    async fn agent_status(&self, args: &AgentStatusArgs) -> Result<Reply, String> {
         let invocation = invocation_id(&args.invocation_id)?;
         if args.cancel {
             self.host()
                 .cancel(&self.caller(), &invocation)
+                .await
+                .ok_or("the host dropped the request")?
                 .map_err(|error| error.to_string())?;
         }
         let value = self.status(invocation)?;
