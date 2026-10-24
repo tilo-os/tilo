@@ -124,6 +124,38 @@ impl KeyboardXkb {
             .map(|raw| raw.saturating_sub(8))
     }
 
+    /// The logical key a press names. Under Ctrl, Super or Alt, a letter
+    /// from a non-Latin source (Russian, Greek, Hebrew, Arabic, ...) is named
+    /// by the Latin character another configured source puts on that key, so
+    /// Super+L locks and Ctrl+C copies whichever source is typing. Latin
+    /// letters with diacritics stay as typed: they are shortcuts of their own
+    /// on the layouts that have them.
+    fn chord_logical_key(&self, keycode: xkb::Keycode, sym: Keysym, mods: ModifiersState) -> Key {
+        let logical = keysym_to_winit_key(sym.raw());
+        if !(mods.control_key() || mods.super_key() || mods.alt_key()) {
+            return logical;
+        }
+        let Key::Character(typed) = &logical else {
+            return logical;
+        };
+        if !typed.chars().any(ui::latin_chord::is_non_latin_letter) {
+            return logical;
+        }
+        let active = self.state.key_get_layout(keycode);
+        (0..self.keymap.num_layouts_for_key(keycode))
+            .filter(|layout| *layout != active)
+            .find_map(|layout| {
+                self.keymap
+                    .key_get_syms_by_level(keycode, layout, 0)
+                    .first()
+                    .and_then(|latin| latin.key_char())
+                    .filter(char::is_ascii_graphic)
+            })
+            .map_or(logical, |latin| {
+                Key::Character(SmolStr::new(latin.encode_utf8(&mut [0; 4])))
+            })
+    }
+
     /// Forget keys and modifiers which may have been released while input
     /// delivery was suspended, while preserving the user's active layout.
     pub(super) fn reset_state(&mut self) {
@@ -137,7 +169,7 @@ impl KeyboardXkb {
     /// mutating xkb's down/up state a second time.
     pub(super) fn repeat_event(&self, keycode: xkb::Keycode) -> WindowEvent {
         let sym = self.state.key_get_one_sym(keycode);
-        let logical = keysym_to_winit_key(sym.raw());
+        let logical = self.chord_logical_key(keycode, sym, self.current_mods());
         let mut input = keyboard_input_event(
             logical,
             text_for(sym.key_char(), self.current_mods()),
@@ -207,7 +239,7 @@ impl KeyboardXkb {
         };
 
         // Derive the logical key from the *keysym* (not UTF-8 output) so chords like Ctrl+K resolve to `Character("k")`, not the control character.
-        let logical = keysym_to_winit_key(sym.raw());
+        let logical = self.chord_logical_key(keycode, sym, new_mods);
         let text = text_for(sym.key_char(), new_mods);
         let input = Some(keyboard_input_event(
             logical,
@@ -363,5 +395,84 @@ pub(super) fn keyboard_input_event(
         device_id: winit::event::DeviceId::dummy(),
         event: ev,
         is_synthetic: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pressed(events: Vec<BackendEvent>) -> winit::event::KeyEvent {
+        events
+            .into_iter()
+            .find_map(|event| match event {
+                BackendEvent::Input(WindowEvent::KeyboardInput { event, .. }) => Some(event),
+                _ => None,
+            })
+            .expect("a key event")
+    }
+
+    #[test]
+    fn a_chord_typed_on_a_russian_source_names_its_latin_key() {
+        let settings = KeyboardSettings {
+            model: "pc105".into(),
+            source_ids: vec!["us".into(), "ru".into()],
+            layouts: "us,ru".into(),
+            variants: ",".into(),
+            options: None,
+            active_index: 1,
+        };
+        let mut keyboard =
+            KeyboardXkb::from_settings(&settings).expect("the us,ru keymap compiles");
+        // Unmodified, the key a US keyboard labels L types the Russian letter.
+        let typed = pressed(keyboard.translate(38, true));
+        assert_eq!(typed.logical_key, Key::Character("д".into()));
+        assert_eq!(typed.text.as_deref(), Some("д"));
+        let _ = keyboard.translate(38, false);
+
+        // Under Super it is the lock chord, as on the US source.
+        let _ = keyboard.translate(125, true);
+        let chord = pressed(keyboard.translate(38, true));
+        assert_eq!(chord.logical_key, Key::Character("l".into()));
+        let shortcuts = settings_store::hardware::ShortcutConfig::default();
+        assert_eq!(
+            tilo_desktop::shortcuts::configured_shortcut_action(
+                &shortcuts,
+                &chord.logical_key,
+                Modifiers::from(ModifiersState::SUPER),
+            ),
+            Some(settings_store::hardware::ShortcutAction::Lock)
+        );
+        let WindowEvent::KeyboardInput { event, .. } =
+            keyboard.repeat_event(xkb::Keycode::new(38 + 8))
+        else {
+            panic!("a repeat is a key event")
+        };
+        assert_eq!(event.logical_key, Key::Character("l".into()));
+        let _ = keyboard.translate(38, false);
+        let _ = keyboard.translate(125, false);
+
+        // Ctrl+C copies on the Russian source too.
+        let _ = keyboard.translate(29, true);
+        let copy = pressed(keyboard.translate(46, true));
+        assert_eq!(copy.logical_key, Key::Character("c".into()));
+    }
+
+    #[test]
+    fn a_chord_on_a_latin_letter_with_a_diacritic_keeps_that_letter() {
+        let settings = KeyboardSettings {
+            model: "pc105".into(),
+            source_ids: vec!["us".into(), "de:nodeadkeys".into()],
+            layouts: "us,de".into(),
+            variants: ",nodeadkeys".into(),
+            options: None,
+            active_index: 1,
+        };
+        let mut keyboard =
+            KeyboardXkb::from_settings(&settings).expect("the us,de keymap compiles");
+        // Ctrl and the German Ö key (US semicolon, evdev 39) stays Ö.
+        let _ = keyboard.translate(29, true);
+        let chord = pressed(keyboard.translate(39, true));
+        assert_eq!(chord.logical_key, Key::Character("ö".into()));
     }
 }
