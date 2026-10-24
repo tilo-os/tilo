@@ -178,14 +178,11 @@ async fn write_stored(
         registry.lock_recover().batch(|registry| {
             for (file, bytes) in whole {
                 let resident = Residency::Resident { bytes };
-                let mut record = match registry.get(file.record_id) {
-                    Some(record) => record.clone(),
-                    None => {
-                        let mut record = RecordAvailability::new(file.record_id, RecordKind::File);
-                        record.current_version = Some(file.version);
-                        record
-                    }
-                };
+                let mut record = registry.get(file.record_id).cloned().unwrap_or_else(|| {
+                    let mut record = RecordAvailability::new(file.record_id, RecordKind::File);
+                    record.current_version = Some(file.version);
+                    record
+                });
                 if record.current_version != Some(file.version) || record.residency == resident {
                     continue;
                 }
@@ -593,24 +590,25 @@ mod tests {
         stored.write_now();
         stored.settled().await;
 
-        let registry = note.registry.lock_recover();
-        for (record_id, _, bytes) in &files {
-            let record = registry
-                .get(*record_id)
-                .expect("each file read whole is recorded");
+        let (records, written, woken) = {
+            let registry = note.registry.lock_recover();
+            let records: Vec<_> = files
+                .iter()
+                .map(|(record_id, _, _)| registry.get(*record_id).cloned())
+                .collect();
+            (
+                records,
+                registry.persist_count() - writes,
+                registry.hydration_generation().wrapping_sub(wakes),
+            )
+        };
+        for ((_, _, bytes), record) in files.iter().zip(records) {
+            let record = record.expect("each file read whole is recorded");
             assert_eq!(record.residency, Residency::Resident { bytes: *bytes });
             assert_eq!(record.current_version, Some(version));
         }
-        assert_eq!(
-            registry.persist_count() - writes,
-            1,
-            "the files are written together"
-        );
-        assert_eq!(
-            registry.hydration_generation().wrapping_sub(wakes),
-            1,
-            "the pinned-hydration pass is woken once"
-        );
+        assert_eq!(written, 1, "the files are written together");
+        assert_eq!(woken, 1, "the pinned-hydration pass is woken once");
     }
 
     /// "Retry download" while the device that keeps the file is offline
