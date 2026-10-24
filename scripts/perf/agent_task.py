@@ -79,6 +79,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -380,6 +381,12 @@ class FakeModel:
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
+            def setup(self) -> None:
+                super().setup()
+                # Each event goes out as written: Nagle's algorithm against the
+                # client's delayed ACK would hold a turn's later pieces ~40 ms.
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
             def log_message(self, *_args: Any) -> None:
                 pass
 
@@ -461,11 +468,19 @@ class TaskRun:
         return self.wall_ms - self.model_ms - self.tilo_ms
 
 
+class NoDelayConnection(http.client.HTTPConnection):
+    """An HTTP connection that sends each request as it is written."""
+
+    def connect(self) -> None:
+        super().connect()
+        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+
 class ModelClient:
     """Streams one Messages turn over a kept-alive loopback connection."""
 
     def __init__(self, port: int, tools: list[dict[str, Any]]):
-        self.connection = http.client.HTTPConnection("127.0.0.1", port, timeout=120)
+        self.connection = NoDelayConnection("127.0.0.1", port, timeout=120)
         # As the Messages API takes them: an MCP tool's inputSchema is its input_schema.
         self.tools = [{"name": t["name"], "description": t.get("description", ""),
                        "input_schema": t.get("inputSchema", {"type": "object"})} for t in tools]
@@ -827,8 +842,10 @@ def collect(runs: list[TaskRun]) -> list[tuple[str, str, list[float], dict[str, 
     results.append(("agent.task.notes.model", "ms", [r.model_ms for r in runs], {}))
     results.append(("agent.task.notes.client", "ms", [r.client_ms for r in runs], {}))
     results.append(("agent.task.notes.turns", "count", [float(r.turns) for r in runs], {}))
+    retried = {step: sum(c.step == f"{step}.retry" for r in runs for c in r.calls) for step in STEPS}
     results.append(("agent.task.notes.retries", "count",
-                    [float(sum(c.step.endswith(".retry") for c in r.calls)) for r in runs], {}))
+                    [float(sum(c.step.endswith(".retry") for c in r.calls)) for r in runs],
+                    {f"retried_{step}": count for step, count in retried.items() if count}))
     for step in STEPS:
         results.append((f"agent.task.notes.step.{step}", "ms", [step_ms(r, step) for r in runs],
                         {"tool": first_call(runs[0], step).name,
@@ -855,8 +872,9 @@ def summary(runs: list[TaskRun]) -> str:
              f"   client {p50([r.client_ms for r in runs]):.2f} ms"]
     for step in STEPS:
         lines.append(f"  {step:9s}{p50([step_ms(r, step) for r in runs]):8.2f} ms")
-    retries = sum(c.step.endswith(".retry") for r in runs for c in r.calls)
-    lines.append(f"  retried calls: {retries}")
+    retried = {step: sum(c.step == f"{step}.retry" for r in runs for c in r.calls) for step in STEPS}
+    lines.append(f"  retried calls: {sum(retried.values())} "
+                 f"({', '.join(f'{step} {n}' for step, n in retried.items() if n) or 'none'})")
     return "\n".join(lines)
 
 
