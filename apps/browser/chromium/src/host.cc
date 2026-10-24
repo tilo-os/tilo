@@ -1505,6 +1505,22 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
       d->GetType("commands")==VTYPE_DICTIONARY?d->GetDictionary("commands"):nullptr);
     return;
   }
+  // What an extension may ask for later, and what of it the person granted,
+  // as the Browser keeps it (extension_permissions.h).
+  if(op=="extension_grants") {
+    auto set=[&](const char* key) {
+      tilo::PermissionSet read;auto inner=d->GetDictionary(key);
+      for(const char* name:{"permissions","hosts"}) {
+        auto list=inner->GetList(name);auto& into=std::string(name)=="permissions"?read.permissions:read.origins;
+        for(size_t i=0;list && i<list->GetSize();++i)into.push_back(list->GetString(i));
+      }
+      return read;
+    };
+    if(extension_tabs)extension_tabs->SetOptional(d->GetString("id"),set("optional"),set("granted"));
+    return;
+  }
+  // The person answered an extension's request for more access.
+  if(op=="extension_permission_decision") {if(extension_tabs)extension_tabs->PermissionDecision(d->GetInt("request"),d->GetBool("allow"));return;}
   if(op=="extension_forget") {if(extension_tabs)extension_tabs->Forget(d->GetString("id"));return;}
   // The person chose an extension's notification, or one of its buttons.
   if(op=="extension_notification_chosen") {
@@ -1833,6 +1849,20 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
            d->GetString("notification").length()<=tilo::ExtensionNotifications::kMaxId &&
            (!d->HasKey("button") || (type("button",VTYPE_INT) && d->GetInt("button")>=0 && d->GetInt("button")<(int)tilo::ExtensionNotifications::kMaxButtons));
   }
+  if(op=="extension_grants") {
+    // Two sets, each of permissions and site patterns, as extension_access names them.
+    auto set=[&](const char* key) {
+      if(!type(key,VTYPE_DICTIONARY))return false;auto inner=d->GetDictionary(key);
+      for(const char* name:{"permissions","hosts"}) {
+        if(!inner->HasKey(name))continue;
+        if(inner->GetType(name)!=VTYPE_LIST)return false;auto list=inner->GetList(name);if(list->GetSize()>512)return false;
+        for(size_t i=0;i<list->GetSize();++i)if(list->GetType(i)!=VTYPE_STRING || list->GetString(i).length()>2048)return false;
+      }
+      return true;
+    };
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && set("optional") && set("granted");
+  }
+  if(op=="extension_permission_decision") return type("request",VTYPE_INT) && d->GetInt("request")>0 && type("allow",VTYPE_BOOL);
   if(op=="extension_access") {
     auto strings=[&](const char* key){
       if(!type(key,VTYPE_LIST))return false;auto list=d->GetList(key);if(list->GetSize()>512)return false;

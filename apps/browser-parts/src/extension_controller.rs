@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use ui::icons::Icon;
 use ui::webview::{
-    ExtensionActionIcon, ExtensionMenuItem, SharedEngine, WebViewCommand, WebViewEvent,
+    ExtensionActionIcon, ExtensionMenuItem, ExtensionPermissionSet, SharedEngine, WebViewCommand,
+    WebViewEvent,
 };
 use ui::widget::floating_surface::PanelAlign;
 use ui::widget::{
@@ -29,6 +30,7 @@ use ui::window_toolbar::ToolbarAction;
 use ui::tilo_actions::{Resource, ResourcePresentation};
 
 use crate::CATALOG;
+use crate::capabilities::ExtensionQuestion;
 use crate::effects::ExtensionRequest;
 use crate::extension_host::{ExtensionHost, Wanted};
 use crate::extension_toolbar::{self as toolbar, Installed};
@@ -286,6 +288,9 @@ pub struct ExtensionController {
     /// What each extension's button menu holds, as the engine told it: the
     /// `chrome.contextMenus` items the extension made for its button.
     menus: HashMap<String, Vec<ExtensionMenuItem>>,
+    /// Extensions' requests for more access, for the window to ask the
+    /// person ([`Self::take_questions`]).
+    questions: Vec<ExtensionQuestion>,
 }
 
 /// The switches `installed` asks for that this session has not made yet,
@@ -351,7 +356,73 @@ impl ExtensionController {
             updated_at: None,
             awaiting: Vec::new(),
             menus: HashMap::new(),
+            questions: Vec::new(),
         }
+    }
+
+    /// The requests for more access extensions made since asked, which the
+    /// window asks the person in its shared prompt.
+    pub fn take_questions(&mut self) -> Vec<ExtensionQuestion> {
+        std::mem::take(&mut self.questions)
+    }
+
+    /// An extension asks for more access (`chrome.permissions.request`):
+    /// the person is asked what it could then do, as when it was added.
+    /// Access Chrome asks nobody about (`storage`) is granted at once, as
+    /// there; one asked of an extension that is off, refused.
+    fn permission_request(
+        &mut self,
+        request: u32,
+        id: &str,
+        asked: &ExtensionPermissionSet,
+        engine: &SharedEngine,
+    ) {
+        let Some(extension) = self
+            .installed
+            .iter()
+            .find(|extension| extension.id == id && extension.enabled)
+        else {
+            engine.send(WebViewCommand::ExtensionPermissionDecision {
+                request,
+                allow: false,
+            });
+            return;
+        };
+        let lines = extensions::asked_summary(asked);
+        if lines.is_empty() {
+            engine.send(WebViewCommand::ExtensionPermissionDecision {
+                request,
+                allow: true,
+            });
+            return;
+        }
+        self.questions.push(ExtensionQuestion {
+            request,
+            name: extension.name.clone(),
+            lines,
+        });
+    }
+
+    /// What an extension holds of what it may ask for changed: kept with
+    /// the extension, so it holds it in the next run too. The engine holds
+    /// it already and is not told it again.
+    fn keep_granted(&mut self, id: &str, granted: ExtensionPermissionSet) {
+        if let Some(told) = self.access_told.get_mut(id) {
+            told.granted.clone_from(&granted);
+        }
+        if let Some(extension) = self
+            .installed
+            .iter_mut()
+            .find(|extension| extension.id == id)
+        {
+            extension.access.granted.clone_from(&granted);
+        }
+        let Some(info) = self.info_of(id).cloned() else {
+            return;
+        };
+        self.change_profile(move || {
+            extensions::set_granted(&info, &granted).map_err(|error| error.to_string())
+        });
     }
 
     fn queue(&self, command: Command) -> impl FnMut() + 'static {
@@ -456,6 +527,14 @@ impl ExtensionController {
                     &id,
                     (&notification, notice.as_ref()),
                 );
+                false
+            }
+            WebViewEvent::ExtensionPermissionRequest { request, id, asked } => {
+                self.permission_request(request, &id, &asked, engine);
+                !self.questions.is_empty()
+            }
+            WebViewEvent::ExtensionPermissions { id, granted } => {
+                self.keep_granted(&id, granted);
                 false
             }
             _ => false,
@@ -631,6 +710,7 @@ impl ExtensionController {
         self.host.flush(engine);
         self.tell_access(engine);
         changed |= self.switch(engine, now);
+        let mut permissions = Vec::new();
         if let Some(Panel::Popup {
             engine: popup,
             size,
@@ -638,10 +718,15 @@ impl ExtensionController {
         }) = &mut self.panel
         {
             // The popup is a tab of its own: its page events are not the
-            // window's, but they must not pile up.
+            // window's, but they must not pile up. What it asks for is the
+            // window's to ask.
             let mut closed = false;
             for event in popup.drain_events() {
                 match event {
+                    event @ (ui::webview::WebViewEvent::ExtensionPermissionRequest { .. }
+                    | ui::webview::WebViewEvent::ExtensionPermissions { .. }) => {
+                        permissions.push(event);
+                    }
                     // Its page closed it (a password filled, a choice made).
                     ui::webview::WebViewEvent::TabClosed => closed = true,
                     // As big as its page, as Chrome sizes a popup.
@@ -669,6 +754,9 @@ impl ExtensionController {
                 self.panel = None;
                 changed = true;
             }
+        }
+        for event in permissions {
+            changed |= self.on_engine_event(event, engine);
         }
         changed
     }
@@ -867,7 +955,8 @@ impl ExtensionController {
         // one keyboard shortcut, the engine gives it to the one told first.
         for extension in &self.installed {
             let (id, access) = (&extension.id, &extension.access);
-            if self.access_told.get(id) != Some(access) {
+            let told = self.access_told.get(id);
+            if told != Some(access) {
                 engine.send(WebViewCommand::ExtensionAccess {
                     id: id.clone(),
                     permissions: access.permissions.clone(),
@@ -876,6 +965,18 @@ impl ExtensionController {
                     token: access.token.clone(),
                     commands: access.commands.clone(),
                 });
+                // What it may ask for later, and was granted: told when it
+                // has any, or had before.
+                let asks = |access: &toolbar::Access| {
+                    !access.optional.is_empty() || !access.granted.is_empty()
+                };
+                if asks(access) || told.is_some_and(asks) {
+                    engine.send(WebViewCommand::ExtensionGrants {
+                        id: id.clone(),
+                        optional: access.optional.clone(),
+                        granted: access.granted.clone(),
+                    });
+                }
             }
         }
         for id in self.access_told.keys() {
@@ -2172,6 +2273,99 @@ mod tests {
     }
 
     #[test]
+    fn an_extension_asks_for_more_access_through_the_window() {
+        let window = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = window.clone();
+        let mut controller = ExtensionController::new(true);
+        let set = |permissions: &[&str], origins: &[&str]| ExtensionPermissionSet {
+            permissions: permissions.iter().map(|&entry| entry.to_owned()).collect(),
+            origins: origins.iter().map(|&entry| entry.to_owned()).collect(),
+        };
+        let access = toolbar::Access {
+            permissions: vec!["storage".into()],
+            optional: set(&["tabs", "alarms"], &["https://*.example.org/*"]),
+            ..toolbar::Access::default()
+        };
+        let mut off = installed("off", None, toolbar::Access::default());
+        off.enabled = false;
+        controller.installed = vec![installed("permit", Some("popup.html"), access), off];
+        // The engine learns what it may ask for.
+        controller.tell_access(&shared);
+        let grants = |window: &ui::webview::test_engine::TestEngine| {
+            window
+                .commands()
+                .into_iter()
+                .filter(|command| matches!(command, WebViewCommand::ExtensionGrants { .. }))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            grants(&window),
+            [WebViewCommand::ExtensionGrants {
+                id: "permit".into(),
+                optional: set(&["tabs", "alarms"], &["https://*.example.org/*"]),
+                granted: set(&[], &[]),
+            }]
+        );
+        // Its request is the window's question, put as its addition was.
+        let request = |request, id: &str, asked| WebViewEvent::ExtensionPermissionRequest {
+            request,
+            id: id.into(),
+            asked,
+        };
+        assert!(controller.on_engine_event(
+            request(3, "permit", set(&["tabs"], &["https://news.example.org/*"])),
+            &shared
+        ));
+        assert_eq!(
+            controller.take_questions(),
+            [ExtensionQuestion {
+                request: 3,
+                name: "permit".into(),
+                lines: vec![
+                    "Read and change your data on news.example.org".into(),
+                    "Read your browsing history".into(),
+                ],
+            }]
+        );
+        assert!(controller.take_questions().is_empty());
+        // Nothing to ask about is granted, as in Chrome; an extension that is
+        // off is refused.
+        controller.on_engine_event(request(4, "permit", set(&["alarms"], &[])), &shared);
+        controller.on_engine_event(request(5, "off", set(&["tabs"], &[])), &shared);
+        assert!(controller.take_questions().is_empty());
+        let decisions: Vec<_> = window
+            .commands()
+            .into_iter()
+            .filter(|command| matches!(command, WebViewCommand::ExtensionPermissionDecision { .. }))
+            .collect();
+        assert_eq!(
+            decisions,
+            [
+                WebViewCommand::ExtensionPermissionDecision {
+                    request: 4,
+                    allow: true
+                },
+                WebViewCommand::ExtensionPermissionDecision {
+                    request: 5,
+                    allow: false
+                },
+            ]
+        );
+        // What the engine granted it is kept, and not told back to it.
+        let before = window.commands().len();
+        controller.on_engine_event(
+            WebViewEvent::ExtensionPermissions {
+                id: "permit".into(),
+                granted: set(&["tabs"], &[]),
+            },
+            &shared,
+        );
+        assert_eq!(controller.installed[0].access.granted, set(&["tabs"], &[]));
+        controller.tell_access(&shared);
+        assert_eq!(window.commands().len(), before);
+    }
+
+    #[test]
     fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
         let window = ui::webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
@@ -2183,6 +2377,7 @@ mod tests {
             scriptable: vec!["<all_urls>".into()],
             token: Some("a".repeat(48)),
             commands: Some(shortcuts.clone()),
+            ..toolbar::Access::default()
         };
         controller.installed = vec![installed("reader", None, tabs)];
         controller.tell_access(&shared);

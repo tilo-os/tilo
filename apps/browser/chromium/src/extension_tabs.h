@@ -54,6 +54,7 @@
 #include "extension_commands.h"
 #include "extension_menus.h"
 #include "extension_notifications.h"
+#include "extension_permissions.h"
 #include "extension_tabs_script.h"
 #include "match_pattern.h"
 
@@ -288,6 +289,7 @@ class ExtensionTabs {
   // `commands` are its manifest's (`commands`), keyboard shortcuts.
   void SetAccess(const std::string& id, std::set<std::string> permissions, std::vector<std::string> hosts, std::vector<std::string> scriptable,
                  const std::string& token, CefRefPtr<CefDictionaryValue> commands) {
+    permissions_.SetRequired(id, permissions, hosts);
     access_[id] = Access{std::move(permissions), std::move(hosts), std::move(scriptable)};
     commands_.Set(id, CommandsOf(commands));
     // The items its button's menu kept from an earlier run.
@@ -303,8 +305,35 @@ class ExtensionTabs {
       Ensure([this, id, held] { Handle(id, 0, held.method, ToJson(Wrap(held.args)), held.reply); });
     }
   }
+  // What the extension may ask for later, and what of it the person
+  // granted (extension_permissions.h), as the Browser keeps it with the
+  // extension.
+  void SetOptional(const std::string& id, PermissionSet optional, const PermissionSet& granted) {
+    permissions_.SetOptional(id, std::move(optional), granted);
+  }
+  // The person answered an extension's request for more access
+  // (`permissions.request`): what they allowed is granted at once, and the
+  // extension hears of it.
+  void PermissionDecision(int request, bool allow) {
+    auto found = asking_.find(request);
+    if (found == asking_.end()) return;
+    auto asking = std::move(found->second);
+    asking_.erase(found);
+    auto granted = CefValue::Create();
+    granted->SetBool(allow && access_.count(asking.extension));
+    if (!granted->GetBool()) { Succeed(asking.reply, granted); return; }
+    const auto added = permissions_.Grant(asking.extension, asking.missing);
+    Succeed(asking.reply, granted);
+    PermissionsChanged(asking.extension, asking.tab, "permissions.onAdded", added);
+  }
   void Forget(const std::string& id) {
     access_.erase(id);
+    permissions_.Forget(id);
+    for (auto it = asking_.begin(); it != asking_.end();) {
+      if (it->second.extension != id) { ++it; continue; }
+      Fail(it->second.reply, "This extension is not running");
+      it = asking_.erase(it);
+    }
     commands_.Forget(id);
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
     listening_.erase(id);
@@ -506,6 +535,8 @@ class ExtensionTabs {
       Button(extension, tabs, method == "action.get", args, reply);
     } else if (method.rfind("notifications.", 0) == 0) {
       Notify(extension, method, args, reply);
+    } else if (method.rfind("permissions.", 0) == 0) {
+      Permissions(extension, caller, method, args, reply);
     } else if (method == "commands.getAll") {
       auto list = CefListValue::Create();
       for (const auto& command : commands_.All(extension)) {
@@ -550,8 +581,9 @@ class ExtensionTabs {
     const bool web = page.rfind("http://", 0) == 0 || page.rfind("https://", 0) == 0 || page.rfind("file://", 0) == 0;
     const std::string own = page.rfind(prefix, 0) == 0 ? page.substr(prefix.size(), 32) : std::string();
     if (!web && own.empty()) return offers;
-    for (const auto& [extension, access] : access_) {
-      if (extension == identity_ || !access.permissions.count("contextMenus") || (!web && extension != own)) continue;
+    for (const auto& entry : access_) {
+      const auto& extension = entry.first;
+      if (extension == identity_ || !Has(extension, "contextMenus") || (!web && extension != own)) continue;
       auto mine = menus_.Offers(extension, context);
       // Each extension's items are a group of their own.
       if (!offers.empty() && !mine.empty()) offers.push_back(MenuOffer{extension, std::string(), std::string(), "separator"});
@@ -1042,7 +1074,8 @@ class ExtensionTabs {
   }
   static bool Listenable(const std::string& name) {
     static const std::set<std::string> names{"action.onClicked", "commands.onCommand", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated", "tabs.onRemoved", "windows.onFocusChanged",
-                                             "notifications.onClicked", "notifications.onButtonClicked", "notifications.onClosed"};
+                                             "notifications.onClicked", "notifications.onButtonClicked", "notifications.onClosed",
+                                             "permissions.onAdded", "permissions.onRemoved"};
     return names.count(name) > 0;
   }
   static bool Populate(CefRefPtr<CefDictionaryValue> args) {
@@ -1192,17 +1225,16 @@ class ExtensionTabs {
     return url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0 || url == "about:blank" ||
            url.rfind("chrome-extension://" + extension + "/", 0) == 0;
   }
+  // What the manifest requires, or the person granted it since.
   bool Has(const std::string& extension, const char* permission) const {
-    auto found = access_.find(extension);
-    return found != access_.end() && found->second.permissions.count(permission) > 0;
+    return access_.count(extension) && permissions_.Has(extension, permission);
   }
   // Whether the extension's host permissions reach `url`. Where its content
   // scripts run does not count: Chrome reads a tab and scripts it by host
   // permissions alone.
   bool HostAccess(const std::string& extension, const std::string& url) const {
-    auto found = access_.find(extension);
-    if (found == access_.end()) return false;
-    for (const auto& pattern : found->second.hosts) if (MatchPattern(pattern, url)) return true;
+    if (!access_.count(extension)) return false;
+    for (const auto& pattern : permissions_.Hosts(extension)) if (MatchPattern(pattern, url)) return true;
     return false;
   }
   bool Granted(const std::string& extension, const ExtensionTab& tab) const {
@@ -1219,10 +1251,9 @@ class ExtensionTabs {
   // which with `activeTab` is what Chrome asks of an extension to capture a
   // tab; content scripts on every site are not.
   bool AllSites(const std::string& extension) const {
-    auto found = access_.find(extension);
-    if (found == access_.end()) return false;
-    if (found->second.permissions.count("<all_urls>")) return true;
-    for (const auto& pattern : found->second.hosts) {
+    if (!access_.count(extension)) return false;
+    if (Has(extension, "<all_urls>")) return true;
+    for (const auto& pattern : permissions_.Hosts(extension)) {
       if (pattern == "<all_urls>") return true;
       const auto separator = pattern.find("://");
       if (separator == std::string::npos) continue;
@@ -1230,6 +1261,100 @@ class ExtensionTabs {
       if (pattern.substr(separator + 3, slash == std::string::npos ? std::string::npos : slash - separator - 3) == "*") return true;
     }
     return false;
+  }
+
+  // A list of strings, as a set of permissions names them.
+  static CefRefPtr<CefListValue> ListOf(const std::vector<std::string>& entries) {
+    auto list = CefListValue::Create();
+    for (const auto& entry : entries) list->SetString(list->GetSize(), entry);
+    return list;
+  }
+  static CefRefPtr<CefDictionaryValue> SetObject(const PermissionSet& set) {
+    auto object = CefDictionaryValue::Create();
+    object->SetList("permissions", ListOf(set.permissions));
+    object->SetList("origins", ListOf(set.origins));
+    return object;
+  }
+  // The set of permissions a call names, as Chrome reads it: `permissions`
+  // and `origins`, each a list of strings, either left out.
+  static std::optional<std::string> ReadSet(CefRefPtr<CefDictionaryValue> args, PermissionSet& set) {
+    for (const char* key : {"permissions", "origins"}) {
+      if (!args->HasKey(key) || args->GetType(key) == VTYPE_NULL) continue;
+      auto list = args->GetType(key) == VTYPE_LIST ? args->GetList(key) : nullptr;
+      if (!list || list->GetSize() > 512) return std::string("Invalid value for argument 1. Property '") + key + "': Invalid type.";
+      auto& into = std::string(key) == "permissions" ? set.permissions : set.origins;
+      for (size_t i = 0; i < list->GetSize(); ++i) {
+        if (list->GetType(i) != VTYPE_STRING || list->GetString(i).length() > 2048)
+          return std::string("Invalid value for argument 1. Property '") + key + "': Invalid type.";
+        const auto entry = list->GetString(i).ToString();
+        if (std::find(into.begin(), into.end(), entry) == into.end()) into.push_back(entry);
+      }
+    }
+    return std::nullopt;
+  }
+  // `chrome.permissions`, which Chromium answers only for the extensions of
+  // its own windows: a request asks the person in the Browser, which keeps
+  // what they grant with the extension (extension_permissions.h).
+  void Permissions(const std::string& extension, int caller, const std::string& method, CefRefPtr<CefDictionaryValue> args, Reply reply) {
+    PermissionSet asked;
+    if (method != "permissions.getAll") {
+      if (auto error = ReadSet(args, asked)) { Fail(reply, *error); return; }
+    }
+    auto answer = CefValue::Create();
+    if (method == "permissions.getAll") {
+      Succeed(reply, Wrap(SetObject(permissions_.All(extension))));
+    } else if (method == "permissions.contains") {
+      answer->SetBool(permissions_.Holds(extension, asked));
+      Succeed(reply, answer);
+    } else if (method == "permissions.request") {
+      PermissionSet missing;
+      if (auto error = permissions_.Ask(extension, asked, missing)) { Fail(reply, *error); return; }
+      if (missing.empty()) { answer->SetBool(true); Succeed(reply, answer); return; }
+      // One question an extension at a time: it cannot pile them up.
+      for (const auto& [id, pending] : asking_)
+        if (pending.extension == extension) { Fail(reply, "A request for permissions is already being shown."); return; }
+      // The person is asked where the extension's page is: its popup, or
+      // its page in a tab.
+      const int tab = caller ? caller : hooks_.focused();
+      const int request = ++asked_;
+      asking_[request] = Asking{extension, tab, missing, reply};
+      auto fields = SetObject(missing);
+      fields->SetInt("request", request);
+      fields->SetString("id", extension);
+      if (hooks_.event) hooks_.event(tab, "extension_permission_request", fields);
+    } else if (method == "permissions.remove") {
+      PermissionSet removed;
+      if (auto error = permissions_.Remove(extension, asked, removed)) { Fail(reply, *error); return; }
+      answer->SetBool(true);
+      Succeed(reply, answer);
+      PermissionsChanged(extension, caller ? caller : hooks_.focused(), "permissions.onRemoved", removed);
+    } else {
+      Fail(reply, "Tilo does not support " + method + " yet");
+    }
+  }
+  // What the extension holds changed by `changed`: the Browser keeps what
+  // it was granted now, told on `tab`, and the extension's worker and pages
+  // hear of the change (`event`).
+  void PermissionsChanged(const std::string& extension, int tab, const std::string& event, const PermissionSet& changed) {
+    if (changed.empty()) return;
+    if (hooks_.event) {
+      auto fields = SetObject(permissions_.Granted(extension));
+      fields->SetString("id", extension);
+      const auto tabs = hooks_.tabs();
+      if (!Find(tabs, tab) && !tabs.empty()) tab = tabs.front().tab;
+      hooks_.event(tab, "extension_permissions", fields);
+    }
+    auto name = CefValue::Create();
+    name->SetString(event);
+    auto args = CefListValue::Create();
+    args->SetDictionary(0, SetObject(changed));
+    const auto expression = "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.dispatch(" + ToJson(name) + ", " + ToJson(Wrap(args)) + ") : -1";
+    // A sleeping worker is woken only to a listener of its own.
+    const bool worker = listening_.count(extension) && listening_[extension].count(event);
+    for (int end : Ends(extension)) {
+      if (!end && !worker) continue;
+      AtEnd(extension, end, expression, [](std::optional<std::string>, CefRefPtr<CefValue>) {});
+    }
   }
 
   // `tabs.captureVisibleTab`: the frame the window's tab shows, as Chrome
@@ -2754,6 +2879,12 @@ class ExtensionTabs {
   std::set<std::string> displays_;
   std::map<std::pair<std::string, int>, std::string> shown_;
   std::map<std::string, Access> access_;
+  // What each extension holds of what it may ask for, and the questions
+  // the person has yet to answer, by number.
+  ExtensionPermissions permissions_;
+  struct Asking { std::string extension; int tab; PermissionSet missing; Reply reply; };
+  std::map<int, Asking> asking_;
+  int asked_ = 0;
   std::map<std::string, std::set<std::string>> listening_;
   std::set<std::pair<std::string, int>> granted_;
   // Each button's look for one tab, by extension and tab id.

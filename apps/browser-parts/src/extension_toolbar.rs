@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
+use ui::webview::ExtensionPermissionSet;
 
 use crate::extensions::ExtensionInfo;
 
@@ -90,6 +91,11 @@ pub struct Access {
     /// Its keyboard shortcuts: the manifest's `commands`, whose suggested
     /// keys the engine gives and runs as Chrome does.
     pub commands: Option<Value>,
+    /// What it may ask for later (`optional_permissions`,
+    /// `optional_host_permissions`), and what of that the person granted
+    /// ([`crate::extensions::granted`]).
+    pub optional: ExtensionPermissionSet,
+    pub granted: ExtensionPermissionSet,
 }
 
 pub fn access(manifest: &Value) -> Access {
@@ -103,6 +109,18 @@ pub fn access(manifest: &Value) -> Access {
             .collect()
     };
     let site = |entry: &String| entry == "<all_urls>" || entry.contains("://");
+    // Manifest V2 lists optional sites among its optional permissions too.
+    let mut optional = ExtensionPermissionSet {
+        permissions: Vec::new(),
+        origins: strings(manifest.get("optional_host_permissions")),
+    };
+    for entry in strings(manifest.get("optional_permissions")) {
+        if site(&entry) {
+            optional.origins.push(entry);
+        } else {
+            optional.permissions.push(entry);
+        }
+    }
     let mut permissions = Vec::new();
     let mut hosts = strings(manifest.get("host_permissions"));
     let mut scriptable = Vec::new();
@@ -135,6 +153,8 @@ pub fn access(manifest: &Value) -> Access {
             .get("commands")
             .filter(|commands| commands.is_object())
             .cloned(),
+        optional,
+        granted: ExtensionPermissionSet::default(),
     }
 }
 
@@ -201,6 +221,7 @@ impl Installed {
         let options = options_page(&manifest);
         let access = Access {
             token: crate::extensions::tabs_token_of(&info.path),
+            granted: crate::extensions::granted(info),
             ..access(&manifest)
         };
         Some(Self {
@@ -554,9 +575,26 @@ mod tests {
                 scriptable: vec!["<all_urls>".into()],
                 token: None,
                 commands: None,
+                optional: ExtensionPermissionSet::default(),
+                granted: ExtensionPermissionSet::default(),
             }
         );
         assert_eq!(access(&serde_json::json!({})), Access::default());
+        // What it may ask for later: MV3 names sites apart, MV2 among the rest.
+        let optional = |manifest| access(&manifest).optional;
+        assert_eq!(
+            optional(serde_json::json!({
+                "optional_permissions": ["tabs", "http://old.example/*"],
+                "optional_host_permissions": ["https://*.example.org/*"],
+            })),
+            ExtensionPermissionSet {
+                permissions: vec!["tabs".into()],
+                origins: vec![
+                    "https://*.example.org/*".into(),
+                    "http://old.example/*".into()
+                ],
+            }
+        );
         // Its keyboard shortcuts go to the engine as the manifest has them.
         let shortcuts = serde_json::json!({"_execute_action": {"suggested_key": "Alt+Shift+Y"}});
         assert_eq!(

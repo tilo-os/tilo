@@ -417,3 +417,93 @@ fn an_extensions_notification_arrives_and_a_choice_goes_back() {
     );
     assert!(!command_within_limits(&chosen(Some(2))));
 }
+
+#[test]
+fn an_extensions_request_for_more_access_reaches_the_browser_and_its_answer_the_engine() {
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let set = |permissions: &[&str], origins: &[&str]| crate::webview::ExtensionPermissionSet {
+        permissions: permissions.iter().map(|&entry| entry.to_owned()).collect(),
+        origins: origins.iter().map(|&entry| entry.to_owned()).collect(),
+    };
+    let grants = WebViewCommand::ExtensionGrants {
+        id: id.into(),
+        optional: set(&["tabs"], &["https://*.example.org/*"]),
+        granted: set(&["tabs"], &[]),
+    };
+    assert!(command_within_limits(&grants));
+    assert_eq!(
+        encode_command(grants),
+        Some(json!({"op":"extension_grants","id":id,
+            "optional":{"permissions":["tabs"],"hosts":["https://*.example.org/*"]},
+            "granted":{"permissions":["tabs"],"hosts":[]}}))
+    );
+    let decision = WebViewCommand::ExtensionPermissionDecision {
+        request: 3,
+        allow: true,
+    };
+    assert!(command_within_limits(&decision));
+    assert_eq!(
+        encode_command(decision),
+        Some(json!({"op":"extension_permission_decision","request":3,"allow":true}))
+    );
+    for bad in [
+        WebViewCommand::ExtensionPermissionDecision {
+            request: 0,
+            allow: true,
+        },
+        WebViewCommand::ExtensionGrants {
+            id: "short".into(),
+            optional: set(&[], &[]),
+            granted: set(&[], &[]),
+        },
+        WebViewCommand::ExtensionGrants {
+            id: id.into(),
+            optional: crate::webview::ExtensionPermissionSet {
+                permissions: vec![String::new(); 513],
+                origins: Vec::new(),
+            },
+            granted: set(&[], &[]),
+        },
+    ] {
+        assert!(!command_within_limits(&bad), "{bad:?}");
+    }
+
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    assert_eq!(
+        event(
+            json!({"event":"extension_permission_request","tab":2,"request":4,"id":id,
+            "permissions":["tabs"],"origins":["http://127.0.0.1/*"]})
+        ),
+        Some(WebViewEvent::ExtensionPermissionRequest {
+            request: 4,
+            id: id.into(),
+            asked: set(&["tabs"], &["http://127.0.0.1/*"]),
+        })
+    );
+    // All it holds now, also nothing.
+    assert_eq!(
+        event(
+            json!({"event":"extension_permissions","tab":2,"id":id,"permissions":[],"origins":[]})
+        ),
+        Some(WebViewEvent::ExtensionPermissions {
+            id: id.into(),
+            granted: set(&[], &[]),
+        })
+    );
+    // A request for nothing, without its number, from no extension, or of
+    // another shape: refused.
+    for bad in [
+        json!({"event":"extension_permission_request","request":4,"id":id,"permissions":[],"origins":[]}),
+        json!({"event":"extension_permission_request","id":id,"permissions":["tabs"],"origins":[]}),
+        json!({"event":"extension_permission_request","request":0,"id":id,"permissions":["tabs"],"origins":[]}),
+        json!({"event":"extension_permission_request","request":4,"id":"short","permissions":["tabs"],"origins":[]}),
+        json!({"event":"extension_permissions","id":id,"permissions":"tabs","origins":[]}),
+        json!({"event":"extension_permissions","id":id,"permissions":[7],"origins":[]}),
+        json!({"event":"extension_permissions","id":id,"permissions":[]}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+}

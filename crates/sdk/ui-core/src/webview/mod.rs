@@ -213,6 +213,20 @@ pub struct Popup {
     pub height: u32,
 }
 
+/// API permissions and site patterns, as `chrome.permissions` names a set
+/// of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionPermissionSet {
+    pub permissions: Vec<String>,
+    pub origins: Vec<String>,
+}
+
+impl ExtensionPermissionSet {
+    pub fn is_empty(&self) -> bool {
+        self.permissions.is_empty() && self.origins.is_empty()
+    }
+}
+
 /// What an extension changed of its toolbar button (`chrome.action`). Each
 /// field is `None` when it did not change; `Some(None)` takes back what it
 /// set for one tab, so that tab shows what every tab shows.
@@ -497,6 +511,21 @@ pub enum WebViewCommand {
         /// suggested keys the engine gives and runs.
         commands: Option<serde_json::Value>,
     },
+    /// What an extension may ask for later (its manifest's
+    /// `optional_permissions` and `optional_host_permissions`), and what of
+    /// it the person granted: the engine answers `chrome.permissions` within
+    /// them, and its tab APIs within what was granted too.
+    ExtensionGrants {
+        id: String,
+        optional: ExtensionPermissionSet,
+        granted: ExtensionPermissionSet,
+    },
+    /// The person answered an extension's request for more access
+    /// ([`WebViewEvent::ExtensionPermissionRequest`]).
+    ExtensionPermissionDecision {
+        request: u32,
+        allow: bool,
+    },
     /// An extension that left the profile: it is told nothing more.
     ExtensionForget {
         id: String,
@@ -610,6 +639,21 @@ pub enum WebViewEvent {
         id: String,
         notification: String,
         notice: Option<ExtensionNotice>,
+    },
+    /// An extension asks for more access (`chrome.permissions.request`),
+    /// all of it among what its manifest offers for later: ask the person,
+    /// and answer with [`WebViewCommand::ExtensionPermissionDecision`].
+    ExtensionPermissionRequest {
+        request: u32,
+        id: String,
+        asked: ExtensionPermissionSet,
+    },
+    /// What an extension holds of what it may ask for changed: it was
+    /// granted more, or gave some up. `granted` is all it holds now, which
+    /// the Browser keeps with the extension.
+    ExtensionPermissions {
+        id: String,
+        granted: ExtensionPermissionSet,
     },
     SiteStatus(SiteStatus),
     SiteResult {

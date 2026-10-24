@@ -528,9 +528,38 @@
     });
   }
 
+  // Access an extension asks for later (`optional_permissions`,
+  // `optional_host_permissions`). Chromium asks the person in its own
+  // window's dialog, which Tilo's pages are in none of: the host asks the
+  // Browser instead, which keeps what the person allowed with the extension
+  // (extension_permissions.h). As in Chrome, a request is made in answer to
+  // something the person did, and the extension's worker and pages hear of
+  // what it gained or gave up.
+  const permissions = chrome.permissions;
+  if (permissions) {
+    const setOf = (given) => ({
+      permissions: [].concat((given && given.permissions) || []),
+      origins: [].concat((given && given.origins) || []),
+    });
+    replace(permissions, 'getAll', () => call('permissions.getAll'));
+    replace(permissions, 'contains', (given) => call('permissions.contains', setOf(given)));
+    replace(permissions, 'request', (given) => {
+      const activation = typeof navigator !== 'undefined' && navigator.userActivation;
+      if (!activation || !activation.isActive) {
+        return Promise.reject(new Error('This function must be called during a user gesture'));
+      }
+      return call('permissions.request', setOf(given));
+    });
+    replace(permissions, 'remove', (given) => call('permissions.remove', setOf(given)));
+    event(permissions, 'onAdded', 'permissions.onAdded');
+    event(permissions, 'onRemoved', 'permissions.onRemoved');
+  }
+
   // Context menu items: the host keeps them and shows them in the page's
-  // menu (extension_menus.h); a choice comes back as onClicked.
-  if (!chrome.contextMenus && (runtime.getManifest().permissions || []).includes('contextMenus')) {
+  // menu (extension_menus.h); a choice comes back as onClicked. An
+  // extension may ask for them later, too.
+  const declared = (manifest.permissions || []).concat(manifest.optional_permissions || []);
+  if (!chrome.contextMenus && declared.includes('contextMenus')) {
     chrome.contextMenus = {onClicked: {}};
   }
   const menus = chrome.contextMenus;

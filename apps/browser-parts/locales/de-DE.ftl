@@ -132,5 +132,6 @@ browser-extension-no-version = Diese Erweiterung läuft in Chrome nicht mehr. Vi
 browser-extension-update-asks = { $name } möchte seit dem Update mehr Zugriff. Schalten Sie die Erweiterung ein, um ihn zu erlauben.
 browser-extension-notification-progress = { $percent } % erledigt
 browser-extension-notification-from = Von { $name }
+browser-extension-asks = { $name } möchte mehr Zugriff. Wenn Sie es erlauben, kann die Erweiterung
 browser-page-stopped = Diese Seite funktioniert nicht mehr
 browser-popup-close = Dieses Fenster schließen
