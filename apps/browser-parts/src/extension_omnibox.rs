@@ -264,7 +264,10 @@ impl ExtensionOmnibox {
         let session = self.session.as_ref()?;
         let text = &session.text;
         let title = match self.defaults.get(&session.keyword.id) {
-            Some(description) => plain_description(&description.replace("%s", text)),
+            // As in Chrome: the description is read without its markup
+            // first, then its first `%s` stands for what is typed, word for
+            // word, so typed `<` or `&amp;` is not taken for markup.
+            Some(description) => plain_description(description).replacen("%s", text, 1),
             None => text.clone(),
         };
         let mut rows = vec![OmniboxRow {
@@ -452,6 +455,29 @@ mod tests {
         assert_eq!(
             told(&engine)[before],
             (kw.id.clone(), OmniboxInput::Started)
+        );
+    }
+
+    #[test]
+    fn what_is_typed_stands_in_the_default_suggestion_word_for_word() {
+        let shared: SharedEngine = TestEngine::new();
+        let mut omnibox = ExtensionOmnibox::default();
+        let kw = keyword(&"a".repeat(32), "kw");
+        let typed = "a<b &amp;  c";
+        omnibox.typed(&format!("kw {typed}"), Some((&kw, typed)), &shared);
+        assert!(
+            omnibox.on_engine_event(&WebViewEvent::ExtensionOmniboxDefault {
+                id: kw.id.clone(),
+                description: Some("Look up <match>%s</match> not %s".into()),
+            })
+        );
+        let (_, rows) = omnibox.rows().unwrap();
+        assert_eq!(
+            rows[0],
+            OmniboxRow {
+                title: "Look up a<b &amp;  c not %s".into(),
+                content: typed.into(),
+            }
         );
     }
 
