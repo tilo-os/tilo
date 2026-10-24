@@ -2388,3 +2388,52 @@ fn an_app_in_a_workspace_on_this_device_only_is_told_so() {
         "and nothing is queued to try again"
     );
 }
+
+/// A workspace still being placed on its host holds no records yet: an app
+/// launched there is told the workspace is not ready, never a failure from
+/// deeper in.
+#[test]
+fn an_app_in_a_workspace_still_being_placed_is_told_it_is_not_ready() {
+    let dir = tempfile::tempdir().expect("socket directory");
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
+    let mut host_identity = tilo_test_env::ScopedEnv::new();
+    host_identity
+        .set("XDG_CONFIG_HOME", dir.path().join("config"))
+        .set("TILO_IDENTITY_ROOT", dir.path().join("system"))
+        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+    crate::firstboot::ensure_throwaway_test_identity(
+        &runtime_identity::identity_dir_from_env().expect("the identity directory"),
+        &crate::firstboot::collaboration_identity_paths(),
+    )
+    .expect("the host's own identity");
+    let socket = dir.path().join("collab.sock");
+    // The broker's room waits to be placed on this device's host.
+    let (_broker, membership) = spawn_broker(&socket);
+    let room = crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
+    membership.write().pending_placements.insert(room);
+    assert!(!membership.read().on_this_device_only(room));
+
+    let refused = CollaborationManager::for_route_fd_with_identity(
+        launched(&socket, FIXTURE).into_raw_fd(),
+        FIXTURE,
+        ROOM,
+        Some(RECORD.to_string()),
+        Some(FIXTURE_HANDLE.to_string()),
+        endpoint_identity(FIXTURE_HANDLE),
+    )
+    .err()
+    .expect("an app opens no document in a room not placed yet");
+    let reason = crate::shell::i18n::t("workspace-not-ready-no-documents");
+    assert!(
+        format!("{refused:?}").contains(&reason),
+        "the app hears why: {refused:?}"
+    );
+    assert!(
+        !format!("{refused:?}").contains("custody"),
+        "and not a custody failure: {refused:?}"
+    );
+}

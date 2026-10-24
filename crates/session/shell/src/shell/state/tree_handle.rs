@@ -103,6 +103,7 @@ struct PolicySnapshot {
     workspaces: Vec<WorkspacePolicy>,
     local_person: Option<[u8; 32]>,
     stewarded_rooms: std::collections::BTreeSet<tilo_desktop_model::RoomId>,
+    committed_record_rooms: std::collections::BTreeSet<tilo_desktop_model::RoomId>,
 }
 
 #[derive(PartialEq)]
@@ -135,6 +136,7 @@ impl PolicySnapshot {
                 .collect(),
             local_person: tree.local_person,
             stewarded_rooms: tree.stewarded_rooms.clone(),
+            committed_record_rooms: tree.committed_record_rooms.clone(),
         }
     }
 
@@ -157,6 +159,7 @@ impl PolicySnapshot {
                 })
             && self.local_person == tree.local_person
             && self.stewarded_rooms == tree.stewarded_rooms
+            && self.committed_record_rooms == tree.committed_record_rooms
     }
 }
 
