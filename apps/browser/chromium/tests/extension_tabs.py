@@ -640,6 +640,14 @@ class ExtensionTabs(unittest.TestCase):
 
     def test_a_privacy_blocker_counts_what_it_blocked_in_the_tab_and_turns_off_for_the_site(self):
         host, ids = self.start('shield', access={'shield': SHIELD})
+        # The engine blocks with the extension's rules before it first runs
+        # its worker, and requests before the worker listens go uncounted,
+        # as in Chrome: the page loads once it listens.
+        listens = "typeof chrome.webRequest == 'object' && chrome.webRequest.onErrorOccurred.hasListeners()"
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, ids['shield'], listens) is not True:
+            self.assertLess(time.monotonic(), deadline, 'the worker never listened')
+            host.settle(0.25)
         page = self.url + '/shielded'
         self.assertEqual(self.shielded(host, page, 'page:untracked'), 'page:untracked')
         self.panel(host, 2, f'chrome-extension://{ids["shield"]}/popup.html')
