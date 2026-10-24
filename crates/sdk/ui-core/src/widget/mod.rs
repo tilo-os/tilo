@@ -3305,6 +3305,8 @@ pub use toggle_group::{
     Segment, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
     SegmentedTouchResult, ToggleGroup, segment_colors,
 };
+pub mod view_tabs;
+pub use view_tabs::ViewTabs;
 
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a

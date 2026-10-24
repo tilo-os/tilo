@@ -448,11 +448,27 @@ fn leading_actions_follow_the_navigation_and_views_stand_before_the_actions() {
     assert!(slots.views_strip().x1 < slots.actions[0].x0);
     assert_eq!(slots.actions.len(), 1, "Import is the menu's only");
     assert!(slots.overflow.area() > 0.0, "the menu holds Import");
-    let widths: Vec<f64> = slots.views.iter().map(Rect::width).collect();
-    assert!(
-        widths.iter().all(|w| (w - widths[0]).abs() < 0.5),
-        "{widths:?}"
-    );
+}
+
+#[test]
+fn each_view_tab_is_as_wide_as_its_label() {
+    let theme = Theme::dark();
+    let row = calendar_row(1280.0);
+    let widths = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        SegmentedFace::tab_widths(&["Month", "Week", "Day"], VIEWS_SIZE, text, &theme)
+    });
+    let tabs = &row.slots().views;
+    assert_eq!(tabs.len(), widths.len());
+    for (tab, width) in tabs.iter().zip(&widths) {
+        assert!(
+            (tab.width() - width).abs() < 0.5,
+            "a tab {} wide for a label needing {width}",
+            tab.width()
+        );
+    }
+    for pair in tabs.windows(2) {
+        assert!((pair[0].x1 - pair[1].x0).abs() < 1e-9, "tabs are packed");
+    }
 }
 
 #[test]

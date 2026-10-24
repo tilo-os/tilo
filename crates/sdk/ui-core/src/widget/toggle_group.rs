@@ -1477,6 +1477,22 @@ impl<'a> SegmentedFace<'a> {
         let segments: Vec<Segment> = labels.iter().map(|label| Segment::new(*label)).collect();
         StripMetrics::of(size, theme).intrinsic_width(&segments, SegmentedStyle::Segmented, text)
     }
+
+    /// Each view tab's width ([`crate::widget::ViewTabs`] and the window
+    /// bar's views): as wide as its label, packed with no track.
+    pub(crate) fn tab_widths(
+        labels: &[&str],
+        size: ControlSize,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Vec<f64> {
+        let segments: Vec<Segment> = labels.iter().map(|label| Segment::new(*label)).collect();
+        StripMetrics::of(size, theme)
+            .naturals(&segments, SegmentedStyle::Tabs, text)
+            .into_iter()
+            .map(|(full, _)| full)
+            .collect()
+    }
     /// The segment rects of a strip in `rect`: equal while every label fits
     /// an equal share, otherwise each as wide as its label needs with the
     /// rest shared, as a `ToggleGroup` partitions itself.
