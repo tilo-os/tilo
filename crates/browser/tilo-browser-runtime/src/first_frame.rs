@@ -55,11 +55,6 @@ impl GpuStep {
 /// the pipelines 10 s; on a GPU the whole start takes about 2 s. Each
 /// pipeline compiled is progress too.
 pub(crate) const STALL_MS: u32 = 60_000;
-/// How long the first-frame step waits before it asks for a frame again on
-/// every tick: a redraw lost on the way (requested while the runtime was
-/// busy, or before the canvas could draw) is asked for again, instead of
-/// waiting for input that may never come.
-pub(crate) const REDRAW_AGAIN_MS: u32 = 2_000;
 
 /// What the watcher does on one tick.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -68,8 +63,6 @@ pub(crate) struct Tick {
     pub(crate) step_changed: bool,
     /// Whether the page is told the start stalled, when that changed.
     pub(crate) stalled: Option<bool>,
-    /// Ask for a frame again.
-    pub(crate) redraw: bool,
 }
 
 /// One mount's start-up watch: fed the step, the pipelines compiled so far
@@ -107,12 +100,65 @@ impl Watch {
             return out;
         }
         self.visible_ms = self.visible_ms.saturating_add(self.tick_ms);
-        out.redraw = step == GpuStep::FirstFrame && self.visible_ms >= REDRAW_AGAIN_MS;
         if self.visible_ms >= STALL_MS && !self.stalled {
             self.stalled = true;
             out.stalled = Some(true);
         }
         out
+    }
+}
+
+/// How long a requested redraw may take to arrive before the first frame is
+/// drawn without it ([`Drive`]).
+pub(crate) const DRIVE_MS: u32 = 250;
+
+/// What [`Drive::tick`] decides.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Drive {
+    /// The first frame is out and redraws arrive: drawing is theirs again.
+    Done,
+    /// Nothing to do this tick.
+    Wait,
+    /// Draw now, through the same path a redraw takes.
+    Draw,
+}
+
+/// Drawing a mount's first frame when the redraws it asks for do not
+/// arrive. The browser delivers redraws on its animation frames, and those
+/// stopped for a visible page whose device and pipelines were ready: with a
+/// software rasteriser on a busy machine, the browser's GPU process was
+/// still compiling pipelines of pages already closed, and the page waited
+/// on a frame that never came. A timer is not paced by the GPU process, so
+/// a frame still gets drawn. Only until the first frame is out and a redraw
+/// has arrived; a hidden page draws nothing, as its animation frames pause
+/// on purpose.
+#[derive(Debug, Default)]
+pub(crate) struct Driver {
+    redraws: u32,
+    arrived: bool,
+}
+
+impl Driver {
+    /// One tick, every [`DRIVE_MS`]: `redraws` counts the redraws delivered
+    /// so far, `frames` the frames presented, `wants_frame` whether the
+    /// mount has something to draw.
+    pub(crate) fn tick(
+        &mut self,
+        redraws: u32,
+        frames: u64,
+        visible: bool,
+        wants_frame: bool,
+    ) -> Drive {
+        let arrived_now = redraws != self.redraws;
+        self.redraws = redraws;
+        self.arrived |= arrived_now;
+        if frames > 0 && self.arrived {
+            Drive::Done
+        } else if arrived_now || !visible || !wants_frame {
+            Drive::Wait
+        } else {
+            Drive::Draw
+        }
     }
 }
 
@@ -159,20 +205,10 @@ mod tests {
         let mut watch = Watch::new(TICK);
         for _ in 0..600 {
             let tick = watch.tick(GpuStep::Device, 0, false);
-            assert!(tick.stalled.is_none() && !tick.redraw);
+            assert!(tick.stalled.is_none());
         }
         let ticks = run(&mut watch, 59, GpuStep::Device, 0);
         assert!(ticks.iter().all(|t| t.stalled.is_none()));
-    }
-
-    // Catches a first frame whose redraw was lost waiting for input forever.
-    #[test]
-    fn a_late_first_frame_is_asked_for_again() {
-        let mut watch = Watch::new(TICK);
-        let first = watch.tick(GpuStep::FirstFrame, 13, true);
-        assert!(first.step_changed && !first.redraw);
-        assert!(watch.tick(GpuStep::FirstFrame, 13, true).redraw);
-        assert!(!watch.tick(GpuStep::Pipelines, 13, true).redraw);
     }
 
     #[test]
@@ -182,5 +218,31 @@ mod tests {
         assert!(!watch.tick(GpuStep::Device, 0, true).step_changed);
         assert!(watch.tick(GpuStep::Pipelines, 0, true).step_changed);
         assert!(!watch.tick(GpuStep::Pipelines, 1, true).step_changed);
+    }
+
+    // Catches a visible page waiting forever on a first frame whose
+    // redraws (animation frames) stopped arriving.
+    #[test]
+    fn a_first_frame_whose_redraws_do_not_arrive_is_drawn_anyway() {
+        let mut driver = Driver::default();
+        assert_eq!(driver.tick(0, 0, true, true), Drive::Draw);
+        assert_eq!(driver.tick(0, 0, true, true), Drive::Draw);
+        // Out, but no redraw has arrived yet: keep drawing what is asked for.
+        assert_eq!(driver.tick(0, 1, true, true), Drive::Draw);
+        assert_eq!(driver.tick(0, 1, true, false), Drive::Wait);
+        // Redraws arrive again: they draw from now on.
+        assert_eq!(driver.tick(1, 1, true, true), Drive::Done);
+    }
+
+    // Catches the timer drawing beside redraws that arrive, or drawing a
+    // hidden page whose animation frames pause on purpose.
+    #[test]
+    fn arriving_redraws_and_hidden_pages_are_left_alone() {
+        let mut driver = Driver::default();
+        assert_eq!(driver.tick(1, 0, true, true), Drive::Wait);
+        assert_eq!(driver.tick(2, 0, true, true), Drive::Wait);
+        assert_eq!(driver.tick(2, 0, false, true), Drive::Wait);
+        assert_eq!(driver.tick(2, 0, true, true), Drive::Draw);
+        assert_eq!(driver.tick(2, 1, true, true), Drive::Done);
     }
 }
