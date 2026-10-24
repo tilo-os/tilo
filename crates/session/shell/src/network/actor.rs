@@ -382,6 +382,13 @@ pub enum NetCmd {
     /// own business in it, or the host's own operations) on a relay session,
     /// and answer the relay's receipt.
     RoomGovernance(Box<room_governance::Request>),
+    /// Tell `ended` once workspace `ws` has no session with a host left: at
+    /// once when it has none now. What waits on a room's host lasts as long
+    /// as the room's sessions do.
+    WatchHostSessions {
+        ws: u64,
+        ended: tokio::sync::oneshot::Sender<()>,
+    },
     /// Ask another of the person's devices for one of its host's own
     /// operations, on a session opened for it.
     OwnDeviceHost(Box<own_device_host::Request>),
@@ -1760,6 +1767,10 @@ impl ActorState {
                 self.host_identity.as_ref(),
             ),
             Some(NetCmd::RoomGovernance(request)) => self.send_room_governance(*request).await,
+            Some(NetCmd::WatchHostSessions { ws, ended }) => {
+                let now = self.sessions_of(ws);
+                self.room_governance.watch_sessions(ws, now, ended);
+            }
             Some(NetCmd::AttachActionBroker { queue, host, rooms }) => {
                 let rooms: HashMap<_, _> = rooms
                     .into_iter()
@@ -2646,9 +2657,24 @@ impl ActorState {
         let (ws, to) = (request.ws, request.to);
         match to {
             room_governance::Addressee::Device(host) => {
+                // Its answer comes on a session of its workspace: with none
+                // up it waits for one being established, and with none of
+                // those there is nothing to wait for.
+                match self.sessions_of(ws) {
+                    room_governance::Sessions::Open => {}
+                    room_governance::Sessions::Connecting => {
+                        self.room_governance.hold_for_session(request);
+                        return;
+                    }
+                    room_governance::Sessions::Closed => {
+                        let _ = request.reply.send(Err(
+                            "this device holds no session with the room's host".into(),
+                        ));
+                        return;
+                    }
+                }
                 if let Some(frame) = self.room_governance.send(request, host, Instant::now()) {
-                    self.publish_remote_action(ws, host, NeighbourMsg::RemoteAction { frame })
-                        .await;
+                    self.publish_to_host_sessions(ws, host, frame);
                 }
             }
             room_governance::Addressee::Host(endpoint) => {
@@ -2713,6 +2739,28 @@ impl ActorState {
         {
             // Its caller hears nothing and gives up in its own time.
             tracing::warn!(%error, host = %endpoint, "a request to a host was not sent");
+        }
+    }
+
+    /// Send `frame`, addressed to the room host whose device is `host`, on a
+    /// host session of `ws`: the one whose handshake authenticated that
+    /// device, else any other, which routes it there. Never the direct
+    /// surface route: a device hosting its own rooms is also a member of
+    /// them under the same key, and its shell does not answer for its host.
+    fn publish_to_host_sessions(&self, ws: WorkspaceId, host: EndpointId, frame: Vec<u8>) {
+        let device = *host.as_bytes();
+        let mut sessions: Vec<_> = self
+            .host_sessions
+            .iter()
+            .filter(|((session_ws, _), _)| *session_ws == ws)
+            .map(|(_, runtime)| &runtime.session)
+            .collect();
+        sessions.sort_by_key(|session| session.relay_device_public_key() != device);
+        let sent = sessions
+            .into_iter()
+            .any(|session| session.publish_remote_action(device, frame.clone()).is_ok());
+        if !sent {
+            tracing::warn!(ws, %host, "no session with the room's host to send a request on");
         }
     }
 
@@ -3853,6 +3901,54 @@ impl ActorState {
                 .any(|ws| self.subscribers.contains_key(ws) && !self.topics.contains_key(ws))
     }
 
+    /// Where workspace `ws` stands with its hosts, this device's own
+    /// included: a session up, one being established, or neither.
+    fn sessions_of(&self, ws: u64) -> room_governance::Sessions {
+        if self
+            .host_sessions
+            .keys()
+            .any(|(session_ws, _)| *session_ws == ws)
+        {
+            room_governance::Sessions::Open
+        } else if self.native_routes.establishing(ws)
+            || self
+                .connecting_hosts
+                .iter()
+                .any(|(connecting_ws, _)| *connecting_ws == ws)
+        {
+            room_governance::Sessions::Connecting
+        } else {
+            room_governance::Sessions::Closed
+        }
+    }
+
+    /// Settle what waits on where workspaces stand with their hosts
+    /// ([`room_governance::Waiting::sessions_changed`]), and send what
+    /// waited for a session now up. Every change to a workspace's sessions
+    /// is made handling one event of [`run`]'s loop, which settles before
+    /// it waits again, so a session ending with nothing else going on is
+    /// settled at once. Costs nothing while nothing waits.
+    async fn settle_session_waits(&mut self) {
+        if !self.room_governance.waits_on_sessions() {
+            return;
+        }
+        let sessions: HashMap<u64, room_governance::Sessions> = self
+            .room_governance
+            .workspaces()
+            .into_iter()
+            .map(|ws| (ws, self.sessions_of(ws)))
+            .collect();
+        let ready = self.room_governance.sessions_changed(|ws| {
+            sessions
+                .get(&ws)
+                .copied()
+                .unwrap_or(room_governance::Sessions::Closed)
+        });
+        for request in ready {
+            self.send_room_governance(request).await;
+        }
+    }
+
     /// Whether a host session goes to another machine: sessions with this
     /// device's own host keep nothing up.
     fn remote_host_sessions(&self) -> bool {
@@ -4517,6 +4613,9 @@ async fn run(
     let mut reported_party = None;
 
     loop {
+        // What waited on a room's sessions follows them, however they
+        // changed.
+        state.settle_session_waits().await;
         // The relays stay up while a remote party lasts, and rest a while
         // after the last one is gone (`crate::network::reachability`).
         let party = state.remote_party();
@@ -4723,6 +4822,17 @@ async fn publish(
         );
         return;
     }
+    let retention = retention(&msg, shell_checkpoint);
+    // Live traffic (pointers, carets, presence) is for whoever hears it now:
+    // in a room with no session up there is no one, and nothing keeps it.
+    if retention.is_none()
+        && !topics.contains_key(&ws)
+        && host_sessions
+            .keys()
+            .all(|(session_ws, _)| *session_ws != ws)
+    {
+        return;
+    }
     let bytes = match postcard::to_allocvec(&msg) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -4730,7 +4840,6 @@ async fn publish(
             return;
         }
     };
-    let retention = retention(&msg, shell_checkpoint);
 
     // Host clients enqueue synchronously into their already-authenticated
     // QUIC pumps. Do that before awaiting gossip: a slow or reconnecting
@@ -4767,6 +4876,7 @@ async fn publish(
         {
             tracing::warn!(
                 ws,
+                kind = msg.kind(),
                 "collaboration publish has no direct topic or workspace host"
             );
         }

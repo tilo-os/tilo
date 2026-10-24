@@ -1329,6 +1329,7 @@ fn bridge_program() -> String {
         grant: vec![rule],
         triggers: vec![],
         saved_by: None,
+        saved_proof: None,
     };
     String::from_utf8(tilo_automation::program::canonical_bytes(&shortcut).unwrap()).unwrap()
 }

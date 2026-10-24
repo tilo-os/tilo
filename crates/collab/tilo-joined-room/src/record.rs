@@ -97,6 +97,11 @@ pub(crate) struct StoredRoom {
     /// Exact broker terminal bindings, committed with the signed room checkpoint.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub effect_receipts: BTreeMap<String, crate::effect_receipt::StoredEffectReceipt>,
+    /// The latest shortcut change committed here: the owner receipt its
+    /// signed room checkpoint is published under. A shortcut change is
+    /// idempotent, so no older one is kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcut_change: Option<tilo_owner_commit::OwnerCommitReceipt>,
     /// Content-addressed cold UUID index, also anchored in signed public room history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect_history_root: Option<[u8; 32]>,

@@ -95,6 +95,10 @@ fn a_workspace_not_placed_stays_waiting_for_the_next_pass() {
             .is_empty(),
         "the next pass takes it again"
     );
+    assert!(
+        !network.placements_pending(),
+        "a network with no host to place on asks for no pass on any frame"
+    );
 }
 
 #[test]
