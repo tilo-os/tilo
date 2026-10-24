@@ -231,7 +231,7 @@ fn the_tpm_wrapper_opens_with_the_secret_and_its_auth_value_is_the_contract_dige
         panic!("a TPM wrapper");
     };
     let b64 = base64::engine::general_purpose::STANDARD;
-    let parent = tilo_rollback::keyslots::primary(&f.runner, &f.ws).unwrap();
+    let parent = tilo_auth::tpm::primary(&f.runner, &f.ws).unwrap();
     let pub_file = f.ws.put("check.pub", &b64.decode(public).unwrap()).unwrap();
     let priv_file =
         f.ws.put("check.priv", &b64.decode(private).unwrap())
@@ -322,6 +322,15 @@ fn a_wrong_secret_costs_one_try_and_the_lockout_refuses_even_the_right_one() {
         Some(Outcome::LockedOut(Some(tries))) => assert_eq!(tries.left, 0),
         _ => panic!("five wrong secrets should lock the TPM out"),
     }
+
+    // Sealing costs no try, so a new secret can be set while the lockout lasts.
+    let renewed = Wrapper::tpm(f.tpm(), &key, &Secret::new("2468")).unwrap();
+    assert!(matches!(
+        renewed
+            .open_with_secret(Some(f.tpm()), UID, &Secret::new("2468"))
+            .unwrap(),
+        Some(Outcome::LockedOut(_))
+    ));
 }
 
 #[test]
