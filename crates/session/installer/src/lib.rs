@@ -39,7 +39,6 @@
 //! * [`internal_handoff`] — the staged (USB-free) installation handoff.
 //! * [`status_log`] — the auto-tailing status view widget.
 //! * [`disk_row`] — a selectable disk row widget.
-//! * [`step_indicator`] — the numbered step-progress breadcrumb.
 //! * [`action_button`] — primary/secondary/disabled call-to-action button.
 //! * [`control`] — what a control does when used: queue its published action.
 //! * [`seg_choice`] — segmented selector over a published action (filesystem).
@@ -79,7 +78,6 @@ pub mod operation;
 pub mod power_readiness;
 pub mod seg_choice;
 pub mod status_log;
-pub mod step_indicator;
 pub mod timezones;
 pub mod unattended;
 pub mod windows_hint_source;

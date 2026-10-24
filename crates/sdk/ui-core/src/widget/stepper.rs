@@ -6,7 +6,8 @@
 //! current one is ringed in primary ink with its number and its label is
 //! strong; later ones are ringed in tertiary ink. When the stations do not
 //! fit the width, the stepper reads "Step 2 of 4" over the current step's
-//! label instead; it never shows a bare "2/4".
+//! label and a progress bar through the current step instead; it never
+//! shows a bare "2/4".
 //!
 //! Before the first step starts (`current(None)`) every station waits. A
 //! stepper with [`Stepper::on_station`] lets the person go back to a step
@@ -30,7 +31,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::{TaffyTreeExt, Widget};
+use crate::widget::{ProgressBarFace, TaffyTreeExt, Widget};
 
 /// The resolved geometry of a stepper in `theme`.
 #[derive(Clone, Debug)]
@@ -43,6 +44,7 @@ struct StepMetrics {
     gap: f64,
     min_gap: f64,
     rule: f64,
+    bar: f64,
 }
 
 impl StepMetrics {
@@ -57,6 +59,7 @@ impl StepMetrics {
             gap: f64::from(spacing.s2),
             min_gap: f64::from(spacing.s6),
             rule: f64::from(theme.tokens.metrics.chrome_rule_px),
+            bar: ProgressBarFace::height(theme),
         }
     }
 
@@ -165,7 +168,10 @@ impl<'a> StepperFace<'a> {
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let m = StepMetrics::new(theme);
         if self.is_compact(text, theme, width) {
-            StepMetrics::line(text, &m.position) + StepMetrics::line(text, &m.current)
+            StepMetrics::line(text, &m.position)
+                + StepMetrics::line(text, &m.current)
+                + m.gap
+                + m.bar
         } else {
             m.disc.max(StepMetrics::line(text, &m.current))
         }
@@ -182,6 +188,15 @@ impl<'a> StepperFace<'a> {
             }
             None => format!("{} steps", self.steps.len()),
         }
+    }
+
+    /// How far the compact form's bar is filled: through the current step.
+    fn fraction(&self) -> f32 {
+        let total = self.steps.len().max(1);
+        let reached = self
+            .current
+            .map_or(0, |current| current.saturating_add(1).min(total));
+        crate::num::f32_of_f64(crate::num::f64_of_usize(reached) / crate::num::f64_of_usize(total))
     }
 
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
@@ -211,6 +226,9 @@ impl<'a> StepperFace<'a> {
                 Point::new(rect.x0, y),
                 None,
             );
+            let bar_y = y + StepMetrics::line(ctx.text, &m.current) + m.gap;
+            ProgressBarFace::new(self.fraction())
+                .paint(ctx, Rect::new(rect.x0, bar_y, rect.x1, bar_y + m.bar));
             return;
         }
 
@@ -685,11 +703,65 @@ mod tests {
         assert_eq!(face.position_text(), "Step 2 of 4");
         assert!(
             face.height(&mut text, &theme, 260.0) > face.height(&mut text, &theme, 900.0),
-            "the compact form stacks its two lines"
+            "the compact form stacks its two lines and its bar"
         );
         assert!(face.is_compact(&mut text, &Theme::dark().with_text_scale(2.0), 600.0));
         let done = StepperFace::new(&STEPS, 9);
         assert_eq!(done.position_text(), "Step 4 of 4");
+    }
+
+    fn compact_scene(face: &StepperFace<'_>, theme: &Theme) -> Scene {
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        face.paint(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme),
+            Rect::new(0.0, 0.0, 200.0, 80.0),
+        );
+        scene
+    }
+
+    #[test]
+    fn the_compact_bar_fills_through_the_current_step() {
+        assert!(StepperFace::new(&STEPS, None).fraction().abs() < f32::EPSILON);
+        assert!((StepperFace::new(&STEPS, 1).fraction() - 0.5).abs() < f32::EPSILON);
+        assert!((StepperFace::new(&STEPS, 4).fraction() - 1.0).abs() < f32::EPSILON);
+        let theme = Theme::dark();
+        let waiting = compact_scene(&StepperFace::new(&STEPS, None), &theme);
+        let second = compact_scene(&StepperFace::new(&STEPS, 1), &theme);
+        assert_eq!(
+            waiting.encoding().n_paths + 1,
+            second.encoding().n_paths,
+            "a started stepper fills its bar over the track"
+        );
+        let nine: Vec<&str> = std::iter::repeat_n("Disk", 9).collect();
+        let mut text = TextRenderer::new();
+        let wizard = StepperFace::new(&nine, 3);
+        assert!(wizard.is_compact(&mut text, &theme, 200.0));
+        assert_eq!(wizard.position_text(), "Step 4 of 9");
+    }
+
+    #[test]
+    fn a_compact_stepper_reads_its_inks_from_the_theme() {
+        let face = StepperFace::new(&STEPS, 1);
+        let dark = compact_scene(&face, &Theme::dark());
+        let light = compact_scene(&face, &Theme::light());
+        assert_ne!(dark.encoding().draw_data, light.encoding().draw_data);
+    }
+
+    #[test]
+    fn a_done_steps_check_reads_on_its_disc_in_every_theme() {
+        use crate::theme::Preset;
+        use crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+        for preset in Preset::ALL {
+            let colors = Theme::preset(preset).tokens.colors;
+            let ratio =
+                crate::a11y::contrast_ratio(colors.surfaces.content, colors.intent.value_fill);
+            assert!(
+                ratio >= NON_TEXT_MIN_CONTRAST,
+                "{}: a done step's check reads at {ratio:.2}:1 on its disc",
+                preset.id()
+            );
+        }
     }
 
     #[test]

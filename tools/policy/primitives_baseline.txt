@@ -101,7 +101,6 @@ glyph-join 12 crates/session/installer/src/installer_app.rs
 glyph-join 2 crates/session/installer/src/installer_app/surface.rs
 glyph-join 1 crates/session/installer/src/installer_network.rs
 glyph-join 1 crates/session/installer/src/online_accounts/mod.rs
-glyph-join 1 crates/session/installer/src/step_indicator.rs
 glyph-join 2 crates/session/shell/src/bin/shots/main.rs
 glyph-join 6 crates/session/shell/src/bin/shots/scenario.rs
 glyph-join 1 crates/session/shell/src/compositor/backend/drm/seat_diag.rs

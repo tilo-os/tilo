@@ -89,7 +89,6 @@ use crate::operation as op;
 use crate::power_readiness::current_insufficient_battery_percent;
 use crate::seg_choice::SegChoice;
 use crate::status_log::StatusLog;
-use crate::step_indicator::StepIndicator;
 
 mod console;
 mod surface;
@@ -455,7 +454,7 @@ pub enum Step {
     Install,
 }
 
-/// Captions for the step-progress breadcrumb, index-aligned with
+/// The wizard's steps as its stepper names them, index-aligned with
 /// [`step_index`].
 pub const STEP_LABELS: [&str; 9] = [
     "Keyboard", "Network", "Accounts", "Disk", "Account", "Options", "Media", "Review", "Install",
@@ -2515,13 +2514,15 @@ impl InstallerApp {
 
     /// Build the composed card subtree for the current step.
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
-        let mut children: Vec<Box<dyn Widget>> = vec![Box::new(StepIndicator::new(
-            STEP_LABELS
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-            step_index(self.step),
-        ))];
+        let mut children: Vec<Box<dyn Widget>> = vec![Box::new(
+            ui::widget::Stepper::new(
+                STEP_LABELS
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+            )
+            .current(step_index(self.step)),
+        )];
 
         let mut actions: Vec<Box<dyn Widget>> = Vec::new();
         match self.step {
