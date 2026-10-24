@@ -35,6 +35,40 @@ impl App {
         changed
     }
 
+    /// The window's Zoom in, Zoom out and Actual size, when it has a window
+    /// a person sees.
+    pub(super) fn zoom_resource(&self) -> Option<tilo_actions::Resource> {
+        self.accessibility
+            .zoom
+            .in_window()
+            .then(crate::host_chrome::zoom::zoom_resource)
+    }
+
+    /// Run a `tilo.host:zoom` operation: one step, as its key does. A
+    /// widget whose content zooms by itself (a web page) takes it first;
+    /// otherwise the window's content zooms.
+    pub(super) fn execute_zoom_operation(
+        &mut self,
+        encoded: &tilo_actions::EncodedAction,
+    ) -> Result<(), String> {
+        let step = crate::host_chrome::zoom::decode(encoded)?;
+        let offered = if crate::content_zoom::provided(self.root_widget.as_mut()) {
+            crate::content_zoom::offer(self.root_widget.as_mut(), step)
+        } else {
+            None
+        };
+        match offered {
+            Some(factor) => self.accessibility.zoom.indicate(factor, crate::time::now()),
+            None => {
+                self.zoom_window_content(step);
+            }
+        }
+        // No input event follows an action: the next frame shows the level.
+        self.needs_sync = true;
+        self.layout.layout_dirty = true;
+        Ok(())
+    }
+
     fn content_zoom_changed(&mut self) {
         self.rebuild_theme();
         self.layout.layout_dirty = true;

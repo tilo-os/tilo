@@ -3436,8 +3436,12 @@ mod tests {
         surface.present(&Rc::new(art));
         let mut harness =
             ui::headless::FrameHarness::new(ui::State::new(), Box::new(surface), (390, 844));
+        // Painting the landscape's layers is real work: a few seconds here,
+        // many times that on a small, busy runner. Only a wait that never
+        // finishes is a failure, so it waits as long as any test waits for
+        // a worker.
         harness
-            .wait_for_visuals(std::time::Duration::from_secs(30))
+            .wait_for_visuals(tilo_test_env::hang_bound())
             .expect("the production capture wait completes");
         let renderer = tools.renderer.borrow();
         assert!(

@@ -109,8 +109,9 @@ pub struct Scrollable {
     /// Absorbs the parent's remaining flex height instead of claiming
     /// `percent(1.0)`. `fixed_height` wins if both are set.
     fill_parent_height: bool,
-    /// Opt-in inherited decision, consumed by the retained content wrapper.
-    content_min_viewport_height: Option<Rc<Cell<f32>>>,
+    /// The content is wrapped to fill at least the viewport
+    /// ([`Self::with_content_min_viewport_height`]).
+    content_fills_viewport: bool,
     child: Option<Element>,
     /// Retained Taffy identity for `child`; refreshed with the layout tree so
     /// event and scroll-layout paths never allocate `taffy.children()`.
@@ -243,7 +244,7 @@ impl Scrollable {
             fixed_height: None,
             max_height: None,
             fill_parent_height: false,
-            content_min_viewport_height: None,
+            content_fills_viewport: false,
             child: None,
             child_node: None,
             rect: Rect::ZERO,
@@ -291,9 +292,10 @@ impl Scrollable {
     }
     #[must_use]
     pub fn with_child(mut self, c: Element) -> Self {
-        self.child = Some(match &self.content_min_viewport_height {
-            Some(minimum) => Box::new(ViewportContent::new(c, Rc::clone(minimum))),
-            None => c,
+        self.child = Some(if self.content_fills_viewport {
+            Box::new(ViewportContent::new(c))
+        } else {
+            c
         });
         self
     }
@@ -303,16 +305,16 @@ impl Scrollable {
     /// content-sized unless their Scrollable opts in.
     ///
     /// Adds a presentational single-child wrapper to normal widget traversal;
-    /// the content keeps its identity, focus and action bindings. Hosts must
-    /// use the shared measured layout solver to resolve the viewport minimum.
+    /// the content keeps its identity, focus and action bindings. Where the
+    /// scroll view's height comes from its content rather than its parent,
+    /// there is no viewport to fill and the content keeps its own height.
     #[must_use]
     pub fn with_content_min_viewport_height(mut self) -> Self {
-        if self.content_min_viewport_height.is_none() {
-            let minimum = Rc::new(Cell::new(0.0));
+        if !self.content_fills_viewport {
             if let Some(child) = self.child.take() {
-                self.child = Some(Box::new(ViewportContent::new(child, Rc::clone(&minimum))));
+                self.child = Some(Box::new(ViewportContent::new(child)));
             }
-            self.content_min_viewport_height = Some(minimum);
+            self.content_fills_viewport = true;
         }
         self
     }
@@ -1281,21 +1283,27 @@ impl Scrollable {
     }
 }
 
-/// A presentational Grid surface. Container supplies the ordinary single-child
-/// lifecycle; we register its layout node as this wrapper's own node so only
-/// this hook adjusts its minimum. The child style is never rewritten.
+/// A presentational Grid surface at least as tall as the scroll view's
+/// viewport. Container supplies the ordinary single-child lifecycle; we
+/// register its layout node as this wrapper's own node. The child style is
+/// never rewritten.
+///
+/// The minimum is a percentage of the viewport, so it resolves only where
+/// the scroll view's height is given to it. It was the scroll view's last
+/// solved height, measured between passes: where an ancestor took its height
+/// from content, that height became the content's floor, and with the scroll
+/// view and this wrapper adjusting a pass apart the two traded heights
+/// without settling.
 struct ViewportContent {
     inner: crate::widget::Container,
-    minimum: Rc<Cell<f32>>,
 }
 
 impl ViewportContent {
-    fn new(child: Element, minimum: Rc<Cell<f32>>) -> Self {
+    fn new(child: Element) -> Self {
         Self {
             inner: crate::widget::Container::new()
                 .with_no_padding()
                 .with_child(child),
-            minimum,
         }
     }
 }
@@ -1331,31 +1339,16 @@ impl crate::widget::Decorator for ViewportContent {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
-                min_size: Size::from_lengths(0.0, self.minimum.get()),
+                min_size: Size {
+                    width: Dimension::length(0.0),
+                    height: Dimension::percent(1.0),
+                },
                 flex_shrink: 0.0,
                 ..Default::default()
             },
         );
         crate::widget::decorator::register_node(nodes, node, self);
         node
-    }
-
-    fn adjust_layout_style(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        _text: &mut TextRenderer,
-    ) -> bool {
-        let Ok(style) = taffy.style(node) else {
-            return false;
-        };
-        let height = Dimension::length(self.minimum.get());
-        if style.min_size.height == height {
-            return false;
-        }
-        let mut style = style.clone();
-        style.min_size.height = height;
-        taffy.set_style(node, style).is_ok()
     }
 
     fn name(&self) -> &'static str {
@@ -1569,15 +1562,6 @@ impl Widget for Scrollable {
             return changed;
         };
         changed |= self.follow_overflow(taffy, node, &layout);
-        if let Some(minimum) = &self.content_min_viewport_height {
-            let height = layout.size.height.max(0.0);
-            if (minimum.get() - height).abs() >= f32::EPSILON {
-                // Inherited decision only. The wrapper's hook changes its OWN
-                // style, regardless of the host's node visitation order.
-                minimum.set(height);
-                changed = true;
-            }
-        }
         changed
     }
 
@@ -2118,7 +2102,13 @@ impl crate::widget::controls::ActionControls for Scrollable {
 mod tests {
     use super::*;
     use crate::testing::{Dispatch, dispatch};
-    use crate::widget::scrollbar::{BAR_FADE_MS as FADE_MS, BAR_HOLD_MS as VISIBLE_HOLD_MS};
+    use crate::widget::scrollbar::BAR_HOLD_MS as VISIBLE_HOLD_MS;
+    // The bar fades as all chrome does.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the chrome fade is a few hundred milliseconds"
+    )]
+    const FADE_MS: u64 = crate::animation::CHROME_FADE.as_millis() as u64;
     use automerge::AutoCommit;
 
     fn vertical(content_h: f32) -> Scrollable {

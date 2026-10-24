@@ -1,0 +1,5 @@
+{"manifest_version": 3, "name": "Vault", "version": "1.0",
+ "action": {"default_popup": "popup.html"},
+ "permissions": ["tabs"],
+ "background": {"service_worker": "worker.js"},
+ "content_security_policy": {"extension_pages": "default-src 'none'; script-src 'self'; connect-src https://vault.example.invalid"}}

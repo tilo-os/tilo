@@ -270,6 +270,7 @@ mod shortcut_config;
 mod shortcut_help;
 mod strip_rail;
 mod tab_menu_host;
+mod tab_rename;
 mod thing_menu;
 mod top_bar;
 mod tree_harvest;
@@ -923,6 +924,10 @@ pub struct ShellOverlayHost {
     /// pixels don't depend on host hardware. See
     /// [`crate::shell::status`].
     status_bridge: Option<crate::shell::status::StatusBridge>,
+    /// The bridge's status as last copied into the chrome, so a frame copies
+    /// only what the bridge changed and a slider being dragged keeps the
+    /// level it shows until it commits.
+    status_copied: std::cell::RefCell<crate::shell::status::SystemStatus>,
     /// Single session-lifetime owner for persistent balance/mono transforms.
     /// Present only in compositor sessions; omitted from shots and unit tests.
     session_audio_policy: Option<crate::shell::session_audio_policy::SessionAudioPolicyOwner>,
@@ -1615,6 +1620,7 @@ fn build_state_group_from_widget(
                     kind,
                     label: desc.title.clone(),
                 },
+                app_title: None,
             }
         })
         .collect();
@@ -1739,6 +1745,14 @@ fn palette_surface_theme(theme: &Theme) -> Theme {
 )]
 #[path = "tab_context_menu_tests.rs"]
 mod tab_context_menu_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+#[path = "tab_rename_tests.rs"]
+mod tab_rename_tests;
 
 #[cfg(test)]
 #[path = "empty_workspace_tests.rs"]

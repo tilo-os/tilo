@@ -45,6 +45,7 @@ fn tree() -> (WorkspaceTree, StripId, StripId) {
             kind: AppKind::Other("Test".into()),
             label: label.into(),
         },
+        app_title: None,
     };
     let mk_group = |id: GroupId, tab: u64, label: &str| WindowGroup {
         id,

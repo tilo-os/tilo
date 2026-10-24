@@ -9,7 +9,7 @@
 
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
 pub use tilo_control::{
@@ -22,7 +22,9 @@ pub use tilo_control::{
 /// fresh 0700 staging directory next to `path`, restricted to 0600 there, and
 /// only then renamed into place, so it is never reachable with wider
 /// permissions, even briefly and even when `path` is in a shared directory.
-/// A stale socket at `path` is replaced; anything else there is refused.
+/// A stale socket at `path` is replaced. A socket another process still
+/// answers on is that process's (another session sharing the runtime
+/// directory) and is refused, as is anything that is not a socket.
 pub fn bind_private(path: &Path) -> io::Result<UnixListener> {
     let parent = path
         .parent()
@@ -47,6 +49,12 @@ pub fn bind_private(path: &Path) -> io::Result<UnixListener> {
                 format!("{} exists and is not a socket", path.display()),
             ));
         }
+        Ok(_) if UnixStream::connect(path).is_ok() => {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("{} already has a live listener", path.display()),
+            ));
+        }
         Ok(_) | Err(_) => {}
     }
 
@@ -69,7 +77,6 @@ pub fn bind_private(path: &Path) -> io::Result<UnixListener> {
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
-    use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
 
     #[test]
@@ -119,6 +126,21 @@ mod tests {
 
             let _listener = bind_private(&path).unwrap();
             UnixStream::connect(&path).unwrap();
+        }
+
+        // Phase `a_socket_another_session_answers_on_is_left_to_it`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let path = runtime.path().join("device-unlock.sock");
+            let theirs = bind_private(&path).unwrap();
+            let error = bind_private(&path).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+            theirs.set_nonblocking(true).unwrap();
+            let _client = UnixStream::connect(&path).unwrap();
+            assert!(
+                theirs.accept().is_ok(),
+                "the first session still answers on its socket"
+            );
         }
 
         {

@@ -1008,6 +1008,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
                     app_id: "org.example.Editor".into(),
                     surface_id: 0xfeed_beef,
                 },
+                app_title: None,
             }],
             active_tab: 990_001,
             width: WindowWidth::Normal,

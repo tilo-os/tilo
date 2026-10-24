@@ -949,8 +949,40 @@ impl NativeAppTick {
 /// While locked the desktop is not shown, and the callback stays until a
 /// real lock or unlock frame, as it did before idle apps stopped driving
 /// cadence.
-fn release_idle_client_callback(locked: bool, content_changed: bool, presented: bool) -> bool {
-    !locked && (!content_changed || presented)
+/// A blanked display hides the desktop as the lock does: callbacks wait for
+/// the frame that wakes it, so clients rest too.
+fn release_idle_client_callback(hidden: bool, content_changed: bool, presented: bool) -> bool {
+    !hidden && (!content_changed || presented)
+}
+
+/// What one tick draws for what changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TickPaint {
+    /// Something new is to be shown on this tick.
+    content_changed: bool,
+    /// A frame is built and handed to the presenter.
+    should_paint: bool,
+    /// A change seen but not painted, carried to the next tick.
+    owed: bool,
+}
+
+/// Decide what a tick draws. A blanked display shows nothing, so nothing is
+/// built or handed to the GPU while it is dark; what changed is owed to the
+/// frame that wakes it.
+fn tick_paint(
+    reasons: NativeRedrawReasons,
+    session: &SessionManager,
+    cadence_due: bool,
+    pipe_ready: bool,
+) -> TickPaint {
+    let wanted = reasons.content_changed(session.is_locked());
+    let content_changed = wanted && !session.is_blanked();
+    let should_paint = content_changed && cadence_due && pipe_ready;
+    TickPaint {
+        content_changed,
+        should_paint,
+        owed: wanted && !should_paint,
+    }
 }
 
 /// Whether the next park must keep the frame deadline for a pending frame.
@@ -3008,12 +3040,21 @@ pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> O
 }
 
 /// Publish the compositor's Wayland socket name to
-/// `$XDG_RUNTIME_DIR/tilo-session/wayland-display`. Last writer wins — the
-/// file answers "what do I connect to *now*"; the printed stderr line stays
-/// authoritative for a specific compositor. Never fatal on failure. Returns
-/// the unlink guard so the file disappears with the process.
+/// `$XDG_RUNTIME_DIR/tilo-session/wayland-display`. The file belongs to the
+/// session that published it while that session runs: a second compositor
+/// in the same runtime directory (a headless one beside the desktop) leaves
+/// it alone, and its printed stderr line is how it is reached. Never fatal
+/// on failure. Returns the unlink guard so the file disappears with the
+/// process.
 fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop> {
     let path = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    if another_live_session_published(&path, socket_name) {
+        eprintln!(
+            "tilo compositor: {} names another running session; leaving it",
+            path.display()
+        );
+        return None;
+    }
     // 0700 when created: the test-control socket may share this directory.
     if let Some(dir) = path.parent()
         && let Err(e) = std::os::unix::fs::DirBuilderExt::mode(
@@ -3037,12 +3078,34 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
 }
 
-/// [`tilo_paths::login::WORKSPACE_ID_FILE`] beside the published Wayland display, written off
-/// this thread; `None` where the display has no place.
-fn published_room() -> Option<crate::compositor::published_room::PublishedRoom> {
-    let display = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
+/// Whether the display file at `path` names a Wayland socket other than
+/// `ours` that a running compositor still answers on, beside it in the
+/// runtime directory.
+pub(crate) fn another_live_session_published(path: &Path, ours: &std::ffi::OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+    let Ok(named) = std::fs::read(path) else {
+        return false;
+    };
+    let named = std::ffi::OsStr::from_bytes(&named);
+    let bare = Path::new(named).file_name() == Some(named);
+    if named == ours || !bare {
+        return false;
+    }
+    path.parent()
+        .and_then(Path::parent)
+        .is_some_and(|runtime| UnixStream::connect(runtime.join(named)).is_ok())
+}
+
+/// [`tilo_paths::login::WORKSPACE_ID_FILE`] beside the Wayland display this
+/// compositor published, written off this thread; `None` where it published
+/// none, so the session that did keeps its own.
+fn published_room(
+    display: Option<&UnlinkOnDrop>,
+) -> Option<crate::compositor::published_room::PublishedRoom> {
     crate::compositor::published_room::PublishedRoom::at(
-        display.with_file_name(tilo_paths::login::WORKSPACE_ID_FILE),
+        display?
+            .0
+            .with_file_name(tilo_paths::login::WORKSPACE_ID_FILE),
     )
 }
 
@@ -4344,11 +4407,21 @@ impl ControlState for FrameBuilderControlState<'_> {
             // is closed).
             fields.insert(
                 "quick_settings_volume".into(),
-                serde_json::json!(chrome.quick_settings.volume),
+                serde_json::json!(chrome.quick_settings.volume_level()),
             );
             fields.insert(
                 "screenshot_markup_strokes".into(),
                 serde_json::json!(self.fb.host().screenshot_markup_strokes()),
+            );
+            // Whether this device's identity waits for the clock: intact,
+            // with a certificate the clock's reading refuses.
+            fields.insert(
+                "identity".into(),
+                serde_json::json!({
+                    "waits_for_clock": chrome.identity_waits_for_clock(),
+                    "recovery": std::env::var_os(crate::shell::identity_provisioning::IDENTITY_RECOVERY_ENV)
+                        .is_some_and(|value| value == "1"),
+                }),
             );
         }
         dump
@@ -4423,6 +4496,14 @@ type SnapshotOutcome = std::sync::Arc<std::sync::Mutex<Option<Result<(), String>
 
 /// Per-process state the test-control wire needs to execute
 /// [`PlannedAction`]s, mirroring `ShellDriver`'s fields: modifier snapshot, auxiliary `AutoCommit` doc, root `ObjId`, focus cursor.
+/// A control client's request of the display ([`test_control::Command::DisplayBlank`],
+/// [`test_control::Command::DisplayWakeFault`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayRequest {
+    Blank,
+    WakeFault(crate::compositor::backend::drm::wake_check::WakeStage),
+}
+
 struct TestControlCtx {
     modifiers: Modifiers,
     doc: AutoCommit,
@@ -4457,6 +4538,9 @@ struct TestControlCtx {
     input: InputEnvironment,
     /// The latest `watch` answer, for the loop to hand to the backend.
     watch_request: Option<bool>,
+    /// What control clients asked of the display, for the loop to apply to
+    /// the session and the backend.
+    display_requests: Vec<DisplayRequest>,
     /// One seat and strip per agent driving this compositor.
     agents: crate::compositor::agent_seats::AgentSeats,
     /// While an agent's command runs, the screen region its snapshots show:
@@ -4502,6 +4586,7 @@ impl TestControlCtx {
             gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
             input: InputEnvironment::default(),
             watch_request: None,
+            display_requests: Vec::new(),
             agents: crate::compositor::agent_seats::AgentSeats::new(),
             snapshot_crop: None,
             snapshot_window: None,
@@ -6470,6 +6555,28 @@ fn dispatch_control_command(
         test_control::Command::GpuFault { fault } => {
             (test_control::inject_gpu_fault(fault), Vec::new())
         }
+        test_control::Command::DisplayBlank => {
+            ctx.display_requests.push(DisplayRequest::Blank);
+            (test_control::Response::Ok { frame: 0 }, Vec::new())
+        }
+        test_control::Command::DisplayWakeFault { stage } => {
+            match crate::compositor::backend::drm::wake_check::WakeStage::parse(&stage) {
+                Some(wake_stage) => {
+                    ctx.display_requests
+                        .push(DisplayRequest::WakeFault(wake_stage));
+                    (test_control::Response::Ok { frame: 0 }, Vec::new())
+                }
+                None => (
+                    test_control::Response::Err {
+                        code: "parse_error".into(),
+                        message: format!(
+                            "no wake stage {stage:?}: one of commit, link, crtc, backlight"
+                        ),
+                    },
+                    Vec::new(),
+                ),
+            }
+        }
         cmd => {
             let state = FrameBuilderControlState {
                 fb: frame_builder,
@@ -7034,10 +7141,25 @@ fn apply_session_transition(
             if let Some(p) = pipe {
                 p.set_dpms(true);
             }
+            backend.note_wake("woke");
         }
         // Lock/Unlock are reflected via `SessionManager::is_locked`; Suspend is
         // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
+    }
+    // And what it left behind. A panel lights asynchronously: each output's
+    // own record (`DRM wake check`) says when, and whether, it came back.
+    if matches!(
+        transition,
+        SessionTransition::Dimmed
+            | SessionTransition::Undimmed
+            | SessionTransition::Blanked
+            | SessionTransition::Woke
+    ) {
+        eprintln!(
+            "tilo compositor: session power {transition:?} applied backlight={}",
+            os_actions::display::backlight_state().unwrap_or_else(|| "none".into())
+        );
     }
 }
 
@@ -7106,6 +7228,48 @@ fn install_native_session_lifecycle(
 fn close_native_session_authority(local_session: Option<&LocalSessionLifecycle>) {
     if let Some(local_session) = local_session {
         local_session.close();
+    }
+}
+
+/// What one press of the hardware power key does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PowerKeyEffect {
+    /// A display that could not be lit is modeset again.
+    RelitOutputs,
+    /// The press woke the blanked display; that is all it does.
+    WokeDisplay,
+    /// The machine suspends (the power settings' action).
+    Suspend,
+    /// The session locks (the power settings' action).
+    Lock,
+    /// The session is already locked: the display turns off.
+    Blank,
+    /// The power settings say to do nothing.
+    Nothing,
+}
+
+/// What a power key press does: first what the person can see is wrong (a
+/// display that could not be lit, a blanked one), then the power settings'
+/// action. Locking a locked session would change nothing on screen, so the
+/// display turns off instead.
+fn power_key_effect(
+    relit_outputs: bool,
+    was_blanked: bool,
+    locked: bool,
+    action: Option<tilo_power_mgmt::PowerAction>,
+) -> PowerKeyEffect {
+    use tilo_power_mgmt::PowerAction;
+    if relit_outputs {
+        return PowerKeyEffect::RelitOutputs;
+    }
+    if was_blanked {
+        return PowerKeyEffect::WokeDisplay;
+    }
+    match action {
+        Some(PowerAction::Suspend) => PowerKeyEffect::Suspend,
+        Some(PowerAction::Lock) if locked => PowerKeyEffect::Blank,
+        Some(PowerAction::Lock) => PowerKeyEffect::Lock,
+        Some(PowerAction::Ignore) | None => PowerKeyEffect::Nothing,
     }
 }
 
@@ -8030,25 +8194,29 @@ enum PriorityRoute {
 /// The compositor's fixed input priority order, pure so it can be checked
 /// without a seat.
 ///
-/// Media keys are the one exception to the lock capturing everything:
-/// volume, mute, brightness and playback belong to the machine, not the
-/// session, so they keep working on the lock screen. They reveal nothing
-/// behind it and their feedback is drawn on the lock surface itself.
+/// The power key and media keys are the exceptions to the lock capturing
+/// everything. The power key belongs to the machine: on a locked session it
+/// still wakes a dark display or does what the power settings say
+/// ([`power_key_effect`]), where the lock's password field would drop it.
+/// Volume, mute, brightness and playback belong to the machine too, so they
+/// keep working on the lock screen. None of them reveals anything behind the
+/// lock, and media feedback is drawn on the lock surface itself.
 fn priority_route(
     event: &WindowEvent,
     modifiers: Modifiers,
     locked: bool,
     shortcuts: &settings_store::hardware::ShortcutConfig,
 ) -> PriorityRoute {
+    if is_power_key(event) {
+        return PriorityRoute::PowerKey;
+    }
     let media_key = crate::shell::media_keys::classify(event);
     if locked {
         return media_key
             .filter(|key| key.acts_while_locked())
             .map_or(PriorityRoute::LockScreen, PriorityRoute::MediaKey);
     }
-    if is_power_key(event) {
-        PriorityRoute::PowerKey
-    } else if let Some(vt) = vt_switch_chord(event, modifiers) {
+    if let Some(vt) = vt_switch_chord(event, modifiers) {
         PriorityRoute::VtSwitch(vt)
     } else if is_remote_input_kill_switch(event, modifiers) {
         PriorityRoute::RemoteInputKillSwitch
@@ -9490,12 +9658,21 @@ pub fn run() {
     // identity before the identity ceremony completes. Keep a one-shot
     // deferred start so that completion brings this session online, rather
     // than requiring the person to restart the desktop they just set up.
-    let enable_peer_sync = peer_sync_requested && onboarding_identity_dir.is_none();
-    let mut deferred_peer_sync = peer_sync_requested && onboarding_identity_dir.is_some();
+    // An identity whose certificate the clock refuses is intact: the
+    // session starts without first-use setup or recovery, says so, and
+    // starts its network and broker once the clock admits the certificate,
+    // as a finished first login does.
+    let identity_clock_refusal = onboarding_identity_dir
+        .is_none()
+        .then(crate::shell::identity_provisioning::identity_clock_refusal)
+        .flatten();
+    let identity_pending = onboarding_identity_dir.is_some() || identity_clock_refusal.is_some();
+    let enable_peer_sync = peer_sync_requested && !identity_pending;
+    let mut deferred_peer_sync = peer_sync_requested && identity_pending;
     // Without peer sync the broker is local-only, but it still reads the
     // session's identity and device key once when it starts. Start it after
     // first-login setup too, or it keeps the pre-identity view all session.
-    let mut deferred_local_broker = !peer_sync_requested && onboarding_identity_dir.is_some();
+    let mut deferred_local_broker = !peer_sync_requested && identity_pending;
     if deferred_peer_sync {
         tracing::info!("peer-sync: waiting for first-login identity setup to complete");
     }
@@ -10011,15 +10188,32 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    let mut identity_clock_wait = identity_clock_refusal.as_ref().and_then(|refusal| {
+        let identity_dir = identity_store.path().parent()?.to_path_buf();
+        tracing::warn!(
+            valid_from_ns = refusal.valid_from_ns,
+            clock_ns = refusal.clock_ns,
+            "this device's certificate waits for the clock; workspaces connect when it is right"
+        );
+        frame_builder.with_chrome(|chrome| chrome.set_identity_waits_for_clock(true));
+        // Apps opened meanwhile start with the broker, not before it.
+        crate::shell::launcher::hold_launches();
+        Some(crate::identity_clock_wait::IdentityClockWait::start(
+            refusal,
+            identity_dir,
+            Arc::clone(&session_wake),
+        ))
+    });
     let mut dictation_vocabulary =
         crate::compositor::dictation::host::VocabularyBinding::new(Arc::clone(&session_wake));
     dictation_vocabulary.refresh(&mut state);
     if let Some(bridge) = frame_builder.host().status_bridge() {
-        bridge.wake_network_changes(Arc::clone(&session_wake));
+        bridge.wake_on_changes(Arc::clone(&session_wake));
     }
     let mut retained_files = crate::onboarding_prepared::session_home()
         .map(|home| crate::retained_files::Session::open(home, Arc::clone(&session_wake)));
     state.output_management.set_wake(Arc::clone(&session_wake));
+    state.set_share_encode_wake(Arc::clone(&session_wake));
     crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
     crate::shell::storage_notice::start(Arc::clone(&session_wake));
     // NTFS drives open only through the shell's own sheet; see shell::drives.
@@ -10058,7 +10252,7 @@ pub fn run() {
         }
     });
     let chooser_attended = Arc::new(AtomicBool::new(false));
-    let mut published_room = published_room();
+    let mut published_room = published_room(display_file.as_ref());
     // Held for the session, like the chooser service that gives into it.
     let chosen_documents = mount_documents();
     let chooser_service = start_chooser_service(
@@ -10197,11 +10391,17 @@ pub fn run() {
     // Whether the pre-sleep signal found an existing lock. A failed suspend
     // may clear only a lock installed for that sleep request.
     let mut sleep_lock_was_locked = false;
+    // Whether the pending sleep is the idle timer's. Its pre-sleep lock is
+    // the idle timer's too, which the person's other devices do not follow.
+    let mut sleep_requested_by_idle = false;
     // Suspend-inhibitor registry: apps hold a token via
     // `inhibit_registry.acquire(reason)`; power service mirrors it into a real logind lock, idle loop checks `is_inhibited()` before suspending.
     // Mailbox the async power service uses to reach this loop (lock, battery
     // toast, idle-reset on resume) and this loop uses to reach it (request suspend).
     let power_bridge = tilo_power_mgmt::PowerBridge::new();
+    // A signal (a resume, a sleep about to start) wakes this loop at once,
+    // however long it would have parked.
+    power_bridge.set_signal_wake(Arc::clone(&session_wake));
     // The source the session started on: the service's first look compares
     // with it, and a settings reload before then resolves its timer.
     let _ = power_bridge.note_on_battery(started_on_battery);
@@ -10804,6 +11004,9 @@ pub fn run() {
         // Keys a control client queued as a physical keyboard's arrive here, with the
         // backend's own events.
         pending_events.extend(test_control_ctx.seat_events.drain(..));
+        // Whether this batch's input found the display blanked: the power key
+        // in it then has done its visible part already, by waking it.
+        let blanked_before_input = session.is_blanked();
         // Any input is activity, whoever it is routed to below (a pen or a
         // pinch can go straight to an app): reset the idle timer and wake the
         // display if it was dimmed or blanked.
@@ -11281,19 +11484,38 @@ pub fn run() {
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
                     } else if route == PriorityRoute::PowerKey {
-                        // Hardware power key resolves per the power policy (logind delegates via
-                        // the service's block inhibitor); a deliberate press bypasses the idle inhibitor.
-                        match power_policy.on_power_key() {
-                            Some(tilo_power_mgmt::PowerAction::Suspend) => {
-                                tracing::info!(target: "tilo::power", "power key: requesting suspend");
+                        // The hardware power key always does something visible, locked or
+                        // not (logind delegates it via the service's block inhibitor): it
+                        // lights a display that could not be lit, wakes a blanked one, or
+                        // does what the power settings say. A deliberate press bypasses the
+                        // idle inhibitor.
+                        let relit = backend.retry_failed_outputs("power key");
+                        let effect = power_key_effect(
+                            relit,
+                            blanked_before_input,
+                            session.is_locked(),
+                            power_policy.on_power_key(),
+                        );
+                        eprintln!(
+                            "tilo compositor: power key: locked={} blanked={blanked_before_input} effect={effect:?}",
+                            session.is_locked()
+                        );
+                        session_changed = true;
+                        match effect {
+                            PowerKeyEffect::RelitOutputs
+                            | PowerKeyEffect::WokeDisplay
+                            | PowerKeyEffect::Nothing => {}
+                            PowerKeyEffect::Suspend => {
                                 sleep_lock_was_locked = session.is_locked();
-                                session_changed = true;
+                                sleep_requested_by_idle = false;
                                 power_bridge.request_suspend();
                             }
-                            Some(tilo_power_mgmt::PowerAction::Lock) => {
+                            PowerKeyEffect::Lock => {
                                 apply_session_transitions!(session.request_lock(Instant::now()));
                             }
-                            Some(tilo_power_mgmt::PowerAction::Ignore) | None => {}
+                            PowerKeyEffect::Blank => {
+                                apply_session_transitions!(session.blank_now(Instant::now()));
+                            }
                         }
                     } else if let PriorityRoute::VtSwitch(vt) = route {
                         // Ahead of every other chord, never offered to a client: leaving the
@@ -11391,20 +11613,6 @@ pub fn run() {
                                 },
                             },
                         );
-                        if brightness_key {
-                            // Quick Settings' per-display sliders follow the
-                            // levels the key just set.
-                            let levels = os_actions::BrightnessService::global().levels();
-                            frame_builder.with_chrome(|st| {
-                                for display in &mut st.quick_settings.displays {
-                                    if let Some(level) =
-                                        levels.iter().find(|l| l.connector == display.connector)
-                                    {
-                                        display.level = level.level;
-                                    }
-                                }
-                            });
-                        }
                         match response {
                             Some(crate::shell::media_keys::Response::Osd(osd)) => {
                                 frame_builder.with_chrome(|st| publish_media_osd(st, osd));
@@ -11413,6 +11621,7 @@ pub fn run() {
                             Some(crate::shell::media_keys::Response::Suspend) => {
                                 tracing::info!(target: "tilo::power", "sleep key: requesting suspend");
                                 sleep_lock_was_locked = session.is_locked();
+                                sleep_requested_by_idle = false;
                                 session_changed = true;
                                 power_bridge.request_suspend();
                             }
@@ -12196,6 +12405,7 @@ pub fn run() {
                 } else {
                     tracing::info!(target: "tilo::power", "idle threshold reached: requesting suspend");
                     sleep_lock_was_locked = session.is_locked();
+                    sleep_requested_by_idle = true;
                     power_bridge.request_idle_suspend();
                 }
             } else {
@@ -12225,7 +12435,26 @@ pub fn run() {
                     // time, and also observe a manual/lid lock that arrived
                     // while the async suspend request was in flight.
                     sleep_lock_was_locked |= session.is_locked();
-                    apply_session_transitions!(session.prepare_for_sleep(Instant::now()));
+                    let transitions = session.prepare_for_sleep(Instant::now());
+                    if sleep_requested_by_idle {
+                        // The idle timer's sleep locks like the idle timer:
+                        // the lock stays on this device.
+                        for t in transitions {
+                            if t == SessionTransition::Locked {
+                                session_follow.locked_by_idle();
+                            }
+                            apply_session_transition(
+                                t,
+                                backend.as_mut(),
+                                present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
+                                &mut screen_dimmer,
+                                Some(&mut state.output_management),
+                            );
+                        }
+                    } else {
+                        apply_session_transitions!(transitions);
+                    }
                     sleep_lock_frame_pending = true;
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
@@ -12239,6 +12468,7 @@ pub fn run() {
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
                     session.cancel_suspend();
+                    sleep_requested_by_idle = false;
                     // A lid/critical request can fail before it ever emits
                     // PreparingForSleep. Only undo a lock that this pending
                     // sleep actually installed; never unlock an unrelated
@@ -12255,10 +12485,12 @@ pub fn run() {
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
                     // returns with no mode/framebuffer/cursor plane; without this, lid close/open is an unrecoverable black screen.
                     backend.reset_display();
+                    backend.note_wake("resume");
                     sleep_lock_frame_pending = false;
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
                     sleep_lock_was_locked = false;
+                    sleep_requested_by_idle = false;
                     // A resumed panel is scanning out whatever was left in its buffers, so the next frame must be a full one.
                     outputs_dirty = false;
                     session_changed = true;
@@ -12437,14 +12669,9 @@ pub fn run() {
         }
 
         // Client fullscreen is a per-output overlay drawn above everything,
-        // never a combined-scene layout collapse, so another monitor's
-        // desktop remains visible and interactive. Except while the shell
-        // takes the input over it (the search palette, a sheet): then the
-        // client is laid out full screen in the desktop itself, on its own
-        // display, beneath the shell's surfaces, which would otherwise draw
-        // under it unseen ([`client_fullscreen_beneath_shell`]).
-        let beneath_shell = client_fullscreen_beneath_shell(&state, &frame_builder);
-        frame_builder.set_fullscreen(beneath_shell);
+        // laid out in the desktop beneath the shell only while the shell
+        // takes the input over it (`FrameBuilder::set_client_fullscreen_group`).
+        frame_builder.set_client_fullscreen_group(state.client_fullscreen_group());
         // A window the person opened or went to ends a full screen: the
         // full-screen window steps back into the strip, which scrolls to it.
         let user_fullscreen = frame_builder.chrome().user_fullscreen_group();
@@ -12606,13 +12833,17 @@ pub fn run() {
         // is served to the seat's input method like an application field.
         let deferred_field =
             frame_builder.focused_ime_requires_deferred_ack(test_control_ctx.focus);
+        // A field that takes text only through deferred receipts (a browser
+        // page field) is served to the input method only for dictation.
+        let receipts_only =
+            frame_builder.focused_ime_refuses_ordinary_commits(test_control_ctx.focus);
         let speech_field_needed = frame_builder
             .host_mut()
             .dictation_surface_mut()
             .needs_original_field();
         let shell_field = (!session.is_locked()
             && state.client_input.keyboard_focus().is_none()
-            && (!deferred_field || speech_field_needed))
+            && (!receipts_only || speech_field_needed))
             .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
             .flatten();
         if shell_field.is_some() && shell_text_input.is_none() {
@@ -12656,7 +12887,7 @@ pub fn run() {
             state.osk_surface,
             state.client_input.keyboard_focus(),
             state.shell_field_active.then_some(shell_field).flatten(),
-            state.text_input_active() && input_methods.osk_shown() && !deferred_field,
+            state.text_input_active() && input_methods.osk_shown() && !receipts_only,
         );
         dictation_vocabulary.refresh(&mut state);
         state.set_native_dictation_deferred(deferred_field && state.shell_field_active);
@@ -13397,7 +13628,19 @@ pub fn run() {
             frame_builder.with_chrome(|st| publish_media_osd(st, osd));
             session_changed = true;
         }
-        software_dim.sync(backend.as_mut(), &session_wake);
+        if software_dim.sync(backend.as_mut(), &session_wake) {
+            // The sliders follow every level the service announces: keys,
+            // Quick Settings, Settings, a firmware hotkey, another program.
+            let levels = os_actions::BrightnessService::global().levels();
+            frame_builder.with_chrome(|st| {
+                if crate::shell::quick_settings::follow_brightness_levels(
+                    &mut st.quick_settings,
+                    &levels,
+                ) {
+                    st.bump();
+                }
+            });
+        }
         let markers_suppressed = session.is_locked() || frame_builder.host().onboarding_active();
         let markers_retired =
             revalidate_native_agent_markers(&mut state, &mut frame_builder, markers_suppressed);
@@ -13432,6 +13675,29 @@ pub fn run() {
         let pump_apps_done = Instant::now();
         pump_checkpoint!("widget-pump");
         deliver_held_key_releases!();
+        if let Some(wait) = identity_clock_wait.as_mut() {
+            match wait.pump() {
+                crate::identity_clock_wait::ClockWaitStep::Waiting => {}
+                crate::identity_clock_wait::ClockWaitStep::Verified => {
+                    identity_clock_wait = None;
+                    tracing::info!(
+                        "the clock admits this device's certificate; starting the session's services"
+                    );
+                    frame_builder.with_chrome(|chrome| chrome.set_identity_waits_for_clock(false));
+                    if let Some(identity_dir) = identity_store.path().parent() {
+                        crate::firstboot::keep_device_certificates_renewed(identity_dir);
+                    }
+                }
+                crate::identity_clock_wait::ClockWaitStep::NeedsRecovery => {
+                    identity_clock_wait = None;
+                    frame_builder.with_chrome(|chrome| chrome.set_identity_waits_for_clock(false));
+                    if let Some(identity_dir) = identity_store.path().parent() {
+                        frame_builder.enable_recovery_onboarding(identity_dir.to_path_buf());
+                    }
+                }
+            }
+        }
+        let identity_setup_active = identity_setup_active || identity_clock_wait.is_some();
         if take_deferred_peer_sync_activation(&mut deferred_peer_sync, identity_setup_active) {
             // `pump_apps` just observed the trusted onboarding completion.
             // Apps were withheld until this edge. The network starts off the
@@ -13791,8 +14057,7 @@ pub fn run() {
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
             owed: content_owed,
         };
-        let content_changed = redraw_reasons.content_changed(session.is_locked());
-        demand_onset.note_tick(content_changed, iter_t0);
+        let display_dark = session.is_blanked();
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
@@ -13808,6 +14073,15 @@ pub fn run() {
             cadence_due,
             frame_builder.host().transition_present_pending(),
         );
+        // A change this tick saw but could not paint is still to be shown: the
+        // next tick that may paint does, even if nothing new happens by then.
+        let TickPaint {
+            content_changed,
+            should_paint,
+            owed,
+        } = tick_paint(redraw_reasons, &session, cadence_due, pipe_ready);
+        content_owed = owed;
+        demand_onset.note_tick(content_changed, iter_t0);
         if content_changed
             && cadence_due
             && !pipe_ready
@@ -13816,17 +14090,14 @@ pub fn run() {
             p.note_backpressure();
             metrics.mark_backpressured();
         }
-        let should_paint = content_changed && cadence_due && pipe_ready;
-        // A change this tick saw but could not paint is still to be shown: the
-        // next tick that may paint does, even if nothing new happens by then.
-        content_owed = content_changed && !should_paint;
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame. A full presenter is itself the
         // gate: its retirement ping wakes the loop when capacity returns.
         let cadence_needed = cadence_wait_needed(
             pipe_ready,
-            (content_changed && !cadence_due) || (!session.is_locked() && animating),
+            (content_changed && !cadence_due)
+                || (!session.is_locked() && !display_dark && animating),
         );
         let (frame_open, notify_privacy) = crate::shell::status::privacy_frame_interest(
             privacy_frame_open,
@@ -14757,6 +15028,18 @@ pub fn run() {
                 apply_session_transitions!(session.note_activity(Instant::now()));
             }
         }
+        for request in std::mem::take(&mut test_control_ctx.display_requests) {
+            match request {
+                DisplayRequest::Blank => {
+                    apply_session_transitions!(session.blank_now(Instant::now()));
+                }
+                DisplayRequest::WakeFault(wake_stage) => {
+                    if let Err(error) = backend.inject_wake_fault(wake_stage.name()) {
+                        eprintln!("tilo compositor: test control: wake fault refused: {error}");
+                    }
+                }
+            }
+        }
         if let Some(watching) = test_control_ctx.watch_request.take() {
             // A viewer's own lease governs from here on.
             watched_for_host = false;
@@ -14867,8 +15150,11 @@ pub fn run() {
         // configure is not a present and not another pump. Release it here,
         // on the tick that saw the commit, so the client is not left waiting
         // on FIFO and the shell does not wake itself to do the same work again.
-        if release_idle_client_callback(session.is_locked(), content_changed, should_paint)
-            && !client_changed
+        if release_idle_client_callback(
+            session.is_locked() || display_dark,
+            content_changed,
+            should_paint,
+        ) && !client_changed
             && configured_after_dispatch == 0
             && !capture_ready
             && foreign::release_idle_frame_callbacks(&mut state)
@@ -14907,8 +15193,8 @@ pub fn run() {
         // visual change is waiting; registered fds wake this early for input,
         // clients, accessibility, and presenter retirement.
         let park_now = Instant::now();
-        let lock_clock_deadline = session
-            .is_locked()
+        // A blanked lock shows no clock, so it does not wake for one.
+        let lock_clock_deadline = (session.is_locked() && !session.is_blanked())
             .then(|| last_lock_clock_refresh.checked_add(LOCK_CLOCK_REFRESH))
             .flatten();
         // Follow the players while the lock is visible; a blanked display
@@ -15219,8 +15505,11 @@ fn sync_quick_settings_from_osd(
     osd: crate::shell::osd::Osd,
 ) {
     match osd.kind {
-        crate::shell::osd::OsdKind::Volume { .. } => {
-            quick_settings.volume = osd.level;
+        crate::shell::osd::OsdKind::Volume { muted } => {
+            quick_settings.status.volume = Some(os_actions::VolumeState {
+                level: osd.level,
+                muted,
+            });
         }
         crate::shell::osd::OsdKind::Brightness { display: None } => {
             quick_settings.brightness = osd.level;
@@ -15253,6 +15542,9 @@ mod lock_focus_tests;
 
 #[cfg(test)]
 mod media_osd_publication_tests;
+
+#[cfg(test)]
+mod blanked_paint_tests;
 
 /// Session-owned ambient-light loop. Settings only records policy; the
 /// compositor owns the display and therefore owns applying that policy after
@@ -15317,24 +15609,28 @@ struct SoftwareDimSync {
     /// The outputs it was applied to, by id: a new one is dimmed as it
     /// appears.
     outputs: Vec<u32>,
+    /// The software dims last applied.
+    dims: Vec<(String, f32)>,
 }
 
 impl SoftwareDimSync {
-    /// Apply what changed since the last call. Costs a comparison when
-    /// nothing did; the service wakes the loop through `wake` when a level
-    /// changes on another thread.
-    fn sync(&mut self, backend: &mut dyn Backend, wake: &crate::session_runtime::Wake) {
+    /// Apply what changed since the last call, and say whether the
+    /// service's levels did. Costs a comparison when nothing did; the
+    /// service wakes the loop through `wake` when a level changes on another
+    /// thread.
+    fn sync(&mut self, backend: &mut dyn Backend, wake: &crate::session_runtime::Wake) -> bool {
         // Only a backend that drives the machine's displays (DRM) dims in
         // software and speaks for its connectors; nested and headless ones
         // leave the brightness service alone.
         if !backend.software_dim_supported() {
-            return;
+            return false;
         }
         let service = os_actions::BrightnessService::global();
         if !self.started {
             self.started = true;
             service.on_change(Arc::clone(wake));
             service.follow_memory();
+            service.follow_backlight();
         }
         let generation = service.generation();
         let same_outputs = backend
@@ -15343,7 +15639,7 @@ impl SoftwareDimSync {
             .map(|output| output.id.0)
             .eq(self.outputs.iter().copied());
         if same_outputs && self.generation == Some(generation) {
-            return;
+            return false;
         }
         if !same_outputs {
             self.outputs = backend.outputs().iter().map(|output| output.id.0).collect();
@@ -15360,7 +15656,13 @@ impl SoftwareDimSync {
             .into_iter()
             .map(|(connector, level)| (connector, os_actions::software_luminance(level)))
             .collect();
-        backend.set_software_dim(&dims);
+        // A hardware level moves the generation too; the gamma is left
+        // alone unless a software level or the outputs changed.
+        if !same_outputs || dims != self.dims {
+            backend.set_software_dim(&dims);
+            self.dims = dims;
+        }
+        true
     }
 }
 
@@ -16837,6 +17139,7 @@ mod tests {
                     app_id: "org.gimp.GIMP".into(),
                     surface_id: 7,
                 },
+                app_title: None,
             }],
             active_tab: 12,
             width: WindowWidth::Normal,
@@ -16852,6 +17155,7 @@ mod tests {
                     app_id: "org.chromium.Chromium".into(),
                     surface_id: 8,
                 },
+                app_title: None,
             }],
             active_tab: 14,
             width: WindowWidth::Normal,
@@ -16927,6 +17231,7 @@ mod tests {
                         app_id: "org.gimp.GIMP".into(),
                         surface_id: 7,
                     },
+                    app_title: None,
                 }],
                 active_tab: 12,
                 width: WindowWidth::Normal,
@@ -17043,6 +17348,7 @@ mod tests {
                                 app_id: "org.gnome.Ptyxis".into(),
                                 surface_id: id + 2,
                             },
+                            app_title: None,
                         }],
                         active_tab: id + 1,
                         width: WindowWidth::Normal,
@@ -17156,6 +17462,7 @@ mod tests {
                         app_id: "org.gnome.Ptyxis".into(),
                         surface_id: 30,
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: 93,
@@ -17164,6 +17471,7 @@ mod tests {
                         app_id: "org.gnome.Ptyxis".into(),
                         surface_id: 31,
                     },
+                    app_title: None,
                 },
             ],
             active_tab: 92,
@@ -17239,6 +17547,7 @@ mod tests {
                             host: desk.clone(),
                             host_label: "Desk".into(),
                         },
+                        app_title: None,
                     },
                     Tab {
                         id: 63,
@@ -17247,6 +17556,7 @@ mod tests {
                             app_id: "org.gimp.GIMP".into(),
                             surface_id: 4,
                         },
+                        app_title: None,
                     },
                     Tab {
                         id: 65,
@@ -17257,6 +17567,7 @@ mod tests {
                             note: String::new(),
                             missing: None,
                         },
+                        app_title: None,
                     },
                 ],
                 active_tab: 62,
@@ -19265,6 +19576,33 @@ mod tests {
     // publishing the socket name for the nested dev loop
 
     #[test]
+    fn a_second_compositor_leaves_the_display_file_of_a_running_session() {
+        let runtime = tempfile::tempdir().unwrap();
+        let display = session_display_path(Some(runtime.path().into())).unwrap();
+        std::fs::create_dir_all(display.parent().unwrap()).unwrap();
+        std::fs::write(&display, "wayland-1").unwrap();
+        let ours = std::ffi::OsStr::new("wayland-2");
+
+        let running =
+            std::os::unix::net::UnixListener::bind(runtime.path().join("wayland-1")).unwrap();
+        assert!(
+            another_live_session_published(&display, ours),
+            "the desktop on wayland-1 still runs: its file is its own"
+        );
+        assert!(
+            !another_live_session_published(&display, std::ffi::OsStr::new("wayland-1")),
+            "a file naming this compositor's own socket is its own"
+        );
+        drop(running);
+        assert!(
+            !another_live_session_published(&display, ours),
+            "a session that is gone leaves its file to be replaced"
+        );
+        std::fs::write(&display, "../wayland-1").unwrap();
+        assert!(!another_live_session_published(&display, ours));
+    }
+
+    #[test]
     fn display_file_is_published_under_the_runtime_dir() {
         // Phase `display_path_lands_under_the_runtime_dir`.
         assert_eq!(
@@ -19630,6 +19968,7 @@ mod tests {
                     kind: AppKind::Other("Test".into()),
                     label: format!("Touch window {id}"),
                 },
+                app_title: None,
             }],
             active_tab: id + 100,
             width: WindowWidth::Fraction(250),
@@ -19760,6 +20099,7 @@ mod tests {
                     app_id: "so.tilo.fixture".into(),
                     surface_id: 0x7e57_0000_0027,
                 },
+                app_title: None,
             }],
             active_tab: 76,
             focus_history: Vec::new(),
@@ -19808,6 +20148,7 @@ mod tests {
                     kind: AppKind::Other("Test".into()),
                     label: format!("W{id}"),
                 },
+                app_title: None,
             }],
             active_tab: id + 100,
             width: WindowWidth::Fraction(600),
@@ -21020,19 +21361,6 @@ fn publish_output_colors(
     state.color_manager.set_preferred(preferred);
 }
 
-/// The group of the client in full screen when the shell takes the input
-/// over it: it is then drawn in the desktop's full-screen layout beneath the
-/// shell's surfaces rather than as the overlay above them. A presenter view
-/// the compositor placed is not a full screen of the person's.
-fn client_fullscreen_beneath_shell(state: &State, frame: &FrameBuilder) -> Option<u64> {
-    state
-        .fullscreen_target
-        .as_ref()
-        .filter(|target| target.pinned_output.is_none())
-        .and(state.fullscreen_group)
-        .filter(|_| client_input::chrome_captures_input(frame))
-}
-
 /// Place the fullscreen client, if any, and return the output it covers.
 fn reconcile_fullscreen_overlay(
     state: &mut State,
@@ -21076,16 +21404,7 @@ fn reconcile_fullscreen_overlay(
         crate::shell::foreign::store().note_fullscreen_extent(target.surface_id, size);
     }
     let rect = output.logical_rect();
-    if frame.chrome().fullscreen_group().is_some()
-        && frame.chrome().user_fullscreen_group().is_none()
-    {
-        // Laid out in the desktop beneath the shell's surfaces this frame
-        // ([`client_fullscreen_beneath_shell`]); nothing is drawn above
-        // them, and no frame of it goes straight to the display.
-        frame.set_fullscreen_surface(None);
-    } else {
-        frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
-    }
+    frame.set_client_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
     Some(output.id)
 }
 
@@ -21326,161 +21645,7 @@ mod gesture_wireup_tests {
 }
 
 #[cfg(test)]
-#[cfg(test)]
-mod output_geometry_tests {
-    use super::{input_capture_zones, output_geometry, select_fullscreen_output};
-    use crate::compositor::backend::{Output, OutputId};
-
-    /// A 2x 2560x1600 laptop panel with a 1x 2560x1440 monitor to its right:
-    /// logically the monitor starts at 1280, in the scene at 2560.
-    fn docked() -> [Output; 2] {
-        [
-            Output::new(OutputId(0), (2560, 1600), 2.0),
-            Output {
-                id: OutputId(1),
-                position: (2560, 0),
-                size: (2560, 1440),
-                scale: 1.0,
-                transform: settings_store::hardware::OutputTransform::Normal,
-                color_profile: None,
-                refresh_mhz: None,
-                logical_position: (1280, 0),
-                identity: crate::compositor::backend::OutputIdentity::default(),
-            },
-        ]
-    }
-
-    /// The shell lays out in the logical desktop and paints each display
-    /// into its scene rectangle at its own scale.
-    #[test]
-    fn a_dense_panel_is_a_logical_display_drawn_at_its_scale() {
-        let geo = output_geometry(&docked());
-        assert_eq!(
-            (
-                geo[0].x,
-                geo[0].y,
-                geo[0].width,
-                geo[0].height,
-                geo[0].scale
-            ),
-            (0.0, 0.0, 1280.0, 800.0, 2.0)
-        );
-        assert_eq!(
-            geo[0].scene,
-            vello::kurbo::Rect::new(0.0, 0.0, 2560.0, 1600.0)
-        );
-        assert_eq!(
-            (geo[1].x, geo[1].width, geo[1].scale),
-            (1280.0, 2560.0, 1.0)
-        );
-        assert_eq!(
-            geo[1].scene,
-            vello::kurbo::Rect::new(2560.0, 0.0, 5120.0, 1440.0)
-        );
-    }
-
-    /// `InputCapture` zones are where a portal client's pointer barriers go:
-    /// the logical desktop the pointer moves in, gapless across a 2x|1x seam.
-    #[test]
-    fn input_capture_zones_are_logical() {
-        let zones = input_capture_zones(&docked());
-        assert_eq!(
-            zones
-                .iter()
-                .map(|z| (z.x, z.y, z.width, z.height))
-                .collect::<Vec<_>>(),
-            vec![(0, 0, 1280, 800), (1280, 0, 2560, 1440)]
-        );
-    }
-
-    #[test]
-    fn output_geometry_maps_outputs_to_displays_and_rehomes_fullscreen() {
-        // Phase `single_output_maps_to_one_display`.
-        // A single monitor maps to one display at the origin — the case every screenshot and test runs in.
-        {
-            let outs = [Output::new(OutputId(0), (3840, 2160), 1.0)];
-            let geo = output_geometry(&outs);
-            assert_eq!(geo.len(), 1);
-            assert_eq!(
-                (geo[0].x, geo[0].width, geo[0].height),
-                (0.0, 3840.0, 2160.0)
-            );
-        }
-        // Phase `side_by_side_outputs_stay_separate_displays`.
-        // Two monitors side by side stay two displays, each with its own width —
-        // what stops a full-width window spanning both (combined geometry here is 3520px, neither display is that wide).
-        {
-            let outs = [
-                Output::new(OutputId(0), (1600, 900), 1.0),
-                Output {
-                    id: OutputId(1),
-                    position: (1600, 0),
-                    size: (1920, 1080),
-                    scale: 1.0,
-                    transform: settings_store::hardware::OutputTransform::Normal,
-                    color_profile: None,
-                    refresh_mhz: None,
-                    logical_position: (1600, 0),
-                    identity: crate::compositor::backend::OutputIdentity::default(),
-                },
-            ];
-            let geo = output_geometry(&outs);
-            assert_eq!(geo.len(), 2);
-            assert_eq!((geo[0].x, geo[0].width), (0.0, 1600.0));
-            assert_eq!((geo[1].x, geo[1].width), (1600.0, 1920.0));
-        }
-        // Phase `zero_sized_outputs_are_dropped`.
-        // A connector mid-modeset reports 0x0; a strip can't place a window on it, so it must not appear as a display.
-        {
-            let outs = [
-                Output::new(OutputId(0), (1600, 900), 1.0),
-                Output::new(OutputId(1), (0, 0), 1.0),
-            ];
-            assert_eq!(output_geometry(&outs).len(), 1);
-        }
-        // Phase `fullscreen_prefers_requested_output_then_rehomes_after_hotplug`.
-        {
-            let outputs = [
-                Output::new(OutputId(0), (1600, 900), 1.0),
-                Output {
-                    id: OutputId(1),
-                    position: (1600, 0),
-                    size: (1920, 1080),
-                    scale: 1.0,
-                    transform: settings_store::hardware::OutputTransform::Normal,
-                    color_profile: None,
-                    refresh_mhz: None,
-                    logical_position: (1600, 0),
-                    identity: crate::compositor::backend::OutputIdentity::default(),
-                },
-            ];
-            let centre = vello::kurbo::Point::new(2000.0, 400.0);
-            assert_eq!(
-                select_fullscreen_output(Some(OutputId(1)), Some(centre), &outputs)
-                    .map(|out| out.id),
-                Some(OutputId(1)),
-                "requested wl_output wins over the old tiled placement"
-            );
-            let remaining = &outputs[..1];
-            assert_eq!(
-                select_fullscreen_output(Some(OutputId(1)), Some(centre), remaining)
-                    .map(|out| out.id),
-                Some(OutputId(0)),
-                "removed requested output deterministically rehomes fullscreen"
-            );
-            assert_eq!(
-                select_fullscreen_output(
-                    None,
-                    Some(vello::kurbo::Point::new(300.0, 400.0)),
-                    &outputs
-                )
-                .map(|out| out.id),
-                Some(OutputId(0)),
-                "no requested output uses the window's owning display"
-            );
-        }
-    }
-}
+mod output_geometry_tests;
 
 #[cfg(test)]
 mod external_floating_security_tests {

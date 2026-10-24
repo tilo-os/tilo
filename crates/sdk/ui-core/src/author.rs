@@ -41,6 +41,10 @@ pub enum Author<'a> {
         installed_by: &'a str,
         appearance: Option<&'a tilo_actions::Appearance>,
         linked: Option<&'a str>,
+        /// The linked person's own colour, which the tile wears when it
+        /// shows no picture: one person has one colour on every surface,
+        /// whether they write in the room or through a bridge.
+        linked_color: Option<Color>,
         image: Option<&'a ImageData>,
     },
 }
@@ -336,11 +340,20 @@ impl<'a> Author<'a> {
                 AgentIdentityStyle::Solid,
             ),
             Self::Bot {
-                bot_name, image, ..
-            } => AvatarFace::new(self.shown_name(), bot_name)
-                .square()
-                .image(image)
-                .paint(ctx, line.mark),
+                bot_name,
+                image,
+                linked_color,
+                ..
+            } => {
+                let face = AvatarFace::new(self.shown_name(), bot_name)
+                    .square()
+                    .image(image);
+                let face = match linked_color {
+                    Some(color) => face.presence(color),
+                    None => face,
+                };
+                face.paint(ctx, line.mark);
+            }
         }
         let style = ctx.theme.text(TextRole::Body).strong();
         let ink = ctx.theme.tokens.colors.text_primary;
@@ -383,6 +396,7 @@ mod tests {
             installed_by: "Ada",
             appearance,
             linked: None,
+            linked_color: None,
             image: None,
         }
     }
@@ -450,6 +464,7 @@ mod tests {
             installed_by: "Ada",
             appearance: Some(&alice),
             linked: Some(person),
+            linked_color: None,
             image: None,
         };
         assert_eq!(linked("Alice").label(&["Alice"]), "alice");
@@ -507,6 +522,7 @@ mod tests {
             installed_by: "Ada",
             appearance: Some(&alice),
             linked: Some("Alice Smith"),
+            linked_color: None,
             image: None,
         };
         assert_eq!(

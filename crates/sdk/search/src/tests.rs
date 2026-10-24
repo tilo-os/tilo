@@ -459,6 +459,46 @@ fn keywords_find_a_record_below_its_name_and_by_typo() {
     );
 }
 
+#[test]
+fn two_letters_begin_a_name_and_match_other_fields_only_as_a_whole_word() {
+    let documents = || {
+        [
+            Document::new(0)
+                .field("Speed Test", FieldWeight::TITLE)
+                .field("ping", FieldWeight::KEYWORD)
+                .field("st", FieldWeight::KEYWORD),
+            Document::new(1)
+                .field("Camera", FieldWeight::TITLE)
+                .field("take a picture", FieldWeight::KEYWORD)
+                .field("Takes photos and records video", FieldWeight::SUBTITLE),
+            Document::new(2).field("Pixel Editor", FieldWeight::TITLE),
+            Document::new(3)
+                .field("Notes", FieldWeight::TITLE)
+                .field("pi is about three", FieldWeight::BODY),
+            Document::new(4)
+                .field("Media", FieldWeight::TITLE)
+                .field("Watch tv shows", FieldWeight::SUBTITLE),
+        ]
+    };
+    for matching in [Matching::LOOSE, Matching::default()] {
+        for index in [committed(matching, documents()), {
+            let mut index = SearchIndex::new(matching).through_tantivy();
+            index.replace_all(documents());
+            index.commit().unwrap();
+            index
+        }] {
+            assert_eq!(keys(&index, "pi"), [2, 3], "a name begun, or a whole word");
+            assert_eq!(keys(&index, "p"), [2]);
+            assert_eq!(keys(&index, "st"), [0], "initials typed whole");
+            assert_eq!(keys(&index, "tv"), [4], "a whole word of a description");
+            assert!(keys(&index, "sh").is_empty(), "not a word begun");
+            assert_eq!(keys(&index, "pin"), [0], "three letters begin a keyword");
+            assert_eq!(keys(&index, "pic"), [1]);
+            assert_eq!(keys(&index, "pho"), [1]);
+        }
+    }
+}
+
 /// Records of every weight, some repeating a text, for comparing the
 /// direct path with tantivy.
 fn alike_documents() -> Vec<Document> {
@@ -589,6 +629,51 @@ fn direct_and_tantivy_answer_alike() {
                 tantivy.search_scored(query, Page::first(64), score),
                 "{query:?} {matching:?} scored"
             );
+        }
+    }
+}
+
+#[test]
+fn a_highlight_marks_exactly_what_the_index_matched() {
+    let texts = [
+        "Choose an emoji",
+        "Insert it where you're typing",
+        "Pixel Editor",
+        "Speed Test",
+        "redundant dune",
+        "pi",
+        "Le Café Crème",
+        "Watch tv shows",
+        "src/volume_9.rs",
+    ];
+    let queries = [
+        "pi", "p", "ty", "typi", "dun", "dune", "edit", "crème", "cafe", "afé", "tv", "sh", ".rs",
+    ];
+    let weights = [
+        FieldWeight::TITLE,
+        FieldWeight::KEYWORD,
+        FieldWeight::SUBTITLE,
+        FieldWeight::BODY,
+    ];
+    for text in texts {
+        for weight in weights {
+            let index = committed(Matching::default(), [Document::new(0).field(text, weight)]);
+            for query in queries {
+                let matched = !keys(&index, query).is_empty();
+                let marked = crate::locate(query, text, weight);
+                assert_eq!(
+                    marked.is_some(),
+                    matched,
+                    "{query:?} in {text:?} at {weight:?}: marked {marked:?}"
+                );
+                if let Some(range) = marked {
+                    assert_eq!(
+                        text.get(range).map(crate::fold),
+                        Some(crate::fold(query)),
+                        "{query:?} in {text:?}: the mark is the query"
+                    );
+                }
+            }
         }
     }
 }

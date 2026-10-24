@@ -14,7 +14,7 @@
 //! presets_v1: {key → json},
 //! effect_receipts_v1: {invocation → json},
 //! automations_v1: {shortcut id → json},
-//! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, tile_json } ] } ] } ] } ] }`.
+//! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, app_title?, tile_json } ] } ] } ] } ] }`.
 //! Geometry and maximization are presentation state and never written.
 
 use std::collections::HashSet;
@@ -142,6 +142,9 @@ fn put_tab(doc: &mut AutoCommit, tabs: &ObjId, index: usize, tab: &Tab) -> Optio
     let entry = doc.insert_object(tabs, index, ObjType::Map).ok()?;
     doc.put(&entry, "id", ScalarValue::Uint(tab.id)).ok()?;
     doc.put(&entry, "title", tab.title.clone()).ok()?;
+    if let Some(app_title) = &tab.app_title {
+        doc.put(&entry, "app_title", app_title.clone()).ok()?;
+    }
     let blob = serde_json::to_vec(&tab.tile).ok()?;
     doc.put(&entry, "tile_json", ScalarValue::Bytes(blob))
         .ok()?;
@@ -279,6 +282,12 @@ fn sync_list<T>(
 
 fn write_tab(doc: &mut AutoCommit, entry: &ObjId, tab: &Tab) {
     let _ = doc.put_str_if_changed(entry, "title", &tab.title);
+    match &tab.app_title {
+        Some(app_title) => {
+            let _ = doc.put_str_if_changed(entry, "app_title", app_title);
+        }
+        None => delete_if_present(doc, entry, "app_title"),
+    }
     put_json_if_changed(doc, entry, "tile_json", &tab.tile);
 }
 
@@ -624,8 +633,16 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     }
 }
 
-/// The tabs under a group entry, as `(id, title, tile_json)`.
-fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<(u64, String, Vec<u8>)> {
+/// One tab as a group entry holds it.
+struct DocTab {
+    id: u64,
+    title: String,
+    app_title: Option<String>,
+    tile_json: Vec<u8>,
+}
+
+/// The tabs under a group entry.
+fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<DocTab> {
     let Some(tabs) = obj(doc, group_entry, TABS_KEY) else {
         return Vec::new();
     };
@@ -633,20 +650,24 @@ fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<(u64, String, Vec<u8
         .filter_map(|i| {
             let entry = obj(doc, &tabs, i)?;
             let id = doc.uint_at(&entry, "id")?;
-            let title = doc.str_at(&entry, "title").unwrap_or_default();
-            let blob = doc.bytes_at(&entry, "tile_json").unwrap_or_default();
-            Some((id, title, blob))
+            Some(DocTab {
+                id,
+                title: doc.str_at(&entry, "title").unwrap_or_default(),
+                app_title: doc.str_at(&entry, "app_title"),
+                tile_json: doc.bytes_at(&entry, "tile_json").unwrap_or_default(),
+            })
         })
         .collect()
 }
 
 /// Fold a document group's tabs into `strip`'s group `group_id`, creating
 /// it with local presentation defaults when the strip does not have it.
-fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[(u64, String, Vec<u8>)]) {
-    let hydrate = |(id, title, blob): &(u64, String, Vec<u8>)| Tab {
-        id: *id,
-        title: title.clone(),
-        tile: tile_from_blob(blob, title),
+fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[DocTab]) {
+    let hydrate = |entry: &DocTab| Tab {
+        id: entry.id,
+        title: entry.title.clone(),
+        tile: tile_from_blob(&entry.tile_json, &entry.title),
+        app_title: entry.app_title.clone(),
     };
     let Some(group) = strip.window_groups.iter_mut().find(|g| g.id == group_id) else {
         let tabs: Vec<Tab> = doc_tabs.iter().map(hydrate).collect();
@@ -670,7 +691,7 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[(u64, String, Ve
             group
                 .tabs
                 .iter()
-                .find(|t| t.id == entry.0)
+                .find(|t| t.id == entry.id)
                 .cloned()
                 .unwrap_or_else(|| hydrate(entry))
         })
@@ -679,7 +700,7 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[(u64, String, Ve
         || group
             .tabs
             .iter()
-            .all(|t| !doc_tabs.iter().any(|(id, _, _)| *id == t.id))
+            .all(|t| !doc_tabs.iter().any(|entry| entry.id == t.id))
     {
         group.active_tab = tabs.first().map_or(0, |t| t.id);
     }

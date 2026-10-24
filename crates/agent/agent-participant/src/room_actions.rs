@@ -269,10 +269,25 @@ enum Job {
     },
 }
 
+impl Job {
+    const fn kind(&self) -> &'static str {
+        match self {
+            Self::Feedback { .. } => "feedback",
+            Self::Catalogue { .. } => "catalogue",
+            Self::Invoke { .. } => "invoke",
+        }
+    }
+}
+
+/// A request that waited for the worker, or ran, at least this long is
+/// logged: every request of every page of every room waits behind the one
+/// before it.
+const SLOW_JOB: Duration = Duration::from_secs(2);
+
 struct Shared {
     ledger: Mutex<Ledger>,
     link: OnceLock<Arc<dyn RoomRecordsLink>>,
-    jobs: Mutex<Option<mpsc::Sender<Job>>>,
+    jobs: Mutex<Option<mpsc::Sender<(Instant, Job)>>>,
 }
 
 /// The host's page actions over every record of its rooms.
@@ -358,7 +373,9 @@ impl RoomActions {
     fn submit(&self, job: Job) -> Result<(), Job> {
         let jobs = self.shared.jobs.lock_recover();
         match jobs.as_ref() {
-            Some(sender) => sender.send(job).map_err(|error| error.0),
+            Some(sender) => sender
+                .send((Instant::now(), job))
+                .map_err(|error| error.0.1),
             None => Err(job),
         }
     }
@@ -1007,8 +1024,25 @@ impl Worker {
         }
     }
 
-    fn run(mut self, jobs: &mpsc::Receiver<Job>) {
-        while let Ok(job) = jobs.recv() {
+    fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
+        while let Ok((queued, job)) = jobs.recv() {
+            let started = Instant::now();
+            let kind = job.kind();
+            self.take(job);
+            let (waited, ran) = (started.duration_since(queued), started.elapsed());
+            if waited.max(ran) >= SLOW_JOB {
+                tracing::warn!(
+                    kind,
+                    waited_ms = waited.as_millis(),
+                    ran_ms = ran.as_millis(),
+                    "room actions: a request waited or ran long"
+                );
+            }
+        }
+    }
+
+    fn take(&mut self, job: Job) {
+        {
             match job {
                 Job::Feedback {
                     workspace_id,

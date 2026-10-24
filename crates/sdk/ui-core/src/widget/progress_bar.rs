@@ -101,7 +101,7 @@ impl ProgressBarFace {
 
     fn fill_colour(&self, theme: &Theme) -> vello::peniko::Color {
         match self.fill {
-            BarFill::Progress => theme.tokens.colors.intent.neutral_fill,
+            BarFill::Progress => theme.tokens.colors.intent.value_fill,
             BarFill::Level(thresholds) => {
                 thresholds.color(theme, self.progress.unwrap_or_default())
             }

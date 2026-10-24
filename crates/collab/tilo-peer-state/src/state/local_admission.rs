@@ -80,15 +80,25 @@ impl StatePeer {
     ) -> Result<(), String> {
         let author = *envelope.author.as_bytes();
         let before = self.clone();
-        let outcome = self.admit_local(app, record, envelope, write, now)?;
+        let report = self.admit_local(app, record, envelope, write, now)?;
+        let outcome = &report.summary;
         if outcome.duplicate {
             return Err("native local document signed sequence is stale".into());
         }
         if outcome.deferred || outcome.incomplete.is_some() || outcome.rejected != 0 {
-            return Err(
-                "native local document was deferred, incomplete or rejected, not newly admitted"
-                    .into(),
-            );
+            let waiting = match &report.primary {
+                super::InputDisposition::RetryLater(prerequisite) => {
+                    format!(", waiting for {prerequisite}")
+                }
+                _ => String::new(),
+            };
+            let incomplete = outcome
+                .incomplete
+                .as_deref()
+                .map_or_else(String::new, |reason| format!(" ({reason})"));
+            return Err(format!(
+                "native local document was deferred, incomplete or rejected, not newly admitted{waiting}{incomplete}"
+            ));
         }
         let admissions = self.admissions_since(&before).map_err(|e| e.to_string())?;
         if !admissions.iter().any(|entry| {

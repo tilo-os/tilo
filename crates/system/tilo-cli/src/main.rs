@@ -45,6 +45,7 @@ mod desktop;
 mod health;
 mod nouns;
 mod os;
+mod status;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
@@ -674,11 +675,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         // have to authenticate to be told what is on it.
         Cmd::Status { json } => {
             require_system_provider()?;
-            let mut args = vec!["list"];
-            if json {
-                args.push("--json");
-            }
-            let code = run_helper_directly(&args)?;
+            let code = deployment_status(json)?;
             if !json {
                 print_cleanup_status();
             }
@@ -1128,6 +1125,18 @@ fn is_root() -> bool {
                 .and_then(|v| v.split_whitespace().next().map(str::to_string))
         })
         .is_some_and(|uid| uid == "0")
+}
+
+/// Root reads the disk itself; anyone else asks the status socket, where there is one.
+fn deployment_status(json: bool) -> Result<ExitCode> {
+    if let Some(socket) = status::socket().filter(|_| !is_root()) {
+        return Ok(status::print(&status::ask(&socket, json)?));
+    }
+    let mut args = vec!["list"];
+    if json {
+        args.push("--json");
+    }
+    run_helper_directly(&args)
 }
 
 fn run_helper_directly(args: &[&str]) -> Result<ExitCode> {

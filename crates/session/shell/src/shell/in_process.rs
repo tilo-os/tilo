@@ -1134,6 +1134,7 @@ mod tests {
                 kind,
                 label: "Tab".into(),
             },
+            app_title: None,
         };
         let room = crate::shell::state::RoomId::new();
         let request = tilo_desktop::resolver::TileRequest { room, tab: &tab };
