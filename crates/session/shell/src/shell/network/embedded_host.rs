@@ -62,6 +62,8 @@ pub(super) struct State {
     /// What a pass that left a placement failing saw ([`Placing`]): no pass
     /// runs again until something it depends on changed.
     failed: Mutex<Option<Placing>>,
+    /// Why each room the last pass left failing was not placed.
+    failures: Mutex<std::collections::BTreeMap<RoomId, String>>,
     /// Bumped when the host opens: a placement that failed for want of it
     /// may succeed now.
     host_generation: std::sync::atomic::AtomicU64,
@@ -448,11 +450,13 @@ impl ShellNetwork {
             (waiting, before)
         };
         let mut failed = false;
+        let mut failures = std::collections::BTreeMap::new();
         for (room, local, name) in waiting {
             let placed = self.place(room, local, &name);
             if let Err(error) = &placed {
                 tracing::warn!(%room, %error, "a workspace was not placed on this device");
                 failed = true;
+                failures.insert(room, error.clone());
             }
             // Placed, the room waits until this device's native owner holds
             // it ([`WorkspaceTree::project_native_room`]), its enrollment
@@ -466,6 +470,11 @@ impl ShellNetwork {
                     .remove(&room);
             }
         }
+        *self
+            .embedded_host
+            .failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = failures;
         // A failed placement is tried again once something it depends on
         // changes, never on every pass: as it was when this pass began, so
         // a change during the pass brings the next one.
@@ -501,6 +510,26 @@ impl ShellNetwork {
             .failed
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(now);
+    }
+
+    /// Why the last placement pass left `room` unplaced, while no later pass
+    /// is due: a placement waiting for something it depends on to change.
+    pub(super) fn placement_failure(&self, room: RoomId) -> Option<String> {
+        if self
+            .embedded_host
+            .failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_none()
+        {
+            return None;
+        }
+        self.embedded_host
+            .failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&room)
+            .cloned()
     }
 
     /// Create `room`, the workspace `local` called `name`, on this device's
