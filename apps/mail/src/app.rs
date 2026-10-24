@@ -1770,7 +1770,14 @@ impl MailApp {
     fn forwarded_files(&self, msg: &Message) -> ForwardedFiles {
         let mut files = Vec::new();
         let mut not_downloaded = Vec::new();
+        let mut too_large = Vec::new();
         for (index, attachment) in msg.shown_attachments() {
+            // Past what one message carries whether it is downloaded or
+            // not: said so, and never read or kept for nothing.
+            if attachment.size > crate::attachment_store::MAX_ATTACHMENT_BYTES as u64 {
+                too_large.push(attachment.filename.clone());
+                continue;
+            }
             let staged = self
                 .attachment_to_save(&msg.id.to_string(), index)
                 .and_then(|(_, bytes)| {
@@ -1786,11 +1793,17 @@ impl MailApp {
             }
         }
         let carried = crate::attachment_store::bounded(&files);
-        let too_large = files
-            .iter()
-            .filter(|file| !carried.contains(file))
-            .map(|file| file.filename.clone())
-            .collect();
+        // A file whose bytes another one carries already goes with it.
+        too_large.extend(
+            files
+                .iter()
+                .filter(|file| {
+                    !carried
+                        .iter()
+                        .any(|kept| kept.content_id == file.content_id)
+                })
+                .map(|file| file.filename.clone()),
+        );
         ForwardedFiles {
             carried,
             not_downloaded,
@@ -6309,6 +6322,57 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         assert!(
             !app.compose.touched(),
             "a forward nobody changed leaves no draft when closed"
+        );
+    }
+
+    /// A forward says truly why a file stays behind: a downloaded file past
+    /// what one message carries is too large, not "not downloaded", and a
+    /// file whose bytes another one already carries is not left behind.
+    #[test]
+    fn a_forward_names_a_file_too_large_to_carry_as_too_large() {
+        let (mut app, mut doc) = app();
+        let mut message = app
+            .shared
+            .borrow()
+            .mailbox
+            .messages
+            .values()
+            .next()
+            .expect("a seeded message")
+            .clone();
+        message.id = uuid::Uuid::new_v4();
+        message.folder = Folder::Inbox;
+        message.subject = "Footage".into();
+        let past_one_message = vec![0_u8; crate::attachment_store::MAX_ATTACHMENT_BYTES + 1];
+        message.attachments = vec![
+            Attachment::hydrated("notes.txt", "text/plain", b"take two".to_vec()),
+            Attachment::hydrated("copy of notes.txt", "text/plain", b"take two".to_vec()),
+            Attachment::hydrated("footage.mp4", "video/mp4", past_one_message),
+        ];
+        let id = message.id;
+        app.shared.borrow_mut().mailbox.insert(message);
+
+        app.open_forward(id);
+        let draft = app.compose.to_draft(&mut ui::widget::Edits::lend(&mut doc));
+        let [file] = draft.attachments.as_slice() else {
+            panic!(
+                "the notes go with the forward once: {:?}",
+                draft.attachments
+            );
+        };
+        assert_eq!(file.filename, "notes.txt");
+        let status = app.shared.borrow().status.clone().unwrap_or_default();
+        assert!(
+            status.contains("footage.mp4") && status.contains("more than one message can carry"),
+            "the downloaded file too large to carry is named as too large: {status}"
+        );
+        assert!(
+            !status.contains("not downloaded"),
+            "nothing here waits to be downloaded: {status}"
+        );
+        assert!(
+            !status.contains("copy of notes.txt"),
+            "the notes' bytes go with the forward: {status}"
         );
     }
 
