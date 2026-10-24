@@ -743,18 +743,21 @@ fn a_tilo_stream_gap_asks_the_target_for_a_keyframe() {
     };
     assert!(frame(&mut app, 0, &IDR).is_empty());
     assert!(frame(&mut app, 1, &DELTA).is_empty());
-    let mut asked = frame(&mut app, 3, &DELTA);
-    let mut seq = 3;
-    let deadline = tilo_test_env::hang_deadline();
-    while asked.is_empty() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        seq += 1;
-        asked = frame(&mut app, seq, &DELTA);
-    }
-    assert_eq!(asked.len(), 1, "one request for the gap");
+    // The decoder may still be starting up on its first unit (a real one
+    // waits for its first picture): the gap is noticed as unit 3 arrives,
+    // not once the worker reaches it.
+    assert_eq!(
+        frame(&mut app, 3, &DELTA),
+        [3],
+        "one request for the gap, naming the unit after it"
+    );
     assert!(
-        (3..=seq).contains(&asked[0]),
-        "the request names a unit after the gap: {asked:?}"
+        frame(&mut app, 5, &IDR).is_empty(),
+        "the keyframe starts the chain again"
+    );
+    assert!(
+        frame(&mut app, 6, &DELTA).is_empty(),
+        "and the deltas after it continue it"
     );
 }
 
