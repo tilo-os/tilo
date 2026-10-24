@@ -1891,6 +1891,23 @@ impl WorkspaceTree {
             .collect()
     }
 
+    /// The person behind each of `room`'s sessions that the room itself
+    /// vouches for, keyed by presence handle: every certified device
+    /// ([`Self::room_peer_principals`]), and the endpoint a validated
+    /// invite pinned as the room's governor ([`RoomAuthority::Peer`]) as
+    /// the room's owner when no certificate names its person. A session
+    /// neither covers is nobody in particular, whatever it calls itself.
+    pub fn room_session_principals(&self, room: RoomId) -> std::collections::BTreeMap<u64, UserId> {
+        let mut people = self.room_peer_principals(room);
+        if let RoomAuthority::Peer(governor) = self.room_authority(room)
+            && let Some(handle) = governor.liveness_handle()
+            && let Some(owner) = self.workspace_in_room(room).and_then(Workspace::owner)
+        {
+            people.entry(handle).or_insert_with(|| owner.clone());
+        }
+        people
+    }
+
     /// The other devices of this device's person in `room`, keyed by
     /// presence handle, each with the name it was certified under: the
     /// same certified devices as [`Self::room_peer_principals`].
