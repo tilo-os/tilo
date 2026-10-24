@@ -547,7 +547,7 @@ fn failure<T: 'static, E: 'static>(
         SkeletonShape::Media(_) | SkeletonShape::Page => false,
     };
     if compact {
-        let mut row = crate::widget::ListRow::new("arriving.failed", failed).error();
+        let mut row = crate::widget::ListRow::new("arriving.failed", failed);
         if matches!(shape, SkeletonShape::Row(row) if row.secondary_lines > 0) {
             row = row.secondary(message);
         } else {
