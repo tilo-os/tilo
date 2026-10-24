@@ -295,7 +295,7 @@ impl Hydrator {
             tokio::task::spawn_blocking(move || files.ensure(&key, size, retention, &chunks))
                 .await??;
         } else if priority == Priority::Pinned {
-            files.set_retention(&key, Retention::Pinned)?;
+            files.keep_offline(&key, true)?;
         }
         // Interactive work claims all of it at once; background work claims
         // request by request, so it never holds ranges while it waits.
