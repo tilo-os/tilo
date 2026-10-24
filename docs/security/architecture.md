@@ -103,8 +103,8 @@ The account key's only jobs: sign device certificates, and sign revocations.
 ### 3.2 Device certificate
 
 Binds a device key to the account. Where a TPM or FIDO2 token is present the device key is
-generated in and never leaves that hardware. Where neither is present it is a software key wrapped
-by the login credential. **The certificate is the same shape either way**, so every consumer of
+generated in and never leaves that hardware. Where neither is present it is a software key in device storage, because
+the machine needs its identity before anyone signs in ([sign-in.md](sign-in.md) §2). **The certificate is the same shape either way**, so every consumer of
 identity is unaware of what kind of hardware, if any, sits underneath.
 
 The set of authorised devices is a replicated CRDT set from day one, never a scalar and never a
@@ -139,7 +139,7 @@ The recovery key is created and displayed **at the moment encryption is enabled*
 that can be printed or photographed, and enrollment does not complete until the user confirms they
 have it. The TPM keyslot is a convenience; the recovery key is the guarantee.
 
-### 3.6 The credential ladder
+### 3.6 One secret
 
 **Day-to-day use must require one secret.**
 
@@ -147,26 +147,29 @@ This is a hard requirement, not an aspiration, because a system that asks for a 
 "only sometimes" trains people to expect prompts — and a user who expects prompts is a user who
 types their passphrase into whatever asks.
 
+The secret is the person's login, typed once per boot at a screen that is the login screen. On a
+verified boot the TPM unlocks the system by itself and the person signs in; when the boot can't
+be verified, or there is no TPM, the login screen comes first and the same secret opens the system
+too. Everything personal is encrypted under a per-person key that only that person's factors
+release, so device-scoped things unlock with the device and user-scoped things with the user —
+one prompt when there is one person, one per person when there are several. A fingerprint, a
+security key or an approval from another of the person's devices stands in for the secret where
+that is safe; the password always works.
+
 | Credential | When | Why it can be short |
 |---|---|---|
-| **PIN** | Every boot, every unlock | The TPM throttles guesses in hardware |
-| **Passphrase** | Only on machines with no TPM at all | Nothing throttles guesses, so it must carry the entropy itself |
-| **Recovery key** | Account recovery, dead TPM, forgotten PIN | Never typed in normal operation |
-
-The PIN cascades rather than repeating. Entering it unseals the device key; the device key unlocks
-the disk, authorises the session, and unwraps the credential vault. The same secret is not
-requested separately by these subsystems.
-
-**Machines without a TPM type exactly one secret too.** It is a passphrase rather than a PIN,
-because without hardware throttling the secret itself must be strong enough to resist offline
-guessing. The number of prompts stays the same, but the string is longer. This costs typing, not
-safety, and does not add a *second* prompt.
+| **PIN or password** | Every sign-in, unlock and privileged prompt | On TPM machines the TPM throttles guesses in hardware |
+| **Passphrase** | The same, on machines with no TPM at all | Nothing throttles guesses, so it must carry the entropy itself |
+| **Recovery key** | Forgotten secret, cleared TPM, lost factors | Never typed in normal operation |
 
 **A short PIN is only safe if guess-throttling actually works.** The TPM's dictionary-attack
-lockout is what makes four digits defensible, and its reset authorisation must be set to a real
+lockout is what makes six digits defensible, and its reset authorisation must be set to a real
 value — left at the empty default, an attacker simply resets the counter and the PIN becomes
-four digits of nothing. Lockout parameters are vendor-set and often generous, so they must be
-read and, where possible, tightened at enrollment rather than assumed.
+six digits of nothing. Lockout parameters are vendor-set and often generous, so they must be
+read and, where possible, tightened rather than assumed.
+
+The design — storage scopes, the per-person key and its wrappers, what each screen offers,
+development machines that sign what they boot — is in [sign-in.md](sign-in.md).
 
 ### 3.7 Why the passphrase should never appear
 
@@ -178,17 +181,6 @@ a legitimate firmware or kernel update re-satisfies the policy instead of breaki
 This is usually filed as a security mechanism. It is equally a usability one — it is the difference
 between a recovery credential that stays in a drawer and one the user keeps somewhere convenient
 because they need it every few weeks.
-
-### 3.8 Where the single PIN stops
-
-Disk unlock is a **device** capability; a home directory is a **user** capability. On a
-single-user machine these collapse into one PIN and one cascade, which is the case to optimise
-for. On a multi-user machine the device unlocks once and each user still authenticates to their own
-home — one PIN *per person*, which is correct rather than a regression.
-
-The cascade must therefore be built as "device credential unlocks device-scoped things, user
-credential unlocks user-scoped things," which happens to be one prompt when there is one user. A
-cascade built as "the PIN unlocks everything" would have to be dismantled to add a second person.
 
 ---
 

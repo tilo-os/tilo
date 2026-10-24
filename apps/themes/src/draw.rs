@@ -178,7 +178,7 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
     );
     paint.fill(
         &RoundedRect::from_rect(track, track.height() / 2.0),
-        colors.intent.neutral_fill,
+        colors.intent.value_fill,
     );
     paint.fill(
         &Circle::new((track.x1 - 9.0, track.center().y), 7.0),

@@ -146,6 +146,12 @@ run = "python3 tools/policy/check_app_toolbars.py"
 inputs = ["apps/**/*.rs", "apps/*/locales/en-US.ftl", "tools/policy/app_toolbars_baseline.txt"]
 
 [[step]]
+name = "host-data-apps"
+label = "Apps that show the machine declare it and are captured only from scenarios"
+run = "python3 tools/policy/check_host_data_apps.py"
+inputs = ["apps/*/tilo-app.toml", "apps/**/*.rs", "tools/screenshots/*.toml", "tools/policy/check_host_data_apps.py"]
+
+[[step]]
 name = "app-resource-action-contract"
 label = "Application resource/action contract"
 run = "python3 tools/policy/check_app_resource_action_contract.py"

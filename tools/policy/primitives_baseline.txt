@@ -82,7 +82,6 @@ glyph-join 7 apps/tube/src/sample.rs
 glyph-join 1 apps/typst-editor/src/app.rs
 glyph-join 2 apps/typst-editor/src/samples.rs
 glyph-join 18 apps/video-editor/src/app.rs
-glyph-join 2 apps/video-editor/src/app/accessibility.rs
 glyph-join 1 apps/video-editor/src/app/paint.rs
 glyph-join 6 apps/video-editor/src/app/project_workflow.rs
 glyph-join 3 apps/video-editor/src/export.rs

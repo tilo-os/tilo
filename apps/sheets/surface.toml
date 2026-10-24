@@ -71,6 +71,15 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "upsert-item"
+kind = "undoable"
+params = [
+  { name = "sheet", required = true, schema = { type = "string" } },
+  { name = "match", required = true, schema = { type = "object" } },
+  { name = "value", required = true, schema = { type = "object" } },
+]
+
+[[resources.verbs]]
 id = "duplicate-sheet"
 kind = "undoable"
 params = [

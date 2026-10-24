@@ -9351,6 +9351,7 @@ mod tests {
                         app_id: (*app_id).into(),
                         surface_id: *surface,
                     },
+                    app_title: None,
                 })
                 .collect(),
             active_tab: tabs[0].0,
@@ -9589,6 +9590,7 @@ mod tests {
                         label: format!("Notes {i}"),
                         note: String::new(),
                     },
+                    app_title: None,
                 }],
                 active_tab: 1_000_u64.saturating_add(i),
                 width: WindowWidth::Normal,
@@ -9609,6 +9611,7 @@ mod tests {
                         app_id: app_id.into(),
                         surface_id: surface,
                     },
+                    app_title: None,
                 }],
                 active_tab: tab_id,
                 width: WindowWidth::Normal,

@@ -120,6 +120,7 @@ suites = [
   "os/tests/board_release_promotion.py",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
+  "os/tests/clock_floor.sh",
   "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
@@ -135,6 +136,7 @@ suites = [
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/esp_generator.sh",
+  "os/tests/deployment_dual_esp.sh",
   "os/tests/airplay_encrypted_session_test.sh",
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
@@ -786,6 +788,7 @@ inputs = ["scripts/browser/"]
 suites = [
   "scripts/browser/benchmark-pages.test.mjs",
   "scripts/browser/scroll-response.test.mjs",
+  "scripts/browser/test_benchmark_input.py",
 ]
 
 # Cargo packages whose code reads repository files outside their directory.
@@ -1230,11 +1233,20 @@ inputs = [
   # Its own tests compile browser-parts in, and its views read the parts'
   # English catalogue.
   "apps/browser-parts/**",
+  "apps/browser/chromium/src/extension_tabs.js",
 ]
 readers = [
   "apps/browser/src/lib.rs",
   "apps/browser/src/personal_bookmark_view.rs",
 ]
+
+[[cargo]]
+package = "browser-parts"
+inputs = [
+  # The engine's tab script, which it writes into each extension's worker.
+  "apps/browser/chromium/src/extension_tabs.js",
+]
+readers = ["apps/browser-parts/src/extensions.rs"]
 
 [[cargo]]
 package = "tilo-fs"

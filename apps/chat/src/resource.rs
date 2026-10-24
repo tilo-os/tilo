@@ -193,11 +193,25 @@ impl ResourceApp for ChatShell {
             .with_drafts(drafts);
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open(app.opener());
-        cx.surface(if live && ui::local_identity::bound().is_some() {
+        // The shell keeps the room's channels as its sidebar, their width,
+        // their drawer in a narrow window and their keys; the conversation
+        // is the window's point, a reading column beside them.
+        let places = ui::widget::NavFeed::new();
+        let shell = ui::widget::NavShell::new()
+            .with_id("chat-shell")
+            .content_kind(ui::widget::ContentKind::Reading)
+            .with_window_toolbar();
+        let app = app.in_shell(&places, shell.window_bar_link());
+        let app = if live && ui::local_identity::bound().is_some() {
             app.announcing()
         } else {
             app
-        })
+        };
+        Box::new(
+            shell
+                .sidebar(crate::sidebar::sidebar(&places))
+                .content(cx.surface(app)),
+        )
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {

@@ -57,6 +57,8 @@ use ui::lock::MutexRecover as _;
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::Resource as _;
 
+#[cfg(test)]
+mod action_surface_tests;
 mod continuity;
 mod library;
 pub(crate) mod personal;
@@ -454,6 +456,9 @@ pub struct BrowserWidget {
     personal_open: ui::LocalState<std::collections::BTreeMap<String, String>>,
     personal_bookmark_location: crate::personal_bookmark_view::Location,
     person_history: Option<ui::framework::PersonRecord<crate::history::BrowsingHistory>>,
+    /// The page last recorded in [`Self::person_history`] before it had a
+    /// title, to name once its title comes.
+    untitled_visit: Option<String>,
     continuity: Option<crate::continuity_handoff::Controller>,
     /// The person's address book, which new tabs fill forms from too.
     address_book: Option<ui::framework::PersonRecord<crate::autofill::AddressBook>>,
@@ -1268,6 +1273,7 @@ impl BrowserWidget {
             personal_open: ui::LocalState::new(std::collections::BTreeMap::new()),
             personal_bookmark_location: crate::personal_bookmark_view::Location::default(),
             person_history: None,
+            untitled_visit: None,
             continuity: None,
             address_book: None,
             history_revision: None,
@@ -1972,6 +1978,15 @@ impl BrowserWidget {
                     .thread_name("browser-open-download")
                     .send();
             }
+            BrowserOperation::Extension(request) => {
+                self.extensions.request(&request)?;
+                self.structure_dirty = true;
+            }
+            BrowserOperation::AddExtension => self.extensions.offer_store_item()?,
+            BrowserOperation::Zoom { step } => {
+                self.daily.zoom_by(step, &self.engine)?;
+                self.structure_dirty = true;
+            }
             BrowserOperation::RevealDownload { id } => {
                 let path = self.completed_download_path(&id)?;
                 let _ = ui::portal::LaunchRequest::reveal(path)
@@ -2363,7 +2378,7 @@ impl BrowserWidget {
 
         let candidate =
             if !input.chars().any(char::is_whitespace) && looks_like_bare_web_host(input) {
-                format!("https://{input}")
+                omnibox::address_target(input)
             } else {
                 search_url(&self.settings.search_engine, input)
             };
@@ -2374,6 +2389,29 @@ impl BrowserWidget {
             return self.reject_navigation("Browser can open only http:// or https:// addresses.");
         }
         Ok(candidate)
+    }
+
+    /// Name the visit just recorded without a title, once the page it
+    /// recorded has one.
+    fn name_untitled_visit(&mut self) {
+        if self.title.trim().is_empty()
+            || self.untitled_visit.as_deref() != Some(self.current_uri.as_str())
+        {
+            return;
+        }
+        self.untitled_visit = None;
+        if let Some(record) = &self.person_history {
+            let name = crate::history::BrowsingHistory::NAME_VISIT.with(
+                crate::history::browsing_history::NameVisit {
+                    url: self.current_uri.clone(),
+                    title: self.title.clone(),
+                },
+            );
+            if let Err(error) = record.invoke(&name) {
+                tracing::warn!(%error, "browser visit was not named");
+            }
+            self.follow_history();
+        }
     }
 
     fn reject_navigation<T>(&mut self, message: &str) -> Result<T, String> {
@@ -3042,6 +3080,11 @@ impl BrowserWidget {
                 } => {
                     self.structure_dirty |= self.extensions.on_result(request_id, ok, &body);
                 }
+                event @ (WebViewEvent::ExtensionAction { .. }
+                | WebViewEvent::ExtensionActionReset
+                | WebViewEvent::ExtensionOpenPopup { .. }) => {
+                    self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
+                }
                 WebViewEvent::CredentialResult(reply) => {
                     let requests = self.credentials.apply(reply);
                     crate::credentials::Credentials::send(&self.engine, requests);
@@ -3171,6 +3214,7 @@ impl BrowserWidget {
                     // The page surface is named after its title.
                     self.structure_dirty |= self.title != title;
                     self.title = title;
+                    self.name_untitled_visit();
                 }
                 WebViewEvent::FaviconChanged {
                     page_url,
@@ -3269,6 +3313,12 @@ impl BrowserWidget {
                         if let Err(error) = record.invoke(&visit) {
                             tracing::warn!(%error, "browser visit was not recorded");
                         }
+                        // A page a web app moves to is named after it loads.
+                        self.untitled_visit = self
+                            .title
+                            .trim()
+                            .is_empty()
+                            .then(|| self.current_uri.clone());
                         self.follow_history();
                         self.follow_personal_bookmarks();
                     }
@@ -5438,6 +5488,7 @@ impl BrowserWidget {
         } else {
             reader.unavailable("no_web_page", "Open a web page first")
         });
+        page.actions.extend(self.daily.zoom_actions());
         let element = String::new();
         for (spec, asking) in [
             (E::ReadPage, &[][..]),
@@ -5614,20 +5665,10 @@ impl BrowserWidget {
         let mut extensions =
             Resource::new("browser.extensions", "browser.extensions", "Extensions");
         extensions.actions.push(E::ShowExtensions.bound());
-        // Installed add-ons are durable local profile entities even while the
-        // engine's activation API is unavailable. Publish each bounded,
-        // address-safe inventory item so the action directory, invocation
-        // history and agents use the same identity as the extension manager.
-        for extension in crate::extensions::list_installed() {
-            extensions.children.push(
-                Resource::new(
-                    crate::extensions::resource_id(&extension.id),
-                    "browser.extension",
-                    extension.name,
-                )
-                .with_action(E::ShowExtensions.bound()),
-            );
-        }
+        extensions.actions.extend(self.extensions.add_action());
+        // Each installed extension, as the window last read the profile,
+        // with what its Library row offers: no disk read per publication.
+        extensions.children.extend(self.extensions.resources());
 
         // Library is a first-class presentation resource rather than an
         // unaddressable collection of tabs.  This lets keyboard users,
@@ -5896,7 +5937,7 @@ impl BrowserWidget {
         self.drive_engine_setup();
         self.apply_engine_events();
         self.apply_panel_events();
-        self.structure_dirty |= self.sync_window_toolbar();
+        self.sync_window_toolbar();
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
         self.drive_page_operation();
@@ -5996,6 +6037,7 @@ impl BrowserWidget {
         if !is_navigation {
             let is_history_pause_toggle =
                 matches!(&operation, BrowserOperation::ToggleHistoryPause);
+            let is_zoom = matches!(&operation, BrowserOperation::Zoom { .. });
             let output = match &operation {
                 BrowserOperation::ClearHistory => local_output("Browsing history cleared."),
                 BrowserOperation::BookmarkPersonalPage { .. }
@@ -6037,6 +6079,8 @@ impl BrowserWidget {
                 } else {
                     "History resumed in this window."
                 })
+            } else if is_zoom {
+                local_output(format!("The page is at {}%", self.daily.zoom_percent()))
             } else {
                 output
             };
@@ -8587,6 +8631,8 @@ mod tests {
         assert_eq!(w.suggestions.items().len(), rows.len());
     }
 
+    include!("browser_widget/retained_address_tests.rs");
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -8943,9 +8989,10 @@ mod tests {
         {
             let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
             for (input, expected) in [
-                ("localhost:3000", "https://localhost:3000"),
-                ("127.0.0.1:8080", "https://127.0.0.1:8080"),
-                ("[::1]:8443", "https://[::1]:8443"),
+                ("localhost:3000", "http://localhost:3000"),
+                ("127.0.0.1:8080", "http://127.0.0.1:8080"),
+                ("[::1]:8443", "http://[::1]:8443"),
+                ("example.com", "https://example.com"),
             ] {
                 assert_eq!(w.navigation_target(input).unwrap(), expected);
             }

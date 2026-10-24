@@ -16,7 +16,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
 use ui::icons::Icon;
-use ui::webview::{SharedEngine, WebViewCommand};
+use ui::webview::{ExtensionActionIcon, SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::floating_surface::PanelAlign;
 use ui::widget::{
     Actions, Banner, Button, Column, Container, Element, ListRow, MenuButton, MenuItem, Text,
@@ -24,7 +24,10 @@ use ui::widget::{
 };
 use ui::window_toolbar::ToolbarAction;
 
+use ui::tilo_actions::{Resource, ResourcePresentation};
+
 use crate::CATALOG;
+use crate::effects::ExtensionRequest;
 use crate::extension_host::{ExtensionHost, Wanted};
 use crate::extension_toolbar::{self as toolbar, Installed};
 use crate::extensions::{self, ExtensionInfo, StagedPackage};
@@ -77,6 +80,34 @@ fn badges_shown(installed: &[Installed], hosted: bool) -> Vec<String> {
         .collect()
 }
 
+/// One of an extension's own pages the panel shows.
+enum ExtensionPage {
+    /// Its toolbar button's popup at `url`; `clicked` when the person's
+    /// click opened it, which lets the extension script the page.
+    Popup {
+        id: String,
+        url: String,
+        clicked: bool,
+    },
+    Settings {
+        id: String,
+        url: String,
+    },
+}
+
+/// An icon an extension gave its button through `chrome.action.setIcon`.
+#[derive(Clone)]
+enum ActionIcon {
+    /// Its file at this path, read once a read of the profile says where the
+    /// extension's files are: a window opened beside running extensions is
+    /// told their icons as its page opens, before it knows them.
+    Unread(String),
+    /// Its file at this path is being read.
+    Reading(String),
+    /// What could be drawn of it: nothing when it is no PNG of its own.
+    Ready(Option<vello::peniko::ImageData>),
+}
+
 /// A slow step's result.
 enum Outcome {
     Staged(Result<StagedPackage, String>),
@@ -89,6 +120,12 @@ enum Outcome {
     },
     /// An extension the daily check brought up to date.
     Updated(extensions::Updated),
+    /// An icon file an extension gave its button, read.
+    ActionIcon {
+        id: String,
+        path: String,
+        image: Option<vello::peniko::ImageData>,
+    },
 }
 
 /// A change to the profile, made on the profile's worker.
@@ -110,19 +147,31 @@ struct Profile {
     icons: Vec<(String, Option<vello::peniko::ImageData>)>,
 }
 
+/// The extensions as the toolbar knows them, beside their records, paired
+/// so the Library's row for each shows its own buttons: one Chromium could
+/// not name (a broken `key`) is left out of both.
+fn paired(infos: Vec<ExtensionInfo>) -> (Vec<ExtensionInfo>, Vec<Installed>) {
+    infos
+        .into_iter()
+        .filter_map(|info| {
+            let installed = Installed::read(
+                &info,
+                extensions::is_approved(&info),
+                extensions::is_pinned(&extensions::chrome_id(&info)?),
+            )?;
+            Some((info, installed))
+        })
+        .unzip()
+}
+
 /// Read the profile, with the icons of the extensions not in `known`.
 fn read_profile(known: &HashSet<String>) -> Profile {
     let infos = extensions::list_installed();
-    let installed: Vec<Installed> = infos
-        .iter()
-        .filter_map(|info| {
-            Installed::read(
-                info,
-                extensions::is_approved(info),
-                extensions::is_pinned(&extensions::chrome_id(info)?),
-            )
-        })
-        .collect();
+    // Each worker runs the tab script before the engine loads it.
+    for info in &infos {
+        extensions::prepare_tabs(&info.path);
+    }
+    let (infos, installed) = paired(infos);
     let wanted = installed
         .iter()
         .filter(|extension| extension.enabled)
@@ -152,9 +201,10 @@ fn read_profile(known: &HashSet<String>) -> Profile {
     }
 }
 
-/// How often the Web Store is asked for newer versions: an ad blocker's
-/// rules come with its updates.
-const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+/// How often a window asks for the day's update check, which one Browser
+/// on the profile is given each day: an ad blocker's rules come with its
+/// updates, and the one that checked may since have closed.
+const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 /// What the anchored panel shows.
 enum Panel {
@@ -179,6 +229,11 @@ pub struct ExtensionController {
     installed: Vec<Installed>,
     infos: Vec<ExtensionInfo>,
     icons: HashMap<String, Option<vello::peniko::ImageData>>,
+    /// Icons extensions set for their buttons, by extension and whether for
+    /// every tab (`true`) or this window's page; and each icon file read,
+    /// by extension and path, since an extension sets the same few again.
+    action_icons: HashMap<(String, bool), ActionIcon>,
+    icon_files: HashMap<(String, String), Option<vello::peniko::ImageData>>,
     refresh: bool,
     store_item: Option<web_store::Item>,
     busy: bool,
@@ -189,6 +244,10 @@ pub struct ExtensionController {
     switches: Vec<(String, bool)>,
     /// What this session turned on or off, so each is asked once.
     switched: HashMap<String, bool>,
+    /// What the engine was told each extension may do with the Browser's
+    /// tabs, and which extension is the Browser's own.
+    access_told: HashMap<String, toolbar::Access>,
+    identity_told: Option<String>,
     /// The manager pages at work, and when each was opened.
     switching: Vec<(SharedEngine, ui::time::Instant)>,
     /// When the store was last asked for updates.
@@ -244,6 +303,8 @@ impl ExtensionController {
             installed: Vec::new(),
             infos: Vec::new(),
             icons: HashMap::new(),
+            action_icons: HashMap::new(),
+            icon_files: HashMap::new(),
             refresh: active,
             store_item: None,
             busy: false,
@@ -252,6 +313,8 @@ impl ExtensionController {
             chromium_version: web_store::FALLBACK_CHROMIUM_VERSION.to_owned(),
             switches: Vec::new(),
             switched: HashMap::new(),
+            access_told: HashMap::new(),
+            identity_told: None,
             switching: Vec::new(),
             updated_at: None,
             awaiting: Vec::new(),
@@ -270,6 +333,132 @@ impl ExtensionController {
     /// The panel was dismissed by a click outside or Escape.
     pub fn dismiss(&mut self) {
         self.panel = None;
+    }
+
+    /// The engine runs `id` no more, or will run a new version of it: what it
+    /// set for its button is gone.
+    fn forget(&mut self, id: &str) {
+        self.host.forget(id);
+        self.action_icons.retain(|(icon, _), _| icon != id);
+        self.icon_files.retain(|(icon, _), _| icon != id);
+    }
+
+    /// What the engine says of extensions' toolbar buttons on this window's
+    /// page: one changed, the page's own values went with its document, or
+    /// one asks to open its popup. Returns whether the interface changed.
+    pub fn on_engine_event(&mut self, event: WebViewEvent, engine: &SharedEngine) -> bool {
+        if !self.active {
+            return false;
+        }
+        match event {
+            WebViewEvent::ExtensionAction { id, global, change } => {
+                let mut changed = self.host.action_changed(&id, global, &change);
+                if let Some(icon) = change.icon {
+                    self.set_icon(id, global, icon);
+                    changed = true;
+                }
+                changed
+            }
+            WebViewEvent::ExtensionActionReset => {
+                let before = self.action_icons.len();
+                self.action_icons.retain(|(_, global), _| *global);
+                self.host.page_changed() | (self.action_icons.len() != before)
+            }
+            WebViewEvent::ExtensionOpenPopup { id, url } => {
+                let running = self
+                    .installed
+                    .iter()
+                    .any(|extension| extension.id == id && extension.enabled);
+                if !running
+                    || matches!(&self.panel, Some(Panel::Popup { id: open, .. }) if *open == id)
+                {
+                    return false;
+                }
+                self.open_page(
+                    ExtensionPage::Popup {
+                        id,
+                        url,
+                        clicked: false,
+                    },
+                    engine,
+                );
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Show `icon` on the extension's button, for every tab or this page;
+    /// `None` takes it back. A file is read off the window's thread.
+    fn set_icon(&mut self, id: String, global: bool, icon: Option<ExtensionActionIcon>) {
+        let key = (id.clone(), global);
+        let Some(icon) = icon else {
+            self.action_icons.remove(&key);
+            return;
+        };
+        let path = match icon {
+            ExtensionActionIcon::Pixels {
+                width,
+                height,
+                rgba,
+            } => {
+                let image = vello::peniko::ImageData {
+                    data: vello::peniko::Blob::new(Arc::new(rgba)),
+                    format: vello::peniko::ImageFormat::Rgba8,
+                    alpha_type: vello::peniko::ImageAlphaType::Alpha,
+                    width,
+                    height,
+                };
+                self.action_icons
+                    .insert(key, ActionIcon::Ready(Some(image)));
+                return;
+            }
+            ExtensionActionIcon::Path(path) => path,
+        };
+        if let Some(image) = self.icon_files.get(&(id.clone(), path.clone())) {
+            self.action_icons
+                .insert(key, ActionIcon::Ready(image.clone()));
+            return;
+        }
+        let icon = if self.read_action_icon(id, path.clone()) {
+            ActionIcon::Reading(path)
+        } else {
+            ActionIcon::Unread(path)
+        };
+        self.action_icons.insert(key, icon);
+    }
+
+    /// Read the icon file at `path` among the extension's files off the
+    /// window's thread; `false` while the profile has not said where they are.
+    fn read_action_icon(&self, id: String, path: String) -> bool {
+        let Some(root) = self
+            .installed
+            .iter()
+            .find(|extension| extension.id == id)
+            .map(|extension| extension.root.clone())
+        else {
+            return false;
+        };
+        let outcomes = self.outcomes.clone();
+        std::thread::spawn(move || {
+            let image =
+                toolbar::icon_within(&root, &path).and_then(|file| toolbar::read_icon(&file));
+            if let Ok(mut queue) = outcomes.lock() {
+                queue.push(Outcome::ActionIcon { id, path, image });
+            }
+        });
+        true
+    }
+
+    /// The icon the extension set for its button on this page, else for
+    /// every tab; `None` when it set none, and the manifest's stands.
+    fn action_icon(&self, id: &str) -> Option<&vello::peniko::ImageData> {
+        [false, true].iter().find_map(|global| {
+            match self.action_icons.get(&(id.to_owned(), *global))? {
+                ActionIcon::Ready(image) => image.as_ref(),
+                ActionIcon::Unread(_) | ActionIcon::Reading(_) => None,
+            }
+        })
     }
 
     /// A reply from the engine to one of this controller's `DevTools` calls.
@@ -319,6 +508,20 @@ impl ExtensionController {
                     self.apply_profile(profile);
                     continue;
                 }
+                Outcome::ActionIcon { id, path, image } => {
+                    for (key, icon) in &mut self.action_icons {
+                        if key.0 == id
+                            && matches!(icon, ActionIcon::Reading(reading) if *reading == path)
+                        {
+                            *icon = ActionIcon::Ready(image.clone());
+                        }
+                    }
+                    if self.icon_files.len() >= 64 {
+                        self.icon_files.clear();
+                    }
+                    self.icon_files.insert((id, path), image);
+                    continue;
+                }
                 Outcome::Staged(Ok(package)) => {
                     self.panel = Some(Panel::Offer(Box::new(package)));
                     self.refresh = true;
@@ -329,17 +532,10 @@ impl ExtensionController {
                         extensions::set_approved(&info, true).map_err(|error| error.to_string())
                     });
                 }
-                Outcome::Updated(extensions::Updated::Installed(info)) => {
-                    // The engine runs the new version once it loads it again.
-                    if let Some(id) = extensions::chrome_id(&info) {
-                        self.host.forget(&id);
-                    }
-                }
-                Outcome::Updated(extensions::Updated::AwaitsApproval(info)) => {
-                    if let Some(id) = extensions::chrome_id(&info) {
-                        self.host.forget(&id);
-                    }
-                    self.awaiting.push(info.name);
+                Outcome::Updated(updated) => {
+                    self.on_updated(updated);
+                    // An update is no add: one still downloading stays busy.
+                    continue;
                 }
                 Outcome::Staged(Err(error)) | Outcome::Installed(Err(error)) => {
                     self.panel = Some(Panel::Message(format!(
@@ -359,6 +555,7 @@ impl ExtensionController {
         let shown = badges_shown(&self.installed, ui::window_toolbar::is_hosted());
         self.host.probe(&shown, now);
         self.host.flush(engine);
+        self.tell_access(engine);
         changed |= self.switch(engine, now);
         if let Some(Panel::Popup {
             engine: popup,
@@ -455,19 +652,82 @@ impl ExtensionController {
         // run is in the state the person chose.
         for (id, enabled) in switches_for(&profile.installed, &mut self.switched) {
             if !enabled {
-                self.host.forget(&id);
+                self.forget(&id);
             }
             self.switches.push((id, enabled));
         }
+        // A page of an extension turned off or removed closes with it, and
+        // an update waits for the person only while its extension is off.
+        if let Some(Panel::Popup { id, .. }) = &self.panel {
+            let owner = id.strip_prefix("settings:").unwrap_or(id);
+            if !profile
+                .installed
+                .iter()
+                .any(|extension| extension.id == owner && extension.enabled)
+            {
+                self.panel = None;
+            }
+        }
+        self.awaiting.retain(|name| {
+            profile
+                .installed
+                .iter()
+                .any(|extension| &extension.name == name && !extension.enabled)
+        });
         self.icons
             .retain(|id, _| profile.installed.iter().any(|e| &e.id == id));
+        // An extension turned off starts again with its manifest's button.
+        let running: HashSet<&String> = profile
+            .installed
+            .iter()
+            .filter(|extension| extension.enabled)
+            .map(|extension| &extension.id)
+            .collect();
+        self.action_icons.retain(|(id, _), _| running.contains(id));
+        self.icon_files.retain(|(id, _), _| running.contains(id));
         self.icons.extend(profile.icons);
         self.installed = profile.installed;
         self.infos = profile.infos;
+        // Icons told before the profile said where their files are.
+        let unread: HashSet<(String, String)> = self
+            .action_icons
+            .iter()
+            .filter_map(|((id, _), icon)| match icon {
+                ActionIcon::Unread(path) => Some((id.clone(), path.clone())),
+                _ => None,
+            })
+            .collect();
+        for (id, path) in unread {
+            if self.read_action_icon(id.clone(), path.clone()) {
+                for ((owner, _), icon) in &mut self.action_icons {
+                    if *owner == id && matches!(icon, ActionIcon::Unread(unread) if *unread == path)
+                    {
+                        *icon = ActionIcon::Reading(path.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// An extension the daily check brought up to date: the engine runs the
+    /// new version once it loads it again, which the next read of the
+    /// profile asks of it, and the Library shows the new version.
+    fn on_updated(&mut self, updated: extensions::Updated) {
+        let (info, awaits) = match updated {
+            extensions::Updated::Installed(info) => (info, false),
+            extensions::Updated::AwaitsApproval(info) => (info, true),
+        };
+        if let Some(id) = extensions::chrome_id(&info) {
+            self.forget(&id);
+        }
+        if awaits {
+            self.awaiting.push(info.name);
+        }
+        self.refresh = true;
     }
 
     /// Ask the Web Store for newer versions of its extensions, on a worker,
-    /// once a day.
+    /// when this Browser is given the day's check.
     fn check_for_updates(&mut self, now: ui::time::Instant) {
         if self.busy
             || self.infos.is_empty()
@@ -483,6 +743,9 @@ impl ExtensionController {
         let outcomes = self.outcomes.clone();
         std::thread::spawn(move || {
             let root = extensions::extensions_dir();
+            if !extensions::claim_update_check(&root, ui::time::unix_now()) {
+                return;
+            }
             for info in infos {
                 match extensions::update_from_store(&info, &version, &root) {
                     Ok(Some(updated)) => {
@@ -497,6 +760,40 @@ impl ExtensionController {
                 }
             }
         });
+    }
+
+    /// Tell the engine which extension is the Browser's own, and what each
+    /// installed extension may do with the Browser's tabs, as it changes.
+    fn tell_access(&mut self, engine: &SharedEngine) {
+        if self.identity_told.is_none()
+            && let Some(id) = extensions::manager_dir()
+                .as_deref()
+                .and_then(extensions::manager_id)
+        {
+            engine.send(WebViewCommand::ExtensionIdentity { id: id.clone() });
+            self.identity_told = Some(id);
+        }
+        let current: HashMap<String, toolbar::Access> = self
+            .installed
+            .iter()
+            .map(|extension| (extension.id.clone(), extension.access.clone()))
+            .collect();
+        for (id, access) in &current {
+            if self.access_told.get(id) != Some(access) {
+                engine.send(WebViewCommand::ExtensionAccess {
+                    id: id.clone(),
+                    permissions: access.permissions.clone(),
+                    hosts: access.hosts.clone(),
+                    token: access.token.clone(),
+                });
+            }
+        }
+        for id in self.access_told.keys() {
+            if !current.contains_key(id) {
+                engine.send(WebViewCommand::ExtensionForget { id: id.clone() });
+            }
+        }
+        self.access_told = current;
     }
 
     /// Open one manager page for the switches asked for, and let go of the
@@ -521,6 +818,8 @@ impl ExtensionController {
         };
         let url = manager_url(&manager, &self.switches);
         if let Ok(page) = engine.create_tab() {
+            // Not a tab any extension is shown.
+            page.send(WebViewCommand::ExtensionPanel { action: None });
             page.send(WebViewCommand::Navigate(url));
             self.switching.push((page, now));
             self.switches.clear();
@@ -529,10 +828,14 @@ impl ExtensionController {
         changed
     }
 
+    /// The record of the extension Chromium knows as `id`, from the last
+    /// read of the profile: never the disk, since this runs on the frame.
     fn info_of(&self, id: &str) -> Option<&ExtensionInfo> {
         self.infos
             .iter()
-            .find(|info| extensions::chrome_id(info).as_deref() == Some(id))
+            .zip(&self.installed)
+            .find(|(_, extension)| extension.id == id)
+            .map(|(info, _)| info)
     }
 
     fn run(&mut self, command: Command, engine: &SharedEngine) {
@@ -591,7 +894,7 @@ impl ExtensionController {
                 if let Some(info) = self.info_of(&id).cloned() {
                     self.host
                         .reconcile(&[], std::slice::from_ref(&id), ui::time::now());
-                    self.host.forget(&id);
+                    self.forget(&id);
                     self.change_profile(move || {
                         extensions::uninstall(&info, &extensions::extensions_dir())
                             .map_err(|error| error.to_string())
@@ -619,22 +922,38 @@ impl ExtensionController {
     }
 
     fn open_action(&mut self, id: &str, engine: &SharedEngine) {
-        let Some(url) = self
-            .installed
-            .iter()
-            .find(|extension| extension.id == id)
-            .and_then(Installed::popup_url)
+        // As the button shows on this page: its popup, or none, or off.
+        let Some(button) = self
+            .model()
+            .menu
+            .into_iter()
+            .map(|entry| entry.button)
+            .find(|button| button.id == id)
         else {
-            self.panel = Some(Panel::Message(
-                "This extension has no popup to show.".into(),
-            ));
+            return;
+        };
+        if !button.enabled {
+            return;
+        }
+        let Some(url) = button.popup else {
+            // A button without a popup acts on the page itself: the
+            // extension hears of the click, as in Chrome.
+            self.panel = None;
+            engine.send(WebViewCommand::ExtensionClick { id: id.to_owned() });
             return;
         };
         if matches!(&self.panel, Some(Panel::Popup { id: open, .. }) if open == id) {
             self.panel = None;
             return;
         }
-        self.open_page(id.to_owned(), url, None, engine);
+        self.open_page(
+            ExtensionPage::Popup {
+                id: id.to_owned(),
+                url,
+                clicked: true,
+            },
+            engine,
+        );
     }
 
     /// Show an extension's settings page, as large as the window allows up
@@ -648,19 +967,30 @@ impl ExtensionController {
         else {
             return;
         };
-        self.open_page(format!("settings:{id}"), url, Some(POPUP_MAX), engine);
+        self.open_page(
+            ExtensionPage::Settings {
+                id: id.to_owned(),
+                url,
+            },
+            engine,
+        );
     }
 
     /// Open one of an extension's own pages in the panel, in a tab of its own.
-    fn open_page(
-        &mut self,
-        key: String,
-        url: String,
-        size: Option<(f32, f32)>,
-        engine: &SharedEngine,
-    ) {
+    fn open_page(&mut self, kind: ExtensionPage, engine: &SharedEngine) {
+        let (key, url, action, size) = match kind {
+            ExtensionPage::Popup { id, url, clicked } => {
+                (id.clone(), url, clicked.then_some(id), None)
+            }
+            ExtensionPage::Settings { id, url } => {
+                (format!("settings:{id}"), url, None, Some(POPUP_MAX))
+            }
+        };
         match engine.create_tab() {
             Ok(page) => {
+                // Its "current tab" is the page it opened over, which the
+                // extension may script when its button opened it.
+                page.send(WebViewCommand::ExtensionPanel { action });
                 page.send(WebViewCommand::ReportDocumentSize(true));
                 page.send(WebViewCommand::Navigate(url));
                 self.panel = Some(Panel::Popup {
@@ -719,8 +1049,12 @@ impl ExtensionController {
                 &entry.label,
             )
             .tooltip(&entry.tooltip)
+            .with_enabled(entry.enabled)
             .on_effect(self.queue(Command::OpenAction(entry.id.clone())));
-            if let Some(Some(image)) = self.icons.get(&entry.id) {
+            let image = self
+                .action_icon(&entry.id)
+                .or_else(|| self.icons.get(&entry.id).and_then(Option::as_ref));
+            if let Some(image) = image {
                 button = button.with_image(image.clone(), Some(&entry.badge));
             }
             buttons.push(Box::new(button));
@@ -769,6 +1103,7 @@ impl ExtensionController {
                     format!("{} ({})", entry.button.label, entry.button.badge)
                 };
                 ToolbarAction::new(format!("{BAR_OPEN}{}", entry.button.id), "box", name)
+                    .enabled(entry.button.enabled)
             })
             .collect()
     }
@@ -800,7 +1135,10 @@ impl ExtensionController {
             } else {
                 format!("{} ({})", entry.button.label, entry.button.badge)
             };
-            items.push(MenuItem::action(&label, move || (open.borrow_mut())()));
+            items.push(
+                MenuItem::action(&label, move || (open.borrow_mut())())
+                    .with_enabled(entry.button.enabled),
+            );
             let pin = self.queue(Command::Pin(entry.button.id.clone(), !entry.pinned));
             let pin = std::cell::RefCell::new(pin);
             items.push(
@@ -913,16 +1251,7 @@ impl ExtensionController {
 
     fn library_row(&self, info: &ExtensionInfo, extension: &Installed) -> Element {
         let id = &extension.id;
-        let running = self.host.is_loaded(id);
-        let status = if info.manifest_version != 3 {
-            "Not supported: only Manifest V3 extensions run"
-        } else if running {
-            "Running"
-        } else if extension.enabled {
-            "Starting\u{2026}"
-        } else {
-            "Off"
-        };
+        let status = self.status(info, extension);
         // Its broadest access, the line Chrome lists first.
         let permissions = extensions::permission_summary(info).map_or_else(
             |e| e.to_string(),
@@ -973,6 +1302,168 @@ impl ExtensionController {
                 .meta(info.version.clone()),
             buttons,
         ))
+    }
+
+    /// Whether an extension runs, as its Library row and its resource say.
+    fn status(&self, info: &ExtensionInfo, extension: &Installed) -> &'static str {
+        if info.manifest_version != 3 {
+            "Not supported: only Manifest V3 extensions run"
+        } else if self.host.is_loaded(&extension.id) {
+            "Running"
+        } else if extension.enabled {
+            "Starting\u{2026}"
+        } else {
+            "Off"
+        }
+    }
+
+    /// The installed extensions as resources, each with what its Library
+    /// row offers, so a screen reader, a script or an agent manages them as
+    /// the person does.
+    pub fn resources(&self) -> Vec<Resource> {
+        use crate::effects::BrowserEffect as E;
+        use ui::tilo_resource::Effect as _;
+        self.infos
+            .iter()
+            .zip(&self.installed)
+            .map(|(info, extension)| {
+                let id = extension.id.clone();
+                let mut resource = Resource::new(
+                    extensions::resource_id(&info.id),
+                    "browser.extension",
+                    info.name.clone(),
+                )
+                .with_presentation(ResourcePresentation {
+                    detail: Some(self.status(info, extension).to_owned()),
+                    ..ResourcePresentation::default()
+                })
+                .with_action(E::ShowExtensions.bound());
+                if info.manifest_version == 3 {
+                    resource = resource.with_action(if extension.enabled {
+                        E::TurnOffExtension { id: id.clone() }.bound()
+                    } else {
+                        E::TurnOnExtension { id: id.clone() }.bound()
+                    });
+                }
+                if extension.enabled && extension.action.is_some() {
+                    resource = resource.with_action(E::UseExtension { id: id.clone() }.bound());
+                }
+                if extension.enabled && extension.options.is_some() {
+                    resource =
+                        resource.with_action(E::OpenExtensionSettings { id: id.clone() }.bound());
+                }
+                if extension.enabled && extension.action.is_some() {
+                    resource = resource.with_action(if extension.pinned {
+                        E::UnpinExtension { id: id.clone() }.bound()
+                    } else {
+                        E::PinExtension { id: id.clone() }.bound()
+                    });
+                }
+                resource.with_action(E::RemoveExtension { id }.bound())
+            })
+            .collect()
+    }
+
+    /// Do what an extension's action asks, on the next `sync`, as its
+    /// Library row's button does.
+    ///
+    /// # Errors
+    /// When this window has no extensions, no extension has the id, or the
+    /// extension cannot do it now (a settings page while it is off).
+    pub fn request(&mut self, request: &ExtensionRequest) -> Result<(), String> {
+        if !self.active {
+            return Err("This window has no extensions".into());
+        }
+        let id = match request {
+            ExtensionRequest::TurnOn(id)
+            | ExtensionRequest::TurnOff(id)
+            | ExtensionRequest::Pin(id, _)
+            | ExtensionRequest::OpenSettings(id)
+            | ExtensionRequest::Use(id)
+            | ExtensionRequest::Remove(id) => id.clone(),
+        };
+        let (info, extension) = self
+            .infos
+            .iter()
+            .zip(&self.installed)
+            .find(|(_, extension)| extension.id == id)
+            .ok_or("No extension has this id")?;
+        let command = match request {
+            ExtensionRequest::TurnOn(_) if info.manifest_version != 3 => {
+                return Err("Only Manifest V3 extensions run".into());
+            }
+            ExtensionRequest::TurnOn(_) => Command::Enable(id),
+            ExtensionRequest::TurnOff(_) => Command::Disable(id),
+            ExtensionRequest::Pin(..) | ExtensionRequest::Use(_)
+                if !extension.enabled || extension.action.is_none() =>
+            {
+                return Err("This extension is off or has no toolbar button".into());
+            }
+            ExtensionRequest::Pin(_, pinned) => Command::Pin(id, *pinned),
+            ExtensionRequest::OpenSettings(_)
+                if !extension.enabled || extension.options.is_none() =>
+            {
+                return Err("This extension is off or has no settings page".into());
+            }
+            ExtensionRequest::OpenSettings(_) => Command::OpenSettings(id),
+            ExtensionRequest::Use(_) => Command::OpenAction(id),
+            ExtensionRequest::Remove(_) => Command::Remove(id),
+        };
+        (self.queue(command))();
+        Ok(())
+    }
+
+    /// Adding the Web Store item on the page, as the extensions' resource
+    /// offers it: available on an item not added yet; none in a window that
+    /// manages no extensions.
+    pub fn add_action(&self) -> Option<ui::tilo_actions::ActionSpec> {
+        use ui::tilo_resource::Effect as _;
+        let add = crate::effects::BrowserEffect::AddExtension.bound();
+        self.active.then(|| match self.store_item_to_add() {
+            Ok(_) => add,
+            Err((code, reason)) => add.unavailable(code, reason),
+        })
+    }
+
+    /// Show what the Web Store item on the page may do, on the next `sync`,
+    /// as Add to Tilo Browser does: the person adds it from the offer.
+    ///
+    /// # Errors
+    /// When there is no Web Store item on the page, it is added already or
+    /// another is being added.
+    pub fn offer_store_item(&self) -> Result<(), String> {
+        if !self.active {
+            return Err("This window has no extensions".into());
+        }
+        let id = self
+            .store_item_to_add()
+            .map_err(|(_, reason)| reason.to_owned())?
+            .id
+            .clone();
+        (self.queue(Command::Fetch(id)))();
+        Ok(())
+    }
+
+    /// The Web Store item on the page, when it can be added now; otherwise
+    /// why not, as a stable code and the reason a person or agent reads.
+    /// The action's availability and its invocation share it, so an agent
+    /// is never told to open a store page while it is on one.
+    fn store_item_to_add(&self) -> Result<&web_store::Item, (&'static str, &'static str)> {
+        let item = self.store_item.as_ref().ok_or((
+            "no_store_item",
+            "Open an extension's page on the Chrome Web Store first",
+        ))?;
+        if self
+            .installed
+            .iter()
+            .any(|extension| extension.id == item.id)
+        {
+            return Err(("added", "This extension is already added"));
+        }
+        if self.busy {
+            return Err(("adding", "Another extension is being added"));
+        }
+        Ok(item)
     }
 
     /// The header of the Extensions section: how to add one.
@@ -1136,6 +1627,568 @@ mod tests {
         assert!(controller.panel.is_none());
     }
 
+    fn installed(id: &str, popup: Option<&str>, access: toolbar::Access) -> Installed {
+        Installed {
+            id: id.into(),
+            name: id.into(),
+            root: std::path::PathBuf::new(),
+            enabled: true,
+            pinned: true,
+            action: Some(toolbar::ActionManifest {
+                popup: popup.map(str::to_owned),
+                ..toolbar::ActionManifest::default()
+            }),
+            options: None,
+            access,
+        }
+    }
+
+    #[test]
+    fn a_button_without_a_popup_tells_the_extension_of_the_click() {
+        let window = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = window.clone();
+        let mut controller = ExtensionController::new(true);
+        controller.installed = vec![installed("clicker", None, toolbar::Access::default())];
+        controller.open_action("clicker", &shared);
+        assert!(
+            controller.panel.is_none(),
+            "nothing to show: the page is acted on"
+        );
+        assert!(window.commands().contains(&WebViewCommand::ExtensionClick {
+            id: "clicker".into()
+        }));
+        assert!(window.created_tabs().is_empty());
+    }
+
+    #[test]
+    fn the_toolbar_shows_what_an_extension_set_for_this_page() {
+        use ui::webview::ExtensionActionChange as Change;
+        let window = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = window.clone();
+        let mut controller = ExtensionController::new(true);
+        let id = "a".repeat(32);
+        let popup = format!("chrome-extension://{id}/popup.html");
+        controller.installed = vec![installed(
+            &id,
+            Some("popup.html"),
+            toolbar::Access::default(),
+        )];
+        let event = |global, change| WebViewEvent::ExtensionAction {
+            id: id.clone(),
+            global,
+            change,
+        };
+        let button = |controller: &ExtensionController| controller.model().pinned.remove(0);
+        let clicks = |window: &ui::webview::test_engine::TestEngine| {
+            window
+                .commands()
+                .iter()
+                .filter(|command| matches!(command, WebViewCommand::ExtensionClick { .. }))
+                .count()
+        };
+
+        // An ad blocker's count for this page, and no popup on it.
+        let page = Change {
+            badge: Some(Some("12".into())),
+            popup: Some(Some(String::new())),
+            ..Change::default()
+        };
+        assert!(controller.on_engine_event(event(false, page.clone()), &shared));
+        assert!(
+            !controller.on_engine_event(event(false, page), &shared),
+            "nothing new"
+        );
+        let shown = button(&controller);
+        assert_eq!((shown.badge.as_str(), shown.popup), ("12", None));
+        controller.open_action(&id, &shared);
+        assert_eq!(clicks(&window), 1, "a click goes to the extension");
+        assert!(window.created_tabs().is_empty());
+
+        // Turned off on this page: a click does nothing.
+        controller.on_engine_event(
+            event(
+                false,
+                Change {
+                    enabled: Some(Some(false)),
+                    ..Change::default()
+                },
+            ),
+            &shared,
+        );
+        assert!(!button(&controller).enabled);
+        controller.open_action(&id, &shared);
+        assert_eq!(clicks(&window), 1);
+
+        // Its icon for every tab outlasts the page; the page's values do not.
+        controller.on_engine_event(
+            event(
+                true,
+                Change {
+                    icon: Some(Some(ExtensionActionIcon::Pixels {
+                        width: 1,
+                        height: 1,
+                        rgba: vec![1, 2, 3, 4],
+                    })),
+                    ..Change::default()
+                },
+            ),
+            &shared,
+        );
+        assert_eq!(
+            controller.action_icon(&id).map(|image| image.width),
+            Some(1)
+        );
+        assert!(controller.on_engine_event(WebViewEvent::ExtensionActionReset, &shared));
+        let shown = button(&controller);
+        assert_eq!(
+            (shown.badge.as_str(), shown.popup.as_deref(), shown.enabled),
+            ("", Some(popup.as_str()), true)
+        );
+        assert!(controller.action_icon(&id).is_some());
+
+        // It asks to open its popup: shown over the page, without the access
+        // a click gives.
+        assert!(controller.on_engine_event(
+            WebViewEvent::ExtensionOpenPopup {
+                id: id.clone(),
+                url: popup.clone(),
+            },
+            &shared,
+        ));
+        let created = window.created_tabs();
+        assert_eq!(created.len(), 1);
+        let commands = created[0].commands();
+        assert!(commands.contains(&WebViewCommand::ExtensionPanel { action: None }));
+        assert!(commands.contains(&WebViewCommand::Navigate(popup.clone())));
+
+        // One turned off asks for nothing.
+        controller.panel = None;
+        controller.installed[0].enabled = false;
+        assert!(!controller.on_engine_event(
+            WebViewEvent::ExtensionOpenPopup {
+                id: id.clone(),
+                url: popup
+            },
+            &shared,
+        ));
+        assert_eq!(window.created_tabs().len(), 1);
+    }
+
+    #[test]
+    fn an_icon_told_before_the_profile_is_read_shows_once_it_is() {
+        // A window opened beside running extensions is told the icons they
+        // set for every tab as its page opens, before its read of the profile
+        // says where their files are.
+        let window: SharedEngine = ui::webview::test_engine::TestEngine::new();
+        let mut controller = ExtensionController::new(true);
+        controller.refresh = false;
+        let id = "a".repeat(32);
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("off.png"),
+            ui::png::encode_rgba8(2, 1, &[1, 2, 3, 255, 5, 6, 7, 255]).unwrap(),
+        )
+        .unwrap();
+        assert!(controller.on_engine_event(
+            WebViewEvent::ExtensionAction {
+                id: id.clone(),
+                global: true,
+                change: ui::webview::ExtensionActionChange {
+                    icon: Some(Some(ExtensionActionIcon::Path("/off.png".into()))),
+                    ..ui::webview::ExtensionActionChange::default()
+                },
+            },
+            &window,
+        ));
+        assert!(controller.action_icon(&id).is_none(), "nothing to read yet");
+
+        controller.apply_profile(Profile {
+            infos: Vec::new(),
+            installed: vec![Installed {
+                root: root.path().to_owned(),
+                ..installed(&id, None, toolbar::Access::default())
+            }],
+            wanted: Vec::new(),
+            icons: Vec::new(),
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while controller.action_icon(&id).is_none() && std::time::Instant::now() < deadline {
+            controller.sync(&window, "");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            controller
+                .action_icon(&id)
+                .map(|image| (image.width, image.height)),
+            Some((2, 1)),
+            "the icon it set, not its manifest's"
+        );
+    }
+
+    #[test]
+    fn a_popup_is_no_tab_and_finds_the_page_it_opened_over() {
+        let window = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = window.clone();
+        let mut controller = ExtensionController::new(true);
+        controller.installed = vec![installed(
+            "asker",
+            Some("popup.html"),
+            toolbar::Access::default(),
+        )];
+        controller.open_action("asker", &shared);
+        let created = window.created_tabs();
+        assert_eq!(created.len(), 1, "the popup's page");
+        let page = &created[0];
+        let commands = page.commands();
+        let panel = commands
+            .iter()
+            .position(|c| matches!(c, WebViewCommand::ExtensionPanel { .. }));
+        let navigate = commands.iter().position(|c| matches!(c, WebViewCommand::Navigate(url) if url == "chrome-extension://asker/popup.html"));
+        assert!(
+            panel.is_some() && panel < navigate,
+            "marked before its page loads: {commands:?}"
+        );
+        assert_eq!(
+            commands[panel.unwrap()],
+            WebViewCommand::ExtensionPanel {
+                action: Some("asker".into())
+            },
+            "opened by its button, it may script the page"
+        );
+    }
+
+    #[test]
+    fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
+        let window = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = window.clone();
+        let mut controller = ExtensionController::new(true);
+        let tabs = toolbar::Access {
+            permissions: vec!["tabs".into()],
+            hosts: vec!["https://*/*".into()],
+            token: Some("a".repeat(48)),
+        };
+        controller.installed = vec![installed("reader", None, tabs)];
+        controller.tell_access(&shared);
+        let told = |window: &ui::webview::test_engine::TestEngine| {
+            window
+                .commands()
+                .into_iter()
+                .filter(|command| {
+                    matches!(
+                        command,
+                        WebViewCommand::ExtensionAccess { .. }
+                            | WebViewCommand::ExtensionForget { .. }
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            told(&window),
+            [WebViewCommand::ExtensionAccess {
+                id: "reader".into(),
+                permissions: vec!["tabs".into()],
+                hosts: vec!["https://*/*".into()],
+                token: Some("a".repeat(48)),
+            }]
+        );
+        controller.tell_access(&shared);
+        assert_eq!(told(&window).len(), 1, "told once while it stays the same");
+        controller.installed.clear();
+        controller.tell_access(&shared);
+        assert_eq!(
+            told(&window).last(),
+            Some(&WebViewCommand::ExtensionForget {
+                id: "reader".into()
+            })
+        );
+    }
+
+    /// Invoke the action `action` of `resource` as a caller of the door
+    /// does: its bound payload, decoded as the window decodes it.
+    fn invoke(
+        controller: &mut ExtensionController,
+        resource: &Resource,
+        action: &str,
+    ) -> Result<(), String> {
+        invoke_operation(resource, action, |operation| match operation {
+            crate::effects::BrowserOperation::Extension(request) => controller.request(&request),
+            other => Err(format!("{other:?} is no extension request")),
+        })
+    }
+
+    /// The operation the action `action` of `resource` decodes to, as a
+    /// caller of the door sends it, handed to `run`.
+    fn invoke_operation(
+        resource: &Resource,
+        action: &str,
+        run: impl FnOnce(crate::effects::BrowserOperation) -> Result<(), String>,
+    ) -> Result<(), String> {
+        use ui::tilo_resource::Effect as _;
+        let spec = resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == action)
+            .ok_or_else(|| format!("{action} is not offered"))?;
+        let encoded = spec
+            .build_json(&serde_json::Map::new())
+            .map_err(|error| format!("{error:?}"))?;
+        let effect = crate::effects::BrowserEffect::from_payload(&encoded.payload)?;
+        run(effect.operation())
+    }
+
+    #[test]
+    fn a_script_or_an_agent_manages_extensions_as_the_library_does() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("lite");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(
+            path.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Lite","version":"1",
+            "action":{"default_popup":"popup.html"},"options_page":"options.html"}"#,
+        )
+        .unwrap();
+        let info = ExtensionInfo {
+            id: "lite".into(),
+            name: "Lite".into(),
+            version: "1".into(),
+            manifest_version: 3,
+            description: String::new(),
+            permissions: Vec::new(),
+            path,
+        };
+        let on = Installed::read(&info, true, false).unwrap();
+        let id = on.id.clone();
+        let mut controller = ExtensionController::new(true);
+        controller.infos = vec![info];
+        controller.installed = vec![on.clone()];
+        let actions = |controller: &ExtensionController| {
+            let resources = controller.resources();
+            assert_eq!(resources.len(), 1);
+            assert_eq!(resources[0].id.0, "browser.extension:lite");
+            resources[0]
+                .actions
+                .iter()
+                .map(|spec| spec.id.clone())
+                .collect::<Vec<_>>()
+        };
+        // On: what its Library row offers.
+        assert_eq!(
+            actions(&controller),
+            [
+                "show-extensions",
+                "turn-off-extension",
+                "use-extension",
+                "open-extension-settings",
+                "pin-extension",
+                "remove-extension"
+            ]
+        );
+        let resource = controller.resources().remove(0);
+        for action in [
+            "turn-off-extension",
+            "use-extension",
+            "pin-extension",
+            "open-extension-settings",
+            "remove-extension",
+        ] {
+            invoke(&mut controller, &resource, action).unwrap();
+        }
+        assert_eq!(
+            queued(&controller),
+            [
+                format!("Disable({id:?})"),
+                format!("OpenAction({id:?})"),
+                format!("Pin({id:?}, true)"),
+                format!("OpenSettings({id:?})"),
+                format!("Remove({id:?})"),
+            ]
+        );
+
+        // Off: it can be turned on, and has no settings or button meanwhile.
+        controller.installed = vec![Installed {
+            enabled: false,
+            ..on
+        }];
+        assert_eq!(
+            actions(&controller),
+            ["show-extensions", "turn-on-extension", "remove-extension"]
+        );
+        let off = controller.resources().remove(0);
+        invoke(&mut controller, &off, "turn-on-extension").unwrap();
+        assert_eq!(queued(&controller).last(), Some(&format!("Enable({id:?})")));
+        assert!(
+            invoke(&mut controller, &resource, "open-extension-settings").is_err(),
+            "no settings page while it is off"
+        );
+        assert!(
+            invoke(&mut controller, &resource, "use-extension").is_err(),
+            "no button while it is off"
+        );
+        assert!(
+            controller
+                .request(&ExtensionRequest::Remove("unknown".into()))
+                .is_err()
+        );
+        assert!(
+            ExtensionController::new(false)
+                .request(&ExtensionRequest::TurnOn(id))
+                .is_err(),
+            "a private window has no extensions"
+        );
+    }
+
+    /// Adding from the Web Store is the extensions' action on a store item
+    /// not added yet; it shows the offer the person adds it from.
+    #[test]
+    fn adding_from_the_store_is_an_action_on_a_store_item_only() {
+        let available = |controller: &ExtensionController| {
+            controller.add_action().map(|spec| {
+                matches!(
+                    spec.contract.availability,
+                    ui::tilo_actions::Availability::Available
+                )
+            })
+        };
+        let mut controller = ExtensionController::new(true);
+        assert_eq!(available(&controller), Some(false), "away from the store");
+        assert!(controller.offer_store_item().is_err());
+        controller.store_item = web_store::item_from_url(STORE_ITEM);
+        assert_eq!(available(&controller), Some(true));
+        let extensions = ui::tilo_actions::Resource::new(
+            "browser.extensions",
+            "browser.extensions",
+            "Extensions",
+        )
+        .with_action(controller.add_action().unwrap());
+        invoke_operation(&extensions, "add-extension", |operation| match operation {
+            crate::effects::BrowserOperation::AddExtension => controller.offer_store_item(),
+            other => Err(format!("{other:?} is not adding")),
+        })
+        .unwrap();
+        assert_eq!(
+            queued(&controller),
+            [r#"Fetch("ddkjiahejlhfcafbddmgiahcphecmpfh")"#],
+            "fetched to show what it may do, as the button does"
+        );
+        controller.busy = true;
+        assert_eq!(available(&controller), Some(false));
+        assert!(controller.offer_store_item().is_err(), "one at a time");
+        controller.busy = false;
+        let id = controller.store_item.as_ref().unwrap().id.clone();
+        controller.installed = vec![installed(&id, None, toolbar::Access::default())];
+        assert_eq!(
+            controller
+                .add_action()
+                .map(|spec| spec.contract.availability),
+            Some(ui::tilo_actions::Availability::Unavailable {
+                code: "added".into(),
+                reason: "This extension is already added".into(),
+            }),
+            "on the store page of one already added, it says so"
+        );
+        assert_eq!(
+            controller.offer_store_item(),
+            Err("This extension is already added".into())
+        );
+        assert_eq!(
+            ExtensionController::new(false).add_action().map(|_| ()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_removed_extensions_page_and_update_notice_go_with_it() {
+        let mut controller = ExtensionController::new(true);
+        controller.panel = Some(Panel::Popup {
+            id: "settings:abc".into(),
+            engine: ui::webview::test_engine::TestEngine::new(),
+            size: None,
+        });
+        controller.awaiting = vec!["abc".into()];
+        let profile = |installed: Vec<Installed>| Profile {
+            infos: Vec::new(),
+            installed,
+            wanted: Vec::new(),
+            icons: Vec::new(),
+        };
+        let off = Installed {
+            enabled: false,
+            ..installed("abc", None, toolbar::Access::default())
+        };
+        // Still there, but off: its page closes, its update still waits.
+        controller.apply_profile(profile(vec![off]));
+        assert!(controller.panel.is_none());
+        assert_eq!(controller.awaiting, ["abc"]);
+        // Removed: nothing is left waiting for it.
+        controller.apply_profile(profile(Vec::new()));
+        assert!(controller.awaiting.is_empty());
+    }
+
+    #[test]
+    fn each_library_row_acts_on_its_own_extension() {
+        let profile = tempfile::tempdir().unwrap();
+        let record = |name: &str, manifest: &str| {
+            let path = profile.path().join(name);
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("manifest.json"), manifest).unwrap();
+            ExtensionInfo {
+                id: name.into(),
+                name: name.into(),
+                version: "1".into(),
+                manifest_version: 3,
+                description: String::new(),
+                permissions: Vec::new(),
+                path,
+            }
+        };
+        let infos = vec![
+            record(
+                "broken",
+                r#"{"manifest_version":3,"name":"broken","version":"1","key":"not base64!"}"#,
+            ),
+            record(
+                "kept",
+                r#"{"manifest_version":3,"name":"kept","version":"1"}"#,
+            ),
+        ];
+        let (infos, installed) = paired(infos);
+        assert_eq!(infos.len(), installed.len());
+        assert_eq!(infos[0].name, "kept");
+        assert_eq!(
+            Some(installed[0].id.clone()),
+            extensions::chrome_id(&infos[0]),
+            "the row's buttons are the kept extension's"
+        );
+    }
+
+    #[test]
+    fn an_updated_extension_is_read_again_so_its_new_version_runs() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Lite","version":"2"}"#,
+        )
+        .unwrap();
+        let info = ExtensionInfo {
+            id: "lite".into(),
+            name: "Lite".into(),
+            version: "2".into(),
+            manifest_version: 3,
+            description: String::new(),
+            permissions: Vec::new(),
+            path: root.path().to_owned(),
+        };
+        let mut controller = ExtensionController::new(true);
+        controller.refresh = false;
+        controller.on_updated(extensions::Updated::Installed(info.clone()));
+        assert!(controller.refresh, "the profile is read again");
+        assert!(controller.awaiting.is_empty());
+        controller.refresh = false;
+        controller.on_updated(extensions::Updated::AwaitsApproval(info));
+        assert!(controller.refresh);
+        assert_eq!(controller.awaiting, ["Lite"]);
+    }
+
     #[test]
     fn a_tilo_windows_bar_shows_every_extensions_badge() {
         let extension = |id: &str, pinned: bool, action: bool| Installed {
@@ -1146,6 +2199,7 @@ mod tests {
             pinned,
             action: action.then(crate::extension_toolbar::ActionManifest::default),
             options: None,
+            access: crate::extension_toolbar::Access::default(),
         };
         let installed = [
             extension("pinned", true, true),
@@ -1166,6 +2220,7 @@ mod tests {
             pinned: false,
             action: None,
             options: None,
+            access: crate::extension_toolbar::Access::default(),
         };
         let mut switched = HashMap::new();
         // At start each is put in the state the person chose, once.

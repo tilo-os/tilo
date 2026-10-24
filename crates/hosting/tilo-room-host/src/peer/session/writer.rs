@@ -14,6 +14,11 @@ use super::SessionLoop;
 /// state or replay frame.
 const PRIVATE_BURST: usize = 8;
 
+/// A write this long is logged: every frame queued behind it, a heartbeat's
+/// answer among them, waited as long, and a peer that hears nothing for its
+/// silence limit reconnects.
+const SLOW_WRITE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// What one pass over the ready queues did.
 enum WriterTurn {
     /// A frame was written; look at the queues again.
@@ -62,6 +67,8 @@ pub(super) struct SessionWriter<'s, W> {
     deferred_state: Option<StateDelivery>,
     deferred_frame: Option<Envelope>,
     raw_turn: bool,
+    /// What the last turn wrote, for the slow-write log.
+    wrote: &'static str,
     /// This connection's halves of its presence and delta slot coding:
     /// they see every batch and coded delta this writer writes, in order.
     coding: SessionCoding,
@@ -90,6 +97,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             deferred_state: None,
             deferred_frame: None,
             raw_turn: false,
+            wrote: "",
             coding: SessionCoding::default(),
         }
     }
@@ -97,7 +105,17 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
     /// Write until a write fails; the session ends the writer otherwise.
     pub(super) async fn run(mut self, cx: SessionLoop<'_, '_>) -> Result<(), PeerError> {
         loop {
-            if let WriterTurn::Idle { live } = self.write_ready(cx).await? {
+            let started = std::time::Instant::now();
+            let turn = self.write_ready(cx).await?;
+            let held = started.elapsed();
+            if held >= SLOW_WRITE {
+                tracing::info!(
+                    write = self.wrote,
+                    held_ms = held.as_millis(),
+                    "a write held the session writer"
+                );
+            }
+            if let WriterTurn::Idle { live } = turn {
                 // None of the queues was ready. Await readiness without starting
                 // a write in a cancellable select branch.
                 self.await_ready(live, cx).await?;
@@ -115,11 +133,17 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
         if self.private_burst < PRIVATE_BURST
             && let Ok(private) = self.private_rx.try_recv()
         {
+            self.wrote = "private";
             write_private(private, cx.peer, cx.session, self.write).await?;
             self.private_burst = self.private_burst.saturating_add(1);
             return Ok(WriterTurn::Wrote);
         }
         if let Some(batch) = self.active.take() {
+            self.wrote = if batch.ticket.is_some() {
+                "replay"
+            } else {
+                "reply"
+            };
             Box::pin(finish_replay_write(
                 batch,
                 cx.peer,
@@ -152,6 +176,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
         if (self.raw_turn || self.deferred_state.is_none())
             && let Some(frame) = self.deferred_frame.take()
         {
+            self.wrote = "live";
             authorize_state_frame(&frame, cx.peer, cx.session).await?;
             // Presence and host-authored deltas are fan-out; the
             // rest of this lane answers or addresses one device.
@@ -165,6 +190,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             return Ok(true);
         }
         if let Some(state) = self.deferred_state.take() {
+            self.wrote = "state";
             write_state_deliveries(
                 self.state_run(state),
                 cx.peer,
@@ -184,6 +210,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             .next_due()
             .is_some_and(|due| due <= tokio::time::Instant::now())
         {
+            self.wrote = "presence";
             write_presence(
                 self.presence,
                 &mut self.coding.presence,

@@ -44,6 +44,11 @@ pub(super) struct Flow {
     /// mismatch → rebuild; pure translation → reuse with a
     /// `translate(delta)` on the outer append.
     cache_rect: Rect,
+    /// What of the theme the cache was painted in: its colours, radii and
+    /// material. A theme change (dark to light, a preset, high contrast)
+    /// moves no child's size and dirties no child, yet every pixel of the
+    /// cache is in the old theme, so a differing theme redraws it.
+    cache_theme: Option<Box<DrawnTheme>>,
     cache_present: bool,
     descendant_caches_released: bool,
     /// The cache holds floating surfaces over the blurred material. A reused
@@ -58,6 +63,37 @@ pub(super) struct Flow {
     /// gap) after its node was built. The retained layout tree keeps the
     /// built style, so the change reports a structure rebuild.
     pub style_dirty: bool,
+    /// The children stack vertically (a column): the widgets after a band
+    /// disclosing move with its edge ([`Widget::disclosing`]).
+    pub vertical: bool,
+    /// The gap between children the layout was built with.
+    pub laid_gap: f64,
+}
+
+/// The parts of a [`Theme`] a cached subtree's pixels depend on beyond its
+/// layout: every colour token, the radii, and whether floating surfaces are
+/// see-through.
+#[derive(Debug, PartialEq)]
+struct DrawnTheme {
+    colors: crate::tokens::Colors,
+    radii: crate::tokens::Radii,
+    reduce_transparency: bool,
+}
+
+impl DrawnTheme {
+    fn of(theme: &Theme) -> Self {
+        Self {
+            colors: theme.tokens.colors.clone(),
+            radii: theme.tokens.radii.clone(),
+            reduce_transparency: theme.reduce_transparency,
+        }
+    }
+
+    fn is(&self, theme: &Theme) -> bool {
+        self.colors == theme.tokens.colors
+            && self.radii == theme.tokens.radii
+            && self.reduce_transparency == theme.reduce_transparency
+    }
 }
 
 impl Flow {
@@ -75,13 +111,25 @@ impl Flow {
             padding_rhythm: None,
             subtree_cache: Scene::new(),
             cache_rect: Rect::ZERO,
+            cache_theme: None,
             cache_present: false,
             descendant_caches_released: false,
             cache_carries_material: false,
             cache_parts: None,
             cache_shows_secret: false,
             style_dirty: false,
+            vertical: false,
+            laid_gap: 0.0,
         }
+    }
+
+    /// The widgets after each child are drawn this much lower while a band
+    /// before them discloses; `None` at rest and in a row.
+    pub fn follower_shifts(&self) -> Option<Vec<f64>> {
+        if !self.vertical {
+            return None;
+        }
+        super::follower_shifts(self.children.iter().map(|child| &**child), self.laid_gap)
     }
 
     /// Redraw the subtree on the next frame instead of replaying the cache.
@@ -166,9 +214,14 @@ impl Flow {
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
+        let theme_changed = self
+            .cache_theme
+            .as_deref()
+            .is_none_or(|drawn| !drawn.is(theme));
         let tracked = crate::scene_parts::is_tracked(scene);
         let needs_rebuild = !self.cache_present
             || size_changed
+            || theme_changed
             || any_child_dirty
             || self.cache_carries_material
             || (tracked && self.cache_parts.is_none());
@@ -191,9 +244,35 @@ impl Flow {
             local.reset();
             crate::backdrop::nest_scene(&local);
             let secrets = crate::secret_paint::SecretPaint::begin();
+            // While a band discloses, what follows it is drawn shifted by
+            // transform and clipped to the column, laid out where it rests.
+            let shifts = self.follower_shifts();
+            let clip = self.rect;
             let mut draw_children = |local: &mut Scene| {
-                for child in &mut self.children {
-                    child.draw(local, Affine::IDENTITY, text_renderer, theme, presence);
+                if shifts.is_some() {
+                    local.push_layer(
+                        vello::peniko::Fill::NonZero,
+                        vello::peniko::BlendMode::default(),
+                        1.0,
+                        Affine::IDENTITY,
+                        &clip,
+                    );
+                }
+                for (index, child) in self.children.iter_mut().enumerate() {
+                    let dy = shifts
+                        .as_deref()
+                        .and_then(|shifts| shifts.get(index).copied())
+                        .unwrap_or(0.0);
+                    child.draw(
+                        local,
+                        Affine::translate((0.0, dy)),
+                        text_renderer,
+                        theme,
+                        presence,
+                    );
+                }
+                if shifts.is_some() {
+                    local.pop_layer();
                 }
             };
             // A tracked section compares its parts frame to frame; a part
@@ -217,6 +296,9 @@ impl Flow {
             ) > 0;
             self.subtree_cache = local;
             self.cache_rect = self.rect;
+            if theme_changed {
+                self.cache_theme = Some(Box::new(DrawnTheme::of(theme)));
+            }
             self.cache_present = true;
             self.descendant_caches_released = false;
             presence.viewport.set(prev_vp);
@@ -386,9 +468,11 @@ macro_rules! flow_widget_methods {
             event: &winit::event::WindowEvent,
             ctx: &mut $crate::widget::EventCtx<'_>,
         ) {
-            $crate::widget::route_to_children(
+            let shifts = self.flow.follower_shifts();
+            $crate::widget::route_to_shifted_children(
                 &mut self.flow.children,
                 &self.flow.child_nodes,
+                shifts.as_deref(),
                 event,
                 ctx,
             );

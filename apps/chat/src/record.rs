@@ -1561,7 +1561,10 @@ impl Chat {
     /// A reviewed report, filed in the channel and kept with its triage;
     /// the channel shows it among its messages.
     // Filing a report is commenting: whoever may comment in the room may.
-    #[action(item = channels, field = "comments")]
+    // Only a person files one: the submission is what the feedback sheet
+    // reviewed with them, which an agent cannot produce, so offering it to
+    // agents only drew them away from `post`.
+    #[action(item = channels, field = "comments", audience = "people")]
     pub fn submit_feedback(
         &mut self,
         cx: &mut ActionCx,

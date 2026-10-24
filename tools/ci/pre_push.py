@@ -41,6 +41,10 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import tomllib
+
+# The repository this script belongs to: where the changed paths are relative to.
+ROOT = Path(__file__).resolve().parents[2]
 
 # Always run: neither is in `t scope` by its inputs alone. fmt-changed is not a default check
 # (main runs the whole tree's `fmt`), and changes compares the commit with its base.
@@ -56,22 +60,44 @@ POLICY_SOURCES = "tools/policy/"
 CLIPPY = "clippy/"
 
 
-def wanted(check: str, changed: list[str]) -> bool:
-    """Whether a check `t scope` names runs before a push."""
+def package_of(path: str, root: Path) -> str | None:
+    """The Cargo package a changed path belongs to: the nearest directory above it with a
+    `Cargo.toml` that declares a `[package]`. None outside every package (the workspace manifest
+    alone, docs, tools)."""
+    directory = (root / path).parent
+    while directory != root and root in directory.parents:
+        manifest = directory / "Cargo.toml"
+        if manifest.is_file():
+            try:
+                name = tomllib.loads(manifest.read_text(encoding="utf-8")).get("package", {}).get("name")
+            except (OSError, tomllib.TOMLDecodeError):
+                return None
+            return name if isinstance(name, str) else None
+        directory = directory.parent
+    return None
+
+
+def wanted(check: str, changed: list[str], packages: set[str]) -> bool:
+    """Whether a check `t scope` names runs before a push. `t scope` names the lint of every
+    package whose key the change moves, its dependents' too; only those of the packages whose
+    files it changes (`packages`) run."""
     if check in GATES or check in ALWAYS:
         return True
     if check.startswith(POLICY_TESTS):
         return any(path.startswith(POLICY_SOURCES) for path in changed)
-    return check.startswith(POLICY) or check.startswith(CLIPPY)
+    if check.startswith(CLIPPY):
+        return check.removeprefix(CLIPPY) in packages
+    return check.startswith(POLICY)
 
 
-def select(scope: dict, changed: list[str]) -> dict[str, list[str]]:
+def select(scope: dict, changed: list[str], root: Path = ROOT) -> dict[str, list[str]]:
     named = list(dict.fromkeys(scope.get("checks", [])))
+    packages = {package for path in changed if (package := package_of(path, root))}
     run, left = [], []
     for check in [*ALWAYS, *named]:
         if check in run or check in left:
             continue
-        if check in REPLACED or not wanted(check, changed):
+        if check in REPLACED or not wanted(check, changed, packages):
             left.append(check)
         else:
             run.append(check)

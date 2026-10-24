@@ -1256,6 +1256,12 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         parent_durable: bool,
         parent_children: &mut Vec<SemanticId>,
     ) {
+        // Under a parent without a durable identity nothing is durable, and
+        // the projection for actions keeps only durable nodes: it need not
+        // ask this widget or anything under it for its node.
+        if self.actions_only && !parent_durable {
+            return;
+        }
         let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
             return;
         };

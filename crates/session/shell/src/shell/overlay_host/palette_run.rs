@@ -155,6 +155,10 @@ impl ShellOverlayHost {
             self.run_secondary_action(slug, doc, root);
             return;
         }
+        if id == palette_flow::ALL_APPS_ID {
+            self.show_all_apps(doc, root);
+            return;
+        }
         if let Some(more) = id
             .strip_prefix(palette_flow::MORE_PREFIX)
             .and_then(|more| more.parse::<usize>().ok())
@@ -699,6 +703,15 @@ impl ShellOverlayHost {
         self.secondary_flow = None;
         self.palette.cancel_argument();
         self.palette.set_bypass_fuzzy(true);
+    }
+
+    /// Every app, as choosing the Apps chip lists them: the launcher's
+    /// "All apps" row. Clearing the chip brings the launcher back.
+    pub(super) fn show_all_apps(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
+        self.active_kind_filter = vec![crate::shell::search::ResourceKind::Application];
+        self.last_search_query.clear(); // force a refresh
+        self.refresh_search_results(doc, root);
+        self.palette.set_cursor(0);
     }
 
     /// Show every row of the group behind "Show all" row `more`, in place:

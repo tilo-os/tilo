@@ -171,6 +171,7 @@ fn desktop(out: &Path, profile: &Path) {
             label: "Chat".into(),
             note: String::new(),
         },
+        app_title: None,
     };
     let tree = tilo_desktop_surface::seed_tree(&mut minter, "Desk", vec![tab]);
     let (surface, _handle) =

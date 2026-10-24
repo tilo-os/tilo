@@ -73,8 +73,10 @@
 
 ; The workspace as fs sees it: the FUSE mount, and the native data plane's
 ; store volume, which tilo-store-volume mounts with context=fusefs_t (its
-; capability probes and content area at /var/lib/tilo/store).
-(allow tilo_fs_t fusefs_t (dir (getattr search open read ioctl write add_name remove_name create)))
+; capability probes and content area at /var/lib/tilo/store). setattr on a
+; directory is the change signal: fs sets its no-op user.tilo.change-signal
+; attribute through its own mount so inotify hears of a peer's edit.
+(allow tilo_fs_t fusefs_t (dir (getattr search open read ioctl write add_name remove_name create setattr)))
 (allow tilo_fs_t fusefs_t (file (getattr open read write create rename lock ioctl)))
 
 ; The content store and record database under /var/cache/quick-fs (var_t,
@@ -142,3 +144,19 @@
 ; every other virtio port stays root-only by owner and mode, so this MAC
 ; grant does not widen who can open them.
 (allow xdm_t virtio_device_t (chr_file (open read write getattr ioctl lock)))
+
+; tilo-authd checks every secret. It runs unconfined (unconfined_service_t)
+; and listens on /run/tilo-auth/socket, a var_run_t socket in its runtime
+; directory. The PAM callers that run confined must reach it: greetd and the
+; greeter (xdm_t: the sign-in and the boot sign-in), polkit's authentication
+; helper (policykit_auth_t), console login (local_login_t) and sshd (sshd_t).
+; Sessions run unconfined and need nothing. The daemon decides what each
+; peer may ask from its credentials, so this grant only opens the door.
+(allow xdm_t var_run_t (sock_file (getattr write)))
+(allow xdm_t unconfined_service_t (unix_stream_socket (connectto)))
+(allow policykit_auth_t var_run_t (sock_file (getattr write)))
+(allow policykit_auth_t unconfined_service_t (unix_stream_socket (connectto)))
+(allow local_login_t var_run_t (sock_file (getattr write)))
+(allow local_login_t unconfined_service_t (unix_stream_socket (connectto)))
+(allow sshd_t var_run_t (sock_file (getattr write)))
+(allow sshd_t unconfined_service_t (unix_stream_socket (connectto)))

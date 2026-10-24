@@ -23,6 +23,8 @@ COPY \
     os/usr/lib/systemd/system/tilo-repair.target \
     os/usr/lib/systemd/system/tilo-repair@.service \
     os/usr/lib/systemd/system/tilo-deployment-rollback.service \
+    os/usr/lib/systemd/system/tilo-deployment-status.socket \
+    os/usr/lib/systemd/system/tilo-deployment-status@.service \
     os/usr/lib/systemd/system/tilo-deployment-update.service \
     os/usr/lib/systemd/system/tilo-live-update.service \
     os/usr/lib/systemd/system/tilo-live-update-session.service \

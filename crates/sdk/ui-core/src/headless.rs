@@ -390,6 +390,8 @@ pub struct FrameHarness {
     replayed_draws: bool,
     /// Windows shown by replaying their drawing, since construction.
     replayed_window_draws: u64,
+    /// Frames whose layout failed, skipped ([`Self::skip_frame`]).
+    skipped_frames: crate::widget::SkippedFrames,
     /// The frame being run draws every window ([`Self::settle_replayed_draws`]).
     suppress_pan_replay: bool,
     /// The host lets pan frames replay windows ([`Self::set_pan_replay`]).
@@ -1445,13 +1447,20 @@ impl FrameHarness {
             .and_then(crate::action_palette::ActionPalette::asking_why)
     }
 
-    /// Confirm what the host is asking, as the person does: press Enter on
-    /// its question. Answers the action confirmed; `None`, changing nothing,
-    /// when nothing is asked.
+    /// Confirm what the host is asking, as the person does: activate the
+    /// dialog's own button named for the verb (a destructive question starts
+    /// on Cancel, so Enter would not go ahead). Answers the action
+    /// confirmed; `None`, changing nothing, when nothing is asked or the
+    /// dialog refused the activation.
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.invalidate_local();
         let (address, _question) = self.asking()?;
-        self.key("Enter");
+        let target = self
+            .action_palette
+            .as_deref()
+            .and_then(crate::action_palette::ActionPalette::confirming_target)?;
+        self.perform_palette_action(&target, &crate::a11y::Action::Activate)
+            .ok()?;
         Some(address)
     }
 
@@ -1634,6 +1643,7 @@ impl FrameHarness {
             settled_history_frames: 0,
             replayed_draws: false,
             replayed_window_draws: 0,
+            skipped_frames: crate::widget::SkippedFrames::default(),
             suppress_pan_replay: false,
             pan_replay_allowed: true,
             pan_frames: 0,
@@ -2261,12 +2271,22 @@ impl FrameHarness {
         self.suppress_pan_replay = true;
         let settled = self.try_relayout();
         self.suppress_pan_replay = false;
-        if let Err(error) = settled {
-            tracing::error!(
-                ?error,
-                "headless: widget layout did not settle; replayed windows not drawn again"
-            );
+        if let Err(error) = settled
+            && let Some(line) = self.skip_frame(&error)
+        {
+            tracing::error!("headless: replayed windows not drawn again: {line}");
         }
+    }
+
+    /// Skip a frame whose layout failed with `error`, as every host does:
+    /// the next frame lays the tree out again, and what was presented last
+    /// stays on screen until then, so input keeps landing. The scene this
+    /// frame left may be partial; a host presents its last frame again
+    /// instead of drawing it. Returns the line to log when one is due
+    /// ([`crate::widget::SkippedFrames`]).
+    pub fn skip_frame(&mut self, error: &crate::widget::WidgetLayoutError) -> Option<String> {
+        self.invalidate_local();
+        self.skipped_frames.skip(error, crate::time::now())
     }
 
     /// Let the frames that follow replay windows at rest when they only
@@ -2421,6 +2441,17 @@ impl FrameHarness {
             && !self.has_pending_owner_models()
     }
 
+    /// The update pass, with the room's presence lent as the frame's
+    /// ([`crate::presence::frame`]) under the window's authority, as the
+    /// live App lends it.
+    fn update_root(&mut self) -> bool {
+        let (root, state) = (&mut self.root, &self.state);
+        let permissions = self.permissions.clone();
+        self.presence.with_permissions(permissions, || {
+            crate::presence::frame::lend(&self.presence, || root.update(&state.doc, &state.root))
+        })
+    }
+
     /// The frame's sync: what the widgets took up is written, the document
     /// read, and what that sync took up written and shown in the same frame.
     fn sync_frame(&mut self) {
@@ -2448,7 +2479,7 @@ impl FrameHarness {
         let submitted = crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
         if settled || submitted {
             self.idle_control_tick();
-            self.root.update(&self.state.doc, &self.state.root);
+            self.update_root();
             self.root.sync(&self.state.doc, &self.state.root);
         }
     }
@@ -3198,11 +3229,10 @@ impl FrameHarness {
     /// [`Self::relayout`], which a caller asks for after changing anything.
     fn run_frame(&mut self) {
         self.poll_touch_hold(crate::time::now());
-        if let Err(error) = self.try_relayout_following_search() {
-            tracing::error!(
-                ?error,
-                "headless: widget layout did not settle; skipping frame"
-            );
+        if let Err(error) = self.try_relayout_following_search()
+            && let Some(line) = self.skip_frame(&error)
+        {
+            tracing::error!("headless: {line}");
         }
     }
 
@@ -3444,7 +3474,7 @@ impl FrameHarness {
         // Select the current record before update, then observe a first
         // asynchronous open before sync can accidentally edit the room index.
         self.tick_records();
-        let updated = self.root.update(&self.state.doc, &self.state.root);
+        let updated = self.update_root();
         self.tick_records();
         // As the live App syncs only when something set `needs_sync`: a
         // frame whose widgets noticed nothing of their own, after nothing
@@ -7273,8 +7303,10 @@ impl FrameHarness {
         let started = match &delivered {
             Some(continuation) => {
                 self.acting_for.insert(invocation, continuation.clone());
-                let _invoker =
-                    crate::invocation_scope::InvokerScope::enter(continuation.invoker.clone());
+                let _invoker = crate::invocation_scope::InvokerScope::delivered(
+                    continuation.invoker.clone(),
+                    invocation,
+                );
                 self.invoke_bound_action_for(
                     address,
                     arguments,
@@ -7838,6 +7870,7 @@ impl FrameHarness {
         target: crate::bound_dispatch::BoundActionTarget,
         intent: &tilo_actions::ControlInvocation,
         on_behalf_of: Option<tilo_actions::InvocationId>,
+        origin: crate::bound_dispatch::Origin,
     ) {
         let invocation = tilo_actions::InvocationId::new();
         // An edit a job started for someone else submitted is theirs, as far
@@ -7897,12 +7930,15 @@ impl FrameHarness {
                     intent,
                 );
             }
-            Err(error) if acting.is_none() => {
+            // Only what the person asked for is refused over the window; the
+            // app hears of its own invocation's refusal through the feedback
+            // above.
+            Err(error) if acting.is_none() && origin == crate::bound_dispatch::Origin::Person => {
                 tracing::warn!(code = error.code(), %error, "headless: bound control refused");
                 self.refuse_visibly(&error);
             }
             Err(error) => {
-                tracing::warn!(code = error.code(), %error, "headless: bound control refused");
+                tracing::warn!(code = error.code(), %error, ?origin, "headless: bound control refused");
                 self.control_failures.push(error.to_string());
             }
         }
@@ -8425,10 +8461,10 @@ impl FrameHarness {
                 "headless: control traversal incomplete; delivering already drained intents"
             );
         }
-        for (target, intent, on_behalf_of) in registered
+        for (target, intent, on_behalf_of, origin) in registered
             .components
             .into_iter()
-            .map(|(target, intent)| (target, intent, None))
+            .map(|(target, intent)| (target, intent, None, crate::bound_dispatch::Origin::Person))
             .chain(bound.pending)
         {
             if on_behalf_of.is_none() && self.take_component_search_invocation(&target, &intent) {
@@ -8443,7 +8479,7 @@ impl FrameHarness {
             {
                 continue;
             }
-            self.dispatch_bound_control(target, &intent, on_behalf_of);
+            self.dispatch_bound_control(target, &intent, on_behalf_of, origin);
         }
 
         let batch =
@@ -10426,6 +10462,41 @@ fn session_door(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A theme change repaints everything on the next frame, retained caches
+    /// included: a window switched from dark to light renders exactly what a
+    /// window opened in light renders. Controls nested in columns kept their
+    /// dark paint when the columns replayed their cached subtree.
+    #[test]
+    fn switching_theme_repaints_retained_controls_as_a_fresh_window_would() {
+        fn controls() -> Box<dyn Widget> {
+            Box::new(
+                crate::widget::Column::new()
+                    .push(Box::new(
+                        crate::widget::Column::new()
+                            .push(Box::new(crate::widget::Checkbox::new("a", "a")))
+                            .push(Box::new(crate::widget::Checkbox::new("b", "b"))),
+                    ))
+                    .push(Box::new(crate::widget::ProgressBar::new(0.4))),
+            )
+        }
+        let mut switched = FrameHarness::new(State::new(), controls(), (240, 160));
+        switched.relayout();
+        switched.set_theme(Theme::light());
+        let fresh =
+            FrameHarness::new_with_theme(State::new(), controls(), (240, 160), Theme::light());
+        let (switched, fresh) = (switched.render_rgba(), fresh.render_rgba());
+        assert!(!fresh.is_empty());
+        let differing = switched
+            .chunks_exact(4)
+            .zip(fresh.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            differing, 0,
+            "{differing} pixels still show the dark theme after switching to light"
+        );
+    }
 
     #[test]
     fn closing_focus_trap_enumerates_history_once() {
@@ -14802,17 +14873,17 @@ mod ordinary_confirmation_owner_tests {
             driver
                 .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
                 .unwrap();
-            let field = driver.a11y_node_named("Confirmation").unwrap();
-            driver
-                .perform_a11y_action(field, &crate::a11y::Action::SetValue("CONFIRM".into()))
-                .unwrap();
+            driver.send(&super::key_input(
+                &winit::keyboard::Key::Character("CONFIRM".into()),
+                winit::event::ElementState::Pressed,
+            ));
             let old = driver.control_domain.clone();
             if replacement {
                 driver.control_domain = crate::ControlDomain::new();
             } else {
                 old.close();
             }
-            let submit = driver.a11y_node_named("Confirm").unwrap();
+            let submit = driver.a11y_node_named("Run fixture").unwrap();
             driver
                 .perform_a11y_action(submit, &crate::a11y::Action::Activate)
                 .unwrap();

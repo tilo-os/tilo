@@ -1,0 +1,4 @@
+{"manifest_version": 3, "name": "Burster", "version": "1.0",
+ "action": {"default_title": "Burst"},
+ "permissions": ["activeTab", "scripting"],
+ "background": {"service_worker": "worker.js"}}

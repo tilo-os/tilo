@@ -8,8 +8,8 @@
 //! and sign-in alone ([`crate::transform::models_url`]).
 
 use crate::{
-    EndpointLocation, ProviderProfile, ProviderProtocol, SecretReference, SignInCredential,
-    SignInIssuer, TokenLimitParam,
+    EndpointLocation, OpenAiApi, ProviderProfile, ProviderProtocol, SecretReference,
+    SignInCredential, SignInIssuer, TokenLimitParam,
 };
 
 /// One known provider.
@@ -191,6 +191,7 @@ impl Preset {
             credential,
             sign_in,
             token_limit_param: self.token_limit_param(),
+            openai_api: (self == Self::OpenAi).then_some(OpenAiApi::Responses),
             id,
             ..ProviderProfile::default()
         }

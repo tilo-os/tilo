@@ -7,7 +7,7 @@ use super::*;
 impl VideoEditorApp {
     #[expect(
         clippy::too_many_lines,
-        reason = "the canvas paint pass, drawn back to front: letterbox, picture, overlays, readouts"
+        reason = "the canvas paint pass, drawn back to front: letterbox, picture, overlays"
     )]
     pub(super) fn draw_preview(
         &self,
@@ -112,34 +112,6 @@ impl VideoEditorApp {
                 top + th + S1,
             );
         }
-        // HUD overlays: the playhead's time, and nothing else, on the floating
-        // material over the picture so it reads over a bright frame as well
-        // as a dark one.
-        let hud = theme.on_ground(ui::chrome::panel_ground(theme));
-        let tc = timecode(self.playhead, self.project.fps);
-        let tc_style = theme.text(TextRole::Label).numeric();
-        let tcw = text_width(tr, &tc, &tc_style);
-        let tch = line_height(tr, &tc_style);
-        let tc_chip = Rect::new(
-            canvas.x0 + S2,
-            canvas.y0 + S2,
-            canvas.x0 + S2 + tcw + S4,
-            canvas.y0 + S2 + tch + S2,
-        );
-        if tc_chip.x1 < canvas.x1 && tc_chip.y1 < canvas.y1 {
-            ui::widget::floating_surface::paint(scene, tf, tc_chip, theme);
-            let top = text_baseline(tc_chip, &tc_style, tr);
-            text(
-                scene,
-                tr,
-                tf,
-                &tc,
-                &tc_style,
-                hud.text_primary,
-                tc_chip.x0 + S2,
-                top,
-            );
-        }
         // The clip under the playhead has no bytes on this device: say so on the
         // canvas, because the picture behind this line is a stand-in generated
         // from metadata, not the user's footage.
@@ -152,6 +124,9 @@ impl VideoEditorApp {
                 None
             };
             if let Some(msg) = unusable {
+                // On the floating material over the picture, so it reads over
+                // a bright frame as well as a dark one.
+                let hud = theme.on_ground(ui::chrome::panel_ground(theme));
                 let style = theme.text(TextRole::Label);
                 let mw = text_width(tr, msg, &style);
                 let mh = line_height(tr, &style);

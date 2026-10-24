@@ -664,6 +664,10 @@ impl App {
                 resources.push(edit);
             }
         }
+        // Every window zooms: an agent or script asked to make it larger
+        // reaches the zoom the keys do.
+        #[cfg(feature = "native")]
+        resources.extend(self.zoom_resource());
         resources
     }
 
@@ -766,6 +770,10 @@ impl App {
         let mut operation_handlers = crate::widget::resource_operation_handlers(&*self.root_widget);
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         operation_handlers.insert(history_actions::OPERATION.to_string());
+        #[cfg(feature = "native")]
+        if self.accessibility.zoom.in_window() {
+            operation_handlers.insert(crate::host_chrome::zoom::ZOOM_OPERATION.to_string());
+        }
         // Bound components have already been validated against their own registries
         // by publication_resources. Only legacy resources use the host registry.
         let unbound_resources = resources
@@ -1895,7 +1903,7 @@ impl App {
                 deferred: None,
             },
         );
-        let invoker_scope = crate::invocation_scope::InvokerScope::enter(invoker);
+        let invoker_scope = crate::invocation_scope::InvokerScope::delivered(invoker, invocation);
         let authorization = self.authorize_published_invocation(
             &crate::invocation_scope::PublishedInvocationRequest {
                 wire_id: id,
@@ -2813,6 +2821,10 @@ impl App {
         if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
             resources.extend(self.edit_resource_for(address));
         }
+        #[cfg(feature = "native")]
+        if address.resource == crate::host_chrome::zoom::ZOOM_RESOURCE {
+            resources.extend(self.zoom_resource());
+        }
         let (typed_arguments, resource, resolved) = Self::resolve_resource_invocation(
             &resources,
             address,
@@ -2979,6 +2991,14 @@ impl App {
                 );
             }
             let operation_invocation = invocation.unwrap_or_default();
+            #[cfg(feature = "native")]
+            if encoded.type_id == crate::host_chrome::zoom::ZOOM_OPERATION {
+                self.execute_zoom_operation(&encoded)
+                    .map_err(tilo_actions::DoorError::Failed)?;
+                return Ok(crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ));
+            }
             if encoded.type_id == history_actions::OPERATION {
                 let result = self
                     .invoke_history_action(&encoded, actor)
@@ -3228,6 +3248,7 @@ impl App {
         target: &crate::bound_dispatch::BoundActionTarget,
         intent: &tilo_actions::ControlInvocation,
         on_behalf_of: Option<tilo_actions::InvocationId>,
+        origin: crate::bound_dispatch::Origin,
     ) -> bool {
         let argument = format!(
             "{}{}",
@@ -3327,8 +3348,11 @@ impl App {
                 true
             }
             Err(error) => {
-                tracing::warn!(%error, "bound control invocation refused");
-                if acting.is_none() {
+                tracing::warn!(%error, ?origin, "bound control invocation refused");
+                // Only what the person asked for is refused over the window;
+                // the app hears of its own invocation's refusal through the
+                // feedback above.
+                if acting.is_none() && origin == crate::bound_dispatch::Origin::Person {
                     self.refuse_visibly(&error);
                 }
                 false
@@ -3642,10 +3666,10 @@ impl App {
                 "control traversal incomplete; delivering already drained intents"
             );
         }
-        for (target, intent, on_behalf_of) in registered
+        for (target, intent, on_behalf_of, origin) in registered
             .components
             .into_iter()
-            .map(|(target, intent)| (target, intent, None))
+            .map(|(target, intent)| (target, intent, None, crate::bound_dispatch::Origin::Person))
             .chain(bound.pending)
         {
             if on_behalf_of.is_none()
@@ -3668,22 +3692,24 @@ impl App {
                 dispatched = dispatched.saturating_add(1);
                 continue;
             }
-            if self.dispatch_bound_control_invocation(&target, &intent, on_behalf_of) {
+            if self.dispatch_bound_control_invocation(&target, &intent, on_behalf_of, origin) {
                 dispatched = dispatched.saturating_add(1);
             }
         }
         dispatched =
             dispatched.saturating_add(self.dispatch_legacy_control_invocations(registered.legacy));
-        while let Some((intent, on_behalf_of)) = registered
+        while let Some((intent, on_behalf_of, origin)) = registered
             .outer
             .pop_front()
-            .map(|intent| (intent, None))
+            .map(|intent| (intent, None, crate::bound_dispatch::Origin::Person))
             .or_else(|| {
-                crate::widget::controls::take_attributed_control_invocation(
-                    self.root_widget.as_mut(),
-                )
+                crate::bound_dispatch::take_attributed_with_origin(self.root_widget.as_mut())
             })
         {
+            // Only what the person asked for is refused over the window; the
+            // app hears of its own invocation's refusal through the feedback.
+            let says_refusal =
+                on_behalf_of.is_none() && origin == crate::bound_dispatch::Origin::Person;
             if on_behalf_of.is_none() && self.take_history_invocation(&intent, None) {
                 dispatched = dispatched.saturating_add(1);
                 continue;
@@ -3712,7 +3738,7 @@ impl App {
                     "action-bound control is unavailable to the local actor"
                 );
                 let error = tilo_actions::DoorError::Unknown(intent.address.clone());
-                if on_behalf_of.is_none() {
+                if says_refusal {
                     self.refuse_visibly(&error);
                 }
                 let refused = Err(error);
@@ -3815,8 +3841,8 @@ impl App {
             match result {
                 Ok(_) => dispatched = dispatched.saturating_add(1),
                 Err(error) => {
-                    tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, %error, "action-bound control invocation refused");
-                    if acting.is_none() {
+                    tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, %error, ?origin, "action-bound control invocation refused");
+                    if acting.is_none() && says_refusal {
                         self.refuse_visibly(&error);
                     }
                 }
@@ -4717,30 +4743,28 @@ impl App {
     }
 
     /// Confirm what the host asks through its own dialog, as the person
-    /// does: Enter on its question; what it confirmed is applied.
-    /// Answers the action confirmed; `None`, changing nothing, when nothing
-    /// is asked.
+    /// does: activate its button named for the verb (a destructive question
+    /// starts on Cancel, so Enter would not go ahead); what it confirmed is
+    /// applied. Answers the action confirmed; `None`, changing nothing, when
+    /// nothing is asked or the dialog refused the activation.
     #[cfg(feature = "native")]
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
-        use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
         let (address, _question) = self.asking()?;
-        let event = winit::event::KeyEvent::synthetic(
-            winit::event::RawKeyEvent {
-                physical_key: PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
-                ),
-                state: winit::event::ElementState::Pressed,
-            },
-            Key::Named(NamedKey::Enter),
-            None,
-            KeyLocation::Standard,
-            false,
-            None,
-            Key::Named(NamedKey::Enter),
+        self.refresh_action_palette_resources();
+        let palette = self.actions.action_palette.as_mut()?;
+        let target = palette.confirming_target()?;
+        self.bindings.clear();
+        self.layout.node_map.clear();
+        self.focused_node = None;
+        let handled = palette.perform_semantic_action(
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
         );
-        self.action_palette_handle_key(&crate::synthetic_input::keyboard_input(event));
+        self.finish_action_palette_input(handled);
         self.dispatch_control_invocations();
-        Some(address)
+        handled.then_some(address)
     }
 
     #[cfg(feature = "native")]

@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{ModelPath, TaffyTreeExt, Widget};
+use ui::widget::{ModelPath, TaffyTreeExt, Widget, card_column_width, card_columns};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -58,23 +58,21 @@ fn tiles() -> Rc<[Tile]> {
     })
 }
 
-/// A tile's narrowest and widest picture at the default text size; its
-/// height is a share of its width.
-const TILE_WIDTH: std::ops::RangeInclusive<f64> = 104.0..=168.0;
+/// A tile's height as a share of its width.
 const TILE_ASPECT: f64 = 0.66;
 
-/// How the tiles lay out across `width`: as many on a line as fit at their
-/// narrowest, rounded down to a count that fills every line alike, each as
-/// wide as the line allows up to its widest. `(columns, width, height)`.
-fn tile_geometry(width: f64, tiles: usize, gap: f64, scale: f64) -> (usize, f64, f64) {
-    let (narrowest, widest) = (TILE_WIDTH.start() * scale, TILE_WIDTH.end() * scale);
+/// How the tiles lay out across `width`, by the card grid's reflow: as many
+/// on a line as fit at their narrowest, rounded down to a count that fills
+/// every line alike, the columns sharing the whole line. `(columns, width,
+/// height)`.
+fn tile_geometry(width: f64, tiles: usize, gap: f64, narrowest: f64) -> (usize, f64, f64) {
     let tiles = tiles.max(1);
-    let fit = (((width + gap) / (narrowest + gap)).floor() as usize).clamp(1, tiles);
+    let fit = card_columns(width, narrowest, gap).min(tiles);
     let columns = (1..=fit)
         .rev()
         .find(|c| tiles.is_multiple_of(*c))
         .unwrap_or(fit);
-    let tile = ((width - gap * (columns as f64 - 1.0)) / columns as f64).clamp(narrowest, widest);
+    let tile = card_column_width(width, columns, gap);
     (columns, tile, (tile * TILE_ASPECT).round())
 }
 
@@ -89,8 +87,10 @@ pub struct ThemeTiles {
     last_cursor: Point,
     action: Option<ui::widget::ActionEmitter<String>>,
     rect: Rect,
-    /// The theme's scale, gap between tiles and room for a name.
-    scale: f64,
+    /// The theme's narrowest and asked-for tile widths, gap between tiles
+    /// and room for a name.
+    narrowest: f64,
+    preferred: f64,
     gap: f64,
     label: f64,
 }
@@ -113,14 +113,20 @@ impl ThemeTiles {
             last_cursor: Point::ZERO,
             action: None,
             rect: Rect::ZERO,
-            scale: 1.0,
+            narrowest: f64::from(ui::tokens::Metrics::BASE.picture_tile_min_width),
+            preferred: f64::from(ui::tokens::Metrics::BASE.picture_tile_width),
             gap: 12.0,
             label: 24.0,
         }
     }
 
     fn geometry(&self) -> (usize, f64, f64) {
-        tile_geometry(self.rect.width(), self.tiles.len(), self.gap, self.scale)
+        tile_geometry(
+            self.rect.width(),
+            self.tiles.len(),
+            self.gap,
+            self.narrowest,
+        )
     }
 
     /// How many tiles stand on a line at the laid-out width.
@@ -397,9 +403,8 @@ impl Widget for ThemeTiles {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.scale = f64::from(
-            theme.tokens.metrics.min_pointer_target / ui::tokens::Metrics::BASE.min_pointer_target,
-        );
+        self.narrowest = f64::from(theme.tokens.metrics.picture_tile_min_width);
+        self.preferred = f64::from(theme.tokens.metrics.picture_tile_width);
         self.gap = f64::from(theme.tokens.spacing.rhythm.sibling);
         self.label = f64::from(theme.text(ui::TextRole::Caption).line_height_px())
             + f64::from(theme.tokens.spacing.s2);
@@ -409,7 +414,7 @@ impl Widget for ThemeTiles {
                 height: Dimension::auto(),
             },
             min_size: Size {
-                width: Dimension::length((TILE_WIDTH.start() * self.scale) as f32),
+                width: Dimension::length(self.narrowest as f32),
                 height: Dimension::auto(),
             },
             ..Default::default()
@@ -425,10 +430,10 @@ impl Widget for ThemeTiles {
     ) -> Size<f32> {
         let width = known.width.unwrap_or_else(|| match available.width {
             taffy::AvailableSpace::Definite(width) => width,
-            _ => ((TILE_WIDTH.end() * self.scale + self.gap) * self.tiles.len() as f64) as f32,
+            _ => ((self.preferred + self.gap) * self.tiles.len() as f64) as f32,
         });
         let (columns, _, height) =
-            tile_geometry(f64::from(width), self.tiles.len(), self.gap, self.scale);
+            tile_geometry(f64::from(width), self.tiles.len(), self.gap, self.narrowest);
         let lines = self.tiles.len().div_ceil(columns);
         Size {
             width,
@@ -699,5 +704,49 @@ mod tests {
         assert_eq!(tiles.columns(), 2);
         assert!(tiles.tile_rect(2).y0 > tiles.tile_rect(0).y1);
         assert_eq!(tiles.tile_at(tiles.tile_rect(3).center()), Some(3));
+    }
+
+    /// From a phone to a wide window, every line of tiles spans the whole
+    /// width: the tiles grow with the window instead of leaving a gap at
+    /// the end of the line, and the column count reflows as it widens.
+    #[test]
+    fn the_tiles_fill_the_line_at_every_width() {
+        let mut tiles = ThemeTiles::new("Dark");
+        let mut counts = Vec::new();
+        let mut first_width = Vec::new();
+        for width in [260.0, 360.0, 420.0, 560.0, 640.0, 720.0, 900.0, 1400.0] {
+            tiles.rect = Rect::new(0.0, 0.0, width, 400.0);
+            let columns = tiles.columns();
+            let line_end = tiles.tile_rect(columns - 1).x1;
+            assert!(
+                (line_end - width).abs() < 0.5,
+                "at {width}: the line of {columns} tiles ends at {line_end}"
+            );
+            assert!(
+                (tiles.tile_rect(0).x0).abs() < 0.5,
+                "at {width}: the line starts at the edge"
+            );
+            let widths: Vec<f64> = (0..columns).map(|i| tiles.tile_rect(i).width()).collect();
+            assert!(
+                widths.iter().all(|w| (w - widths[0]).abs() < 0.01),
+                "at {width}: the tiles share the line evenly: {widths:?}"
+            );
+            counts.push(columns);
+            first_width.push(widths[0]);
+        }
+        assert!(
+            counts.windows(2).all(|pair| pair[1] >= pair[0]),
+            "a wider pane never shows fewer columns: {counts:?}"
+        );
+        assert_eq!(counts.first(), Some(&2), "a phone shows two columns");
+        assert_eq!(
+            counts.last(),
+            Some(&AppearancePrefs::THEMES.len()),
+            "a wide pane shows every tile on one line"
+        );
+        assert!(
+            first_width[7] > first_width[6],
+            "on one line the tiles keep growing with the window: {first_width:?}"
+        );
     }
 }

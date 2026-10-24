@@ -165,10 +165,10 @@ pub(crate) fn awake_sentence(state: &QuickSettingsState) -> Option<String> {
 /// The battery's charge state, in words.
 pub(crate) fn battery_state_text(state: &QuickSettingsState) -> String {
     use tilo_power_mgmt::BatteryState;
-    if !state.battery.present {
+    if !state.battery().present {
         return t("qs-power-ac");
     }
-    t(match state.battery.state {
+    t(match state.battery().state {
         BatteryState::Charging => "qs-battery-charging",
         BatteryState::Full => "qs-battery-full",
         BatteryState::PendingCharge => "qs-battery-not-charging",
@@ -179,10 +179,10 @@ pub(crate) fn battery_state_text(state: &QuickSettingsState) -> String {
 /// How long until empty or full, in words, when the battery says.
 pub(crate) fn battery_time_text(state: &QuickSettingsState) -> Option<String> {
     use tilo_power_mgmt::BatteryTime;
-    if !state.battery.present {
+    if !state.battery().present {
         return None;
     }
-    let (key, minutes) = match state.battery_time? {
+    let (key, minutes) = match state.status.battery_time? {
         BatteryTime::ToEmpty(minutes) => ("qs-battery-time-left", minutes),
         BatteryTime::ToFull(minutes) => ("qs-battery-time-to-full", minutes),
     };
@@ -352,7 +352,7 @@ fn vpn(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
 }
 
 fn battery(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
-    if state.battery.present {
+    if state.battery().present {
         let lines = if battery_time_text(state).is_some() {
             2.0
         } else {
@@ -370,7 +370,7 @@ fn battery(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
         b.push(ItemKind::Awake(awake), m.row);
     }
     b.push(
-        ItemKind::Settings(t(if state.battery.present {
+        ItemKind::Settings(t(if state.battery().present {
             "qs-battery-settings"
         } else {
             "qs-power-settings"
@@ -988,7 +988,7 @@ fn paint_battery(
         .theme
         .text(TextRole::Title)
         .with_weight(TextWeight::Semibold);
-    let percent = format!("{}%", state.battery.percent);
+    let percent = format!("{}%", state.battery().percent);
     ctx.text.draw_style(
         ctx.scene,
         &percent,
@@ -1022,7 +1022,7 @@ fn paint_battery(
         ctx.scene,
         ctx.transform,
         gauge,
-        f64::from(state.battery.percent.min(100)) / 100.0,
+        f64::from(state.battery().percent.min(100)) / 100.0,
         ctx.theme,
     );
 }
@@ -1175,12 +1175,12 @@ mod tests {
     #[test]
     fn the_power_mode_is_chosen_under_its_tile_and_the_battery_section_links_to_it() {
         let mut state = QuickSettingsState::fixture();
-        state.battery = tilo_power_mgmt::BatterySnapshot {
+        state.status.battery = Some(tilo_power_mgmt::BatterySnapshot {
             present: true,
             percent: 82,
             state: tilo_power_mgmt::BatteryState::Discharging,
-        };
-        state.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(190));
+        });
+        state.status.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(190));
         state.power_profiles = vec![PowerProfile::Saver, PowerProfile::Balanced];
         state.awake_holders = vec!["Firefox".into()];
         let battery = layout(QsSection::Battery, &state, 360.0, metrics());

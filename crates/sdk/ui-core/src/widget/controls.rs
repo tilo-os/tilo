@@ -13,12 +13,33 @@ use std::collections::HashSet;
 use super::capability::{capability, capability_mut};
 use super::{
     ControlBindingKind, ControlBindingMetadata, ResourceOperationStart, Widget,
-    semantic_action_bindings,
+    semantic_action_bindings_into,
 };
 
 /// How the host answered a control's invocation: started (done at once with
 /// its output, or accepted to finish later), or refused.
 pub type ControlResult = Result<ResourceOperationStart, tilo_actions::DoorError>;
+
+/// Who asked for a queued invocation on this device.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Origin {
+    /// A person's gesture: a press, a key, a pick from a menu. A refusal is
+    /// said over the window, so a click is never dropped unseen.
+    #[default]
+    Person,
+    /// The app on its own, for nobody's gesture: a read receipt, keeping a
+    /// record in step with what is shown. Nobody pressed anything, so a
+    /// refusal is reported to the app and logged, never put over the window
+    /// as if the person had been refused.
+    App,
+}
+
+/// Say, while the host drains it, who asked for the invocation a queue is
+/// handing over (see [`Origin`]). A queue that says nothing hands over a
+/// person's invocation.
+pub fn note_drained_origin(origin: Origin) {
+    crate::bound_dispatch::note_drained_origin(origin);
+}
 
 /// A control intent and the effect invocation it continues, when an
 /// effect's handler or completion queued it.
@@ -173,7 +194,16 @@ pub(crate) fn value_control_bindings<I>(
 }
 
 fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetadata> {
-    let mut bindings = semantic_action_bindings(widget.accessibility());
+    // Read a widget's kept rows where it keeps them, not a copy of each.
+    let mut bindings = Vec::new();
+    if let Some(shared) = widget.accessibility_shared() {
+        semantic_action_bindings_into(&shared.node, &mut bindings);
+        for child in &shared.children {
+            semantic_action_bindings_into(child, &mut bindings);
+        }
+    } else if let Some(node) = widget.accessibility() {
+        semantic_action_bindings_into(&node, &mut bindings);
+    }
     widget.for_each_child(&mut |child| bindings.extend(control_action_bindings(child)));
     bindings
 }

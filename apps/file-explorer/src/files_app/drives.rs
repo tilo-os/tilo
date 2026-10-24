@@ -27,9 +27,12 @@ pub(super) type DriveLister = fn() -> Result<Vec<DriveEntry>, String>;
 pub(super) type DriveOpener = fn(&str) -> Result<(), String>;
 
 fn open_through_shell(drive: &str) -> Result<(), String> {
-    runtime_portal::tools::open_tool(runtime_portal::tools::ToolIntent::OpenDrive {
-        drive: drive.to_owned(),
-    })
+    runtime_portal::tools::open_tool(
+        runtime_portal::tools::ToolIntent::OpenDrive {
+            drive: drive.to_owned(),
+        },
+        None,
+    )
 }
 
 pub(super) struct Drives {

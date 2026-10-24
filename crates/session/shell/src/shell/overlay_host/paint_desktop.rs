@@ -346,7 +346,7 @@ impl ShellOverlayHost {
             {
                 row.status = Some(status);
             }
-            if let Some(id) = crate::shell::desk_widgets::team::presence_id(presence, row) {
+            if let Some(id) = crate::shell::desk_widgets::team::presence_id(presence, None, row) {
                 row.availability = presence.availability_of(&id);
                 row.call = presence.call_of(&id).map(str::to_owned);
             }

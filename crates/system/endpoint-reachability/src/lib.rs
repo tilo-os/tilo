@@ -569,9 +569,10 @@ mod tests {
         endpoint.close().await;
     }
 
-    /// Woken by an invite, an endpoint names the relay it chose as home in
-    /// its address, which the invite carries; resting empties the map and
-    /// gives the home relay up, so the address stops naming it.
+    /// Woken by an open invite, an endpoint names the relay it chose as home
+    /// in its address, which the invite carries; once nothing needs the
+    /// relays they rest, which empties the map and gives the home relay up,
+    /// so the address stops naming it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_woken_endpoint_names_its_home_relay_within_the_wait() {
         let (_server, own) = super::test_support::local_relay().await;
@@ -598,7 +599,11 @@ mod tests {
         .unwrap();
         assert!(named, "a dormant endpoint has no home relay to name");
 
-        reachability.wake("an invitation was issued");
+        // The open invitation holds the relays up while the endpoint picks
+        // its home relay: a bare wake would rest them after the 300 ms
+        // delay, which a loaded runner's net report can outlast, and an
+        // endpoint whose relays rested never picks one.
+        reachability.need(Need::Session, Some("an invitation is open"));
         let waiting = reachability.clone();
         let addr = tokio::task::spawn_blocking(move || {
             waiting.relay_addr_within(tilo_test_env::hang_bound())
@@ -611,6 +616,7 @@ mod tests {
             own.urls::<Vec<_>>().iter().collect::<Vec<_>>()
         );
 
+        reachability.need(Need::Session, None);
         until_relays(&relays, 0).await;
         assert!(reachability.is_dormant());
         tilo_test_env::within("a rested endpoint to stop naming its home relay", async {

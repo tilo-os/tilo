@@ -32,13 +32,10 @@ thiserror.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-automation = { version = "0.1.0", path = "../../collab/automation" }
 uuid.workspace = true
-web-time = "1"
 
 [dev-dependencies]
 # Tests take a peer's changes in the way production does (clippy.toml).
 tilo-automerge.workspace = true
-# The binary form owner commits carry task records in.
-postcard = { workspace = true, features = ["alloc"] }
 
 [[test]]
 name = "it"

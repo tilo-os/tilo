@@ -519,8 +519,6 @@ pub struct QuickSettingsState {
     /// spans several: what "brighter" and "dimmer" adjust. The overlay host
     /// keeps it current whenever search refreshes.
     pub focused_display: Option<String>,
-    /// 0.0..=1.0.
-    pub volume: f32,
     /// False after the audio service cannot provide a sink reading.
     pub volume_available: bool,
     pub wifi: bool,
@@ -531,11 +529,10 @@ pub struct QuickSettingsState {
     pub bluetooth_available: bool,
     /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
-    /// The top bar's battery reading — same type, same sysfs parser — so
-    /// the panel and the tray cannot disagree about the charge.
-    pub battery: tilo_power_mgmt::BatterySnapshot,
-    /// Time to empty or to full, when the battery reports its rate.
-    pub battery_time: Option<tilo_power_mgmt::BatteryTime>,
+    /// Battery, link and volume: the one copy the top bar draws too, taken
+    /// each frame from [`crate::shell::status::StatusBridge`] with no lock
+    /// held across a draw; `None` fields until a reading lands.
+    pub status: crate::shell::status::SystemStatus,
     /// `None` when fwupd is unavailable, otherwise the offered update count.
     pub firmware_updates: Option<usize>,
     pub radios: os_actions::RadioState,
@@ -560,9 +557,6 @@ pub struct QuickSettingsState {
     /// Quick Settings. Cleared whenever Quick Settings opens another way.
     pub paste_origin: Option<PasteOrigin>,
     pub wifi_networks: Vec<WifiNetwork>,
-    /// The primary link the status poller last observed: what Wi-Fi is
-    /// connected to even when discovery failed or has not answered yet.
-    pub link: Option<os_actions::LinkStatus>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
     /// A typed radio mutation is admitted but has not completed.
@@ -659,14 +653,12 @@ impl Default for QuickSettingsState {
             brightness_available: false,
             displays: Vec::new(),
             focused_display: None,
-            volume: 0.4,
             volume_available: true,
             wifi: true,
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: tilo_power_mgmt::BatterySnapshot::absent(),
-            battery_time: None,
+            status: crate::shell::status::SystemStatus::default(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -680,7 +672,6 @@ impl Default for QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
-            link: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -709,14 +700,18 @@ impl QuickSettingsState {
             brightness_available: true,
             displays: Vec::new(),
             focused_display: None,
-            volume: 0.4,
             volume_available: true,
             wifi: true,
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: tilo_power_mgmt::BatterySnapshot::absent(),
-            battery_time: None,
+            status: crate::shell::status::SystemStatus {
+                volume: Some(os_actions::VolumeState {
+                    level: 0.4,
+                    muted: false,
+                }),
+                ..crate::shell::status::SystemStatus::default()
+            },
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -730,7 +725,6 @@ impl QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
-            link: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -872,10 +866,6 @@ pub struct ChromeState {
     pub open_target: OpenTarget,
     /// What the overlay host publishes for search as it changes.
     pub search_context: SearchContextState,
-    /// Copied here once per frame from
-    /// [`crate::shell::status::StatusBridge`] with no lock held across
-    /// a draw. `None` until a poller publishes.
-    pub status: crate::shell::status::SystemStatus,
     /// Session-local projection from Clocks; schedules never enter chrome.
     pub clock_activity: Option<ClockActivity>,
     /// At most one — an OSD counts a value up, so eight volume presses
@@ -919,10 +909,10 @@ pub struct ChromeState {
     pub activity_glance: ActivityGlance,
     /// The last wave at this person, which the top bar says for a moment.
     pub(crate) wave_notice: Option<tilo_desktop::chrome::WaveNotice>,
-    /// The calls in progress in the workspace in front that this device is
-    /// not in, as the people panel reads them from presence: what search's
-    /// Happening now offers to join ([`Self::publish_calls_here`]).
-    pub calls_here: Vec<crate::shell::search::providers::happening_now::LiveCall>,
+    /// The calls in progress in each workspace that this device is not in,
+    /// as the people panel reads them from presence: what search's
+    /// Happening now offers to join ([`Self::publish_live_calls`]).
+    pub live_calls: Vec<crate::shell::search::providers::happening_now::LiveCall>,
     activity_focus_request: Option<ActivityFocus>,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     history_action_request: Option<String>,
@@ -1013,7 +1003,9 @@ pub struct ChromeState {
     /// NOT persisted — the compositor sets it from live state each
     /// frame via [`Self::set_fullscreen_group`]. Client fullscreen is a
     /// per-output overlay, so the native loop writes `None` here every
-    /// tick; do not park Super+F in this slot (W07).
+    /// tick except while the shell takes the input over it
+    /// (`FrameBuilder::set_client_fullscreen_group`); do not park Super+F
+    /// in this slot (W07).
     fullscreen_group: Option<u64>,
     /// Super+F (and the action door) park the focused group here. Kept
     /// separate from [`Self::fullscreen_group`], which the compositor
@@ -1049,6 +1041,10 @@ pub struct ChromeState {
     /// `None` is working; `Some(reason)` means every app runs alone —
     /// the one collaboration failure an app can't report for itself.
     pub collab_unavailable: Option<String>,
+    /// While this device's certificate is refused for the clock's reading
+    /// alone, the notice that says so: the identity is intact, and the
+    /// workspaces connect once the clock is right.
+    pub identity_clock_notice: Option<u64>,
     /// The documents open tabs are showing. Held here because chrome
     /// is what everything outside the widget tree already reaches
     /// through. Starts in-memory so tests write nothing to disk.
@@ -1125,6 +1121,8 @@ pub struct ChromeState {
     /// Someone asked to rename the focused strip without saying the name:
     /// the overlay host opens the switcher's name field for it.
     strip_rename_requested: bool,
+    /// A tab whose name field in its pill was asked for, for the overlay host.
+    pub(crate) tab_rename_request: Option<crate::shell::state::TabId>,
     strip_switcher_requested: bool,
     /// Last layout pass, so placement can ask "which border can the
     /// user actually see" without reaching into the widget tree.
@@ -1242,7 +1240,6 @@ impl ChromeState {
             search_resource_scope: None,
             open_target: OpenTarget::default(),
             search_context: SearchContextState::default(),
-            status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
@@ -1257,7 +1254,7 @@ impl ChromeState {
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             wave_notice: None,
-            calls_here: Vec::new(),
+            live_calls: Vec::new(),
             activity_focus_request: None,
             workspace_view_request: None,
             history_action_request: None,
@@ -1295,12 +1292,14 @@ impl ChromeState {
             single_strip: false,
             peer_sync_enabled: false,
             collab_unavailable: None,
+            identity_clock_notice: None,
             peer_sync_requests: Vec::new(),
             publications: BTreeMap::new(),
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
             strip_switcher_open: false,
             strip_rename_requested: false,
+            tab_rename_request: None,
             strip_switcher_requested: false,
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
@@ -1699,6 +1698,13 @@ impl ChromeState {
         self.user_fullscreen_group.or(self.fullscreen_group)
     }
 
+    /// The group of a client in its own full screen while it is laid out
+    /// in the desktop beneath the shell's surfaces (the search palette or a
+    /// sheet is open over it), apart from the person's Super+F.
+    pub fn client_fullscreen_group(&self) -> Option<u64> {
+        self.fullscreen_group
+    }
+
     /// The group the person expanded to full screen (Super+F), apart from
     /// any client's own full screen.
     pub fn user_fullscreen_group(&self) -> Option<u64> {
@@ -1864,10 +1870,36 @@ impl ChromeState {
 
     /// Person principal selected for the active workspace, or the session
     /// fallback when no workspace is active.
+    ///
+    /// Reads the tree, so a caller already holding a [`Self::tree`] guard
+    /// asks [`Self::active_local_user_in`] with it instead: a second read on
+    /// the same thread waits behind any writer queued since the first, and
+    /// that writer waits for the first read, so neither moves.
     pub fn active_local_user(&self) -> crate::shell::state::UserId {
-        self.tree().desktop.active_workspace().map_or_else(
+        let room = self
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(crate::shell::state::Workspace::room);
+        self.local_user_for_active_room(room)
+    }
+
+    /// [`Self::active_local_user`] for a caller that holds the tree.
+    pub fn active_local_user_in(&self, tree: &WorkspaceTree) -> crate::shell::state::UserId {
+        self.local_user_for_active_room(
+            tree.desktop
+                .active_workspace()
+                .map(crate::shell::state::Workspace::room),
+        )
+    }
+
+    fn local_user_for_active_room(
+        &self,
+        room: Option<crate::shell::state::RoomId>,
+    ) -> crate::shell::state::UserId {
+        room.map_or_else(
             || self.local_user_id.clone(),
-            |workspace| self.local_user_for_room(&workspace.room()),
+            |room| self.local_user_for_room(&room),
         )
     }
 
@@ -2200,14 +2232,14 @@ impl ChromeState {
         }
     }
 
-    /// Publish the calls of the workspace in front ([`Self::calls_here`]).
-    /// The same calls again change nothing, so a resting frame stays cached.
-    pub fn publish_calls_here(
+    /// Publish the calls of every workspace ([`Self::live_calls`]). The
+    /// same calls again change nothing, so a resting frame stays cached.
+    pub fn publish_live_calls(
         &mut self,
         calls: Vec<crate::shell::search::providers::happening_now::LiveCall>,
     ) {
-        if self.calls_here != calls {
-            self.calls_here = calls;
+        if self.live_calls != calls {
+            self.live_calls = calls;
             self.bump();
         }
     }
@@ -4752,6 +4784,7 @@ mod active_tab_tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "first".into(),
                         },
+                        app_title: None,
                     },
                     Tab {
                         id: 200,
@@ -4760,6 +4793,7 @@ mod active_tab_tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "second".into(),
                         },
+                        app_title: None,
                     },
                 ],
                 active_tab: active_tab_id,
@@ -4922,6 +4956,7 @@ mod active_tab_tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "third".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: 300,
                     width: StateWidth::Normal,
@@ -5015,6 +5050,7 @@ mod active_tab_tests {
                     id: tab_id,
                     title: "Dropped".into(),
                     tile,
+                    app_title: None,
                 }],
                 active_tab: tab_id,
                 width: StateWidth::Normal,
@@ -5239,30 +5275,5 @@ mod active_tab_tests {
 }
 
 #[cfg(test)]
-mod new_workspace_tests {
-    use super::*;
-
-    /// A workspace the person makes holds nothing but its first empty strip,
-    /// so it shows the empty-workspace launchpad.
-    #[test]
-    fn a_new_workspace_is_empty_and_shows_its_launchpad() {
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
-        let id = chrome.borrow_mut().add_workspace("Fresh");
-        let state = chrome.borrow();
-        let tree = state.tree();
-        assert_eq!(tree.desktop.active, id);
-        let workspace = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == id)
-            .expect("the workspace was added");
-        assert_eq!(workspace.strips.len(), 1, "only its first strip");
-        assert!(
-            workspace.strips[0].window_groups.is_empty(),
-            "and nothing in it"
-        );
-        assert!(!workspace.has_windows(), "so the launchpad shows");
-        drop(tree);
-    }
-}
+#[path = "chrome_state_new_workspace_tests.rs"]
+mod new_workspace_tests;

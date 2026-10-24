@@ -17,7 +17,7 @@ use ui::{
     webview::{SharedEngine, SiteStatus, WebViewCommand, WebViewEvent},
     widget::{
         Button, ButtonRole, Column, Container, Property, PropertyList, Row, ScrollAxis, Scrollable,
-        Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
+        Spacer, Text, Widget, toggle_group::Segment,
     },
 };
 #[derive(Clone, Debug)]
@@ -303,9 +303,9 @@ impl SiteControls {
     }
     /// The panel's own page switcher: protection, or the connection and the
     /// data the site holds.
-    fn pages(&self) -> ToggleGroup {
+    fn pages(&self) -> ui::widget::ViewTabs {
         let pending = self.pending.clone();
-        ToggleGroup::new(
+        ui::widget::ViewTabs::new(
             vec![
                 Segment::new("Protection"),
                 Segment::new("Connection and data"),

@@ -29,9 +29,7 @@ impl MusicApp {
         invocation: tilo_actions::InvocationId,
         playback: crate::model::Playback,
     ) -> Result<ui::framework::Effected, String> {
-        if self.resource_stream_invocation.is_some() {
-            return Err("another Music stream-start operation is still resolving".into());
-        }
+        self.supersede_pending_stream_start();
         let resuming = self.pb.current == playback.current && self.audio.has_stream();
         let frames_before = if resuming {
             self.audio.frames_rendered()

@@ -94,6 +94,7 @@ fn fixture() -> (
                 kind: AppKind::Other(definition.app_id.into()),
                 label: "display-only".into(),
             },
+            app_title: None,
         });
     }
     let mut ws = Workspace::new(WorkspaceId(1), "Work");
