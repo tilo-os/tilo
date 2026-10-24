@@ -151,9 +151,12 @@ impl TextInput {
         }
     }
 
+    /// Keep the caret in view, scrolled no further than the text needs: a
+    /// field that widens shows the start of its text again.
     pub(super) fn update_single_line_scroll(
         &mut self,
         cursor_x_offset: f64,
+        content_w: f64,
         padding_x: f64,
         caret_width: f64,
     ) {
@@ -171,6 +174,7 @@ impl TextInput {
             } else if cursor_x_offset - self.scroll_x > visible_width {
                 self.scroll_x = cursor_x_offset - visible_width;
             }
+            self.scroll_x = self.scroll_x.min((content_w - visible_width).max(0.0));
         } else {
             // Unfocused (e.g. a block-editor cell after load) must not scroll to the caret.
             self.scroll_x = 0.0;
