@@ -431,12 +431,6 @@ impl OverlayStack {
             .any(ShellLayer::dismiss)
     }
 
-    pub(crate) fn is_animating(&self, now: Instant) -> bool {
-        self.layers()
-            .into_iter()
-            .any(|layer| layer.is_animating(now))
-    }
-
     /// Advance every layer's clock; `true` when any of them changed.
     pub(crate) fn tick(&mut self, now: Instant) -> bool {
         self.layers_mut()

@@ -663,11 +663,14 @@ pub struct ShellOverlayHost {
     /// The input the person last used, which the next surface that opens
     /// or closes follows: a shortcut lands at once, a click animates.
     input_source: ui::tokens::MotionSource,
-    /// What started the running workspace switch.
+    /// A workspace switch was asked for and no frame has been painted since:
+    /// the switch owes the one frame that shows the other workspace. The
+    /// switch itself does not move (the content is swapped in that frame),
+    /// so nothing past that frame is owed.
+    workspace_switch_owed: bool,
+    /// The input the switch [`Self::workspace_switch_owed`] was asked by: a
+    /// chord announces its switch before the content is swapped.
     workspace_switch_source: ui::tokens::MotionSource,
-    /// Wall-clock end of that frame run. Draw must not clear it: snapping
-    /// the curve let the close flush both scanouts on every remaining paint.
-    workspace_switch_until: Option<Instant>,
     /// Times each switch from its chord to its first and resting frames.
     workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency,
     /// Previous-frame quick-settings visibility, to detect the open edge.
