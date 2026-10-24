@@ -607,6 +607,10 @@ impl<C: CallLane> VoiceBridge<C> {
         if people.is_empty() {
             return "Nobody on Tilo yet".to_owned();
         }
+        // The names people show in the room's Chat, as its messages carry
+        // them to Discord; a member Chat does not know yet by the name their
+        // device joined with.
+        let chat = self.chat().await;
         let members = self
             .rooms
             .summary(&self.room)
@@ -616,14 +620,34 @@ impl<C: CallLane> VoiceBridge<C> {
         let names: Vec<String> = people
             .iter()
             .map(|person| {
-                members
-                    .iter()
-                    .find(|member| member.user_public_key == *person)
-                    .and_then(|member| member.display_name.clone())
+                let id = hex::encode(person);
+                chat.as_ref()
+                    .and_then(|chat| chat.people.iter().find(|shown| shown.id.0 == id))
+                    .map(|shown| shown.name.trim().to_owned())
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| {
+                        members
+                            .iter()
+                            .find(|member| member.user_public_key == *person)
+                            .and_then(|member| member.display_name.clone())
+                    })
                     .unwrap_or_else(|| "someone".to_owned())
             })
             .collect();
         format!("On Tilo: {}", names.join(", "))
+    }
+
+    /// The room's Chat as the room holds it now.
+    async fn chat(&self) -> Option<<::chat::Chat as tilo_resource::Resource>::State> {
+        let record = room_record(&self.catalogue, CHAT);
+        let saved = self
+            .rooms
+            .record_document(&self.room, CHAT, &record)
+            .await
+            .ok()
+            .flatten()?;
+        let mut doc = automerge::AutoCommit::load(&saved).ok()?;
+        super::opened::<::chat::Chat>(&mut doc).ok()
     }
 
     /// Ask the worker into `call` showing `status`, unless that is what it
