@@ -42,6 +42,7 @@ use crate::shell::state::{
 #[cfg(target_os = "linux")]
 mod idle_host;
 mod invite_join;
+mod member_controls;
 mod old_rooms;
 mod own_devices;
 

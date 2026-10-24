@@ -427,7 +427,14 @@ fn mcp_process_owns_and_reaps_its_children() {
             let _ = child.kill();
             let _ = child.wait();
         }
-        assert_eq!(roots.len(), 2);
+        // What the two apps said, so a missing directory names its cause.
+        let said = (0..2)
+            .map(|index| {
+                std::fs::read_to_string(root.join(format!("helper-{index}.log")))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), 2, "each app publishes its directory: {said:?}");
         assert!(roots.iter().all(|root| root.app_id == "dev.tilo.same"));
         assert_ne!(roots[0].peer_id, roots[1].peer_id);
     }
