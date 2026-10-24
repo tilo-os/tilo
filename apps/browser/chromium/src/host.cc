@@ -1015,8 +1015,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
 #endif
     CefString text(key);auto utf16=text.ToString16();
     if(utf16.size()==1) e.character=e.unmodified_character=utf16[0];
+#if defined(OS_MAC)
+    StampHostKeys(true);
+#endif
     browser_->GetHost()->SendKeyEvent(e);
     if(d->GetBool("down") && (utf16.size()==1 || key=="Enter") && !d->GetBool("ctrl")&&!d->GetBool("meta")) { e.type=KEYEVENT_CHAR;browser_->GetHost()->SendKeyEvent(e); }
+#if defined(OS_MAC)
+    StampHostKeys(false);
+#endif
   }
   // Page actions deliver input exactly as a person's pointer and keyboard do.
   // Coordinates arrive in CSS pixels; CEF's view space is zoomed DIPs.
