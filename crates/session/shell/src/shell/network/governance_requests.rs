@@ -168,6 +168,20 @@ pub(crate) trait LocalGovernor: Send + Sync {
     /// # Errors
     /// The host refused it, or could not be asked.
     fn ask(&self, room: RoomId, route: GovernanceRoute) -> Result<(), String>;
+    /// Have the host record `receipt` in `room`, this device's member
+    /// receipt, and wait for its answer.
+    ///
+    /// # Errors
+    /// The host refused it, or could not be asked; a governor that holds no
+    /// room's receipts says so.
+    fn record_receipt(
+        &self,
+        room: RoomId,
+        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
+    ) -> Result<(), String> {
+        let _ = (room, receipt);
+        Err("this governor records no receipts".into())
+    }
 }
 
 impl ShellNetwork {

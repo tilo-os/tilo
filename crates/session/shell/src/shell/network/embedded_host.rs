@@ -548,4 +548,25 @@ impl super::governance_requests::LocalGovernor for OwnHostGovernor {
         )
         .map(drop)
     }
+
+    fn record_receipt(
+        &self,
+        room: RoomId,
+        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
+    ) -> Result<(), String> {
+        let invoke = relay_rooms::invocation(
+            tilo_relay_session::rooms::MEMBER_ACTIONS_PROVIDER,
+            tilo_relay_session::rooms::member_resource(&room.to_string()),
+            tilo_relay_session::rooms::RECORD_EFFECT_RECEIPT,
+            relay_rooms::receipt_arguments(receipt)?,
+        );
+        serve_in_process(
+            &self.host,
+            &self.identity,
+            &self.runtime,
+            room_topic_id(room),
+            invoke,
+        )
+        .map(drop)
+    }
 }

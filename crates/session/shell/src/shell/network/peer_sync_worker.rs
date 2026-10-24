@@ -45,6 +45,7 @@ enum Work {
     HostRooms(Option<iroh::EndpointId>),
     SyncRound,
     Governance(Vec<(RoomId, crate::shell::state::GovernanceRequest)>),
+    Receipts(Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)>),
 }
 
 #[derive(Default)]
@@ -98,6 +99,9 @@ impl ShellNetwork {
                             }
                             Work::Governance(requests) => {
                                 network.send_governance_requests(requests);
+                            }
+                            Work::Receipts(receipts) => {
+                                network.record_unrecorded_receipts(receipts);
                             }
                         }));
                     if ran.is_err() {
@@ -292,7 +296,8 @@ impl ShellNetwork {
                 | Work::FollowList(_)
                 | Work::HostRooms(_)
                 | Work::SyncRound
-                | Work::Governance(_),
+                | Work::Governance(_)
+                | Work::Receipts(_),
             )) => Ok(()),
         }
     }
@@ -308,6 +313,21 @@ impl ShellNetwork {
         };
         match worker.send(Work::Governance(requests)) {
             Err(mpsc::SendError(Work::Governance(requests))) => Err(requests),
+            Ok(()) | Err(mpsc::SendError(_)) => Ok(()),
+        }
+    }
+
+    /// Hand `receipts` to the worker, which asks their rooms' hosts to
+    /// record them; answered with them when the session started no worker.
+    pub(super) fn receipts_off_loop(
+        &self,
+        receipts: Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)>,
+    ) -> Result<(), Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)>> {
+        let Some(worker) = self.peer_sync_worker.worker.get() else {
+            return Err(receipts);
+        };
+        match worker.send(Work::Receipts(receipts)) {
+            Err(mpsc::SendError(Work::Receipts(receipts))) => Err(receipts),
             Ok(()) | Err(mpsc::SendError(_)) => Ok(()),
         }
     }
