@@ -953,12 +953,14 @@ impl Store {
         let path = self
             .entry_path(desktop_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a downloaded app"))?;
-        let icon = existing_icon(&path);
-        std::fs::remove_file(&path)?;
-        if let Some(icon) = icon.filter(|icon| Path::new(icon).starts_with(&self.icons)) {
+        // The icon goes first: once the entry is gone, so is everything of
+        // it, for whoever watches the entry.
+        if let Some(icon) =
+            existing_icon(&path).filter(|icon| Path::new(icon).starts_with(&self.icons))
+        {
             let _ = std::fs::remove_file(icon);
         }
-        Ok(())
+        std::fs::remove_file(&path)
     }
 
     /// Point the entry `desktop_id` at `program`, the file the person found
