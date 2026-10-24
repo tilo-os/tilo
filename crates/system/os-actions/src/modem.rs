@@ -397,7 +397,7 @@ impl NetworkModes {
             .collect::<Vec<_>>()
             .join("-");
         if let Some(preferred) = self.preferred_generation() {
-            key.push_str(&format!("-prefer-{preferred}g"));
+            key = format!("{key}-prefer-{preferred}g");
         }
         key
     }
@@ -574,7 +574,7 @@ impl ModemChange {
     /// Refuse malformed codes and objects before `ModemManager` is asked.
     fn validate(&self) -> Result<(), ModemError> {
         match self {
-            Self::SendPin { sim, pin } => {
+            Self::SendPin { sim, pin } | Self::SetPinLock { sim, pin, .. } => {
                 valid_object(sim, SIM_PREFIX)?;
                 valid_pin(pin)
             }
@@ -582,10 +582,6 @@ impl ModemChange {
                 valid_object(sim, SIM_PREFIX)?;
                 valid_puk(puk)?;
                 valid_pin(new_pin)
-            }
-            Self::SetPinLock { sim, pin, .. } => {
-                valid_object(sim, SIM_PREFIX)?;
-                valid_pin(pin)
             }
             Self::ChangePin {
                 sim,
@@ -711,7 +707,7 @@ impl ModemManager {
             .ok()
             .filter(|_| registered)
             .and_then(Technology::from_mm);
-        let modes = modem
+        let current = modem
             .current_modes()
             .await
             .ok()
@@ -728,6 +724,7 @@ impl ModemManager {
             .await
             .ok()
             .filter(|_| registered)
+            .as_deref()
             .and_then(non_empty);
         let registration = gpp
             .registration_state()
@@ -751,7 +748,7 @@ impl ModemManager {
             technology,
             operator,
             registration,
-            modes,
+            modes: current,
             supported_modes,
             sims: self.sims(&modem).await,
             numbers: modem.own_numbers().await.unwrap_or_default(),
@@ -801,9 +798,24 @@ impl ModemManager {
             path: path.to_owned(),
             slot,
             active: sim.active().await.unwrap_or(primary),
-            operator: sim.operator_name().await.ok().and_then(non_empty),
-            operator_code: sim.operator_identifier().await.ok().and_then(non_empty),
-            iccid: sim.sim_identifier().await.ok().and_then(non_empty),
+            operator: sim
+                .operator_name()
+                .await
+                .ok()
+                .as_deref()
+                .and_then(non_empty),
+            operator_code: sim
+                .operator_identifier()
+                .await
+                .ok()
+                .as_deref()
+                .and_then(non_empty),
+            iccid: sim
+                .sim_identifier()
+                .await
+                .ok()
+                .as_deref()
+                .and_then(non_empty),
             kind,
         })
     }
@@ -882,7 +894,7 @@ impl ModemManager {
     }
 }
 
-fn non_empty(value: String) -> Option<String> {
+fn non_empty(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty() && trimmed != "--").then(|| trimmed.to_owned())
 }
@@ -934,6 +946,10 @@ pub fn apply_modem_change(change: &ModemChange) -> Result<(), ModemError> {
 
 /// The `NetworkManager` profile mobile data connects with.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a separate NetworkManager property of the profile"
+)]
 pub struct MobileProfile {
     pub uuid: String,
     pub name: String,
@@ -1094,6 +1110,18 @@ fn create_mobile_profile() -> Result<String, String> {
     read_mobile_profile()?
         .map(|profile| profile.uuid)
         .ok_or_else(|| "NetworkManager did not keep the mobile data profile".into())
+}
+
+/// The mobile data profile's uuid, making the profile when there is none,
+/// so its roaming, APN and metering can be set before data is first on.
+///
+/// # Errors
+/// What `nmcli` refused.
+pub fn mobile_profile_uuid() -> Result<String, String> {
+    match read_mobile_profile()? {
+        Some(profile) => Ok(profile.uuid),
+        None => create_mobile_profile(),
+    }
 }
 
 /// Turn mobile data on or off: the modem's radio, and the profile that
