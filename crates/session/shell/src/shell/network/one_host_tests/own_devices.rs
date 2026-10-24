@@ -225,3 +225,112 @@ fn governance_from_a_persons_other_device_reaches_the_host_and_the_first_device(
     );
     drop((first, second, guest));
 }
+
+/// A governance change a person makes on a device that does not host their
+/// workspace, while the host is away, waits: it is never shown as refused,
+/// and once the host's session is back it is asked and applies on both
+/// devices.
+#[test]
+#[serial_test::serial]
+fn governance_made_while_the_host_is_away_applies_once_it_is_back() {
+    use crate::shell::state::GovernanceRequest;
+    use tilo_desktop_model::commands::DesktopCommand;
+
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let dir = scratch();
+    let wakes = Arc::new(Wakes::default());
+    let ada = Person::new(53);
+    home.env().set("TILO_USER_ID", ada.id());
+    let mut first = Device::start(
+        &ada,
+        "Ada's desktop",
+        &dir.path().join("desktop"),
+        0x0A31,
+        DeviceCapabilities::primary(),
+        &wakes,
+    );
+    let second = Device::start(
+        &ada,
+        "Ada's laptop",
+        &dir.path().join("laptop"),
+        0x0A32,
+        DeviceCapabilities::member(),
+        &wakes,
+    );
+    let (_, room) = hosted_workspace(&first, &[&second], "Projects");
+    second.reach(&first);
+    until(
+        &[&first, &second],
+        "the laptop to hold the workspace",
+        || second.holds(room).then_some(()),
+    );
+    let name_on = |device: &Device| {
+        device
+            .tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .map(|workspace| workspace.name.clone())
+    };
+    let refused_on = |device: &Device| !device.tree.read().governance_refusals.is_empty();
+    let rename = |name: &str| {
+        second.tree.write().request_governance(
+            room,
+            GovernanceRequest::Command(DesktopCommand::RenameWorkspace { name: name.into() }),
+        );
+    };
+
+    // With the host there, a rename on the laptop applies on both devices.
+    rename("Plans");
+    until(
+        &[&first, &second],
+        "the first rename on both devices",
+        || {
+            (name_on(&first).as_deref() == Some("Plans")
+                && name_on(&second).as_deref() == Some("Plans"))
+            .then_some(())
+        },
+    );
+
+    // The desktop, the workspace's host, goes away; Ada renames the
+    // workspace on the laptop.
+    first.go_offline();
+    rename("Roadmap");
+    until(&[&second], "the rename to wait for the host", || {
+        let waiting = second.net().governance_waiting.lock().unwrap().is_some();
+        (waiting && second.tree.read().governance_requests.len() == 1).then_some(())
+    });
+    assert!(!refused_on(&second), "a host out of reach refused nothing");
+
+    // The desktop comes back: the laptop asks again, and the rename applies.
+    first.come_back();
+    second.reach(&first);
+    until(
+        &[&first, &second],
+        "the desktop to host the workspace again",
+        || first.hosted_rooms().contains(&room).then_some(()),
+    );
+    until(
+        &[&first, &second],
+        "the laptop to ask the host again",
+        || {
+            assert!(!refused_on(&second), "a host out of reach refused nothing");
+            second
+                .tree
+                .read()
+                .governance_requests
+                .is_empty()
+                .then_some(())
+        },
+    );
+    until(&[&first, &second], "the rename on both devices", || {
+        assert!(!refused_on(&second), "a host out of reach refused nothing");
+        (name_on(&first).as_deref() == Some("Roadmap")
+            && name_on(&second).as_deref() == Some("Roadmap"))
+        .then_some(())
+    });
+    assert!(second.tree.read().governance_requests.is_empty());
+    drop((first, second));
+}

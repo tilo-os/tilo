@@ -874,6 +874,14 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
             "rooms marked as being joined with no enrollment into them are marked no more"
         );
     }
+    let orphaned = tree.drop_orphaned_placements();
+    if !orphaned.is_empty() {
+        tracing::info!(
+            target: tilo_startup_metrics::REPAIR_TARGET,
+            ?orphaned,
+            "rooms waiting to be placed with no workspace are placed no more"
+        );
+    }
     drop_unidentifiable_windows(&mut tree);
     tree.prune_local_app_records();
     tree.prune_package_launches();

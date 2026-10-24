@@ -471,14 +471,20 @@ impl PeerDepartureHistory {
 }
 
 /// The rooms whose topics this device joins: every room in the tree but one
-/// it is still joining through a host, or still placing on one. That room's traffic comes over its
-/// native session once the replica installs, which joins the topic itself;
-/// joined earlier, its host would replay the room's retained traffic to a
-/// device that cannot yet tell a member from anyone.
+/// it is still joining through a host or still placing on one, and one on
+/// this device only. A joining room's traffic comes over its native session
+/// once the replica installs, which joins the topic itself; joined earlier,
+/// its host would replay the room's retained traffic to a device that cannot
+/// yet tell a member from anyone. A room on this device only, kept from
+/// before rooms had hosts, is carried by no transport.
 fn topic_rooms(tree: &crate::shell::state::WorkspaceTree) -> Vec<RoomId> {
     tree.rooms()
         .into_iter()
-        .filter(|room| !tree.is_joining(*room) && !tree.pending_placements.contains(room))
+        .filter(|room| {
+            !tree.is_joining(*room)
+                && !tree.pending_placements.contains(room)
+                && !tree.on_this_device_only(*room)
+        })
         .collect()
 }
 
@@ -6715,7 +6721,11 @@ impl ShellNetwork {
             self.apply_published_home_peers();
         });
         steps.time("network/shared-rooms", || match admission {
-            Admission::InPlace => self.finish_shared_rooms(),
+            Admission::InPlace => {
+                if self.take_shared_rooms_due() {
+                    self.finish_shared_rooms();
+                }
+            }
             Admission::OffLoop => self.finish_shared_rooms_off_loop(),
         });
         steps.time("network/placements", || match admission {
@@ -6828,6 +6838,11 @@ impl ShellNetwork {
             NetEvent::HostReady { ws, peer } => {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));
+                }
+                // A host's session is up: governance changes waiting for a
+                // host out of reach may reach it now.
+                if let Ok(mut waiting) = self.governance_waiting.lock() {
+                    *waiting = None;
                 }
                 self.record_content_sources_changed();
                 self.handle_host_ready(ws);
