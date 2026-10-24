@@ -246,9 +246,47 @@ impl Widget for Reserve {
     }
 }
 
+/// What a view reads of its read, whatever its answer's type: the view
+/// itself is not generic, so the toolkit builds it once for every app.
+trait ArrivalRead {
+    fn revision(&self) -> u64;
+    fn began(&self) -> Instant;
+    /// Where a pending read's answer comes from; `None` once it landed.
+    fn source(&self) -> Option<Source>;
+    /// What its answer shows once it landed; `None` while pending.
+    fn landed(&self) -> Option<Showing>;
+    fn holds_frame_until(&self, now: Instant) -> Option<Instant>;
+}
+
+impl<T, E> ArrivalRead for Arriving<T, E> {
+    fn revision(&self) -> u64 {
+        Arriving::revision(self)
+    }
+
+    fn began(&self) -> Instant {
+        Arriving::began(self)
+    }
+
+    fn source(&self) -> Option<Source> {
+        self.with(|arrival| arrival.source().cloned())
+    }
+
+    fn landed(&self) -> Option<Showing> {
+        self.with(|arrival| match arrival {
+            Arrival::Pending { .. } => None,
+            Arrival::Ready(_) => Some(Showing::Answer),
+            Arrival::Failed(_) => Some(Showing::Failure),
+        })
+    }
+
+    fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
+        Arriving::holds_frame_until(self, now)
+    }
+}
+
 /// A read's view. See the module docs; build one with [`Arriving::view`].
-pub struct ArrivingView<T: 'static, E: 'static = String> {
-    arriving: Arriving<T, E>,
+pub struct ArrivingView {
+    arriving: Box<dyn ArrivalRead>,
     shape: Rc<Cell<SkeletonShape>>,
     reveal: Rc<Cell<Reveal>>,
     inner: ModelView<Reveal>,
@@ -269,10 +307,13 @@ pub struct ArrivingView<T: 'static, E: 'static = String> {
     answerable: bool,
 }
 
-impl<T: 'static, E: std::fmt::Display + 'static> ArrivingView<T, E> {
+impl ArrivingView {
     /// The view of `arriving`, showing `build`'s content once the answer is
     /// there.
-    pub fn new(arriving: &Arriving<T, E>, mut build: impl FnMut(&T) -> Element + 'static) -> Self {
+    pub fn new<T: 'static, E: std::fmt::Display + 'static>(
+        arriving: &Arriving<T, E>,
+        mut build: impl FnMut(&T) -> Element + 'static,
+    ) -> Self {
         let shape = Rc::new(Cell::new(SkeletonShape::Text { lines: 3 }));
         let reveal = Rc::new(Cell::new(Reveal {
             showing: Showing::Placeholder,
@@ -303,7 +344,7 @@ impl<T: 'static, E: std::fmt::Display + 'static> ArrivingView<T, E> {
             },
         );
         Self {
-            arriving: arriving.clone(),
+            arriving: Box::new(arriving.clone()),
             shape,
             reveal,
             inner,
@@ -332,7 +373,7 @@ fn failure<T: 'static, E: 'static>(arriving: &Arriving<T, E>, message: String) -
     Box::new(banner)
 }
 
-impl ArrivingView<()> {
+impl ArrivingView {
     /// The framework's placeholder for data on its way from `from`, timed
     /// from when it is built: for a view rebuilt from a snapshot that knows
     /// the data is pending but holds no read of its own. It reserves
@@ -354,7 +395,7 @@ impl ArrivingView<()> {
     }
 }
 
-impl<T: 'static, E: 'static> ArrivingView<T, E> {
+impl ArrivingView {
     /// Say what the content looks like, so the reserved space and the
     /// skeleton take its geometry and nothing moves when it lands.
     #[must_use]
@@ -391,7 +432,7 @@ impl<T: 'static, E: 'static> ArrivingView<T, E> {
         let revision = self.arriving.revision();
         if self.observed != Some(revision) {
             self.observed = Some(revision);
-            let pending = self.arriving.with(|arrival| arrival.source().cloned());
+            let pending = self.arriving.source();
             match pending {
                 // An answer on screen stays until the next one lands, and
                 // that one replaces it as it lands: no placeholder stood
@@ -423,11 +464,7 @@ impl<T: 'static, E: 'static> ArrivingView<T, E> {
     }
 
     fn reveal_when_due(&mut self, now: Instant, revision: u64) {
-        let Some(showing) = self.arriving.with(|arrival| match arrival {
-            Arrival::Pending { .. } => None,
-            Arrival::Ready(_) => Some(Showing::Answer),
-            Arrival::Failed(_) => Some(Showing::Failure),
-        }) else {
+        let Some(showing) = self.arriving.landed() else {
             return;
         };
         let current = self.reveal.get();
@@ -498,7 +535,7 @@ fn layered(
     }
 }
 
-impl<T: 'static, E: 'static> Widget for ArrivingView<T, E> {
+impl Widget for ArrivingView {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.reconcile(crate::motion::frame_now());
         self.inner.sync(state, path);
@@ -691,7 +728,7 @@ impl<T: 'static, E: std::fmt::Display + 'static> Arriving<T, E> {
     /// The view of this read: `build`'s content once the answer is there.
     /// Every placeholder and timing on the way is the framework's
     /// ([`ArrivingView`]).
-    pub fn view(&self, build: impl FnMut(&T) -> Element + 'static) -> ArrivingView<T, E> {
+    pub fn view(&self, build: impl FnMut(&T) -> Element + 'static) -> ArrivingView {
         ArrivingView::new(self, build)
     }
 }

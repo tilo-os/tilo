@@ -47,6 +47,35 @@ use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
 /// The shape of a tree row's placeholder: one line where its label goes.
 const ARRIVING_SHAPE: SkeletonShape = SkeletonShape::Text { lines: 1 };
 
+/// Paint slot `slot`'s arrival over `face_rect` at `now`: its placeholder, or
+/// the step a node that landed in it fades out of. `None` when the
+/// placeholder is all the row shows, else the opacity the landed node draws
+/// at. Not generic over the tree, so the toolkit builds it once.
+fn paint_arriving_slot(
+    arrivals: &crate::widget::ArrivingRows<TreeSlot>,
+    slot: &TreeSlot,
+    ctx: &mut PaintCtx<'_>,
+    face_rect: Rect,
+    now: Instant,
+) -> Option<f32> {
+    if let Some(face) = arrivals.face(slot, ARRIVING_SHAPE, now) {
+        face.paint(ctx, face_rect);
+        return None;
+    }
+    if let Some((face, fading)) = arrivals.outgoing_face(slot, ARRIVING_SHAPE, now) {
+        ctx.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            fading,
+            ctx.transform,
+            &face_rect,
+        );
+        face.paint(ctx, face_rect);
+        ctx.scene.pop_layer();
+    }
+    Some(arrivals.fade(slot, now).map_or(1.0, |fade| fade.incoming))
+}
+
 mod access_rows;
 mod affordances;
 mod editing;
@@ -3268,30 +3297,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                         + f64_of_usize(depth) * indent_px
                         + self.disclosure_w;
                     let face_rect = Rect::new(label_x0, y0, self.rect.x1 - self.row_inset, y1);
-                    if let Some(face) = self.arrivals.face(&slot, ARRIVING_SHAPE, now) {
-                        face.paint(
-                            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                            face_rect,
-                        );
+                    let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+                    let Some(incoming) =
+                        paint_arriving_slot(&self.arrivals, &slot, &mut ctx, face_rect, now)
+                    else {
                         break 'row;
-                    }
-                    if let Some((face, fading)) =
-                        self.arrivals.outgoing_face(&slot, ARRIVING_SHAPE, now)
-                    {
-                        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-                        ctx.scene.push_layer(
-                            vello::peniko::Fill::NonZero,
-                            vello::peniko::BlendMode::default(),
-                            fading,
-                            transform,
-                            &face_rect,
-                        );
-                        face.paint(&mut ctx, face_rect);
-                        ctx.scene.pop_layer();
-                    }
-                    if let Some(fade) = self.arrivals.fade(&slot, now) {
-                        opacity *= fade.incoming;
-                    }
+                    };
+                    opacity *= incoming;
                 }
                 if let TreeRowKey::Node(id) = key
                     && self.is_nav()
