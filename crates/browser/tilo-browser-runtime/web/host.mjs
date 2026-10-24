@@ -115,7 +115,8 @@ export async function mountDesktop(target,options={}) {
   const report=data=>{
     // A finished copy is the app's to show, in its own window; the page only speaks it.
     if(data.clipboard==='copied')status.show('Copied to system clipboard',{spoken:true,again:true});
-    if(data.clipboard==='failed')status.show(`Could not copy to system clipboard: ${data.clipboardError??'browser access denied'}`,{again:true});
+    // The clipboard says why in a sentence of its own (tilo-clipboard's web/clipboard.mjs).
+    if(data.clipboard==='failed')status.show(data.clipboardError||'Could not copy. Try the keyboard Copy shortcut.',{again:true});
     if(data.desktopCommand){const row=data.desktopCommand;status.show(row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`);}
     if(data.desktopErrors?.length)status.show(`Desktop request unavailable: ${data.desktopErrors.at(-1)}`);
     options.onStatus?.(data);
