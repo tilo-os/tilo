@@ -2102,7 +2102,13 @@ impl crate::widget::controls::ActionControls for Scrollable {
 mod tests {
     use super::*;
     use crate::testing::{Dispatch, dispatch};
-    use crate::widget::scrollbar::{BAR_FADE_MS as FADE_MS, BAR_HOLD_MS as VISIBLE_HOLD_MS};
+    use crate::widget::scrollbar::BAR_HOLD_MS as VISIBLE_HOLD_MS;
+    // The bar fades as all chrome does.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the chrome fade is a few hundred milliseconds"
+    )]
+    const FADE_MS: u64 = crate::animation::CHROME_FADE.as_millis() as u64;
     use automerge::AutoCommit;
 
     fn vertical(content_h: f32) -> Scrollable {

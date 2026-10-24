@@ -35,8 +35,6 @@ use edges::RowEdgeDrag;
 
 /// Idle time before the strip snaps to the nearest group's left edge.
 const SNAP_IDLE_MS: u32 = 200;
-/// Snap-animation duration (cubic-out).
-const SNAP_ANIM_MS: u32 = 200;
 /// A group this close to its laid-out x, and this slow, has arrived.
 const MOVE_SETTLED_PX: f64 = 0.25;
 const MOVE_SETTLED_PX_PER_S: f64 = crate::tokens::motion::MOVE_SETTLED_PX_PER_S; // rest velocity in px/s, not a Theme gap
@@ -231,6 +229,23 @@ impl Glide {
     }
 }
 
+/// How the pan settles on a group's edge, on [`crate::motion::Snap`]: its
+/// spring, and how long a run from rest takes (zero when it lands).
+#[derive(Clone, Copy, Debug)]
+struct SnapTiming {
+    timing: crate::motion::Timing,
+    settles: Duration,
+}
+
+impl SnapTiming {
+    fn of(motion: crate::tokens::EffectiveMotion, source: MotionSource) -> Self {
+        let (spec, enter) = (crate::motion::Snap::SPEC, crate::motion::Direction::Enter);
+        let timing = spec.timing(enter, motion, source);
+        let settles = spec.settle_time(enter, motion, source);
+        Self { timing, settles }
+    }
+}
+
 /// In-flight snap animation; cleared when the curve settles or the user
 /// starts wheeling again.
 #[derive(Clone, Copy, Debug)]
@@ -238,15 +253,16 @@ struct SnapAnim {
     from: f64,
     to: f64,
     started: Instant,
-    duration: Duration,
+    timing: SnapTiming,
 }
 
 impl SnapAnim {
-    /// Position and velocity (px/s) at `now`: a critically damped spring
-    /// that has arrived by `duration` (`motion::SpringSpec::settling_within`),
-    /// so a shortcut's reveal is over within its budget.
+    /// Position and velocity (px/s) at `now` on the snap's spring.
     fn at(self, now: Instant) -> (f64, f64) {
-        let (offset, velocity) = crate::motion::SpringSpec::settling_within(self.duration).state(
+        let crate::motion::Timing::Spring(spring) = self.timing.timing else {
+            return (self.to, 0.0);
+        };
+        let (offset, velocity) = spring.state(
             self.from - self.to,
             0.0,
             now.saturating_duration_since(self.started).as_secs_f64(),
@@ -1040,8 +1056,9 @@ impl Pan {
     }
 
     /// True while a snap is in flight, or the user just wheeled (within
-    /// the idle threshold); keeps the shell's redraw chain pumping.
-    fn snap_in_flight(&self) -> bool {
+    /// the idle threshold and the `snap` that follows it); keeps the
+    /// shell's redraw chain pumping.
+    fn snap_in_flight(&self, snap: SnapTiming) -> bool {
         if self.animating() || self.direct_pan_moving(crate::time::now()) {
             return true;
         }
@@ -1049,7 +1066,7 @@ impl Pan {
         // so `tick_snap` runs the moment it clears.
         if let Some(t) = self.last_wheel_at
             && crate::time::now().saturating_duration_since(t)
-                < Duration::from_millis(u64::from(SNAP_IDLE_MS + SNAP_ANIM_MS))
+                < Duration::from_millis(u64::from(SNAP_IDLE_MS)) + snap.settles
             && !self.is_aligned_to_group()
         {
             return true;
@@ -1092,9 +1109,11 @@ impl Pan {
         best
     }
 
-    /// Advance the snap state to `now`; under `reduce_motion` a snap lands
-    /// on the tick it starts. Returns whether `scroll_x` moved.
-    fn tick_snap_at(&mut self, now: Instant, reduce_motion: bool) -> bool {
+    /// Advance the snap state to `now`; a wheel's snap settles on `snap`,
+    /// and under reduced motion a snap lands on the tick it starts. Returns
+    /// whether `scroll_x` moved.
+    fn tick_snap_at(&mut self, now: Instant, snap: SnapTiming) -> bool {
+        let reduce_motion = snap.settles.is_zero();
         let before = self.scroll_x;
         // Fingers down: show where they were at this frame.
         if let Some(origin) = self.strip_pan_origin {
@@ -1141,7 +1160,7 @@ impl Pan {
                             from: self.scroll_x,
                             to: target,
                             started,
-                            duration: Duration::from_millis(u64::from(SNAP_ANIM_MS)),
+                            timing: snap,
                         });
                     }
                 } else {
@@ -1151,7 +1170,7 @@ impl Pan {
         }
         if let Some(anim) = self.snap_anim {
             let elapsed = now.saturating_duration_since(anim.started);
-            if reduce_motion || elapsed >= anim.duration {
+            if reduce_motion || elapsed >= anim.timing.settles {
                 self.scroll_x = anim.to;
                 self.snap_anim = None;
                 self.last_wheel_at = None;
@@ -1162,23 +1181,23 @@ impl Pan {
         (self.scroll_x - before).abs() > f64::EPSILON
     }
 
-    /// Ease on the snap curve from `from` to where the pan now is, over
-    /// `duration`, rather than cutting there.
-    fn slide_scroll_from(&mut self, from: f64, now: Instant, duration: Duration) {
+    /// Ease on the snap curve from `from` to where the pan now is, on
+    /// `timing`, rather than cutting there.
+    fn slide_scroll_from(&mut self, from: f64, now: Instant, timing: SnapTiming) {
         self.snap_anim = Some(SnapAnim {
             from,
             to: self.scroll_x,
             started: now,
-            duration,
+            timing,
         });
         self.scroll_x = from;
     }
 
-    /// Slide to `sx` over exactly `duration` from where the pan is drawn at
-    /// `now`: a shortcut's reveal, which may only say where the target went
-    /// and must be over within its budget. A press mid-slide retargets from
-    /// the drawn position, so presses never queue.
-    fn slide_to(&mut self, sx: f64, now: Instant, duration: Duration) {
+    /// Slide to `sx` on `timing` from where the pan is drawn at `now`: a
+    /// shortcut's reveal, which may only say where the target went and must
+    /// be over within its budget. A press mid-slide retargets from the drawn
+    /// position, so presses never queue.
+    fn slide_to(&mut self, sx: f64, now: Instant, timing: SnapTiming) {
         let from = match (self.glide, self.snap_anim) {
             (Some(glide), _) => glide.at(now).0,
             (None, Some(anim)) => anim.at(now).0,
@@ -1186,12 +1205,12 @@ impl Pan {
         };
         self.glide = None;
         self.last_wheel_at = None;
-        if duration.is_zero() || (sx - from).abs() <= SNAP_SETTLED_PX {
+        if timing.settles.is_zero() || (sx - from).abs() <= SNAP_SETTLED_PX {
             self.jump_to(sx);
             return;
         }
         self.scroll_x = sx;
-        self.slide_scroll_from(from, now, duration);
+        self.slide_scroll_from(from, now, timing);
     }
 
     /// Note where the run's groups were laid out. The pan stays where it
@@ -2742,7 +2761,7 @@ impl GroupRow {
             return false;
         };
         if source.lands_at_once() {
-            let slide = self.motion.context(source, self.motion.durations.fast());
+            let slide = self.snap_timing(source);
             self.pan_of_group_mut(group_id).slide_to(sx, now, slide);
         } else {
             let omega = self.move_omega;
@@ -2834,7 +2853,7 @@ impl GroupRow {
         };
         self.pan_of_group_mut(keep).absolute = false;
         if source.lands_at_once() {
-            let slide = self.motion.context(source, self.motion.durations.fast());
+            let slide = self.snap_timing(source);
             self.pan_of_group_mut(keep).slide_to(sx, now, slide);
         } else {
             let omega = self.move_omega;
@@ -2911,12 +2930,12 @@ impl GroupRow {
     /// tree. Advances every run's snap.
     pub fn tick_snap_at(&mut self, now: Instant) {
         let mut moved = false;
-        let reduce_motion = self.reduce_motion;
+        let snap = self.snap_timing(MotionSource::Pointer);
         if self.lanes.is_empty() {
-            moved = self.pan.tick_snap_at(now, reduce_motion);
+            moved = self.pan.tick_snap_at(now, snap);
         }
         for lane in &mut self.lanes {
-            moved |= lane.pan.tick_snap_at(now, reduce_motion);
+            moved |= lane.pan.tick_snap_at(now, snap);
         }
         // Must invalidate the parent's subtree cache or needs_redraw()
         // stays false and it re-emits the pre-snap cached scene.
@@ -2926,14 +2945,22 @@ impl GroupRow {
     }
 
     fn snap_in_flight(&self) -> bool {
-        self.pans().iter().any(|pan| pan.snap_in_flight())
+        let snap = self.snap_timing(MotionSource::Pointer);
+        self.pans().iter().any(|pan| pan.snap_in_flight(snap))
+    }
+
+    /// How the pan settles when `source` moved it, on the standard snap.
+    fn snap_timing(&self, source: MotionSource) -> SnapTiming {
+        let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
+        SnapTiming::of(motion, source)
     }
 
     /// A direct pan is under the fingers, or settling after them.
     pub fn direct_pan_in_progress(&self) -> bool {
+        let snap = self.snap_timing(MotionSource::Pointer);
         self.pans()
             .iter()
-            .any(|pan| pan.strip_pan_origin.is_some() || pan.snap_in_flight())
+            .any(|pan| pan.strip_pan_origin.is_some() || pan.snap_in_flight(snap))
     }
 
     /// The time the pan's motion is read at for a frame at `now`: a capture
@@ -4741,10 +4768,7 @@ impl Widget for GroupRow {
         // may move the strip under the pointer.
         let edge_resizing = self.edge_drag.is_some();
         let ease_reframe = self.shift_armed && !self.reduce_motion;
-        let reframe = self.motion.context(
-            self.motion_source,
-            Duration::from_millis(u64::from(SNAP_ANIM_MS)),
-        );
+        let reframe = self.snap_timing(self.motion_source);
         let now = crate::time::now();
         let dest_w: Vec<f64> = (0..runs).map(|k| self.dest_content_w(k)).collect();
         let going: Vec<u64> = self
@@ -7922,7 +7946,8 @@ mod tests {
                 0.0,
                 "the pan is applied by ticks, not the call"
             );
-            anim.tick_snap_at(t0 + Duration::from_millis(u64::from(SNAP_ANIM_MS / 2)));
+            let snap = crate::tokens::Motion::default().durations.base();
+            anim.tick_snap_at(t0 + snap / 2);
             let mid = anim.scroll_x();
             assert!(
                 mid > 0.0 && mid < expected,
