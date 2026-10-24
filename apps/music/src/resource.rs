@@ -368,6 +368,15 @@ impl ResourceSurface<Library, MusicEffect> for MusicApp {
     }
 
     fn effect(&mut self, effect: MusicEffect, cx: &mut EffectCx<Library, Self>) -> EffectAnswer {
+        // The song that plays is the one playing as the effect runs, not
+        // the one a control saw when it was bound.
+        let effect = match effect {
+            MusicEffect::ToggleLikePlaying => match self.playing_track() {
+                Some(track) => MusicEffect::ToggleLike { track },
+                None => return Err("Nothing is playing".into()),
+            },
+            effect => effect,
+        };
         if let MusicEffect::ToggleLike { track } = &effect {
             if cx.dispatcher().read_only() {
                 return Err("Liking a song requires permission to edit the library".into());

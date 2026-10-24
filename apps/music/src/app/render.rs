@@ -1577,7 +1577,7 @@ impl MusicApp {
                 self.catalogue_invocation = Some(invocation);
                 Ok(ui::framework::Effected::Pending)
             }
-            MusicEffect::ToggleLike { .. } => {
+            MusicEffect::ToggleLike { .. } | MusicEffect::ToggleLikePlaying => {
                 Err("Catalogue likes require the admitted resource effect".into())
             }
             MusicEffect::OpenFile => {
