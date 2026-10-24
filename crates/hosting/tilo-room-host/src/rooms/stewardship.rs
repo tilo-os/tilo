@@ -346,6 +346,46 @@ impl Stewardship {
         Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes())
     }
 
+    /// The channels whose group holds `device` at an older epoch than this
+    /// steward's: it has not acknowledged their head frame. Every channel
+    /// stewarded here counts, open or not.
+    pub(super) fn behind(&mut self, device: [u8; 32]) -> Result<Vec<ChannelId>, String> {
+        let device = Ed25519PublicKey::from_bytes(device);
+        let mut behind = Vec::new();
+        for channel in self.stewarded() {
+            let steward = Self::steward(
+                &mut self.stewards,
+                &self.dir,
+                &self.key,
+                &self.vault,
+                channel,
+            )?;
+            if steward.members().contains(&device) && !steward.caught_up(&device) {
+                behind.push(channel);
+            }
+        }
+        Ok(behind)
+    }
+
+    /// Every channel stewarded here: those open, and those kept under its
+    /// directory.
+    fn stewarded(&self) -> std::collections::HashSet<ChannelId> {
+        let kept = std::fs::read_dir(&self.dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().and_then(|extension| extension.to_str()) != Some("group") {
+                    return None;
+                }
+                uuid::Uuid::parse_str(path.file_stem()?.to_str()?)
+                    .ok()
+                    .map(ChannelId)
+            });
+        self.stewards.keys().copied().chain(kept).collect()
+    }
+
     /// The frames `channel`'s steward still owes `device`.
     #[cfg(test)]
     pub(super) fn owed(

@@ -383,6 +383,12 @@ impl<S: StewardStore> ChannelSteward<S> {
         self.group.epoch()
     }
 
+    /// Whether `device` acknowledged this steward's head frame: it holds
+    /// the channel as it stands now.
+    pub fn caught_up(&self, device: &Ed25519PublicKey) -> bool {
+        self.ledger.acknowledged.get(device) == Some(&self.journal.head_digest())
+    }
+
     /// Every device in the group, the steward included.
     pub fn members(&self) -> BTreeSet<Ed25519PublicKey> {
         self.group

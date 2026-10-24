@@ -14,7 +14,7 @@ use crate::rooms::actions::tests::admit_granted;
 use crate::rooms::fixtures::{TestHost, device_host};
 use crate::rooms::ownership::tests::{deliver, replica};
 use crate::rooms::tests::signed_pre_admission_by;
-use crate::rooms::{HeldChannels, Rooms};
+use crate::rooms::{HeldChannels, OwnershipError, Rooms};
 
 /// A person's own device, certified by their root, that hosts the rooms
 /// placed on it and keeps its channels as a member under `dir`.
@@ -125,10 +125,36 @@ impl Device {
             .lock()
             .await
             .owed(channel, self.public());
-        frames
+        let events = frames
             .into_iter()
             .flat_map(|frame| member.receive(frame, &vault()).unwrap())
-            .collect()
+            .collect();
+        if let Some(ack) = member.acknowledgement(&self.key).unwrap() {
+            let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsGovernanceAck {
+                room: room.to_owned(),
+                ack: Box::new(ack),
+                delivery: 1,
+            })
+            .unwrap();
+            rooms
+                .absorb(room, self.cert.device_public_key, &body)
+                .await
+                .unwrap();
+            rooms.steward_notices(room).await.unwrap();
+        }
+        events
+    }
+
+    /// Ask `rooms` for `member`'s channel and join it.
+    async fn join(&self, rooms: &Rooms, room: &str, member: &mut ChannelMember) {
+        self.ask(rooms, room, member).await;
+        let events = self.receive(rooms, room, member).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, MemberEvent::Joined { .. })),
+            "{events:?}"
+        );
     }
 }
 
@@ -197,16 +223,8 @@ async fn the_new_owners_host_stewards_the_channels_from_the_group_its_device_hel
     owner.admits(old.rooms(), &room, 2, &writer).await;
     let mut held = recipient.member(channel, &owner);
     let mut writing = writer.member(channel, &owner);
-    for (device, member) in [(&recipient, &mut held), (&writer, &mut writing)] {
-        device.ask(old.rooms(), &room, member).await;
-        let events = device.receive(old.rooms(), &room, member).await;
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, MemberEvent::Joined { .. })),
-            "{events:?}"
-        );
-    }
+    recipient.join(old.rooms(), &room, &mut held).await;
+    writer.join(old.rooms(), &room, &mut writing).await;
     let before = seal(
         &writing.content_keys().unwrap(),
         artifact,
@@ -215,7 +233,8 @@ async fn the_new_owners_host_stewards_the_channels_from_the_group_its_device_hel
     let (_, epoch) = steward_keys(old.rooms(), &room, channel).await;
     let (mut recipients_copy, seen) = replica(old.rooms(), &room).await;
 
-    // The room is handed to the recipient's desk: the owner's desk stops
+    // The room is handed to the recipient's desk once it holds the channel
+    // as it stands, the writer joining included; the owner's desk stops
     // stewarding it.
     let new = recipient.host().await;
     let offer = old
@@ -224,8 +243,22 @@ async fn the_new_owners_host_stewards_the_channels_from_the_group_its_device_hel
         .await
         .unwrap();
     let acceptance = new.rooms().acceptance(&offer).unwrap();
+    let refused = old
+        .rooms()
+        .accept_ownership(&room, &recipient.cert, [2; 32], acceptance.clone())
+        .await;
+    assert!(
+        matches!(&refused, Err(OwnershipError::ChannelsBehind(behind)) if behind == &[channel]),
+        "{refused:?}"
+    );
+    let events = recipient.receive(old.rooms(), &room, &mut held).await;
+    assert_eq!(
+        events.last(),
+        Some(&MemberEvent::Advanced { epoch }),
+        "{events:?}"
+    );
     old.rooms()
-        .accept_ownership(&room, &recipient.cert, [2; 32], acceptance)
+        .accept_ownership(&room, &recipient.cert, [3; 32], acceptance)
         .await
         .unwrap();
     assert!(steward_of(old.rooms(), &room).await.is_none());
@@ -256,20 +289,10 @@ async fn the_new_owners_host_stewards_the_channels_from_the_group_its_device_hel
     assert!(writing.follow_steward(recipient.public()).unwrap());
     recipient.admits(new.rooms(), &room, 3, &later).await;
     let mut joining = later.member(channel, &recipient);
-    later.ask(new.rooms(), &room, &mut joining).await;
-    assert!(
-        later
-            .receive(new.rooms(), &room, &mut joining)
-            .await
-            .iter()
-            .any(|event| matches!(event, MemberEvent::Joined { .. }))
-    );
-    let events = writer.receive(new.rooms(), &room, &mut writing).await;
-    assert!(
-        events
-            .iter()
-            .all(|event| matches!(event, MemberEvent::Advanced { .. })),
-        "{events:?}"
+    later.join(new.rooms(), &room, &mut joining).await;
+    assert_eq!(
+        writer.receive(new.rooms(), &room, &mut writing).await,
+        [MemberEvent::Advanced { epoch: epoch + 1 }]
     );
     let after = seal(
         &writing.content_keys().unwrap(),

@@ -58,6 +58,10 @@ pub enum OwnershipError {
     /// The copy this host was asked to take up does not hand the room to
     /// this host's device.
     NotHandedHere,
+    /// The accepting device holds these channels at an older epoch than
+    /// their steward here: it governs them from what it holds, so it takes
+    /// what it is owed first and accepts again.
+    ChannelsBehind(Vec<collab_types::ChannelId>),
     /// The room is not governed here, the asker is not one of its members,
     /// or the change could not be committed.
     Room(CollaborationError),
@@ -74,6 +78,11 @@ impl std::fmt::Display for OwnershipError {
                 f.write_str("the room is taken by the device its acceptance names")
             }
             Self::NotHandedHere => f.write_str("the room was not handed to this device"),
+            Self::ChannelsBehind(channels) => write!(
+                f,
+                "the accepting device has not caught up with {} of the room's channels",
+                channels.len()
+            ),
             Self::Room(error) => write!(f, "{error}"),
         }
     }
@@ -291,6 +300,16 @@ impl Rooms {
         handoff::check_acceptance(governed.room(), host, &offer, &acceptance, now)?;
         if !active_member(&governed, &offer.recipient, system_time(now)) {
             return Err(OwnershipError::RecipientNotMember);
+        }
+        if let Some(stewardship) = &governed.stewardship {
+            let behind = stewardship
+                .channels
+                .lock()
+                .await
+                .behind(acceptance.successor.device_public_key)?;
+            if !behind.is_empty() {
+                return Err(OwnershipError::ChannelsBehind(behind));
+            }
         }
         let digest = request_digest(&("ownership.accept", &acceptance))?;
         let key = self.inner.host.key.clone();
