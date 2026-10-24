@@ -2149,23 +2149,7 @@ impl MusicApp {
         let at = (self.pb.queue_index + 1).min(self.pb.queue.len());
         self.pb.queue.insert(at, id);
         shuffle_inserted(&mut self.shuffle_order, at);
-        self.shuffle_next(at);
-    }
-
-    /// Under shuffle, play the queue's song at `index` right after the
-    /// current one: "Play next" means next in the order heard, not only in
-    /// the queue's own order.
-    fn shuffle_next(&mut self, index: usize) {
-        let Some(from) = self.shuffle_order.iter().position(|&i| i == index) else {
-            return;
-        };
-        self.shuffle_order.remove(from);
-        let after = self
-            .shuffle_order
-            .iter()
-            .position(|&i| i == self.pb.queue_index)
-            .map_or(self.shuffle_order.len(), |at| at + 1);
-        self.shuffle_order.insert(after, index);
+        shuffle_put_next(&mut self.shuffle_order, at, self.pb.queue_index);
     }
 
     /// Remove the queue entry at an absolute index, keeping `queue_index`
@@ -3283,7 +3267,7 @@ impl MusicApp {
     /// settle locally and return `None`.
     pub(crate) fn apply_resource_playback(
         &mut self,
-        mut playback: Playback,
+        playback: Playback,
     ) -> Result<Option<u64>, String> {
         if playback.queue.len() > 10_000
             || playback.volume > 100
@@ -3327,9 +3311,14 @@ impl MusicApp {
             _ => {}
         }
         // Transport preferences must not discard which shuffled tracks have
-        // already played, and neither does one song joining or leaving the
-        // queue. Only a different queue or shuffle mode invalidates it.
-        self.follow_queue_edit(&mut playback);
+        // already played. Only a different shuffle mode, or a different
+        // queue the order was not carried over to (`follow_shuffled_edit`),
+        // invalidates it.
+        if self.pb.shuffle != playback.shuffle
+            || (self.pb.queue != playback.queue && self.shuffle_order.len() != playback.queue.len())
+        {
+            self.shuffle_order.clear();
+        }
         let requested_playing = playback.playing;
         let changed_track = self.pb.current != playback.current;
         let changed_position = self.pb.position_ms != playback.position_ms;
@@ -3375,35 +3364,48 @@ impl MusicApp {
         Ok(request)
     }
 
-    /// Carry the shuffled order over to `playback`'s queue when it differs
-    /// from the current one by a single song added or removed; any other
-    /// change of queue or shuffle mode starts a new order. A removed playing
-    /// song hands over to the next shuffled one, as the queue's own remove
-    /// does.
-    fn follow_queue_edit(&mut self, playback: &mut Playback) {
-        if self.pb.shuffle != playback.shuffle {
+    /// Carry the shuffled order over to the queue `edit` turns this one
+    /// into, `next`'s, as the person's own queue edits do; a removed playing
+    /// song hands over to the next shuffled one in `next`. Answers the order
+    /// as it was, or `None` when nothing is shuffled.
+    pub(super) fn follow_shuffled_edit(
+        &mut self,
+        edit: crate::actions::QueueEdit,
+        next: &mut Playback,
+    ) -> Option<Vec<usize>> {
+        use crate::actions::QueueEdit;
+        if !self.pb.shuffle || next.shuffle != self.pb.shuffle {
+            return None;
+        }
+        if matches!(edit, QueueEdit::PutNext(_)) {
+            self.ensure_shuffle_order();
+        }
+        if self.shuffle_order.len() != self.pb.queue.len() {
+            // No order drawn for this queue yet: one is drawn when needed.
             self.shuffle_order.clear();
-            return;
+            return None;
         }
-        if self.pb.queue == playback.queue || self.shuffle_order.is_empty() {
-            return;
-        }
-        match single_queue_edit(&self.pb.queue, &playback.queue) {
-            Some(QueueEdit::Inserted(at)) => shuffle_inserted(&mut self.shuffle_order, at),
-            Some(QueueEdit::Removed(index)) => {
+        let before = self.shuffle_order.clone();
+        match edit {
+            QueueEdit::Added(at) => shuffle_inserted(&mut self.shuffle_order, at),
+            QueueEdit::PutNext(at) => {
+                shuffle_inserted(&mut self.shuffle_order, at);
+                shuffle_put_next(&mut self.shuffle_order, at, self.pb.queue_index);
+            }
+            QueueEdit::Removed(index) => {
                 let slot = shuffle_removed(&mut self.shuffle_order, index);
                 let shuffled = slot.and_then(|slot| self.shuffle_order.get(slot).copied());
                 if index == self.pb.queue_index
-                    && playback.current.is_some()
-                    && let Some(next) = shuffled
-                    && let Some(song) = playback.queue.get(next)
+                    && next.current.is_some()
+                    && let Some(following) = shuffled
+                    && let Some(song) = next.queue.get(following)
                 {
-                    playback.queue_index = next;
-                    playback.current = Some(song.clone());
+                    next.queue_index = following;
+                    next.current = Some(song.clone());
                 }
             }
-            None => self.shuffle_order.clear(),
         }
+        Some(before)
     }
 
     fn retire_replaced_playback(&mut self) {
@@ -5539,6 +5541,21 @@ fn shuffle_inserted(order: &mut Vec<usize>, at: usize) {
     order.push(at);
 }
 
+/// Under shuffle, play the queue's song at `index` right after the one at
+/// `current`: "Play next" means next in the order heard, not only in the
+/// queue's own order.
+fn shuffle_put_next(order: &mut Vec<usize>, index: usize, current: usize) {
+    let Some(from) = order.iter().position(|&i| i == index) else {
+        return;
+    };
+    order.remove(from);
+    let after = order
+        .iter()
+        .position(|&i| i == current)
+        .map_or(order.len(), |at| at + 1);
+    order.insert(after, index);
+}
+
 /// The song at `index` left the queue: the shuffled order drops it and
 /// keeps every other song in its place. Answers where in the order it was.
 fn shuffle_removed(order: &mut Vec<usize>, index: usize) -> Option<usize> {
@@ -5552,28 +5569,6 @@ fn shuffle_removed(order: &mut Vec<usize>, index: usize) -> Option<usize> {
         }
     }
     slot
-}
-
-/// How one queue differs from another by a single song.
-#[derive(Debug, PartialEq, Eq)]
-enum QueueEdit {
-    Inserted(usize),
-    Removed(usize),
-}
-
-fn single_queue_edit(before: &[String], after: &[String]) -> Option<QueueEdit> {
-    let common = before
-        .iter()
-        .zip(after)
-        .take_while(|(before, after)| before == after)
-        .count();
-    if after.len() == before.len() + 1 && after.get(common + 1..) == before.get(common..) {
-        Some(QueueEdit::Inserted(common))
-    } else if before.len() == after.len() + 1 && before.get(common + 1..) == after.get(common..) {
-        Some(QueueEdit::Removed(common))
-    } else {
-        None
-    }
 }
 
 mod local_files;
