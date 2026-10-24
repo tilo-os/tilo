@@ -22,7 +22,7 @@
 //! reported as such rather than guessed at.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use ui::time::Duration;
 
@@ -208,28 +208,32 @@ impl Chooser {
     }
 
     /// Start one streamed turn. Its events arrive on the returned channel,
-    /// ending with exactly one [`TurnEvent::Finished`].
+    /// ending with exactly one [`TurnEvent::Finished`]; dropping the
+    /// returned [`TurnStop`] stops the turn.
     pub fn start_turn(
         &self,
         body: Value,
         timeout: Duration,
         turn: usize,
-    ) -> std::sync::mpsc::Receiver<TurnEvent> {
+    ) -> (std::sync::mpsc::Receiver<TurnEvent>, TurnStop) {
         let trace = tilo_model_client::PlanTrace {
             id: self.trace.load(Ordering::Relaxed),
             turn: u32::try_from(turn).unwrap_or(u32::MAX),
         };
-        if let Some(turns) = &self.turns {
+        let stop = TurnStop::default();
+        let rx = if let Some(turns) = &self.turns {
             turns.start(TurnRequest {
                 body,
                 timeout,
                 trace: Some(trace),
+                stop: Arc::clone(&stop.0),
             })
         } else {
             let (tx, rx) = std::sync::mpsc::channel();
             let _ = tx.send(TurnEvent::Finished(Err("no model transport".into())));
             rx
-        }
+        };
+        (rx, stop)
     }
 
     /// Whether a live call is possible at all. Cheap to ask, and worth
@@ -978,6 +982,20 @@ pub struct TurnRequest {
     pub body: Value,
     pub timeout: Duration,
     pub trace: Option<tilo_model_client::PlanTrace>,
+    /// Set once the loop has let go of the turn: the transport stops it.
+    pub stop: Arc<AtomicBool>,
+}
+
+/// Held by whoever wants a turn's answer: dropping it (a stopped task, a
+/// turn the loop lets go of) stops the turn, so a provider call nobody
+/// will read is not paid for to its end.
+#[derive(Debug, Default)]
+pub struct TurnStop(Arc<AtomicBool>);
+
+impl Drop for TurnStop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Runs a turn somewhere else — normally on its own thread over the model
@@ -1103,7 +1121,8 @@ impl TurnTransport for GatewayTurns {
                     >(request.body.clone())
                     {
                         let mut previews = NeutralPreviews::default();
-                        tilo_model_client::complete_streaming(
+                        let stop = &request.stop;
+                        tilo_model_client::complete_streaming_until(
                             &profile_id,
                             &model_id,
                             neutral,
@@ -1117,6 +1136,7 @@ impl TurnTransport for GatewayTurns {
                                     });
                                 }
                             },
+                            &|| stop.load(Ordering::Relaxed),
                         )
                         .map(|response| serde_json::json!(response).to_string())
                         .inspect_err(|error| {
@@ -2017,6 +2037,83 @@ mod tests {
         gate.plan_over(third);
         gate.release(third);
         assert_eq!(held(&gate), (false, 0), "released: sent, channel free");
+    }
+
+    /// A task stopped while its planning turn streams lets go of the turn.
+    /// The turn's provider call used to run to its end, billed, holding the
+    /// agent's one gateway channel from the next task's turns: dropping its
+    /// [`TurnStop`] now has the gateway stop it.
+    #[cfg(unix)]
+    #[test]
+    fn a_turn_the_loop_lets_go_of_is_stopped_at_the_gateway() {
+        use std::os::fd::AsRawFd as _;
+        use tilo_model_client::{Frame, Request, Response, read_frame, write_frame};
+        let reply = |output: String| Response {
+            ok: true,
+            output: Some(output),
+            configured: None,
+            error: None,
+            model_error: None,
+            event: None,
+        };
+        let (app, mut gateway) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(
+            tilo_model_client::SERVICE_FD_ENV,
+            app.as_raw_fd().to_string(),
+        );
+        let (started_by, started) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            gateway
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            assert!(matches!(frame.value, Request::CancellationSupported));
+            write_frame(&mut gateway, &reply("cancel-v1".into())).unwrap();
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            let Request::Cancellable { id, request } = frame.value else {
+                panic!("a loop turn is a cancellable operation");
+            };
+            assert!(matches!(*request, Request::Complete { .. }));
+            started_by.send(()).unwrap();
+            // The provider works on; nothing comes until the stop.
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            let Request::Cancel { id: stopped } = frame.value else {
+                panic!("the abandoned turn is stopped");
+            };
+            write_frame(&mut gateway, &reply(format!("cancelled:{stopped}"))).unwrap();
+            stopped == id
+        });
+        let turns = GatewayTurns {
+            profile_id: "hosted".into(),
+            model_id: "model".into(),
+            marks: Arc::default(),
+        };
+        let body = serde_json::to_value(
+            agent_provider_config::protocol::Conversation::new("system", "hello")
+                .request(Vec::new(), 64),
+        )
+        .unwrap();
+        let stop = TurnStop::default();
+        let rx = turns.start(TurnRequest {
+            body,
+            timeout: Duration::from_secs(30),
+            trace: None,
+            stop: Arc::clone(&stop.0),
+        });
+        tilo_test_env::recv("the turn reaching the gateway", &started);
+        drop(stop);
+        let finished = loop {
+            if let TurnEvent::Finished(result) = tilo_test_env::recv("the turn's end", &rx) {
+                break result;
+            }
+        };
+        assert!(finished.is_err(), "a stopped turn has no answer");
+        assert!(
+            server.join().unwrap(),
+            "the stop names the turn's operation"
+        );
+        drop(env);
     }
 
     const PROTOCOLS: [agent_provider_config::ProviderProtocol; 2] = [

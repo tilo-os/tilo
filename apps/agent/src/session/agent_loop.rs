@@ -176,6 +176,12 @@ pub(super) struct ActiveTurn {
     completed: usize,
     /// Calls the stream has begun, by index.
     begun: HashSet<usize>,
+    /// Stops the turn when the loop lets go of it.
+    #[allow(
+        dead_code,
+        reason = "held only to be dropped: letting go of the turn stops its model call"
+    )]
+    stop: Option<crate::model::TurnStop>,
 }
 
 impl ActiveTurn {
@@ -190,6 +196,7 @@ impl ActiveTurn {
             published_at: ui::time::now(),
             completed: 0,
             begun: HashSet::new(),
+            stop: None,
         }
     }
 
@@ -1155,8 +1162,9 @@ impl Session {
         // the host and is not waited for: its answer is read while the model
         // thinks, and before any step of this turn reaches the host.
         let turn_began = ui::time::now();
-        let rx = self.chooser.start_turn(body, timeout, turn);
+        let (rx, stop) = self.chooser.start_turn(body, timeout, turn);
         let mut active = ActiveTurn::new(rx);
+        active.stop = Some(stop);
         active.presentation_run = format!("{}:{turn}", run.run_id);
         self.turn = Some(active);
         self.poll_cancellation(run)?;

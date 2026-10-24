@@ -590,6 +590,49 @@ pub fn complete_streaming(
     timeout: Duration,
     on_event: &mut dyn FnMut(&agent_provider_config::protocol::StreamEvent),
 ) -> Result<agent_provider_config::protocol::ModelResponse, ClientError> {
+    complete_stream(
+        (profile_id, model_id),
+        model_request,
+        timeout,
+        on_event,
+        None,
+    )
+}
+
+/// [`complete_streaming`] for a caller that may stop wanting the answer:
+/// once `stop` says so (it is asked every [`STOP_POLL`] while the turn
+/// runs), the gateway is told to stop the provider call, so
+/// an abandoned turn is not paid for to its end and no longer holds the
+/// process's one gateway channel.
+///
+/// # Errors
+/// As [`complete_streaming`]; a stopped turn fails as
+/// [`ErrorKind::Cancelled`](agent_provider_config::protocol::ErrorKind::Cancelled),
+/// and a gateway that cannot stop calls refuses the turn before any work.
+pub fn complete_streaming_until(
+    profile_id: &str,
+    model_id: &str,
+    model_request: agent_provider_config::protocol::ModelRequest,
+    timeout: Duration,
+    on_event: &mut dyn FnMut(&agent_provider_config::protocol::StreamEvent),
+    stop: &(dyn Fn() -> bool + Sync),
+) -> Result<agent_provider_config::protocol::ModelResponse, ClientError> {
+    complete_stream(
+        (profile_id, model_id),
+        model_request,
+        timeout,
+        on_event,
+        Some(stop),
+    )
+}
+
+fn complete_stream(
+    (profile_id, model_id): (&str, &str),
+    model_request: agent_provider_config::protocol::ModelRequest,
+    timeout: Duration,
+    on_event: &mut dyn FnMut(&agent_provider_config::protocol::StreamEvent),
+    stop: Option<&(dyn Fn() -> bool + Sync)>,
+) -> Result<agent_provider_config::protocol::ModelResponse, ClientError> {
     let request = Request::Complete {
         profile_id: profile_id.into(),
         model_id: model_id.into(),
@@ -598,18 +641,23 @@ pub fn complete_streaming(
         stream: true,
     };
     let mut invalid = false;
-    let output = streaming_request(request, true, &mut |kind, payload| {
-        // Drain after a malformed event to preserve the shared legacy channel,
-        // but never deliver more deltas from a poisoned turn.
-        if invalid {
-            return;
-        }
-        match transport::decode_event(kind, payload) {
-            Ok(Some(event)) => on_event(&event),
-            Ok(None) => {}
-            Err(_) => invalid = true,
-        }
-    });
+    let output = streaming_request(
+        request,
+        true,
+        &mut |kind, payload| {
+            // Drain after a malformed event to preserve the shared legacy channel,
+            // but never deliver more deltas from a poisoned turn.
+            if invalid {
+                return;
+            }
+            match transport::decode_event(kind, payload) {
+                Ok(Some(event)) => on_event(&event),
+                Ok(None) => {}
+                Err(_) => invalid = true,
+            }
+        },
+        stop,
+    );
     let result = if invalid {
         Err(agent_provider_config::protocol::ModelError::invalid(
             "invalid gateway stream event",
@@ -622,11 +670,15 @@ pub fn complete_streaming(
     transport::finish_stream(result, on_event).map_err(ClientError::Model)
 }
 
+/// How often a stoppable stream asks whether its caller still wants it.
+pub const STOP_POLL: Duration = Duration::from_millis(100);
+
 #[cfg(not(unix))]
 fn streaming_request(
     _request: Request,
     _deltas: bool,
     _on_event: &mut dyn FnMut(&str, &str),
+    _stop: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> Result<String, ClientError> {
     Err(ClientError::Unavailable)
 }
@@ -636,9 +688,10 @@ fn streaming_request(
     request: Request,
     deltas: bool,
     on_event: &mut dyn FnMut(&str, &str),
+    stop: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> Result<String, ClientError> {
     let turn = ChannelTurn::take()?;
-    let output = streaming_exchange(request, deltas, on_event);
+    let output = streaming_exchange(request, deltas, on_event, stop);
     drop(turn);
     output
 }
@@ -649,21 +702,182 @@ fn streaming_exchange(
     request: Request,
     deltas: bool,
     on_event: &mut dyn FnMut(&str, &str),
+    stop: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> Result<String, ClientError> {
     let mut stream = service_stream()?;
+    let Some(stop) = stop else {
+        write_frame(
+            &mut stream,
+            &Frame {
+                version: RPC_VERSION,
+                value: request,
+            },
+        )?;
+        return read_stream(&mut stream, deltas, on_event, None);
+    };
+    let id = cancellable(&mut stream, request)?;
+    let writer = stream.try_clone().map_err(|error| io_error(&error))?;
+    let watch = StopWatch::default();
+    std::thread::scope(|scope| {
+        // Without a watcher the turn still runs, only unstoppable between
+        // its events.
+        let _ = std::thread::Builder::new()
+            .name("model-gateway-stop".into())
+            .spawn_scoped(scope, || watch.stop_when(stop, id, writer));
+        let output = read_stream(&mut stream, deltas, on_event, Some((&watch, id)));
+        watch.finish();
+        output
+    })
+}
+
+/// Start `request` as a cancellable operation on `stream`, after the
+/// gateway agreed to stop operations: its id.
+#[cfg(unix)]
+fn cancellable(stream: &mut UnixStream, request: Request) -> Result<u64, ClientError> {
+    use agent_provider_config::protocol::{ErrorKind, ModelError};
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     write_frame(
-        &mut stream,
+        stream,
         &Frame {
             version: RPC_VERSION,
-            value: request,
+            value: Request::CancellationSupported,
         },
     )?;
+    let supported: Response = read_frame(stream)?;
+    if !supported.ok
+        || supported.event.is_some()
+        || supported.output.as_deref() != Some("cancel-v1")
+    {
+        return Err(ClientError::Model(ModelError::new(ErrorKind::Unsupported)));
+    }
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    write_frame(
+        stream,
+        &Frame {
+            version: RPC_VERSION,
+            value: Request::Cancellable {
+                id,
+                request: Box::new(request),
+            },
+        },
+    )?;
+    Ok(id)
+}
+
+/// Where a stoppable stream is: over (its answer read), or told to stop.
+#[cfg(unix)]
+#[derive(Default)]
+struct StopWatch {
+    state: std::sync::Mutex<Stopping>,
+    over: std::sync::Condvar,
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct Stopping {
+    over: bool,
+    cancelled: bool,
+}
+
+#[cfg(unix)]
+impl StopWatch {
+    /// Until the stream is over, ask `stop` every [`STOP_POLL`]; once it
+    /// says so, tell the gateway to stop operation `id`.
+    fn stop_when(&self, stop: &(dyn Fn() -> bool + Sync), id: u64, mut writer: UnixStream) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !state.over && !stop() {
+            state = self
+                .over
+                .wait_timeout(state, STOP_POLL)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        if !state.over {
+            // Under the lock: the reader either sees the stream told to
+            // stop, or has taken its answer and this is not sent.
+            state.cancelled = write_frame(
+                &mut writer,
+                &Frame {
+                    version: RPC_VERSION,
+                    value: Request::Cancel { id },
+                },
+            )
+            .is_ok();
+        }
+        drop(state);
+    }
+
+    /// One frame was read; `last` when it is the stream's answer. Whether
+    /// the stream was told to stop, so the frame is not the caller's.
+    fn read(&self, last: bool) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cancelled = state.cancelled;
+        let over = last && !cancelled;
+        if over {
+            state.over = true;
+        }
+        drop(state);
+        if over {
+            self.over.notify_all();
+        }
+        cancelled
+    }
+
+    /// The stream ended, however it did: the watcher stops.
+    fn finish(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .over = true;
+        self.over.notify_all();
+    }
+}
+
+/// Read a streamed answer's frames from `stream`, delivering its events. A
+/// stoppable stream (`watch`) told to stop reads on, discarding, to the
+/// gateway's acknowledgement, so no frame of it is left on the channel.
+#[cfg(unix)]
+fn read_stream(
+    stream: &mut UnixStream,
+    deltas: bool,
+    on_event: &mut dyn FnMut(&str, &str),
+    watch: Option<(&StopWatch, u64)>,
+) -> Result<String, ClientError> {
     // A bounded number of intermediate frames: one per completed tool call,
     // and (only when asked for) a separately bounded number of deltas.
     let mut calls = 0_usize;
     let mut delta_frames = 0_usize;
+    let mut stopped = 0_usize;
     loop {
-        let response: Response = read_frame(&mut stream)?;
+        let response: Response = read_frame(stream)?;
+        if let Some((watch, id)) = watch
+            && watch.read(response.event.is_none())
+        {
+            if response.event.is_none()
+                && response.ok
+                && response.output.as_deref() == Some(format!("cancelled:{id}").as_str())
+            {
+                return Err(ClientError::Model(
+                    agent_provider_config::protocol::ModelError::new(
+                        agent_provider_config::protocol::ErrorKind::Cancelled,
+                    ),
+                ));
+            }
+            stopped = stopped.saturating_add(1);
+            if stopped > MAX_STREAM_EVENTS + MAX_DELTA_EVENTS + 1 {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return Err(ClientError::Protocol(
+                    "gateway did not acknowledge the stop".into(),
+                ));
+            }
+            continue;
+        }
         let response = response.into_result()?;
         match response.event {
             Some(event) => {
@@ -1025,6 +1239,7 @@ mod wire_tests {
                     in_event.send(()).unwrap();
                     let _ = go.recv_timeout(tilo_test_env::hang_bound());
                 },
+                None,
             )
         });
         tilo_test_env::recv("the stream's event", &event_seen);
@@ -1044,6 +1259,133 @@ mod wire_tests {
         go_on.send(()).unwrap();
         assert_eq!(stream.join().unwrap().unwrap(), "the plan");
         assert_eq!(transform.join().unwrap().unwrap(), "the document");
+        drop(env);
+        drop(app);
+        server.join().unwrap();
+    }
+
+    /// A gateway that streams one event of a cancellable `Plan`, then
+    /// (when `answers_first`) its answer, and acknowledges the stop it is
+    /// then sent; afterwards it answers each transform with its input.
+    /// Hands back the id the stop named.
+    fn stoppable_gateway(
+        mut gateway: UnixStream,
+        answers_first: bool,
+    ) -> std::thread::JoinHandle<u64> {
+        std::thread::spawn(move || {
+            gateway
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            assert!(matches!(frame.value, Request::CancellationSupported));
+            write_frame(&mut gateway, &answer("cancel-v1", None)).unwrap();
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            let Request::Cancellable { id, request } = frame.value else {
+                panic!("a stoppable stream starts a cancellable operation");
+            };
+            assert!(matches!(*request, Request::Plan { .. }));
+            write_frame(&mut gateway, &answer("{}", Some(EVENT_TOOL_CALL))).unwrap();
+            if answers_first {
+                write_frame(&mut gateway, &answer("the plan", None)).unwrap();
+            }
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            let Request::Cancel { id: stopped } = frame.value else {
+                panic!("the caller stops the operation");
+            };
+            if !answers_first {
+                // A frame the provider produced before the stop arrived.
+                write_frame(&mut gateway, &answer("{}", Some(EVENT_TOOL_CALL))).unwrap();
+            }
+            write_frame(&mut gateway, &answer(&format!("cancelled:{stopped}"), None)).unwrap();
+            assert_eq!(stopped, id);
+            while let Ok(frame) = read_frame::<Frame<Request>>(&mut gateway) {
+                let Request::Transform { input, .. } = frame.value else {
+                    panic!("only a transform follows the stream");
+                };
+                write_frame(&mut gateway, &answer(&input, None)).unwrap();
+            }
+            stopped
+        })
+    }
+
+    /// Ask a stoppable `Plan` that its caller gives up on at its first event,
+    /// then a transform on the same channel.
+    fn give_up_then_transform() -> (Result<String, ClientError>, Result<String, ClientError>) {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut events = 0_usize;
+        let plan = streaming_request(
+            Request::Plan {
+                profile_id: "hosted".into(),
+                model_id: "model".into(),
+                body: serde_json::Value::Null,
+                timeout_ms: 1000,
+                stream: true,
+                deltas: false,
+                trace: None,
+            },
+            false,
+            &mut |_, _| {
+                events = events.saturating_add(1);
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                // Long enough for the watcher to see it before the answer
+                // is read.
+                std::thread::sleep(Duration::from_millis(300));
+            },
+            Some(&|| stop.load(std::sync::atomic::Ordering::Relaxed)),
+        );
+        assert_eq!(events, 1, "nothing after the stop reaches the caller");
+        let after = transform(
+            "hosted",
+            "model",
+            "Shorten",
+            "after the stop",
+            64,
+            Duration::from_secs(1),
+        );
+        (plan, after)
+    }
+
+    /// The agent lets go of a planning turn when its task is stopped. The
+    /// turn used to run to its end at the provider, billed, holding the
+    /// channel: the gateway is now told to stop it, the turn ends as
+    /// cancelled, and the next call on the channel gets its own answer.
+    #[test]
+    fn a_stream_its_caller_gives_up_on_is_stopped_at_the_gateway() {
+        use std::os::fd::AsRawFd as _;
+        let (app, gateway) = UnixStream::pair().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(SERVICE_FD_ENV, app.as_raw_fd().to_string());
+        let server = stoppable_gateway(gateway, false);
+        let (plan, after) = give_up_then_transform();
+        let Err(ClientError::Model(error)) = plan else {
+            panic!("a stopped turn is cancelled, not answered: {plan:?}");
+        };
+        assert_eq!(
+            error.kind,
+            agent_provider_config::protocol::ErrorKind::Cancelled
+        );
+        assert_eq!(after.unwrap(), "after the stop");
+        drop(env);
+        drop(app);
+        server.join().unwrap();
+    }
+
+    /// The stop can cross the answer: the gateway acknowledges it after
+    /// the answer went out, and that acknowledgement is read here, not
+    /// left on the channel as the next call's answer.
+    #[test]
+    fn a_stop_that_crosses_the_answer_leaves_nothing_on_the_channel() {
+        use std::os::fd::AsRawFd as _;
+        let (app, gateway) = UnixStream::pair().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(SERVICE_FD_ENV, app.as_raw_fd().to_string());
+        let server = stoppable_gateway(gateway, true);
+        let (plan, after) = give_up_then_transform();
+        assert!(
+            matches!(&plan, Err(ClientError::Model(error)) if error.kind == agent_provider_config::protocol::ErrorKind::Cancelled),
+            "{plan:?}"
+        );
+        assert_eq!(after.unwrap(), "after the stop");
         drop(env);
         drop(app);
         server.join().unwrap();
@@ -1082,6 +1424,7 @@ mod wire_tests {
                     at_unix_ms: None,
                 }));
             },
+            None,
         );
         assert_eq!(plan.unwrap(), "the plan");
         assert!(matches!(nested, Some(Err(ClientError::Protocol(_)))));
