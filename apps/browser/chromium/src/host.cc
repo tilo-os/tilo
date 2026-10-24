@@ -562,6 +562,77 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     pending_navigation_.clear();navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;navigation_aborting_=false;bootstrap_settled_=true;
   }
   void OnFrameCreated(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame) override { SendFilters(frame);SendScripts(frame); }
+  // Where the text being composed is, for the input method's candidates.
+  // Chromium reports each character's box in view DIPs; the protocol's
+  // pixels are physical. Only the composition's first line counts: a box
+  // around a wrapped composition would push the candidates off it.
+  void OnImeCompositionRangeChanged(CefRefPtr<CefBrowser>,const CefRange& range,const RectList& bounds) override {
+    auto d=CefDictionaryValue::Create();
+    if(range.from!=CefRange::InvalidRange().from && !bounds.empty() && bounds.front().height>0) {
+      const CefRect& first=bounds.front();
+      int left=first.x,top=first.y,right=first.x+first.width,bottom=first.y+first.height;
+      for(const auto& box:bounds) {
+        if(box.height<=0 || box.y>=bottom || box.y+box.height<=top) continue;
+        left=std::min(left,box.x);right=std::max(right,box.x+box.width);
+      }
+      const double scale=geometry_.scale();
+      d->SetDouble("x",left*scale);d->SetDouble("y",top*scale);d->SetDouble("width",(right-left)*scale);d->SetDouble("height",(bottom-top)*scale);
+    }
+    PublishComposition(d);
+  }
+  // A composition's box, or none (no `x`) once it has ended.
+  void PublishComposition(CefRefPtr<CefDictionaryValue> d) {
+    auto value=CefValue::Create();value->SetDictionary(d->Copy(false));
+    const auto report=CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString();
+    if(report==composition_report_)return;
+    composition_report_=report;Event("ime_composition_bounds",d);
+  }
+  // The caret moved, or a selection changed: the focused field may have
+  // moved with it (a text area growing as it is typed in). Typing changes
+  // the selection with every key; one probe answers a burst of them.
+  void OnTextSelectionChanged(CefRefPtr<CefBrowser>,const CefString&,const CefRange&) override { ProbeTextFieldSoon(); }
+  // Ask the focused frame's renderer for its focused field (renderer.cc).
+  void ProbeTextField() {
+    if(!browser_)return;auto frame=browser_->GetFocusedFrame();
+    if(frame && frame->IsValid()) frame->SendProcessMessage(PID_RENDERER,CefProcessMessage::Create("tilo.text_field_probe"));
+  }
+  // Once the page has settled from a scroll, a resize or typing, while a
+  // field has the focus: one probe however many events arrive in between.
+  void ProbeTextFieldSoon() {
+    if(!text_field_editable_ || text_field_probe_scheduled_)return;
+    text_field_probe_scheduled_=true;
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->text_field_probe_scheduled_=false;self->ProbeTextField(); },CefRefPtr<Client>(this)),100);
+  }
+  // A renderer's report of its focused field: on a focus change, or in
+  // answer to a probe. A probe's answer counts only from the frame that has
+  // the focus now; a stale one from a frame left behind is dropped.
+  // Renderer input is untrusted: every value is checked and bounded.
+  void ReceiveTextField(CefRefPtr<CefFrame> frame,CefRefPtr<CefListValue> args) {
+    if(!browser_ || !frame || !frame->IsValid())return;
+    const size_t size=args->GetSize();
+    if((size!=2 && size!=6) || args->GetType(0)!=VTYPE_BOOL || args->GetType(1)!=VTYPE_INT)return;
+    for(size_t i=2;i<size;++i)if(args->GetType(i)!=VTYPE_INT || std::abs(args->GetInt(i))>65536)return;
+    if(args->GetBool(0)) {auto focused=browser_->GetFocusedFrame();if(!focused || focused->GetIdentifier()!=frame->GetIdentifier())return;}
+    static const char* const purposes[]={"","text","text","password","email","url","phone","number","search"};
+    const int kind=args->GetInt(1);
+    if(kind<0 || kind>=static_cast<int>(std::size(purposes)))return;
+    auto d=CefDictionaryValue::Create();d->SetBool("editable",kind!=0);
+    if(kind) {
+      d->SetString("purpose",purposes[kind]);d->SetBool("multiline",kind==2);
+      // The renderer gives the box in the widget's device pixels, which are
+      // the protocol's physical pixels.
+      if(size==6 && args->GetInt(5)>0 && args->GetInt(4)>=0) {
+        d->SetInt("x",args->GetInt(2));d->SetInt("y",args->GetInt(3));d->SetInt("width",args->GetInt(4));d->SetInt("height",args->GetInt(5));
+      }
+    }
+    PublishTextField(d);
+  }
+  void PublishTextField(CefRefPtr<CefDictionaryValue> d) {
+    auto value=CefValue::Create();value->SetDictionary(d->Copy(false));
+    const auto report=CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString();
+    if(report==text_field_report_)return;
+    text_field_report_=report;text_field_editable_=d->GetBool("editable");Event("text_field",d);
+  }
   void GetViewRect(CefRefPtr<CefBrowser>,CefRect& rect) override { rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height()); }
   bool GetScreenInfo(CefRefPtr<CefBrowser>,CefScreenInfo& info) override {
     info.device_scale_factor=geometry_.scale();info.rect=info.available_rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height());return true;
@@ -628,7 +699,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     paint_snapshot_->Attach();
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("selection_text",true);d->SetBool("page_clipboard",page_clipboard && !sealed_documents);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("ime_composition",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("selection_text",true);d->SetBool("page_clipboard",page_clipboard && !sealed_documents);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     if(extension_tabs)extension_tabs->Introduce(id_);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
@@ -770,6 +841,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void OnLoadStart(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,TransitionType) override {
     if(!frame->IsMain()) return;
     tilo::ForgetBootstrap(browser);
+    // A new document has no field focused yet.
+    {auto field=CefDictionaryValue::Create();field->SetBool("editable",false);PublishTextField(field);}
+    // A document in a new renderer has a widget of its own, which Chromium
+    // does not tell it has the focus: without it the page takes keys but
+    // ignores an input method's composition.
+    if(page_focused_ && browser_) browser_->GetHost()->SetFocus(true);
     // A new document: extensions' worlds and ports in the old one are gone.
     if(extension_tabs)extension_tabs->Navigated(id_);
     main_navigation_finished_=false;
@@ -848,6 +925,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
     if(source!=PID_RENDERER) return false;
+    if(message->GetName()=="tilo.text_field") {
+      if(browser && browser_ && browser->IsSame(browser_)) ReceiveTextField(frame,message->GetArgumentList());
+      return true;
+    }
     if(message->GetName()=="tilo.selection_text") {
       auto args=message->GetArgumentList();
       if(args->GetSize()!=2 || args->GetType(0)!=VTYPE_INT || args->GetType(1)!=VTYPE_STRING) return true;
@@ -1039,7 +1120,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       visible_=d->GetBool("visible");
       credential_document_.SetVisible(visible_);
       if(!visible_) CancelCredentialRequests();
-      host->WasHidden(!visible_);host->SetFocus(visible_);
+      host->WasHidden(!visible_);host->SetFocus(visible_);page_focused_=visible_;
       if(!visible_ && context_callback_) context_callback_->Cancel();
       if(visible_) {
         host->Invalidate(PET_VIEW);
@@ -1132,7 +1213,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       CefPostDelayedTask(TID_UI,base::BindOnce(&PublishZoomLevels),100);
     }
     else if(op=="focus") {
-      host->SetFocus(d->GetBool("focused"));
+      page_focused_=d->GetBool("focused");
+      host->SetFocus(page_focused_);
       if(d->GetBool("focused") && !extension_panel_ && last_focused_tab!=id_) {last_focused_tab=id_;if(extension_tabs)extension_tabs->Focused(id_);}
     }
     // An extension's popup or settings page, shown over the page used last.
@@ -1180,7 +1262,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       TraceGeometry("resize-applied",id_,w,h,scale);
       stale_paint_recovery_pending_=false;
       if(effect==tilo::ResizeEffect::Repaint) { host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
-      popup_.clear();frame_.reset();whole_next_=true;host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
+      popup_.clear();frame_.reset();whole_next_=true;host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);ProbeTextFieldSoon();
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
       if(op=="mouse_move") host->SendMouseMoveEvent(event,false);
@@ -1191,6 +1273,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         const int whole_x=static_cast<int>(dx),whole_y=static_cast<int>(dy);
         wheel_rest_x_=dx-whole_x;wheel_rest_y_=dy-whole_y;
         if(whole_x||whole_y) host->SendMouseWheelEvent(event,whole_x,whole_y);
+        // A focused field scrolled moves under the input method.
+        if(whole_x||whole_y) ProbeTextFieldSoon();
       }
       else { std::string button=d->GetString("button");auto type=button=="right"?MBT_RIGHT:button=="middle"?MBT_MIDDLE:MBT_LEFT;bool down=d->GetBool("down");
         int flag=type==MBT_RIGHT?EVENTFLAG_RIGHT_MOUSE_BUTTON:type==MBT_MIDDLE?EVENTFLAG_MIDDLE_MOUSE_BUTTON:EVENTFLAG_LEFT_MOUSE_BUTTON;
@@ -1211,6 +1295,25 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(frame) { if(d->GetString("direction")=="undo") frame->Undo();else frame->Redo(); }
     }
     else if(op=="key") {if(d->GetBool("down"))activated_=std::chrono::steady_clock::now();KeyCommand(d);}
+    // The platform input method's composition, as a native field takes it:
+    // the page sees compositionstart, compositionupdate and compositionend,
+    // and the committed text as typed.
+    else if(op=="ime_composition") {
+      activated_=std::chrono::steady_clock::now();
+      const CefString text=d->GetString("text");
+      CefCompositionUnderline underline;
+      // A transparent underline is drawn in the text's own colour.
+      underline.range=CefRange(0,static_cast<uint32_t>(text.ToString16().size()));underline.color=0;underline.background_color=0;underline.thick=0;underline.style=CEF_CUS_SOLID;
+      host->ImeSetComposition(text,{underline},CefRange::InvalidRange(),
+        CefRange(static_cast<uint32_t>(d->GetInt("selection_start")),static_cast<uint32_t>(d->GetInt("selection_end"))));
+    }
+    else if(op=="ime_commit" || op=="ime_cancel" || op=="ime_finish") {
+      if(op=="ime_commit") {activated_=std::chrono::steady_clock::now();host->ImeCommitText(d->GetString("text"),CefRange::InvalidRange(),0);}
+      else if(op=="ime_cancel") host->ImeCancelComposition();
+      else host->ImeFinishComposingText(false);
+      // The composition is over: the next one is placed by its own box.
+      PublishComposition(CefDictionaryValue::Create());
+    }
     else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
     else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"),d->HasKey("dismiss") && d->GetType("dismiss")==VTYPE_BOOL && d->GetBool("dismiss"));
     else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
@@ -1306,7 +1409,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // it, so the page gets them in the order they were pressed.
   void KeyCommand(CefRefPtr<CefDictionaryValue> d) {
     if(paste_prime_) {if(held_keys_.size()<256)held_keys_.push_back(d->Copy(false));return;}
-    if(SharesClipboard() && d->GetBool("down") && tilo::PasteKey(d->GetString("key"),d->GetBool("ctrl"),d->GetBool("shift"),d->GetBool("alt"),d->GetBool("meta"))) {
+    // Ctrl+М on a Russian layout pastes as Ctrl+V does (key_mapping.h).
+    const std::string key=d->GetString("key"),code=d->HasKey("code")?d->GetString("code").ToString():std::string();
+    const char letter=key.size()==1?0:tilo::ShortcutLetter(key,code);
+    if(SharesClipboard() && d->GetBool("down") && tilo::PasteKey(letter?std::string(1,letter):key,d->GetBool("ctrl"),d->GetBool("shift"),d->GetBool("alt"),d->GetBool("meta"))) {
       static int primes=0;primes=primes%2147483647+1;
       const int request=clipboard_reads.Add({tilo::ClipboardReads::Purpose::Paste,id_,{},primes});
       if(request) {paste_prime_=primes;held_keys_.push_back(d->Copy(false));AskClipboard(request);return;}
@@ -1329,10 +1435,16 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     e.modifiers=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
     key_modifiers_=e.modifiers;
     std::string key=d->GetString("key");
+    const std::string code=d->HasKey("code")?d->GetString("code").ToString():std::string();
+    // Shortcuts are named by Latin letters: on a layout without them the
+    // letter is the one on the key pressed (Ctrl+С on a Russian layout).
+    const char letter=tilo::ShortcutLetter(key,code);
+    const bool latin=key.size()==1;
+    const std::string shortcut_key=!latin && letter?std::string(1,letter):key;
     // An extension's keyboard shortcut runs its command, and the page gets
     // neither its press nor its release (extension_commands.h). A release
     // is known by the key's name: it may read otherwise ("y" once Shift is up).
-    if(auto shortcut=tilo::KeyShortcut(key,d->GetBool("ctrl"),d->GetBool("alt"),d->GetBool("shift"),d->GetBool("meta"))) {
+    if(auto shortcut=tilo::KeyShortcut(shortcut_key,d->GetBool("ctrl"),d->GetBool("alt"),d->GetBool("shift"),d->GetBool("meta"))) {
       if(!d->GetBool("down")) { if(commanded_keys_.erase(shortcut->key)) return; }
       // In an extension's popup or side panel it runs over the page the
       // panel shows for, as in Chrome, whose shortcuts belong to the window.
@@ -1341,8 +1453,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
 #if defined(OS_MAC)
     // Offscreen CEF has no Cocoa Edit menu to translate Command shortcuts.
     // Execute against the focused frame, preserving native clipboard semantics.
-    if(d->GetBool("meta") && !d->GetBool("ctrl") && !d->GetBool("alt") && key.size()==1) {
-      char letter=static_cast<char>(std::tolower(static_cast<unsigned char>(key[0])));
+    if(d->GetBool("meta") && !d->GetBool("ctrl") && !d->GetBool("alt") && letter) {
       if(letter=='a'||letter=='c'||letter=='x'||letter=='v'||letter=='z') {
         if(d->GetBool("down")) { auto frame=browser_->GetFocusedFrame();if(frame) {
           if(letter=='a') frame->SelectAll();else if(letter=='c') frame->Copy();else if(letter=='x') frame->Cut();else if(letter=='v') frame->Paste();else if(d->GetBool("shift")) frame->Redo();else frame->Undo();
@@ -1351,7 +1462,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
     }
 #endif
-    const auto mapping=tilo::MapKey(key);
+    const auto mapping=tilo::MapKey(key,code);
     e.windows_key_code=mapping.windows;
     e.character=mapping.character;
     e.unmodified_character=mapping.character;
@@ -1743,6 +1854,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<tilo::ServiceSessionImport> service_session_import_;
   int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
   // The press a following press may continue as a double or triple click.
+  // The last focused-field and composition reports sent, so each goes out
+  // only when it changes.
+  std::string text_field_report_,composition_report_;
+  bool text_field_editable_=false,text_field_probe_scheduled_=false;
+  // The embedder last gave the page the keyboard (`focus`, `visibility`).
+  bool page_focused_=false;
   int click_count_=0,click_x_=0,click_y_=0;cef_mouse_button_type_t click_button_=MBT_LEFT;std::chrono::steady_clock::time_point click_time_;
   // What of the wheel's last movement was less than a whole pixel.
   double wheel_rest_x_=0,wheel_rest_y_=0;
@@ -2112,7 +2229,16 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return type("direction",VTYPE_STRING) &&
       (d->GetString("direction")=="undo" || d->GetString("direction")=="redo");
   }
-  if(op=="key") return type("key",VTYPE_STRING) && type("down",VTYPE_BOOL);
+  if(op=="key") return type("key",VTYPE_STRING) && type("down",VTYPE_BOOL) &&
+    (!d->HasKey("code") || (type("code",VTYPE_STRING) && tilo::KeyCodeShaped(d->GetString("code").ToString())));
+  if(op=="ime_composition") {
+    if(!type("text",VTYPE_STRING) || d->GetString("text").ToString().size()>4096 || !type("selection_start",VTYPE_INT) || !type("selection_end",VTYPE_INT))return false;
+    const auto length=static_cast<int>(d->GetString("text").ToString16().size());
+    const int start=d->GetInt("selection_start"),end=d->GetInt("selection_end");
+    return 0<=start && start<=end && end<=length;
+  }
+  if(op=="ime_commit") return type("text",VTYPE_STRING) && !d->GetString("text").empty() && d->GetString("text").ToString().size()<=64*1024;
+  if(op=="ime_cancel" || op=="ime_finish") return no_payload();
   if(op=="scripts" || op=="blocking_scripts") {
     if(!type("scripts",VTYPE_LIST)) return false;
     auto list=d->GetList("scripts");for(size_t i=0;i<list->GetSize();++i) if(list->GetType(i)!=VTYPE_STRING) return false;
