@@ -62,11 +62,20 @@ pub enum Label {
     LanDiscoveryProbe,
     /// An answer to a LAN discovery probe, sealed to the asking device.
     LanDiscoveryReply,
+    /// A person's user key wrapped under a key stretched from their
+    /// passphrase, on a machine without a TPM.
+    SignInPassphrase,
+    /// A person's user key wrapped under a key derived from their recovery
+    /// key.
+    SignInRecovery,
+    /// The TPM's dictionary-attack reset authorisation, wrapped under the
+    /// admin's user key or the machine's recovery key.
+    TpmLockoutAuth,
 }
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 26] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -90,6 +99,9 @@ impl Label {
         Self::StoreCallerProof,
         Self::LanDiscoveryProbe,
         Self::LanDiscoveryReply,
+        Self::SignInPassphrase,
+        Self::SignInRecovery,
+        Self::TpmLockoutAuth,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -119,6 +131,9 @@ impl Label {
             Self::StoreCallerProof => "tilo-seal/v1/store-caller-proof",
             Self::LanDiscoveryProbe => "tilo-seal/v1/lan-discovery-probe",
             Self::LanDiscoveryReply => "tilo-seal/v1/lan-discovery-reply",
+            Self::SignInPassphrase => "tilo-seal/v1/sign-in-passphrase",
+            Self::SignInRecovery => "tilo-seal/v1/sign-in-recovery",
+            Self::TpmLockoutAuth => "tilo-seal/v1/tpm-lockout-auth",
         }
     }
 

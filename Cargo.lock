@@ -16825,6 +16825,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-auth"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "getrandom 0.4.3",
+ "hex",
+ "hmac 0.13.0",
+ "libc",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tilo-files",
+ "tilo-rollback",
+ "tilo-seal",
+ "tilo-test-env",
+ "tilo-unlock-protocol",
+ "unicode-normalization",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-automation"
 version = "0.1.0"
 dependencies = [
