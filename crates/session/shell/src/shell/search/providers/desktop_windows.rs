@@ -791,6 +791,17 @@ mod tests {
     #[test]
     fn a_tab_moves_to_another_workspace_by_its_exact_action() {
         let (chrome, mut doc) = fixture();
+        // A window moves between rooms through their hosts, which the
+        // session's network reaches: the compositor gives the transfers
+        // that reader once peer sync is up.
+        let (network, _commands) =
+            crate::shell::network::shell_network_for_test(chrome.borrow().tree_handle(), 1);
+        chrome
+            .borrow_mut()
+            .window_transfers
+            .set_hosted_rooms(Box::new(crate::shell::document_import::NativeHostedRooms(
+                std::sync::Arc::new(network),
+            )));
         let target = {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
