@@ -150,6 +150,8 @@ impl super::App {
         }
         let started = hosted_pump_timing().then(crate::time::now);
         let _entry = self.enter_wake_scope();
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("pump.inputs");
         let (inbound, directory) = self.pump_collab_presence_inner(true);
         // Retire expired/cancelled jobs before their later model continuation.
         // A completion produced below is polled on the following host pass.
@@ -166,6 +168,8 @@ impl super::App {
             || !self.actions.pending_application_launches.is_empty();
         let next_deadline = self.root_widget.next_wake_deadline();
         let deadline_due = next_deadline.is_some_and(|deadline| deadline <= crate::time::now());
+        #[cfg(test)]
+        drop(probe);
         let mut force_sync = always_refresh
             || inbound
             || authority_changed
@@ -183,19 +187,31 @@ impl super::App {
             || wakes.is_some_and(|(pending, _)| pending)
         {
             report.updated = true;
+            #[cfg(test)]
+            let _probe = crate::profiling::frame_probe::span("pump.update");
             self.update_model();
             // A model-dirty wake raised while draining joins this sync.
             force_sync |= self.take_hosted_wakes().is_none_or(|(_, sync)| sync);
         }
         // A host pump is the worker's model frame and must drain asynchronous
         // notifications even when no native Wake/redraw event exists.
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("pump.sync");
         report.synced = self.sync_model(force_sync);
+        #[cfg(test)]
+        drop(probe);
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("pump.idle");
         let progress = self.service_idle_model();
+        #[cfg(test)]
+        drop(probe);
         if progress.changed && !report.synced {
             // Local control/history/commit progress changed model state after
             // the (skipped) sync; the publication below must not reuse it.
             self.invalidate_widget_resource_cache();
         }
+        #[cfg(test)]
+        let _publish_probe = crate::profiling::frame_probe::span("pump.publish");
         if always_refresh
             || self.actions.hosted.publication.is_none()
             || self.hosted_publication_stamp() != self.actions.hosted.publication
@@ -427,7 +443,11 @@ impl super::App {
     }
 
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("idle.discovery");
         let history_changed = self.refresh_local_undo_discovery();
+        #[cfg(test)]
+        drop(probe);
         let changed = self.service_local_control_history() || history_changed;
         // This is local writer progress, never a durable owner receipt. The
         // existing scoped publication barrier still gates terminal success.
