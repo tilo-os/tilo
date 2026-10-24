@@ -371,6 +371,7 @@ impl ShellNetwork {
             .remove(&id);
         match target {
             Some((room, local)) => {
+                self.placement_enrollment_ended(room, result.is_ok());
                 self.enrollment_ended(
                     room,
                     local,
