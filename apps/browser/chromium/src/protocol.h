@@ -36,6 +36,20 @@ inline ReadResult ReadPacket(std::istream& in, Packet& p) {
   if(p.kind==2 && !ValidFrame(p.data)) return ReadResult::Error;
   return ReadResult::Ok;
 }
+// Where a frame packet's pixels start: after its length, kind, tab (routed
+// tabs only) and dimensions.
+inline size_t FramePixelOffset(uint32_t tab) { return tab==1 ? 13 : 17; }
+// One tab's frame as a whole packet, its pixels copied once: kind 2 for the
+// first tab, kind 3 carrying the tab for the others. Empty when the pixels do
+// not match the dimensions or the packet would pass the limit.
+inline std::string FramePacket(uint32_t tab,uint32_t width,uint32_t height,const char* pixels,size_t size) {
+  const size_t offset=FramePixelOffset(tab);
+  if(!tab || size!=FrameSize(width,height) || !size || size+offset-4>kMaxPacket) return {};
+  std::string out; out.reserve(offset+size);
+  AppendU32(out,static_cast<uint32_t>(size+offset-4)); out.push_back(static_cast<char>(tab==1?2:3));
+  if(tab!=1) AppendU32(out,tab);
+  AppendU32(out,width); AppendU32(out,height); out.append(pixels,size); return out;
+}
 inline std::string EncodePacket(uint8_t kind,const std::string& data) {
   if(data.size()+1>kMaxPacket) throw std::length_error("IPC packet too large");
   std::string out; out.reserve(data.size()+5); AppendU32(out,static_cast<uint32_t>(data.size()+1)); out.push_back(kind); out+=data; return out;

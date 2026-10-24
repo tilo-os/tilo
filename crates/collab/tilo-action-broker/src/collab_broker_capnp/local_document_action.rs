@@ -28,6 +28,12 @@ pub(super) struct ReceiptRecord {
 }
 
 impl ReceiptRecord {
+    /// The connection whose report this admitted.
+    #[cfg(test)]
+    pub(super) const fn peer_id(&self) -> u64 {
+        self.peer_id
+    }
+
     #[cfg(test)]
     pub(super) fn admitted_request_is(&self, request: &serde_json::Value) -> bool {
         self.request_digest == admission_request_digest(request)
@@ -139,15 +145,16 @@ fn cached_receipt(
     }
     let current = state.revalidate_admission(route, &channel.verified_identity)?;
     validate_report_custody(request, route, &current)?;
-    // Host workers are registered for the whole of their connection, so a
-    // connection that is not one never was: nothing reported on it can have
-    // been admitted, and nothing will be. Say so definitively, or the caller
-    // keeps every report (and the surface it was made under) forever.
+    // A worker is registered on a route when its connection joins it, for
+    // as long as the connection lives, so a connection that is no worker
+    // here never was: nothing reported on it can have been admitted, and
+    // nothing will be. Say so definitively, or the caller keeps every
+    // report (and the surface it was made under) forever.
     let target = state
         .host_workers
         .lock()
         .map_err(|_| capnp::Error::failed("worker registry unavailable".into()))?
-        .get(&channel.peer_id)
+        .get(channel.peer_id, route)
         .cloned()
         .ok_or_else(|| not_a_host_worker(state))?;
     state.revalidate_admission(route, &target)?;
@@ -251,9 +258,10 @@ fn validate_report_offer(request: &Request, action: &PublishedAction) -> Result<
     Ok(())
 }
 
-/// The answer to a report on a connection with no host-worker registration.
-/// Retirement clears every registration, and says nothing about what was
-/// admitted before it: that stays uncertain.
+/// The answer to a report on a route its connection is no worker on: a
+/// connection no launcher authenticated, or a route of another app than the
+/// one launched. Retirement clears every registration, and says nothing
+/// about what was admitted before it: that stays uncertain.
 fn not_a_host_worker(state: &CapnpBrokerState) -> capnp::Error {
     if state.is_accepting() {
         rejected(runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING.into())
@@ -358,7 +366,7 @@ pub(super) fn admit(
             .host_workers
             .lock()
             .map_err(|_| rejected("worker registry unavailable".into()))?
-            .get(&peer)
+            .get(peer, &route)
             .cloned()
             .ok_or_else(|| not_a_host_worker(state))?;
         state

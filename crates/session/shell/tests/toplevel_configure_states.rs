@@ -625,6 +625,7 @@ fn opening_a_window_ends_a_full_screen_and_a_provisional_one_does_not() {
                 kind: shell::shell::state::AppKind::Other("Notes".into()),
                 label: "Notes".into(),
             },
+            app_title: None,
         };
         shell::shell::tab_binding::place_tab(
             &mut tree,
@@ -673,6 +674,7 @@ fn an_expanded_window_ends_its_full_screen_only_for_a_window_the_person_opened()
             kind: shell::shell::state::AppKind::Other(title.into()),
             label: title.into(),
         },
+        app_title: None,
     };
 
     {
@@ -729,6 +731,7 @@ fn stub_tab(id: u64, title: &str) -> shell::shell::state::Tab {
             kind: shell::shell::state::AppKind::Other(title.into()),
             label: title.into(),
         },
+        app_title: None,
     }
 }
 
@@ -956,4 +959,219 @@ fn an_app_that_stops_answering_shows_not_responding_until_it_answers() {
         "and it shows again if the app still does not answer"
     );
     assert!(cleared && !recovered, "the answer clears it by itself");
+}
+
+/// What one compositor tick shows of a window in full screen, placed as the
+/// native loop places it every frame.
+#[derive(Debug)]
+struct FullScreenTick {
+    /// The window drawn as the overlay above everything, and where.
+    overlay: Option<(u64, Rect)>,
+    /// The group laid out full screen in the desktop beneath the shell.
+    beneath_shell: Option<u64>,
+    /// Where the desktop draws the window's tile.
+    tile: Option<Rect>,
+    /// The full top bar stands aside.
+    top_bar_aside: bool,
+    /// The surface handed straight to the display, if any.
+    scanout: Option<u64>,
+    /// Which surface holds the keyboard.
+    keyboard: Option<u64>,
+    /// The client is still in its own full screen.
+    still_full_screen: bool,
+    palette: bool,
+}
+
+impl Harness {
+    /// One tick: full screen placed (`FrameBuilder::set_client_fullscreen_group`,
+    /// then the overlay as `reconcile_fullscreen_overlay` places it), a frame
+    /// painted, and the keyboard reconciled.
+    fn full_screen_tick(&mut self, surface: u64, output: Rect) -> FullScreenTick {
+        let group = self.wl.state.client_fullscreen_group();
+        self.frame.set_client_fullscreen_group(group);
+        self.frame.set_client_fullscreen_surface(
+            group.map(|_| (surface, "Fullscreen".to_owned(), output)),
+        );
+        let mut scanout = None;
+        for _ in 0..2 {
+            self.frame.relayout();
+            scanout = self
+                .frame
+                .paint_with_damage()
+                .scanout_candidate()
+                .map(|candidate| candidate.surface);
+        }
+        shell::compositor::client_input::sync_keyboard_focus(&mut self.wl.state, &self.frame);
+        self.pump();
+        let tile = self.frame.foreign_surface_rect(surface);
+        FullScreenTick {
+            overlay: self.frame.fullscreen_surface_rect(),
+            beneath_shell: self.frame.chrome().client_fullscreen_group(),
+            tile,
+            top_bar_aside: self.frame.chrome().fullscreen_covers_primary(),
+            scanout,
+            keyboard: self.wl.state.client_input.keyboard_focus(),
+            still_full_screen: self.wl.state.client_fullscreen_group().is_some(),
+            palette: self.frame.host().palette_visible(),
+        }
+    }
+}
+
+impl Harness {
+    /// Press and release `key` on the shell, as the seat delivers it.
+    fn press_and_release(
+        &mut self,
+        doc: &mut automerge::AutoCommit,
+        key: winit::keyboard::NamedKey,
+    ) {
+        let mut focus = None;
+        for state in [
+            winit::event::ElementState::Pressed,
+            winit::event::ElementState::Released,
+        ] {
+            let event = winit::event::WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event: ui::synthetic_input::key_event(
+                    winit::keyboard::Key::Named(key),
+                    None,
+                    state,
+                ),
+                is_synthetic: false,
+            };
+            self.frame.dispatch_event(
+                &event,
+                &winit::event::Modifiers::default(),
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT,
+                &mut focus,
+            );
+        }
+    }
+}
+
+/// A window in full screen, then search (Super+Space): the palette shows
+/// over it on its display, the window stays full screen and the top bar
+/// stays hidden; nothing of the window is drawn above the palette or handed
+/// straight to the display. Esc closes the palette, and the keyboard goes
+/// back to the window, drawn over everything and scanned out again.
+#[test]
+fn search_shows_over_a_full_screen_window_and_esc_gives_it_the_keyboard_back() {
+    search_over_a_full_screen_window(false);
+}
+
+/// The same with the window also put full screen by the person (Super+F)
+/// before the app inside it went full screen, as a video page does: search
+/// still shows over it rather than opening unseen beneath the window.
+#[test]
+fn search_shows_over_a_full_screen_page_in_a_super_f_window() {
+    search_over_a_full_screen_window(true);
+}
+
+fn search_over_a_full_screen_window(super_f: bool) {
+    const FULLSCREEN: u32 = 2;
+    const SIZE: (u32, u32) = (1600, 900);
+    let output = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
+    let mut h = Harness::new();
+    h.state.output_size = (1600, 900);
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, "org.tilo.Movie");
+    toplevel.set_app_id("org.tilo.Movie".into());
+    surface.commit();
+    h.pump();
+    let id = h.foreign_id("org.tilo.Movie");
+    let store = shell::compositor::foreign::store();
+    store.note_placement(id, Rect::new(0.0, 0.0, 800.0, 820.0));
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+    // Its full-screen frame: opaque and the size of the display.
+    let pixels = [10, 20, 30, 255].repeat(SIZE.0.saturating_mul(SIZE.1) as usize);
+    store.publish_rgba(id, &pixels, SIZE.0, SIZE.1);
+    h.focus(id);
+    if super_f {
+        // Super+F parks the focused group.
+        let group = {
+            let tree = h.state.workspace_tree.read();
+            let desktop = &tree.desktop;
+            let strip = *desktop.active_strip.get(&desktop.active).expect("a strip");
+            let group = desktop.active_group_for(strip);
+            drop(tree);
+            group
+        };
+        assert!(group.is_some(), "fixture: the window's group is focused");
+        h.frame
+            .with_chrome(|chrome| chrome.set_user_fullscreen_group(group));
+    }
+    toplevel.set_fullscreen(None);
+    h.pump();
+    // The extent `reconcile_fullscreen_overlay` gives the full-screen client.
+    store.note_fullscreen_extent(id, (1600, 900));
+    let group = h.state.client_fullscreen_group();
+    let before = h.full_screen_tick(id, output);
+
+    // Super+Space.
+    let mut doc = automerge::AutoCommit::new();
+    h.frame
+        .host_mut()
+        .open_global_search(&doc, &automerge::ROOT);
+    let searching = h.full_screen_tick(id, output);
+    let states_searching = h.last_states("org.tilo.Movie");
+
+    // Esc.
+    h.press_and_release(&mut doc, winit::keyboard::NamedKey::Escape);
+    let after = h.full_screen_tick(id, output);
+    let states_after = h.last_states("org.tilo.Movie");
+    drop(h);
+    store.forget(id);
+
+    assert!(group.is_some(), "fixture: the window is full screen");
+    assert_eq!(before.overlay, Some((id, output)), "{before:?}");
+    assert_eq!(before.beneath_shell, None, "{before:?}");
+    assert_eq!(before.scanout, Some(id), "alone on top: {before:?}");
+    assert_eq!(before.keyboard, Some(id), "{before:?}");
+
+    assert!(searching.palette, "Super+Space opens search: {searching:?}");
+    assert_eq!(
+        searching.overlay, None,
+        "nothing of the window is drawn above the palette: {searching:?}"
+    );
+    assert_eq!(searching.beneath_shell, group, "{searching:?}");
+    let tile = searching.tile.expect("the desktop draws the window");
+    assert!(
+        tile.x0 <= output.x0
+            && tile.y0 <= output.y0
+            && tile.x1 >= output.x1
+            && tile.y1 >= output.y1,
+        "it still fills its display beneath the palette: {tile:?}"
+    );
+    assert!(
+        searching.top_bar_aside,
+        "the top bar stays hidden: {searching:?}"
+    );
+    assert_eq!(
+        searching.scanout, None,
+        "the palette is composited over it: {searching:?}"
+    );
+    assert_eq!(
+        searching.keyboard, None,
+        "search has the keyboard: {searching:?}"
+    );
+    assert!(searching.still_full_screen, "{searching:?}");
+    assert!(
+        states_searching.contains(&FULLSCREEN),
+        "the window is never told it left full screen: {states_searching:?}"
+    );
+
+    assert!(!after.palette, "Esc closes search: {after:?}");
+    assert_eq!(after.overlay, Some((id, output)), "{after:?}");
+    assert_eq!(after.beneath_shell, None, "{after:?}");
+    assert_eq!(after.scanout, Some(id), "scanned out again: {after:?}");
+    assert_eq!(after.keyboard, Some(id), "the keyboard is back: {after:?}");
+    assert!(after.still_full_screen, "{after:?}");
+    assert!(states_after.contains(&FULLSCREEN), "{states_after:?}");
 }

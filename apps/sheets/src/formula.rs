@@ -33,7 +33,10 @@ use ui::num::f64_of_usize;
 use crate::model::{Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1};
 
 mod book;
+mod resolve;
+mod rounding;
 pub use book::{Book, recalculate_in_book, recalculate_snapshot};
+use rounding::RoundMode;
 
 // ---------------------------------------------------------------------------
 // Character cursor
@@ -1103,7 +1106,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         let addrs: Vec<Addr> = self.raw.keys().copied().collect();
         for addr in addrs {
             if !self.cache.contains_key(&addr) {
-                let v = self.eval_cell(addr);
+                let v = self.resolve(addr);
                 self.cache.insert(addr, v);
             }
         }
@@ -1507,7 +1510,10 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         let value = match name {
             "ABS" => self.unary_num(args, f64::abs),
             "SQRT" => self.unary_num(args, f64::sqrt),
-            "INT" | "FLOOR" => self.unary_num(args, f64::floor),
+            "INT" => self.unary_num(args, f64::floor),
+            "FLOOR" => {
+                self.round_to_multiple(args, f64::floor, CellValue::Error(FormulaError::Div0))
+            }
             "SIGN" => self.unary_num(args, f64::signum),
             "EXP" => self.unary_num(args, f64::exp),
             "LN" => self.unary_num(args, f64::ln),
@@ -1538,7 +1544,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 }
             }),
             "POWER" => self.binary_num(args, |a, b| Some(a.powf(b))),
-            "CEILING" => self.unary_num(args, f64::ceil),
+            "CEILING" => self.round_to_multiple(args, f64::ceil, CellValue::Number(0.0)),
             _ => return None,
         };
         Some(value)
@@ -1796,39 +1802,6 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             },
             _ => CellValue::Error(FormulaError::Value),
         }
-    }
-
-    fn round_fn(&mut self, args: &[Expr], mode: RoundMode) -> CellValue {
-        let Some(value_expr) = args.first() else {
-            return CellValue::Error(FormulaError::Error);
-        };
-        let v = self.eval_expr(value_expr);
-        if v.is_error() {
-            return v;
-        }
-        let Some(n) = v.as_number() else {
-            return CellValue::Error(FormulaError::Value);
-        };
-        // Past ±308 the scale factor is already 0 or infinite, so clamping
-        // there loses nothing and keeps the exponent in range.
-        let digits = args.get(1).map_or(0, |a| {
-            let scale = self.eval_expr(a).as_number().unwrap_or(0.0);
-            i32::try_from(number_to_int(scale).clamp(-308, 308)).unwrap_or(0)
-        });
-        let factor = 10f64.powi(digits);
-        let scaled = n * factor;
-        let rounded = match mode {
-            RoundMode::Nearest => scaled.round(),
-            RoundMode::Down => scaled.trunc(),
-            RoundMode::Up => {
-                if scaled >= 0.0 {
-                    scaled.ceil()
-                } else {
-                    scaled.floor()
-                }
-            }
-        };
-        CellValue::Number(rounded / factor)
     }
 
     fn unary_text(&mut self, args: &[Expr], f: impl Fn(&str) -> String) -> CellValue {
@@ -2312,13 +2285,6 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             TimeComponent::Second => seconds,
         }))
     }
-}
-
-#[derive(Clone, Copy)]
-enum RoundMode {
-    Nearest,
-    Down,
-    Up,
 }
 
 /// Which way a lookup scans its table.
@@ -3026,6 +2992,19 @@ mod tests {
             assert_eq!(val(&m, "A2"), CellValue::Number(2.0));
             assert_eq!(val(&m, "A3"), CellValue::Number(12.0));
             assert_eq!(val(&m, "A4"), CellValue::Number(3.14));
+            // Halves round away from zero at the digits typed, as in Excel,
+            // although 0.285 and 1.005 sit just below their halves in binary.
+            for (formula, rounded) in [
+                ("=ROUND(0.285,2)", 0.29),
+                ("=ROUND(1.005,2)", 1.01),
+                ("=ROUND(-1.005,2)", -1.01),
+                ("=ROUND(1234.5,-2)", 1200.0),
+                ("=ROUNDUP(0.1+0.2,1)", 0.3),
+                ("=ROUNDDOWN(4.35*100,0)", 435.0),
+            ] {
+                let m = run(&[("A1", formula)]);
+                assert_eq!(val(&m, "A1"), CellValue::Number(rounded), "{formula}");
+            }
             assert_eq!(val(&m, "A5"), CellValue::Number(8.0));
             assert_eq!(val(&m, "A6"), CellValue::Number(7.0));
             assert_eq!(val(&m, "A7"), CellValue::Number(24.0));

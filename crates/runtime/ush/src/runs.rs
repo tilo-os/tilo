@@ -4,9 +4,8 @@
 //! (docs/app-model/ush.md, "Command runs").
 //!
 //! Terminal names a key per session (`"runs"` in `open-session`). When the
-//! session's shell is `bash`, it starts with [`bash_rc`] as its rc file: the
-//! person's own rc first, then a `DEBUG` trap and a `PROMPT_COMMAND` that
-//! write
+//! session's shell is `bash`, its rc file ([`crate::shell_start::bash_rc`])
+//! ends with a `DEBUG` trap and a `PROMPT_COMMAND` that write
 //!
 //! ```text
 //! ESC ] 133 ; A ; k=<key> BEL                           the prompt is shown
@@ -24,9 +23,6 @@ use std::path::Path;
 /// from the supervisor, to the `run` process that builds the guest).
 pub const KEY_ENV: &str = "TILO_USH_RUNS";
 
-/// Where the rc file is in a guest.
-pub const GUEST_RC: &str = "/run/ush/runs.bash";
-
 /// Whether `key` may mark a session's runs: 16 to 64 ASCII letters and
 /// digits, so it is safe inside a mark and a shell word.
 #[must_use]
@@ -40,21 +36,9 @@ pub fn is_bash(shell: &Path) -> bool {
     shell.file_name().is_some_and(|name| name == "bash")
 }
 
-/// The rc file of a marked `bash`: `/etc/profile` first when `profile`
-/// (the Host target's login shell, which this replaces), then the person's
-/// `~/.bashrc`, then the marks.
-#[must_use]
-pub fn bash_rc(profile: bool) -> String {
-    let mut rc = String::from("# ush: marks each command run for Terminal\n");
-    if profile {
-        rc.push_str("[ -f /etc/profile ] && . /etc/profile\n");
-    }
-    rc.push_str(MARKS);
-    rc
-}
-
-const MARKS: &str = r#"[ -f ~/.bashrc ] && . ~/.bashrc
-__ush_runs_key=$TILO_USH_RUNS
+/// The marks the session's `bash` rc file ends with
+/// ([`crate::shell_start::bash_rc`]).
+pub(crate) const MARKS: &str = r#"__ush_runs_key=$TILO_USH_RUNS
 unset TILO_USH_RUNS
 __ush_runs_armed=0
 __ush_runs_ran=0
@@ -117,7 +101,7 @@ mod tests {
         };
         let home = tempfile::tempdir().unwrap();
         let rc = home.path().join("runs.bash");
-        std::fs::write(&rc, bash_rc(false)).unwrap();
+        std::fs::write(&rc, crate::shell_start::bash_rc("", true)).unwrap();
         let key = "k3y0fth1ss3ss10n";
         let output = std::process::Command::new(bash)
             .args(["--rcfile", rc.to_str().unwrap(), "-i"])

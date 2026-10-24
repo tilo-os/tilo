@@ -150,6 +150,7 @@ impl WindowControls {
                     pressed: state.pressed == Some(control),
                     on: control == WindowControl::History && state.history_open,
                     enabled: true,
+                    destructive: false,
                 },
             );
         }
@@ -164,6 +165,8 @@ pub struct ButtonFace {
     pub on: bool,
     /// It can act now.
     pub enabled: bool,
+    /// It ends, removes or discards something: the destructive role's face.
+    pub destructive: bool,
 }
 
 /// Paint one icon button of the window's bar with the shared button face
@@ -178,7 +181,13 @@ pub fn paint_icon_button(
     (rect, icon): (Rect, icons::Icon),
     face: ButtonFace,
 ) {
+    let role = if face.destructive {
+        crate::widget::ButtonRole::Destructive
+    } else {
+        crate::widget::ButtonRole::Plain
+    };
     let face = crate::widget::ButtonFace::icon_only(rect, icon, "")
+        .role(role)
         .control_size(crate::widget::ControlSize::Small)
         .hovered(face.hovered && face.enabled)
         .pressed(face.pressed && face.enabled)

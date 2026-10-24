@@ -636,9 +636,7 @@ fn deleting_from_the_window_asks_the_host_once() {
             .contains("Delete this request?"),
         "the window asks nothing of its own"
     );
-    app.harness().type_text("CONFIRM");
-    app.harness().key("Enter");
-    app.settle();
+    assert!(app.confirm_asked().is_some(), "the host asks");
     assert_eq!(
         count(&app),
         before - 1,

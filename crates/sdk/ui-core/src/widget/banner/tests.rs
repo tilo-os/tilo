@@ -193,3 +193,110 @@ fn the_banner_is_a_live_region_by_severity() {
         Some(Politeness::Polite)
     );
 }
+
+/// The banner (first) and what follows it in the harness's column.
+fn band_and_shift(d: &FrameHarness, span: f64) -> (Option<crate::widget::Disclosing>, f64) {
+    let children = d.root_widget().children();
+    let band = children[0].disclosing();
+    let shift = band.map_or(0.0, |band| band.follower_offset(span - band.extent));
+    (band, shift)
+}
+
+fn sync_column(state: &crate::LocalState<Option<BannerNotice>>, dismissible: bool) -> Column {
+    let banner = Banner::from_state(state).with_id("sync");
+    let banner = if dismissible {
+        banner.dismissible()
+    } else {
+        banner
+    };
+    Column::new()
+        .push(Box::new(banner))
+        .push(Box::new(crate::widget::Text::new("Below").with_id("below")))
+}
+
+fn sync_failed() -> BannerNotice {
+    BannerNotice::error("Sync failed").message("We'll keep trying in the background.")
+}
+
+#[test]
+fn an_arriving_banner_discloses_and_what_follows_moves_with_its_edge() {
+    let state = crate::LocalState::new(None::<BannerNotice>);
+    let mut d = driver(Box::new(sync_column(&state, false)));
+    let empty_y = d.targets()["below"].y0;
+    // Nobody did anything: the window went offline. The frame's instant is
+    // held, so the test reads the motion where it starts.
+    let _frame = crate::motion::pin_frame();
+    state.set(Some(sync_failed()));
+    d.relayout();
+    let shown_y = d.targets()["below"].y0;
+    assert!(
+        shown_y > empty_y + 30.0,
+        "the layout gives the banner its room at once"
+    );
+    let (band, shift) = band_and_shift(&d, shown_y - empty_y);
+    let band = band.expect("an unprompted banner still discloses");
+    assert!(band.laid && band.drawn.abs() < 0.5, "it opens from nothing");
+    assert!(
+        (shown_y + shift - empty_y).abs() < 0.5,
+        "what follows is drawn where it stood and moves by transform"
+    );
+    assert!(d.root_widget().needs_animation_frame());
+
+    // At rest it asks for nothing and nothing is shifted.
+    let _settled = crate::motion::testing::settled();
+    let (band, _) = band_and_shift(&d, shown_y - empty_y);
+    assert!(band.is_none());
+    assert!(!d.root_widget().needs_animation_frame());
+}
+
+#[test]
+fn a_banner_dismissed_by_pointer_collapses_and_by_key_lands() {
+    let state = crate::LocalState::new(Some(sync_failed()));
+    let mut d = driver(Box::new(sync_column(&state, true)));
+    let (band, _) = band_and_shift(&d, 0.0);
+    assert!(band.is_none(), "first paint shows the banner at rest");
+    let shown_y = d.targets()["below"].y0;
+    let dismiss = d.targets()["sync.dismiss"];
+
+    let _frame = crate::motion::pin_frame();
+    d.click_at(dismiss.center().x, dismiss.center().y);
+    d.relayout();
+    let empty_y = d.targets()["below"].y0;
+    assert!(empty_y < shown_y - 30.0, "the layout closes at once");
+    let (band, shift) = band_and_shift(&d, shown_y - empty_y);
+    let band = band.expect("a click collapses it");
+    assert!(!band.laid);
+    assert!(
+        (empty_y + shift - shown_y).abs() < 0.5,
+        "what follows starts where it stood"
+    );
+    drop(_frame);
+
+    // Shown again and hidden by a key: it lands.
+    let mut d = driver(Box::new(sync_column(&state, false)));
+    state.set(Some(sync_failed()));
+    d.relayout();
+    crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+    state.set(None);
+    d.relayout();
+    assert!(band_and_shift(&d, 0.0).0.is_none(), "a key's result lands");
+}
+
+#[test]
+fn under_reduced_motion_a_banner_lands_and_its_contents_fade_in() {
+    let state = crate::LocalState::new(None::<BannerNotice>);
+    let mut d = driver(Box::new(sync_column(&state, false)));
+    d.set_theme(Theme::dark().with_reduce_motion(true));
+    let empty_y = d.targets()["below"].y0;
+    let _frame = crate::motion::pin_frame();
+    state.set(Some(sync_failed()));
+    d.relayout();
+    let shown_y = d.targets()["below"].y0;
+    let (band, shift) = band_and_shift(&d, shown_y - empty_y);
+    let band = band.expect("its contents fade in");
+    assert!(
+        (band.drawn - band.extent).abs() < 0.5,
+        "the height lands at once"
+    );
+    assert!(shift.abs() < 0.5, "nothing below moves");
+}

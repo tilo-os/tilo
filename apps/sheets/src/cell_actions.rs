@@ -434,9 +434,10 @@ fn formula_errors(snap: &SheetSnapshot, start: Addr, end: Addr) -> Vec<serde_jso
 
 /// The cell edits that answer with the range they changed, so a caller sees
 /// the values it produced without reading them back.
-pub const ANSWERING_EDITS: [&str; 7] = [
+pub const ANSWERING_EDITS: [&str; 8] = [
     "new-sheet",
     "set-records",
+    "upsert-item",
     "set-cells",
     "write-cells",
     "format-cells",
@@ -461,6 +462,11 @@ pub fn answer(
     use ui::tilo_resource::Resource as _;
     if !ANSWERING_EDITS.contains(&action) {
         return None;
+    }
+    // An edit run again that wrote nothing new (an upsert of a row as it
+    // is) still answers, so its caller sees it held rather than failed.
+    if changes.is_empty() {
+        return Some(serde_json::json!({ "unchanged": true }));
     }
     let workbook = crate::workbook::Workbook::read(doc).ok()?;
     let touched = touched_cells(changes);

@@ -525,3 +525,40 @@ fn the_workbook_reads_as_rows_of_what_its_cells_show() {
     assert!(Workbook::read_content(&state, book.doc(), Some("Nope")).is_err());
     assert!(Workbook::read_content(&state, book.doc(), Some("Sheet1!ZZ")).is_err());
 }
+
+/// Two people adding a row by its key at once each keep their own row: the
+/// row an upsert appends is new, never the next row reached by position.
+#[test]
+fn rows_two_replicas_upsert_at_once_are_two_rows() {
+    let mut ours = Replica::<Workbook>::new();
+    let first = Id::from_raw(FIRST_SHEET_ID);
+    write(&mut ours, &first, &[("A1", "Name"), ("B1", "Seats")]);
+    let mut theirs = ours.fork();
+    let upsert = |name: &str, seats: i64| {
+        Workbook::UPSERT_ITEM.with(verbs::UpsertItem {
+            sheet: first.clone(),
+            matching: [("Name".to_owned(), serde_json::json!(name))].into(),
+            value: [("Seats".to_owned(), serde_json::json!(seats))].into(),
+        })
+    };
+    ours.apply(upsert("Ana", 2)).unwrap();
+    theirs.apply(upsert("Ben", 3)).unwrap();
+    ours.sync_with(&mut theirs).unwrap();
+    let state = ours.state().unwrap();
+    assert_eq!(state, theirs.state().unwrap());
+    let snapshot = sheet_of(&state, &first).snapshot();
+    let mut rows: Vec<(String, String)> = (1..3)
+        .map(|row| {
+            let cell = |col| snapshot.raw.get(&(col, row)).cloned().unwrap_or_default();
+            (cell(0), cell(1))
+        })
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            ("Ana".to_owned(), "2".to_owned()),
+            ("Ben".to_owned(), "3".to_owned())
+        ]
+    );
+}

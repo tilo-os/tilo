@@ -728,9 +728,11 @@ impl NumberInput {
     }
 
     /// Move the value by `delta` (one stepper press / arrow), clamping.
-    /// Records a change + pending write when it actually moves.
+    /// Records a change + pending write when it actually moves. The sum is
+    /// the decimal the value and step make, so tenths stay tenths.
     fn step_by(&mut self, delta: f64) {
-        let next = (self.value + delta).clamp(self.min, self.max);
+        let next = crate::num::snap_decimal(self.value + delta, &[self.value, delta])
+            .clamp(self.min, self.max);
         if !next.is_nan() && next.total_cmp(&self.value).is_ne() {
             self.value = next;
             self.record_user_value(next);
@@ -1397,6 +1399,37 @@ mod tests {
         number.sync(&AutoCommit::new(), &automerge::ROOT);
         assert_eq!(number.value(), 3e-18);
         assert_eq!(number.field.value(), "0.000000000000000003");
+    }
+
+    #[test]
+    fn decimal_steps_land_on_the_value_shown_and_reach_the_ends() {
+        let mut n = NumberInput::new(0.0)
+            .with_range(0.0, 1.0)
+            .with_step(0.1)
+            .with_precision(1);
+        layout_at(&mut n, 0.0, 0.0);
+        n.field.set_focus(true);
+        for _ in 0..3 {
+            dispatch(&mut n, &named_key(NamedKey::ArrowUp));
+        }
+        assert_eq!(n.value(), 0.3, "three tenths up is 0.3");
+        assert_eq!(n.take_changed(), Some(0.3));
+        for _ in 0..3 {
+            dispatch(&mut n, &named_key(NamedKey::ArrowDown));
+        }
+        assert_eq!(n.value(), 0.0, "three tenths back down is the minimum");
+        assert_eq!(n.take_changed(), Some(0.0));
+        dispatch(&mut n, &named_key(NamedKey::ArrowDown));
+        assert_eq!(
+            n.take_changed(),
+            None,
+            "a step past the minimum moves nothing"
+        );
+        for _ in 0..10 {
+            dispatch(&mut n, &named_key(NamedKey::ArrowUp));
+        }
+        assert_eq!(n.value(), 1.0, "ten tenths reach the maximum");
+        assert_eq!(n.field.value(), "1.0");
     }
 
     #[test]

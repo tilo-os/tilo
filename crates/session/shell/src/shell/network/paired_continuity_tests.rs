@@ -506,6 +506,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
                 app_id: "so.tilo.browser".into(),
                 surface_id: 94,
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,
@@ -532,6 +533,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
                 label: "Terminal".into(),
                 note: String::new(),
             },
+            app_title: None,
         }],
         active_tab: local_tab,
         width: WindowWidth::Normal,
@@ -868,6 +870,19 @@ fn claim_editor(
     });
 }
 
+/// A continuation registry that knows `tab` as the same app instance on both sides.
+fn registry_bound_to(
+    tab: u64,
+) -> Arc<Mutex<crate::shell::personal_continuity_registry::ContinuationRegistry>> {
+    let registry = crate::shell::personal_continuity_registry::ContinuationRegistry::default();
+    let registry = Arc::new(Mutex::new(registry));
+    registry.lock().unwrap().bind_tab(
+        crate::shell::personal_continuity::AppInstanceId(tab),
+        crate::shell::personal_continuity::AppInstanceId(tab),
+    );
+    registry
+}
+
 impl NativeEditorPair {
     fn new() -> OwnerFixtureFuture<'static, Self> {
         Box::pin(async move {
@@ -908,6 +923,7 @@ impl NativeEditorPair {
                             app_id: "so.tilo.code-editor".into(),
                             surface_id: 0xB1,
                         },
+                        app_title: None,
                     }],
                     active_tab: tab,
                     width: WindowWidth::Normal,
@@ -922,18 +938,8 @@ impl NativeEditorPair {
                 Some(home.data().join("left-continuity.bin"));
             right.network_mut().personal_continuity_path =
                 Some(home.data().join("right-continuity.bin"));
-            let left_registry = Arc::new(Mutex::new(
-                crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
-            ));
-            let right_registry = Arc::new(Mutex::new(
-                crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
-            ));
-            for registry in [&left_registry, &right_registry] {
-                registry.lock().unwrap().bind_tab(
-                    crate::shell::personal_continuity::AppInstanceId(tab),
-                    crate::shell::personal_continuity::AppInstanceId(tab),
-                );
-            }
+            let left_registry = registry_bound_to(tab);
+            let right_registry = registry_bound_to(tab);
             let target_document = target.peer_document();
             let target_semantic = target
                 .surface_mut::<code_editor::CodeApp>()

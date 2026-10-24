@@ -5,6 +5,7 @@ use crate::widget::{Column, TileContent, TileHost};
 use automerge::ReadDoc;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use taffy::TaffyTree;
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionSpec, EncodedAction, ExecutionLocus, LocalTransport,
     Resource,

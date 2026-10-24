@@ -10,7 +10,7 @@
 //! checked against its request ([`CHECK_WORK_ENV`]): small models skip or
 //! get wrong a part of a long request most often, so their presets check.
 
-use tilo_model_gateway::host_backend::TokenLimitParam;
+use tilo_model_gateway::host_backend::{OpenAiApi, TokenLimitParam};
 
 /// Select `fastest`, `balanced` or `cheapest` for a host-side planner.
 pub const PRESET_ENV: &str = "TILO_AGENT_PRESET";
@@ -29,6 +29,11 @@ pub const HEDGE_ENV: &str = "TILO_AGENT_HEDGE_MS";
 /// Name an OpenAI-compatible endpoint's output limit `max_tokens` or
 /// `max_completion_tokens`, whatever the model's family suggests.
 pub const TOKEN_LIMIT_ENV: &str = "TILO_AGENT_TOKEN_LIMIT_PARAM";
+/// Ask an OpenAI-compatible endpoint through `responses` or
+/// `chat_completions`, whatever its address suggests (a proxy in front of
+/// `OpenAI` takes Responses); unset, `OpenAI`'s own API takes Responses and
+/// any other endpoint chat completions.
+pub const OPENAI_API_ENV: &str = "TILO_AGENT_OPENAI_API";
 
 /// A coarse model-family hint, overridable for provider aliases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +115,9 @@ pub struct Profile {
     /// The output limit's field ([`TOKEN_LIMIT_ENV`]); `None` sends the
     /// request's own (`max_tokens`).
     token_limit: Option<TokenLimitParam>,
+    /// The API asked through ([`OPENAI_API_ENV`]); `None` as the endpoint
+    /// suggests.
+    openai_api: Option<OpenAiApi>,
 }
 
 impl Profile {
@@ -135,6 +143,13 @@ impl Profile {
             },
             None => reasoning_family(model).then_some(TokenLimitParam::MaxCompletionTokens),
         };
+        profile.openai_api = explicit(OPENAI_API_ENV).and_then(|named| {
+            match named.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+                "responses" => Some(OpenAiApi::Responses),
+                "chat_completions" | "chat" => Some(OpenAiApi::ChatCompletions),
+                _ => None,
+            }
+        });
         if let Some(tier) = explicit(SERVICE_TIER_ENV) {
             profile.service_tier = recognised(&tier, &["auto", "default", "flex", "priority"]);
         }
@@ -181,6 +196,13 @@ impl Profile {
         self.token_limit
     }
 
+    /// The API an OpenAI-compatible endpoint is asked through, when it was
+    /// named.
+    #[must_use]
+    pub const fn openai_api(&self) -> Option<OpenAiApi> {
+        self.openai_api
+    }
+
     /// The service tier asked for, if any.
     #[must_use]
     pub fn service_tier(&self) -> Option<&str> {
@@ -206,6 +228,7 @@ impl Profile {
             check_work: class == ModelClass::Small,
             hedge_after: None,
             token_limit: None,
+            openai_api: None,
         }
     }
 
@@ -250,6 +273,25 @@ mod tests {
         assert_eq!(ModelClass::named("unknown"), None);
         assert_eq!(Goal::named(" FAST "), Some(Goal::Fastest));
         assert_eq!(Goal::named("unknown"), None);
+    }
+
+    #[test]
+    fn the_openai_api_is_asked_through_only_when_named() {
+        let none = |_: &str| None;
+        assert_eq!(Profile::resolve("gpt-6-luna", &none).openai_api(), None);
+        for (named, api) in [
+            (" Responses ", Some(OpenAiApi::Responses)),
+            ("chat-completions", Some(OpenAiApi::ChatCompletions)),
+            ("chat", Some(OpenAiApi::ChatCompletions)),
+            ("graphql", None),
+        ] {
+            let told = |name: &str| (name == OPENAI_API_ENV).then(|| named.to_owned());
+            assert_eq!(
+                Profile::resolve("gpt-6-luna", &told).openai_api(),
+                api,
+                "{named}"
+            );
+        }
     }
 
     #[test]

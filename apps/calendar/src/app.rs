@@ -329,6 +329,11 @@ pub struct CalendarApp {
     rect: Rect,
     /// The shell's content column, holding the calendar view.
     content_rect: Rect,
+    /// Direct touch on the calendar, read for a sideways swipe.
+    fingers: ui::gesture::TouchGestureArena,
+    /// The fingers down began on the calendar's period, so a sideways swipe
+    /// of them steps it.
+    swipe_steps: bool,
     /// The editor sheet's card while it is open.
     detail_rect: Rect,
     notes_origin: Point,
@@ -510,6 +515,8 @@ impl CalendarApp {
             contacts_requested,
             rect: Rect::ZERO,
             content_rect: Rect::ZERO,
+            fingers: ui::gesture::TouchGestureArena::new(),
+            swipe_steps: false,
             detail_rect: Rect::ZERO,
             notes_origin: Point::new(-10000.0, -10000.0),
             notes_w: 0.0,
@@ -2661,6 +2668,49 @@ impl CalendarApp {
         self.dirty = true;
     }
 
+    /// Follow one finger's contact; a one-finger sideways swipe that began
+    /// on the shown period steps to the next period (leftwards) or the
+    /// previous one (rightwards). True when the swipe stepped.
+    fn swipe(&mut self, touch: &winit::event::Touch, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+        use ui::gesture::{GesturePhase, TouchGestureEvent, TouchSwipeDirection};
+        use winit::event::TouchPhase;
+        let point = ctx.logical(touch.location);
+        let phase = match touch.phase {
+            TouchPhase::Started => GesturePhase::Begin,
+            TouchPhase::Moved => GesturePhase::Update,
+            TouchPhase::Ended => GesturePhase::End,
+            TouchPhase::Cancelled => GesturePhase::Cancel,
+        };
+        if phase == GesturePhase::Begin && self.fingers.contact_count() == 0 {
+            self.swipe_steps = self.view != View::Tasks
+                && !self.repeat_scope_menu.is_open()
+                && self.calendar_content_interactive()
+                && self.content_rect.contains(point);
+        }
+        let step = self
+            .fingers
+            .on_touch(touch.id, point, phase)
+            .into_iter()
+            .find_map(|gesture| match gesture {
+                TouchGestureEvent::Swipe {
+                    fingers: 1,
+                    direction: TouchSwipeDirection::Left,
+                } => Some(Action::Next),
+                TouchGestureEvent::Swipe {
+                    fingers: 1,
+                    direction: TouchSwipeDirection::Right,
+                } => Some(Action::Prev),
+                _ => None,
+            });
+        let Some(action) = step.filter(|_| self.swipe_steps) else {
+            return false;
+        };
+        self.apply_action(action, &mut ctx.state);
+        self.dirty = true;
+        *ctx.handled = true;
+        true
+    }
+
     fn step_period(&mut self, dir: i32) {
         self.anchor = match self.view {
             View::Month => date::add_months(self.anchor, dir),
@@ -4142,6 +4192,11 @@ impl Widget for CalendarApp {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = ctx.logical(position);
             self.dirty = true;
+        }
+        if let WindowEvent::Touch(touch) = event
+            && self.swipe(touch, ctx)
+        {
+            return;
         }
 
         // The question a drag on a repeating event asks owns input while it

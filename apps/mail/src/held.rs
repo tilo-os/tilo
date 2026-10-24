@@ -363,8 +363,11 @@ impl Mail {
     }
 
     /// Write the mailbox's draft to `to` about `subject` saying `body`,
-    /// as a person would in the composer: refused over a draft already
-    /// being written, which is that person's work.
+    /// as a person would in the composer. A draft this wrote that nobody
+    /// changed since is written over; any other is the work of the person
+    /// writing it, and is left alone. The refusal names no other verb: an
+    /// agent may neither save over a draft nor discard it without asking,
+    /// since both reach outside the mailbox.
     pub(crate) fn draft_held(
         &mut self,
         to: &str,
@@ -372,10 +375,10 @@ impl Mail {
         subject: &str,
         body: &str,
     ) -> Result<(), Refusal> {
-        if self.has_draft() {
+        if self.has_draft() && !self.draft.untouched_since_drafted() {
             return Err(Refusal::new(
-                "a draft is being written already: discard it first, or save over it with \
-                 save-draft",
+                "a person is writing a draft here, and it is theirs: leave it, or ask them to \
+                 send or discard it",
             ));
         }
         let to = bounded_text(to, MAX_DRAFT_ADDRESS_CHARS, false);
@@ -383,6 +386,7 @@ impl Mail {
             return Err(Refusal::new("a draft goes to at least one address"));
         }
         let body = bounded_text(body, MAX_DRAFT_BODY_CHARS, true);
+        let started = crate::resource::started_body(&body, None);
         self.start_draft_body(body.clone(), None);
         self.save_draft(DraftData {
             to,
@@ -391,6 +395,8 @@ impl Mail {
             body,
             ..DraftData::default()
         });
+        let drafted = self.draft.fingerprint(&tilo_content::hash_bytes(&started));
+        self.draft.drafted = Some(drafted);
         Ok(())
     }
 
@@ -796,12 +802,16 @@ fn eml(held: &HeldMessage) -> Result<Vec<u8>, String> {
 }
 
 /// What a held-mail verb made, answered to its caller: the message a
-/// delivery kept, by id and item.
+/// delivery kept, by id and item, and the draft as drafting left it.
 pub(crate) fn answer(
     doc: &tilo_resource::Doc,
     action: &str,
     changes: &[automerge::Patch],
 ) -> Option<serde_json::Value> {
+    if action == "draft-message" || action == "draft-reply" {
+        let mail = crate::resource::read_mail(doc)?;
+        return Some(serde_json::json!({ "draft": mail.draft_summary() }));
+    }
     if action != "deliver-message" {
         return None;
     }

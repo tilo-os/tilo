@@ -590,6 +590,14 @@ impl<T: SettingsSchema + Clone + PartialEq> Followed<T> {
         true
     }
 
+    /// Whether the document changed since the value was last read, without
+    /// reading it: what a widget's `update` reports, so the frame syncs and
+    /// [`Self::refresh`] takes the change up.
+    #[must_use]
+    pub fn moved(&self) -> bool {
+        self.settings.revision() != self.seen
+    }
+
     /// The stored settings, for the effect that writes them.
     #[must_use]
     pub fn settings(&self) -> &StoredSettings<T> {

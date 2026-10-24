@@ -32,6 +32,9 @@ SKOPEO = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4
 TOOLS = ["os/image/build-layer.sh", "os/image/layers.toml", "os/image/args.Containerfile",
          "tools/ci/os/pieces.py", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh",
          "os/base-snapshot.env", "os/kernel-snapshot.env", "os/dev/build-image.sh", "keys/cosign.pub"]
+# What measures a built image and judges it against os/image-size-budget.toml.
+IMAGE_SIZE_TOOLS = ["tools/ci/os/image-size.sh", "tools/perf/image_size.py",
+                    "os/tests/image_size_budget.py", "os/image-size-budget.toml"]
 
 
 def scripts_of(paths, depth=3):
@@ -251,6 +254,17 @@ def block():
             ("outputs", arr([f"/target/os/{arch}/image/**"])),
             ("requires", arr(["arch=any"])),
             ("cost", '"minutes"'), ("requirement", requirement(1, "2GiB")), ("default", "false")]))
+        # The composed image's /usr against its budget: every check that ships or boots
+        # os-image-<arch> needs this one, so an image over budget goes nowhere.
+        out.append(check([
+            ("name", f'"os-image-size-{arch}"'),
+            ("run", f'"bash tools/ci/os/image-size.sh production-{arch} /target/os/{arch}/image/oci '
+                    f'/target/os/{arch}/size"'),
+            ("inputs", arr(IMAGE_SIZE_TOOLS)),
+            ("needs", arr([f"os-image-{arch}"])),
+            ("outputs", arr([f"/target/os/{arch}/size/**"])),
+            ("requires", arr(["arch=any"])),
+            ("cost", '"minutes"'), ("requirement", requirement(2, "4GiB")), ("default", "false")]))
     return "\n".join(out)
 
 

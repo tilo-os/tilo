@@ -911,6 +911,32 @@ pub trait Backend {
     /// arrives, so nothing else would trigger it.
     fn reset_display(&mut self) {}
 
+    /// The display woke (`reason`: `resume`, `woke`). An output that could
+    /// not be lit is lit again, and the flight record notes which input
+    /// devices the session holds and, when it comes, the first input event
+    /// after the wake. Default no-op: a hosted or headless backend has no
+    /// outputs or input of its own.
+    fn note_wake(&mut self, _reason: &'static str) {}
+
+    /// Light every output that could not be lit again (a link that did not
+    /// come up, a refused modeset): the person asked for the displays.
+    /// Whether there was one. Default: a backend without outputs of its own
+    /// has none.
+    fn retry_failed_outputs(&mut self, _reason: &'static str) -> bool {
+        false
+    }
+
+    /// Take the wake stage named `stage` as failed in every output's next
+    /// wake, whatever it observes: the test-control fault that proves the
+    /// wake's recovery on hardware that never fails.
+    ///
+    /// # Errors
+    ///
+    /// The backend has no outputs to wake, or `stage` names no stage.
+    fn inject_wake_fault(&mut self, _stage: &str) -> Result<(), String> {
+        Err("this backend has no display outputs to wake".to_owned())
+    }
+
     /// Re-read the persisted input, keyboard, accessibility and tablet
     /// preferences and apply them.
     ///

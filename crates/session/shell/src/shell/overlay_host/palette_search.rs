@@ -522,20 +522,23 @@ impl ShellOverlayHost {
     }
 
     /// `groups` cut to the rows the card has room for, noting which kinds
-    /// there are to filter by. The launcher's sections are not kinds.
+    /// there are to filter by. The launcher is kept whole: each of its
+    /// sections holds only its few rows, and its sections are not kinds.
     fn fit_to_card(
         &mut self,
         groups: Vec<crate::shell::search::KindGroup>,
         launcher: bool,
     ) -> Vec<crate::shell::search::KindGroup> {
-        let capacity = self.palette.entry_row_capacity();
         if launcher {
             self.present_kinds.clear();
-            crate::shell::search::launcher::trim(groups, capacity, &self.expanded_kinds)
-        } else {
-            self.note_present_kinds(&groups);
-            ui::search::system::trim_groups(groups, capacity, &self.expanded_kinds)
+            return groups;
         }
+        self.note_present_kinds(&groups);
+        ui::search::system::trim_groups(
+            groups,
+            self.palette.entry_row_capacity(),
+            &self.expanded_kinds,
+        )
     }
 
     pub(super) fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
@@ -612,6 +615,9 @@ impl ShellOverlayHost {
         let (results, mut entries) = self.palette_rows(&groups, &current_query);
         if launcher {
             under_launcher_sections(&mut entries);
+            if let Some(all_apps) = all_apps_entry(&entries) {
+                entries.push(all_apps);
+            }
         }
 
         // Peer-sync rows are ordinary `ActionsProvider` results, ranked
@@ -942,6 +948,20 @@ impl ShellOverlayHost {
 
 /// Each launcher row under its section's header, read as that section's
 /// named group.
+/// The launcher's way to every app, under the apps it lists: the last
+/// section's last row. `None` when the launcher lists no apps.
+pub(super) fn all_apps_entry(entries: &[CommandEntry]) -> Option<CommandEntry> {
+    let apps = crate::shell::search::launcher::LauncherSection::Apps.label();
+    let last = entries.last()?;
+    (last.section.as_deref() == Some(apps.as_str())).then(|| {
+        let mut entry = CommandEntry::new(palette_flow::ALL_APPS_ID, t("search-launcher-all-apps"))
+            .icon(ui::icons::Icon::LayoutGrid)
+            .group(apps.clone());
+        entry.section = Some(apps);
+        entry
+    })
+}
+
 fn under_launcher_sections(entries: &mut [CommandEntry]) {
     for entry in entries {
         if let Some(section) = entry

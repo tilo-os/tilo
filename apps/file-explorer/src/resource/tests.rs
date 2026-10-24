@@ -775,6 +775,8 @@ fn import_entry() -> tilo_cloud_files::cloud::ImportEntry {
     }
 }
 
+// Cloud import stages through descriptor-relative paths only Linux provides.
+#[cfg(target_os = "linux")]
 #[test]
 fn cloud_import_queues_on_its_device_and_undo_reverts_its_record() {
     // Keep this real service socket private to the test: other concurrently

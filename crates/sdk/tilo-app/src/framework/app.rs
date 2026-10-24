@@ -118,6 +118,12 @@ pub trait ResourceApp: 'static {
     /// the filesystem's projection, not the app's document. The app's
     /// surface names the file with [`SurfaceCx::file_history`](super::SurfaceCx::file_history).
     const FILE_HISTORY: Option<FileHistory> = None;
+    /// What of the machine it runs on the app shows (its journal, its
+    /// processes, its drives, the person's real files). A headless drive
+    /// that captures it must then name one of its [scenarios](Self::scenarios)
+    /// and is built from that scenario's fixtures, so no picture of the app
+    /// shows the machine of whoever took it.
+    const READS_HOST: &'static [ui_core::launch::HostSource] = &[];
 
     /// Import a former document format using host-local custody, before typed
     /// projection or resource publication. Unlike schema evolution this may
@@ -1506,6 +1512,7 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         .capture_scenario(capture::<A>)
         .shot_viewport(shot_viewport::<A>)
         .scenarios(A::scenarios())
+        .reads_host(A::READS_HOST)
         .max_positionals(A::ARGUMENTS)
         .command_handler(run_command::<A>)
         .allowed_options(&["--data-dir"])

@@ -123,6 +123,7 @@ fn a_drag_in_a_desktop_window_selects_the_text_and_ctrl_c_copies_it() {
                 label: "PDF Viewer".into(),
                 note: String::new(),
             },
+            app_title: None,
         })
         .collect();
     let queue = OwnerWakeQueue::default();

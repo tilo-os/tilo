@@ -16,7 +16,7 @@
 //!
 //! The room's host runs them: the connector's code stays there, and the
 //! page or shell only asks, through a host's [`RoomRecordActions`].
-//! [`RoomAccounts`] asks every room record that answers the read and keeps
+//! [`RoomAccounts`] asks the room's connectors ([`connector_apps`]) for the read and keeps
 //! what it learns as [`LinkedAccount`]s; a host lends it to the panels that
 //! show them as [`LinkedAccounts`].
 
@@ -311,10 +311,27 @@ impl LinkingRecheck {
 /// The answer to one action the room's host ran.
 pub type ActionAnswer = Result<serde_json::Value, String>;
 
+/// Of `room_apps`, the apps whose room record the room holds, those that
+/// may publish the read ([`READ_ACTION`]): connectors, which bridge a
+/// service elsewhere and so run on the room's host (its secret store, its
+/// worker), never in the person's desktop. An app the desktop runs itself
+/// (`runs_here`) publishes no reading, and asking its record would only
+/// have the host open it to answer that it has no such action.
+pub fn connector_apps(
+    room_apps: impl IntoIterator<Item = String>,
+    runs_here: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    room_apps
+        .into_iter()
+        .filter(|app| !runs_here(app))
+        .collect()
+}
+
 /// How a host asks the room's host to run an action of a room record for
 /// the person, on the web and natively alike.
 pub trait RoomRecordActions {
-    /// The apps whose room record this room holds.
+    /// The apps whose room record this room holds and may publish the read
+    /// ([`READ_ACTION`]): the room's connectors ([`connector_apps`]).
     fn apps(&self) -> Vec<String>;
     /// Ask the room's host to run `action` on `app`'s room record (its own
     /// resource) with `arguments`, as the person; `done` gets the answer,
@@ -555,6 +572,17 @@ mod tests {
             };
             done(Ok(answer));
         }
+    }
+
+    #[test]
+    fn only_connectors_are_asked_for_a_reading() {
+        let room = ["so.tilo.chat", "so.tilo.contacts", "so.tilo.discord"].map(String::from);
+        let runs_here = |app: &str| matches!(app, "so.tilo.chat" | "so.tilo.contacts");
+        assert_eq!(connector_apps(room, runs_here), ["so.tilo.discord"]);
+        assert!(
+            connector_apps(["so.tilo.chat".to_owned()], runs_here).is_empty(),
+            "a room with no connector is asked nothing"
+        );
     }
 
     #[test]

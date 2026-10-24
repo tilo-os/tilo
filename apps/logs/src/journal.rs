@@ -545,7 +545,7 @@ fn entry_from_json(v: &Value) -> Option<LogEntry> {
         .and_then(|s| s.parse::<i64>().ok())
         .map_or(Priority::Info, Priority::from_level);
 
-    let message = field(v, "MESSAGE").unwrap_or_default();
+    let message = without_terminal_escapes(&field(v, "MESSAGE").unwrap_or_default());
     let pid = field(v, "_PID").and_then(|s| s.parse::<u32>().ok());
     let hostname = field(v, "_HOSTNAME").unwrap_or_default();
     let boot_id = field(v, "_BOOT_ID").unwrap_or_default();
@@ -575,6 +575,45 @@ fn entry_from_json(v: &Value) -> Option<LogEntry> {
         transport,
         extra,
     })
+}
+
+/// `text` without the terminal's colour and cursor sequences a program
+/// wrote for a console (`ESC [ … m`, `ESC ] … BEL`) and without other
+/// control characters, which have no glyph: the words alone.
+fn without_terminal_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                // A control sequence ends at its final byte, `@` to `~`.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // An operating-system command ends at BEL or `ESC \`.
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' {
+                            chars.next_if_eq(&'\\');
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\t' => out.push(' '),
+            c if c.is_control() && c != '\n' => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ===================================================================
@@ -655,6 +694,21 @@ fn build(row: &Row, base_us: u64, hostname: &str, boot_id: &str) -> LogEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_message_written_for_a_console_reads_as_its_words() {
+        assert_eq!(
+            without_terminal_escapes(
+                "\u{1b}[2m2026-10-23T08:20:00Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m shell: closed"
+            ),
+            "2026-10-23T08:20:00Z ERROR shell: closed"
+        );
+        assert_eq!(
+            without_terminal_escapes("\u{1b}]0;title\u{7}done\u{1b}]8;;x\u{1b}\\ok\u{8}"),
+            "doneok"
+        );
+        assert_eq!(without_terminal_escapes("plain\ttext"), "plain text");
+    }
 
     #[test]
     fn sample_has_mixed_severities_and_two_boots() {

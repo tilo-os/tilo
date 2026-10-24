@@ -298,7 +298,13 @@ impl super::App {
     }
 
     pub(super) fn update_model(&mut self) -> bool {
-        if !self.root_widget.update(&self.state.doc, &self.state.root) {
+        // The room's presence is state of the frame, lent under the window's
+        // authority, as the draw sees it.
+        let (root, state, presence) = (&mut self.root_widget, &self.state, &self.presence_ctx);
+        let updated = presence.with_permissions(self.permission_ctx.clone(), || {
+            crate::presence::frame::lend(presence, || root.update(&state.doc, &state.root))
+        });
+        if !updated {
             return false;
         }
         self.invalidate_widget_resource_cache();

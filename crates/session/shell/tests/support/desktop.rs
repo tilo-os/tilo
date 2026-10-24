@@ -894,15 +894,11 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                 let mut answer = serde_json::from_str::<Answer>(&line);
                 // A stall whose main thread was still computing is slow work:
                 // note it with its stack, then hold the loop to the busy limit.
-                if let Ok(Answer::Stalled {
-                    budget_ms,
-                    main_thread_cpu_ms,
-                    main_thread_starved_ms,
-                    threads,
-                    ..
-                }) = &answer
-                    && answer.as_ref().is_ok_and(Answer::stalled_but_working)
+                if let Ok(stalled @ Answer::Stalled { threads, .. }) = &answer
+                    && stalled.stalled_but_working()
                 {
+                    let summary = render(stalled);
+                    let summary = summary.lines().next().unwrap_or_default();
                     let main = threads.first().map_or("", |t| t.backtrace.as_str());
                     let top: Vec<&str> = main
                         .lines()
@@ -910,11 +906,7 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                         .take(14)
                         .collect();
                     if let Ok(mut jank) = watch.jank.lock() {
-                        jank.push(format!(
-                            "main loop slow for over {budget_ms} ms ({main_thread_cpu_ms} ms CPU, \
-                             {main_thread_starved_ms} ms waiting for a core):\n{}",
-                            top.join("\n")
-                        ));
+                        jank.push(format!("{summary}\n{}", top.join("\n")));
                     }
                     // Keep asking: it still working is fine, its turning blocked
                     // (a lock, I/O) fails at once, and working past the limit is

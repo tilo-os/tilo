@@ -23,6 +23,7 @@ impl TileSource for Apps {
                 label: app.to_owned(),
                 note: String::new(),
             },
+            app_title: None,
         })
     }
 }
@@ -46,6 +47,7 @@ impl Desk {
                 label: "Chat".into(),
                 note: String::new(),
             },
+            app_title: None,
         };
         let tree = seed_tree(&mut minter, "Desk", vec![chat]);
         let (surface, handle) = DesktopSurface::new(tree, 9, Box::new(Apps));

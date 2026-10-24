@@ -306,7 +306,7 @@ fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
         assert_eq!(agent_answer(&mut app, action), Answer::Ask, "{action}");
     }
     // Rendering into content reads.
-    assert_eq!(agent_answer(&mut app, "render"), Answer::Allow);
+    assert_eq!(agent_answer(&mut app, "render-timeline"), Answer::Allow);
     // The window's door never runs an ask for someone acting for the
     // person; the broker pauses the agent's run to ask them.
     let asked = app.effect(&video_editor::actions::VideoEditorEffect::Export {

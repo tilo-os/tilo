@@ -573,11 +573,14 @@ impl PhotosApp {
             ..ToolbarLocation::default()
         });
         if self.header_back_visible() {
-            toolbar.leading.push(ToolbarAction::new(
-                format!("{:?}", Hit::Library),
-                "arrow-left",
-                tr("photos-library"),
-            ));
+            toolbar.leading.push(
+                ToolbarAction::new(
+                    format!("{:?}", Hit::Library),
+                    "arrow-left",
+                    tr("photos-library"),
+                )
+                .navigating(),
+            );
         }
         let commands = self.commands();
         let commands = commands.iter().map(|command| {
