@@ -114,7 +114,8 @@ callbacks to a new action.
 Every tab starts on `about:blank` before its first address. That first entry is
 no page the person visited: `history` reports no `back` while it is all that is
 behind the page, `back` does not go to it, and `navigation_history` leaves it
-out.
+out. A page's `beforeunload` request to stay is let go, as closing its tab lets
+it go; there is no prompt to answer it.
 
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
 only the newest pending CPU frame is kept. Frames are copied during OnPaint;
