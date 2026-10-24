@@ -371,6 +371,7 @@ fn greeter(channel: &str) -> installed::InstalledBot {
         grant: Vec::new(),
         triggers: vec![trigger],
         saved_by: None,
+        saved_proof: None,
     };
     // Exactly what its steps and triggers need, as a room admits a bot.
     let shortcut = Shortcut {
@@ -675,6 +676,7 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
         grant: Vec::new(),
         triggers: vec![trigger],
         saved_by: None,
+        saved_proof: None,
     };
     let shortcut = Shortcut {
         grant: tilo_automation::grant::derived_rules(
@@ -925,6 +927,7 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
         grant: Vec::new(),
         triggers: vec![trigger],
         saved_by: None,
+        saved_proof: None,
     };
     let armed = [Armed {
         firer: Firer::Bot { installation: "b1" },

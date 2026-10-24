@@ -150,6 +150,58 @@ fn governed_grant(
     .with_lifetime(lifetime.unwrap_or(tilo_action_policy::Lifetime::UntilRevoked)))
 }
 
+/// Say each governance change made here that its room's governor refused,
+/// as a failed action is said once its palette row is gone: a warning
+/// naming the change, with the governor's reason. What the change showed
+/// ahead of the answer is already undone
+/// ([`WorkspaceTree::refuse_governance`]). Answers whether any was said.
+pub(crate) fn report_governance_refusals(st: &mut crate::shell::chrome_state::ChromeState) -> bool {
+    if st.tree().governance_refusals.is_empty() {
+        return false;
+    }
+    let refusals = st.tree_mut().take_governance_refusals();
+    for refusal in refusals {
+        let title = crate::shell::i18n::t(refused_change_label(&refusal.request));
+        st.push_warning_notification(
+            crate::shell::i18n::t_args("host-action-cannot-run", &[("title", title.into())]),
+            refusal.reason,
+        );
+    }
+    st.bump();
+    true
+}
+
+/// The string key naming the change `request` asked for.
+fn refused_change_label(request: &GovernanceRequest) -> &'static str {
+    use tilo_action_policy::Change;
+    use tilo_desktop_model::commands::DesktopCommand;
+    match request {
+        GovernanceRequest::Policy(Change::AddMember { .. } | Change::SetRole { .. }) => {
+            "search-action-member-role-set"
+        }
+        GovernanceRequest::Policy(Change::RemoveMember { .. }) => "search-action-member-remove",
+        GovernanceRequest::Policy(
+            Change::Ban { .. }
+            | Change::Unban { .. }
+            | Change::Restrict { .. }
+            | Change::Unrestrict { .. },
+        ) => "governance-change-members",
+        GovernanceRequest::Policy(_)
+        | GovernanceRequest::GrantSandbox(_)
+        | GovernanceRequest::RevokeSandbox(_)
+        | GovernanceRequest::Command(
+            DesktopCommand::GrantAppAction { .. } | DesktopCommand::RevokeAppAction { .. },
+        ) => "governance-change-access",
+        GovernanceRequest::Command(DesktopCommand::RenameWorkspace { .. }) => {
+            "global-search-rename-workspace"
+        }
+        GovernanceRequest::Command(
+            DesktopCommand::SavePreset { .. } | DesktopCommand::AssignPreset { .. },
+        ) => "governance-change-presets",
+        GovernanceRequest::Command(_) => "governance-change-settings",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
