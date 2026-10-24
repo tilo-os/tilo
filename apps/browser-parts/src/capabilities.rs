@@ -5,8 +5,38 @@ use ui::tokens::TextRole;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::{Button, Column, Container, EmptyState, ListRow, Row, Text, Widget};
 
+/// An extension's request for more access (`chrome.permissions.request`),
+/// as the person is asked it: its name and what it could then do, one line
+/// each.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionQuestion {
+    pub request: u32,
+    pub name: String,
+    pub lines: Vec<String>,
+}
+
+/// Extensions' questions, which their answer takes away; `version` moves
+/// with each change, so the window redraws.
+#[derive(Default)]
+struct ExtensionQuestions {
+    open: BTreeMap<u32, ExtensionQuestion>,
+    version: u64,
+}
+
+impl ExtensionQuestions {
+    /// Tell the engine the person's answer to `request`, which goes.
+    fn answer(&mut self, engine: &SharedEngine, request: u32, allow: bool) {
+        if self.open.remove(&request).is_some() {
+            self.version = self.version.wrapping_add(1);
+            engine.send(WebViewCommand::ExtensionPermissionDecision { request, allow });
+        }
+    }
+}
+
 pub struct Capabilities {
     permissions: BTreeMap<u32, (String, String)>,
+    extension_questions: std::rc::Rc<std::cell::RefCell<ExtensionQuestions>>,
+    observed_question_version: u64,
     // Native events are drained on the UI thread. Tabs share this UI model;
     // background download workers communicate through the engine protocol.
     downloads: std::rc::Rc<std::cell::RefCell<DownloadStore>>,
@@ -17,6 +47,8 @@ impl Default for Capabilities {
     fn default() -> Self {
         Self {
             permissions: BTreeMap::new(),
+            extension_questions: std::rc::Rc::default(),
+            observed_question_version: 0,
             downloads: std::rc::Rc::default(),
             observed_download_version: 0,
             notice: ui::LocalState::new(String::new()),
@@ -79,6 +111,35 @@ struct Download {
     error: String,
 }
 impl Capabilities {
+    /// Ask the person an extension's question, after those already asked.
+    pub fn ask_for_extension(&self, question: ExtensionQuestion) {
+        let mut questions = self.extension_questions.borrow_mut();
+        if questions.open.len() < 32 {
+            questions.open.insert(question.request, question);
+            questions.version = questions.version.wrapping_add(1);
+        }
+    }
+    /// Ask the person extensions' requests for more access, from their
+    /// popups or their pages in this window; whether the questions on offer
+    /// changed since last asked, by these or an answer.
+    pub fn ask(&mut self, questions: Vec<ExtensionQuestion>) -> bool {
+        for question in questions {
+            self.ask_for_extension(question);
+        }
+        self.extension_questions_changed()
+    }
+    /// Whether an extension's question came or was answered since asked.
+    pub fn extension_questions_changed(&mut self) -> bool {
+        let version = self.extension_questions.borrow().version;
+        let changed = version != self.observed_question_version;
+        self.observed_question_version = version;
+        changed
+    }
+    /// Whether an extension's question waits for the person: the window asks
+    /// it over the extension's own popup, which waits for the answer.
+    pub fn asks_for_extension(&self) -> bool {
+        !self.extension_questions.borrow().open.is_empty()
+    }
     pub fn downloads_changed(&mut self) -> bool {
         let version = self.downloads.borrow().version;
         let changed = version != self.observed_download_version;
@@ -282,6 +343,9 @@ impl Capabilities {
         }
     }
     pub fn prompt(&self, engine: &SharedEngine) -> Option<Box<dyn Widget>> {
+        if let Some(question) = self.extension_questions.borrow().open.values().next() {
+            return Some(self.extension_prompt(question, engine));
+        }
         let downloads = self.downloads.borrow();
         let (id, title, permission) =
             if let Some((&id, (origin, rights))) = self.permissions.first_key_value() {
@@ -330,15 +394,70 @@ impl Capabilities {
             )),
         ))
     }
-    /// Whether the question on offer is a site's permission request, rather
-    /// than a file the page offers.
+    /// An extension's question: what it could then do, and the same two
+    /// answers a site's question has.
+    fn extension_prompt(
+        &self,
+        question: &ExtensionQuestion,
+        engine: &SharedEngine,
+    ) -> Box<dyn Widget> {
+        let request = question.request;
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Sibling)
+            .push(Box::new(
+                Text::new(&crate::CATALOG.t_args(
+                    "browser-extension-asks",
+                    &[("name", ui::i18n::ArgValue::Text(question.name.clone()))],
+                ))
+                .with_role(ui::TextRole::Body),
+            ));
+        for line in &question.lines {
+            column = column.push(Box::new(
+                Text::new(line).with_role(TextRole::Caption).dimmed(),
+            ));
+        }
+        let mut row = Row::new();
+        for (label, allow) in [("Allow", true), ("Deny", false)] {
+            let engine = engine.clone();
+            let questions = self.extension_questions.clone();
+            row = row.push(Box::new(
+                Button::new(
+                    &format!("browser.decision.extension.{request}.{allow}"),
+                    label,
+                )
+                .control_size(ui::widget::ControlSize::Regular)
+                .on_effect(move || questions.borrow_mut().answer(&engine, request, allow)),
+            ));
+        }
+        Box::new(
+            Container::new()
+                .with_background()
+                .with_child(Box::new(column.push(Box::new(row)))),
+        )
+    }
+    /// Whether the question on offer is a permission request, a site's or an
+    /// extension's, rather than a file the page offers.
     pub fn prompt_is_permission(&self) -> bool {
-        !self.permissions.is_empty()
+        !self.permissions.is_empty() || self.asks_for_extension()
     }
     /// The person dismissed the question on offer: a permission is set aside
-    /// unanswered, so the site may ask again; a download is declined.
+    /// unanswered, so the site may ask again; an extension's request and a
+    /// download are declined.
     pub fn decline_prompt(&self, engine: &SharedEngine) {
-        if let Some((&id, _)) = self.permissions.first_key_value() {
+        let extension = self
+            .extension_questions
+            .borrow()
+            .open
+            .keys()
+            .next()
+            .copied();
+        if let Some(request) = extension {
+            self.extension_questions
+                .borrow_mut()
+                .answer(engine, request, false);
+        } else if let Some((&id, _)) = self.permissions.first_key_value() {
             engine.send(WebViewCommand::PermissionDismissed { id });
         } else if let Some((&id, _)) = self.downloads.borrow().prompts.first_key_value() {
             engine.send(WebViewCommand::DownloadDecision { id, allow: false });
@@ -485,6 +604,70 @@ mod tests {
     use ui::framework::HostDelivery as _;
     fn contains(widget: &dyn Widget, id: &str) -> bool {
         ui::widget::find_test_id(widget, id).is_some()
+    }
+    #[test]
+    fn an_extensions_question_is_asked_first_and_answered_once() {
+        let capture = ui::webview::test_engine::TestEngine::new();
+        let engine: SharedEngine = capture.clone();
+        let mut capabilities = Capabilities::default();
+        capabilities.apply(WebViewEvent::PermissionRequested {
+            id: 1,
+            origin: "https://site.test".into(),
+            permissions: "camera".into(),
+        });
+        for request in [4, 5] {
+            capabilities.ask_for_extension(ExtensionQuestion {
+                request,
+                name: "Permit".into(),
+                lines: vec!["Read your browsing history".into()],
+            });
+        }
+        assert!(capabilities.extension_questions_changed());
+        assert!(!capabilities.extension_questions_changed());
+        assert!(capabilities.asks_for_extension() && capabilities.prompt_is_permission());
+        // Its question comes before the site's, and an agent or a screen
+        // reader answers it as the person does.
+        let mut prompt = capabilities.prompt(&engine).unwrap();
+        assert!(contains(
+            prompt.as_ref(),
+            "browser.decision.extension.4.true"
+        ));
+        assert!(!contains(prompt.as_ref(), "browser.decision.true.1.true"));
+        prompt
+            .start_encoded(
+                ui::tilo_actions::OperationKind::Effect,
+                "tilo.ui.control.invoke",
+                &serde_json::to_vec("browser.decision.extension.4.true").unwrap(),
+                &mut automerge::AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert_eq!(
+            capture.commands(),
+            [WebViewCommand::ExtensionPermissionDecision {
+                request: 4,
+                allow: true
+            }]
+        );
+        assert!(capabilities.extension_questions_changed());
+        // Dismissed, the next is declined; then the site's is on offer.
+        capabilities.decline_prompt(&engine);
+        assert_eq!(
+            capture.commands().last(),
+            Some(&WebViewCommand::ExtensionPermissionDecision {
+                request: 5,
+                allow: false
+            })
+        );
+        assert!(!capabilities.asks_for_extension());
+        let prompt = capabilities.prompt(&engine).unwrap();
+        assert!(contains(prompt.as_ref(), "browser.decision.true.1.true"));
+        // An answered question is answered once.
+        capabilities
+            .extension_questions
+            .borrow_mut()
+            .answer(&engine, 5, true);
+        assert_eq!(capture.commands().len(), 2);
     }
     #[test]
     #[allow(

@@ -5,6 +5,7 @@
 )]
 mod audio;
 mod extension_notification;
+mod extension_permissions;
 pub mod install;
 mod menus;
 mod protocol;
@@ -2127,6 +2128,9 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         | "extension_execute_action"
         | "extension_notification" => decode_extension_event(value).is_some(),
         "extension_menu" => decode_extension_menu(value).is_some(),
+        "extension_permission_request" | "extension_permissions" => {
+            extension_permissions::decode(value).is_some()
+        }
         "devtools_result" => {
             value["request_id"]
                 .as_u64()
@@ -2399,6 +2403,21 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                     commands.is_object() && commands.to_string().len() <= 64 * 1024
                 })
         }
+        WebViewCommand::ExtensionGrants {
+            id,
+            optional,
+            granted,
+        } => {
+            extension_id(id)
+                && [optional, granted].iter().all(|set| {
+                    [&set.permissions, &set.origins].iter().all(|list| {
+                        list.len() <= 512 && list.iter().all(|entry| entry.len() <= 2048)
+                    })
+                })
+        }
+        WebViewCommand::ExtensionPermissionDecision { request, .. } => {
+            *request > 0 && i32::try_from(*request).is_ok()
+        }
         WebViewCommand::ExtensionForget { id }
         | WebViewCommand::ExtensionIdentity { id }
         | WebViewCommand::ExtensionClick { id } => extension_id(id),
@@ -2566,6 +2585,9 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         | "extension_open_popup"
         | "extension_execute_action"
         | "extension_notification" => decode_extension_event(value)?,
+        "extension_permission_request" | "extension_permissions" => {
+            extension_permissions::decode(value)?
+        }
         "extension_action_reset" => WebViewEvent::ExtensionActionReset,
         "devtools_result" => WebViewEvent::DevToolsResult {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
@@ -2835,6 +2857,17 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
                 command["commands"] = commands;
             }
             command
+        }
+        WebViewCommand::ExtensionGrants {
+            id,
+            optional,
+            granted,
+        } => {
+            let set = |set: &super::ExtensionPermissionSet| json!({"permissions":set.permissions,"hosts":set.origins});
+            json!({"op":"extension_grants","id":id,"optional":set(&optional),"granted":set(&granted)})
+        }
+        WebViewCommand::ExtensionPermissionDecision { request, allow } => {
+            json!({"op":"extension_permission_decision","request":request,"allow":allow})
         }
         WebViewCommand::ExtensionForget { id } => json!({"op":"extension_forget","id":id}),
         WebViewCommand::ExtensionIdentity { id } => json!({"op":"extension_identity","id":id}),

@@ -546,6 +546,23 @@ content scripts (with `sender.tab`) work without help.
   sleeps, hears `onClicked` or `onButtonClicked`, then `onClosed` by the
   person, since Tilo takes a chosen notification away; `clear` is heard as
   `onClosed` not by the person.
+- `chrome.permissions` (`src/extension_permissions.h`): Chromium asks the
+  person for an extension's optional access in a dialog of its own window,
+  and answers "Could not find an active window." here. The Browser tells
+  the host what each extension's manifest offers for later
+  (`optional_permissions`, `optional_host_permissions`) and what of it the
+  person granted (`extension_grants`); `request`, made in answer to
+  something the person did and only for what the manifest offers, asks the
+  Browser (`extension_permission_request`), which asks the person in its
+  shared prompt, granting at once what Chrome asks nobody about, and
+  answers (`extension_permission_decision`). What the extension holds then
+  counts for its tabs, scripting, capture and menu items at once, it hears
+  of it (`onAdded`, `onRemoved`) in its worker and pages, and the Browser
+  keeps it with the extension (`extension_permissions`). `contains`,
+  `getAll` and `remove` (never of what the manifest requires) answer from
+  the same. An API Chromium itself gives only an extension that holds it
+  in Chromium's own records (`chrome.bookmarks`) stays missing when the
+  person grants it here: what the host answers follows the grant.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for

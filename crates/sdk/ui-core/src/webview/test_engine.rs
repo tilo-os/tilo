@@ -610,6 +610,8 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::PermissionDecision { .. }
             | WebViewCommand::PermissionDismissed { .. }
             | WebViewCommand::ExtensionAccess { .. }
+            | WebViewCommand::ExtensionGrants { .. }
+            | WebViewCommand::ExtensionPermissionDecision { .. }
             | WebViewCommand::ExtensionForget { .. }
             | WebViewCommand::ExtensionIdentity { .. }
             | WebViewCommand::ExtensionPanel { .. }

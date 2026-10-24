@@ -78,6 +78,12 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   alone, changed as it says, under text of its own set for the page, and the
   next page counts anew. With two blockers each counts what its own rules
   did, and one that may read what they matched finds its rules for a tab.
+- An extension asks for the access its manifest offers for later
+  (`optional_permissions`, `optional_host_permissions`) when the person
+  clicks in its popup: the Browser is asked, and what the person allows the
+  extension holds at once, reaches the page with, and hears of in its
+  worker; what it gives up it loses. What it was granted in an earlier run
+  it holds from the start.
 """
 import base64
 import hashlib
@@ -658,6 +664,116 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(blank, {'welcome': False, 'blank': True, 'found': self.url + '/was-blank', 'listed': 1})
         welcomed = json.loads(self.title(host, 4, 'kept:')[len('kept:'):])
         self.assertEqual(welcomed, {'welcome': True, 'blank': False, 'found': self.url + '/was-welcome', 'listed': 1})
+
+    def grants(self, host, extension, optional, granted=((), ())):
+        """Tell the engine what `extension` may ask for later and what of it
+        the person granted, as the Browser does once it read the profile
+        (extension_controller.rs, tell_access)."""
+        host.send(op='extension_grants', id=extension,
+                  optional={'permissions': list(optional[0]), 'hosts': list(optional[1])},
+                  granted={'permissions': list(granted[0]), 'hosts': list(granted[1])})
+
+    def worker_value(self, host, extension, expression, predicate):
+        """`expression` in the extension's worker once `predicate` holds of it."""
+        deadline = time.monotonic() + HANG_BOUND
+        while True:
+            value = self.in_worker(host, extension, expression)
+            if value is not None and predicate(value):
+                return value
+            self.assertLess(time.monotonic(), deadline, f'the worker still has {value!r}')
+            host.settle(0.25)
+
+    def told(self, host, predicate):
+        """The first event `predicate` holds of, also one that came while the
+        test waited for something else, which is then used up."""
+        seen = next((e for e in host.seen if predicate(e)), None)
+        if seen is not None:
+            host.seen.remove(seen)
+            return seen
+        event = host.until(predicate)
+        host.seen.remove(event)
+        return event
+
+    def click_panel(self, host, tab):
+        host.send(op='mouse_move', tab=tab, x=50, y=50)
+        host.send(op='mouse_button', tab=tab, button='left', down=True, x=50, y=50)
+        host.send(op='mouse_button', tab=tab, button='left', down=False, x=50, y=50)
+
+    def test_an_extension_asks_for_more_access_and_the_person_decides(self):
+        host, ids = self.start('permit', access={'permit': (['storage', 'scripting'], [])})
+        permit = ids['permit']
+        self.grants(host, permit, (['tabs'], ['http://127.0.0.1/*']))
+        page = self.url + '/permit-page'
+        host.navigate(page)
+        self.worker_value(host, permit, 'typeof heard', lambda value: value == 'object')
+        # It holds what its manifest requires, and may not script the page.
+        self.assertEqual(self.in_worker(host, permit, 'script()'),
+                         'refused: Cannot access contents of the page. Extension manifest must request permission to access the respective host.')
+        self.assertEqual(self.in_worker(host, permit, 'urls()'), [None])
+        self.panel(host, 2, f'chrome-extension://{permit}/popup.html')
+        ready = json.loads(self.title(host, 2, 'ready:')[len('ready:'):])
+        self.assertEqual(ready, {'unasked': 'This function must be called during a user gesture',
+                                 'all': {'permissions': ['scripting', 'storage'], 'origins': []},
+                                 'tabs': False, 'site': False, 'url': None})
+        # A click in its popup asks the Browser, for what it lacks of what
+        # the manifest offers.
+        self.click_panel(host, 2)
+        asked = self.told(host, lambda e: e['event'] == 'extension_permission_request')
+        self.assertEqual((asked.get('tab'), asked['id'], asked['permissions'], asked['origins']),
+                         (2, permit, ['tabs'], ['http://127.0.0.1/*']))
+        self.assertFalse(any(e['event'] == 'title' and e['title'].startswith('asked:') for e in host.seen))
+        host.send(op='extension_permission_decision', request=asked['request'], allow=True)
+        answered = json.loads(self.title(host, 2, 'asked:')[len('asked:'):])
+        self.assertEqual(answered, {
+            'granted': True, 'error': None, 'undeclared': 'Only permissions specified in the manifest may be requested.',
+            'all': {'permissions': ['scripting', 'storage', 'tabs'], 'origins': ['http://127.0.0.1/*']},
+            'tabs': True, 'site': True, 'url': page})
+        # The Browser keeps what it was granted with the extension.
+        kept = self.told(host, lambda e: e['event'] == 'extension_permissions')
+        self.assertEqual((kept['id'], kept['permissions'], kept['origins']), (permit, ['tabs'], ['http://127.0.0.1/*']))
+        # Its worker hears of it, sees the page and may script it.
+        added = {'added': {'permissions': ['tabs'], 'origins': ['http://127.0.0.1/*']}}
+        self.worker_value(host, permit, 'JSON.stringify(heard)', lambda value: json.loads(value) == [added])
+        self.assertEqual(self.in_worker(host, permit, 'urls()'), [page])
+        self.assertEqual(self.in_worker(host, permit, 'script()'), '/permit-page')
+
+        # It gives the site up, never what its manifest requires.
+        self.panel(host, 3, f'chrome-extension://{permit}/popup.html?drop')
+        dropped = json.loads(self.title(host, 3, 'dropped:')[len('dropped:'):])
+        self.assertEqual(dropped, {
+            'required': 'You cannot remove required permissions.', 'removed': True,
+            'all': {'permissions': ['scripting', 'storage', 'tabs'], 'origins': []},
+            'tabs': True, 'site': False, 'url': page})
+        kept = self.told(host, lambda e: e['event'] == 'extension_permissions')
+        self.assertEqual(kept['permissions'], ['tabs'])
+        removed = {'removed': {'permissions': [], 'origins': ['http://127.0.0.1/*']}}
+        self.worker_value(host, permit, 'JSON.stringify(heard)', lambda value: json.loads(value) == [added, removed])
+        self.assertTrue(self.in_worker(host, permit, 'script()').startswith('refused: '))
+
+        # Asked again, for the site alone, and refused: it holds no more.
+        self.panel(host, 4, f'chrome-extension://{permit}/popup.html')
+        self.title(host, 4, 'ready:')
+        self.click_panel(host, 4)
+        asked = self.told(host, lambda e: e['event'] == 'extension_permission_request')
+        self.assertEqual((asked['permissions'], asked['origins']), ([], ['http://127.0.0.1/*']))
+        host.send(op='extension_permission_decision', request=asked['request'], allow=False)
+        refused = json.loads(self.title(host, 4, 'asked:')[len('asked:'):])
+        self.assertEqual((refused['granted'], refused['site'], refused['tabs']), (False, False, True))
+        self.assertTrue(self.in_worker(host, permit, 'script()').startswith('refused: '))
+
+    def test_access_granted_in_an_earlier_run_holds_from_the_start(self):
+        host, ids = self.start('permit', access={'permit': (['storage', 'scripting'], [])})
+        permit = ids['permit']
+        # What the manifest no longer offers is no grant.
+        self.grants(host, permit, (['tabs'], ['http://127.0.0.1/*']),
+                    (['tabs', 'history'], ['http://127.0.0.1/*', 'https://example.org/*']))
+        page = self.url + '/granted-before'
+        host.navigate(page)
+        self.worker_value(host, permit, 'typeof heard', lambda value: value == 'object')
+        self.assertEqual(self.in_worker(host, permit, 'chrome.permissions.getAll()'),
+                         {'permissions': ['scripting', 'storage', 'tabs'], 'origins': ['http://127.0.0.1/*']})
+        self.assertEqual(self.in_worker(host, permit, 'urls()'), [page])
+        self.assertEqual(self.in_worker(host, permit, 'script()'), '/granted-before')
 
     def test_a_worker_and_its_content_script_talk_both_ways_by_tab(self):
         # Its content script's site is no host permission (the Browser sends
