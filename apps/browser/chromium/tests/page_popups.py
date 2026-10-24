@@ -6,6 +6,8 @@
   app takes the page's popups.
 - The popup answers the page that opened it (`window.opener.postMessage`),
   which a separate tab could not, and closes itself when done.
+- A popup that closes itself as it loads, before the host has set it up,
+  takes nothing else with it.
 - A popup left open closes with the tab that opened it.
 - The app closing a popup (its panel's close button) leaves the page open.
 """
@@ -38,8 +40,12 @@ addEventListener('message', event => { document.title = 'opener:' + event.data; 
 SIGN_IN = b'''<!doctype html><title>signin</title><body>
 <script>
 window.opener.postMessage('signed-in:' + location.pathname, '*');
-if (location.search !== '?stay') setTimeout(() => window.close(), 200);
+if (location.search === '?now') window.close();
+else if (location.search !== '?stay') setTimeout(() => window.close(), 200);
 </script></body>'''
+NOW = b'''<!doctype html><title>ready</title>
+<body style="margin:0"><button style="position:absolute;left:0;top:0;width:300px;height:100px"
+ onclick="window.open('/signin?now','signin','width=300,height=300')">Sign in</button></body>'''
 STAY = b'''<!doctype html><title>ready</title>
 <body style="margin:0"><button style="position:absolute;left:0;top:0;width:300px;height:100px"
  onclick="window.open('/signin?stay','signin','width=300,height=300')">Sign in</button></body>'''
@@ -48,7 +54,7 @@ STAY = b'''<!doctype html><title>ready</title>
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split('?')[0]
-        body = {'/': OPENER, '/signin': SIGN_IN, '/stay': STAY}.get(path, b'')
+        body = {'/': OPENER, '/signin': SIGN_IN, '/stay': STAY, '/now': NOW}.get(path, b'')
         self.send_response(200)
         self.send_header('Content-Type', 'text/html')
         self.send_header('Content-Length', str(len(body)))
@@ -101,6 +107,15 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-page-popups-') as profile:
 
     seen = []
 
+    def ended(what, error):
+        """The reader's `error` while waiting for `what`, with what the host
+        said before it and how it ended."""
+        try:
+            code = host.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            code = 'nothing yet'
+        return AssertionError(f'{what}: {error!r}, the host exited with {code}; saw {seen[-20:]}')
+
     def until(what, predicate):
         """The first event `predicate` accepts, every one before it kept."""
         deadline = time.monotonic() + HANG_BOUND
@@ -110,7 +125,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-page-popups-') as profile:
             except queue.Empty:
                 raise AssertionError(f'{what}: never came; saw {seen[-20:]}') from None
             if isinstance(event, Exception):
-                raise event
+                raise ended(what, event)
             if event['event'] != 'frame':
                 seen.append(event)
             if predicate(event):
@@ -136,7 +151,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-page-popups-') as profile:
                 continue
             while True:
                 if isinstance(event, Exception):
-                    raise event
+                    raise ended(what, event)
                 if event['event'] != 'frame':
                     seen.append(event)
                 if on(tab, 'popup')(event):
@@ -164,6 +179,13 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-page-popups-') as profile:
         # It answers the page that opened it, then closes itself.
         until('the popup answering its opener', on(1, 'title', title='opener:signed-in:/signin'))
         until('the popup closing itself', on(first, 'closed'))
+
+        # One that closes itself as it loads is gone, and the page with it
+        # goes on: its close cut the host's setting up of it short.
+        send(op='navigate', url=BASE + '/now')
+        until('the opener of a popup closing at once', on(1, 'title', title='ready'))
+        hasty = open_popup(1, 'a popup closing at once')['popup']
+        until('the popup closing at once', on(hasty, 'closed'))
 
         # A popup left open closes with the tab that opened it.
         send(op='create_tab', tab=2)

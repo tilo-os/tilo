@@ -705,7 +705,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
   }
-  bool DoClose(CefRefPtr<CefBrowser>) override { return false; }
+  // The browser is closing, also of its own accord (a popup's
+  // window.close()): DevTools detaches as it goes, which cuts short any
+  // script registration still under way, and that is no failure of the host.
+  bool DoClose(CefRefPtr<CefBrowser>) override { native_closing_=true;return false; }
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
     if(!browser_ || !browser->IsSame(browser_))return;
     TraceGeometry("before-close",id_);
