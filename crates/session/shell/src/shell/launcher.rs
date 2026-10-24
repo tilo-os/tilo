@@ -17,6 +17,10 @@ pub(crate) mod launch_history;
 mod recorded_use;
 #[cfg(target_os = "linux")]
 pub(crate) mod retained_home;
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) mod room_hold;
+#[cfg(test)]
+mod room_hold_tests;
 #[cfg(target_os = "linux")]
 pub(crate) mod window_doors;
 
@@ -1035,6 +1039,9 @@ pub enum LaunchFailure {
     WaitingForDeveloper,
     /// The app needs a newer system, whose update has been started.
     SystemBehind,
+    /// The room the app was to open in will not be ready for it; the
+    /// event's detail says why, in the person's words.
+    RoomRefused,
     /// Held launches released by a failed prerequisite and other causes with
     /// no more specific copy.
     Other,
@@ -1073,6 +1080,7 @@ impl LaunchFailure {
             Self::UpdateFailed => "launch-failed-update",
             Self::WaitingForDeveloper => "launch-failed-waiting-for-developer",
             Self::SystemBehind => "launch-failed-system-behind",
+            Self::RoomRefused => "workspace-needs-join-again",
         }
     }
 }
@@ -1207,6 +1215,10 @@ impl LaunchEvent {
             return Some(memory_notice(&self.display_name, end));
         }
         let body = match &self.kind {
+            LaunchEventKind::SpawnFailed {
+                reason: LaunchFailure::RoomRefused,
+                detail,
+            } => detail.clone(),
             LaunchEventKind::SpawnFailed { reason, .. } => {
                 crate::shell::i18n::t(reason.message_key())
             }
@@ -1505,6 +1517,9 @@ pub(crate) struct SessionLaunches {
     /// Launches held until the session's services are up.
     #[cfg(any(test, target_os = "linux"))]
     gate: Mutex<Gate>,
+    /// Launches held until their room is ready for apps.
+    #[cfg(any(test, target_os = "linux"))]
+    rooms: room_hold::State,
 }
 
 impl Default for SessionLaunches {
@@ -1531,6 +1546,8 @@ impl Default for SessionLaunches {
             gate: Mutex::new(Gate::open_with_capacity(
                 crate::shell::launch_gate::MAX_HELD_LAUNCHES,
             )),
+            #[cfg(any(test, target_os = "linux"))]
+            rooms: room_hold::State::default(),
         }
     }
 }
@@ -4868,16 +4885,22 @@ pub fn release_held_launches() {
     let session = LaunchSession::current();
     release_from(&session.gate, |held| {
         // A failure to start is reported through the session by `start_launch`.
-        let _ = start_launch(
-            held.package_id,
-            held.display_name,
-            held.command,
-            &session,
-            held.authority,
-            #[cfg(target_os = "linux")]
-            held.retained,
-        );
+        let _ = room_hold::admit(&session, held, start_held);
     });
+}
+
+/// Start `held` now in `session`.
+#[cfg(any(test, target_os = "linux"))]
+fn start_held(held: HeldLaunch, session: &LaunchSession) -> Result<(), String> {
+    start_launch(
+        held.package_id,
+        held.display_name,
+        held.command,
+        session,
+        held.authority,
+        #[cfg(target_os = "linux")]
+        held.retained,
+    )
 }
 
 /// Report every held launch as failed with `reason`, and let later launches
@@ -4926,6 +4949,16 @@ fn held_launch_failure(launch: HeldLaunch, detail: &str) -> LaunchEvent {
             detail: detail.to_string(),
         },
     }
+}
+
+/// `launch` will not start: its room is not going to be ready, for `reason`.
+#[cfg(any(test, target_os = "linux"))]
+fn room_refused(launch: HeldLaunch, reason: &str) -> LaunchEvent {
+    let mut event = held_launch_failure(launch, reason);
+    if let LaunchEventKind::SpawnFailed { reason, .. } = &mut event.kind {
+        *reason = LaunchFailure::RoomRefused;
+    }
+    event
 }
 
 /// Admit one launch through `gate`: start it now, hold it, or report it.
@@ -5004,17 +5037,7 @@ fn spawn_launch_with_authority(
             display_name,
             command,
         },
-        |held| {
-            start_launch(
-                held.package_id,
-                held.display_name,
-                held.command,
-                &session,
-                held.authority,
-                #[cfg(target_os = "linux")]
-                held.retained,
-            )
-        },
+        |held| room_hold::admit(&session, held, start_held),
         |event| session.push(event),
     )
 }
@@ -6411,7 +6434,14 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
     let mut expired = Vec::new();
     let mut unshown = Vec::new();
     lock(&session.pending).retain(|note| {
-        let presentation_timed_out = note.claimed_by.is_none() && now >= note.present_before;
+        // A launch waiting for its room has not started: its window is not
+        // late yet.
+        #[cfg(any(test, target_os = "linux"))]
+        let waiting = note.claimed_by.is_none() && room_hold::waits(&session, &note.key);
+        #[cfg(not(any(test, target_os = "linux")))]
+        let waiting = false;
+        let presentation_timed_out =
+            note.claimed_by.is_none() && now >= note.present_before && !waiting;
         let retired = note.retire_after.is_some_and(|deadline| now >= deadline);
         let keep = !presentation_timed_out && !retired;
         if retired && let Some(surface) = note.claimed_by {
