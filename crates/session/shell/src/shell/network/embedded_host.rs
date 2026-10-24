@@ -142,6 +142,22 @@ impl ShellNetwork {
         })
     }
 
+    /// Whether this device's own host holds `room`, as the native owner,
+    /// already open, has it.
+    pub(super) fn hosted_here(&self, room: RoomId) -> bool {
+        let Some(owner) = self.opened_native_owner() else {
+            return false;
+        };
+        let own = *self.local_peer_id.as_bytes();
+        owner
+            .with_current(room, |view| {
+                Ok(view
+                    .transport_hint()
+                    .is_ok_and(|hint| tilo_joined_room::session::hosted_by(hint, &own)))
+            })
+            .unwrap_or(false)
+    }
+
     /// Where this device's host keeps its rooms.
     fn host_state_root(&self) -> Result<PathBuf, String> {
         let path = self
@@ -264,10 +280,20 @@ impl ShellNetwork {
         }
     }
 
+    /// Whether this network places workspaces at all: it has a host of its
+    /// own and an identity to create rooms as. Neither changes while it
+    /// runs, so a device without them never tries, rather than failing on
+    /// every pass; its workspaces wait, pending, for the network a
+    /// provisioned identity starts.
+    fn places_workspaces(&self) -> bool {
+        self.embedded_host.host.is_some() && self.host_identity.is_some()
+    }
+
     /// Whether a workspace waits to be placed and no pass is queued for it,
     /// never waiting: the frame loop asks.
     fn placements_pending(&self) -> bool {
-        !self.embedded_host.queued.load(Ordering::Acquire)
+        self.places_workspaces()
+            && !self.embedded_host.queued.load(Ordering::Acquire)
             && self.tree.try_read().is_some_and(|tree| {
                 let placing = self
                     .embedded_host
@@ -304,6 +330,9 @@ impl ShellNetwork {
     /// each once. Blocks on the host and the disk: runs on the peer-sync
     /// worker.
     pub(crate) fn place_pending_workspaces(&self) {
+        if !self.places_workspaces() {
+            return;
+        }
         let waiting = {
             let tree = self.tree.read();
             let mut placing = self
