@@ -308,11 +308,7 @@ class HookTests(unittest.TestCase):
         self.assertEqual(run[run.index("--rev") + 1], self.git("rev-parse", "HEAD").stdout.strip())
         self.assertEqual(run[run.index("--priority") + 1], "high")
         self.assertEqual(run[run.index("--json") + 1:],
-                         ["fmt-changed", "changes", "clippy/shell", "clippy/notes"])
-        # A policy step the fixture's manifest marks a push runs; the rest wait for main.
-        self.assertEqual(pre_push.select({"checks": ["policy/formats"]}, ["apps/notes/src/lib.rs"],
-                                         steps={"policy/formats"})["run"],
-                         ["fmt-changed", "changes", "policy/formats"])
+                         ["fmt-changed", "changes", "clippy/shell", "clippy/notes", "policy/formats"])
         self.assertFalse(any(call[0] == "main" for call in calls), "nothing is skipped for being red on main")
         self.assertIn("t test test-x86_64/shell", pushed.stderr)
         # It names what t suggests and runs none of it.

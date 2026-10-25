@@ -97,9 +97,9 @@ base=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1])).get("
 git diff --name-only "${base:-$pushed^}" "$pushed" -- >"$out/changed" 2>/dev/null || : >"$out/changed"
 
 # Of those, what a push runs (tools/ci/pre_push.py says why): its own cheap checks, chosen
-# without waiting for anything that talks to t. A policy step runs when t.toml marks it
-# `pre_push = true`; the steps that build or index the whole tree are main's. A check t's
-# failure comparison finds red on main runs all the same.
+# without waiting for anything that talks to t. A policy step runs when tools/policy/steps.toml
+# marks it `pre_push = true`; the steps that build or index the whole tree are main's. A check
+# t's failure comparison finds red on main runs all the same.
 run_cheap() {
   python3 -I "$top/tools/ci/pre_push.py" select --scope "$out/scope.json" --changed "$out/changed" \
     --policy-steps "$steps" >"$out/plan.json"
@@ -108,18 +108,14 @@ plan_started=$SECONDS
 run_cheap
 read -r -a gate <<<"$(python3 -I -c 'import json, sys; print(" ".join(json.load(open(sys.argv[1]))["run"]))' "$out/plan.json")"
 # The gate runs its cheap checks on their own, at the priority that runs first, and each one is
-# minutes of a loaded node: a policy step a push doesn't run, and the size check waiting for t to
-# say whether the commit's shared runtime is built, must not be queued in front of it. What each
-# leaves out is in `$out/skipped`, which the push says and records.
+# minutes of a loaded node: the size check waiting for t to say whether the commit's shared
+# runtime is built must not be queued in front of them. What it leaves out is in `$out/skipped`,
+# which the push says and records. `select` has already left out every check a push doesn't run.
 : >"$out/skipped"
 kept=()
 size_checks=()
 for check in "${gate[@]}"; do
   case $check in
-    policy/*)
-      printf '%s\n' "$check is not one a push runs (t.toml: pre_push); main runs it" >>"$out/skipped"
-      continue
-      ;;
     app-size/*) size_checks+=("$check") ;;
   esac
   kept+=("$check")
