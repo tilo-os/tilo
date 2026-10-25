@@ -89,10 +89,26 @@ fn prepared_effect_conflict_and_failed_barriers_remain_uncertain() {
         let (mut journal, key, request, update) = fixture(&root);
         journal.fail_at = Some(failure);
         assert!(journal.prepare_effect(&key, update, &request).is_err());
-        assert!(
-            journal.lookup(&key).is_err(),
-            "failed preparation poisons submission path"
-        );
+        if failure == super::BarrierFailure::Directory {
+            // The rename may have made it durable, so nothing is read until
+            // recovery reads the store back.
+            assert!(
+                journal.lookup(&key).is_err(),
+                "failed preparation poisons submission path"
+            );
+        } else {
+            // The entry was withdrawn: the prepared effect is not there.
+            assert!(!journal.failed());
+            assert!(
+                journal
+                    .lookup(&key)
+                    .unwrap()
+                    .unwrap()
+                    .prepared_effect
+                    .is_none(),
+                "a withdrawn preparation left no effect"
+            );
+        }
         drop(journal);
         let journal = InvocationJournal::open(&root).unwrap();
         assert!(journal.lookup(&key).unwrap().unwrap().uncertain);
