@@ -18,7 +18,11 @@ MANIFEST = "tools/policy/steps.toml"
 GIT_INDEX = "tools/ci/t-git-index.sh"
 FINDINGS = "tools/policy/findings.py"
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-FIELDS = {"name", "label", "run", "inputs", "git", "tests", "covered_by"}
+FIELDS = {"name", "label", "run", "inputs", "git", "tests", "covered_by", "pre_push"}
+# What a step a push runs may not be: it lists the tree through Git (t indexes all of it first),
+# reads the whole tree, or builds. Those wait for main, which runs every default check.
+WHOLE_TREE = frozenset({"**"})
+BUILD = re.compile(r"(?:^|[\s;&|(])cargo\s+(?:build|test|run|clippy|install)\b")
 # Directories whose modules a step's Python imports by bare name (each script puts its own
 # directory, or one of these, on sys.path).
 MODULE_DIRS = ("tools/policy", "tools/ci", "tools/docs")
@@ -36,6 +40,7 @@ class Step:
     git: bool
     tests: bool
     covered_by: str | None
+    pre_push: bool = False
 
     @property
     def check(self) -> str:
@@ -66,7 +71,7 @@ def load(root: Path = ROOT) -> list[Step]:
             raise ValueError(f"{MANIFEST}: a step's name is lowercase words joined by '-', not {name!r}")
         step = Step(name, entry["label"], " ".join(entry["run"].replace("\\\n", " ").split()),
                     tuple(entry.get("inputs", ())), bool(entry.get("git")), bool(entry.get("tests")),
-                    entry.get("covered_by"))
+                    entry.get("covered_by"), bool(entry.get("pre_push")))
         if (step.tests, name) in seen:
             raise ValueError(f"{MANIFEST}: two steps are called {name}")
         if step.covered_by is None and not step.inputs:
@@ -74,6 +79,13 @@ def load(root: Path = ROOT) -> list[Step]:
         if step.covered_by is not None and (step.inputs or step.tests):
             raise ValueError(f"{MANIFEST}: step {name} is covered by {step.covered_by}, whose declaration says "
                              "what it reads")
+        if step.pre_push and not step.tests:
+            why = ("it lists the tree through Git" if step.git else
+                   "it reads the whole tree" if WHOLE_TREE & set(step.inputs) else
+                   "it builds" if BUILD.search(step.run) else "")
+            if why:
+                raise ValueError(f"{MANIFEST}: step {name} says pre_push = true, but {why}: a push runs only "
+                                 "the steps that build nothing and read no Git index of the tree")
         seen.add((step.tests, name))
         steps.append(step)
     return steps
