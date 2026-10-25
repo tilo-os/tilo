@@ -319,6 +319,7 @@ pub mod virtual_viewport;
 pub mod window_door;
 pub mod window_slots;
 pub mod window_toolbar;
+pub mod workspace_emoji;
 pub mod workspace_identity;
 #[cfg(feature = "native")]
 pub use native::warmup;

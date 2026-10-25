@@ -30,6 +30,10 @@ history-edit-settle-failed = { $item } aus { $field } fehlgeschlagen: { $reason 
 history-edit-settle-failed-unnamed = Ein Eintrag aus { $field } fehlgeschlagen: { $reason }
 history-edit-forget = { $item } aus { $field } entfernt
 history-edit-forget-unnamed = Einen Eintrag aus { $field } entfernt
+history-edit-react = Mit { $new } auf { $item } reagiert
+history-edit-react-unnamed = Mit { $new } reagiert
+history-edit-unreact = Reaktion { $new } auf { $item } zurückgenommen
+history-edit-unreact-unnamed = Reaktion { $new } zurückgenommen
 history-edit = { $field } von { $item } geändert
 history-edit-unnamed = { $field } geändert
 
