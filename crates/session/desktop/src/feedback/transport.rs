@@ -545,6 +545,25 @@ impl CanonicalDestination {
         Ok(SignedReceipt { receipt, signature })
     }
 
+    /// [`Self::receipt`], or `None` while it is not yet due: the report has
+    /// not reached the owner's durable record yet, or its screenshot has not
+    /// reached the owner's content store, which takes it in only after the
+    /// report lands. The reporter asks again; only real refusals are errors,
+    /// so "not yet" never reads as a lost admission.
+    /// # Errors
+    /// Refuses admission, attribution, payload and namespace failures.
+    pub fn receipt_when_kept(
+        &mut self,
+        submission: &Submission,
+        enrollment: &Enrollment,
+    ) -> Result<Option<SignedReceipt>, Error> {
+        match self.receipt(submission, enrollment) {
+            Ok(receipt) => Ok(Some(receipt)),
+            Err(Error::NotDurable) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Refuses a report whose screenshot the owner does not durably keep.
     fn witness_content(&self, submission: &Submission) -> Result<(), Error> {
         match &submission.feedback.screenshot {
