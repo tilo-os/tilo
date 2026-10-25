@@ -76,6 +76,16 @@ pub(crate) fn schema_wants(schema: &serde_json::Value) -> Option<Wants> {
     }
 }
 
+/// What a place in a step's arguments takes, as its parameter's schema
+/// says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Place {
+    /// A date or a number.
+    Typed(Wants),
+    /// Anything: nothing types it (a cell, a record's field by its header).
+    Untyped,
+}
+
 /// Fill in what `arguments` write as arithmetic where `params` take a date
 /// or a number, at the top level and in the fields and items their schemas
 /// type.
@@ -88,48 +98,119 @@ pub(crate) fn fill(
     arguments: &mut serde_json::Map<String, serde_json::Value>,
     params: &[tilo_actions::ActionParam],
 ) -> Result<(), String> {
+    visit_arguments(arguments, params, &mut |value, place| match place {
+        Place::Typed(wants) => fill_leaf(value, wants),
+        Place::Untyped => Ok(()),
+    })
+}
+
+/// Fill in each value of `arguments` that nothing types and that is only
+/// arithmetic ([`untyped`]): `10 business days after 2026-10-14` in a
+/// row's cell becomes the date, `289 - 50` the number. Anything else is
+/// left as written.
+pub(crate) fn fill_untyped(
+    arguments: &mut serde_json::Map<String, serde_json::Value>,
+    params: &[tilo_actions::ActionParam],
+) {
+    let filled = visit_arguments(arguments, params, &mut |value, place| {
+        if place == Place::Untyped
+            && let serde_json::Value::String(text) = value
+            && let Some(computed) = untyped(text)
+        {
+            *value = computed;
+        }
+        Ok(())
+    });
+    debug_assert!(filled.is_ok(), "filling untyped values refuses nothing");
+}
+
+/// Call `act` on each place of `arguments` that `params` type as a date or
+/// a number, and on each string nothing types. A parameter the action
+/// does not declare, and text a parameter takes, are left alone.
+fn visit_arguments(
+    arguments: &mut serde_json::Map<String, serde_json::Value>,
+    params: &[tilo_actions::ActionParam],
+    act: &mut impl FnMut(&mut serde_json::Value, Place) -> Result<(), String>,
+) -> Result<(), String> {
+    use tilo_actions::ParamType;
     for (name, value) in arguments.iter_mut() {
         let Some(param) = params.iter().find(|param| param.name.as_ref() == name) else {
             continue;
         };
         let named = |why: String| format!("`{name}`: {why}");
         if let Some(wants) = param_wants(param) {
-            fill_leaf(value, wants).map_err(named)?;
+            act(value, Place::Typed(wants)).map_err(named)?;
         } else if let Some(schema) = param.schema.as_deref() {
-            fill_within(value, schema).map_err(named)?;
+            visit(value, Some(schema), act).map_err(named)?;
+        } else if matches!(param.ty, ParamType::Object | ParamType::Array) {
+            visit(value, None, act).map_err(named)?;
         }
     }
     Ok(())
 }
 
-/// `value` with the fields and items `schema` types as dates or numbers
-/// filled in.
-fn fill_within(value: &mut serde_json::Value, schema: &serde_json::Value) -> Result<(), String> {
-    if let Some(wants) = schema_wants(schema) {
-        return fill_leaf(value, wants);
+/// Call `act` on the places within `value` that `schema` (`None`: no
+/// schema at all) types as a date or a number, and on the strings it
+/// leaves untyped.
+fn visit(
+    value: &mut serde_json::Value,
+    schema: Option<&serde_json::Value>,
+    act: &mut impl FnMut(&mut serde_json::Value, Place) -> Result<(), String>,
+) -> Result<(), String> {
+    if let Some(schema) = schema {
+        if let Some(wants) = schema_wants(schema) {
+            return act(value, Place::Typed(wants));
+        }
+        // A type defined elsewhere, or one of several: what its places
+        // take is not read here, so none of them counts as untyped.
+        if ["$ref", "anyOf", "oneOf", "allOf"]
+            .iter()
+            .any(|key| schema.get(key).is_some())
+        {
+            return Ok(());
+        }
     }
     match value {
+        serde_json::Value::String(_) if schema.is_none_or(says_nothing) => {
+            act(value, Place::Untyped)
+        }
         serde_json::Value::Object(fields) => {
-            let Some(properties) = schema
-                .get("properties")
-                .and_then(serde_json::Value::as_object)
-            else {
-                return Ok(());
-            };
             for (name, field) in fields.iter_mut() {
-                if let Some(inner) = properties.get(name) {
-                    fill_within(field, inner).map_err(|why| format!("{name}: {why}"))?;
-                }
+                let inner = schema.and_then(|schema| {
+                    schema
+                        .get("properties")
+                        .and_then(|properties| properties.get(name))
+                        .or_else(|| {
+                            schema
+                                .get("additionalProperties")
+                                .filter(|inner| inner.is_object())
+                        })
+                });
+                visit(field, inner, act).map_err(|why| format!("{name}: {why}"))?;
             }
             Ok(())
         }
-        serde_json::Value::Array(items) => match schema.get("items") {
-            Some(inner) if inner.is_object() => items
+        serde_json::Value::Array(items) => {
+            let inner = schema
+                .and_then(|schema| schema.get("items"))
+                .filter(|inner| inner.is_object());
+            items
                 .iter_mut()
-                .try_for_each(|item| fill_within(item, inner)),
-            _ => Ok(()),
-        },
+                .try_for_each(|item| visit(item, inner, act))
+        }
         _ => Ok(()),
+    }
+}
+
+/// Whether `schema` says nothing of what its value is (`true`, `{}`, a
+/// description alone).
+fn says_nothing(schema: &serde_json::Value) -> bool {
+    match schema {
+        serde_json::Value::Bool(any) => *any,
+        serde_json::Value::Object(fields) => !["type", "enum", "const", "format", "pattern"]
+            .iter()
+            .any(|key| fields.contains_key(*key)),
+        _ => false,
     }
 }
 
@@ -175,7 +256,7 @@ pub(crate) fn typed(text: &str, wants: Wants) -> Result<Option<serde_json::Value
             if dates::parse(trimmed).is_some() && dates::instant(trimmed).is_some() {
                 return Ok(None);
             }
-            let tokens = tokens(trimmed)?;
+            let tokens = tokens(trimmed, Reading::Lenient)?;
             let Some((day, clock)) = date_form(&tokens) else {
                 return Err(format!("`{trimmed}` is not a date: {DATE_FORMS}"));
             };
@@ -194,7 +275,7 @@ pub(crate) fn typed(text: &str, wants: Wants) -> Result<Option<serde_json::Value
 ///
 /// Text not read whole as one of the forms, with the forms.
 pub(crate) fn evaluate(text: &str) -> Result<Value, String> {
-    let tokens = tokens(text)?;
+    let tokens = tokens(text, Reading::Lenient)?;
     if let Some((day, _)) = date_form(&tokens) {
         return Ok(Value::Date(day));
     }
@@ -204,6 +285,50 @@ pub(crate) fn evaluate(text: &str) -> Result<Value, String> {
             text.trim()
         )
     })
+}
+
+/// `text`, a value nothing types, as what it computes when it is nothing
+/// but arithmetic: a date moved by days, weeks or months (`10 business
+/// days after 2026-10-14`, `2026-10-14 + 3 weeks`) as its ISO date, and
+/// numbers worked (`289 - 50`, `4 x 38.50`, `sum of 120, 80 and 45`, `15%
+/// of 200`) as a number. `None` for anything else, left as written: text
+/// that says more than the arithmetic (`Call 319 - 75 today`), a plain
+/// value, and what is read only [`Reading::Strict`]ly.
+pub(crate) fn untyped(text: &str) -> Option<serde_json::Value> {
+    let trimmed = text.trim();
+    if !trimmed.contains(|c: char| c.is_ascii_digit()) || lenient_number(trimmed).is_some() {
+        return None;
+    }
+    let tokens = tokens(trimmed, Reading::Strict).ok()?;
+    if tokens
+        .iter()
+        .any(|token| *token == Token::Word("today".into()))
+    {
+        return None;
+    }
+    if let Some((day, clock)) = date_form(&tokens) {
+        // A date alone is what it says already.
+        if tokens.len() == 1 {
+            return None;
+        }
+        let mut iso = dates::iso(day);
+        iso.push_str(clock.as_deref().unwrap_or_default());
+        return Some(serde_json::Value::String(iso));
+    }
+    number_form(&tokens).map(|number| Value::Number(number).to_json())
+}
+
+/// How strictly text is read as arithmetic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reading {
+    /// Where a parameter takes a date or a number: a date may be written
+    /// with its month by name, or in numbers only one order reads.
+    Lenient,
+    /// Where nothing types the value, so text that only looks like
+    /// arithmetic must stay text: dates are ISO, and each run of digits
+    /// is one number or date whole, so `555-1234`, `1920x1080`, `3/4` and
+    /// `03/04/2026` are not sums.
+    Strict,
 }
 
 /// One piece of plain arithmetic.
@@ -223,14 +348,15 @@ const CURRENCY_WORDS: [&str; 10] = [
     "eur", "usd", "gbp", "chf", "jpy", "cad", "aud", "sek", "nok", "dkk",
 ];
 
-/// `text` as tokens: dates (ISO, numbers one order reads, a month by
-/// name), numbers (currency marks left out, thousands grouped by commas),
-/// marks and words.
+/// `text` as tokens: dates (ISO; read [`Reading::Lenient`]ly, numbers one
+/// order reads and a month by name too), numbers (currency marks left
+/// out, thousands grouped by commas), marks and words.
 ///
 /// # Errors
 ///
-/// A date whose day and month could be either way, or a decimal comma.
-fn tokens(text: &str) -> Result<Vec<Token>, String> {
+/// A date whose day and month could be either way, or a decimal comma;
+/// read strictly, a run of digits that is not one number or date whole.
+fn tokens(text: &str, reading: Reading) -> Result<Vec<Token>, String> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
     let mut at = 0;
@@ -247,7 +373,14 @@ fn tokens(text: &str) -> Result<Vec<Token>, String> {
                 c.is_ascii_alphanumeric() || matches!(c, '-' | '/' | '.' | ',' | ':' | '+')
             });
             let word: String = chars.get(at..end).unwrap_or_default().iter().collect();
-            let (token, used) = number_or_date(&word)?;
+            let (token, used) = number_or_date(&word, reading)?;
+            if reading == Reading::Strict
+                && !word
+                    .get(used..)
+                    .is_some_and(|rest| rest.trim_end_matches(',').is_empty())
+            {
+                return Err(format!("`{word}` is not one number or date"));
+            }
             out.push(token);
             step(&mut at, used.max(1));
         } else if c.is_alphabetic() {
@@ -278,7 +411,10 @@ fn tokens(text: &str) -> Result<Vec<Token>, String> {
             step(&mut at, 1);
         }
     }
-    Ok(join_written_dates(&out))
+    Ok(match reading {
+        Reading::Lenient => join_written_dates(&out),
+        Reading::Strict => out,
+    })
 }
 
 /// `at` moved on by `by`.
@@ -296,7 +432,7 @@ fn run_end(chars: &[char], from: usize, keep: impl Fn(char) -> bool) -> usize {
 
 /// The token `word` (a run of digits and what joins them) starts with and
 /// how many of its characters it takes.
-fn number_or_date(word: &str) -> Result<(Token, usize), String> {
+fn number_or_date(word: &str, reading: Reading) -> Result<(Token, usize), String> {
     // An ISO date, with a time after it kept as written.
     if let Some(date) = word.get(..10).and_then(dates::parse) {
         let rest = word.get(10..).unwrap_or_default();
@@ -310,7 +446,9 @@ fn number_or_date(word: &str) -> Result<(Token, usize), String> {
     let date_end = word.find(|c: char| !(c.is_ascii_digit() || matches!(c, '/' | '.' | '-')));
     let date_part = word.get(..date_end.unwrap_or(word.len())).unwrap_or(word);
     let date_part = date_part.trim_end_matches(['.', '-']);
-    if let Some((numeric, _)) = dates::numeric_date(date_part) {
+    if reading == Reading::Lenient
+        && let Some((numeric, _)) = dates::numeric_date(date_part)
+    {
         return match numeric {
             dates::Numeric::Settled(day) => Ok((Token::Date(day, None), date_part.len())),
             dates::Numeric::Either {
