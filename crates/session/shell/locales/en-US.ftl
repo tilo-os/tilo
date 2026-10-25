@@ -1448,7 +1448,7 @@ search-app-job-streaming = streaming
 search-app-job-succeeded = succeeded
 search-app-job-failed = failed
 search-app-job-cancelled = cancelled
-search-app-resource-contains = contains resources
+search-app-content-contains = contains resources
 
 # Search: session actions
 search-session-logout = Log out of Tilo
