@@ -439,6 +439,7 @@ async fn stream_a_window(who: Viewer) {
         let sent_at = Instant::now();
         viewer_cmd
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: WS,
                 msg: NeighbourMsg::RemoteInput {
                     peer: viewer_peer,
@@ -524,6 +525,7 @@ async fn stream_a_window(who: Viewer) {
     // reach it, so it was listening.
     host_cmd
         .send(NetCmd::Publish {
+            at: tokio::time::Instant::now(),
             ws: WS,
             msg: NeighbourMsg::SurfaceFrame {
                 surface: SURFACE + 1,
