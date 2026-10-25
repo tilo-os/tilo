@@ -149,37 +149,37 @@ def run_cargo(root: Path) -> subprocess.CompletedProcess[str]:
 def audit(
     root: Path = ROOT,
     run: Callable[[Path], subprocess.CompletedProcess[str]] = run_cargo,
-) -> list[str]:
-    """The failure, as lines to print; empty when the graph is acyclic."""
+) -> tuple[list[str], list[str]]:
+    """The findings (stdout lines) and what else to say (stderr lines); both
+    empty when the graph is acyclic. A graph that could not be checked has no
+    findings, only its reason."""
     result = run(root)
     if result.returncode != 0:
-        return [
+        return [], [
             f"`{' '.join(COMMAND)}` failed, so the package graph could not be checked:",
             *(f"  {line}" for line in result.stderr.strip().splitlines()),
         ]
     try:
         lock = tomllib.loads((root / "Cargo.lock").read_text())
     except (OSError, tomllib.TOMLDecodeError) as e:
-        return [f"Cargo.lock could not be read, so the package graph could not be checked: {e}"]
+        return [], [f"Cargo.lock could not be read, so the package graph could not be checked: {e}"]
     cycle = find_cycle(graph(json.loads(result.stdout), lock))
     if cycle:
-        return [
-            "the workspace's package graph has a cycle:",
-            "  " + " -> ".join(cycle),
-            HINT,
-        ]
-    return []
+        return [f"Cargo.lock: the workspace's package graph has a cycle: {' -> '.join(cycle)}"], [HINT]
+    return [], []
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
-    failure = audit()
-    if failure:
+    found, notes = audit()
+    if found or notes:
         print("Dependency cycle check FAILED", file=sys.stderr)
-        for line in failure:
+        for line in found:
+            print(line)
+        for line in notes:
             print(line, file=sys.stderr)
         return 1
-    print("Dependency cycle check OK (the package graph is acyclic)")
+    print("Dependency cycle check OK (the package graph is acyclic)", file=sys.stderr)
     return 0
 
 

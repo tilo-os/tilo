@@ -265,13 +265,16 @@ def check(root: Path, baseline_path: Path) -> list[str]:
     found = scan(root)
     allowed = load_baseline(baseline_path)
     errors = unknown_exemptions(root)
+    # The baseline's findings name it from the top of the tree.
+    listed = (baseline_path.relative_to(root).as_posix()
+              if baseline_path.is_relative_to(root) else baseline_path.name)
     for key in sorted(set(found) | set(allowed)):
         file, rule = key
         have, may = found.get(key, 0), allowed.get(key, 0)
         if have > may:
             errors.append(f"{file}: {have} {rule} (allowed {may}); {ADVICE.get(rule, ROW_ADVICE)}")
         elif have < may:
-            errors.append(f"{baseline_path.name}: {rule} {may} {file} is now {have}; "
+            errors.append(f"{listed}: {rule} {may} {file} is now {have}; "
                           "lower the count (or delete the line at 0)")
     return errors
 
@@ -291,7 +294,7 @@ def main(argv: list[str]) -> int:
     if errors:
         print("\n".join(errors))
         return 1
-    print("app toolbars OK (an app's controls are its window bar's slots)")
+    print("app toolbars OK (an app's controls are its window bar's slots)", file=sys.stderr)
     return 0
 
 

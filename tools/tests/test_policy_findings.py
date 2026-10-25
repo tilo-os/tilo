@@ -16,15 +16,17 @@ import findings  # noqa: E402
 # output under `---- <name> stdout ----`.
 TEST_LINE = re.compile(r"^test (.+) \.\.\. FAILED$")
 
-# What check_source_file_size.py prints when it fails.
-SIZE_FAILED = ("apps/pdf-viewer/src/app_events.rs: 3023 lines, over its ceiling of 3000; split its cohesive\n"
-               "apps/photos/src/app/tests.rs: 3019 lines, over its ceiling of 3000; split its cohesive\n"
-               "\n"
-               "source file size: 2 problem(s); see tools/policy/check_source_file_size.py\n")
+# What check_source_file_size.py prints when it fails: its findings on stdout, its count on
+# stderr.
+SIZE_FINDINGS = ("apps/pdf-viewer/src/app_events.rs: 3023 lines, over its ceiling of 3000; split its cohesive\n"
+                 "apps/photos/src/app/tests.rs: 3019 lines, over its ceiling of 3000; split its cohesive\n")
+SIZE_COUNT = "\nsource file size: 2 problem(s); see tools/policy/check_source_file_size.py\n"
 
 
-def step(output: str, status: int) -> subprocess.CompletedProcess:
-    script = f"import sys; sys.stdout.write({output!r}); sys.exit({status})"
+def step(out: str, status: int, err: str = "") -> subprocess.CompletedProcess:
+    """findings.py running a step that writes `err` to stderr, then `out` to stdout."""
+    script = (f"import sys; sys.stderr.write({err!r}); sys.stderr.flush(); "
+              f"sys.stdout.write({out!r}); sys.exit({status})")
     return subprocess.run([sys.executable, str(FINDINGS), sys.executable, "-c", script],
                           capture_output=True, text=True)
 
@@ -32,11 +34,8 @@ def step(output: str, status: int) -> subprocess.CompletedProcess:
 def tree(entries: dict[str, int]) -> subprocess.CompletedProcess:
     """The step findings.py ran over a tree of files, each with the length it was given: it says
     what check_source_file_size.py says about every one of them."""
-    lines = [f"{path}: {count} lines, over its ceiling of 3000" for path, count in entries.items()]
-    lines.append(f"source file size: {len(lines)} problem(s); see tools/policy/check_source_file_size.py")
-    script = "import sys\nsys.stdout.write({!r})\nsys.exit(1)".format("\n".join(lines) + "\n")
-    return subprocess.run([sys.executable, str(FINDINGS), sys.executable, "-c", script],
-                          capture_output=True, text=True)
+    lines = "".join(f"{path}: {count} lines, over its ceiling of 3000\n" for path, count in entries.items())
+    return step(lines, 1, f"source file size: {len(entries)} problem(s)\n")
 
 
 def failed(stdout: str) -> list[str]:
@@ -44,15 +43,17 @@ def failed(stdout: str) -> list[str]:
 
 
 def keys(output: str) -> list[str]:
-    """What t compares: the findings a step's output is reported as."""
-    return [name for name, _, _ in findings.findings(output)]
+    """What t compares: the findings a step's stdout is reported as."""
+    return [name for name, _ in findings.findings(output)]
 
 
 class FindingsTests(unittest.TestCase):
-    def test_each_problem_a_step_reports_is_a_failed_test_named_by_its_file(self):
-        ran = step(SIZE_FAILED, 1)
+    def test_each_finding_a_step_reports_is_a_failed_test_named_by_its_file(self):
+        ran = step(SIZE_FINDINGS, 1, SIZE_COUNT)
         self.assertEqual(ran.returncode, 1)
-        self.assertTrue(ran.stdout.startswith(SIZE_FAILED), "the step's own output comes first, as it was")
+        passed_through = ran.stdout[:ran.stdout.index("\ntest ")]
+        self.assertIn(SIZE_FINDINGS, passed_through, "the step's stdout comes first, as it was")
+        self.assertIn(SIZE_COUNT, passed_through, "and so does its stderr")
         self.assertEqual(failed(ran.stdout), [
             "apps/pdf-viewer/src/app_events.rs",
             "apps/photos/src/app/tests.rs"])
@@ -76,84 +77,63 @@ class FindingsTests(unittest.TestCase):
                                                       "apps/pdf-viewer/src/app_events.rs"],
                          "the file added over its ceiling is a finding main does not have")
 
-    def test_a_finding_is_its_file_and_rule_never_the_words_it_used(self):
-        # The same file under other words, a count that moved or a line that moved: main's.
-        self.assertEqual(findings.finding("apps/a.rs: 3023 lines, over its ceiling of 3000; split it"),
-                         findings.finding("apps/a.rs: 3101 lines, over its ceiling of 3500; split its cohesive"))
-        self.assertEqual(findings.finding("crates/a/src/lib.rs:10: forbidden call"),
-                         findings.finding("crates/a/src/lib.rs:12: forbidden call"))
-        # The path a line repeats is still the file it is about.
-        self.assertEqual(findings.finding("crates/a/src/lib.rs:3010: forbidden call in crates/a/src/lib.rs"),
-                         "crates/a/src/lib.rs")
-        self.assertEqual(findings.finding("apps/a.rs:10: copy starts with a capital (apps/a.rs)"), "apps/a.rs")
+    def test_each_format_of_a_finding_is_named_by_its_path(self):
+        self.assertEqual(keys("crates/a/src/lib.rs:10: forbidden call\n"), ["crates/a/src/lib.rs"])
+        self.assertEqual(keys("apps/b.rs: 3019 lines, over its ceiling of 3000\n"), ["apps/b.rs"])
+        # A finding about something that is no file names the file that declares it.
+        self.assertEqual(keys("Cargo.lock: reqwest 0.12.0 depends on native-tls\n"), ["Cargo.lock"])
+        self.assertEqual(keys("crates/web/Cargo.toml: web reaches workspace-hack for wasm32\n"),
+                         ["crates/web/Cargo.toml"])
+        # Extensionless and dotted top-level files are paths all the same.
+        self.assertEqual(keys("Containerfile: copies the whole build context\n"), ["Containerfile"])
+        self.assertEqual(keys(".forgejo/workflows/ci.yml:4: mutable workflow action\n"),
+                         [".forgejo/workflows/ci.yml"])
 
-    def test_a_temporary_directory_is_one_finding_however_its_random_name_reads(self):
-        # t runs a step twice, once on main and once on the branch, and compares the findings: a
-        # temporary path whose random name carries digits must read the same both times.
-        self.assertEqual(findings.finding("/tmp/skill-check-a1b2c3/app.rs: 12: uses a private shaper"),
-                         findings.finding("/tmp/skill-check-9f8e7d/app.rs: 12: uses a private shaper"))
-        self.assertEqual(findings.finding("/tmp/tmp51ee5d3c/x.rs: bad"), "/tmp/…/x.rs: bad")
+    def test_a_finding_is_its_file_never_its_line_or_words(self):
+        # The same file under other words, a count that moved or a line that moved: main's.
+        self.assertEqual(keys("apps/a.rs: 3023 lines, over its ceiling of 3000; split it\n"),
+                         keys("apps/a.rs: 3101 lines, over its ceiling of 3500; split its cohesive\n"))
+        self.assertEqual(keys("crates/a/src/lib.rs:10: forbidden call\n"),
+                         keys("crates/a/src/lib.rs:12: forbidden call\n"))
+        # The file a finding starts with decides, not one its message mentions.
+        self.assertEqual(keys("apps/demo/tilo-app.toml: uses `camera` without declaring it "
+                              "(crates/a/src/lib.rs:12)\n"), ["apps/demo/tilo-app.toml"])
 
     def test_the_second_finding_about_one_file_is_a_finding_of_its_own(self):
-        # The first line of a step about a file is that file's finding; a second one about it is
-        # another, so a step that finds one more than main about a file is the branch's.
-        self.assertEqual(keys("crates/a.rs:10: forbidden call\ncrates/a.rs: 3010 lines, over its ceiling\n"),
-                         ["crates/a.rs", "crates/a.rs (2)"])
-        # The file a line names decides, not the file a rule of it mentions.
-        self.assertEqual(keys("apps/demo/tilo-app.toml: uses `camera` without declaring it "
-                              "(crates/a/src/lib.rs:12)\n"
-                              "apps/demo/tilo-app.toml: uses `mic` without declaring it "
-                              "(crates/a/src/lib.rs:14)\n"),
-                         ["crates/a/src/lib.rs", "crates/a/src/lib.rs (2)"])
+        # A step that finds one more than main about a file adds a finding of the branch's.
+        self.assertEqual(keys("crates/a.rs:10: forbidden call\ncrates/a.rs: 3010 lines, over its ceiling\n"
+                              "crates/a.rs:12: forbidden call\n"),
+                         ["crates/a.rs", "crates/a.rs (2)", "crates/a.rs (3)"])
 
-    def test_the_named_file_decides_which_file_a_finding_is_about(self):
-        # A check about what a file does, reported under its manifest: the manifest is what the
-        # branch touched and what main's finding is about too.
-        self.assertEqual(findings.finding("apps/demo/tilo-app.toml: uses `camera` without declaring it "
-                                          "(crates/a/src/lib.rs:12)"), "crates/a/src/lib.rs")
-        self.assertEqual(findings.finding("apps/settings-core/locales/en-US.ftl: de-DE lacks music-title"),
-                         "apps/settings-core/locales/en-US.ftl")
-        self.assertEqual(findings.finding("os/components.toml: tilo-demo is not a Tilo capability"),
-                         "os/components.toml")
-        # Numbers inside names stay: they tell files and rules apart.
-        self.assertEqual(findings.finding("apps/v2/x86_64.rs: sha256 of 2 files"), "apps/v2/x86_64.rs")
-        # A finding that names no file of the tree keeps the step's words, its numbers blanked.
-        self.assertEqual(findings.finding("wrote /tmp/policy.Ab3xQ9/out: 3 ... 4"), "wrote /tmp/…/out: N N")
+    def test_headings_counts_and_hints_on_stderr_are_never_findings(self):
+        # The tls-stack check's heading names a file and ends in a colon; on stderr it is no
+        # finding, and its findings below it are.
+        tls = ("Cargo.lock: contains openssl 0.10.73\n"
+               "Cargo.lock: native-tls 0.2.14 depends on openssl\n")
+        ran = step(tls, 1, "rustls is the only TLS stack; OpenSSL is not allowed (docs/policies.md):\n")
+        self.assertEqual(failed(ran.stdout), ["Cargo.lock", "Cargo.lock (2)"])
+        self.assertIn("rustls is the only TLS stack; OpenSSL is not allowed (docs/policies.md):\n",
+                      ran.stdout, "the heading is passed through all the same")
+        # A count, and a hint naming the check's own file, are not findings either.
+        ran = step("os/Containerfile:12: copies the whole build context\n", 1,
+                   "\n3 image builder input problem(s); see tools/policy/check_image_builder_inputs.py\n")
+        self.assertEqual(failed(ran.stdout), ["os/Containerfile"])
 
-    def test_a_summary_line_is_reported_only_when_the_step_named_no_file(self):
-        # The summary counts what the lines above it already report: never a finding of its own,
-        # which would make every step that grows a problem new however red main is.
-        self.assertNotIn("source file size: N problem(s); see tools/policy/check_source_file_size.py",
-                         keys(SIZE_FAILED))
-        self.assertNotIn("N image builder input problem(s)", keys("os/Containerfile: N: copies the whole "
-                                                               "build context\n\n3 image builder input "
-                                                               "problem(s)\n"))
-        # A step that fails without naming what it found is compared as the whole it is.
-        self.assertEqual(keys("source file size: 1 problem(s); see tools/policy/check_source_file_size.py\n"), [
-            "source file size: N problem(s); see tools/policy/check_source_file_size.py"])
-        self.assertEqual(keys("\n1 image builder input problem(s)\n"), ["N image builder input problem(s)"])
-
-    def test_a_heading_is_reported_only_when_the_step_named_nothing_else(self):
-        # A heading says the rule the lines under it break: never a finding of its own, which
-        # would keep a step red on main for its heading after every file under it is fixed.
-        motion = ("Animations are composed from ui::motion (crates/sdk/ui-core/src/motion/):\n"
-                  "crates/session/desktop/src/feedback_picker.rs:368: easing helper; use a named motion\n")
-        self.assertEqual(keys(motion), ["crates/session/desktop/src/feedback_picker.rs"])
-        self.assertEqual(keys("GStreamer is the only media stack, and no shipped image carries Cisco's "
-                              "OpenH264:\n  openh264 in the dependency graph\n"), ["openh264 in the dependency graph"])
-        # A line ending in a colon that names a file is a finding about that file.
-        self.assertEqual(keys("apps/a.rs:\n"), ["apps/a.rs"])
-        # A step that says only its heading is compared as the whole it is.
-        self.assertEqual(keys("Nothing but a heading:\n"), ["Nothing but a heading:"])
+    def test_a_line_on_stdout_out_of_format_is_still_a_finding(self):
+        # Never lost: named by its words, without what t would read as a test line.
+        self.assertEqual(keys("openh264 in the dependency graph\n"), ["openh264 in the dependency graph"])
+        self.assertEqual(keys("a ... b ---- c\n"), ["a b c"])
 
     def test_a_step_that_passed_crashed_or_was_misused_found_nothing(self):
-        ran = step("all good\n", 0)
+        ran = step("", 0, "all good\n")
         self.assertEqual((ran.returncode, failed(ran.stdout)), (0, []))
-        crashed = step("Traceback (most recent call last):\n  File \"x.py\", line 3\nKeyError: 'a'\n", 1)
+        crashed = step("apps/a.rs: half a finding\n", 1,
+                       "Traceback (most recent call last):\n  File \"x.py\", line 3\nKeyError: 'a'\n")
         self.assertEqual((crashed.returncode, failed(crashed.stdout)), (1, []))
-        misused = step("usage: check.py [--staged]\n", 2)
+        misused = step("", 2, "usage: check.py [--staged]\n")
         self.assertEqual((misused.returncode, failed(misused.stdout)), (2, []))
-        silent = step("", 1)
+        # A step that fails saying only why on stderr is compared as the whole it is.
+        silent = step("", 1, "inspection failed: no Cargo.lock\n")
         self.assertEqual((silent.returncode, failed(silent.stdout)), (1, []))
 
 

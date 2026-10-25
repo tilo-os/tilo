@@ -39,10 +39,10 @@ class NoTelemetryTests(unittest.TestCase):
             self.assertEqual(
                 checker.check(root),
                 [
-                    "Cargo.lock contains sentry 0.34.0",
-                    "Cargo.lock contains sentry-core 0.34.0",
-                    "app 0.1.0 depends on sentry",
-                    "sentry 0.34.0 depends on sentry-core",
+                    "Cargo.lock: app 0.1.0 depends on sentry",
+                    "Cargo.lock: contains sentry 0.34.0",
+                    "Cargo.lock: contains sentry-core 0.34.0",
+                    "Cargo.lock: sentry 0.34.0 depends on sentry-core",
                 ],
             )
 

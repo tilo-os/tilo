@@ -142,7 +142,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print("document engine boundary OK")
+    print("document engine boundary OK", file=sys.stderr)
     return 0
 
 
