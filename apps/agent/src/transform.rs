@@ -1491,52 +1491,56 @@ mod tests {
         assert!(service.running.is_empty());
     }
 
-    /// Cancelling a transform used to drop only its answer: the model call
-    /// ran on to its end, billed, holding the agent's one gateway channel
-    /// from its planning turns. The call is now told to stop.
-    #[test]
-    fn a_cancelled_transform_stops_its_model_call() {
-        /// A model that works until it is told to stop, and says so.
-        struct Working(Sender<bool>);
-        impl TransformModel for Working {
-            fn answer(&self, _: &str, _: &str, _: u32, _: Duration) -> Result<String, String> {
-                Err("only a stoppable call is made".into())
-            }
+    /// A model that works until it is told to stop: it says when its call
+    /// began, and whether the stop reached it.
+    struct Working {
+        began: Sender<()>,
+        told: Sender<bool>,
+    }
 
-            fn answer_until(
-                &self,
-                _: (&str, &str),
-                _: u32,
-                _: Duration,
-                stop: &AtomicBool,
-            ) -> Result<String, String> {
-                let deadline = tilo_test_env::hang_deadline();
-                while !stop.load(Ordering::Relaxed) && ui::time::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                let _ = self.0.send(stop.load(Ordering::Relaxed));
-                Err("stopped".into())
-            }
+    impl TransformModel for Working {
+        fn answer(&self, _: &str, _: &str, _: u32, _: Duration) -> Result<String, String> {
+            Err("only a stoppable call is made".into())
         }
-        let (told, stopped) = channel();
-        let mut service = TransformService::new(Arc::new(Working(told)), store());
+
+        fn answer_until(
+            &self,
+            _: (&str, &str),
+            _: u32,
+            _: Duration,
+            stop: &AtomicBool,
+        ) -> Result<String, String> {
+            let _ = self.began.send(());
+            let deadline = tilo_test_env::hang_deadline();
+            while !stop.load(Ordering::Relaxed) && ui::time::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let _ = self.told.send(stop.load(Ordering::Relaxed));
+            Err("stopped".into())
+        }
+    }
+
+    /// Start invocation 4, a summary.
+    fn start_summary(service: &mut TransformService) {
         let argument = format!("{ARGUMENTS_JSON_PREFIX}{}", json!({"input": "text"}));
-        service.start(
-            directed(4),
-            RESOURCE_ID,
-            "summarise",
-            Some(&argument),
-            "ada",
-            None,
-        );
-        assert!(matches!(
-            service.cancel(4),
-            Some(InvocationUpdate::Cancelled { .. })
-        ));
         assert!(
-            tilo_test_env::recv("the model call ending", &stopped),
-            "the model call was told to stop"
+            service
+                .start(
+                    directed(4),
+                    RESOURCE_ID,
+                    "summarise",
+                    Some(&argument),
+                    "ada",
+                    None,
+                )
+                .is_none(),
+            "the transform runs"
         );
+    }
+
+    /// Wait until the cancelled invocation's worker reported, checking its
+    /// answer is dropped.
+    fn drain_cancelled(service: &mut TransformService) {
         let deadline = tilo_test_env::hang_deadline();
         while !service.running.is_empty() && ui::time::now() < deadline {
             assert!(
@@ -1546,5 +1550,56 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(service.running.is_empty(), "its slot is free again");
+    }
+
+    /// Cancelling a transform used to drop only its answer: the model call
+    /// ran on to its end, billed, holding the agent's one gateway channel
+    /// from its planning turns. A call in progress is now told to stop.
+    #[test]
+    fn a_cancelled_transform_stops_its_model_call() {
+        let (began_by, began) = channel();
+        let (told, stopped) = channel();
+        let mut service = TransformService::new(
+            Arc::new(Working {
+                began: began_by,
+                told,
+            }),
+            store(),
+        );
+        start_summary(&mut service);
+        // Cancel while the call runs, not before its worker reached it.
+        tilo_test_env::recv("the model call beginning", &began);
+        assert!(matches!(
+            service.cancel(4),
+            Some(InvocationUpdate::Cancelled { .. })
+        ));
+        assert!(
+            tilo_test_env::recv("the model call ending", &stopped),
+            "the model call was told to stop"
+        );
+        drain_cancelled(&mut service);
+    }
+
+    /// A transform cancelled before its worker asks the model never asks it.
+    #[test]
+    fn a_transform_cancelled_before_its_call_never_asks_the_model() {
+        let (began_by, began) = channel();
+        let (told, _stopped) = channel();
+        let model = Arc::new(Working {
+            began: began_by,
+            told,
+        });
+        let call = bind_wire(
+            "summarise",
+            Some(&format!(
+                "{ARGUMENTS_JSON_PREFIX}{}",
+                json!({"input": "text"})
+            )),
+            &store(),
+        )
+        .unwrap();
+        let failure = run_until(&call, model.as_ref(), &AtomicBool::new(true)).unwrap_err();
+        assert_eq!(failure.code, code::MODEL_UNAVAILABLE);
+        assert!(began.try_recv().is_err(), "the model was not asked");
     }
 }
