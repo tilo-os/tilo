@@ -71,7 +71,7 @@ WGPU_BACKEND = "vulkan"
 WGPU_ADAPTER_NAME = "llvmpipe"
 
 # The workspace tests: tools/ci/t-nextest.sh prepares what the packages need and
-# leaves out the visual goldens and quarantined tests (.config/nextest-filters.toml).
+# leaves out the visual goldens (.config/nextest-filters.toml).
 # Media, audio and the software GPU are present in the builder, so a test that finds
 # one missing fails instead of skipping. Pushes to main run the push-only suites too.
 [[cargo]]
