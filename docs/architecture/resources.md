@@ -75,8 +75,8 @@ text it wrote itself.
 
 - `#[model(label)]` names the item: history, search, agents and item resources
   use it ("Deploy script"). One per type. `#[model(label = "first last")]` on
-  the type names it by several fields joined ("Ada Lovelace"), falling back to
-  the `#[model(label)]` field when they are empty.
+  the type names it by several fields joined ("Ada Lovelace"), each named once,
+  falling back to the `#[model(label)]` field when they are empty.
 - `#[model(readonly)]` publishes the field for reading but offers no field edit;
   only verbs change it.
 - `#[model(unit)]` stores the field as its own storage unit (for a
