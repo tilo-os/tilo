@@ -743,7 +743,11 @@ fn end_of(events: &[Event], begin: usize) -> Option<usize> {
 }
 
 /// Where `scene` paints in its pieces from `first` on: a piece inside a
-/// bounded part by that part's bounds, any other by its draw bounds.
+/// bounded part by that part's bounds, any other by its draw bounds. The
+/// parts still open at `first` (those around the part that ended there)
+/// cover that part too, so their bounds would say everything after it is
+/// over it: a piece only they bound counts by its draw bounds, and by
+/// theirs only where those cannot bound it.
 #[cfg(feature = "native")]
 fn drawn_from(
     scene: &Scene,
@@ -752,22 +756,35 @@ fn drawn_from(
     bounds: &mut tilo_cpu_raster::DrawBounds,
 ) -> Option<Vec<Rect>> {
     let ends = part_ends(events).ok()?;
+    let bounds_of = |owner: &usize| match ends.get(*owner) {
+        Some(PartEnd::Bounds(rects)) => Some(*rects),
+        _ => None,
+    };
     let mut open: Vec<usize> = Vec::new();
+    let mut around: Option<Vec<usize>> = None;
     let mut drawn = Vec::new();
     for piece in 0..=events.len() {
         if piece >= first {
+            let around = around.get_or_insert_with(|| open.clone());
             let range = piece_range(scene.encoding(), events, piece);
             let piece_scene = slice(scene.encoding(), range)?;
             if !piece_scene.encoding().draw_tags.is_empty() {
-                let bounded = open.iter().rev().find_map(|&owner| match ends.get(owner) {
-                    Some(PartEnd::Bounds(rects)) => Some(*rects),
-                    _ => None,
-                });
-                match bounded {
+                let inside = open
+                    .iter()
+                    .rev()
+                    .filter(|owner| !around.contains(owner))
+                    .find_map(bounds_of);
+                match inside {
                     // A part claiming to paint nothing must not have drawn.
                     Some([]) => return None,
                     Some(rects) => drawn.extend_from_slice(rects),
-                    None => drawn.extend(bounds.of(piece_scene.encoding())?),
+                    None => match bounds.of(piece_scene.encoding()) {
+                        Some(rects) => drawn.extend(rects),
+                        None => match open.iter().rev().find_map(bounds_of) {
+                            Some([]) | None => return None,
+                            Some(rects) => drawn.extend_from_slice(rects),
+                        },
+                    },
                 }
             }
         }
