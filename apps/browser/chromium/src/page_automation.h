@@ -36,8 +36,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // CSS pixels in the main frame's viewport.
   using Click=std::function<void(double,double)>;
   using Key=std::function<void(CefRefPtr<CefDictionaryValue>)>;
-  PageAutomation(CefRefPtr<CefBrowser> browser,Emit emit,Click click,Key key)
-      :browser_(browser),emit_(std::move(emit)),click_(std::move(click)),key_(std::move(key)) {}
+  // One step of a pointer gesture, in the same CSS pixels.
+  using Pointer=std::function<void(CefRefPtr<CefDictionaryValue>)>;
+  PageAutomation(CefRefPtr<CefBrowser> browser,Emit emit,Click click,Key key,Pointer pointer)
+      :browser_(browser),emit_(std::move(emit)),click_(std::move(click)),key_(std::move(key)),pointer_(std::move(pointer)) {}
   void Attach() { registration_=browser_->GetHost()->AddDevToolsMessageObserver(this); }
   void Detach() { registration_=nullptr;browser_=nullptr;pending_.reset();CancelFileDialog(); }
   // A page asked for files. A click this automation is driving holds the
@@ -107,7 +109,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // A held file chooser waits this long for `fill_files`, then is cancelled so
   // the page is never left waiting on input that will not come.
   static constexpr int64_t kFileDialogWaitMs=60000;
-  enum class Stage { FrameTree, World, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, Evaluate, Fence };
+  enum class Stage { FrameTree, World, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, PointerTree, PointerWorld, PointerLocate, Evaluate, Fence };
+  // Long enough for hover, the press and the drop to paint what they set.
+  static constexpr int64_t kPointerFrameMs=60;
   struct TextFrame { std::string id,loader;int world=0,document=0;bool same_origin=true; };
   struct Pending {
     int request;uint64_t token;uint64_t navigations;bool retried;
@@ -152,6 +156,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(Action()=="fill_files" && file_dialog_) { AnswerFileDialog(pending_->command->GetList("paths"));return; }
     // Choosing files resolves the ref exactly as reading the page did, in the
     // document the outline named.
+    // A pointer gesture reads the document itself, one step at a time.
+    if(Action()=="pointer") { BeginGesture();return; }
     Call(Stage::FrameTree,"Page.getFrameTree",nullptr);
   }
   // Answer the held chooser with these paths. The page then runs exactly what
@@ -196,6 +202,63 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     params->SetInt("contextId",world_);params->SetBool("silent",true);
     Call(Stage::FileTarget,"Runtime.evaluate",params);
   }
+  // A gesture's steps are resolved one at a time: a step that names an
+  // element is placed in that element's box in this document, every other
+  // step is already a viewport position.
+  void BeginGesture() {
+    pointer_index_=0;
+    if(pending_->command->GetList("steps")->GetSize()==0) { Fail("unavailable","A gesture has no steps");return; }
+    AdvancePointer();
+  }
+  // One page action in the world this gesture already shares with the page.
+  CefRefPtr<CefDictionaryValue> PointerEvaluate(CefRefPtr<CefDictionaryValue> command) {
+    auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
+    auto params=CefDictionaryValue::Create();
+    params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
+    params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("silent",true);
+    params->SetBool("awaitPromise",true);
+    return params;
+  }
+  CefRefPtr<CefDictionaryValue> PointerStep() const { return pending_->command->GetList("steps")->GetDictionary(pointer_index_); }
+  void AdvancePointer() {
+    auto steps=pending_->command->GetList("steps");
+    if(pointer_index_>=steps->GetSize()) { SettlePointer();return; }
+    if(!world_) { Call(Stage::PointerTree,"Page.getFrameTree",CefRefPtr<CefDictionaryValue>());return; }
+    auto step=steps->GetDictionary(pointer_index_);
+    if(!step->HasKey("element")) { PointerLocated();return; }
+    auto command=CefDictionaryValue::Create();
+    command->SetString("action","locate_box");command->SetInt("doc",document_);
+    command->SetString("element",step->GetString("element"));
+    Call(Stage::PointerLocate,"Runtime.evaluate",PointerEvaluate(command));
+  }
+  // A step naming an element is placed in that element's box; one that names
+  // none is already a viewport position.
+  void PointerLocated() {
+    auto step=PointerStep();
+    double x=0,y=0;
+    if(step->HasKey("element")) {
+      auto box=pointer_box_;
+      if(!box) { Fail("stale_element","That element is not on the page");return; }
+      x=Number(box,"x")+Number(step,"x");y=Number(box,"y")+Number(step,"y");
+    } else { x=Number(step,"x");y=Number(step,"y"); }
+    auto event=CefDictionaryValue::Create();
+    event->SetString("kind",step->GetString("kind"));event->SetDouble("x",x);event->SetDouble("y",y);
+    event->SetString("button",pending_->command->GetString("button"));
+    pointer_(event);
+    ++pointer_index_;
+    // A gesture's steps are its own frames: the page sees each position it
+    // would have seen from a hand moving across it.
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
+      if(self->pending_ && self->pending_->token==token) self->AdvancePointer();
+    },CefRefPtr<PageAutomation>(this),pending_->token),kPointerFrameMs);
+  }
+  // What the gesture did to the page is what the caller reads back: the same
+  // read of the page any other action answers with, once the last step has
+  // painted.
+  void SettlePointer() {
+    pending_->command->SetString("action","changes");
+    Evaluate();
+  }
   void Call(Stage stage,const char* method,CefRefPtr<CefDictionaryValue> params) {
     stage_=stage;call_=browser_->GetHost()->ExecuteDevToolsMethod(0,method,params);
     if(!call_) Fail("unavailable","The page's inspector connection is unavailable");
@@ -223,6 +286,41 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         if(!live) { Fail("text_input_retired","The original checked frame was replaced");return; }
       }
       Fail("unavailable","The original text request was not acknowledged");return;
+    }
+    if(stage_==Stage::PointerTree || stage_==Stage::PointerWorld || stage_==Stage::PointerLocate) {
+      if(stage_==Stage::PointerTree) {
+        // A frame tree names the document a fresh world belongs to.
+        auto tree=success && result?result->GetDictionary("frameTree"):nullptr;
+        auto frame=tree?tree->GetDictionary("frame"):nullptr;
+        if(!frame || frame->GetType("id")!=VTYPE_STRING || frame->GetType("loaderId")!=VTYPE_STRING) { Fail("unavailable","The page has no document to read");return; }
+        if(world_ && loader_==frame->GetString("loaderId").ToString()) { AdvancePointer();return; }
+        loader_=frame->GetString("loaderId").ToString();
+        auto params=CefDictionaryValue::Create();
+        params->SetString("frameId",frame->GetString("id"));params->SetString("worldName","tilo-page-actions");
+        Call(Stage::PointerWorld,"Page.createIsolatedWorld",params);return;
+      }
+      if(stage_==Stage::PointerWorld) {
+        if(!success || !result || result->GetType("executionContextId")!=VTYPE_INT) { Fail("unavailable","The page refused a script context");return; }
+        world_=result->GetInt("executionContextId");
+        document_=page_documents=page_documents%2147483647+1;
+        AdvancePointer();return;
+      }
+      auto remote=success && result?result->GetDictionary("result"):nullptr;
+      auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
+      if(!value) {
+        // The document this step named is gone: place the step in the page
+        // that replaced it, once, before answering that the ref is stale.
+        if(pending_->retried) { Fail("page_changed","The page changed during the gesture");return; }
+        pending_->retried=true;world_=0;
+        Call(Stage::PointerTree,"Page.getFrameTree",CefRefPtr<CefDictionaryValue>());return;
+      }
+      if(!value->GetBool("ok")) {
+        const auto code=value->GetType("code")==VTYPE_STRING?value->GetString("code").ToString():"script";
+        Fail(code.size()<=64?code:"script",Text(value,"message"));return;
+      }
+      auto data=value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr;
+      if(!data) { Fail("script","The page gave no position for that element");return; }
+      pointer_box_=data;PointerLocated();return;
     }
     if(stage_==Stage::FrameTree) {
       auto tree=success && result?result->GetDictionary("frameTree"):nullptr;
@@ -506,13 +604,15 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void Reply(int request,CefRefPtr<CefDictionaryValue> fields,bool text_input=false) { fields->SetInt("request_id",request);emit_(text_input?"text_input_result":"page_result",fields); }
   CefRefPtr<CefBrowser> browser_;CefRefPtr<CefRegistration> registration_;
-  Emit emit_;Click click_;Key key_;
+  Emit emit_;Click click_;Key key_;Pointer pointer_;
   std::optional<Pending> pending_;Stage stage_=Stage::FrameTree;int call_=0;
   std::vector<TextFrame> text_candidates_;TextFrame text_frame_;std::optional<TextFrame> text_owner_;std::string text_lease_;
   bool native_attempted_=false;std::string native_object_;
   std::string file_object_;
   CefRefPtr<CefFileDialogCallback> file_dialog_;int file_dialog_request_=0;
   int world_=0,document_=0;std::string loader_;uint64_t token_=0,navigations_=0;
+  // The gesture's own step cursor and the last box an element resolved to.
+  size_t pointer_index_=0;CefRefPtr<CefDictionaryValue> pointer_box_;
   IMPLEMENT_REFCOUNTING(PageAutomation);
 };
 }

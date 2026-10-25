@@ -9,11 +9,44 @@
 //! publishes; only showing the page again rides the browser itself.
 
 use ui::tilo_resource::{self, Effect};
-use ui::webview::{KeyModifiers, PageKey, PageRequest};
+use ui::webview::{
+    KeyModifiers, PageKey, PageRequest, PointerButton, PointerPoint, PointerStep, PointerStepKind,
+};
 
 /// How long a settle waits for the page to go quiet, and at most, by default.
 const PAGE_SETTLE_QUIET_MS: u32 = 500;
 const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
+
+/// One `kind=move x=10 y=10 element=d1e4` step of a pointer gesture, or
+/// nothing when a field is missing or unreadable; the engine then refuses
+/// the gesture as out of bounds.
+fn pointer_step(text: &str) -> Option<PointerStep> {
+    let mut kind = None;
+    let mut element = None;
+    let mut x = None;
+    let mut y = None;
+    for field in text.split_whitespace() {
+        let (name, value) = field.split_once('=')?;
+        match name {
+            "kind" => kind = Some(value),
+            "element" if !value.is_empty() => element = Some(value.to_string()),
+            "x" => x = value.parse::<f64>().ok(),
+            "y" => y = value.parse::<f64>().ok(),
+            _ => return None,
+        }
+    }
+    let kind = match kind? {
+        "move" => PointerStepKind::Move,
+        "down" => PointerStepKind::Down,
+        "up" => PointerStepKind::Up,
+        _ => return None,
+    };
+    let at = match element.is_some() {
+        true => PointerPoint::InElement { x: x?, y: y? },
+        false => PointerPoint::Viewport { x: x?, y: y? },
+    };
+    Some(PointerStep { kind, at, element })
+}
 
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "browser.effect")]
@@ -441,6 +474,27 @@ pub enum BrowserEffect {
         #[param("The question's id")]
         dialog: u32,
     },
+    /// Move the pointer on the page
+    ///
+    /// Runs one gesture of real pointer input, as a hand makes it: steps in
+    /// order, each a move, a press or a release, placed in an element's box
+    /// or at a viewport point, with the button held between a press and its
+    /// release. Hovering reveals what a page shows under the pointer
+    /// (`kind=move x=120 y=90`, then `kind=down` and `kind=up` on what
+    /// appeared); dragging carries one element onto another (`kind=down
+    /// element=d1e2`, `kind=move element=d1e3`, `kind=up element=d1e3`);
+    /// drawing is a stroke per press and release (`kind=down element=d1e4
+    /// x=20 y=20`, moves across, `kind=up`). The answer reports what
+    /// changed on the page.
+    #[effect(row, job, returns, untrusted)]
+    PointerPage {
+        #[param(
+            "Steps in order, one per item, such as kind=move element=d1e4 x=10 y=10: a step naming an element is placed inside its box, every other step is a viewport position in CSS pixels"
+        )]
+        steps: Vec<String>,
+        #[param("Button the gesture presses and releases: left or right (default left)")]
+        button: Option<String>,
+    },
     /// Bookmark this page personally
     #[effect(row, returns, idempotent)]
     BookmarkPersonalPage {
@@ -634,6 +688,10 @@ impl BrowserEffect {
             } => page(PageRequest::Submit {
                 element,
                 cross_origin: cross_origin.unwrap_or(false),
+            }),
+            Self::PointerPage { steps, button } => page(PageRequest::Pointer {
+                steps: steps.iter().filter_map(|step| pointer_step(step)).collect(),
+                button: PointerButton::parse(button.as_deref().unwrap_or("left")),
             }),
         }
     }

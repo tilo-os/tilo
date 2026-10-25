@@ -5447,6 +5447,13 @@ impl BrowserWidget {
             ),
             (E::ReadPageConsole { since: None }, &["since"][..]),
             (E::ReadPageNetwork { since: None }, &["since"][..]),
+            (
+                E::PointerPage {
+                    steps: Vec::new(),
+                    button: None,
+                },
+                &["steps", "button"][..],
+            ),
         ] {
             let spec = spec.bound_asking(asking);
             page.actions.push(if web_page {
