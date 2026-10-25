@@ -1,0 +1,6 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "model-providers.root"
+label = "Model providers"
+version = 1
