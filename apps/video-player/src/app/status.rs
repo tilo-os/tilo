@@ -71,6 +71,7 @@ impl PlayerApp {
         let content = match status {
             MediaStatus::Idle => EmptyStateContent {
                 icon: Some(Icon::Film),
+                message: self.empty_picture_hint(),
                 action_label: Some("Open a video"),
                 ..EmptyStateContent::new("No video open")
             },
@@ -101,6 +102,13 @@ impl PlayerApp {
                 .paint(&mut ctx, self.rect, &content, cursor, self.status_focused)
         };
         self.status_action_rect = status_action.unwrap_or(Rect::ZERO);
+    }
+
+    /// How the person reaches the library from an empty picture: the window
+    /// bar's sidebar button, while the library is away.
+    fn empty_picture_hint(&self) -> Option<&'static str> {
+        (!self.library_visible)
+            .then_some("Open Library in the window bar for videos you played before.")
     }
 
     /// The letterbox, for a staged loading state that holds back the picture.
