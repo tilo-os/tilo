@@ -320,6 +320,31 @@ impl ShellNetwork {
         serve_in_process(&host, identity, &self.runtime_handle()?, ws, invoke)
     }
 
+    /// [`Self::local_host_action`] for a caller already on the network's
+    /// runtime: the same in-process operation of this device's own host,
+    /// awaited rather than blocked on. Waits on nothing but this device.
+    pub(super) async fn local_host_action_awaited(
+        &self,
+        ws: u64,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let host = self.local_host()?;
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or("native identity unavailable")?;
+        let invoke = relay_rooms::invocation(
+            HOST_ACTIONS_PROVIDER,
+            HOST_ROOMS_RESOURCE.to_owned(),
+            action,
+            arguments,
+        );
+        let pending = serve_in_process_pending(&host, identity, ws, invoke)?;
+        drop(host);
+        receipt_of(pending.await)
+    }
+
     /// Make this device's open `host` the governor of the rooms placed on
     /// it, so a change to one of them is asked there in process, with or
     /// without a running network.
@@ -712,18 +737,33 @@ fn serve_in_process(
     ws: u64,
     invoke: tilo_actions::remote::InvokeRequest,
 ) -> Result<serde_json::Value, String> {
+    let pending = serve_in_process_pending(host, identity, ws, invoke)?;
+    receipt_of(runtime.block_on(pending))
+}
+
+/// Ask this device's open `host` `invoke` as this device, in process: the
+/// answer, to wait for.
+fn serve_in_process_pending(
+    host: &RoomHost,
+    identity: &crate::network::actor::HostIdentity,
+    ws: u64,
+    invoke: tilo_actions::remote::InvokeRequest,
+) -> Result<tilo_actions::remote::Pending<RemoteActionMessage>, String> {
     let (certificate, _) = identity.current_native_material(ws)?;
     let caller = room_host::local_caller(&certificate);
-    let pending = host
-        .actions()
+    host.actions()
         .serve_certified(
             ws,
             &caller,
             &certificate,
             RemoteActionMessage::Invoke(invoke),
         )
-        .ok_or("this device's host does not answer its own operations")?;
-    match runtime.block_on(pending) {
+        .ok_or_else(|| "this device's host does not answer its own operations".into())
+}
+
+/// What this device's host answered an operation asked in process.
+fn receipt_of(answer: Option<RemoteActionMessage>) -> Result<serde_json::Value, String> {
+    match answer {
         Some(RemoteActionMessage::Receipt(receipt)) => relay_rooms::receipt_value(receipt.status),
         Some(_) => Err("this device's host answered with something else".into()),
         None => Err("this device's host dropped the request".into()),
