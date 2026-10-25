@@ -308,15 +308,21 @@ impl Drop for InstalledSettings {
 /// launch and invitation in one-host needs, which a room no host holds
 /// (one on this device only) does not offer. The room stays held while the
 /// returned guard lives.
-#[cfg(test)]
-pub(crate) struct OwnHostedRoom {
-    pub(crate) person: crate::shell::state::UserId,
+#[cfg(any(test, feature = "test-support"))]
+pub struct OwnHostedRoom {
+    pub person: crate::shell::state::UserId,
     _owner: crate::shell::native_workspace_owner::NativeWorkspaceOwner,
     _directory: tempfile::TempDir,
 }
 
-#[cfg(test)]
-pub(crate) fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnHostedRoom {
+/// Place the active workspace's room on this device ([`OwnHostedRoom`]).
+///
+/// # Panics
+///
+/// The room cannot be placed: a fixture that does not hold.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnHostedRoom {
     let directory = tempfile::tempdir().expect("a directory for the state file");
     let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).expect("room");
     {
