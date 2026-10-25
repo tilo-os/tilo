@@ -44,6 +44,10 @@ mod cpu_raster {
         pub(super) fn upload(&self, _: &vello::wgpu::Queue, _: &vello::wgpu::Texture) {
             match self.0 {}
         }
+        #[expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "the same signature as the native canvas, which records the setting"
+        )]
         pub(super) fn draw_damage_only(&mut self, _: bool) {
             match self.0 {}
         }
