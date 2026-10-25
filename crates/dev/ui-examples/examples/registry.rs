@@ -98,6 +98,7 @@ const SHOT_SOURCES: &[&str] = &[
     "gallery_harness_shots.rs",
     "gallery_shots.rs",
     "history_cases.rs",
+    "inline_emoji_shots.rs",
     "nav_shell_shots.rs",
     "perf_hud_shot.rs",
     "scrollbar_shots.rs",
