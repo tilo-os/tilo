@@ -58,7 +58,7 @@ impl ShellNetwork {
     /// host's live plane when the room has one (`hosted`), else on the
     /// room's own topic, where its members read it as a live frame all the
     /// same ([`NeighbourMsg::LivePresence`]).
-    fn send_live(&self, ws: u64, hosted: bool, frame: Vec<u8>) -> bool {
+    pub(super) fn send_live(&self, ws: u64, hosted: bool, frame: Vec<u8>) -> bool {
         if hosted {
             return self
                 .cmd_tx

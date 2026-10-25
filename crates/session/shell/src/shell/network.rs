@@ -31,6 +31,7 @@ mod input_declines;
 mod lan_discovery;
 #[cfg(test)]
 mod live_identity_tests;
+mod live_layouts;
 mod live_waves;
 mod native_admission;
 #[cfg(test)]
@@ -1611,6 +1612,8 @@ pub struct ShellNetwork {
     live_labels: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
     /// The app each live member focuses, per room and handle.
     live_apps: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
+    /// Where each live member's windows are, per room and handle.
+    live_layouts: live_layouts::LiveLayouts,
     /// What live members say beside their pointers and react with, as it
     /// arrived, for the presence pump ([`Self::take_live_chat`]).
     live_chat: Mutex<Vec<LiveChat>>,
@@ -2356,6 +2359,7 @@ impl ShellNetwork {
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
             live_apps: Mutex::default(),
+            live_layouts: Mutex::default(),
             live_chat: Mutex::default(),
             live_desk_pointers: Mutex::default(),
             live_waves: Mutex::default(),
@@ -3910,6 +3914,7 @@ impl ShellNetwork {
                 pointer: inbound.desk_pointer.clone(),
             });
         }
+        self.hear_layout(&cluster_id, peer, inbound.layout.clone());
         if let Ok(mut apps) = self.live_apps.lock() {
             let apps = apps.entry(cluster_id.clone()).or_default();
             match inbound.app_id.as_str() {
@@ -9008,6 +9013,7 @@ pub(crate) fn shell_network_for_test(
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
         live_apps: Mutex::default(),
+        live_layouts: Mutex::default(),
         live_chat: Mutex::default(),
         live_desk_pointers: Mutex::default(),
         live_waves: Mutex::default(),
