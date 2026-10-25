@@ -157,6 +157,9 @@ impl ResourceApp for ChatShell {
     /// The chat's messages, kept in parts beside the room's chat record.
     fn records(records: &mut ui::framework::Records<'_>) {
         records.chain::<crate::parts::ChatPart>();
+        // The workspace's emoji are Chat's: every app of the room opens
+        // them, and their changes are decided against Chat's surface.
+        records.workspace::<ui::tilo_workspace_emoji::WorkspaceEmoji>();
     }
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
