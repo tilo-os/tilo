@@ -289,7 +289,7 @@ mod tests {
 
     /// The fullest layout, beside a person's other presence at its usual
     /// sizes (a full name, an activity line, a caret, two sentences of cursor
-    /// chat), still fits one presence frame.
+    /// chat, a wave, following someone), still fits one presence frame.
     #[test]
     fn the_fullest_layout_fits_a_presence_frame() {
         let record = LiveRecord {
@@ -339,6 +339,7 @@ mod tests {
                     MAX_LAYOUT_WINDOWS
                 ],
             }),
+            following: Some("cd".repeat(32)),
         });
         let bytes = frame.encode().unwrap();
         // Measured: what the fullest layout leaves of a frame.

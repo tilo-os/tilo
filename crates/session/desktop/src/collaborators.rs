@@ -257,6 +257,39 @@ impl CollaboratorsModel<'_> {
     }
 }
 
+/// Say on each follower's row whom they follow, from `pairs` of
+/// `(follower, followed)` roster ids: "Following Ada", or "Following you"
+/// when they follow this person (`own_id`). Every member's roster says who
+/// follows whom, the same on every host.
+pub fn note_following(rows: &mut [RosterRow], pairs: &[(String, String)], own_id: Option<&str>) {
+    for (follower, followed) in pairs {
+        // `None` for this person: "you".
+        let person = if own_id == Some(followed.as_str()) {
+            None
+        } else if let Some(row) = rows.iter().find(|row| &row.id == followed) {
+            Some(row.label.clone())
+        } else {
+            continue;
+        };
+        let Some(row) = rows.iter_mut().find(|row| &row.id == follower) else {
+            continue;
+        };
+        let place = row
+            .activity
+            .take()
+            .filter(|activity| !activity.trim().is_empty());
+        row.activity = Some(match (place, person) {
+            (None, None) => t("people-follows-you"),
+            (None, Some(person)) => t_args("people-follows", &[("person", person.into())]),
+            (Some(place), None) => t_args("people-follows-you-where", &[("place", place.into())]),
+            (Some(place), Some(person)) => t_args(
+                "people-follows-where",
+                &[("place", place.into()), ("person", person.into())],
+            ),
+        });
+    }
+}
+
 /// One painted row: which model row, where, and its controls.
 #[derive(Clone, Debug, Default)]
 struct RowPlace {
@@ -2393,6 +2426,24 @@ mod tests {
             model.relationship_for("bob"),
             Some(RosterFollowRelationship::FollowedBy("ada".into()))
         );
+    }
+
+    /// A follower's row says whom they follow, "you" for this person,
+    /// after where they are.
+    #[test]
+    fn a_followers_row_says_whom_they_follow() {
+        let mut rows = vec![row("ada", "Ada"), row("bob", "Bob"), row("cy", "Cy")];
+        rows[0].activity = Some("In Notes".into());
+        rows[1].activity = None;
+        rows[2].activity = None;
+        let pairs = [
+            ("ada".to_owned(), "bob".to_owned()),
+            ("cy".to_owned(), "me".to_owned()),
+        ];
+        note_following(&mut rows, &pairs, Some("me"));
+        assert_eq!(rows[0].activity.as_deref(), Some("In Notes, following Bob"));
+        assert_eq!(rows[1].activity, None);
+        assert_eq!(rows[2].activity.as_deref(), Some("Following you"));
     }
 
     /// The person's other devices are listed as theirs, under their own
