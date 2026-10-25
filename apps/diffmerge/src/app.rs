@@ -12,6 +12,9 @@
 //!   or reads the two paths it was given, and opens what it read as a
 //!   comparison through an action.
 
+mod folders;
+mod save;
+
 use std::collections::HashMap;
 use std::path::Path;
 use ui::widget::TaffyTreeExt;
@@ -26,6 +29,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectReply, Effected};
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
+    SaveDestination,
 };
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -35,7 +39,7 @@ use ui::widget::Widget;
 use crate::actions::DiffmergeEffect;
 use crate::chrome::{Chrome, Command, Header};
 use crate::diff_view::DiffView;
-use crate::doc::{Comparison, MergeInputs, Session};
+use crate::doc::{Comparison, HunkChoice, MergeInputs, Session};
 use crate::i18n::{count, t, t_args};
 use crate::merge_view::MergeView;
 use crate::resource::session;
@@ -88,6 +92,9 @@ enum Action {
     NextChange,
     Open,
     LoadSample,
+    Save,
+    CompareFolders,
+    ShowFolders,
 }
 
 impl From<Command> for Action {
@@ -99,6 +106,9 @@ impl From<Command> for Action {
             Command::Next => Self::NextChange,
             Command::Open => Self::Open,
             Command::LoadSample => Self::LoadSample,
+            Command::SaveMerged => Self::Save,
+            Command::CompareFolders => Self::CompareFolders,
+            Command::ShowFolders => Self::ShowFolders,
         }
     }
 }
@@ -143,6 +153,39 @@ pub struct DiffMergeApp {
     presented: Option<(Option<Comparison>, Option<MergeInputs>)>,
     /// Capture requests a visible comparison status.
     shots_status: bool,
+    /// Where the merged result was last written, so Save writes there again
+    /// without asking. Kept on this device: a place is a fact about here,
+    /// not about the document.
+    saved_place: Option<SaveDestination>,
+    /// The merged text as it was when it was last written: equal to the
+    /// document's text means nothing is waiting to be saved.
+    saved_text: Option<String>,
+    /// The merged text and whether a merge is open, as last presented. The
+    /// save flow writes what the document holds without reading the record
+    /// through the effect (it has no typed access to it).
+    merged_text: String,
+    merge_open: bool,
+    /// A folder comparison that was opened: its two roots and what differs.
+    /// A listing is a way into comparisons, like the file chooser, so it is
+    /// view state; every comparison it opens is in the document.
+    folders: Option<crate::folder::FolderComparison>,
+    /// Whether the folder listing is what the content column shows.
+    showing_folders: bool,
+    folder_selection: usize,
+    folder_scroll: f64,
+    /// The listing's rows as last painted, with the entry each shows.
+    folder_rows: Vec<(usize, Rect)>,
+    /// The listing's scrollable band and content height, from the last paint.
+    folder_viewport: Rect,
+    folder_content_height: f64,
+    /// One line about the last save or folder read, shown in the status bar
+    /// until the next action.
+    notice: Option<String>,
+    /// Where the pointer last was, for the folder listing's rows.
+    pointer: Option<Point>,
+    /// This platform's chord conventions: what Cmd is, so Save and Open are
+    /// the chords the person already knows.
+    conventions: ui::platform::PlatformConventions,
 }
 
 impl DiffMergeApp {
@@ -160,6 +203,27 @@ impl DiffMergeApp {
     fn status_readouts(&self) -> (String, String) {
         if self.load_error.is_some() {
             return (String::new(), String::new());
+        }
+        if self.showing_folders
+            && let Some(comparison) = &self.folders
+        {
+            let (added, removed, modified) = comparison.counts();
+            let total = comparison.entries.len();
+            let position = (total > 0).then(|| (self.folder_selection + 1, total));
+            return (
+                t_args(
+                    "folder-status-counts",
+                    &[
+                        ("added", count(added)),
+                        ("removed", count(removed)),
+                        ("modified", count(modified)),
+                    ],
+                ),
+                position_label(position),
+            );
+        }
+        if let Some(notice) = &self.notice {
+            return (notice.clone(), String::new());
         }
         match self.mode {
             Mode::Diff => {
@@ -223,8 +287,16 @@ impl DiffMergeApp {
         Header {
             mode: self.mode,
             changes,
+            merge_open: self.merge_open && self.load_error.is_none(),
+            saved: self.saved(),
+            folders: self.folders.is_some(),
             compact: self.compact,
         }
+    }
+
+    /// Whether the merged result holds nothing that is not written yet.
+    fn saved(&self) -> bool {
+        self.merge_open && self.saved_text.as_deref() == Some(self.merged_text.as_str())
     }
 
     pub(crate) fn attach_chrome(&mut self, chrome: Chrome) {
@@ -257,6 +329,20 @@ impl DiffMergeApp {
             dispatcher: None,
             presented: None,
             shots_status: false,
+            saved_place: None,
+            saved_text: None,
+            merged_text: String::new(),
+            merge_open: false,
+            folders: None,
+            showing_folders: false,
+            folder_selection: 0,
+            folder_scroll: 0.0,
+            folder_rows: Vec::new(),
+            folder_viewport: Rect::ZERO,
+            folder_content_height: 0.0,
+            notice: None,
+            pointer: None,
+            conventions: ui::platform::PlatformConventions::default(),
         }
     }
 
@@ -298,6 +384,22 @@ impl DiffMergeApp {
         if let Some(mode) = mode {
             self.show(mode);
         }
+        self.merged_text.clone_from(&state.merged);
+        self.merge_open = state.merge.is_some();
+        if merge_changed {
+            // A different merge has its own result, and no place of its own
+            // yet: saving asks where, rather than writing over the last one.
+            self.saved_text = None;
+            self.saved_place = None;
+            if state.merge.is_some() {
+                self.showing_folders = false;
+            }
+        }
+        if comparison_changed && state.comparison.is_some() {
+            // A comparison opened from the folder listing is what the
+            // person asked to see.
+            self.showing_folders = false;
+        }
         self.presented = Some((state.comparison.clone(), state.merge.clone()));
         self.invalidation.paint = true;
     }
@@ -329,6 +431,11 @@ impl DiffMergeApp {
             Some("status") => {
                 self.show(Mode::Merge);
                 self.arm_status_bubble_for_shots();
+            }
+            Some("folders") => {
+                self.folders = Some(crate::samples::folder_comparison());
+                self.showing_folders = true;
+                self.folder_selection = 3;
             }
             _ => self.show(Mode::Merge),
         }
@@ -413,6 +520,43 @@ impl DiffMergeApp {
             DiffmergeEffect::OpenFiles { .. } => {
                 Err("left and right paths must be supplied together".into())
             }
+            DiffmergeEffect::OpenOne { path, side } => Ok(cx.thread(
+                move |_progress| label_and_text(Path::new(&path)),
+                move |app: &mut Self, opened, cx| match opened {
+                    Ok((label, text)) => {
+                        let absent = t("source-absent");
+                        let opened = if side == "left" {
+                            session::OpenComparison {
+                                left_label: label,
+                                left: text,
+                                right_label: absent,
+                                right: String::new(),
+                            }
+                        } else {
+                            session::OpenComparison {
+                                left_label: absent,
+                                left: String::new(),
+                                right_label: label,
+                                right: text,
+                            }
+                        };
+                        cx.submit(Session::OPEN_COMPARISON.with(opened));
+                        app.load_error = None;
+                        app.show(Mode::Diff);
+                        Ok(Effected::done())
+                    }
+                    Err(reason) => {
+                        app.load_error = Some(reason.clone());
+                        app.invalidation.paint = true;
+                        Err(reason)
+                    }
+                },
+            )),
+            DiffmergeEffect::SaveMerged { path } => self.answer_save(cx, path, false),
+            DiffmergeEffect::SaveMergedAs => self.answer_save(cx, None, true),
+            DiffmergeEffect::CompareFolders { left, right } => {
+                self.answer_compare_folders(cx, left, right)
+            }
         }
     }
 
@@ -466,7 +610,39 @@ impl DiffMergeApp {
                 right: None,
             }),
             Action::LoadSample => self.effect(&DiffmergeEffect::LoadSample),
+            Action::Save => self.effect(&DiffmergeEffect::SaveMerged { path: None }),
+            Action::CompareFolders => self.effect(&DiffmergeEffect::CompareFolders {
+                left: None,
+                right: None,
+            }),
+            Action::ShowFolders => {
+                if self.folders.is_some() {
+                    self.showing_folders = true;
+                    self.invalidation.paint = true;
+                    self.publish_header();
+                }
+            }
         }
+    }
+
+    /// Take the side `choice` for the change under review: the keyboard path
+    /// to what a chip does, and then on to the next change so a merge with
+    /// forty conflicts is forty keystrokes rather than forty mouse round
+    /// trips.
+    fn accept(&mut self, choice: HunkChoice) {
+        if self.mode != Mode::Merge {
+            return;
+        }
+        let Some(hunk) = self.merge.active_hunk() else {
+            return;
+        };
+        if !self.merge.can_resolve(hunk) {
+            return;
+        }
+        self.merge.resolve(hunk, choice);
+        self.submit_resolution();
+        self.merge.navigate(true);
+        self.invalidation.paint = true;
     }
 
     /// Run one of the app's effects through the same door the palette uses.
@@ -721,7 +897,11 @@ impl DiffMergeApp {
 
     /// Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
     /// Returns `true` if the event was consumed.
-    fn handle_keyboard_shortcut(&mut self, event: &WindowEvent) -> bool {
+    fn handle_keyboard_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> bool {
         let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -735,7 +915,27 @@ impl DiffMergeApp {
             return false;
         };
 
+        let command = self.conventions.command_modifier_down(modifiers);
         match logical_key {
+            Key::Character(ch) if command => match ch.as_str() {
+                // The system's save chord writes the merged result; with
+                // Shift it asks for a new place.
+                "s" | "S" => {
+                    if modifiers.shift_key() {
+                        // Save as… is the same effect with a forced chooser:
+                        // the palette lists it too.
+                        self.effect(&DiffmergeEffect::SaveMergedAs);
+                    } else {
+                        self.act(Action::Save);
+                    }
+                    true
+                }
+                "o" | "O" => {
+                    self.act(Action::Open);
+                    true
+                }
+                _ => false,
+            },
             Key::Character(ch) => match ch.as_str() {
                 "n" | "N" => {
                     self.act(Action::NextChange);
@@ -753,8 +953,44 @@ impl DiffMergeApp {
                     self.act(Action::ModeMerge);
                     true
                 }
+                // Taking a side is the merge's real work: a key for each
+                // side, in the order the chips read.
+                "o" | "O" => {
+                    self.accept(HunkChoice::Ours);
+                    true
+                }
+                "t" | "T" => {
+                    self.accept(HunkChoice::Theirs);
+                    true
+                }
+                "b" | "B" => {
+                    self.accept(HunkChoice::Both);
+                    true
+                }
+                "f" | "F" => {
+                    if self.folders.is_some() {
+                        self.showing_folders = !self.showing_folders;
+                        self.publish_header();
+                        self.invalidation.paint = true;
+                        true
+                    } else {
+                        false
+                    }
+                }
                 _ => false,
             },
+            Key::Named(NamedKey::ArrowDown) if self.showing_folders => {
+                self.step_folder(1);
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) if self.showing_folders => {
+                self.step_folder(-1);
+                true
+            }
+            Key::Named(NamedKey::Enter) if self.showing_folders => {
+                self.open_folder_entry(self.folder_selection);
+                true
+            }
             Key::Named(NamedKey::F8) => {
                 self.act(Action::NextChange);
                 true
@@ -882,6 +1118,25 @@ impl Widget for DiffMergeApp {
         if let Some(reason) = &self.load_error {
             let mut ctx = PaintCtx::new(scene, transform, tr, theme);
             Self::draw_error(&mut ctx, content, reason);
+        } else if self.showing_folders
+            && let Some(comparison) = self.folders.clone()
+        {
+            let row_h = crate::folder_view::row_height(tr, theme);
+            let mut ctx = PaintCtx::new(scene, transform, tr, theme);
+            let draw = crate::folder_view::paint(
+                &mut ctx,
+                content,
+                &comparison,
+                self.folder_selection,
+                self.folder_scroll,
+                self.pointer,
+            );
+            self.folder_rows = draw.rows;
+            self.folder_viewport = draw.viewport;
+            self.folder_content_height = draw.content_height;
+            let max_scroll = (draw.content_height - draw.viewport.height()).max(0.0);
+            self.folder_scroll = self.folder_scroll.clamp(0.0, max_scroll);
+            self.reveal_folder_row(self.folder_selection, row_h);
         } else {
             match self.mode {
                 Mode::Diff => self.diff.draw(scene, transform, tr, theme, presence),
@@ -898,7 +1153,54 @@ impl Widget for DiffMergeApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if !self.merge.merged_editor_focused() && self.handle_keyboard_shortcut(event) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = Some(Point::new(
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
+                ));
+            }
+            WindowEvent::CursorLeft { .. } => self.pointer = None,
+            // The listing scrolls on its own; the comparison views under it
+            // are not what the person is looking at.
+            WindowEvent::MouseWheel { delta, .. } if self.showing_folders => {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                        f64::from(*y) * f64::from(ui::tokens::Metrics::BASE.min_pointer_target)
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
+                };
+                let max = (self.folder_content_height - self.folder_viewport.height()).max(0.0);
+                self.folder_scroll = (self.folder_scroll - dy).clamp(0.0, max);
+                self.invalidation.paint = true;
+                *ctx.handled = true;
+                return;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } if self.showing_folders => {
+                if let Some(pos) = self.pointer
+                    && let Some((index, _)) =
+                        self.folder_rows.iter().find(|(_, rect)| rect.contains(pos))
+                {
+                    let index = *index;
+                    if index == self.folder_selection {
+                        self.open_folder_entry(index);
+                    } else {
+                        self.folder_selection = index;
+                        self.invalidation.paint = true;
+                    }
+                }
+                *ctx.handled = true;
+                return;
+            }
+            _ => {}
+        }
+        if !self.merge.merged_editor_focused()
+            && self.handle_keyboard_shortcut(event, ctx.modifiers.state())
+        {
             *ctx.handled = true;
             return;
         }
@@ -956,6 +1258,47 @@ impl Widget for DiffMergeApp {
         use ui::a11y::{AccessNode, Role};
 
         let mut children = Vec::new();
+        if self.showing_folders
+            && let Some(comparison) = &self.folders
+        {
+            let (added, removed, modified) = comparison.counts();
+            children.push(
+                AccessNode::new(Role::Paragraph)
+                    .with_key(ui::a11y::hash_key(&"diffmerge.folders.summary"))
+                    .with_name(format!(
+                        "{} and {}: {} added, {} removed, {} modified",
+                        comparison.left_label, comparison.right_label, added, removed, modified
+                    ))
+                    .with_description(if comparison.truncated {
+                        "Only the first part of the folders was compared"
+                    } else {
+                        "Choose a file to compare it"
+                    }),
+            );
+            // The rows that were painted, so the listing is the same list to
+            // a screen reader as to the eye, and a bound on a folder with
+            // thousands of differences.
+            for (index, rect) in self.folder_rows.iter().take(500) {
+                let Some(entry) = comparison.entries.get(*index) else {
+                    continue;
+                };
+                children.push(
+                    AccessNode::new(Role::Button)
+                        .with_key(ui::a11y::hash_key(&format!(
+                            "diffmerge.folder-entry:{index}"
+                        )))
+                        .with_name(format!("{}: {}", entry.path, entry.kind.tag()))
+                        .with_description("Open these two files as a comparison")
+                        .with_action_target(format!("diffmerge.folder-entry:{index}"))
+                        .with_bounds(*rect)
+                        .with_state(
+                            ui::a11y::AccessState::new()
+                                .focusable(true)
+                                .selected(*index == self.folder_selection),
+                        ),
+                );
+            }
+        }
         // The active view is one of this widget's children and publishes
         // itself; its controls are published here, where their actions are
         // handled.
@@ -1003,6 +1346,24 @@ impl Widget for DiffMergeApp {
         let _ = (state, path);
         if !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus) {
             return false;
+        }
+        if let Some(index) = target
+            .strip_prefix("diffmerge.folder-entry:")
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            let count = self
+                .folders
+                .as_ref()
+                .map_or(0, |folders| folders.entries.len());
+            if !self.showing_folders || index >= count {
+                return false;
+            }
+            self.folder_selection = index;
+            if matches!(action, ui::a11y::Action::Activate) {
+                self.open_folder_entry(index);
+            }
+            self.invalidation.paint = true;
+            return true;
         }
         if let Some((block, fingerprint)) = target
             .strip_prefix("diffmerge.diff-block:")
@@ -1110,7 +1471,12 @@ impl DiffMergeApp {
                 self.invalidation.paint = true;
                 return Ok(());
             }
-            DiffmergeEffect::OpenFiles { .. } | DiffmergeEffect::LoadSample => {
+            DiffmergeEffect::OpenFiles { .. }
+            | DiffmergeEffect::LoadSample
+            | DiffmergeEffect::SaveMerged { .. }
+            | DiffmergeEffect::OpenOne { .. }
+            | DiffmergeEffect::SaveMergedAs
+            | DiffmergeEffect::CompareFolders { .. } => {
                 return Err("not a view of what is open".into());
             }
         });
@@ -1227,8 +1593,11 @@ mod tests {
             "3-way merge",
             "Previous change",
             "Next change",
+            "Folder list",
             "Load sample",
+            "Compare folders…",
             "Open files",
+            "Save merged result",
         ]
         .into_iter()
         .map(|name| {
@@ -1239,6 +1608,8 @@ mod tests {
                         label == name
                             || (name == "3-way merge" && label == "Merge")
                             || (name == "Load sample" && label == "Sample")
+                            || (name == "Compare folders…" && label == "Folders")
+                            || (name == "Save merged result" && label == "Save")
                     })
                 })
                 .unwrap_or_else(|| panic!("missing header control {name}: {controls:?}"))
@@ -1581,13 +1952,83 @@ mod tests {
         );
     }
 
+    /// Taking a side is one keystroke, and the review moves on to the next
+    /// change: forty conflicts are forty keys, not forty mouse round trips.
+    #[test]
+    fn a_side_is_taken_from_the_keyboard_and_the_review_moves_on() {
+        let mut app = sample_app();
+        app.call("show-merge", serde_json::json!({})).unwrap();
+        app.settle();
+        let state = app.state();
+        let hunk = first_conflict(&state);
+        let before = state.merged.clone();
+        app.harness().key("t");
+        app.settle();
+        let state = app.state();
+        assert_eq!(
+            state.resolutions(),
+            vec![(hunk, HunkChoice::Theirs)],
+            "the key resolved the change under review, through the record"
+        );
+        assert_ne!(state.merged, before, "the merged result composed it");
+        let changes = state.merge_model().change_indices();
+        let next = changes
+            .iter()
+            .position(|change| *change == hunk)
+            .and_then(|position| changes.get(position.saturating_add(1)).copied());
+        assert_eq!(
+            app.with_surface::<DiffMergeApp, _>(|view| view.merge.active_hunk())
+                .flatten(),
+            next,
+            "the review moved on to the next change"
+        );
+        assert!(app.undo(), "one undo step");
+        app.settle();
+        assert_eq!(app.state().merged, before, "undo took back the key's work");
+    }
+
+    /// A folder listing is a way into comparisons: the chosen row opens the
+    /// two files it names as an ordinary comparison, which is the document.
+    #[test]
+    fn the_folder_listing_opens_the_pair_under_review() {
+        let base =
+            std::env::temp_dir().join(format!("tilo-diffmerge-listing-{}", std::process::id()));
+        let left = base.join("left");
+        let right = base.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("notes.txt"), "one\n").unwrap();
+        std::fs::write(right.join("notes.txt"), "two\n").unwrap();
+        let comparison = crate::folder::compare(&left, &right).unwrap();
+
+        let mut app = TestApp::<DiffmergeShell>::new().unwrap();
+        app.with_surface::<DiffMergeApp, _>(|view| {
+            view.folders = Some(comparison);
+            view.showing_folders = true;
+            view.folder_selection = 0;
+        });
+        app.settle();
+        app.harness().key("Enter");
+        app.settle();
+        let state = app.state();
+        let opened = state.comparison.expect("the pair opened as a comparison");
+        assert_eq!(opened.left.0, "one\n");
+        assert_eq!(opened.right.0, "two\n");
+        assert_eq!(
+            app.with_surface::<DiffMergeApp, _>(|view| view.showing_folders),
+            Some(false),
+            "the comparison the person asked for is what shows"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
     /// Each screenshot scenario stages through the framework: the samples
     /// through their actions, the mode, error and status through the view.
     #[test]
     fn scenarios_stage_through_actions_and_view_state() {
         let empty = TestApp::<DiffmergeShell>::capture(Some("empty")).unwrap();
         assert!(empty.state().comparison.is_none() && empty.state().merge.is_none());
-        for scenario in ["diff", "merge", "error", "status"] {
+        for scenario in ["diff", "merge", "folders", "error", "status"] {
             let mut app = TestApp::<DiffmergeShell>::capture(Some(scenario)).unwrap();
             let state = app.state();
             assert!(
@@ -1597,6 +2038,7 @@ mod tests {
             let tree = app.harness().inspection_json().unwrap();
             match scenario {
                 "diff" => assert!(tree.contains("Diff between"), "{scenario}"),
+                "folders" => assert!(tree.contains("release-1.4"), "{scenario}"),
                 "merge" | "status" => assert!(tree.contains("Three-way merge"), "{scenario}"),
                 _ => assert!(tree.contains("File loading failed"), "{scenario}"),
             }
@@ -1738,7 +2180,11 @@ mod tests {
     fn phone_toolbar_keeps_every_control_visible_without_overlap() {
         let mut app = TestApp::<DiffmergeShell>::capture_at(Some("merge"), (390, 760)).unwrap();
         let controls = header_controls(&mut app);
-        assert_eq!(controls.len(), 6, "two modes and four canonical actions");
+        assert_eq!(
+            controls.len(),
+            9,
+            "two modes, change navigation, the folder and save actions, and Open files"
+        );
         let mut rects: Vec<_> = controls
             .iter()
             .skip(2)
@@ -2039,10 +2485,15 @@ mod tests {
                 .iter()
                 .any(|control| control.id == canvas.id && control.focused)
         );
-        assert_eq!(controls.len(), 6, "both modes and four actions");
+        assert_eq!(controls.len(), 9, "both modes and every header action");
+        // Every control is a real target; one that does not apply now (the
+        // folder list, with no folder comparison open) says so by being
+        // disabled rather than by answering nothing.
         assert!(
-            controls.iter().all(|control| control.bounds.is_some()
-                && control.verbs.iter().any(|verb| verb == "activate")),
+            controls.iter().all(|control| {
+                control.bounds.is_some()
+                    && (control.disabled || control.verbs.iter().any(|verb| verb == "activate"))
+            }),
             "actual exported controls: {controls:?}"
         );
         let sample = controls
@@ -2099,7 +2550,9 @@ mod tests {
             "Previous change",
             "Next change",
             "Load sample",
+            "Compare folders…",
             "Open files",
+            "Save merged result",
         ] {
             app.harness().tab(false);
             assert!(

@@ -289,10 +289,11 @@ impl ResourceApp for DiffmergeShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["empty", "diff", "merge", "error", "status"]
+        &["empty", "diff", "merge", "folders", "error", "status"]
     }
 
-    /// Every scenario but the empty one shows the bundled samples.
+    /// Every scenario but the empty one shows the bundled samples; the
+    /// folder listing shows the sample tree comparison instead.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Session>> {
         if name == Some("empty") {
             return Vec::new();
