@@ -264,7 +264,39 @@ impl Rooms {
             RoomsRequest::Permits { room, node } => {
                 RoomsReply::Permits(self.page_permits(&room, device, &node).await?)
             }
+            request @ (RoomsRequest::Share { .. } | RoomsRequest::Unshare { .. }) => {
+                self.page_share(device, request).await?
+            }
         })
+    }
+
+    /// A page's share of one record or item with the room, or its end.
+    async fn page_share(
+        &self,
+        device: &DeviceCert,
+        request: RoomsRequest,
+    ) -> Result<RoomsReply, CollaborationError> {
+        Ok(RoomsReply::Shared(match request {
+            RoomsRequest::Share {
+                room,
+                share,
+                node,
+                access,
+            } => {
+                let node = node
+                    .parse()
+                    .map_err(|_| CollaborationError::new("not a node of the room's tree"))?;
+                let access = access
+                    .parse()
+                    .map_err(|_| CollaborationError::new("a share gives `view` or `edit`"))?;
+                self.share_resource(&room, device, &share, &node, access)
+                    .await?
+            }
+            RoomsRequest::Unshare { room, share } => {
+                self.unshare_resource(&room, device, &share).await?
+            }
+            _ => return Err(CollaborationError::new("not a share")),
+        }))
     }
 
     /// Whether `device`'s person may make an undoable change at `node` of
@@ -301,7 +333,7 @@ impl Rooms {
 
     /// Whether `device` is of the spectator person of the room hosted as
     /// `workspace_id`.
-    async fn watches_only(&self, workspace_id: u64, device: &DeviceCert) -> bool {
+    pub(super) async fn watches_only(&self, workspace_id: u64, device: &DeviceCert) -> bool {
         let workspace = self
             .inner
             .host

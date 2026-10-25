@@ -26,6 +26,7 @@ mod kind;
 mod path;
 pub mod roles;
 mod room;
+pub mod share;
 mod standing;
 
 pub use admission::{Admission, Asker, Invoked, Refused, admit};

@@ -411,6 +411,29 @@ pub enum RoomsRequest {
         /// invitation in its `invite` query parameter.
         link: String,
     },
+    /// Share one record, or one item of it, with `room`'s members, as the
+    /// calling device's person: answered with [`RoomsReply::Shared`], how
+    /// many grants the share holds. The members below the owner get what
+    /// `access` gives, never more than the sharer holds there.
+    Share {
+        room: String,
+        /// The share's id, such as the message that shares it: 1 to 128
+        /// letters, digits or `.` `_` `:` `-`.
+        share: String,
+        /// The record or item, as a node of the room's tree in its text
+        /// form (`room:<id>/app:<app>/kind:<kind>/resource:<id>[/item:<id>]`;
+        /// `resource:*` names an item of the app's own record).
+        node: String,
+        /// `view` or `edit`.
+        access: String,
+    },
+    /// End the share `share` in `room`: answered with
+    /// [`RoomsReply::Shared`], how many of its grants were revoked (its
+    /// sharer's, or any for a person who may govern revoking).
+    Unshare {
+        room: String,
+        share: String,
+    },
 }
 
 /// The answer to a [`RoomsRequest`].
@@ -438,6 +461,9 @@ pub enum RoomsReply {
     Permits(bool),
     /// The requests left at the door, oldest first.
     WaitList(Vec<WaitListEntry>),
+    /// How many grants a [`RoomsRequest::Share`] holds, or a
+    /// [`RoomsRequest::Unshare`] revoked.
+    Shared(u32),
 }
 
 /// One `/join` step.
