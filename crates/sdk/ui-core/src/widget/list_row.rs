@@ -350,6 +350,9 @@ pub struct ListRowFace<'a> {
     reveal_actions: bool,
     swipe: Option<(SwipeAction<'a>, f64)>,
     trailing_width: Option<f64>,
+    /// The room the list keeps after every row's trailing control, at
+    /// least: its rows' controls stand in one column.
+    trailing_after: f64,
     interaction: Interaction,
     /// The rect the lift, separator and focus ring take when it differs from
     /// the rect the text is laid out in (a retained row whose trailing
@@ -441,6 +444,7 @@ impl<'a> ListRowFace<'a> {
             reveal_actions: false,
             swipe: None,
             trailing_width: None,
+            trailing_after: 0.0,
             interaction: Interaction::default(),
             frame: None,
         }
@@ -690,6 +694,15 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
+    /// Keep at least `width` after the trailing slot, where a row of the
+    /// same list holds a mark this one does not: the list's controls stand
+    /// in one column.
+    #[must_use]
+    pub(crate) fn trailing_after(mut self, width: f64) -> Self {
+        self.trailing_after = width.max(0.0);
+        self
+    }
+
     #[must_use]
     pub fn interaction(mut self, interaction: Interaction) -> Self {
         self.interaction = interaction;
@@ -847,10 +860,16 @@ impl<'a> ListRowFace<'a> {
         self.count.map(|count| count.to_string())
     }
 
-    /// How far inside the row's edge its trailing slot ends: the columns
-    /// [`Self::geometry`] lays out after it (a disclosure chevron, a check,
-    /// a status dot), each with its gap.
+    /// How far inside the row's edge its trailing slot ends: its own marks
+    /// after it, or the room its list keeps there if that is wider.
     fn after_trailing(&self, m: &RowMetrics) -> f64 {
+        self.marks_after_trailing(m).max(self.trailing_after)
+    }
+
+    /// The width of the columns [`Self::geometry`] lays out after the
+    /// trailing slot (a disclosure chevron, a check, a status dot), each
+    /// with its gap.
+    fn marks_after_trailing(&self, m: &RowMetrics) -> f64 {
         let mut width = 0.0;
         if self.disclosure {
             width += m.icon + m.column_gap;
@@ -908,6 +927,7 @@ impl<'a> ListRowFace<'a> {
         if let Some(width) = self.trailing_width
             && width > 0.0
         {
+            right = right.min(rect.x1 - m.bleed - self.after_trailing(m));
             geo.trailing = Some(Rect::new(right - width, rect.y0, right, rect.y1));
             right -= width + m.column_gap;
         }
@@ -1862,6 +1882,9 @@ pub struct ListRow {
     /// layout.
     column_badges: Option<std::rc::Rc<[String]>>,
     pub(crate) shared_leading: Option<f64>,
+    /// Set by the list: the room every row of it keeps after its trailing
+    /// control.
+    pub(crate) shared_after_trailing: Option<f64>,
     leading_tooltip: Option<String>,
     tooltip: Option<String>,
     status: Option<(StatusKind, String)>,
@@ -1926,6 +1949,7 @@ impl ListRow {
             leading_column: None,
             column_badges: None,
             shared_leading: None,
+            shared_after_trailing: None,
             leading_tooltip: None,
             tooltip: None,
             status: None,
@@ -2380,6 +2404,25 @@ impl ListRow {
         }
     }
 
+    /// Set by the list: the room its consecutive rows keep after their
+    /// trailing controls, so the controls stand in one column.
+    pub(crate) fn set_shared_after_trailing(&mut self, width: Option<f64>) {
+        if self.shared_after_trailing != width {
+            self.shared_after_trailing = width;
+            self.dirty = true;
+        }
+    }
+
+    /// The room this row's own marks take after its trailing control, for
+    /// the list to share across its rows; none without a control.
+    pub(crate) fn marks_after_trailing(&self, theme: &Theme) -> f64 {
+        if self.trailing.is_none() {
+            return 0.0;
+        }
+        let m = RowMetrics::new(theme);
+        self.with_face(|face| face.marks_after_trailing(&m))
+    }
+
     pub(crate) fn badge_label(&self) -> Option<&str> {
         match &self.leading {
             Some(Leading::Badge(badge)) => Some(badge),
@@ -2650,6 +2693,9 @@ impl ListRow {
         }
         if let Some(checked) = self.checked {
             face = face.checked(checked);
+        }
+        if let Some(width) = self.shared_after_trailing {
+            face = face.trailing_after(width);
         }
         if let Some(width) = self.leading_column.or(self.shared_leading) {
             face = face.leading_column(width);
