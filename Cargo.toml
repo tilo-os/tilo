@@ -303,6 +303,7 @@ members = [
     "crates/platform/tilo-wake",
     "crates/platform/tilo-agent-models",
     "crates/platform/tilo-contact-directory",
+    "crates/platform/tilo-workspace-emoji",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
     "crates/platform/tilo-archive",
