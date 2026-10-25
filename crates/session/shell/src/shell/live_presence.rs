@@ -336,6 +336,41 @@ impl Outbound {
         frame.into_iter().collect()
     }
 
+    /// Say whom this person follows in the room whose workspace is `ws`:
+    /// `following`, their live publisher in hex (`None` to stop saying),
+    /// restated with every later frame, as [`Self::lay_out`] says where the
+    /// windows are. Returns the frames to publish; none when the frame says
+    /// so already.
+    pub fn follow(
+        &mut self,
+        ws: u64,
+        desktop: LiveRecord,
+        participant: LiveParticipant,
+        following: Option<String>,
+        now: Instant,
+    ) -> Vec<Vec<u8>> {
+        if self
+            .rooms
+            .get(&ws)
+            .is_some_and(|room| room.frame.following == following)
+            || (following.is_none() && !self.rooms.contains_key(&ws))
+        {
+            return Vec::new();
+        }
+        let room = self.room(ws, now);
+        let before = room.frame.clone();
+        room.frame.participant = Some(participant);
+        room.frame.focus.get_or_insert(desktop);
+        room.frame.following = following;
+        let frame = self.publish(ws, now);
+        if frame.is_none()
+            && let Some(room) = self.rooms.get_mut(&ws)
+        {
+            room.frame = before;
+        }
+        frame.into_iter().collect()
+    }
+
     /// Frames to repeat because they were not sent for [`KEEPALIVE`].
     pub fn keepalives(&mut self, now: Instant) -> Vec<(u64, Vec<u8>)> {
         let mut due = Vec::new();
@@ -354,7 +389,8 @@ impl Outbound {
                 || (room.frame.pointer.is_none()
                     && room.frame.selection.is_none()
                     && room.frame.chat.is_none()
-                    && room.frame.layout.is_none())
+                    && room.frame.layout.is_none()
+                    && room.frame.following.is_none())
             {
                 continue;
             }
@@ -410,6 +446,8 @@ pub struct Inbound {
     pub wave: Option<LiveWave>,
     /// Where the sender's windows are on its screen.
     pub layout: Option<LiveLayout>,
+    /// Whose view the sender follows: their live publisher, in hex.
+    pub following: Option<String>,
     /// The sender's pointer when it is over the empty desktop (beside a
     /// window, or on a strip showing none): no app's to draw, so the
     /// desktop places it in its own layout ([`PointerLayout::place`]).
@@ -455,6 +493,7 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
         reaction: presence.reaction.clone(),
         wave: presence.wave.clone(),
         layout: presence.layout.clone(),
+        following: presence.following.clone(),
         desk_pointer,
         ..Inbound::default()
     };

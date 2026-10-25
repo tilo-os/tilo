@@ -384,3 +384,18 @@ test('publisher carries where its windows are, by app and digest only', () => {
   ]});
   assert.throws(() => publisher.update({layout: {size: [1, 1], windows: [{app: 'a', record: 'not hex', rect: [0, 0, 1, 1]}]}}));
 });
+
+test('publisher says whom it follows while it lasts, and stops saying so', () => {
+  const {clock, sent, publisher} = publisherHarness();
+  publisher.start();
+  publisher.update({following: 'ab12cd'});
+  clock.advance(0);
+  assert.equal(sent.at(-1).following, 'ab12cd');
+  publisher.update({pointer: P(1, 1)});
+  clock.frame();
+  assert.equal(sent.at(-1).following, 'ab12cd', 'restated with every frame');
+  publisher.update({following: null});
+  clock.frame();
+  assert.equal(sent.at(-1).following, null);
+  assert.throws(() => publisher.update({following: 'Not Hex'}));
+});

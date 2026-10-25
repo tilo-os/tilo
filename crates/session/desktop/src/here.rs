@@ -19,6 +19,7 @@ use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent};
 use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
+mod following;
 mod screen;
 mod waves;
 pub use screen::{MemberLayout, MemberWindow, Screen, ScreenWindow};
@@ -77,6 +78,9 @@ pub struct LiveMember {
     /// Where a person's windows are on their screen.
     #[serde(default)]
     pub layout: Option<MemberLayout>,
+    /// Whose view the member follows: that member's publisher.
+    #[serde(default)]
+    pub following: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -173,6 +177,8 @@ pub struct HereState {
     waves: waves::Waves,
     /// The last wave at this person, as the bar says it.
     notice: Option<crate::chrome::WaveNotice>,
+    /// Whose view this page follows: their publisher.
+    following: Option<String>,
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
@@ -382,7 +388,9 @@ impl HereState {
         self.revision
     }
 
-    fn own_id(&self) -> Option<&str> {
+    /// This page's own publisher, which names this person on its roster.
+    #[must_use]
+    pub fn own_id(&self) -> Option<&str> {
         self.own.as_ref().map(|own| own.publisher.as_str())
     }
 
@@ -903,6 +911,7 @@ mod tests {
             user: None,
             wave: None,
             layout: None,
+            following: None,
         }
     }
 

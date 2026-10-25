@@ -6,6 +6,10 @@
 )]
 use super::*;
 
+/// How [`ShellOverlayHost::roster_following_pairs`] names this person,
+/// who has no row of their own: no row's id is empty.
+pub(super) const OWN_ROSTER_ID: &str = "";
+
 impl ShellOverlayHost {
     /// While following someone: the shared "Following Ada" banner (a frame
     /// in their colour round the work area and a bar with Stop in the
@@ -208,6 +212,10 @@ impl ShellOverlayHost {
             .into_iter()
             .filter_map(|(follower, target)| {
                 let follower = roster_id_for_presence.get(follower.0.as_str())?;
+                // Someone following this person: "you", never a row.
+                if presence.is_own_identity(&target.0) {
+                    return Some((follower.clone(), OWN_ROSTER_ID.to_owned()));
+                }
                 let target = roster_id_for_presence.get(target.0.as_str())?;
                 rows.iter()
                     .any(|row| row.id == follower.as_str())

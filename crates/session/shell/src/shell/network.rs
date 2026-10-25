@@ -3963,6 +3963,29 @@ impl ShellNetwork {
                 presence,
             );
         }
+        // Whom they follow reaches the roster as a desktop's following
+        // does over the mesh: room presence of the sender's handle.
+        let following = self
+            .live_waves
+            .lock()
+            .ok()
+            .and_then(|mut waves| waves.hear_following(from, inbound.following.as_deref()));
+        if let Some(target) = following
+            && let Ok(key) = postcard::to_stdvec(&ui::presence::PresenceKey::Workspace {
+                id: cluster_id.clone(),
+            })
+        {
+            self.handle_typed_app_presence_message(
+                peer,
+                None,
+                "tilo-shell".into(),
+                cluster_id,
+                collab_types::PeerPresence {
+                    key,
+                    payload: collab_types::PeerPresencePayload::Following { target },
+                },
+            );
+        }
     }
 
     /// Ask the room's workspace hosts to replay the room, for a local app
