@@ -495,8 +495,11 @@ impl RemoteDesktopBackend {
                 app_id: auth.caller.app_id.clone(),
                 resource: LifecycleResource::Prompt,
             };
+            let prompts = self.ctx.prompts.clone();
+            let withdrawn = request_path.clone();
             let cancel = move |_: &LifecycleEntry| {
                 cancellation.store(true, Ordering::Release);
+                prompts.cancel_request(&withdrawn);
             };
             self.lifecycle
                 .with_request(connection, &request_path, request_entry, cancel, async {
@@ -533,11 +536,12 @@ impl RemoteDesktopBackend {
                         scope: Expiry::AfterUse,
                     };
                     let allowed = restored.is_some()
-                        || flow::resolve(
+                        || flow::resolve_for_request(
                             &self.ctx,
                             auth.caller,
                             CapabilityKind::RemoteDesktop,
                             cap_template,
+                            request_path.clone(),
                         )
                         .await
                         .is_allowed();

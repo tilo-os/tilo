@@ -448,7 +448,12 @@ impl ScreenCastBackend {
                 resource: LifecycleResource::Prompt,
             };
             let request_path = handle.to_string();
-            let cancel = move |_: &LifecycleEntry| cancellation.store(true, Ordering::Release);
+            let prompts = self.ctx.prompts.clone();
+            let withdrawn = request_path.clone();
+            let cancel = move |_: &LifecycleEntry| {
+                cancellation.store(true, Ordering::Release);
+                prompts.cancel_request(&withdrawn);
+            };
             self.lifecycle
                 .with_request(connection, &request_path, request_entry, cancel, async {
                     // SelectSources is mandatory. Never synthesize a session from fields
@@ -485,11 +490,12 @@ impl ScreenCastBackend {
                     // restore token is the only fast path.
                     if !session.restored && !session.consented {
                         let cap_template = Capability::Screencast { scope: GRANT_ONCE };
-                        let outcome = flow::resolve(
+                        let outcome = flow::resolve_for_request(
                             &self.ctx,
                             auth.caller.clone(),
                             CapabilityKind::Screencast,
                             cap_template,
+                            request_path.clone(),
                         )
                         .await;
                         if cancelled.load(Ordering::Acquire) || !outcome.is_allowed() {
