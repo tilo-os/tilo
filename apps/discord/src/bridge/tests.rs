@@ -108,6 +108,34 @@ fn a_post_entry_names_its_channel_and_the_plan_finds_the_message_it_made() {
     );
 }
 
+/// Sharing a window or a resource posts a message, which goes across like
+/// any post; its sharer stopping the share edits the Discord copy.
+#[test]
+fn sharing_posts_and_stopping_a_share_edits_its_copy() {
+    let shared = json!({
+        "kind": CHAT_KIND,
+        "did": verb("share-window"),
+        "item": {"kind": "channels", "id": "c1"},
+        "actor": {"id": "u_ada"},
+        "arguments": {"channel": "c1"},
+    });
+    assert_eq!(route_channel(&shared), "c1");
+    let plan = planned(&guild(), &shared);
+    assert_eq!(plan.sends.len(), 1, "{:?}", plan.sends);
+    assert_eq!(plan.sends[0]["op"]["tilo"], "m1");
+    let mut sent = guild();
+    sent.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    let stopped = json!({
+        "kind": CHAT_KIND,
+        "did": verb("stop-sharing"),
+        "item": {"kind": "messages", "id": "m1"},
+        "arguments": {"message": "m1"},
+    });
+    let plan = planned(&sent, &stopped);
+    assert_eq!(plan.edits.len(), 1, "{plan:?}");
+    assert_eq!(plan.edits[0]["message"], "dm1");
+}
+
 #[test]
 fn a_chat_delete_finds_the_channel_the_message_was_in() {
     let mut g = guild();

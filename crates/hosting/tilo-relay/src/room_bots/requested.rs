@@ -222,7 +222,7 @@ impl Follower {
                 &self.host,
                 inputs,
                 bot,
-                host.avatars_url.as_deref(),
+                &host.public,
             )
             .await?;
             settings.insert(app.clone(), env);
