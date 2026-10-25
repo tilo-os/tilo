@@ -44,6 +44,26 @@ pub struct Attachment {
     pub size: Option<u64>,
 }
 
+/// The thing a message shares (`Message.reference`): the address Chat
+/// keeps, never its content.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reference {
+    pub kind: String,
+    pub id: String,
+    pub label: String,
+}
+
+/// A window shared live into a message (`Message.share`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Share {
+    /// `view` or `edit`.
+    pub access: String,
+    /// Whether its sharer still has it open.
+    pub open: bool,
+    /// Whether its sharer stopped sharing it, or it is gone.
+    pub ended: bool,
+}
+
 /// A Chat message.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Message {
@@ -59,6 +79,12 @@ pub struct Message {
     /// The name the message shows instead of its author's, when a bot posted
     /// it for someone (`Message.appearance`).
     pub appearance_name: Option<String>,
+    /// What it shares, when it was written by sharing something.
+    pub reference: Option<Reference>,
+    /// The record the reference lives in (`record:<app>:<record>`).
+    pub source_provider: Option<String>,
+    /// The live share of a window it carries.
+    pub share: Option<Share>,
 }
 
 /// A person or agent in the chat.
@@ -212,6 +238,42 @@ fn attachment(value: &Value) -> Option<Attachment> {
     })
 }
 
+fn reference(value: &Value) -> Option<Reference> {
+    let reference = json_field(value, "reference");
+    let id = opt_text(&reference, "id")?;
+    Some(Reference {
+        kind: text(&reference, "kind"),
+        label: opt_text(&reference, "label").unwrap_or_else(|| id.clone()),
+        id,
+    })
+}
+
+/// A stored data enum's variant, lower case: as a plain string, as
+/// `{"$variant": …}` or in serde's externally tagged form.
+fn variant(value: &Value) -> Option<String> {
+    match value {
+        Value::String(name) => Some(name.to_ascii_lowercase()),
+        Value::Object(object) => match object.get("$variant") {
+            Some(Value::String(name)) => Some(name.to_ascii_lowercase()),
+            _ => object.keys().next().map(|name| name.to_ascii_lowercase()),
+        },
+        _ => None,
+    }
+}
+
+fn share(value: &Value) -> Option<Share> {
+    let share = json_field(value, "share");
+    share.as_object()?;
+    Some(Share {
+        access: share
+            .get("access")
+            .and_then(variant)
+            .unwrap_or_else(|| "view".to_owned()),
+        open: flag(&share, "open"),
+        ended: flag(&share, "ended"),
+    })
+}
+
 /// Every message `chat` holds, in the order the read gave them.
 #[must_use]
 pub fn messages(chat: &Value) -> Vec<Message> {
@@ -259,6 +321,9 @@ pub fn message(chat: &Value, id: &str) -> Option<Message> {
         mentions,
         attachment: attachment(&v),
         appearance_name: opt_text(&appearance, "name"),
+        reference: reference(&v),
+        source_provider: opt_text(&v, "source_provider"),
+        share: share(&v),
     })
 }
 
@@ -371,6 +436,49 @@ mod tests {
         let attachment = m.attachment.unwrap();
         assert_eq!((attachment.blob.as_str(), attachment.size), ("ff", Some(5)));
         assert_eq!(m.appearance_name.as_deref(), Some("Bo"));
+    }
+
+    /// A window shared live: its address, its record and the share's
+    /// state, the access stored as a data enum or as text.
+    #[test]
+    fn reads_a_shared_window() {
+        let chat = json!({
+            "messages": [
+                {"id": "m3", "value": {"channel": "c_general", "author": "u_ada", "text": "Plan", "parent": null,
+                  "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan", "span": null},
+                  "source_provider": "record:so.tilo.notes:plan",
+                  "share": {"access": {"$variant": "edit"}, "open": true, "ended": false}}},
+                {"id": "m4", "value": {"channel": "c_general", "author": "u_ada", "text": "Plan", "parent": null,
+                  "reference": "{\"kind\":\"notes.page\",\"id\":\"notes.page:1\",\"label\":\"Plan\"}",
+                  "share": {"access": "View", "open": false, "ended": true}}}
+            ]
+        });
+        let live = message(&chat, "m3").unwrap();
+        assert_eq!(
+            live.reference,
+            Some(Reference {
+                kind: "notes.page".into(),
+                id: "notes.page:1".into(),
+                label: "Plan".into()
+            })
+        );
+        assert_eq!(
+            live.source_provider.as_deref(),
+            Some("record:so.tilo.notes:plan")
+        );
+        assert_eq!(
+            live.share,
+            Some(Share {
+                access: "edit".into(),
+                open: true,
+                ended: false
+            })
+        );
+        let ended = message(&chat, "m4").unwrap();
+        assert_eq!(ended.reference.unwrap().label, "Plan");
+        let share = ended.share.unwrap();
+        assert_eq!((share.access.as_str(), share.ended), ("view", true));
+        assert_eq!(message(&self::chat(), "m1").unwrap().share, None);
     }
 
     #[test]

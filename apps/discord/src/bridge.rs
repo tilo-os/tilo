@@ -247,6 +247,18 @@ fn about<'a>(item: Option<&'a str>, event: &'a Value) -> &'a str {
         .unwrap_or_default()
 }
 
+/// The Chat verbs that make a message: a post, and sharing a resource or a
+/// live window, which post the share.
+const POSTS: &[&str] = &["post", "share-resource", "share-window"];
+
+/// The Chat verbs that change how a share reads without editing its words:
+/// its sharer stopping it, or the share ending with its resource.
+const SHARE_CHANGES: &[&str] = &["stop-sharing", "end-share"];
+
+fn posts(verb: &str) -> bool {
+    POSTS.contains(&verb)
+}
+
 /// The channel whose latest messages the program reads with `event`: a
 /// post names its channel, not the message it made, so the plan finds that
 /// message among the channel's newest. Empty for any other event.
@@ -255,7 +267,7 @@ pub fn route_channel(event: &Value) -> String {
     match fired(event) {
         Fired::Chat {
             verbs, item, event, ..
-        } if verbs.iter().any(|verb| verb == "post") => channel_of(item, event).to_owned(),
+        } if verbs.iter().any(|verb| posts(verb)) => channel_of(item, event).to_owned(),
         _ => String::new(),
     }
 }
@@ -382,7 +394,7 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
             event,
         } => {
             for verb in &verbs {
-                let message = if verb == "post" {
+                let message = if posts(verb) {
                     posted(read.guild, read.chat, item, event).unwrap_or_default()
                 } else if verb == SUBMIT_FEEDBACK {
                     filed_report(event).unwrap_or_default()
@@ -438,8 +450,8 @@ fn tilo_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, message: &s
     } = read;
     match verb {
         // A filed report goes across as the message Chat reads it out as.
-        "post" | SUBMIT_FEEDBACK => post(plan, guild, chat, message, context),
-        "edit-message" => {
+        verb if posts(verb) || verb == SUBMIT_FEEDBACK => post(plan, guild, chat, message, context),
+        verb if verb == "edit-message" || SHARE_CHANGES.contains(&verb) => {
             plan.edits
                 .extend(values(outbound::plan_edit(guild, chat, message, context)));
         }
