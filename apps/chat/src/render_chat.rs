@@ -25,9 +25,9 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead,
-    ControlSize, EmptyState, EmptyStateContent, ListRowFace, MediaArt, MediaAspect, MediaCardFace,
-    MediaSize, RowLeading,
+    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ControlSize,
+    EmptyState, EmptyStateContent, ListRowFace, MediaArt, MediaAspect, MediaCardFace, MediaSize,
+    RowLeading,
 };
 
 use crate::app::{ChatApp, Hit, MenuTarget};
@@ -937,7 +937,13 @@ impl ChatApp {
         let react_h = if m.reactions.is_empty() {
             0.0
         } else {
-            ChipFace::height(theme) + f64::from(sp.s2)
+            ui::widget::reaction_strip::measure_height(
+                &m.reactions,
+                self.can_participate(),
+                f64::from(text_w),
+                tr,
+                theme,
+            ) + f64::from(sp.s2)
         };
         // While editing, the "Edited" marker gives way to the editor's own
         // controls row.
@@ -1331,7 +1337,12 @@ impl ChatApp {
         }
 
         if !m.reactions.is_empty() {
-            self.draw_reactions(PaintCtx::new(scene, tf, tr, theme), m, text_x, *y, hits);
+            self.draw_reactions(
+                PaintCtx::new(scene, tf, tr, theme),
+                m,
+                (false, Point::new(text_x, *y), f64::from(text_w)),
+                hits,
+            );
             *y += rm.react_h;
         }
 
@@ -1427,58 +1438,51 @@ impl ChatApp {
         *y += rm.edit_ctrl_h;
     }
 
-    /// One chip per reaction (yours selected), then a chip to add another.
+    /// The message's reactions as the toolkit's shared strip: a pill per
+    /// emoji (yours accented), then the add button while you may react.
+    /// `place` is the surface (`true` in the thread), the strip's origin
+    /// and the width it wraps at. Returns its height.
     fn draw_reactions(
         &self,
         paint: PaintCtx<'_>,
         m: &Message,
-        text_x: f64,
-        y: f64,
+        (thread, origin, width): (bool, Point, f64),
         hits: &mut Vec<(Rect, Hit)>,
-    ) {
+    ) -> f64 {
+        use ui::widget::reaction_strip::StripHit;
         let PaintCtx {
             scene,
             transform: tf,
             text: tr,
             theme,
         } = paint;
-        let chip_h = ChipFace::height(theme);
-        let gap = f64::from(theme.tokens.spacing.s2);
-        let mut x = text_x;
-        for reaction in &m.reactions {
-            let mine = reaction.includes(&self.me.id);
-            let label = format!("{} {}", reaction.emoji, reaction.count());
-            let chip_w = ChipFace::intrinsic_width(&label, ChipLead::None, false, tr, theme);
-            let chip = Rect::new(x, y, x + chip_w, y + chip_h);
-            ChipFace::new(chip, &label)
-                .selected(mine)
-                .hovered(self.hovered(chip))
-                .paint(scene, tf, tr, theme);
-            ChatApp::push_hit(
-                hits,
-                chip,
-                Hit::Reaction {
-                    msg: m.id.clone(),
-                    emoji: reaction.emoji.clone(),
-                },
-            );
-            x = chip.x1 + gap;
-        }
-        let lead = ChipLead::Glyph(Icon::Plus);
-        let add_w = ChipFace::intrinsic_width("", lead, false, tr, theme);
-        let add = Rect::new(x, y, x + add_w, y + chip_h);
-        ChipFace::new(add, "")
-            .lead(lead)
-            .hovered(self.hovered(add))
-            .paint(scene, tf, tr, theme);
-        ChatApp::push_hit(
-            hits,
-            add,
-            Hit::AddReaction {
-                msg: m.id.clone(),
-                anchor: Point::new(add.x0, add.y1 + gap / 2.0),
-            },
+        let mut strips = self.reaction_strips.borrow_mut();
+        let strip = strips.entry((thread, m.id.clone())).or_default();
+        let laid = strip.layout(
+            &m.reactions,
+            &self.me.id,
+            self.can_participate(),
+            (origin, width),
+            tr,
+            theme,
         );
+        let height = laid.height();
+        for (rect, target) in laid.targets() {
+            let hit = match target {
+                StripHit::Toggle(emoji) => Hit::Reaction {
+                    msg: m.id.clone(),
+                    emoji,
+                },
+                StripHit::Add { anchor } => Hit::AddReaction {
+                    msg: m.id.clone(),
+                    anchor: Point::new(anchor.x0, anchor.y1),
+                },
+            };
+            ChatApp::push_hit(hits, rect, hit);
+        }
+        let hover = (self.menu.is_none() && !self.emoji_open).then_some(self.last_mouse);
+        strip.paint(&mut PaintCtx::new(scene, tf, tr, theme), hover, None);
+        height
     }
 
     /// The link into a message's thread: who replied, how many replies and
@@ -2355,7 +2359,13 @@ impl ChatApp {
             height += self.attachment_flow_height(attachment, f64::from(width), tr, theme);
         }
         if !message.reactions.is_empty() {
-            height += ChipFace::height(theme) + f64::from(sp.s2);
+            height += ui::widget::reaction_strip::measure_height(
+                &message.reactions,
+                self.can_participate(),
+                f64::from(width),
+                tr,
+                theme,
+            ) + f64::from(sp.s2);
         }
         height += f64::from(sp.s3);
         height
@@ -2445,17 +2455,12 @@ impl ChatApp {
             yy += self.attachment_flow_height(att, f64::from(tw), tr, theme);
         }
         if !m.reactions.is_empty() {
-            let chip_h = ChipFace::height(theme);
-            let mut chip_x = tx;
-            for reaction in &m.reactions {
-                let label = format!("{} {}", reaction.emoji, reaction.count());
-                let chip_w = ChipFace::intrinsic_width(&label, ChipLead::None, false, tr, theme);
-                ChipFace::new(Rect::new(chip_x, yy, chip_x + chip_w, yy + chip_h), &label)
-                    .selected(reaction.includes(&self.me.id))
-                    .paint(scene, tf, tr, theme);
-                chip_x += chip_w + f64::from(sp.s2);
-            }
-            yy += chip_h + f64::from(sp.s2);
+            yy += self.draw_reactions(
+                PaintCtx::new(scene, tf, tr, theme),
+                m,
+                (true, Point::new(tx, yy), f64::from(tw)),
+                hits,
+            ) + f64::from(sp.s2);
         }
         yy + f64::from(sp.s3)
     }
