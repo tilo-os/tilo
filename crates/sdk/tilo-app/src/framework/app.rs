@@ -926,6 +926,10 @@ fn hosted(context: &HostContext) -> super::settings::Hosted {
             context.author().0.clone(),
             context.live_permissions(),
         )),
+        workspace: context
+            .workspace_records()
+            .cloned()
+            .map(|records| (records, context.wake_handle())),
     }
 }
 

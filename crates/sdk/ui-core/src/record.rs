@@ -38,6 +38,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 pub mod person;
 pub mod transfer;
+pub mod workspace;
 
 /// Key, in a record's own document, of the map holding its identity.
 const META: &str = "tilo:record";

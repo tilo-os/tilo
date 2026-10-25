@@ -16805,6 +16805,7 @@ dependencies = [
  "tilo-search",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-workspace-emoji",
  "tracing",
  "workspace-hack",
 ]
