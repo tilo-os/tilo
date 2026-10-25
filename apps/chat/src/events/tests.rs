@@ -373,7 +373,11 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
             app.draft_main, "🎉",
             "the emoji was typed into the composer draft"
         );
-        assert_eq!(app.emoji_recents.items(), ["🎉"], "picks are remembered");
+        assert_eq!(
+            ui::emoji_catalogue::recents(),
+            ["🎉"],
+            "picks are remembered"
+        );
     }
 
     // Phase: reply_in_thread_sets_parent.

@@ -84,18 +84,13 @@ impl ChatApp {
         handled
     }
 
-    /// Scroll what is under the pointer: the emoji grid, an open thread
+    /// Scroll what is under the pointer: an open thread
     /// (which keeps the wheel from the timeline behind it), or the timeline.
     fn handle_wheel(&mut self, delta: &MouseScrollDelta, scale: f64) {
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 44.0,
             MouseScrollDelta::PixelDelta(p) => p.y / scale,
         };
-        if self.emoji_open && self.emoji_grid.contains(self.last_mouse) {
-            // Clamped against the content height when painted.
-            self.emoji_scroll = (self.emoji_scroll - dy).max(0.0);
-            return;
-        }
         if self.thread_open.is_some() && self.thread_body.contains(self.last_mouse) {
             return;
         }
@@ -118,6 +113,10 @@ impl ChatApp {
         handled: &mut bool,
     ) -> bool {
         if self.route_modal_event(event, scale, modifiers, doc) {
+            *handled = true;
+            return false;
+        }
+        if self.route_emoji_picker_event(event, scale, modifiers, doc) {
             *handled = true;
             return false;
         }
@@ -203,6 +202,53 @@ impl ChatApp {
             _ => {}
         }
         false
+    }
+
+    /// While the emoji picker is up it takes the keyboard (typing searches,
+    /// arrows move, Enter picks, Escape closes) and the pointer over it; a
+    /// press anywhere else closes it. A pick goes the way a picked
+    /// [`Hit::EmojiChoice`] does. Pointer moves still reach the rest of
+    /// Chat, so hover stays current.
+    fn route_emoji_picker_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        if !self.emoji_open {
+            return false;
+        }
+        if !self.emoji_picker.is_open() {
+            self.emoji_picker.reopen();
+        }
+        let over = self.emoji_picker.rect().contains(self.last_mouse);
+        drive_retained_control(&mut self.emoji_picker, event, scale, modifiers, doc);
+        for picked in self.emoji_picker.take_events() {
+            match picked {
+                ui::widget::PickerEvent::Picked(emoji) => self.on_hit_emoji_choice(&emoji, doc),
+                ui::widget::PickerEvent::Dismissed => self.close_emoji_picker(),
+            }
+        }
+        if !self.emoji_picker.is_open() {
+            self.close_emoji_picker();
+        }
+        match event {
+            WindowEvent::KeyboardInput { .. }
+            | WindowEvent::Ime(_)
+            | WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } => true,
+            WindowEvent::MouseWheel { .. } | WindowEvent::MouseInput { .. } => over,
+            _ => false,
+        }
+    }
+
+    fn close_emoji_picker(&mut self) {
+        self.emoji_open = false;
+        self.emoji_target = None;
+        self.emoji_picker.close();
     }
 
     /// Give an open shared context menu first refusal. Its selection index is
@@ -359,10 +405,8 @@ impl ChatApp {
                 *handled = true;
             }
             Some(hit) => {
-                let text_input_hit = matches!(
-                    hit,
-                    Hit::FocusMain | Hit::FocusThread | Hit::FocusEdit | Hit::FocusEmojiSearch
-                );
+                let text_input_hit =
+                    matches!(hit, Hit::FocusMain | Hit::FocusThread | Hit::FocusEdit);
                 self.on_hit(hit, doc);
                 // A click in a composer focuses it (via `on_hit`) and
                 // then places the caret at the click point — forward the
@@ -478,16 +522,6 @@ impl ChatApp {
             return;
         }
 
-        if self.emoji_open && !matches!(logical_key, Key::Named(NamedKey::Escape)) {
-            if matches!(logical_key, Key::Named(NamedKey::Enter)) {
-                self.pick_first_emoji_result(doc);
-            } else {
-                self.route_emoji_search(event, scale, modifiers, doc);
-            }
-            *handled = true;
-            return;
-        }
-
         let composer_owns = self.main_composer_can_edit()
             && self.menu.is_none()
             && !self.emoji_open
@@ -516,9 +550,6 @@ impl ChatApp {
         if self.editing.is_some() {
             self.route_edit_input(event, scale, modifiers, doc);
             true
-        } else if self.emoji_open {
-            self.route_emoji_search(event, scale, modifiers, doc);
-            true
         } else if self.main_composer_can_edit()
             && self.menu.is_none()
             && !self.emoji_open
@@ -529,30 +560,6 @@ impl ChatApp {
             true
         } else {
             false
-        }
-    }
-
-    fn route_emoji_search(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut ui::widget::Edits<'_>,
-    ) {
-        drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
-        if self.emoji_search.take_dirty().is_some() {
-            self.emoji_scroll = 0.0;
-        }
-    }
-
-    /// Enter in the picker's search field picks the best match.
-    fn pick_first_emoji_result(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        let first = crate::i18n::emoji_catalogue()
-            .search(self.emoji_search.value(), 1)
-            .first()
-            .map(|e| e.text());
-        if let Some(first) = first {
-            self.on_hit_emoji_choice(first, doc);
         }
     }
 
@@ -641,9 +648,6 @@ impl ChatApp {
         self.composer_main.handle(event, scale, modifiers, doc);
         self.composer_thread.handle(event, scale, modifiers, doc);
         self.edit_input.handle(event, scale, modifiers, doc);
-        if self.emoji_open {
-            drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
-        }
     }
 
     /// Forward a press to the focused composer so it places the caret at the
@@ -655,15 +659,7 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
-        if self.emoji_open {
-            let handled = drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
-            if self.emoji_search.take_dirty().is_some() {
-                self.emoji_scroll = 0.0;
-            }
-            // A press elsewhere on the panel leaves typing in the query.
-            self.emoji_search.set_focused(true);
-            handled
-        } else if self.editing.is_some() {
+        if self.editing.is_some() {
             self.edit_input.handle(event, scale, modifiers, doc)
         } else {
             self.focused_composer_mut()
@@ -801,12 +797,7 @@ impl ChatApp {
             Hit::ComposerEmoji(anchor) if self.can_participate() => {
                 self.open_emoji_picker(None, anchor);
             }
-            Hit::EmojiGroup(group) => {
-                self.emoji_group = group;
-                self.emoji_scroll = 0.0;
-                self.emoji_search.set_query("");
-            }
-            Hit::FocusEmojiSearch => self.emoji_search.set_focused(true),
+            Hit::EmojiGroup(group) => self.emoji_picker.select_group(group),
             Hit::Attach if self.can_participate() => self.open_attach_picker(),
             Hit::AttachPick(path) => {
                 self.attach_file(doc, std::path::Path::new(&path));
@@ -1131,17 +1122,14 @@ impl ChatApp {
         self.emoji_open = true;
         self.emoji_target = target;
         self.emoji_anchor = anchor;
-        self.emoji_search.set_query("");
-        let _ = self.emoji_search.take_dirty();
-        self.emoji_search.set_focused(true);
-        self.emoji_scroll = 0.0;
+        self.emoji_picker.reopen();
         // Space and Enter now type into the query rather than re-activating
         // the control that opened the picker.
         self.keyboard_target = None;
     }
 
     fn on_hit_emoji_choice(&mut self, e: &str, doc: &mut ui::widget::Edits<'_>) {
-        self.emoji_recents.record(e);
+        ui::emoji_catalogue::record_recent(e);
         if let Some(target) = self.emoji_target.take() {
             if self.can_participate() {
                 let action = self.reaction_toggle_action(&target, e);
@@ -1151,7 +1139,7 @@ impl ChatApp {
         } else {
             self.insert_text(doc, e);
         }
-        self.emoji_open = false;
+        self.close_emoji_picker();
     }
 
     /// Join the room's voice channel; if it has none, make one to start the

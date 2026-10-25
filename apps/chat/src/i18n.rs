@@ -18,6 +18,90 @@ pub fn emoji_catalogue() -> &'static emoji::Catalogue {
     emoji::Catalogue::for_locale(&ui::i18n::I18nManager::current_locale())
 }
 
+/// Hand the catalogue to the toolkit's shared emoji picker and reaction
+/// strip ([`ui::emoji_catalogue::CATALOGUE`]). Chat links the catalogue, so
+/// it is there from the first frame; in the browser desktop it stays in
+/// Chat's own module.
+pub fn offer_emoji_catalogue() {
+    ui::emoji_catalogue::CATALOGUE.install(shared_catalogue);
+}
+
+/// One locale's catalogue as the picker reads it.
+struct Shared(&'static emoji::Catalogue);
+
+fn shared_catalogue(tag: &str) -> &'static dyn ui::emoji_catalogue::EmojiCatalogue {
+    // One small wrapper per locale ever asked for (a handful), kept for the
+    // process like the catalogues themselves.
+    static SHARED: std::sync::Mutex<Vec<&'static Shared>> = std::sync::Mutex::new(Vec::new());
+    let catalogue = emoji::Catalogue::for_locale(tag);
+    let mut shared = SHARED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(found) = shared.iter().find(|s| std::ptr::eq(s.0, catalogue)) {
+        return *found;
+    }
+    let made: &'static Shared = Box::leak(Box::new(Shared(catalogue)));
+    shared.push(made);
+    made
+}
+
+impl ui::emoji_catalogue::EmojiCatalogue for Shared {
+    fn groups(&self) -> Vec<ui::emoji_catalogue::CatalogueGroup> {
+        self.0
+            .groups()
+            .iter()
+            .map(|group| ui::emoji_catalogue::CatalogueGroup {
+                id: group.id(),
+                label: group.label(),
+                icon: group.icon(),
+            })
+            .collect()
+    }
+
+    fn group_emoji(&self, index: usize) -> Vec<&'static str> {
+        self.0.groups().get(index).map_or_else(Vec::new, |group| {
+            self.0
+                .group_emoji(group)
+                .iter()
+                .map(emoji::Emoji::text)
+                .collect()
+        })
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Vec<&'static str> {
+        self.0
+            .search(query, limit)
+            .into_iter()
+            .map(emoji::Emoji::text)
+            .collect()
+    }
+
+    fn info(&self, text: &str) -> Option<ui::emoji_catalogue::EmojiInfo> {
+        let found = self.0.lookup(text)?;
+        Some(ui::emoji_catalogue::EmojiInfo {
+            name: found.emoji.name(),
+            tone: found
+                .tone
+                .and_then(|tone| emoji::SkinTone::ALL.iter().position(|t| *t == tone))
+                .and_then(|at| u8::try_from(at).ok()),
+            takes_tone: found.emoji.takes_skin_tone(),
+        })
+    }
+
+    fn tones(&self, text: &str) -> Vec<&'static str> {
+        let Some(found) = self.0.lookup(text) else {
+            return Vec::new();
+        };
+        if !found.emoji.takes_skin_tone() {
+            return Vec::new();
+        }
+        std::iter::once(None)
+            .chain(emoji::SkinTone::ALL.into_iter().map(Some))
+            .filter_map(|tone| self.0.with_skin_tone(found.emoji.text(), tone))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,8 +156,6 @@ mod tests {
         "chat-emoji-insert",
         "chat-emoji-choose",
         "chat-emoji-group",
-        "chat-reaction-add",
-        "chat-reaction-remove",
         "chat-agent-work-taken",
         "chat-agent-work-waiting",
         "chat-agent-work-intent",
