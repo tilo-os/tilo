@@ -30,6 +30,9 @@ pub fn ensure() {
     CATALOG.ensure();
     SETTINGS_INDEX.ensure();
     ui::i18n::I18nManager::register_widget_messages();
+    // The window bars' reaction pickers (the toolkit's shared picker, drawn
+    // here for every app's window) pick from the whole catalogue.
+    tilo_emoji_catalogue::offer();
 }
 
 /// Resolve a shell string key.
