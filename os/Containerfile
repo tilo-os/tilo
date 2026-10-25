@@ -937,7 +937,7 @@ FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
 COPY os/usr/libexec/tilo-session os/usr/libexec/tilo-image-trust-staged \
-    os/usr/libexec/tilo-verified-update \
+    os/usr/libexec/tilo-verified-update os/usr/libexec/tilo-update-channel \
     /tilo-components/usr/libexec/
 COPY os/external-assets/github-assets.tsv /tilo-components/external-assets/
 COPY os/usr/lib/systemd/user/tilo-ush.service \
