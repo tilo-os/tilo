@@ -69,6 +69,11 @@ pub struct PersistentConfig {
     /// The strips, by name, the room's shared desktop has
     /// (`TILO_ROOMS_STRIPS`); unset, none beyond what people make.
     pub strips: Vec<String>,
+    /// Texts published outside the room that get a discussion thread in it
+    /// (`TILO_ROOMS_DISCUSSIONS`: semicolon-separated `<address>=<title>`),
+    /// so a reader arriving from such a text finds the people discussing it.
+    /// Unset, none. A text whose thread the room keeps is left as it is.
+    pub discussions: Vec<String>,
     /// Proxies whose `X-Forwarded-For` names the visitor.
     pub trusted_proxies: TrustedProxies,
     /// The header those proxies name a visitor's country in
@@ -492,6 +497,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         chat_channels: chat_channels(var)?,
         feedback_channel: feedback_channel(var)?,
         strips: strips(var)?,
+        discussions: discussions(var)?,
         trusted_proxies: trusted_proxies(var)?,
         country_header: var("TILO_ROOMS_COUNTRY_HEADER")
             .map(|name| name.trim().to_owned())
@@ -806,6 +812,34 @@ fn chat_channels(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
     Ok(channels)
 }
 
+/// `TILO_ROOMS_DISCUSSIONS`: semicolon-separated `<address>=<title>`, each
+/// a published text's address and the title its thread is named. Checked as
+/// the relay checks an announcement, so a mistyped one stops the start
+/// rather than the room's threads.
+fn discussions(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
+    let announced: Vec<String> = var("TILO_ROOMS_DISCUSSIONS")
+        .unwrap_or_default()
+        .split(';')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for entry in &announced {
+        let (address, title) = entry.split_once('=').with_context(|| {
+            format!("TILO_ROOMS_DISCUSSIONS takes ADDRESS=TITLE, not {entry:?}")
+        })?;
+        ensure!(
+            address.trim().starts_with("http"),
+            "TILO_ROOMS_DISCUSSIONS names a web address, not {address:?}"
+        );
+        ensure!(
+            !title.trim().is_empty(),
+            "TILO_ROOMS_DISCUSSIONS names each thread's title"
+        );
+    }
+    Ok(announced)
+}
+
 /// `TILO_ROOMS_STRIPS`: comma-separated strip names, each 1-48
 /// characters, none twice.
 fn strips(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
@@ -1058,6 +1092,34 @@ mod tests {
         for bad in ["Main,Main", long.as_str()] {
             assert!(
                 config(&[base[0], base[1], ("TILO_ROOMS_STRIPS", bad)]).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(defaults.discussions.is_empty());
+        let discussions = config(&[
+            base[0],
+            base[1],
+            (
+                "TILO_ROOMS_DISCUSSIONS",
+                " https://tilo.so/blog/a-post=A post ;; https://tilo.so/blog/two=Second ",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            discussions.persistent.unwrap().discussions,
+            [
+                "https://tilo.so/blog/a-post=A post",
+                "https://tilo.so/blog/two=Second"
+            ]
+        );
+        for bad in [
+            "https://tilo.so/blog/a-post",
+            "=A post",
+            "https://tilo.so/blog/a-post=",
+            "tilo.so/blog/a-post=A post",
+        ] {
+            assert!(
+                config(&[base[0], base[1], ("TILO_ROOMS_DISCUSSIONS", bad)]).is_err(),
                 "{bad}"
             );
         }
