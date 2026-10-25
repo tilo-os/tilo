@@ -55,9 +55,9 @@ fn screen(id: &str) -> PeerScreen {
 struct Pictures(Vec<u64>);
 
 impl PeekPictures for Pictures {
-    fn paint(&mut self, window: u64, _: &mut Scene, _: Affine, _: Rect) -> bool {
+    fn paint(&mut self, window: u64, _: &mut Scene, _: Affine, _: Rect) -> Pictured {
         self.0.push(window);
-        true
+        Pictured::Live
     }
 }
 
@@ -70,11 +70,22 @@ struct Frame<'a> {
 }
 
 fn draw(overlay: &mut PeopleOverlay, frame: &Frame<'_>, pictures: &mut dyn PeekPictures) {
-    draw_own(overlay, frame, None, pictures);
+    draw_in(HOST, overlay, frame, None, pictures);
 }
 
 /// [`draw`], with this person's own row leading the list.
 fn draw_own(
+    overlay: &mut PeopleOverlay,
+    frame: &Frame<'_>,
+    own: Option<&RosterRow>,
+    pictures: &mut dyn PeekPictures,
+) {
+    draw_in(HOST, overlay, frame, own, pictures);
+}
+
+/// [`draw`] in `host`, with this person's own row (`own`) leading.
+fn draw_in(
+    host: Rect,
     overlay: &mut PeopleOverlay,
     frame: &Frame<'_>,
     own: Option<&RosterRow>,
@@ -86,7 +97,7 @@ fn draw_own(
         &mut TextRenderer::new(),
         &Theme::dark(),
         &PeopleOverlayModel {
-            host: HOST,
+            host,
             occupied: &[],
             rows: frame.rows,
             screens: frame.screens,
@@ -389,6 +400,81 @@ fn a_peek_opens_on_a_rest_not_a_pass() {
     });
     at(start, 2200, || draw(&mut overlay, &frame, &mut NoPictures));
     assert_eq!(overlay.peeked(), None);
+}
+
+/// On a 2560x1440 screen at twice the density, as on a 5K display: the
+/// pointer arrives in device pixels, slowly and in bursts (a busy page
+/// delivers several moves between frames), and the host draws again only
+/// when the overlay asks. The rest is still measured in points from the
+/// first move onto the row, the overlay names the moment the peek is due,
+/// and the first frame at that moment opens it.
+#[test]
+fn a_peek_opens_at_twice_the_density_on_the_frame_it_asks_for() {
+    const SCALE: f64 = 2.0;
+    let host = Rect::new(0.0, 40.0, 2560.0, 1440.0);
+    let rows = vec![row("ada", "Ada")];
+    let screens = [screen("ada")];
+    let frame = Frame {
+        rows: &rows,
+        screens: &screens,
+        messages: &[],
+        followed: None,
+        unavailable: None,
+    };
+    let mut overlay = shown_overlay();
+    let start = ui::time::now();
+    at(start, 0, || {
+        draw_in(host, &mut overlay, &frame, None, &mut NoPictures);
+    });
+    let ada = overlay.rows[0].rect;
+    assert!(
+        ada.x1 <= host.x1 && ada.x0 > host.center().x,
+        "at the right edge: {ada:?}"
+    );
+    let device = |point: Point| Point::new(point.x * SCALE, point.y * SCALE);
+    let mut handled = false;
+    // A burst of moves across the row, all in device pixels.
+    for (ms, dx) in [(10, -30.0), (12, -10.0), (14, 0.0)] {
+        let point = ada.center() + ui::kurbo::Vec2::new(dx, 0.0);
+        at(start, ms, || {
+            overlay.handle_event(&moved(device(point)), SCALE, &mut handled)
+        });
+    }
+    assert!(handled, "the row takes the pointer");
+    let due = overlay
+        .next_wake_deadline()
+        .expect("the peek asks for a frame");
+    let first = start
+        .checked_add(Duration::from_millis(10))
+        .expect("in range");
+    assert_eq!(
+        due.saturating_duration_since(first),
+        HOVER_INTENT,
+        "measured from the first move onto the row, not the last"
+    );
+    // Moves within the row between frames never restart the intent.
+    at(start, 200, || {
+        overlay.handle_event(&moved(device(ada.center())), SCALE, &mut handled)
+    });
+    assert_eq!(overlay.next_wake_deadline(), Some(due));
+    // The host's next frame, at the moment it was asked for.
+    tilo_clock::testing::with_monotonic_time(due, || {
+        draw_in(host, &mut overlay, &frame, None, &mut NoPictures);
+    });
+    assert_eq!(overlay.peeked(), Some("ada"));
+    let _guard = ui::motion::testing::settled();
+    at(start, 900, || {
+        draw_in(host, &mut overlay, &frame, None, &mut NoPictures);
+    });
+    let card = overlay.peek.drawn;
+    assert!(
+        card.area() > 0.0 && host.contains(card.origin()),
+        "on screen: {card:?}"
+    );
+    assert!(
+        card.x1 <= overlay.panel.x0,
+        "beside the panel, away from the edge"
+    );
 }
 
 /// Their screen is built from their presence: a window on something shared
