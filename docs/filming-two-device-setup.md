@@ -18,6 +18,7 @@ path; only the two physical machines and the browser page are simulated.
 | The other machine receives the pointer's owner and position | `presence_round_trips_over_iroh` | same file |
 | A computer joins a `tilo.coffee`-style site and shares records with a browser in that room | `a_computer_joins_a_sites_workspace_through_its_door_and_shares_it_with_a_browser` | `crates/session/shell/src/shell/network/site_join_tests.rs` |
 | Two computers in one site workspace see each other's pointer | `two_computers_in_a_sites_workspace_see_each_others_pointer` | same file |
+| The two recordings cut into one side-by-side frame | `two_angles_share_one_frame_as_a_single_step` | `apps/video-editor/src/app/window_bar_tests.rs` |
 
 The browser in those tests is the real `tilo-browser-peer` crate, joined
 through the real host's HTTPS routes to a real `tilo-relay` host. What no test
@@ -92,9 +93,14 @@ switch.
 2. **Screen capture, in sync.** Record both screens for the same actions: an
    edit typed on one, the cursor crossing, and an edit back the other way. The
    recording is the material; the phone take is the introduction.
-3. **Cut.** Open both recordings in the video editor and lay them as one
-   side-by-side pair, starting at the same moment. The cursor crossing is the
-   join: cut to it on both halves at once.
+3. **Cut.** Open both recordings in the video editor, put them on two video
+   tracks and start them at the same moment (the second recording goes on the
+   lower track, so it takes the left half). Press **Place side by side** in the
+   editor's bar: the lower track's picture fills the left half of the frame and
+   the track above it the right, as one step of undo. The inspector's **Left
+   half** and **Right half** buttons place a single picture the same way. The
+   cursor crossing is the join: cut to it on both halves at once, which is one
+   **Split at playhead** over both tracks.
 
 The take has no script past step 1: everything after it is the same three
 actions recorded twice.
