@@ -269,6 +269,14 @@ def quote(value: str) -> str:
 # check hot-plugs it; without the port the loop only waits.
 SHELL_SCRIPT = f"""#!/usr/bin/bash
 # signin-e2e check, this throwaway disk only: a root shell on {SHELL_PORT}.
+# Who runs chcon on this system: its parent and arguments, for the evidence.
+if command -v auditctl >/dev/null 2>&1; then
+  auditctl -a always,exit -F arch=b64 -S execve -F path=/usr/bin/chcon -k chcon \
+    && echo 'tilo-e2e-shell: chcon audit rule installed' \
+    || echo 'tilo-e2e-shell: the chcon audit rule could not be installed'
+else
+  echo 'tilo-e2e-shell: this image has no auditctl'
+fi
 echo 'tilo-e2e-shell: waiting for {SHELL_PORT}'
 while :; do
   if [ -e /dev/virtio-ports/{SHELL_PORT} ]; then
@@ -677,6 +685,9 @@ cryptsetup close e2e-target
         "failed": "systemctl --failed --no-pager --plain --no-legend; "
                   "systemctl status --no-pager tilo-authd.socket tilo-authd.service greetd | tail -n 60",
         "sessions": "loginctl list-sessions --no-pager",
+        "chcon": "{ journalctl -b -u tilo-e2e-shell -o cat | grep -i 'audit\\|auditctl'; "
+                 "ausearch -k chcon -i 2>/dev/null || journalctl -b --no-pager -o short-monotonic "
+                 "_TRANSPORT=audit | grep -E -A4 'key=\"chcon\"'; } | tail -n 160",
         "initrd": "journalctl -b --no-pager -o short-monotonic | grep -E "
                   "'tilo-root-discover|tilo-boot-signin|tilo-auth|systemd-cryptsetup|plymouth' "
                   "| head -n 300",
