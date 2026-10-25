@@ -911,3 +911,37 @@ signal-meter-weak = Schwaches Signal
 signal-meter-fair = Mittleres Signal
 signal-meter-good = Gutes Signal
 signal-meter-strong = Starkes Signal
+
+reaction-strip-add = Reaktion hinzufügen
+reaction-strip-react = Reaktion { $emoji } hinzufügen
+reaction-strip-unreact = Reaktion { $emoji } entfernen
+reaction-strip-count = { $count ->
+    [one] Eine Reaktion
+   *[other] { $count } Reaktionen
+}
+reaction-strip-you = Du
+reaction-strip-reacted-one = { $first } hat mit { $emoji } reagiert
+reaction-strip-reacted-two = { $first } und { $second } haben mit { $emoji } reagiert
+reaction-strip-reacted-three = { $first }, { $second } und { $third } haben mit { $emoji } reagiert
+reaction-strip-reacted-more = { $first }, { $second } und { $others ->
+    [one] eine weitere Person
+   *[other] { $others } weitere
+} haben mit { $emoji } reagiert
+
+emoji-chooser-title = Emoji
+emoji-chooser-search = Emoji suchen
+emoji-chooser-groups = Emoji-Kategorien
+emoji-chooser-workspace = Arbeitsbereich
+emoji-chooser-recent = Zuletzt verwendet
+emoji-chooser-results = Passende Emoji
+emoji-chooser-no-results = Keine Emoji gefunden
+emoji-chooser-arriving = Weitere Emoji kommen gleich
+emoji-chooser-add = Emoji hinzufügen
+emoji-chooser-tones = Hauttöne
+emoji-chooser-tone-hint = Hautton wählen
+emoji-chooser-toned = { $name }, { $tone }
+emoji-chooser-tone-light = heller Hautton
+emoji-chooser-tone-medium-light = mittelheller Hautton
+emoji-chooser-tone-medium = mittlerer Hautton
+emoji-chooser-tone-medium-dark = mitteldunkler Hautton
+emoji-chooser-tone-dark = dunkler Hautton

@@ -917,3 +917,42 @@ signal-meter-weak = Weak signal
 signal-meter-fair = Fair signal
 signal-meter-good = Good signal
 signal-meter-strong = Strong signal
+
+# Reactions: the pills under a message or on a page, one per emoji. $emoji is
+# the emoji itself, or a workspace emoji written as :name:.
+reaction-strip-add = Add reaction
+reaction-strip-react = Add { $emoji } reaction
+reaction-strip-unreact = Remove { $emoji } reaction
+reaction-strip-count = { $count ->
+    [one] One reaction
+   *[other] { $count } reactions
+}
+# Who reacted, in the tooltip of a pill; $emoji is the emoji's name.
+reaction-strip-you = You
+reaction-strip-reacted-one = { $first } reacted with { $emoji }
+reaction-strip-reacted-two = { $first } and { $second } reacted with { $emoji }
+reaction-strip-reacted-three = { $first }, { $second } and { $third } reacted with { $emoji }
+reaction-strip-reacted-more = { $first }, { $second } and { $others ->
+    [one] one other
+   *[other] { $others } others
+} reacted with { $emoji }
+
+# The emoji picker: the workspace's own emoji, the recently used ones and
+# Unicode's groups as tabs.
+emoji-chooser-title = Emoji
+emoji-chooser-search = Search emoji
+emoji-chooser-groups = Emoji categories
+emoji-chooser-workspace = Workspace
+emoji-chooser-recent = Recently used
+emoji-chooser-results = Matching emoji
+emoji-chooser-no-results = No emoji found
+emoji-chooser-arriving = More emoji are on their way
+emoji-chooser-add = Add emoji
+emoji-chooser-tones = Skin tones
+emoji-chooser-tone-hint = Pick a skin tone
+emoji-chooser-toned = { $name }, { $tone }
+emoji-chooser-tone-light = light skin tone
+emoji-chooser-tone-medium-light = medium-light skin tone
+emoji-chooser-tone-medium = medium skin tone
+emoji-chooser-tone-medium-dark = medium-dark skin tone
+emoji-chooser-tone-dark = dark skin tone
