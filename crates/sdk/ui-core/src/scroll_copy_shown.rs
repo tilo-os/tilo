@@ -170,6 +170,33 @@ impl<S: Shown + PartialEq> ShownFrames<S> {
     }
 }
 
+impl<S: Shown> ShownFrames<S> {
+    /// From the scroller's draw, once this frame is noted: where the frame
+    /// keeps the pixels of its content, as [`Self::compare`] will find it
+    /// (moved by a copy, or not moved), for its content to leave out what
+    /// it has nothing new to paint for ([`crate::draw_cull`]). `None` when
+    /// it repaints its viewport.
+    pub(crate) fn keep(&self) -> Option<crate::draw_cull::Keep> {
+        let (drawing, presented) = self.frames()?;
+        if drawing.clip() != presented.clip()
+            || drawing.transform() != presented.transform()
+            || !drawing.same_view(presented)
+        {
+            return None;
+        }
+        let delta = presented.scroll() - drawing.scroll();
+        if delta != Vec2::ZERO && !drawing.same_content(presented) {
+            return None;
+        }
+        // What paints over the content without moving repaints, where it
+        // is and where it was.
+        let mut overlays = Vec::new();
+        drawing.overlays(&mut overlays);
+        presented.overlays(&mut overlays);
+        crate::draw_cull::Keep::scrolled(drawing.transform(), drawing.clip(), delta, &overlays)
+    }
+}
+
 /// One piece of what a scroller paints: a line, a page, a caret. `rect` is
 /// where it paints with the content unscrolled (on screen plus the scroll),
 /// or on screen for a piece that does not move with the content; `paint`

@@ -271,6 +271,11 @@ pub mod host_operation {
         resource_operation_handlers, start_in_children, start_operation,
     };
 }
+#[cfg_attr(
+    not(any(feature = "native", test)),
+    expect(dead_code, reason = "only a native host's frame culls its draw")
+)]
+pub(crate) mod draw_cull;
 pub mod host_palette;
 pub mod published;
 pub mod reader_hud;

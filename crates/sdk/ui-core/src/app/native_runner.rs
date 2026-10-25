@@ -1756,6 +1756,7 @@ impl AppHandler {
                 damage_regions,
                 scroll_copies: Vec::new(),
                 full_redraw: true,
+                partial: false,
                 backdrop: crate::backdrop::BackdropFrame::default(),
             })
             .is_err()
@@ -2394,6 +2395,7 @@ impl AppHandler {
                 damage_regions,
                 scroll_copies: Vec::new(),
                 full_redraw: true,
+                partial: false,
                 // The compositor puts this window over the desktop; nothing
                 // under its surfaces is in this scene to blur.
                 backdrop: crate::backdrop::BackdropFrame::default(),
@@ -2879,9 +2881,34 @@ impl AppHandler {
         // backdrop under the material before the frame renders.
         let backdrop_recording = crate::backdrop::BackdropRecording::begin();
         crate::backdrop::layer_scene(&scene, 0);
+        // The local render worker repaints only the damage from each scene,
+        // over the pixels it presented last: a frame that repaints neither
+        // whole nor under layers the widgets' damage does not describe is
+        // drawn only where its damage needs it (`crate::draw_cull`).
+        let culls = !full_redraw_required
+            && !self.top_layer_drawn
+            && app.history.is_none()
+            && app.history_layout.is_none()
+            && !crate::render_thread::remote::requested();
+        let mut culling = culls.then(|| std::mem::take(&mut app.layout.cull));
+        let culled = culling.is_some();
+        let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
         let draw_phase = slow_event::phase("draw");
-        let drawn = draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        let drawn = draw_frame_content_with(
+            app,
+            &mut scene,
+            (width, height),
+            scale_factor,
+            t_draw_start,
+            culling.as_mut().map(|culling| &mut culling.scenes),
+        );
         drop(draw_phase);
+        // Culled, what paints over the widgets waits with their layers, to
+        // be composed over them once the frame knows its damage.
+        let over: &mut Scene = match culling.as_mut() {
+            Some(culling) => &mut culling.scenes.layers,
+            None => &mut scene,
+        };
         // An empty state waiting for its room's first sync turns a spinner
         // no widget's damage covers (`crate::room_sync`): a new pose damages
         // its slot, in scene pixels.
@@ -2894,17 +2921,27 @@ impl AppHandler {
         let mut top_layer = drawn.top_layer.is_some() || drawn.tooltip.is_some();
         // What paints over the widgets without moving with a scroll and is no
         // widget the copy planner sees: the header bar another desktop gets.
-        let before_decorations = scene.encoding().draw_tags.len();
+        let before_decorations = over.encoding().draw_tags.len();
         #[cfg(target_os = "linux")]
         {
-            self.decorations.draw(app, &mut scene, transform);
+            self.decorations.draw(app, over, transform);
             full_redraw_required |= self.decorations.take_repaint();
         }
-        self.slot_bar.draw(app, &mut scene, transform);
+        self.slot_bar.draw(app, over, transform);
         full_redraw_required |= self.slot_bar.take_repaint();
-        let decorated = scene.encoding().draw_tags.len() != before_decorations;
-        let backdrop =
-            crate::backdrop::BackdropFrame::from_single_scene(backdrop_recording.finish());
+        let decorated = over.encoding().draw_tags.len() != before_decorations;
+        // Culled, the floating surfaces drawn into the frame's scenes reach
+        // its scene once they are composed into it.
+        let mut backdrop_recording = Some(backdrop_recording);
+        let mut backdrop = if culled {
+            crate::backdrop::BackdropFrame::default()
+        } else {
+            backdrop_recording
+                .take()
+                .map_or_else(crate::backdrop::BackdropFrame::default, |recording| {
+                    crate::backdrop::BackdropFrame::from_single_scene(recording.finish())
+                })
+        };
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         // Peer pointers, names and activity paint over the widgets and damage
         // only the marks that changed. Carets, selections and marks widgets
@@ -2917,9 +2954,9 @@ impl AppHandler {
             window_rect,
             crate::time::now(),
         );
-        scene.append(self.presence_layer.scene(), None);
+        over.append(self.presence_layer.scene(), None);
         full_redraw_required |= presence_damage.is_none();
-        let content_draw_tags = scene.encoding().draw_tags.len();
+        let content_draw_tags = over.encoding().draw_tags.len();
 
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);
@@ -2959,14 +2996,14 @@ impl AppHandler {
         record_main_stage(&mut native_main_stages, MainStage::AfterNativeFrameLog);
 
         if app.debug_mode {
-            draw_debug_outlines(app, &mut scene, transform);
+            draw_debug_outlines(app, over, transform);
         }
         record_main_stage(&mut native_main_stages, MainStage::AfterDebugOutlines);
 
         // Debug outlines paint over the widgets too. A layer drawn this
         // frame, or one erased since the last, covers pixels no widget's
         // damage reports. (The presence layer reports its own.)
-        top_layer |= scene.encoding().draw_tags.len() != content_draw_tags;
+        top_layer |= over.encoding().draw_tags.len() != content_draw_tags;
         full_redraw_required |=
             top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer);
 
@@ -3061,6 +3098,40 @@ impl AppHandler {
                 scroll_copies = planned.copies;
             }
         }
+        // A culled frame shows only what it drew: nothing it left out may
+        // be repainted, and the worker must be able to repaint its damage
+        // alone. Otherwise its widgets are drawn again in full. Then its
+        // scenes are composed into the frame's.
+        let mut partial = false;
+        if let Some(mut culling) = culling {
+            let left_out = cull_frame
+                .as_ref()
+                .is_some_and(crate::draw_cull::Frame::skipped_any);
+            let holds = left_out
+                && !full_redraw_required
+                && crate::render_thread::renders_damage_alone(width, height, &damage_regions)
+                && cull_frame
+                    .as_ref()
+                    .is_some_and(|frame| frame.holds(Some(&damage_regions)));
+            drop(cull_frame);
+            if left_out && !holds {
+                redraw_culled_widgets(app, &mut culling.scenes, &drawn);
+            }
+            culling.tally(left_out, left_out && !holds);
+            partial = left_out && holds;
+            let secret = culling.shows_secret(app.floating.secret_on_screen, partial);
+            app.set_secret_on_screen(secret);
+            compose_culled(&mut scene, &culling.scenes);
+            if let Some(recording) = backdrop_recording.take() {
+                backdrop = crate::backdrop::BackdropFrame::from_single_scene(recording.finish());
+            }
+            culling.repainted(&damage_regions, !scroll_copies.is_empty());
+            app.layout.cull = culling;
+        } else if !full_redraw_required {
+            app.layout
+                .cull
+                .repainted(&damage_regions, !scroll_copies.is_empty());
+        }
         if !app.capture_frame_ready() {
             scene.reset();
             render.buffers.unprepare((scene, damage_regions));
@@ -3153,6 +3224,7 @@ impl AppHandler {
                 damage_regions,
                 scroll_copies,
                 full_redraw: full_redraw_required,
+                partial,
                 backdrop,
                 on_present: self.dev_reload_timing.take().map(|timing| {
                     let submitted = crate::time::wall();

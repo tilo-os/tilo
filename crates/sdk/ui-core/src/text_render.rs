@@ -3389,6 +3389,28 @@ impl TextRenderer {
         clip: Rect,
         paint: Option<&dyn Fn(usize) -> Option<Color>>,
     ) {
+        self.draw_rich_in_clip_painted_leaving_out(
+            scene,
+            layout,
+            transform,
+            color,
+            (clip, &[]),
+            paint,
+        );
+    }
+
+    /// [`Self::draw_rich_in_clip_painted`] inside `clip`, but for the rows
+    /// of the logical lines `leave_out` (ascending), whose pixels the frame
+    /// keeps ([`crate::draw_cull`]).
+    pub(crate) fn draw_rich_in_clip_painted_leaving_out(
+        &mut self,
+        scene: &mut Scene,
+        layout: &crate::richtext::RichTextLayout,
+        transform: Affine,
+        color: Color,
+        (clip, leave_out): (Rect, &[usize]),
+        paint: Option<&dyn Fn(usize) -> Option<Color>>,
+    ) {
         draw_rich_backgrounds(scene, layout, transform);
         // Every row whose ink can reach the clip, however far it hangs past
         // its band; the glyph batches whose own ink misses it drop below.
@@ -3413,6 +3435,9 @@ impl TextRenderer {
                 if rich_run_below_clip(&run, transform, clip, reach) {
                     break;
                 }
+                continue;
+            }
+            if leave_out.binary_search(&run.line_i).is_ok() {
                 continue;
             }
             let paint_run = RunPaint { color, paint };
