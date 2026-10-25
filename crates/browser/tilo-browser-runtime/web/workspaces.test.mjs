@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneRooms, HostAdmissionError, hostDeviceOf, isPublicHome, joinViaHost, leaveOnWaitList, joinWhenSeated, keptMembership, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedRoom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneRooms, HostAdmissionError, hostDeviceOf, isPublicHome, joinViaHost, leaveOnWaitList, leaveWaitList, waitListing, confirmWaitList, waitListStanding, joinWhenSeated, keptMembership, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedRoom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -263,22 +263,23 @@ test('a door taking people by invitation tells a visitor without one so, and ask
 });
 
 test('a door taking people by invitation says when it keeps a wait list, and where to be taken off it', async () => {
-  for (const [contact, said] of [['hello@example.org', 'hello@example.org'], [undefined, null], ['', null]]) {
+  for (const [contact, said, mail] of [['hello@example.org', 'hello@example.org', true], [undefined, null, false], ['', null, undefined]]) {
     const {options} = harness({person: identity(0x44), joinReply: {status: 403,
-      body: {error: 'this room takes people by invitation for now', code: 'invitation-only', waitList: true, contact}}});
+      body: {error: 'this room takes people by invitation for now', code: 'invitation-only', waitList: true, contact, mail}}});
     await assert.rejects(joinViaHost(options),
-      error => error.code === 'invitation-only' && error.door?.waitList === true && error.door.contact === said);
+      error => error.code === 'invitation-only' && error.door?.waitList === true && error.door.contact === said
+        && error.door.mail === (mail === true));
   }
 });
 
 test('an address left at the door is sent there, and each refusal is named for the page to say', async () => {
   const posted = [];
   const door = answer => async (url, init) => { posted.push({url: String(url), init}); return reply(answer); };
-  assert.equal(await leaveOnWaitList({workspace: commons, email: ' Ada@Example.org ',
-    fetch: door({body: {email: 'ada@example.org'}})}), 'ada@example.org');
+  assert.deepEqual(await leaveOnWaitList({workspace: commons, email: ' Ada@Example.org ', language: 'de-AT',
+    fetch: door({body: {email: 'ada@example.org', mail: true}})}), {email: 'ada@example.org', mail: true});
   assert.equal(posted[0].url, 'https://rooms.example/wait-list');
   assert.equal(posted[0].init.method, 'POST');
-  assert.deepEqual(JSON.parse(posted[0].init.body), {email: ' Ada@Example.org '});
+  assert.deepEqual(JSON.parse(posted[0].init.body), {email: ' Ada@Example.org ', language: 'de-AT'});
   for (const [status, code, headers = {}] of [[400, 'invalid-email'], [429, 'too-many', {'retry-after': '600'}],
     [503, 'wait-list-full'], [404, 'no-wait-list'], [503, 'unavailable'], [500, 'something-else']]) {
     await assert.rejects(leaveOnWaitList({workspace: commons, email: 'x@y.org', fetch: door({status, headers, body: {error: 'no', code}})}),
@@ -289,6 +290,101 @@ test('an address left at the door is sent there, and each refusal is named for t
     {name: 'HostAdmissionError', code: 'unavailable'});
   await assert.rejects(leaveOnWaitList({workspace: {name: 'Closed', host: {origin: 'https://h.example'}}, email: 'x@y.org', fetch: door({})}),
     {name: 'HostAdmissionError', code: 'invitation-only'});
+});
+
+const memoryStorage = () => {
+  const values = new Map();
+  return {values, getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key)};
+};
+
+test('the browser keeps the secret that takes its address off a door’s wait list, and only for that door', async () => {
+  const storage = memoryStorage();
+  const secret = 'a1'.repeat(32);
+  const posted = [];
+  const door = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body), credentials: init.credentials}); return reply(answer); };
+  assert.equal(waitListing(commons, storage), null);
+  assert.deepEqual(await leaveOnWaitList({workspace: commons, email: ' Ada@Example.org ', storage,
+    fetch: door({body: {email: 'Ada@Example.org', removal: secret}})}), {email: 'Ada@Example.org', mail: false});
+  assert.deepEqual(waitListing(commons, storage), {email: 'Ada@Example.org', pending: false});
+  assert.equal(waitListing({...commons, admission: 'https://other.example/'}, storage), null);
+  assert.doesNotMatch(JSON.stringify(waitListing(commons, storage)), /a1a1/, 'the secret stays inside');
+
+  // Taking it off sends the secret alone, and forgets it here.
+  await leaveWaitList({workspace: commons, storage, fetch: door({body: {}})});
+  assert.equal(posted.at(-1).url, 'https://rooms.example/wait-list/remove');
+  assert.deepEqual(posted.at(-1).body, {secret});
+  assert.equal(posted.at(-1).credentials, 'omit');
+  assert.equal(waitListing(commons, storage), null);
+  assert.equal(storage.values.size, 0);
+  // Nothing kept: nothing is asked.
+  const asked = posted.length;
+  await leaveWaitList({workspace: commons, storage, fetch: door({body: {}})});
+  assert.equal(posted.length, asked);
+});
+
+test('a wait-list removal the door could not do keeps the secret to try again', async () => {
+  const storage = memoryStorage();
+  await leaveOnWaitList({workspace: commons, email: 'bo@example.org', storage,
+    fetch: async () => reply({body: {email: 'bo@example.org', removal: 'b2'.repeat(32)}})});
+  for (const [status, code, headers = {}] of [[429, 'too-many', {'retry-after': '60'}], [503, 'unavailable']]) {
+    await assert.rejects(leaveWaitList({workspace: commons, storage, fetch: async () => reply({status, headers, body: {error: 'no', code}})}),
+      error => error instanceof HostAdmissionError && error.code === code);
+    assert.deepEqual(waitListing(commons, storage), {email: 'bo@example.org', pending: false});
+  }
+  await assert.rejects(leaveWaitList({workspace: commons, storage, fetch: async () => { throw new TypeError('Failed to fetch'); }}),
+    {code: 'unavailable'});
+  assert.deepEqual(waitListing(commons, storage), {email: 'bo@example.org', pending: false});
+  // A secret the door calls none is nothing to keep.
+  await leaveWaitList({workspace: commons, storage, fetch: async () => reply({status: 400, body: {code: 'invalid-secret'}})});
+  assert.equal(waitListing(commons, storage), null);
+  // A door that handed back no secret leaves nothing to take off here.
+  await leaveOnWaitList({workspace: commons, email: 'cy@example.org', storage, fetch: async () => reply({body: {email: 'cy@example.org'}})});
+  assert.equal(waitListing(commons, storage), null);
+});
+
+test('a mailed address waits to be confirmed by its link, and the door says where it stands', async () => {
+  const storage = memoryStorage();
+  const posted = [];
+  const door = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body)}); return reply(answer); };
+  const secret = 'c3'.repeat(32);
+  await leaveOnWaitList({workspace: commons, email: 'cy@example.org', storage,
+    fetch: door({body: {email: 'cy@example.org', removal: secret, mail: true}})});
+  assert.deepEqual(waitListing(commons, storage), {email: 'cy@example.org', pending: true});
+
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({body: {standing: 'pending'}})}), 'pending');
+  assert.equal(posted.at(-1).url, 'https://rooms.example/wait-list/standing');
+  assert.deepEqual(posted.at(-1).body, {secret});
+  // The link confirms it: sent as it came, and this browser stops waiting.
+  const token = 'd4'.repeat(32);
+  assert.equal(await confirmWaitList({workspace: commons, token, storage, fetch: door({body: {confirmed: true}})}), true);
+  assert.equal(posted.at(-1).url, 'https://rooms.example/wait-list/confirm');
+  assert.deepEqual(posted.at(-1).body, {token});
+  assert.deepEqual(waitListing(commons, storage), {email: 'cy@example.org', pending: false});
+  // A link no longer waiting, or none at all, confirms nothing.
+  assert.equal(await confirmWaitList({workspace: commons, token, storage, fetch: door({body: {confirmed: false}})}), false);
+  const asked = posted.length;
+  assert.equal(await confirmWaitList({workspace: commons, token: 'nope', storage, fetch: door({body: {confirmed: true}})}), false);
+  assert.equal(posted.length, asked);
+  // The door cannot say now: nothing changes; it says gone: forgotten.
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({status: 503, body: {code: 'unavailable'}})}), null);
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: async () => { throw new TypeError('Failed to fetch'); }}), null);
+  assert.ok(waitListing(commons, storage));
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({body: {standing: 'gone'}})}), 'gone');
+  assert.equal(waitListing(commons, storage), null);
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({body: {standing: 'listed'}})}), null);
+});
+
+test('a removal link takes its address off, and this browser forgets what it left', async () => {
+  const storage = memoryStorage();
+  const posted = [];
+  const door = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body)}); return reply(answer); };
+  await leaveOnWaitList({workspace: commons, email: 'dee@example.org', storage,
+    fetch: door({body: {email: 'dee@example.org', removal: 'e5'.repeat(32), mail: true}})});
+  const linked = 'f6'.repeat(32);
+  await leaveWaitList({workspace: commons, secret: linked, storage, fetch: door({body: {}})});
+  assert.deepEqual(posted.at(-1), {url: 'https://rooms.example/wait-list/remove', body: {secret: linked}});
+  assert.equal(waitListing(commons, storage), null);
+  await assert.rejects(leaveWaitList({workspace: commons, secret: 'not hex', storage, fetch: door({body: {}})}), {code: 'invalid-secret'});
 });
 
 test('an address cooling down after a removal turns away someone who kept no membership, as the door said', async () => {

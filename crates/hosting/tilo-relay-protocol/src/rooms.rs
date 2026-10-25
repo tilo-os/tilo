@@ -291,6 +291,11 @@ pub enum RoomsRequest {
         /// How the inviting person names themself; the invitation records
         /// it with their user root.
         inviter_name: Option<String>,
+        /// The wait-list entry ([`WaitListEntry::request_id`]) the invitation
+        /// answers: the entry shows it was invited, and leaves the list
+        /// once someone joins with the invitation.
+        #[serde(default)]
+        wait_list_entry: Option<[u8; 32]>,
     },
     /// Cancel an invitation not yet redeemed: answered with
     /// [`RoomsReply::Pending`].
@@ -385,12 +390,26 @@ pub enum RoomsRequest {
     WaitList {
         room: String,
     },
-    /// Take a request left at `room`'s door off its wait list, once it was
-    /// invited or is not to be: answered with [`RoomsReply::WaitList`].
+    /// Take a request left at `room`'s door off its wait list, when it is
+    /// not to be invited: answered with [`RoomsReply::WaitList`]. An entry
+    /// invited ([`RoomsRequest::Invite`]'s `wait_list_entry`) leaves the
+    /// list by itself once someone joins with that invitation.
     Unlist {
         room: String,
         /// The entry.
         request_id: [u8; 32],
+    },
+    /// Mail the invitation `link` to the wait-list entry `wait_list_entry`
+    /// it was issued for ([`RoomsRequest::Invite`]'s `wait_list_entry`):
+    /// answered with [`RoomsReply::WaitList`], or refused where the room
+    /// sends no mail, when the page shares the link itself.
+    MailInvite {
+        room: String,
+        /// The confirmed entry.
+        wait_list_entry: [u8; 32],
+        /// The invitation's web link: the room's own door, with the signed
+        /// invitation in its `invite` query parameter.
+        link: String,
     },
 }
 
@@ -520,8 +539,9 @@ pub enum JoinReply {
 pub const MAX_CONTACT_CHARS: usize = 254;
 
 /// `text` as the address a request left at a room's door keeps
-/// ([`WaitListEntry`]): an email address, trimmed and lowercased, so
-/// one address is one request however it was typed.
+/// ([`WaitListEntry`]): an email address, trimmed and otherwise as typed,
+/// since that is how its owner writes it. One address is one request
+/// however it was typed: requests are told apart by [`contact_key`].
 ///
 /// # Errors
 ///
@@ -529,7 +549,7 @@ pub const MAX_CONTACT_CHARS: usize = 254;
 /// [`MAX_CONTACT_CHARS`] characters: one `@` with something before it and a
 /// dotted domain after it, and no space or control character.
 pub fn contact_address(text: &str) -> Result<String, &'static str> {
-    let address = text.trim().to_lowercase();
+    let address = text.trim().to_owned();
     if address.chars().count() > MAX_CONTACT_CHARS {
         return Err("an email address is at most 254 characters");
     }
@@ -550,11 +570,56 @@ pub fn contact_address(text: &str) -> Result<String, &'static str> {
     }
 }
 
+/// The longest invitation link a door mails: an invitation carries its
+/// signed certificate chain, a few KiB once encoded.
+pub const MAX_INVITATION_LINK: usize = 16 * 1024;
+
+/// Whether `link` is an invitation on the web entry `door` (a URL ending
+/// in `/`): under it, with an `invite=` parameter, no longer than
+/// [`MAX_INVITATION_LINK`] and without spaces or control characters. Only
+/// such a link is mailed to an address on a wait list for a member.
+#[must_use]
+pub fn invitation_on_door(door: &str, link: &str) -> bool {
+    door.ends_with('/')
+        && link.len() <= MAX_INVITATION_LINK
+        && link
+            .strip_prefix(door)
+            .is_some_and(|rest| rest.contains("invite="))
+        && !link.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// What tells two addresses ([`contact_address`]) apart: lowercased, so
+/// `Ada@Example.org` and `ada@example.org` are one request.
+#[must_use]
+pub fn contact_key(address: &str) -> String {
+    address.trim().to_lowercase()
+}
+
+/// The language mails to an address left at the door are in, for the
+/// language tag its page was read in: `de` for German, otherwise `en`.
+#[must_use]
+pub fn mail_language(tag: &str) -> &'static str {
+    let primary = tag.split(['-', '_']).next().unwrap_or_default();
+    if primary.eq_ignore_ascii_case("de") {
+        "de"
+    } else {
+        "en"
+    }
+}
+
+/// The bytes of the secret that takes a request left at a room's door off
+/// its wait list again: random, handed only to whoever left it. The room
+/// keeps only its SHA-256.
+pub const WAIT_LIST_REMOVAL_BYTES: usize = 32;
+
 /// A request left at the door of a room that takes people by invitation:
 /// someone who has no invitation, and so no identity the room knows yet,
 /// left an address to be invited at. Someone who may invite sends an
-/// invitation of their own there, then takes the entry off the list
-/// ([`RoomsRequest::Unlist`]). Unlike a [`JoinRequest`] it names no person
+/// invitation of their own there ([`RoomsRequest::Invite`] naming the
+/// entry), and the entry leaves the list once someone joins with it; or
+/// they take it off the list ([`RoomsRequest::Unlist`]). Whoever left it
+/// takes it off themselves with the secret they were handed
+/// ([`WAIT_LIST_REMOVAL_BYTES`]). Unlike a [`JoinRequest`] it names no person
 /// or device: it is not anyone to admit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitListEntry {
@@ -564,6 +629,8 @@ pub struct WaitListEntry {
     pub contact: String,
     /// When it was left.
     pub added_at_ns: u64,
+    /// When it was last invited, so nobody invites it twice.
+    pub invited_at_ns: Option<u64>,
 }
 
 #[cfg(test)]
@@ -582,7 +649,15 @@ mod tests {
     fn a_contact_is_one_email_address_however_it_was_typed() {
         assert_eq!(
             contact_address("  Ada@Example.ORG "),
-            Ok("ada@example.org".to_owned())
+            Ok("Ada@Example.ORG".to_owned())
+        );
+        assert_eq!(contact_key("Ada@Example.ORG"), "ada@example.org");
+        assert_eq!(mail_language("de-AT"), "de");
+        assert_eq!(mail_language("en-US"), "en");
+        assert_eq!(mail_language("fr"), "en");
+        assert_eq!(
+            contact_key(" ada@example.org"),
+            contact_key("ADA@example.org")
         );
         assert_eq!(
             contact_address("ada+tilo@mail.example.co.uk"),
