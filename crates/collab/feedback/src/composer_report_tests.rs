@@ -58,6 +58,8 @@ fn picked() -> PickedReport {
         build: None,
         path: "Chat[0]/Row[2]".into(),
         role: "ListItem".into(),
+        kind: None,
+        caption: String::new(),
         label: None,
         record: None,
         area: Area {

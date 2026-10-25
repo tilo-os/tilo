@@ -1166,6 +1166,46 @@ feedback-picker-picked = { $count ->
 }
 feedback-picker-continue = Continue
 feedback-picker-cancel = Cancel
+# What a picked part is called while picking and in the review: what it is,
+# then in which app ("Message in Chat", "The “Send message” button in Chat").
+feedback-part-in = { $what } in { $app }
+# A part the app names with its own words, by its role.
+feedback-part-named = The “{ $name }” { $role ->
+    [Button] button
+    [ToggleButton] button
+    [Link] link
+    [Tab] tab
+    [MenuItem] menu item
+    [Checkbox] checkbox
+    [Switch] switch
+    [TextInput] field
+    [MultilineTextInput] field
+    [Heading] heading
+   *[other] { $role }
+}
+# A part known only by its role, as assistive technology names it.
+feedback-part-role = { $role ->
+    [ListItem] A list item
+    [Row] A row
+    [Cell] A cell
+    [Button] A button
+    [ToggleButton] A button
+    [Link] A link
+    [Image] A picture
+    [TextInput] A field
+    [MultilineTextInput] A field
+    [StaticText] A text
+    [Paragraph] A paragraph
+    [Heading] A heading
+    [List] A list
+    [Group] A group
+    [Window] A window
+    [Toolbar] A toolbar
+    [Menu] A menu
+    [MenuItem] A menu item
+    [Tab] A tab
+   *[other] A part
+}
 
 # Following someone's view
 follow-label = Following { $person }

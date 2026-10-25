@@ -99,6 +99,7 @@ fn a_query_and_its_answer_read_back_as_they_were_written() {
         parts: vec![CapturedPart {
             path: "Window[0]/Row[0]".into(),
             role: None,
+            kind: None,
             label: None,
             texts: vec![CapturedText {
                 text: "Reply".into(),
@@ -111,6 +112,7 @@ fn a_query_and_its_answer_read_back_as_they_were_written() {
             at: 7,
             resource: "chat".into(),
             action: "send".into(),
+            label: None,
             done: true,
         }],
     };

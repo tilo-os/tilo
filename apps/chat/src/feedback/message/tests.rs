@@ -32,6 +32,7 @@ fn selection(app_name: &str, path: &str, role: &str) -> ReviewedSelection {
         build: None,
         path: path.into(),
         role: role.into(),
+        kind: None,
         record: None,
         label: None,
         texts: Vec::new(),
@@ -46,6 +47,7 @@ fn interaction(at: i64, action: &str, resource: &str, outcome: Outcome) -> Inter
         app: "so.tilo.files".into(),
         action: action.into(),
         resource: resource.into(),
+        label: (action == "save").then(|| "Save the file".into()),
         outcome,
     }
 }
@@ -70,14 +72,14 @@ fn picked(picture: bool) -> (Doc, Submission) {
                 (" clicks it", None),
             ],
         )),
-        ..selection("Files", "Toolbar[0]/Button[2]", "button")
+        ..selection("Files", "Toolbar[0]/Button[2]", "Button")
     };
     let row = ReviewedSelection {
         texts: vec![
             text(TextKind::Interface, &[("Modified", None)]),
             text(TextKind::Content, &[("", Some(Hidden::Personal))]),
         ],
-        ..selection("", "List[0]/Row[4]", "row")
+        ..selection("", "List[0]/Row[4]", "Row")
     };
     let submission = Submission {
         id: "0123456789abcdef0123456789abcdef".into(),
@@ -132,12 +134,12 @@ fn a_picked_report_reads_out_its_picks_notes_actions_and_timings() {
     assert_eq!(
         lines,
         [
-            "1. Files: Save (button)",
+            "1. The \u{201C}Save\u{201D} button in Files",
             "\u{201C}Nothing happens when \u{2039}name\u{203A} clicks it\u{201D}",
-            "2. so.tilo.files: row (row)",
+            "2. A row in so.tilo.files",
             "Modified",
             "\u{2039}personal\u{203A}",
-            "Just before: open on files.folder, save on files.file (refused)",
+            "Just before: open on files.folder, Save the file (refused)",
             "Slow: 2 of the last 4 frames over 16 ms, the slowest 52 ms",
         ]
     );
@@ -203,7 +205,7 @@ fn a_bot_reading_the_room_reads_the_report_as_its_message() {
         value["text"]
             .as_str()
             .unwrap()
-            .starts_with("1. Files: Save (button)")
+            .starts_with("1. The \u{201C}Save\u{201D} button in Files")
     );
     let latest =
         crate::effects::read_room(&chat, &none, None, Some(&submission.destination.channel));

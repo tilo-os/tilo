@@ -1185,6 +1185,42 @@ feedback-picker-picked = { $count ->
 }
 feedback-picker-continue = Weiter
 feedback-picker-cancel = Abbrechen
+feedback-part-in = { $what } in { $app }
+feedback-part-named = „{ $name }“ ({ $role ->
+    [Button] Schaltfläche
+    [ToggleButton] Schaltfläche
+    [Link] Link
+    [Tab] Tab
+    [MenuItem] Menüeintrag
+    [Checkbox] Kästchen
+    [Switch] Schalter
+    [TextInput] Feld
+    [MultilineTextInput] Feld
+    [Heading] Überschrift
+   *[other] { $role }
+})
+feedback-part-role = { $role ->
+    [ListItem] Ein Listeneintrag
+    [Row] Eine Zeile
+    [Cell] Eine Zelle
+    [Button] Eine Schaltfläche
+    [ToggleButton] Eine Schaltfläche
+    [Link] Ein Link
+    [Image] Ein Bild
+    [TextInput] Ein Feld
+    [MultilineTextInput] Ein Feld
+    [StaticText] Ein Text
+    [Paragraph] Ein Absatz
+    [Heading] Eine Überschrift
+    [List] Eine Liste
+    [Group] Eine Gruppe
+    [Window] Ein Fenster
+    [Toolbar] Eine Werkzeugleiste
+    [Menu] Ein Menü
+    [MenuItem] Ein Menüeintrag
+    [Tab] Ein Tab
+   *[other] Ein Teil
+}
 
 # Der Ansicht einer Person folgen
 follow-label = Du folgst { $person }
