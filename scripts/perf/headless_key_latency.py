@@ -144,11 +144,11 @@ def wait_client_ready(proc: subprocess.Popen, timeout: float) -> str:
     """Bound the complete readiness line, including a client that writes only a prefix."""
     deadline = time.monotonic() + timeout
     data = b""
+    reader = proc.stdout
     # The descriptor, read as bytes, rather than the text stream: the line is
     # validated as bytes below, and a buffered reader could hold a line this
-    # loop still waits for. Registered once and asked again before every read:
-    # the wait is level triggered, so a line that was already complete before
-    # the first wait is seen at once instead of after an edge that never comes.
+    # loop still waits for. `os.read` would block on a descriptor whose reader
+    # already holds the bytes, so the read waits for the line, not the pipe.
     fd = proc.stdout.fileno()
     with selectors.DefaultSelector() as selector:
         selector.register(fd, selectors.EVENT_READ)
@@ -156,7 +156,10 @@ def wait_client_ready(proc: subprocess.Popen, timeout: float) -> str:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not selector.select(remaining):
                 raise RuntimeError("latency client readiness timed out")
-            chunk = os.read(fd, 4096)
+            try:
+                chunk = reader.read1(4096)
+            except BlockingIOError:
+                continue
             if not chunk:
                 raise RuntimeError(f"latency client exited before readiness: {data!r}")
             data += chunk
