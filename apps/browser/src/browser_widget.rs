@@ -7515,6 +7515,71 @@ mod tests {
             );
         }
 
+        // Phase `pointer_gestures_reach_the_page_as_pointer_input`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            for (id, args, expected) in [
+                (
+                    "hover-page",
+                    serde_json::json!({"element": "d1e4"}),
+                    PageRequest::Hover {
+                        element: Some("d1e4".into()),
+                        point: None,
+                    },
+                ),
+                (
+                    "drag-page",
+                    serde_json::json!({"from": "d1e4", "to": "d1e6"}),
+                    PageRequest::Drag {
+                        from: Some("d1e4".into()),
+                        from_point: None,
+                        to: Some("d1e6".into()),
+                        to_point: None,
+                        // The effect's default: evenly spaced moves.
+                        steps: 8,
+                    },
+                ),
+                (
+                    "pointer-path",
+                    serde_json::json!({"element": "d1e4", "points": [[1.0, 2.0], [3.0, 4.0]]}),
+                    PageRequest::Path {
+                        element: Some("d1e4".into()),
+                        points: vec![(1.0, 2.0), (3.0, 4.0)],
+                    },
+                ),
+            ] {
+                let action = page_action(&widget, &doc, id);
+                assert!(action.contract.validate_declaration().is_empty(), "{id}");
+                assert!(action.contract.is_programmatic(), "{id}");
+                let invocation = start(&mut widget, &mut doc, &root, id, &args)
+                    .unwrap_or_else(|error| panic!("{id}: {error}"));
+                widget.sync(&doc, &root);
+                assert_eq!(
+                    page_requests(&engine).last(),
+                    Some(&expected),
+                    "{id} asks the page for its own pointer gesture"
+                );
+                assert!(matches!(
+                    widget.poll_invocation(invocation),
+                    Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+                ));
+            }
+            // A gesture names where it goes; half a gesture is refused.
+            for (id, args) in [
+                ("hover-page", serde_json::json!({})),
+                ("drag-page", serde_json::json!({"from": "d1e4"})),
+                (
+                    "pointer-path",
+                    serde_json::json!({"element": "d1e4", "points": [[1.0, 2.0]]}),
+                ),
+            ] {
+                assert!(
+                    start(&mut widget, &mut doc, &root, id, &args).is_err(),
+                    "{id}"
+                );
+            }
+        }
+
         // Phase `read_returns_the_engine_outline_in_the_declared_shape`.
         {
             let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
