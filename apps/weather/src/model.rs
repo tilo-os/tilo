@@ -289,6 +289,12 @@ impl WeatherSnapshot {
     pub fn wind_in(&self, value: f64, units: Units) -> f64 {
         crate::units::convert_wind(value, self.source_units.wind, units.wind)
     }
+
+    /// The precipitation depth as a reading in the person's unit, with that
+    /// unit's decimals (`2.4` millimetres, `0.09` inches).
+    pub fn precip_reading(&self, value: f64, units: Units) -> String {
+        units.precip_reading(value, self.source_units.precip)
+    }
 }
 
 /// The top-level application model: the saved locations, which one is

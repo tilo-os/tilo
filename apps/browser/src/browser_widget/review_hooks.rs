@@ -67,7 +67,7 @@ impl BrowserWidget {
         let mut index = omnibox::HistoryIndex::default();
         index.rebuild(&entries);
         let matches = index.search(typed, omnibox::MAX_ROWS, 10);
-        let rows = omnibox::build_rows(typed, &matches, &[], "", omnibox::MAX_ROWS);
+        let rows = omnibox::build_rows(typed, &matches, &[], &[], "", omnibox::MAX_ROWS);
         self.suggestions
             .set_search_engine(&crate::settings::search_engine_name(
                 &self.settings.search_engine,

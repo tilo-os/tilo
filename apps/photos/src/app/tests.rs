@@ -164,6 +164,112 @@ fn press_bar(app: &mut PhotosApp, name: &str) -> bool {
 }
 
 #[test]
+fn the_open_photograph_can_be_presented_slid_and_zoomed() {
+    eprintln!("phase presenting_is_the_window_and_the_slide_show_advances_the_set");
+    {
+        let mut app = test_app();
+        let mut doc = crate::test_doc::new_doc();
+        stage(&mut app, &mut doc, "opened");
+        sync(&mut app, &mut doc);
+        assert!(!app.library_mode, "a photograph is open");
+        assert!(app.viewer.is_some(), "the photograph has a viewer");
+
+        // Full screen is the window's, and the app asks for it.
+        assert_eq!(
+            ui::widget::FullscreenProvider::fullscreen_intent(&app),
+            Some(false)
+        );
+        app.toggle_presentation();
+        assert_eq!(
+            ui::widget::FullscreenProvider::fullscreen_intent(&app),
+            Some(true),
+            "presenting asks the window for the screen"
+        );
+        // Leaving full screen any other way ends the presentation.
+        ui::widget::FullscreenProvider::on_fullscreen_changed(&mut app, false);
+        assert!(!app.presenting);
+        assert_eq!(
+            ui::widget::FullscreenProvider::fullscreen_intent(&app),
+            Some(false)
+        );
+    }
+
+    eprintln!("phase the_slide_show_advances_wraps_and_sets_a_wake");
+    {
+        let mut app = test_app();
+        let mut doc = crate::test_doc::new_doc();
+        stage(&mut app, &mut doc, "library");
+        sync(&mut app, &mut doc);
+        let order = app.photo_order();
+        assert!(
+            order.len() >= 2,
+            "the sample library has several photographs"
+        );
+        let first = order[0].clone();
+        app.show_photo(&first);
+        sync(&mut app, &mut doc);
+
+        app.toggle_slide_show();
+        assert!(app.slide_show_running(), "the slide show runs");
+        assert!(app.presenting, "a slide show is a presentation");
+        assert!(
+            Widget::next_wake_deadline(&app).is_some(),
+            "the window sleeps until the next photograph is due"
+        );
+
+        // Stepping goes to the next photograph in the chronology, and wraps.
+        assert!(app.step_photo(true));
+        assert_eq!(app.open_photo_id(), Some(order[1].as_str()));
+        app.show_photo(&order[order.len() - 1]);
+        assert!(
+            app.step_photo(true),
+            "the last photograph wraps to the first"
+        );
+        assert_eq!(app.open_photo_id(), Some(order[0].as_str()));
+        assert!(app.step_photo(false));
+        assert_eq!(
+            app.open_photo_id(),
+            Some(order[order.len() - 1].as_str()),
+            "and the first wraps back to the last"
+        );
+        app.toggle_slide_show();
+        assert!(!app.slide_show_running(), "the same control stops it");
+        assert!(
+            Widget::next_wake_deadline(&app).is_none() || app.notice_said.deadline().is_some(),
+            "a stopped slide show asks for no wake of its own"
+        );
+    }
+
+    eprintln!("phase the_picture_zooms_rather_than_the_window_and_never_in_the_library");
+    {
+        use ui::content_zoom::{ContentZoom, ZoomStep};
+        let mut app = test_app();
+        let mut doc = crate::test_doc::new_doc();
+        stage(&mut app, &mut doc, "opened");
+        sync(&mut app, &mut doc);
+        let before = app.viewer.as_ref().expect("a viewer").zoom();
+        let factor = app
+            .zoom_content(ZoomStep::In)
+            .expect("the photograph takes the gesture");
+        assert!(factor > before, "the picture grew");
+        assert_eq!(
+            app.viewer.as_ref().expect("a viewer").zoom(),
+            factor,
+            "the surface shows the factor it answered"
+        );
+        let reset = app
+            .zoom_content(ZoomStep::Reset)
+            .expect("reset is the picture's own size");
+        assert!((reset - 1.0).abs() < 1e-6);
+        assert_eq!(app.viewer.as_ref().expect("a viewer").zoom(), 1.0);
+
+        // In the library the gesture belongs to the window, not the grid.
+        app.show_library();
+        assert_eq!(app.zoom_content(ZoomStep::In), None);
+    }
+}
+
+#[test]
 fn timeline_layout_stays_legible_justified_and_virtually_bounded() {
     eprintln!("phase justified_timeline_preserves_aspects_and_never_crosses_a_day");
     {

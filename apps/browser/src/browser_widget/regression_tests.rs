@@ -659,3 +659,159 @@ fn a_page_action_while_the_page_waits_on_its_question_answers_at_once() {
         "answered, the page takes the action"
     );
 }
+
+/// The pages the person saved are what the address bar suggests too:
+/// typing what a bookmark says recalls it, marked as a saved page.
+#[test]
+fn typing_in_the_address_bar_suggests_saved_pages() {
+    let mut w = BrowserWidget::new_headless();
+    w.present_state(&tests::bookmarked(&[(
+        "https://reports.example.test/annual",
+        "Annual report",
+    )]));
+    let (doc, root) = tests::synced(&mut w);
+    let mut tree = TaffyTree::new();
+    w.build_layout(
+        &mut tree,
+        &Theme::dark(),
+        &mut std::collections::HashMap::default(),
+    );
+    assert!(w.focus_address_input());
+    w.address.set("annual".into());
+    w.sync(&doc, &root);
+    let rows = w.suggestions.items().to_vec();
+    let saved = rows
+        .iter()
+        .find(|row| row.kind == omnibox::RowKind::Bookmark)
+        .unwrap_or_else(|| panic!("the saved page is suggested: {rows:?}"));
+    assert_eq!(saved.title, "Annual report");
+    assert_eq!(saved.detail, "reports.example.test/annual");
+    assert_eq!(saved.url, "https://reports.example.test/annual");
+    // Choosing it opens the page it names.
+    assert_eq!(
+        row_destination(saved, &w.settings.search_engine),
+        "https://reports.example.test/annual"
+    );
+
+    // A bookmark saved in the person's own library is suggested as well.
+    let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
+    let personal = app
+        .person::<crate::personal_bookmarks::PersonalBookmarks>()
+        .expect("a test profile keeps person records");
+    personal
+        .invoke(
+            &crate::personal_bookmarks::PersonalBookmarks::ADD_BOOKMARK.with((
+                "https://person.example.test/notes".to_owned(),
+                "Notes of the year".to_owned(),
+            )),
+        )
+        .unwrap();
+    let mut own = BrowserWidget::new_headless();
+    own.attach_personal_bookmarks(personal);
+    let (doc, root) = tests::synced(&mut own);
+    let mut tree = TaffyTree::new();
+    own.build_layout(
+        &mut tree,
+        &Theme::dark(),
+        &mut std::collections::HashMap::default(),
+    );
+    assert!(own.focus_address_input());
+    own.address.set("notes".into());
+    own.sync(&doc, &root);
+    let rows = own.suggestions.items().to_vec();
+    assert!(
+        rows.iter().any(|row| row.kind == omnibox::RowKind::Bookmark
+            && row.url == "https://person.example.test/notes"),
+        "the person's own bookmark is suggested: {rows:?}"
+    );
+}
+
+/// The Library's history rows forget one page each, through the same
+/// `forget` verb that clears all of them: the rest stay.
+#[test]
+fn a_history_row_forgets_only_its_own_page() {
+    let (_app, record) = tests::person_history();
+    for (url, title) in [
+        ("https://one.test/", "One"),
+        ("https://two.test/", "Two"),
+        ("https://three.test/", "Three"),
+    ] {
+        record
+            .invoke(&crate::history::BrowsingHistory::VISIT.with(
+                crate::history::browsing_history::Visit {
+                    url: url.into(),
+                    title: title.into(),
+                    at: 10,
+                },
+            ))
+            .unwrap();
+    }
+    let mut w = BrowserWidget::new_headless();
+    w.attach_history(record.clone());
+    w.show_library = true;
+    w.library_section = LibrarySection::History;
+    let (doc, root) = tests::synced(&mut w);
+    architecture_tests::compose(&mut w);
+
+    let forgotten = "https://two.test/";
+    let id = history_resource_id(forgotten);
+    // The row still opens its page, and now offers its own removal.
+    architecture_tests::assert_action_binding(&w, &format!("{id}.open"), &id, "open");
+    architecture_tests::assert_action_binding(&w, &format!("{id}.forget"), &id, "forget-visit");
+
+    // What its press runs is the row's own published action.
+    let page = w.resource_by_id(&id).expect("the history page is a row");
+    let forget = page
+        .actions
+        .iter()
+        .find(|action| action.id == "forget-visit")
+        .expect("the row offers forgetting it");
+    let encoded = forget.build_json(&serde_json::Map::new()).unwrap();
+    assert!(
+        matches!(
+            w.admit(
+                ui::tilo_actions::InvocationId::new(),
+                tests::effect_operation(&encoded.payload),
+            )
+            .map(Some)
+            .unwrap(),
+            Some(ui::framework::Effected::Done(_))
+        ),
+        "forgetting one page answers at once"
+    );
+    w.sync(&doc, &root);
+
+    let shown: Vec<&str> = w
+        .history
+        .entries()
+        .iter()
+        .map(|entry| entry.url.as_str())
+        .collect();
+    assert!(
+        !shown.contains(&forgotten),
+        "the forgotten page is gone from the list: {shown:?}"
+    );
+    for kept in ["https://one.test/", "https://three.test/"] {
+        assert!(shown.contains(&kept), "{kept} stays: {shown:?}");
+    }
+    assert!(
+        record.with(|history| !history.visits.contains_key(forgotten)
+            && history.visits.contains_key("https://one.test/")
+            && history.visits.contains_key("https://three.test/")),
+        "the record forgets exactly that page"
+    );
+
+    // The list the person sees agrees: one row gone, the others there.
+    architecture_tests::compose(&mut w);
+    assert!(
+        w.find_rect(&format!("{id}.open")).is_none(),
+        "no row is left for the forgotten page"
+    );
+    for kept in ["https://one.test/", "https://three.test/"] {
+        assert!(
+            w.find_rect(&format!("{}.open", history_resource_id(kept)))
+                .is_some(),
+            "{kept} keeps its row"
+        );
+    }
+}

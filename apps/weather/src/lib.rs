@@ -7,7 +7,7 @@
 //! ## Architecture
 //! - [`model`] — pure data (locations, snapshots, units), no IO.
 //! - [`wxcode`] — WMO weather-code → condition/icon family mapping.
-//! - [`units`] — °C/°F + km/h/mph conversions.
+//! - [`units`] — °C/°F, km/h/mph and mm/in conversions.
 //! - [`region`] — read-only consumer of the shared Settings store, from which
 //!   the display units are derived (Settings owns the toggle, not this app).
 //! - [`api`] — Open-Meteo URL construction + JSON parsing (pure/testable).
@@ -63,6 +63,8 @@ pub mod api;
 pub mod app;
 pub mod chart;
 pub mod core;
+pub(crate) mod freshness;
+pub mod i18n;
 pub mod icon;
 pub mod interaction;
 pub mod locales;
