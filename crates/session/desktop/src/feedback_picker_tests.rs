@@ -237,10 +237,17 @@ fn a_click_fades_the_dim_in_and_then_asks_for_no_frames() {
 }
 
 #[test]
-fn a_caption_names_the_app_and_the_role_in_words() {
+fn a_caption_says_what_the_part_is_in_the_apps_words() {
     assert_eq!(
-        PickTarget::caption("Chat", "ListItem"),
-        "Chat \u{b7} List item"
+        PickTarget::caption("Chat", "ListItem", Some("Message"), None),
+        "Message in Chat"
     );
-    assert_eq!(PickTarget::caption("Tilo", "Button"), "Tilo \u{b7} Button");
+    assert_eq!(
+        PickTarget::caption("Chat", "Button", None, Some("Send message")),
+        "The \u{201c}Send message\u{201d} button in Chat"
+    );
+    assert_eq!(
+        PickTarget::caption("Tilo", "ListItem", None, None),
+        "A list item in Tilo"
+    );
 }

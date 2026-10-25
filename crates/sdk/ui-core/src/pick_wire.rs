@@ -65,6 +65,12 @@ pub struct PickedPart {
     pub path: String,
     /// Its role as assistive technology names it (`Button`, `ListItem`).
     pub role: String,
+    /// What kind of thing it is in the app's own words ("Message").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Its name, when that is the app's own copy ("Send message").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<String>,
     pub rect: [f64; 4],
 }
 
@@ -75,6 +81,9 @@ pub struct CapturedPart {
     /// `None` for a widget that names no semantics of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// What kind of thing it is in the app's own words ("Message").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<CapturedText>,
     pub texts: Vec<CapturedText>,
@@ -100,6 +109,9 @@ pub struct RecentAction {
     pub at: i64,
     pub resource: String,
     pub action: String,
+    /// The action's label as the app words it ("Post a message").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub done: bool,
 }
 
@@ -118,6 +130,8 @@ pub fn rect_of(coords: [f64; 4]) -> Option<Rect> {
 fn part(target: crate::pick::PickTarget) -> PickedPart {
     PickedPart {
         role: target.role_name(),
+        kind: target.kind.clone(),
+        copy: target.name.clone().filter(|_| target.interface),
         path: target.path,
         rect: rect_array(target.rect),
     }
@@ -169,6 +183,7 @@ pub fn answer(root: &dyn Widget, query: &PickQuery) -> PickAnswer {
                     Some(CapturedPart {
                         path: asked.path.clone(),
                         role: captured.role.map(crate::pick::role_name),
+                        kind: captured.kind,
                         label: captured.label.map(text),
                         texts: captured.texts.into_iter().map(text).collect(),
                         masked: crate::pick::sensitive_areas(root, &asked.path, whole)
@@ -187,6 +202,7 @@ pub fn answer(root: &dyn Widget, query: &PickQuery) -> PickAnswer {
                     at: invocation.at,
                     resource: invocation.resource,
                     action: invocation.action,
+                    label: invocation.label,
                     done: invocation.done,
                 })
                 .collect();

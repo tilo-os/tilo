@@ -149,6 +149,8 @@ fn part(path: &str, role: &str, rect: [f64; 4]) -> PickedPart {
     PickedPart {
         path: path.into(),
         role: role.into(),
+        kind: None,
+        copy: None,
         rect,
     }
 }
@@ -234,6 +236,7 @@ fn a_window_names_what_is_under_the_pointer_and_a_click_reports_it_with_its_text
         parts: vec![CapturedPart {
             path: "Root[0]/List[0]/Row[1]".into(),
             role: Some("ListItem".into()),
+            kind: None,
             label: None,
             texts: vec![
                 CapturedText {
@@ -253,6 +256,7 @@ fn a_window_names_what_is_under_the_pointer_and_a_click_reports_it_with_its_text
             at: 5,
             resource: "chat.message".into(),
             action: "send".into(),
+            label: Some("Send message".into()),
             done: true,
         }],
     };
