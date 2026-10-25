@@ -66,6 +66,10 @@ pub(super) struct Composer {
     card: Rect,
     pub(super) field: Rect,
     send: Rect,
+    /// What assistive technology reads of the box this frame: the
+    /// conversation's last lines where they are, and whom the field writes to.
+    lines: Option<(Rect, String)>,
+    field_name: String,
 }
 
 /// The box's height in `theme`: its lines and its field, or, where
@@ -127,6 +131,34 @@ impl Composer {
     pub(super) fn focus(&mut self) {
         self.focused = true;
         self.selection = Selection::collapsed(self.text.len());
+    }
+
+    /// What assistive technology reads of the box: the conversation's last
+    /// lines, and the field with whom it writes to and what is typed.
+    pub(super) fn accessibility(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+        let mut nodes = Vec::new();
+        if self.person.is_none() {
+            return nodes;
+        }
+        if let Some((rect, spoken)) = &self.lines {
+            nodes.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(spoken.as_str())
+                    .with_bounds(*rect)
+                    .with_semantic_key("people-peek-messages"),
+            );
+        }
+        if self.field.area() > 0.0 {
+            nodes.push(
+                AccessNode::new(Role::TextInput)
+                    .with_name(self.field_name.as_str())
+                    .with_value(self.text.as_str())
+                    .with_bounds(self.field)
+                    .with_semantic_key("people-peek-message-field"),
+            );
+        }
+        nodes
     }
 
     /// Where Send is, while there is something to send.
@@ -200,12 +232,17 @@ impl Composer {
         theme: &Theme,
         model: &ComposerModel<'_>,
     ) {
+        self.lines = None;
         if model.peek.area() <= 0.0 {
             self.card = Rect::ZERO;
             self.field = Rect::ZERO;
             self.send = Rect::ZERO;
             return;
         }
+        self.field_name = t_args(
+            "people-overlay-message-placeholder",
+            &[("name", model.name.to_owned().into())],
+        );
         let spacing = &theme.tokens.spacing;
         let pad = f64::from(spacing.s3);
         let gap = super::peek::gap(theme);
@@ -241,10 +278,27 @@ impl Composer {
         );
         Self::paint_bubble(scene, placed, theme, card, below, gap);
         let inner = card.inset(-pad);
+        let field_h = FieldFace::height(ControlSize::Regular, theme);
         if model.unavailable.is_none() {
             Self::paint_lines(scene, placed, text, theme, inner, model.lines, model.name);
+            if !model.lines.is_empty() {
+                let spoken = model
+                    .lines
+                    .iter()
+                    .map(|line| {
+                        let who = if line.mine {
+                            crate::i18n::t("people-overlay-message-you")
+                        } else {
+                            model.name.to_owned()
+                        };
+                        format!("{who}: {}", line.text)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let area = Rect::new(inner.x0, inner.y0, inner.x1, inner.y1 - field_h);
+                self.lines = Some((area, spoken));
+            }
         }
-        let field_h = FieldFace::height(ControlSize::Regular, theme);
         let field = Rect::new(inner.x0, inner.y1 - field_h, inner.x1, inner.y1);
         match model.unavailable {
             Some(reason) => {
