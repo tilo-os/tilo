@@ -26,6 +26,7 @@ def load(name: str, path: Path):
 
 pieces = load("os_pieces_under_test", REPO / "tools/ci/os/pieces.py")
 layers = load("oci_layers_under_test", REPO / "tools/ci/os/oci_layers.py")
+os_toml = load("os_toml_under_test", REPO / "tools/ci/os/os_toml.py")
 
 
 class PiecesTests(unittest.TestCase):
@@ -110,6 +111,41 @@ class OciLayersTests(unittest.TestCase):
                                      str(root / "inputs.json")], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("is not built on", result.stderr)
+
+
+class ScriptKeyTests(unittest.TestCase):
+    """A layer is keyed by the scripts its tools run, not by those their comments mention."""
+
+    def scripts(self, files: dict[str, str], seed: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            for name, text in files.items():
+                (Path(temporary) / name).parent.mkdir(parents=True, exist_ok=True)
+                (Path(temporary) / name).write_text(text)
+            repo, os_toml.REPO = os_toml.REPO, temporary
+            try:
+                return os_toml.scripts_of([seed])
+            finally:
+                os_toml.REPO = repo
+
+    def test_code_names_a_script_and_a_comment_does_not(self) -> None:
+        files = {name: "" for name in ("os/dev/run.sh", "os/dev/sourced.sh", "os/dev/arg.sh", "os/dev/vm.sh",
+                                       "os/tests/gate.sh", "os/dev/helper.py", "os/dev/doc.sh")}
+        files["os/dev/build.sh"] = (
+            "# boots with os/dev/vm.sh\n"
+            'source "$(dirname "${BASH_SOURCE[0]}")/sourced.sh"\n'
+            'bash "$TILO_OS_DIR/dev/run.sh" "#x"  # then os/tests/gate.sh\n'
+            'check "os/dev/arg.sh" ${#items[@]}\n'
+            "python3 os/dev/tool.py\n")
+        files["os/dev/tool.py"] = ('"""Like os/dev/doc.sh."""\n'
+                                   'HELPER = Path(__file__).with_name("helper.py")  # not os/dev/doc.sh\n')
+        self.assertEqual(self.scripts(files, "os/dev/build.sh"),
+                         ["os/dev/arg.sh", "os/dev/helper.py", "os/dev/run.sh", "os/dev/sourced.sh", "os/dev/tool.py"])
+
+    def test_no_image_layer_is_keyed_by_the_vm_tools(self) -> None:
+        keyed = set(os_toml.scripts_of(os_toml.TOOLS))
+        self.assertIn("os/dev/_common.sh", keyed)
+        self.assertFalse(keyed & {"os/dev/vm.sh", "os/tests/boot_performance_gate.sh"})
+
 
 if __name__ == "__main__":
     unittest.main()

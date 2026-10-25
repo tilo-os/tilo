@@ -18,10 +18,12 @@ the system layer and what is above it, a changed crate the compile and the layer
 the binaries up, and neither ever the package transaction.
 """
 
+import io
 import json
 import os
 import re
 import sys
+import tokenize
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -48,27 +50,61 @@ IMAGE_SIZE_TOOLS = ["tools/ci/os/image-size.sh", "tools/perf/image_size.py",
                     "os/tests/image_size_budget.py", "os/image-size-budget.toml"]
 
 
-def scripts_of(paths, depth=3, skip=()):
+# A script names another by its repository path, or one beside it by its bare name: quoted,
+# a word, or after its own directory ("$(dirname "${BASH_SOURCE[0]}")/x.sh", "$HERE/x.sh").
+SCRIPT = re.compile(r"(?:\$TILO_OS_DIR|\$\{TILO_OS_DIR\}|os)/((?:dev|tests|scripts)/[A-Za-z0-9_.-]+\.(?:sh|py))")
+SIBLING = re.compile(r"""(?:^|[\s"'=(]|(?:\)|\}|\$\w+)/)([A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:sh|py))\b""", re.M)
+
+
+def without_comments(path, text):
+    """A file's text without its comments, so a script named only in prose keys nothing. Python's
+    comments and docstrings go by its tokenizer; every other file's (shell, TOML, env,
+    Containerfile) from a `#` that starts a word outside quotes to the end of the line."""
+    if path.endswith(".py"):
+        toks = [t for t in tokenize.generate_tokens(io.StringIO(text).readline)
+                if t.type not in (tokenize.COMMENT, tokenize.NL)]
+        starts = (tokenize.INDENT, tokenize.DEDENT, tokenize.NEWLINE)
+        return " ".join(t.string for i, t in enumerate(toks)
+                        if not (t.type == tokenize.STRING and (i == 0 or toks[i - 1].type in starts)
+                                and i + 1 < len(toks) and toks[i + 1].type == tokenize.NEWLINE))
+    lines = []
+    for line in text.splitlines():
+        quote, escaped, cut = None, False, len(line)
+        for i, c in enumerate(line):
+            if escaped:
+                escaped = False
+            elif c == "\\" and quote != "'":
+                escaped = True
+            elif quote:
+                quote = None if c == quote else quote
+            elif c in "'\"":
+                quote = c
+            elif c == "#" and (i == 0 or line[i - 1].isspace()):
+                cut = i
+                break
+        lines.append(line[:cut])
+    return "\n".join(lines)
+
+
+def scripts_of(paths, skip=()):
     """The os/ scripts the given scripts run, transitively: build-image.sh resolves and
     verifies every pin through them, so they key every layer. A script in `skip` is left out
-    with what only it runs."""
-    found, todo = set(skip), list(paths)
-    pat = re.compile(r"(?:\$TILO_OS_DIR|\$\{TILO_OS_DIR\}|os)/((?:dev|tests|scripts)/[A-Za-z0-9_.-]+\.(?:sh|py))")
-    for _ in range(depth):
-        nxt = []
-        for p in todo:
-            full = os.path.join(REPO, p)
-            if not os.path.isfile(full):
-                continue
-            with open(full, errors="replace") as f:
-                text = f.read()
-            for m in pat.finditer(text):
-                q = "os/" + m.group(1)
-                if q not in found and os.path.isfile(os.path.join(REPO, q)):
-                    found.add(q)
-                    nxt.append(q)
-        todo = nxt
-    return sorted(found - set(skip))
+    with what only it runs. Only code names a script; a comment naming one keys nothing."""
+    found, todo = set(skip) | set(paths), list(paths)
+    while todo:
+        p = todo.pop()
+        full = os.path.join(REPO, p)
+        if not os.path.isfile(full):
+            continue
+        with open(full, errors="replace") as f:
+            text = without_comments(p, f.read())
+        named = ["os/" + m.group(1) for m in SCRIPT.finditer(text)]
+        named += [os.path.join(os.path.dirname(p), m.group(1)) for m in SIBLING.finditer(text)]
+        for q in named:
+            if q not in found and os.path.isfile(os.path.join(REPO, q)):
+                found.add(q)
+                todo.append(q)
+    return sorted(found - set(skip) - set(paths))
 
 
 def kernel_tools():
