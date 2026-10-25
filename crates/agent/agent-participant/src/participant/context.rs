@@ -62,7 +62,12 @@ impl AgentParticipant {
         let mut known = self.known_titled(&apps);
         // A follow-up is about the records the request named too: its own
         // text ("check the work", "now export it") names none of them.
-        let naming = naming_text(task, request.as_deref());
+        let mut naming = naming_text(task, request.as_deref());
+        // An item of a coordinated task is about the records its request
+        // names, as one agent planning the whole would be.
+        if let Some(whole) = self.item_request() {
+            naming = naming_text(&naming, Some(&whole));
+        }
         let mut about = self.open_named(&naming, &apps, &known);
         about.extend(self.open_new(&naming, &apps, &known));
         known.retain(|(route, _)| !self.apps.contains_key(route));
