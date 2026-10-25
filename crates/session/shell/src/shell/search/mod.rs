@@ -20,6 +20,7 @@ pub mod providers;
 pub mod recent_places;
 #[cfg(test)]
 mod relevance_tests;
+mod timing;
 pub mod usage;
 pub mod visibility;
 
@@ -1414,15 +1415,18 @@ impl SearchRegistry {
             }
             out.push_str(provider.id());
             out.push('\0');
-            out.push_str(&provider.search_revision(&SearchContext {
-                query_scope: Some(args.scope),
-                include_programmatic: false,
-                needle: args.needle,
-                wanted: args.wanted_kinds,
-                chrome: args.chrome,
-                doc: args.doc,
-                doc_root: args.doc_root,
-            }));
+            {
+                let _cost = timing::Cost::new("search/provider-revision", provider.id());
+                out.push_str(&provider.search_revision(&SearchContext {
+                    query_scope: Some(args.scope),
+                    include_programmatic: false,
+                    needle: args.needle,
+                    wanted: args.wanted_kinds,
+                    chrome: args.chrome,
+                    doc: args.doc,
+                    doc_root: args.doc_root,
+                }));
+            }
             out.push('\0');
         }
         out
@@ -1519,19 +1523,22 @@ impl SearchRegistry {
                         .max_bytes
                         .min(HEADLESS_MAX_BYTES.saturating_sub(bytes));
                 }
-                let page = source.provider.query_page(
-                    SearchContext {
-                        query_scope: Some(args.scope),
-                        include_programmatic,
-                        needle: args.needle,
-                        wanted: &source.wanted,
-                        chrome: args.chrome,
-                        doc: args.doc,
-                        doc_root: args.doc_root,
-                    },
-                    source.cursor.as_ref(),
-                    budget,
-                );
+                let page = {
+                    let _cost = timing::Cost::new("search/provider-query", source.provider.id());
+                    source.provider.query_page(
+                        SearchContext {
+                            query_scope: Some(args.scope),
+                            include_programmatic,
+                            needle: args.needle,
+                            wanted: &source.wanted,
+                            chrome: args.chrome,
+                            doc: args.doc,
+                            doc_root: args.doc_root,
+                        },
+                        source.cursor.as_ref(),
+                        budget,
+                    )
+                };
                 pages = pages.saturating_add(1);
                 advanced = true;
                 source.note_page(&page);

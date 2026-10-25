@@ -587,6 +587,7 @@ suites = [
   "scripts/perf/browser_qualification.test.mjs",
   "scripts/perf/native_stream_qualification.test.mjs",
   "scripts/perf/code_editor_effects_test.py",
+  "scripts/perf/desktop_chrome_bench_test.py",
   "scripts/perf/device_latency_bench_test.py",
   "scripts/perf/device_notes_latency_test.py",
   "scripts/perf/device_notes_trace_test.py",

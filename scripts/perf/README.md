@@ -102,6 +102,27 @@ executable stand-alone; the higher-level flow is described below.
   in a workspace of its own. t's performance run runs it in the `agent`
   group.
 
+### Windowed desktop input
+
+`desktop_chrome_bench.py` starts a private windowed compositor inside headless
+Cage, opens search, then measures pointer bursts and visible query edits. It
+checks that each edit was consumed and keeps the existing frame trace alongside
+its JSON report. It never drives or captures the user's desktop.
+
+```bash
+cp --reflink=auto target/debug/shell target/shell-before
+# Make the change and rebuild shell, then compare on the same GPU and dimensions:
+python3 scripts/perf/desktop_chrome_bench.py --shell-bin target/shell-before --label before
+python3 scripts/perf/desktop_chrome_bench.py --shell-bin target/debug/shell --label after
+```
+
+The reported round trips include control-socket and compositor-loop work, not
+physical keyboard-to-panel latency. Use repeated runs; inspect the frame trace
+rather than attributing every tail sample to rendering. `--trace-search` also
+records provider revision/query costs, without query or resource contents, to
+identify work before rendering. Results refuse an already-used label. Cage and
+a debug or `dev-overrides` shell build are required.
+
 ## Optimise (three-step PGO + optional BOLT)
 
 1. `pgo-instrument.sh` — build shell + terminal + file-explorer +

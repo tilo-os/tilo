@@ -43,6 +43,7 @@ impl CapnpBrokerState {
             .ok_or(ActionHostError::UnknownAction)?;
         if query.max_results != 0
             || query.provider.is_some()
+            || query.app_id.is_some()
             || query.view_resource.is_some()
             || query.parent_resource.is_some()
             || !query.needle.is_empty()
@@ -81,6 +82,19 @@ impl CapnpBrokerState {
         root: &ActionDirectoryRoot,
         query: &CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        // A directory root publishes one application's rows, so a query for
+        // another application is answered empty without asking it: nothing
+        // it holds could match. The caller's room was checked before here.
+        if query
+            .app_id
+            .as_deref()
+            .is_some_and(|app| app != root.app_id.as_str())
+        {
+            return Pending::ready(Ok(CataloguePage {
+                exhausted: true,
+                ..CataloguePage::default()
+            }));
+        }
         let actor = self.caller_actor(caller, &root.cluster_id);
         let queue = self.action_directory_request_queue();
         let reply = if let Some(target) = &query.target {
