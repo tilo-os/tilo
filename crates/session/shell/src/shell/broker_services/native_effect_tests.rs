@@ -378,14 +378,16 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
             .expect("a native seat without a transport lease resolves")
             .is_ok()
     );
+    // A room this device's host holds is sealed: its membership surface
+    // offers the one change the device asks, an opening app's authorship.
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: surface.peer_id.to_string(),
-            address: tilo_actions::ActionAddress::new("desktop:workspace", "add-agent"),
+            address: tilo_actions::ActionAddress::new("desktop:workspace", "grant-app-authorship"),
         },
         argument: InvokeArgument::Json(
-            serde_json::json!({"agent":"scribe", "preset":"operator"})
+            serde_json::json!({"app": "so.tilo.chat"})
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -870,10 +872,11 @@ fn failed_effect(
         invocation,
         target: RemoteActionTarget {
             provider: surface.peer_id.to_string(),
-            address: tilo_actions::ActionAddress::new("desktop:workspace", "add-agent"),
+            address: tilo_actions::ActionAddress::new("desktop:workspace", "grant-app-authorship"),
         },
+        // Admitted, then refused by the owner: no canonical application id.
         argument: InvokeArgument::Json(
-            serde_json::json!({"agent":"scribe", "preset":"not-a-preset"})
+            serde_json::json!({"app": "Not A Canonical App"})
                 .as_object()
                 .unwrap()
                 .clone(),
