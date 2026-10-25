@@ -327,6 +327,7 @@ fn an_app_filter_applies_before_the_page_bound() {
     assert!(scoped.exhausted);
 
     let all = page(&fixture, &fixture.caller, &workspace_query(&fixture.room));
+    drop(fixture);
     assert_eq!(
         all.rows.len(),
         usize::try_from(MAX_CATALOGUE_PAGE).unwrap_or(usize::MAX)
@@ -356,6 +357,7 @@ fn an_app_scoped_query_still_refuses_a_stranger() {
         0,
         "a caller with no role builds no governance descriptors"
     );
+    drop(fixture);
 }
 
 /// One live directory row, `read` of `workspace:atlas`.
@@ -584,6 +586,7 @@ async fn a_numeric_directory_answers_another_apps_query_without_asking_it() {
                 0,
                 "an exact target the directory cannot publish is not resolved"
             );
+            drop(fixture);
         })
         .await;
 }
@@ -621,6 +624,7 @@ async fn a_numeric_directory_answers_its_own_apps_query() {
                     .is_err(),
                 "an app filter that matches still needs the revision of its target"
             );
+            drop(fixture);
         })
         .await;
 }
