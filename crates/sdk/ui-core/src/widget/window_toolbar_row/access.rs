@@ -280,6 +280,7 @@ impl ToolbarRow {
             }
             nodes.push(more);
         }
+        nodes.extend(self.reaction_nodes());
         nodes
     }
 
@@ -453,6 +454,9 @@ impl ToolbarRow {
 
     /// Run the slot `target` names, as assistive technology activates it.
     pub(crate) fn perform(&mut self, target: &str) -> bool {
+        if let Some(ran) = self.perform_reaction(target) {
+            return ran;
+        }
         if let Some(index) = target
             .strip_prefix(SUGGESTION_TARGET_PREFIX)
             .and_then(|index| index.parse::<usize>().ok())
