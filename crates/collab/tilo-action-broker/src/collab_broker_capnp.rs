@@ -25,6 +25,7 @@ mod observed_launch;
 mod offload_door;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
+mod app_changes;
 #[cfg(test)]
 mod app_settings_tests;
 #[cfg(test)]
@@ -7533,6 +7534,7 @@ impl CapnpBrokerState {
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged
             | CollabEvent::DrivesChanged
+            | CollabEvent::ApplicationsChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
@@ -9251,6 +9253,14 @@ impl channel_handle::Server for CapnpChannelHandle {
             }),
             Err(error) => Promise::err(error),
         }
+    }
+
+    fn applications_changed(
+        self: Rc<Self>,
+        params: channel_handle::ApplicationsChangedParams,
+        results: channel_handle::ApplicationsChangedResults,
+    ) -> Promise<(), capnp::Error> {
+        self.answered_about_app_changes(&params, results)
     }
 
     fn approved_check_reported_progress(

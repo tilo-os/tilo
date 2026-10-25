@@ -928,6 +928,14 @@ pub enum CollabEvent {
     /// arrives once the route joins, so it also fetches the first list. Only
     /// the certified Files route receives these.
     DrivesChanged,
+    /// The person's apps may have changed: one was installed, removed from
+    /// their apps or uninstalled, here or on another of their devices. It
+    /// names nothing; Files asks the tools service for the list again
+    /// instead of asking on a timer, and asks once when it comes to its
+    /// Applications place for what changed while it was not there. The
+    /// first arrives once the route joins. Only the certified Files route
+    /// receives these.
+    ApplicationsChanged,
     Realtime(crate::realtime_continuity::RealtimeEvent),
 }
 

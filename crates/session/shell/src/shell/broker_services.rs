@@ -1971,6 +1971,7 @@ pub fn native_services(
         }),
         #[cfg(target_os = "linux")]
         drives: Some(Arc::new(NativeDrives)),
+        applications: Some(Arc::new(NativeApplications)),
         wifi_continuity: network.clone().map(|network| {
             Arc::new(NativeWifiContinuity(network))
                 as Arc<dyn tilo_action_broker::services::WifiContinuityServices>
@@ -2050,6 +2051,7 @@ pub(crate) fn test_broker_with_membership(
         shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone()))),
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         app_action_grants: Some(Arc::new(NativeAppActionGrants(membership))),
+        applications: Some(Arc::new(NativeApplications)),
         ..Default::default()
     };
     tilo_action_broker::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
@@ -2086,6 +2088,16 @@ impl tilo_action_broker::services::DriveServices for NativeDrives {
         Some(Box::pin(crate::shell::drives::changed(after)))
     }
 }
+/// The person's apps, which tell the certified Files route when the list it
+/// is given changes.
+pub struct NativeApplications;
+
+impl tilo_action_broker::services::ApplicationServices for NativeApplications {
+    fn changed(&self, after: u64) -> Option<tilo_action_broker::services::ApplicationChange> {
+        Some(Box::pin(crate::shell::app_list::changed(after)))
+    }
+}
+
 /// Wi-Fi credentials carried between the person's certified devices.
 pub struct NativeWifiContinuity(pub Arc<super::network::ShellNetwork>);
 impl tilo_action_broker::services::WifiContinuityServices for NativeWifiContinuity {

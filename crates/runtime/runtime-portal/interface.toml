@@ -284,6 +284,7 @@ capnp = [
 "capnp:collab.capnp:ChannelHandle" = "interface"
 "capnp:collab.capnp:ChannelHandle.actionCatalogue" = "@19 ()->(catalogueJson:Text)"
 "capnp:collab.capnp:ChannelHandle.admitLocalDocumentAction" = "@66 (request:Data)->(observation:PublishedInvocationObservation)"
+"capnp:collab.capnp:ChannelHandle.applicationsChanged" = "@70 (after:UInt64)->(change:UInt64)"
 "capnp:collab.capnp:ChannelHandle.approvedCheck" = "@58 (request:Data)->(receipt:Data)"
 "capnp:collab.capnp:ChannelHandle.approvedCheckReportedProgress" = "@60 (request:Data)->(stream:ApprovedCheckReportedProgressStream)"
 "capnp:collab.capnp:ChannelHandle.audioOutputCommand" = "@57 (command:Data)->(reply:Data)"
