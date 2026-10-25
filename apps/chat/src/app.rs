@@ -4628,8 +4628,26 @@ impl Widget for ChatApp {
         self.hover_tooltip_target(point)
     }
 
+    /// The flap's resize edge, then the painted control under the pointer:
+    /// a text field's I-beam, a handle's grab, a pointing hand on what a
+    /// press activates. A popover's scrim asks for nothing.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.right_flap.resize_cursor(point)
+        use winit::window::CursorIcon;
+        if let Some(resize) = self.right_flap.resize_cursor(point) {
+            return Some(resize);
+        }
+        let (_, hit) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(rect, _)| rect.contains(point))?;
+        match hit {
+            Hit::Dismiss => None,
+            Hit::FocusEmojiSearch => Some(CursorIcon::Text),
+            Hit::AgentDragHandle | Hit::CallDragHandle => Some(CursorIcon::Grab),
+            hit if self.text_field_access(hit).is_some() => Some(CursorIcon::Text),
+            _ => Some(CursorIcon::Pointer),
+        }
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {

@@ -5512,16 +5512,13 @@ impl FrameBuilder {
         self.pointer_image = image;
     }
 
-    /// The cursor the chrome under `point` asks for: the smallest widget
-    /// containing the point that names one wins, so a nested button beats
-    /// the bar around it — the same rule `ui::App` applies to app windows.
+    /// The cursor the chrome under `point` asks for, by the rule every
+    /// host shares ([`ui::widget::cursor`]).
     pub fn chrome_cursor_at(
         &self,
         point: vello::kurbo::Point,
     ) -> Option<winit::window::CursorIcon> {
-        let mut best: Option<(f64, winit::window::CursorIcon)> = None;
-        chrome_cursor_walk(self.host.as_ref(), point, &mut best);
-        best.map(|(_, icon)| icon)
+        ui::widget::cursor::in_tree(self.host.as_ref(), point)
     }
 
     /// What the focused chrome widget asks of an input method — its purpose
@@ -6175,25 +6172,6 @@ fn claims_raw_touch_walk(widget: &dyn ui::widget::Widget, point: vello::kurbo::P
             .children()
             .into_iter()
             .any(|child| claims_raw_touch_walk(child, point))
-}
-
-fn chrome_cursor_walk(
-    widget: &dyn ui::widget::Widget,
-    point: vello::kurbo::Point,
-    best: &mut Option<(f64, winit::window::CursorIcon)>,
-) {
-    let rect = widget.get_rect();
-    if rect.contains(point)
-        && let Some(icon) = widget.cursor_shape(point)
-    {
-        let area = rect.area().max(0.0);
-        if best.is_none_or(|(smallest, _)| area < smallest) {
-            *best = Some((area, icon));
-        }
-    }
-    for child in widget.children() {
-        chrome_cursor_walk(child, point, best);
-    }
 }
 
 /// Depth-first walk of the widget tree, registering each visited node:

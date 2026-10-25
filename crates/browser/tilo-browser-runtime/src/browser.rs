@@ -471,6 +471,8 @@ struct Mount {
     /// The root rect of the last semantics tree built, which a status
     /// whose tree was left unbuilt still reports.
     tree_root_rect: std::cell::Cell<[f64; 4]>,
+    /// The pointer shape the canvas shows, as the surface last asked.
+    cursor: winit::window::CursorIcon,
 }
 
 struct Desktop {
@@ -1134,6 +1136,9 @@ impl ApplicationHandler<u64> for Runner {
                     let passes = m.frame.relayout_frames();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.metric_end("input", start);
+                    if !matches!(event, WindowEvent::Touch(_)) {
+                        m.show_cursor();
+                    }
                     if m.frame.relayout_frames() != passes {
                         m.note_measured();
                         // Laid out here, outside the frame, which then
@@ -1780,6 +1785,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         entries: 0,
         tree_entries: std::cell::Cell::new(0),
         tree_root_rect: std::cell::Cell::new([0.0; 4]),
+        cursor: winit::window::CursorIcon::Default,
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
     emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
@@ -3308,6 +3314,7 @@ pub fn request_semantics(id: u64) -> Result<(), JsValue> {
 }
 
 mod desktop_exports;
+mod fonts;
 use crate::first_frame::{self, GpuStep};
 pub(crate) mod pointers;
 mod retained;
@@ -3772,56 +3779,6 @@ pub fn drop_files(id: u64, files: &JsValue, x: f64, y: f64) -> Result<u32, JsVal
         m.pending = true;
         m.window.request_redraw();
         Ok(handed)
-    })
-}
-
-/// Optional canonical fonts the last shaping pass needed, as a JSON array.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn font_demands(id: u64) -> Result<String, JsValue> {
-    // Takes what the last shaping asked to fetch; the tree is the same.
-    with_mount_quietly(id, |m| {
-        serde_json::to_string(&m.frame.take_browser_font_demands()).map_err(error)
-    })
-}
-
-/// Install one fetched optional font. `sha256` is the page's lowercase hex
-/// digest of `bytes` from `crypto.subtle.digest`, which runs natively off the
-/// main thread; the runtime checks it against the canonical manifest compiled
-/// into this build instead of hashing the font again.
-#[wasm_bindgen]
-pub fn install_font(id: u64, name: &str, bytes: Vec<u8>, sha256: &str) -> Result<bool, JsValue> {
-    let (changed, wake) = with_mount(id, |m| {
-        let changed = m
-            .frame
-            .install_browser_font(name, bytes, sha256)
-            .map_err(error)?;
-        let wake = changed && !m.hidden;
-        if wake {
-            m.pending = true;
-            m.window.request_redraw();
-        }
-        Ok((changed, wake))
-    })?;
-    if wake {
-        proxy()?.send_event(id).map_err(error)?;
-    }
-    Ok(changed)
-}
-
-/// A font fetch failed; demand is re-reported by a later frame.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn font_failed(id: u64) -> Result<(), JsValue> {
-    with_mount(id, |m| {
-        m.frame.browser_font_failed();
-        Ok(())
     })
 }
 
