@@ -1,0 +1,206 @@
+//! A filed report as its channel shows it: a message by whoever filed it,
+//! read out from the report's structured entries in the reader's language,
+//! with its masked picture as the message's image and the reactions people
+//! answered it with. Nothing of this is stored: the record keeps the
+//! reviewed submission, and this is how it reads.
+
+use tilo_document::ClipBlock;
+use ui::feedback::{FrameTimings, Hidden, Interaction, Outcome, ReviewedSelection, ReviewedText};
+use ui::tilo_resource::Id;
+
+use crate::record::FeedbackReport;
+
+/// The file name a report's picture goes by where one shows (a bridge's
+/// upload).
+pub const PICTURE_NAME: &str = "report.png";
+
+/// The most of one pick's texts the message lists.
+const SHOWN_TEXTS: usize = 6;
+/// The most of the reporter's last actions the message lists, newest last.
+const SHOWN_ACTIONS: usize = 5;
+
+/// `report` as the message its channel shows, `None` for a report whose
+/// submission is missing.
+pub(crate) fn message(report: &FeedbackReport) -> Option<crate::record::Message> {
+    let submission = report.submission.as_ref()?;
+    let feedback = &submission.feedback;
+    let lines = lines(
+        &feedback.text,
+        &feedback.selections,
+        &feedback.interactions,
+        feedback.timings.as_ref(),
+    );
+    let body = lines
+        .iter()
+        .map(|line| ClipBlock {
+            kind: "paragraph".into(),
+            text: line.clone(),
+            marks: Vec::new(),
+            level: None,
+            ordered: None,
+            align: None,
+            attrs: std::collections::BTreeMap::new(),
+        })
+        .collect();
+    let attachment = feedback
+        .screenshot
+        .as_ref()
+        .map(|picture| crate::model::Attachment::Image {
+            name: PICTURE_NAME.into(),
+            blob: picture.hash.to_ascii_lowercase(),
+            w: picture.width,
+            h: picture.height,
+        })
+        .filter(crate::record::valid_attachment);
+    Some(crate::record::Message {
+        channel: Id::from_raw(submission.destination.channel.clone()),
+        author: report.author.clone(),
+        ts: report.ts,
+        text: lines.join("\n"),
+        body,
+        reactions: report.reactions.clone(),
+        attachment,
+        ..crate::record::Message::default()
+    })
+}
+
+/// The report's lines: the reporter's summary, each pick with what it
+/// said and their note on it, what they did last and how slow it was.
+fn lines(
+    summary: &str,
+    selections: &[ReviewedSelection],
+    interactions: &[Interaction],
+    timings: Option<&FrameTimings>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !summary.trim().is_empty() {
+        lines.push(summary.trim().to_owned());
+    }
+    for (index, selection) in selections.iter().enumerate() {
+        lines.extend(pick(index, selection));
+    }
+    if let Some(recent) = recent(interactions) {
+        lines.push(recent);
+    }
+    if let Some(timings) = timings.filter(|timings| !timings.frames.is_empty()) {
+        lines.push(crate::i18n::t_args(
+            "chat-feedback-slow",
+            &[
+                ("slow", timings.slow_frames().into()),
+                ("frames", timings.frames.len().into()),
+                ("budget", (timings.budget / 1_000).into()),
+                ("worst", (timings.worst() / 1_000).into()),
+            ],
+        ));
+    }
+    lines
+}
+
+/// One pick: which app's part of what role, the reporter's note on it,
+/// and the texts it showed.
+fn pick(index: usize, selection: &ReviewedSelection) -> Vec<String> {
+    let app = if selection.app_name.trim().is_empty() {
+        selection.app.clone()
+    } else {
+        selection.app_name.clone()
+    };
+    let what = selection
+        .label
+        .as_ref()
+        .map(read)
+        .filter(|label| !label.trim().is_empty())
+        .unwrap_or_else(|| selection.role.clone());
+    let mut lines = vec![crate::i18n::t_args(
+        "chat-feedback-pick",
+        &[
+            ("index", index.saturating_add(1).into()),
+            ("app", app.into()),
+            ("what", what.into()),
+            ("role", selection.role.clone().into()),
+        ],
+    )];
+    if let Some(note) = selection
+        .note
+        .as_ref()
+        .map(read)
+        .filter(|note| !note.trim().is_empty())
+    {
+        lines.push(crate::i18n::t_args(
+            "chat-feedback-note",
+            &[("note", note.into())],
+        ));
+    }
+    let shown: Vec<String> = selection
+        .texts
+        .iter()
+        .map(read)
+        .filter(|text| !text.trim().is_empty())
+        .take(SHOWN_TEXTS)
+        .collect();
+    if !shown.is_empty() {
+        lines.push(crate::i18n::t_args(
+            "chat-feedback-texts",
+            &[("texts", shown.join(" \u{00B7} ").into())],
+        ));
+    }
+    lines
+}
+
+/// The reporter's last actions, newest last.
+fn recent(interactions: &[Interaction]) -> Option<String> {
+    let skip = interactions.len().saturating_sub(SHOWN_ACTIONS);
+    let actions: Vec<String> = interactions
+        .iter()
+        .skip(skip)
+        .map(|interaction| {
+            let outcome = match interaction.outcome {
+                Outcome::Done => "done",
+                Outcome::Refused => "refused",
+                Outcome::Failed => "failed",
+            };
+            crate::i18n::t_args(
+                "chat-feedback-action",
+                &[
+                    ("action", interaction.action.clone().into()),
+                    ("resource", interaction.resource.clone().into()),
+                    ("outcome", outcome.into()),
+                ],
+            )
+        })
+        .collect();
+    (!actions.is_empty()).then(|| {
+        crate::i18n::t_args(
+            "chat-feedback-recent",
+            &[("actions", actions.join(", ").into())],
+        )
+    })
+}
+
+/// A reviewed text with each hidden span as its kind's placeholder.
+fn read(text: &ReviewedText) -> String {
+    text.parts
+        .iter()
+        .map(|part| match part.hidden {
+            Some(hidden) => crate::i18n::t_args(
+                "chat-feedback-hidden",
+                &[("kind", hidden_kind(hidden).into())],
+            ),
+            None => part.text.clone(),
+        })
+        .collect()
+}
+
+const fn hidden_kind(hidden: Hidden) -> &'static str {
+    match hidden {
+        Hidden::Name => "name",
+        Hidden::Email => "email",
+        Hidden::Phone => "phone",
+        Hidden::Address => "address",
+        Hidden::Account => "account",
+        Hidden::Credential => "credential",
+        Hidden::Personal => "personal",
+    }
+}
+
+#[cfg(test)]
+mod tests;

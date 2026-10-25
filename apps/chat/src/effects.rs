@@ -815,6 +815,10 @@ pub(crate) fn read_room(
     channel: Option<&str>,
 ) -> serde_json::Value {
     use ui::tilo_resource::Model as _;
+    // A filed report reads as the message its channel shows.
+    let reports: std::collections::BTreeMap<tilo_resource::Id, crate::record::Message> =
+        chat.feedback_messages().collect();
+    let found = |id: &tilo_resource::Id| held.get(id).or_else(|| reports.get(id));
     let mut wanted: Vec<tilo_resource::Id> = message
         .map(tilo_resource::Id::from_raw)
         .into_iter()
@@ -822,6 +826,7 @@ pub(crate) fn read_room(
     if let Some(channel) = channel {
         let mut latest: Vec<(&tilo_resource::Id, &crate::record::Message)> = held
             .iter()
+            .chain(&reports)
             .filter(|(_, found)| found.channel.as_str() == channel)
             .collect();
         latest.sort_by_key(|(_, found)| found.ts);
@@ -831,7 +836,7 @@ pub(crate) fn read_room(
     // Each with the message it answers, once.
     let answered: Vec<tilo_resource::Id> = wanted
         .iter()
-        .filter_map(|id| held.get(id)?.parent.clone())
+        .filter_map(|id| found(id)?.parent.clone())
         .collect();
     wanted.extend(answered);
     let mut messages = Vec::new();
@@ -840,7 +845,7 @@ pub(crate) fn read_room(
         if !seen.insert(id.clone()) {
             continue;
         }
-        if let Some(found) = held.get(&id) {
+        if let Some(found) = found(&id) {
             messages.push(serde_json::json!({ "id": id.as_str(), "value": found.to_json() }));
         }
     }
