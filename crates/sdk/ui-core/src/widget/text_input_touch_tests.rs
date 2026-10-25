@@ -100,3 +100,29 @@ fn a_tap_on_a_fields_clear_button_clears_it() {
         "a finger presses the clear button as a click does"
     );
 }
+
+/// The control reads its own finger, and the window's touch emulation also
+/// makes a click of the same tap: the two together used to show the
+/// password and hide it again in one tap.
+#[test]
+fn a_tap_on_a_secret_fields_show_control_shows_it() {
+    let _settled = crate::motion::testing::settled();
+    let secret = crate::LocalState::new("hunter2".to_owned());
+    let mut frame = touch_form(TextInput::from_state(&secret).with_secret(true));
+    let reveal = frame
+        .with_widget_mut::<TextInput, _>(|field| field.reveal_control_rect())
+        .flatten()
+        .expect("the show control is shown");
+
+    frame.tap_at(reveal.center().x, reveal.center().y);
+
+    assert_eq!(
+        frame.with_widget_mut::<TextInput, _>(|field| field.is_revealed()),
+        Some(true),
+        "a finger shows the password as a click does"
+    );
+    assert!(
+        frame.ime_window().is_none(),
+        "the field keeps out of focus, so no keyboard comes up"
+    );
+}
