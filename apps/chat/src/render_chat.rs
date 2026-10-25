@@ -24,6 +24,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
+use ui::widget::conversation::{ConversationClock, DayBreaks, DayDividerFace};
 use ui::widget::{
     AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead,
     ControlSize, EmptyState, EmptyStateContent, ListRowFace, MediaArt, MediaAspect, MediaCardFace,
@@ -146,6 +147,13 @@ impl ChatApp {
         parts.draw(scene, "chat-composer", composer, |scene| {
             self.draw_composer(scene, tf, tr, theme, presence, hits);
         });
+        // The attachment the person opened sits over everything, the window's
+        // own bar included: it is the whole window's layer, not the column's.
+        if self.attachment_view.is_some() {
+            parts.draw(scene, "chat-attachment", self.rect, |scene| {
+                self.draw_attachment_viewer(scene, tf, tr, theme, hits);
+            });
+        }
     }
 
     /// The colours mentions are painted in on `theme`, for every participant
@@ -406,7 +414,7 @@ impl ChatApp {
     }
 
     /// Whether the pointer is over `rect`.
-    fn hovered(&self, rect: Rect) -> bool {
+    pub(crate) fn hovered(&self, rect: Rect) -> bool {
         rect.contains(self.last_mouse)
     }
 
@@ -675,8 +683,8 @@ impl ChatApp {
         }
 
         let groups = model::group_messages(&self.messages);
-        let divider_h = nav_row_height(theme);
-        let (rows, total) = self.measure_message_rows(tr, theme, &groups, text_w, divider_h);
+        let clock = ConversationClock::local();
+        let (items, total) = self.measure_message_rows(tr, theme, &groups, text_w, clock);
 
         // The origin is pinned to the newest edge. If a message arrives while
         // the reader is looking back through history, compensate for the new
@@ -697,17 +705,24 @@ impl ChatApp {
         let max_start = area.y0;
         let min_start = (area.y1 - total).min(area.y0);
         if self.reveal_scroll_pending {
-            // A message shown from search, or one opened in the editor.
-            if let Some(target) = self.revealed_message.as_deref().or(self.editing.as_deref())
-                && let Some(target_index) = rows.iter().position(|row| row.idx_id == target)
-            {
-                let before = rows
+            // A message shown from search, or one opened in the editor. The
+            // sum above the target counts the day dividers too, so the row
+            // lands where it is painted rather than a divider's height early.
+            let target = self.revealed_message.as_deref().or(self.editing.as_deref());
+            let target_index = target.and_then(|target| {
+                items.iter().position(|item| match item {
+                    TimelineItem::Row(row) => row.idx_id == target,
+                    TimelineItem::Divider { .. } => false,
+                })
+            });
+            if let Some(target_index) = target_index {
+                let before: f64 = items
                     .iter()
                     .take(target_index)
-                    .map(RowM::height)
-                    .sum::<f64>();
-                if let Some(row) = rows.get(target_index) {
-                    let target_mid = divider_h + before + row.height() / 2.0;
+                    .map(|item| Self::item_height(item, theme))
+                    .sum();
+                if let Some(TimelineItem::Row(row)) = items.get(target_index) {
+                    let target_mid = before + row.height() / 2.0;
                     self.scroll = area.center().y - start_y - target_mid;
                 }
             }
@@ -717,7 +732,7 @@ impl ChatApp {
             self.reveal_scroll_pending = false;
         }
         self.scroll = self.scroll.clamp(0.0, (total - area.height()).max(0.0));
-        let y = (start_y + self.scroll).clamp(min_start, max_start);
+        let mut y = (start_y + self.scroll).clamp(min_start, max_start);
         // Store the normalised (bounded) offset, not the raw wheel accumulator.
         // This prevents an unbounded value from leaking across a resize or a
         // channel switch, and gives sync an accurate read-edge answer.
@@ -736,23 +751,23 @@ impl ChatApp {
         self.timeline_at_end = at_end;
         self.timeline_total_height = total;
 
-        let mut y = self.draw_messages_date_divider(
-            PaintCtx::new(scene, tf, tr, theme),
-            area,
-            y,
-            divider_h,
-        );
-
         let first_row_hit = hits.len();
-        for rm in &rows {
-            self.draw_row(
-                PaintCtx::new(scene, tf, tr, theme),
-                presence,
-                rm,
-                column,
-                &mut y,
-                hits,
-            );
+        for item in &items {
+            match item {
+                TimelineItem::Divider { label } => {
+                    y = self.draw_day_divider(PaintCtx::new(scene, tf, tr, theme), area, label, y);
+                }
+                TimelineItem::Row(rm) => {
+                    self.draw_row(
+                        PaintCtx::new(scene, tf, tr, theme),
+                        presence,
+                        rm,
+                        column,
+                        &mut y,
+                        hits,
+                    );
+                }
+            }
         }
         // A row scrolled half out of the timeline is clipped where it is
         // painted; so is what it answers to, never reaching the header.
@@ -801,87 +816,59 @@ impl ChatApp {
         ChatApp::push_hit(hits, rect, Hit::JumpToLatest);
     }
 
-    /// Measure every row across every group (divider + rows), returning the
-    /// per-row measurements and the total timeline height.
+    /// Measure every row across every group, with a day divider wherever the
+    /// local day changes — not only at the oldest loaded message — returning
+    /// the timeline's items and its total height.
     fn measure_message_rows(
         &self,
         tr: &mut TextRenderer,
         theme: &Theme,
         groups: &[model::MessageGroup],
         text_w: f32,
-        divider_h: f64,
-    ) -> (Vec<RowM>, f64) {
-        let mut total = divider_h;
-        let mut rows: Vec<RowM> = Vec::new();
+        clock: ConversationClock,
+    ) -> (Vec<TimelineItem>, f64) {
+        let mut total = 0.0;
+        let mut items: Vec<TimelineItem> = Vec::new();
+        let mut days = DayBreaks::new();
         for g in groups {
             for (gi, &idx) in g.message_indices.iter().enumerate() {
                 let Some(m) = self.messages.get(idx) else {
                     continue;
                 };
+                let day = clock.day(m.ts);
+                if days.begins(day) {
+                    let height = DayDividerFace::height(theme);
+                    total += height;
+                    items.push(TimelineItem::Divider {
+                        label: clock.day_label(day),
+                    });
+                }
                 let rm = self.measure_row(tr, theme, m, gi == 0, text_w);
                 total += rm.height();
-                rows.push(rm);
+                items.push(TimelineItem::Row(rm));
             }
         }
-        (rows, total)
+        (items, total)
     }
 
-    /// The day the first message was sent, centred between two hairlines.
-    /// Returns the cursor `y` for the first message row beneath it.
-    fn draw_messages_date_divider(
-        &self,
-        paint: PaintCtx<'_>,
-        area: Rect,
-        y: f64,
-        divider_h: f64,
-    ) -> f64 {
-        let PaintCtx {
-            scene,
-            transform: tf,
-            text: tr,
-            theme,
-        } = paint;
-        let label = self.messages.first().map_or_else(
-            || ui::format::near_day(0).unwrap_or_default(),
-            |m| day_label(m.ts),
-        );
-        let style = theme.text(TextRole::Caption);
-        let w = width_of(tr, &label, &style);
-        let band = Rect::new(area.x0, y, area.x1, y + divider_h);
-        let gap = f64::from(theme.tokens.spacing.s3);
-        let ground = theme.tokens.colors.surfaces.content;
-        let cx = band.center().x;
-        let x0 = area.x0 + self.chrome.gutter;
-        let x1 = area.x1 - self.chrome.gutter;
-        ui::surface::separator(
-            scene,
-            tf,
-            x0,
-            cx - w / 2.0 - gap,
-            band.center().y,
-            0.0,
-            ground,
-        );
-        ui::surface::separator(
-            scene,
-            tf,
-            cx + w / 2.0 + gap,
-            x1,
-            band.center().y,
-            0.0,
-            ground,
-        );
-        let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        line_in(
-            &mut ctx,
-            &label,
-            &style,
-            theme.text_dim,
-            cx - w / 2.0,
-            band,
-            w + 1.0,
-        );
-        y + divider_h
+    /// One timeline item's height: a divider's row, or a message's.
+    fn item_height(item: &TimelineItem, theme: &Theme) -> f64 {
+        match item {
+            TimelineItem::Divider { .. } => DayDividerFace::height(theme),
+            TimelineItem::Row(rm) => rm.height(),
+        }
+    }
+
+    /// One day divider, in the toolkit's face: the same band, rules and
+    /// centring Messages draws, so a day reads the same in both apps.
+    fn draw_day_divider(&self, mut paint: PaintCtx<'_>, area: Rect, label: &str, y: f64) -> f64 {
+        let theme = paint.theme;
+        let height = DayDividerFace::height(theme);
+        let band = Rect::new(area.x0, y, area.x1, y + height);
+        let leading = area.x0 + self.chrome.gutter;
+        let trailing = area.x1 - self.chrome.gutter;
+        DayDividerFace::new(label).paint(&mut paint.reborrow(), band, leading, trailing);
+        y + height
     }
 
     fn measure_row(
@@ -1321,12 +1308,25 @@ impl ChatApp {
         }
 
         if let Some(att) = &m.attachment {
-            self.draw_attachment(
+            let card = self.draw_attachment(
                 PaintCtx::new(scene, tf, tr, theme),
                 att,
                 Point::new(text_x, *y),
                 f64::from(text_w),
             );
+            // A shared picture opens: a card nobody can enlarge is a card
+            // that answers nothing ([`crate::attachment_view`]). Recorded
+            // after the row's menu target, so a click on the card opens it.
+            if self.embed_allowed(att.blob()) {
+                ChatApp::push_hit(
+                    hits,
+                    card,
+                    Hit::Attachment {
+                        msg: m.id.clone(),
+                        action: ui::widget::conversation::AttachmentAction::OpenFullSize,
+                    },
+                );
+            }
             *y += rm.att_h;
         }
 
@@ -1602,7 +1602,13 @@ impl ChatApp {
         face.height(tr, theme, w) + gap
     }
 
-    fn draw_attachment(&self, paint: PaintCtx<'_>, att: &Attachment, origin: Point, max_w: f64) {
+    fn draw_attachment(
+        &self,
+        paint: PaintCtx<'_>,
+        att: &Attachment,
+        origin: Point,
+        max_w: f64,
+    ) -> Rect {
         let PaintCtx {
             scene,
             transform: tf,
@@ -1615,7 +1621,7 @@ impl ChatApp {
         // cannot open.
         if !self.embed_allowed(att.blob()) {
             let icon = attachment_icon(att);
-            paint_file_card(
+            let card = paint_file_card(
                 &mut ctx,
                 origin,
                 max_w,
@@ -1623,11 +1629,11 @@ impl ChatApp {
                 att.name(),
                 &crate::i18n::t("chat-attachment-no-access"),
             );
-            return;
+            return card;
         }
         match att {
             Attachment::File { name, size, .. } => {
-                paint_file_card(
+                let card = paint_file_card(
                     &mut ctx,
                     origin,
                     max_w,
@@ -1635,6 +1641,8 @@ impl ChatApp {
                     name,
                     &format_bytes(*size),
                 );
+                self.paint_attachment_open(&mut ctx, att, card);
+                card
             }
             Attachment::Image { blob, .. } => {
                 let image = self.images.get(&crate::images::blob_key(blob));
@@ -1649,10 +1657,10 @@ impl ChatApp {
                 };
                 let (w, face) = media_face(att, art, &meta, max_w, theme);
                 let h = face.height(ctx.text, theme, w);
-                face.paint(
-                    &mut ctx,
-                    Rect::new(origin.x, origin.y, origin.x + w, origin.y + h),
-                );
+                let card = Rect::new(origin.x, origin.y, origin.x + w, origin.y + h);
+                face.paint(&mut ctx, card);
+                self.paint_attachment_open(&mut ctx, att, card);
+                card
             }
             Attachment::Video { blob, .. } => {
                 // A frame needs the media engine's decoder, so the card shows
@@ -1665,12 +1673,22 @@ impl ChatApp {
                 let meta = media_meta(att);
                 let (w, face) = media_face(att, art, &meta, max_w, theme);
                 let h = face.height(ctx.text, theme, w);
-                face.paint(
-                    &mut ctx,
-                    Rect::new(origin.x, origin.y, origin.x + w, origin.y + h),
-                );
+                let card = Rect::new(origin.x, origin.y, origin.x + w, origin.y + h);
+                face.paint(&mut ctx, card);
+                self.paint_attachment_open(&mut ctx, att, card);
+                card
             }
         }
+    }
+
+    /// The badge that says a card opens, on the card the pointer is over.
+    fn paint_attachment_open(&self, paint: &mut PaintCtx<'_>, att: &Attachment, card: Rect) {
+        let summary = self.attachment_summary(att);
+        ui::widget::conversation::attachment::AttachmentFace::new(&summary).paint_open_badge(
+            paint,
+            card,
+            self.hovered(card),
+        );
     }
 
     // ------------------------------------------------------------ composer
@@ -2825,20 +2843,17 @@ pub(crate) fn typing_line(
     }
 }
 
-/// The local time of `ts` as `HH:MM`.
+/// The local time of `ts` as the person reads clocks: the toolkit's clock, the
+/// same one Messages shows on every line.
 fn clock_label(ts: i64) -> String {
-    model::clock(ts + local_offset())
+    ConversationClock::local().clock(ts)
 }
 
-/// "Today", "Yesterday" or "N days ago" for `ts`, against the local date.
+/// "Today", "Yesterday", the weekday, or the date: the toolkit's day label,
+/// the same rule Messages uses for its dividers.
 fn day_label(ts: i64) -> String {
-    let offset = local_offset();
-    model::day_label(ts + offset, ui::clock::local_now().timestamp() + offset)
-}
-
-/// Seconds the local time zone is ahead of UTC now.
-fn local_offset() -> i64 {
-    i64::from(ui::clock::local_now().offset().local_minus_utc())
+    let clock = ConversationClock::local();
+    clock.day_label(clock.day(ts))
 }
 
 /// The icon that says what kind of file an attachment is.
@@ -2915,7 +2930,7 @@ fn paint_file_card(
     icon: Icon,
     name: &str,
     detail: &str,
-) {
+) -> Rect {
     let theme = ctx.theme;
     let w = file_card_width(max_w, theme);
     let h = file_card_height(ctx.text, theme);
@@ -2956,6 +2971,7 @@ fn paint_file_card(
         Point::new(tx, body.y0 + name_h),
         None,
     );
+    rect
 }
 
 /// Line box of a message-group header (author name + time) plus the gap to
@@ -3143,6 +3159,15 @@ fn draw_agent_work_line(
 }
 
 /// Per-row measured heights for the timeline layout.
+/// One thing the timeline paints, in order: a day divider, or a message.
+enum TimelineItem {
+    /// The day changed here: the shared divider band, labelled.
+    Divider {
+        label: String,
+    },
+    Row(RowM),
+}
+
 struct RowM {
     idx_id: String,
     show_header: bool,
@@ -3216,13 +3241,74 @@ fn composer_slot(slots: &[Rect], index: usize) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentWorkLineStyle, AgentWorkPresentation, RowM, media_face, media_meta};
+    use super::{
+        AgentWorkLineStyle, AgentWorkPresentation, RowM, TimelineItem, media_face, media_meta,
+    };
     use crate::model::{
         AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
         Attachment,
     };
     use ui::theme::Theme;
     use ui::widget::{MediaArt, MediaSize};
+
+    /// A conversation that crosses midnight gets a divider at the crossing,
+    /// not only at the oldest message: scrolling to a line from three days ago
+    /// must show which day it belongs to.
+    #[test]
+    fn a_divider_appears_wherever_the_day_changes() {
+        use crate::model::Message;
+        let theme = Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let identity = crate::identity::LocalIdentity::demo();
+        let doc = automerge::AutoCommit::new();
+        let mut app = crate::ChatApp::new(
+            identity,
+            crate::app::ChatRuntime::Unavailable,
+            tilo_content::ContentStore::memory(),
+        );
+        app.attach_framework(ui::framework::Dispatcher::detached(
+            "so.tilo.chat",
+            &app.me.id.clone(),
+        ));
+        let line = |id: &str, ts: i64| Message {
+            id: id.into(),
+            channel: "c".into(),
+            author: "u_ada".into(),
+            ts,
+            text: "x".into(),
+            body: Vec::new(),
+            edited: false,
+            history: Vec::new(),
+            parent: None,
+            reactions: Vec::new(),
+            mentions: Vec::new(),
+            reference: None,
+            source_provider: None,
+            attachment: None,
+            pinned: false,
+            work: None,
+            appearance: None,
+        };
+        // Two hours apart across midnight, and one three days later.
+        let start = 1_782_828_300_i64;
+        app.messages = vec![
+            line("a", start),
+            line("b", start.saturating_add(3_600)),
+            line("c", start.saturating_add(4 * 86_400)),
+        ];
+        let groups = crate::model::group_messages(&app.messages);
+        let clock = ui::widget::ConversationClock::at(0, start);
+        let (items, _) = app.measure_message_rows(&mut text, &theme, &groups, 400.0, clock);
+        let dividers = items
+            .iter()
+            .filter(|item| matches!(item, TimelineItem::Divider { .. }))
+            .count();
+        assert_eq!(
+            dividers, 2,
+            "one divider for the first day and one where the day changes"
+        );
+        let _ = doc;
+    }
 
     #[test]
     fn media_cards_keep_the_picture_shape_inside_a_regular_card() {
