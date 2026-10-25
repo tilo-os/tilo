@@ -49,6 +49,7 @@ use std::fmt::Write as _;
 use std::future::Future;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -65,10 +66,12 @@ use tokio::time::Instant;
 use url::{Host, Url};
 
 use super::{
-    ERROR_HEADER, FINAL_URL_HEADER, FORWARD_PREFIX, MARKER_HEADER, MARKER_PARAM, ProxyFailure,
-    SESSION_PARAM, VERSION,
+    ERROR_HEADER, FINAL_URL_HEADER, FORWARD_PREFIX, MARKER_HEADER, MARKER_PARAM, PEER_LOCAL,
+    PEER_PARAM, ProxyFailure, SESSION_PARAM, VERSION,
 };
 use crate::NetError;
+
+mod local;
 
 /// Bounds of one proxied exchange, and who may reach what.
 #[derive(Clone, Debug)]
@@ -87,6 +90,11 @@ pub struct Config {
     pub limits: RateLimits,
     /// How much it relays per visitor and per room over a window.
     pub budgets: Budgets,
+    /// Whether it also answers for the host machine's own files
+    /// ([`PEER_LOCAL`]): an app in a page reads the same paths its person
+    /// reads in the desktop session, without downloading them. Off by
+    /// default, and never on from a client's say-so.
+    pub peer: bool,
 }
 
 impl Default for Config {
@@ -99,6 +107,7 @@ impl Default for Config {
             destinations: Destinations::Public,
             limits: RateLimits::default(),
             budgets: Budgets::default(),
+            peer: false,
         }
     }
 }
@@ -844,7 +853,7 @@ impl FetchProxy {
     {
         let config = &self.inner.config;
         let (parts, body) = request.into_parts();
-        let checked = check_request(&parts).map_err(|refused| (refused, None))?;
+        let checked = check_request(&parts, config.peer).map_err(|refused| (refused, None))?;
         let (mut method, mut url, form) = checked;
         let origin = |url: &Url| Some(url.origin().ascii_serialization());
         let permit = self
@@ -856,6 +865,9 @@ impl FetchProxy {
         let mut headers = outgoing_headers(&parts.headers);
         if form == Form::Query {
             piece_of_range(&mut headers);
+        }
+        if url.scheme() == PEER_SCHEME {
+            return Self::peer_answer(self, caller, rooms, &method, &url, deadline, permit);
         }
         let mut hop = 0usize;
         let answer = loop {
@@ -924,6 +936,36 @@ impl FetchProxy {
             _permit: permit,
         };
         streamed(answer, &url, relayed).map_err(|refused| (refused, origin(&url)))
+    }
+
+    /// The answer to a peer request: this machine's own file, read here and
+    /// relayed under the same bounds, clock and budgets as a site's answer, so
+    /// a page reads either without knowing which it got.
+    fn peer_answer(
+        proxy: &FetchProxy,
+        caller: Caller,
+        rooms: &[Room],
+        method: &Method,
+        url: &Url,
+        deadline: Instant,
+        permit: Permit,
+    ) -> Result<Response<ProxyBody>, (Refused, Option<String>)> {
+        let origin = || Some(url.origin().ascii_serialization());
+        let path = PathBuf::from(url.path());
+        let answer = local::answer(&path, method);
+        log_answer(caller, method, url, answer.status(), 0);
+        let relayed = Relayed {
+            answer: None,
+            deadline,
+            received: 0,
+            limit: proxy.inner.config.max_response_bytes,
+            proxy: proxy.clone(),
+            caller,
+            rooms: rooms.into(),
+            over_budget: false,
+            _permit: permit,
+        };
+        streamed(answer, url, relayed).map_err(|refused| (refused, origin()))
     }
 
     /// Take one request from `caller`'s budget and one place in flight.
@@ -1131,7 +1173,13 @@ pub fn query_session(method: &Method, uri: &::http::Uri) -> Option<String> {
         .flatten()
 }
 
-fn check_request(parts: &::http::request::Parts) -> Result<(Method, Url, Form), Refused> {
+/// The scheme a peer request names: this machine's own path, not a site.
+const PEER_SCHEME: &str = "file";
+
+fn check_request(
+    parts: &::http::request::Parts,
+    peer: bool,
+) -> Result<(Method, Url, Form), Refused> {
     let header = parts
         .headers
         .get(MARKER_HEADER)
@@ -1163,6 +1211,33 @@ fn check_request(parts: &::http::request::Parts) -> Result<(Method, Url, Form), 
                 "url is missing or not an absolute URL",
             )
         })?;
+    // A peer request is this machine's own path, written as the URL it is on
+    // disk; the host reads it only when it offers [`Config::peer`].
+    let peer_target = query_param(&parts.uri, PEER_PARAM).as_deref() == Some(PEER_LOCAL);
+    if peer_target {
+        if !peer {
+            return Err(Refused::new(
+                ProxyFailure::BadRequest,
+                "this host does not answer for its own files",
+            ));
+        }
+        if target.scheme() != PEER_SCHEME {
+            return Err(Refused::new(
+                ProxyFailure::BadRequest,
+                format!(
+                    "a peer request names a {PEER_SCHEME}: path, not {}",
+                    target.scheme()
+                ),
+            ));
+        }
+        return Ok((parts.method.clone(), target, form));
+    }
+    if query_param(&parts.uri, PEER_PARAM).is_some() {
+        return Err(Refused::new(
+            ProxyFailure::BadRequest,
+            format!("{PEER_PARAM} is missing or names no known resource"),
+        ));
+    }
     if !matches!(target.scheme(), "http" | "https") {
         return Err(Refused::new(
             ProxyFailure::BadRequest,

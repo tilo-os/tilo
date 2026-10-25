@@ -187,3 +187,110 @@ async fn a_host_without_the_proxy_names_none() {
     assert_eq!(peer.fetch_proxy_session(), None);
     peer.close();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admitted_page_reads_a_file_on_the_hosts_machine_without_a_401() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "room-host", DeviceCapabilities::host());
+    let laptop = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host_serving(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+        HostSettings {
+            plain_listen: Some("127.0.0.1:0".parse().unwrap()),
+            fetch_proxy: Some(FetchProxySetup {
+                config: tilo_net::proxy::host::Config {
+                    peer: true,
+                    ..Default::default()
+                },
+                metrics_file: None,
+            }),
+            ..Default::default()
+        },
+    )
+    .await;
+    let plain = host.web.plain_origin.clone().unwrap();
+    let plain = plain.replace("localhost", "127.0.0.1");
+    let peer = start_peer(
+        Host::Https(host.https()),
+        laptop.cert.clone(),
+        host_device.cert.clone(),
+        laptop.key.clone(),
+    );
+    let token = session(&peer).await;
+
+    let directory = state.path().join("shared");
+    std::fs::create_dir_all(&directory).unwrap();
+    let notes = directory.join("Notes.md");
+    std::fs::write(&notes, "# Notes\n").unwrap();
+
+    let proxy = Proxy {
+        endpoint: Url::parse(&format!("{plain}/peer/v1/fetch")).unwrap(),
+        session: Some(token.clone()),
+    };
+    let (url, headers) =
+        proxy::peer_route(&proxy, notes.to_str().unwrap(), &HeaderMap::new()).unwrap();
+    let stream = tokio::net::TcpStream::connect(plain.trim_start_matches("http://"))
+        .await
+        .unwrap();
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
+            .await
+            .unwrap();
+    tokio::spawn(connection);
+    let mut request = hyper::Request::get(format!("{}?{}", url.path(), url.query().unwrap()))
+        .header(hyper::header::HOST, "localhost");
+    for (name, value) in &headers {
+        request = request.header(name, value);
+    }
+    let response = sender
+        .send_request(
+            request
+                .body(http_body_util::Empty::<bytes::Bytes>::new())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response.headers()["content-type"],
+        "text/markdown; charset=utf-8"
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], b"# Notes\n");
+
+    // The same request without the session is still the page's 401: the
+    // session binding is what makes the file readable, nothing else.
+    let stranger = Proxy {
+        endpoint: proxy.endpoint.clone(),
+        session: Some(hex::encode([3; 32])),
+    };
+    let (url, headers) =
+        proxy::peer_route(&stranger, notes.to_str().unwrap(), &HeaderMap::new()).unwrap();
+    let stream = tokio::net::TcpStream::connect(plain.trim_start_matches("http://"))
+        .await
+        .unwrap();
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
+            .await
+            .unwrap();
+    tokio::spawn(connection);
+    let mut request = hyper::Request::get(format!("{}?{}", url.path(), url.query().unwrap()))
+        .header(hyper::header::HOST, "localhost");
+    for (name, value) in &headers {
+        request = request.header(name, value);
+    }
+    let response = sender
+        .send_request(
+            request
+                .body(http_body_util::Empty::<bytes::Bytes>::new())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 401);
+    peer.close();
+}
