@@ -8,7 +8,7 @@
 
 use crate::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
-    WorkspaceId, WorkspaceTree, next_id,
+    WorkspaceId, WorkspaceTree,
 };
 
 /// A window the person asked to be taken to: what
@@ -259,7 +259,7 @@ pub fn adopt_toplevel_at(
         return target;
     }
     let new_tab = Tab {
-        id: next_id(),
+        id: tree.mint_id(),
         title: tab_label_for_foreign(&resolved_id),
         tile: TileContent::Foreign {
             app_id: resolved_id,
@@ -313,7 +313,7 @@ pub fn open_hosted_app(
 ) -> TabId {
     let title = title.into();
     let new_tab = Tab {
-        id: next_id(),
+        id: tree.mint_id(),
         title: title.clone(),
         tile: TileContent::AppPlaceholder { kind, label: title },
         app_title: None,
@@ -344,7 +344,7 @@ pub fn hold_place_for_launch(
     placement: Placement,
 ) -> TabId {
     let new_tab = Tab {
-        id: next_id(),
+        id: tree.mint_id(),
         title: label.to_owned(),
         tile: TileContent::LocalApp {
             app_id: package_id.to_owned(),
@@ -426,13 +426,8 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
         return false;
     };
     if destination_strip != source_strip {
-        return tree.move_tab_across_strips(
-            source_strip,
-            destination_strip,
-            tab_id,
-            next_id(),
-            target,
-        );
+        let group = tree.mint_id();
+        return tree.move_tab_across_strips(source_strip, destination_strip, tab_id, group, target);
     }
 
     let Some(strip) = tree
@@ -514,7 +509,7 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
         ui::widget::TabDropTarget::GroupGap { gap_index } => topology.insert(
             gap_index.min(topology.len()),
             ui::widget::GroupTopology {
-                id: next_id(),
+                id: tree.mint_id(),
                 tab_ids: vec![tab_id],
                 active_tab: tab_id,
                 width: ui::widget::WindowWidth::Normal,
@@ -539,11 +534,12 @@ fn tab_insert_index(group: &WindowGroup, placement: Placement) -> usize {
     }
 }
 
-/// A new window group holding only `tab`, which is active in it.
-fn lone_group(tab: Tab) -> WindowGroup {
+/// A new window group holding only `tab`, which is active in it, its id
+/// minted under `salt`, the tree's.
+fn lone_group(tab: Tab, salt: u16) -> WindowGroup {
     let active_tab = tab.id;
     WindowGroup {
-        id: next_id(),
+        id: crate::shell::state::mint_under(salt),
         tabs: vec![tab],
         active_tab,
         width: WindowWidth::Normal,
@@ -557,6 +553,7 @@ fn lone_group(tab: Tab) -> WindowGroup {
 /// hosted-app opens route through here. Returns `new_tab`'s id even when it can't be spliced (no active workspace).
 pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -> TabId {
     let tab_id = new_tab.id;
+    let salt = tree.local_salt();
 
     // Resolve the focused strip + group *before* taking the mutable workspace borrow: both live on the tree, not on the workspace.
     let Some(ws_id) = tree.desktop.active_workspace().map(|w| w.id) else {
@@ -571,10 +568,10 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
 
     // No strips at all: synthesize one around the new tab. Mirrors `apply_workspace_drop`'s empty-strip path.
     if ws.strips.is_empty() {
-        let group = lone_group(new_tab);
+        let group = lone_group(new_tab, salt);
         let group_id = group.id;
         let strip = Strip {
-            id: StripId::from(next_id()),
+            id: StripId::from(crate::shell::state::mint_under(salt)),
             name: String::new(),
             window_groups: vec![group],
         };
@@ -638,7 +635,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         return tab_id;
     }
 
-    let group = lone_group(new_tab);
+    let group = lone_group(new_tab, salt);
     let group_id = group.id;
     // Right of the group the placement named, falling back to the focused one when that group is gone, and to the end of the strip when nothing is focused either.
     let anchor = match placement {
@@ -1424,7 +1421,7 @@ pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::state::WorkspaceTree;
+    use crate::shell::state::{WorkspaceTree, next_id};
     use std::collections::BTreeMap;
 
     /// The group holding the foreign tab for `surface_id`, wherever placement put it — tests assert

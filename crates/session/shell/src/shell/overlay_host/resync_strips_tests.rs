@@ -1025,12 +1025,12 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         let remote_id = |counter| (u64::from(PEER_SALT) << 48) | counter;
 
         let mut local = WorkspaceTree::bootstrap_demo();
-        local.set_salt_override(HOST_SALT);
+        local.set_peer_salt(HOST_SALT);
         let local_workspace = local.desktop.active;
         let room = local.room_of(local_workspace).expect("local room");
 
         let mut peer = WorkspaceTree::bootstrap_demo();
-        peer.set_salt_override(PEER_SALT);
+        peer.set_peer_salt(PEER_SALT);
         let peer_workspace = peer.desktop.active;
         assert!(peer.stand_in_room(peer_workspace, room));
         // What the room's admitted document carries of the peer's layout,

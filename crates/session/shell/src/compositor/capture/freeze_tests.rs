@@ -69,7 +69,7 @@ fn tree() -> WorkspaceTree {
         }],
     }];
     let mut tree = WorkspaceTree::default();
-    tree.set_salt_override(SALT);
+    tree.set_peer_salt(SALT);
     tree.desktop.workspaces = vec![ws];
     tree.desktop.active = ws_id;
     tree.desktop.active_strip.insert(ws_id, STRIP);

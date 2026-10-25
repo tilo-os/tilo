@@ -521,39 +521,41 @@ impl GovernedPeerIdentity {
 /// shell modules written against the Cloud-side extension trait.
 pub use tilo_desktop::authority::{WorkspaceAuthority, WorkspaceAuthority as WorkspaceExt};
 
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-/// Process-wide counter behind [`FreshId::new`] and `next_id` — this
-/// compositor's host-side [`tilo_desktop_model::IdMinter`], kept as two
-/// atomics because every subsystem mints through it concurrently.
+/// The counter behind every id minted in this process — the low 48 bits.
+/// The high 16 are the salt of the tree that mints ([`WorkspaceTree::mint_id`]),
+/// so the counter is shared and the namespace is not: two trees in one
+/// process (simulated devices) mint in their own namespaces, and one
+/// counter keeps every id unique within each. Two atomics' worth of state
+/// because every subsystem mints concurrently.
 /// [`WorkspaceTree::seed_next_id_from_self`] advances it past the highest
 /// persisted id at load, or a fresh process restarts at `1` and collides
-/// with an already-loaded entry. Only the low 48 bits come from here; the
-/// high 16 carry [`NEXT_ID_PEER_SALT`] so two peers minting in parallel
-/// never collide — otherwise `apply_changes` folds two distinct
-/// workspaces with the same id into one.
+/// with an already-loaded entry.
 pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// High-16-bit peer salt for every id `next_id` mints. Default `0`
-/// keeps tests on `0x0001, 0x0002, …`; session bootstrap
-/// (`compositor::session_bootstrap::load_session_tree`) overwrites it at
-/// startup with the salt stored beside the state file. `Relaxed`: written
-/// once at boot, nothing piggy-backs on visibility.
-pub(crate) static NEXT_ID_PEER_SALT: AtomicU16 = AtomicU16::new(0);
-
-pub(crate) fn next_id() -> u64 {
-    let counter = NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed);
-    compose_id(NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed), counter)
+/// An id under `salt`, from the process's counter.
+pub(crate) fn mint_under(salt: u16) -> u64 {
+    compose_id(salt, NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed))
 }
 
-/// The process-wide id source as a [`MintIds`], for model operations that
-/// create windows, groups or strips.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ProcessIds;
+/// An id in the unsalted namespace (salt `0`): what a tree whose session
+/// never set a salt mints ([`WorkspaceTree::bootstrap_default`],
+/// `WorkspaceTree::default()`), so fixtures built around such a tree can
+/// make ids matching it. Ids for a device's tree come from
+/// [`WorkspaceTree::mint_id`].
+pub(crate) fn next_id() -> u64 {
+    mint_under(0)
+}
 
-impl MintIds for ProcessIds {
+/// Ids under one salt as a [`MintIds`], for model operations that create
+/// windows, groups or strips: [`WorkspaceTree::ids`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SaltedIds(pub u16);
+
+impl MintIds for SaltedIds {
     fn mint_id(&mut self) -> u64 {
-        next_id()
+        mint_under(self.0)
     }
 }
 
@@ -571,9 +573,11 @@ pub(crate) fn rehomed(workspace: &Workspace, room: RoomId) -> Workspace {
     copy
 }
 
-/// Mint a fresh workspace or strip id from the process-wide counter.
+/// A fresh workspace or strip id in the unsalted namespace, matching a tree
+/// with no salt ([`next_id`]). A device's tree mints its own:
+/// [`WorkspaceTree::mint_strip_id`], [`WorkspaceTree::mint_workspace_id`].
 pub trait FreshId: Sized {
-    /// Allocate a fresh, process-wide unique id.
+    /// Allocate a fresh, process-wide unique id under salt `0`.
     fn new() -> Self;
 }
 
@@ -1314,46 +1318,42 @@ impl WorkspaceTree {
         tilo_desktop_model::apps::record_routes(self.room_docs.get(&room)?).remove(&tab)
     }
 
-    /// Set the process-wide peer salt `next_id` stamps into the high
-    /// 16 bits of every freshly-allocated id. Default `0` keeps
-    /// `WorkspaceId(1)`-style test literals working; two peers under
-    /// distinct salts can never collide. Takes `&mut self` even though
-    /// the salt is process-global, so a per-tree-salt refactor stays a
-    /// one-line change.
+    /// Give this tree its device's salt: every id it mints from now on
+    /// carries it in the high 16 bits, and replication treats that range as
+    /// this tree's own. Must be set **before** the tree mints anything that
+    /// is kept: an id minted under salt `0` is identical on every first
+    /// boot, and the room document keys a window group by id, so two such
+    /// devices fold two distinct windows into one. Ids already minted keep
+    /// their salt — saved ids never change.
     pub fn set_peer_salt(&mut self, salt: u16) {
-        Self::set_process_peer_salt(salt);
+        self.desktop.salt = salt;
     }
 
-    /// [`Self::set_peer_salt`] without a tree to call it on. Must run
-    /// **before** the tree is loaded: ids minted before the salt exists
-    /// land in the shared 0-salt range, identical on every first boot,
-    /// and the room document keys a window group by id — so two such
-    /// peers fold two distinct windows into one. Re-seeding the counter
-    /// afterward does not repair already-minted ids.
-    pub fn set_process_peer_salt(salt: u16) {
-        NEXT_ID_PEER_SALT.store(salt, AtomicOrdering::Relaxed);
-    }
-
-    /// Read the current process-wide peer salt. Mostly used by tests to
-    /// assert on the salt without poking the static directly.
-    pub fn peer_salt(&self) -> u16 {
-        NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed)
-    }
-
-    /// The salt replication treats as this tree's own — the id range
-    /// this tree may write and sweep. `Self::peer_salt_override`
-    /// first, the process-wide salt otherwise.
+    /// The salt this tree mints under and replication treats as its own —
+    /// the id range this tree may write and sweep.
     pub fn local_salt(&self) -> u16 {
-        self.desktop
-            .peer_salt_override
-            .unwrap_or_else(|| NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed))
+        self.desktop.local_salt()
     }
 
-    /// Give this tree a salt without touching the process-wide one, for
-    /// holding two trees at once. The caller must mint matching ids
-    /// itself; `next_id` reads the static.
-    pub fn set_salt_override(&mut self, salt: u16) {
-        self.desktop.peer_salt_override = Some(salt);
+    /// A fresh id (window group, tab, record instance, …) in this tree's
+    /// namespace.
+    pub fn mint_id(&self) -> u64 {
+        mint_under(self.local_salt())
+    }
+
+    /// A fresh strip id in this tree's namespace.
+    pub fn mint_strip_id(&self) -> StripId {
+        StripId(self.mint_id())
+    }
+
+    /// A fresh local workspace id in this tree's namespace.
+    pub fn mint_workspace_id(&self) -> WorkspaceId {
+        WorkspaceId(self.mint_id())
+    }
+
+    /// This tree's namespace as a [`MintIds`], for model operations.
+    pub fn ids(&self) -> SaltedIds {
+        SaltedIds(self.local_salt())
     }
 
     /// Walk every id and advance `NEXT_ID` past the highest counter
@@ -1362,7 +1362,7 @@ impl WorkspaceTree {
     /// without this it collides with persisted ids. Only local-salt ids
     /// count; a remote peer's must not advance our counter.
     pub fn seed_next_id_from_self(&self) {
-        let local_salt = NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed);
+        let local_salt = self.local_salt();
         let mut max_counter: u64 = 0;
         let mut consider = |id: u64| {
             if peer_salt_of(id) == local_salt {
@@ -2250,7 +2250,7 @@ impl WorkspaceTree {
             .any(|w| w.id == derived)
             || self.workspace_aliases.contains_key(&derived)
         {
-            WorkspaceId::new()
+            self.mint_workspace_id()
         } else {
             derived
         }
@@ -2557,7 +2557,14 @@ impl WorkspaceTree {
     ///
     /// For a populated tree, use [`Self::bootstrap_demo`].
     pub fn bootstrap_default() -> Self {
+        Self::bootstrap_default_with_salt(0)
+    }
+
+    /// [`Self::bootstrap_default`] for the device whose salt is `salt`: its
+    /// first workspace is minted in that device's namespace.
+    pub fn bootstrap_default_with_salt(salt: u16) -> Self {
         let mut tree = Self::default();
+        tree.set_peer_salt(salt);
         let (home, _) = tree.create_hosted_workspace("Home");
         tree.desktop.active = home;
         tree.seed_doc_from_cache();
@@ -3194,7 +3201,7 @@ impl WorkspaceTree {
     /// Append a workspace named `name` showing `room`.
     fn append_workspace_for_room(&mut self, name: &str, room: RoomId) -> WorkspaceId {
         let ws_id = self.new_workspace_id(room);
-        let strip_id = StripId::new();
+        let strip_id = self.mint_strip_id();
         let mut ws = Workspace::in_room(ws_id, room, name);
         ws.strips = vec![Strip {
             id: strip_id,
@@ -3471,6 +3478,7 @@ impl WorkspaceTree {
         continuation: &crate::shell::personal_continuity::WorkspaceContinuation,
         labels: &dyn ContinuationLabels,
     ) -> bool {
+        let salt = self.local_salt();
         let existing_continuation_tabs = self.continuation_tabs.clone();
         let (changed, file_references, file_reference_removals, inserted_continuation_tabs) = {
             let mut file_references = Vec::new();
@@ -3585,12 +3593,12 @@ impl WorkspaceTree {
                 while workspace.strips.len() <= app.placement.strip as usize {
                     workspace
                         .strips
-                        .push(Strip::new(StripId::new(), "Available elsewhere"));
+                        .push(Strip::new(StripId(mint_under(salt)), "Available elsewhere"));
                 }
                 let strip = &mut workspace.strips[app.placement.strip as usize];
                 while strip.window_groups.len() <= app.placement.group as usize {
                     strip.window_groups.push(WindowGroup {
-                        id: next_id(),
+                        id: mint_under(salt),
                         tabs: Vec::new(),
                         active_tab: 0,
                         width: WindowWidth::Normal,
@@ -3798,9 +3806,10 @@ impl WorkspaceTree {
     ) -> Option<GroupId> {
         let before_workspaces = self.desktop.workspaces.clone();
         let before_doc = self.doc.clone();
-        let moved =
-            self.desktop
-                .split_tab_into_new_group(strip_id, tab_id, insert_at, &mut ProcessIds)?;
+        let mut ids = self.ids();
+        let moved = self
+            .desktop
+            .split_tab_into_new_group(strip_id, tab_id, insert_at, &mut ids)?;
         if !tilo_desktop_model::desktop_doc::apply_tab_move(
             &mut self.doc,
             strip_id,
@@ -3950,7 +3959,9 @@ impl WorkspaceTree {
         self.desktop
             .active_workspace()
             .ok_or("there is no active workspace")?;
-        let made = apply_to_active_workspace(&mut self.desktop, command, &mut || Ok(next_id()))?;
+        let salt = self.local_salt();
+        let made =
+            apply_to_active_workspace(&mut self.desktop, command, &mut || Ok(mint_under(salt)))?;
         let strip = if let Some(strip) = renamed {
             strip
         } else {

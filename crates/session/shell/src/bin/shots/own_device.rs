@@ -142,7 +142,7 @@ impl OwnDevice {
     pub fn laptop(person: &str) -> Self {
         let (key, cert) = device(&root(), 0x1A, "Laptop");
         let mut tree = WorkspaceTree::default();
-        tree.set_salt_override(LAPTOP_SALT);
+        tree.set_peer_salt(LAPTOP_SALT);
         let room = seed_research(&mut tree, LAPTOP_SALT, person);
         let list = PersonalWorkspaces::new(cert.user_public_key, cert.device_public_key);
         Self {

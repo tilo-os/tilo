@@ -1307,7 +1307,7 @@ mod tests {
         });
         workspace.strips.push(strip);
         let mut tree = WorkspaceTree::default();
-        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
+        tree.set_peer_salt(crate::shell::state::peer_salt_of(tab_id));
         tree.desktop.active = workspace.id;
         tree.desktop.workspaces = vec![workspace];
         let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
@@ -1366,7 +1366,7 @@ mod tests {
             focus_history: Vec::new(),
         });
         let mut tree = WorkspaceTree::default();
-        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
+        tree.set_peer_salt(crate::shell::state::peer_salt_of(tab_id));
         tree.desktop.active = workspace.id;
         tree.desktop.workspaces = vec![workspace];
         let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
@@ -1430,7 +1430,7 @@ mod tests {
         });
         workspace.strips.push(strip);
         let mut tree = WorkspaceTree::default();
-        tree.set_salt_override(crate::shell::state::peer_salt_of(tab));
+        tree.set_peer_salt(crate::shell::state::peer_salt_of(tab));
         tree.desktop.active = workspace.id;
         tree.desktop.workspaces = vec![workspace];
         tree.remember_local_app_record(tab, 8183);
