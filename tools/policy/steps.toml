@@ -98,6 +98,8 @@ run = """python3 tools/policy/check_workflow_package_paths.py \
   --check tilo-relay 't.toml#image-relay' \
   --check registry-server 't.toml#image-registry-server' \
   --check tilo-runtime 't.toml#runtime-macos' \
+  --check notes 't.toml#apps-macos' \
+  --check tilo-install-helpers 't.toml#vm-test-binaries' \
   --check tilo-app-cli 't.toml#sdk-linux'"""
 inputs = ["t.toml", ".forgejo/workflows/**", "Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
 pre_push = true

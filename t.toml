@@ -482,7 +482,7 @@ inputs = [".forgejo/**", ".config/visual-goldens-image", "dist/ci/install-sccach
 name = "policy/workflow-package-paths"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-run = "python3 tools/policy/findings.py python3 tools/policy/check_workflow_package_paths.py --check tilo-advisory-lock 't.toml#canary-ci-builder-cache-cold-x86_64' --check tilo-advisory-lock 't.toml#canary-ci-builder-cache-warm-x86_64' --check tilo-crypto 't.toml#development-signing-context-x86_64' --check tilo-fs 't.toml#real-fuse' --check tilo-relay 't.toml#image-relay' --check registry-server 't.toml#image-registry-server' --check tilo-runtime 't.toml#runtime-macos' --check tilo-app-cli 't.toml#sdk-linux'"
+run = "python3 tools/policy/findings.py python3 tools/policy/check_workflow_package_paths.py --check tilo-advisory-lock 't.toml#canary-ci-builder-cache-cold-x86_64' --check tilo-advisory-lock 't.toml#canary-ci-builder-cache-warm-x86_64' --check tilo-crypto 't.toml#development-signing-context-x86_64' --check tilo-fs 't.toml#real-fuse' --check tilo-relay 't.toml#image-relay' --check registry-server 't.toml#image-registry-server' --check tilo-runtime 't.toml#runtime-macos' --check notes 't.toml#apps-macos' --check tilo-install-helpers 't.toml#vm-test-binaries' --check tilo-app-cli 't.toml#sdk-linux'"
 hints = { builds = false }
 inputs = ["t.toml", ".forgejo/workflows/**", "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "tools/ci/t_matrix.py", "tools/policy/check_workflow_package_paths.py", "tools/policy/findings.py"]
 
