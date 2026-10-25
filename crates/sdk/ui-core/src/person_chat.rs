@@ -439,6 +439,25 @@ pub fn contacts() -> Vec<Contact> {
     contacts_snapshot()
 }
 
+/// Ask the room for its people again, when someone is there whom the last
+/// list did not have: at most once every ten seconds, and the list in hand
+/// stays until the new one comes.
+pub fn refresh_contacts() {
+    let Ok(mut value) = cache().lock() else {
+        return;
+    };
+    current(&mut value);
+    let recent = value.attempts.get("").is_some_and(|at| {
+        crate::time::now().saturating_duration_since(*at) < Duration::from_secs(10)
+    });
+    if recent || value.pending.contains_key("") {
+        return;
+    }
+    value.attempts.remove("");
+    drop(value);
+    load_contacts_once();
+}
+
 /// Public membership keys from the last authorized snapshot.
 /// Semantic row resolution may inspect these while an invocation is being
 /// decoded, before its private effect context exists. This starts no RPC and
