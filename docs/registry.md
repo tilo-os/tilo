@@ -374,6 +374,21 @@ tilo-registry-server add-publisher \
     --first-party
 ```
 
+`add-publisher` replaces a row, so the namespaces it names are the whole of
+what the publisher may claim afterwards. To give an allowlisted publisher one
+more namespace beside the ones it owns already, pass `--grant`: the namespaces
+it does not own yet are added to its row and the rest of the row is left as it
+is. A grant never creates a publisher — that is an add — so a key that is not
+allowlisted yet is refused, and the replace path stays for correcting a row.
+
+```
+tilo-registry-server add-publisher \
+    --pubkey <publisher-hex> \
+    --can-add-new \
+    --namespace com.acme \
+    --grant
+```
+
 **Upgrading an existing registry.** Rows written before namespaces existed
 were read as `so.tilo`; they now own nothing. `serve` and `list-publishers`
 log a warning naming each such key, and `list-publishers` shows it with

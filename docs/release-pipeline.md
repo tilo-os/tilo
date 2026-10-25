@@ -199,9 +199,15 @@ t dispatch publish-os-release --ref stable
   `latest`; a `gen<N>` already published is never moved.
 
 The generation is the next one of the signed published series
-(os/dev/next-generation.sh), and the image carries it. `t test os-release-rehearsal-x86_64`
-runs the boot signing, signing and publishing of this tree with throwaway keys into an
-OCI layout, without credentials.
+(os/dev/next-generation.sh), and the image carries it. A series starts with
+`gen1`: `next-generation.sh` reads an absent repository as empty only under
+`TILO_ALLOW_EMPTY_SERIES=1`, and only when the registry authenticated the read
+and answered "name unknown". A genuinely absent repository, a deleted or
+renamed one, and an unreadable one are otherwise the same answer, so the
+first publication is published from a tree whose generation was allocated
+that way on purpose with no signed series to read. `t test
+os-release-rehearsal-x86_64` runs the boot signing, signing and publishing of
+this tree with throwaway keys into an OCI layout, without credentials.
 
 ## Dev VM disks
 
