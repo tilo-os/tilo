@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The Activity pane (src/activity.rs) and the Feedback composer
 # (src/feedback.rs) load as their own modules.
-tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity", "deferred-model-clients", "deferred-feedback-composer"] }
+tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity", "deferred-model-clients", "deferred-feedback-composer", "deferred-people-overlay"] }
 tilo-desktop-surface = { path = "../../session/desktop-surface" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 # Search loads as its own module the first time something searches

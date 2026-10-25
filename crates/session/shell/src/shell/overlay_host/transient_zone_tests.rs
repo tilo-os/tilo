@@ -84,7 +84,7 @@ fn no_transient_overlaps_a_window_bar() {
     let bars = fb.host().window_bar_rects();
     assert!(!bars.is_empty(), "the window's bar is on screen");
     let banner = fb.host().notification_banners_rect();
-    let follow = fb.host().follow_chip_rect;
+    let follow = fb.host().follow_banner.chip_rect();
     assert!(!banner.is_zero_area(), "the banner is up");
     assert!(!follow.is_zero_area(), "the follow bar is up");
     let area = fb.host().overlay_area();
