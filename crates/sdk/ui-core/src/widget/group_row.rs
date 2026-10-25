@@ -5008,6 +5008,7 @@ impl Widget for GroupRow {
                     .iter()
                     .filter(|id| !self.shown_elsewhere.contains(id)),
             );
+            crate::window_pictures::settled(self.groups.iter().map(|group| &group.id));
             self.draw_handles(
                 scene,
                 transform,
@@ -5251,6 +5252,15 @@ impl Widget for GroupRow {
         // a parent's subtree cache would otherwise keep re-emitting the
         // frame the fade started in.
         if self.scroll_dirty || self.sibling_fade_needs_frame() {
+            return true;
+        }
+        // A window just wanted small has no picture until the strip draws
+        // it once more.
+        if self
+            .groups
+            .iter()
+            .any(|group| crate::window_pictures::owed(group.id))
+        {
             return true;
         }
         // A strip come to rest still shows the desktop where its pan began:
