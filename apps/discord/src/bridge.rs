@@ -252,8 +252,8 @@ fn about<'a>(item: Option<&'a str>, event: &'a Value) -> &'a str {
 const POSTS: &[&str] = &["post", "share-resource", "share-window"];
 
 /// The Chat verbs that change how a share reads without editing its words:
-/// its sharer stopping it, or the share ending with its resource.
-const SHARE_CHANGES: &[&str] = &["stop-sharing", "end-share"];
+/// its sharer stopping it, or closing or reopening the window it shows.
+const SHARE_CHANGES: &[&str] = &["stop-sharing", "share-open"];
 
 fn posts(verb: &str) -> bool {
     POSTS.contains(&verb)
