@@ -1561,22 +1561,33 @@ mod tests {
                 context.provide_open_file(file);
             },
         );
-        let owner = session.network().native_owner().unwrap();
+        // The room's host holds the record: committed in the clear, or, in
+        // a room whose records are sealed channels, as the sealed writes
+        // the host keeps under the record's wire name.
+        let app = notes::definition().app_id;
         let record = RecordId::for_tab(93).to_string();
+        let wire = session
+            .network()
+            .register_local_record(app, &session.room, &record);
+        let host = session
+            .network()
+            .room_host()
+            .expect("the session runs its host");
+        let runtime = session.network().runtime_handle().unwrap();
         until(
             &mut [&mut notes],
             "the Notes tab's record exists in the room",
             || {
-                owner
-                    .with_current(room, |view| {
-                        Ok(view
-                            .peer()
-                            .document(notes::definition().app_id, &record)
-                            .is_some())
+                runtime
+                    .block_on(host.rooms().record_routes(&session.room))
+                    .is_ok_and(|routes| {
+                        routes.iter().any(|(held_app, held)| {
+                            held_app == app && (*held == record || *held == wire)
+                        })
                     })
-                    .unwrap_or(false)
             },
         );
+        drop(host);
         drop(notes);
         drop(apps);
         drop(session);
