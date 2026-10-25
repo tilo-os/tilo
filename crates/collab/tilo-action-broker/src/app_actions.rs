@@ -75,6 +75,10 @@ pub struct AppActionConsentRequest {
     /// The invocation as the person reviews it, field by field, where they
     /// confirm exact arguments: what is admitted is what these render.
     pub draft: Option<tilo_actions::Draft>,
+    /// The change the step makes, before and after, where it previews it
+    /// ([`crate::services::Preview`]): the person decides on the difference,
+    /// and what they confirm is what it shows.
+    pub preview: Option<crate::services::Preview>,
 }
 
 /// The Store moderation disclosure and the root identity the host will use.
