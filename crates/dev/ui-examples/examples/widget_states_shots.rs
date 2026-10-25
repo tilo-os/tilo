@@ -236,6 +236,15 @@ fn control_specs() -> Vec<Spec> {
         widget("Button, plain", 56.0, |c, _| {
             button(ButtonRole::Plain, "Details", c)
         }),
+        widget("Menu button", 56.0, |c, _| match c.st {
+            St::Selected | St::Error => None,
+            st => boxed(
+                Button::new("menu", "Editor")
+                    .control_size(c.size)
+                    .with_enabled(st != St::Disabled)
+                    .with_menu(Vec::new()),
+            ),
+        }),
         widget("Key", 56.0, |c, _| match c.st {
             St::Error => None,
             st => boxed(

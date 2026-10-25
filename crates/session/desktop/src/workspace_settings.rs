@@ -41,7 +41,7 @@ pub mod agent_access;
 pub mod overlay;
 mod people_pane;
 
-pub use people_pane::{draw_members_pane, member_row_controls, ownership_button};
+pub use people_pane::{member_row_controls, member_row_offers, ownership_button};
 
 /// The host's application catalogue, as workspace settings name apps and
 /// offer them as default openers.
@@ -3024,18 +3024,6 @@ pub fn members_authority_note(is_owner: bool) -> Option<String> {
     (!is_owner).then(|| t("workspace-settings-owner-only"))
 }
 
-/// Pointer and accessibility target for the ownership action entry point in
-/// the Members intro card.
-pub fn ownership_action_rect(pane_rect: Rect) -> Rect {
-    let center_y = pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT / 2.0;
-    Rect::new(
-        pane_rect.x1 - PANE_PAD_X - 168.0,
-        center_y - 18.0,
-        pane_rect.x1 - PANE_PAD_X - 8.0,
-        center_y + 18.0,
-    )
-}
-
 /// Plain-language ownership state shared by visual rendering, accessibility
 /// snapshots, and deterministic UI tests.
 pub fn ownership_transfer_status(
@@ -5254,66 +5242,6 @@ mod members_pane_tests {
 
         let viewer = "viewer".to_string();
         assert!(governance_resource(&ws, &viewer).actions.is_empty());
-    }
-
-    #[test]
-    fn draw_members_pane_paints_members_and_skips_a_zero_area_pane() {
-        {
-            let theme = Theme::dark();
-            let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-            let mut tr = TextRenderer::new();
-
-            let mut empty = Scene::new();
-            draw_members_pane(
-                &mut empty,
-                Affine::IDENTITY,
-                pane,
-                (
-                    &Workspace::new(WorkspaceId::default(), "empty"),
-                    &crate::collaborators::PeopleNames::default(),
-                ),
-                &OWNER.to_string(),
-                true,
-                &mut tr,
-                &theme,
-            );
-            let mut full = Scene::new();
-            draw_members_pane(
-                &mut full,
-                Affine::IDENTITY,
-                pane,
-                (
-                    &ws_with_two_members(),
-                    &crate::collaborators::PeopleNames::default(),
-                ),
-                &OWNER.to_string(),
-                true,
-                &mut tr,
-                &theme,
-            );
-            assert!(
-                full.encoding().draw_tags.len() > empty.encoding().draw_tags.len(),
-                "a populated roster must paint more than the empty state"
-            );
-        }
-
-        {
-            let ws = ws_with_two_members();
-            let mut scene = Scene::new();
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            draw_members_pane(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(100.0, 100.0, 100.0, 100.0),
-                (&ws, &crate::collaborators::PeopleNames::default()),
-                &OWNER.to_string(),
-                true,
-                &mut tr,
-                &theme,
-            );
-            assert!(scene.encoding().draw_tags.is_empty());
-        }
     }
 }
 
