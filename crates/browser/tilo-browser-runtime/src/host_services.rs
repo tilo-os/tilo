@@ -39,6 +39,14 @@ pub(crate) struct ModelConfig {
 }
 
 impl ModelConfig {
+    /// What a report's review calls this model: the one the embedding host
+    /// chose, else its model service's default.
+    pub(crate) fn name(&self) -> String {
+        self.model_id
+            .clone()
+            .unwrap_or_else(|| "the model service's default model".into())
+    }
+
     pub(crate) fn connect(&self) -> Result<ui::models::Models, String> {
         if self.session_token.trim().is_empty() {
             return Err("model session is required".into());

@@ -15,7 +15,6 @@
 //! never the original text, and each reader renders them its own way.
 
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use tilo_feedback_review::{
@@ -969,37 +968,13 @@ impl ReviewedFeedback {
 #[must_use]
 pub fn model_prompt(request: &ReviewTraceRequest, exposure: Exposure) -> (String, Vec<ModelText>) {
     let view = tilo_feedback_review::model_view(request, exposure);
-    let mut prompt = String::from(
-        "You check a bug report before it is posted where many people read it. \
-         Find every personal detail in the numbered texts below: names of people, \
-         email addresses, phone numbers, postal addresses, account numbers, \
-         passwords or keys, and anything else that identifies or concerns a person. \
-         Interface words such as button labels are not personal. Text in \u{2039}angle quotes\u{203A} \
-         is already hidden. Answer with JSON only, in this shape: \
-         {\"hide\":[{\"text\":0,\"quote\":\"exact words from that text\",\"category\":\"name\"}]} \
-         where category is one of name, email, phone, address, account_number, \
-         credential_like, free_form_personal. Answer {\"hide\":[]} when nothing is personal.\n\n",
+    let prompt = crate::model_review::prompt(
+        view.iter()
+            .enumerate()
+            .filter(|(_, text)| text.quotable())
+            .map(|(index, text)| (index, text.shown.as_str())),
     );
-    for (index, text) in view.iter().enumerate() {
-        if text.quotable() {
-            let _ = writeln!(prompt, "[{index}] {}", text.shown);
-        }
-    }
     (prompt, view)
-}
-
-#[derive(Deserialize)]
-struct ModelAnswer {
-    #[serde(default)]
-    hide: Vec<ModelHide>,
-}
-
-#[derive(Deserialize)]
-struct ModelHide {
-    text: usize,
-    quote: String,
-    #[serde(default)]
-    category: Option<RedactionCategory>,
 }
 
 /// The redactions a model's `answer` to [`model_prompt`] proposes, each
@@ -1009,13 +984,7 @@ struct ModelHide {
 /// # Errors
 /// Refuses an answer with no JSON object in it.
 pub fn model_proposals(view: &[ModelText], answer: &str) -> Result<ReviewProposals, Error> {
-    let start = answer.find('{').ok_or(Error::Invalid("model answer"))?;
-    let end = answer.rfind('}').ok_or(Error::Invalid("model answer"))?;
-    let json = answer
-        .get(start..=end)
-        .ok_or(Error::Invalid("model answer"))?;
-    let parsed: ModelAnswer =
-        serde_json::from_str(json).map_err(|_| Error::Invalid("model answer"))?;
+    let parsed = crate::model_review::parse(answer)?;
     let confidence = Confidence::new(70).map_err(|_| Error::Invalid("model answer"))?;
     let mut redactions: Vec<RedactionProposal> = Vec::new();
     for hide in parsed

@@ -32,7 +32,7 @@ use tilo_relay_protocol::rooms::{JoinReply, JoinStep, PreAdmission, RoomRole, jo
 use tilo_relay_session::rooms::SetMemberRoleRequest;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use crate::web_cli::{RoomArgs, enrol, operator_lines, start_relay, web_config};
+use crate::web_cli::{RoomArgs, enrol, operator_lines, start_relay_lending, web_config};
 
 /// The secret store this host keeps room roots in.
 pub(crate) const SECRET_APP: &str = "so.tilo.relay";
@@ -200,7 +200,9 @@ pub struct PersistentArgs {
     /// The model API key the room's moderation agent asks with, mounted
     /// from the operator's encrypted secrets; kept in this host's secret
     /// store. Without it the room has no moderation agent and reports wait
-    /// for its human Moderators.
+    /// for its human Moderators. The same model looks over the reports its
+    /// members write in the feedback channel before they send them, asked
+    /// through the room, so their pages never hold the key.
     #[arg(long = "moderation-key-file", value_name = "PATH")]
     pub moderation_key_file: Option<PathBuf>,
     /// The model the moderation agent asks.
@@ -1471,6 +1473,21 @@ pub(crate) async fn run(
     if let Some(agent) = &moderation {
         tracing::info!(model = agent.model(), "moderation agent loaded");
     }
+    // The same model looks over the reports the room's members write
+    // before they send them, asked through the room on their behalf.
+    let feedback_reviewer = moderation
+        .is_some()
+        .then(|| {
+            crate::persistent_moderation::RoomReviewer::from_store(
+                &store,
+                persistent.moderation_model.as_deref(),
+            )
+        })
+        .transpose()?
+        .map(|reviewer| {
+            std::sync::Arc::new(reviewer)
+                as std::sync::Arc<dyn tilo_agent_participant::FeedbackReviewer>
+        });
     let host = host_key(&state)?;
     let host_cert = enrol(
         &root,
@@ -1484,7 +1501,7 @@ pub(crate) async fn run(
         member_limits: persistent.member_limits.then(Default::default),
         ..Default::default()
     };
-    let hosted = start_relay(
+    let hosted = start_relay_lending(
         config,
         RelayIdentity {
             user_public_key: root.verifying_key().to_bytes(),
@@ -1494,6 +1511,7 @@ pub(crate) async fn run(
         },
         &args.web,
         &state,
+        crate::web_cli::Lent { feedback_reviewer },
     )
     .await?;
     let rooms = hosted

@@ -139,7 +139,8 @@ pub struct PersistentConfig {
     /// The Discord bot token, when the bridge runs.
     pub discord_token_file: Option<PathBuf>,
     /// The model API key the room's moderation agent asks with, when it
-    /// runs; mounted from the operator's encrypted secrets.
+    /// runs; mounted from the operator's encrypted secrets. The same model
+    /// looks over members' feedback reports before they are sent.
     pub moderation_key_file: Option<PathBuf>,
     /// The model the moderation agent asks, when not the default.
     pub moderation_model: Option<String>,

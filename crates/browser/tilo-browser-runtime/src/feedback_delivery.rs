@@ -41,7 +41,7 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-struct Connection {
+pub(crate) struct Connection {
     peer: PeerHandle,
     events: PeerEvents,
     reporter: DeviceCert,
@@ -56,6 +56,11 @@ struct Connection {
     filed: HashMap<String, web_time::Instant>,
     admission: Option<(Enrollment, web_time::Instant)>,
     receipts: HashMap<String, SignedReceipt>,
+    /// The model the owner lends to look over reviews, as its last answer
+    /// named it.
+    pub(crate) reviewer: Option<String>,
+    /// Reviews asked of the owner's model, by the question that asks.
+    reviews: HashMap<u64, crate::feedback_review::Answer>,
     installed: bool,
     error: Option<String>,
 }
@@ -99,6 +104,8 @@ pub(crate) fn configure(
             filed: HashMap::new(),
             admission: None,
             receipts: HashMap::new(),
+            reviewer: None,
+            reviews: HashMap::new(),
             installed: false,
             error: None,
         };
@@ -106,6 +113,10 @@ pub(crate) fn configure(
         connections.insert(id, Rc::new(RefCell::new(connection)));
         Ok(())
     })
+}
+/// The connection to the owner of peer `id`'s feedback destination.
+pub(crate) fn connection(id: u32) -> Option<Rc<RefCell<Connection>>> {
+    CONNECTIONS.with_borrow(|connections| connections.get(&id).cloned())
 }
 pub(crate) fn forget(id: u32) {
     CONNECTIONS.with_borrow_mut(|connections| {
@@ -131,8 +142,38 @@ pub(crate) fn status(id: u32) -> String {
 }
 impl Connection {
     fn request(&mut self, submission: Option<Submission>) -> Result<(), String> {
+        self.ask(submission, None).map(drop)
+    }
+    /// Ask the owner's model to look over a report's review `prompt`; the
+    /// answer comes back to `answer`.
+    pub(crate) fn ask_review(
+        &mut self,
+        prompt: String,
+        answer: crate::feedback_review::Answer,
+    ) -> Result<(), String> {
+        let correlation = self.ask(None, Some(prompt))?;
+        self.reviews.insert(correlation, answer);
+        Ok(())
+    }
+    /// Reviews whose question is no longer waited for end unanswered.
+    fn settle_reviews(&mut self) {
+        let pending = &self.pending;
+        self.reviews.retain(|correlation, answer| {
+            let waiting = pending.contains_key(correlation);
+            if !waiting {
+                answer.set(None);
+            }
+            waiting
+        });
+    }
+    fn ask(
+        &mut self,
+        submission: Option<Submission>,
+        review: Option<String>,
+    ) -> Result<u64, String> {
         self.pending
             .retain(|_, (sent, _)| sent.elapsed() < ASK_TIMEOUT);
+        self.settle_reviews();
         if self.pending.len() >= 8 {
             return Err("feedback owner requests pending".into());
         }
@@ -149,6 +190,7 @@ impl Connection {
                     .map(serde_json::to_value)
                     .transpose()
                     .map_err(|error| error.to_string())?,
+                review,
             },
         })
         .encode()
@@ -157,7 +199,7 @@ impl Connection {
             .send_remote_action(self.workspace, self.owner.device_public_key, frame)?;
         self.pending
             .insert(self.serial, (web_time::Instant::now(), submission));
-        Ok(())
+        Ok(self.serial)
     }
     /// File `submission` through the owner's own submit action. It runs
     /// there as this reporter, so filing needs only their right to comment,
@@ -314,12 +356,21 @@ pub(crate) fn pump(id: u32) {
                 let Some((_, submission)) = state.pending.remove(&correlation) else {
                     continue;
                 };
+                if let Some(review) = state.reviews.remove(&correlation) {
+                    review.set(
+                        result
+                            .as_ref()
+                            .ok()
+                            .and_then(|answer| answer.review.clone()),
+                    );
+                }
                 match result
                     .map_err(|error| format!("feedback owner refused: {error:?}"))
                     .and_then(|answer| state.admit(&answer).map(|admission| (answer, admission)))
                 {
                     Ok((answer, admission)) => {
                         state.admission = Some((admission.clone(), web_time::Instant::now()));
+                        state.reviewer.clone_from(&answer.reviewer);
                         state.error = None;
                         if let Some(submission) = submission
                             && let Some(receipt) = admission.receipt_in(&answer, &submission)
@@ -359,6 +410,7 @@ pub(crate) fn pump(id: u32) {
             } if workspace_id == state.workspace && to == state.owner.device_public_key => {
                 state.admission = None;
                 state.pending.clear();
+                state.settle_reviews();
                 state.error = Some("feedback owner unavailable".into());
             }
             _ => {}
