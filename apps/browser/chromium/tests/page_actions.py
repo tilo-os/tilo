@@ -328,6 +328,33 @@ class PageActions(unittest.TestCase):
             clicked = self.page('click', element=receipts)
             self.assertTrue(clicked['ok'], clicked)
 
+    def test_chosen_files_reach_the_page_with_and_without_a_held_chooser(self):
+        # Choosing files names the element in the inspected document, not in a
+        # node id: a ref read from the outline resolves there, and the page
+        # receives the picker's own input and change events either way.
+        self.h.navigate(self.url + '/form')
+        with tempfile.TemporaryDirectory() as folder:
+            first = os.path.join(folder, 'proof.pdf')
+            second = os.path.join(folder, 'second.pdf')
+            for path, body in ((first, b'%PDF-1.4'), (second, b'%PDF-1.5')):
+                with open(path, 'wb') as file:
+                    file.write(body)
+            proof = self.ref(self.outline(), 'file "Proof of address"')
+            chosen = self.ok('fill_files', element=proof, paths=[first])
+            self.assertEqual(chosen['data']['files'], ['proof.pdf'], chosen)
+            self.assertEqual(self.main_world('document.querySelector("[name=proof]").files[0].name'),
+                             'proof.pdf')
+            self.assertEqual(self.main_world('document.getElementById("status").textContent'),
+                             'files proof.pdf:8')
+            # A click holds the page's chooser; answering it with the same
+            # action reaches the same field, so the page sees the second file.
+            clicked = self.ok('click', element=proof)
+            self.assertIn('file chooser', clicked['message'], clicked)
+            chosen = self.ok('fill_files', element=proof, paths=[second])
+            self.assertEqual(chosen['data']['files'], ['second.pdf'], chosen)
+            self.assertEqual(self.main_world('document.querySelector("[name=proof]").files[0].name'),
+                             'second.pdf')
+
     def test_secrets_and_cross_site_submissions_need_explicit_consent(self):
         self.h.navigate(self.url + '/agent')
         outline = self.outline()
