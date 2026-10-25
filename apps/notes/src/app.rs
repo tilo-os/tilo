@@ -1370,6 +1370,9 @@ impl NotesApp {
         while let Some(url) = self.main.take_external_link_open() {
             self.request(&NotesEffect::OpenLink { url });
         }
+        while let Some(href) = self.main.take_resource_link_open() {
+            self.request(&NotesEffect::OpenResource { href });
+        }
     }
 
     /// Test accessor: the currently selected page id.
@@ -3419,6 +3422,11 @@ impl NotesApp {
             ui::widget::block_editor::LinkTarget::Page(id) => id,
             ui::widget::block_editor::LinkTarget::External(url) => {
                 self.request(&NotesEffect::OpenLink { url });
+                *handled = true;
+                return true;
+            }
+            ui::widget::block_editor::LinkTarget::Resource(href) => {
+                self.request(&NotesEffect::OpenResource { href });
                 *handled = true;
                 return true;
             }

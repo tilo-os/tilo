@@ -849,6 +849,7 @@ block-a11y-table-row = Zeile { $row }
 block-a11y-table = Tabelle
 block-a11y-open-link = Verlinkte Notiz öffnen
 block-a11y-open-external = Weblink öffnen
+block-a11y-open-resource = { $label } öffnen
 block-a11y-block = { $kind }-Block { $position }
 block-a11y-level = Ebene { $level }
 block-a11y-document = Ziehe den Griff eines Blocks, um ihn zu verschieben. Alt+Pfeil hoch und Alt+Pfeil runter verschieben den fokussierten Block. Tab rückt ihn unter den Block darüber ein, Umschalt+Tab wieder aus; Escape, dann Tab, verlässt den Editor.

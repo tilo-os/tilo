@@ -1249,6 +1249,16 @@ impl<R: Resource> Dispatcher<R> {
         &self.core.opener
     }
 
+    /// Open what `href`, a `tilo://open#…` address a link in this view's
+    /// text carries, names: the app that keeps that resource shows it,
+    /// started first when no window does.
+    ///
+    /// # Errors
+    /// Why it cannot be asked: the address names no app of this desktop.
+    pub fn open_link(&self, href: &str) -> Result<(), String> {
+        super::reference::open_link(&self.core.opener, href)
+    }
+
     /// Open `reference`, which `app` keeps in its `record` (`None`: the
     /// app's own record of the workspace), where it lives: its app opens at
     /// it, launched first when no window shows it. The open is an action

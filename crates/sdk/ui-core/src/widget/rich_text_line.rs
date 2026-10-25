@@ -929,7 +929,11 @@ impl RichTextLine {
                     let background = theme.tokens.colors.surfaces.raised;
                     span.background = Some([background.r(), background.g(), background.b()]);
                 }
-                if segment.code || segment.link.is_some() || segment.external_link {
+                if segment.code
+                    || segment.link.is_some()
+                    || segment.external_link
+                    || segment.resource_link.is_some()
+                {
                     let color = theme.tokens.colors.text_primary;
                     span.color = Some([color.r(), color.g(), color.b()]);
                 }
@@ -959,9 +963,10 @@ impl RichTextLine {
         }
         for span in &self.marks {
             let (color, strike) = match span.mark {
-                Mark::Link(_) | Mark::Transclusion(_) | Mark::ExternalLink(_) => {
-                    (theme.tokens.colors.text_primary, false)
-                }
+                Mark::Link(_)
+                | Mark::Transclusion(_)
+                | Mark::ExternalLink(_)
+                | Mark::ResourceLink(_) => (theme.tokens.colors.text_primary, false),
                 Mark::Underline => (theme.tokens.colors.text_primary, false),
                 Mark::Strikethrough => (theme.tokens.colors.text_primary, true),
                 _ => continue,

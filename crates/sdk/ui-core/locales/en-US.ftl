@@ -855,6 +855,7 @@ block-a11y-table-row = Row { $row }
 block-a11y-table = Table
 block-a11y-open-link = Open linked note
 block-a11y-open-external = Open web link
+block-a11y-open-resource = Open { $label }
 block-a11y-block = { $kind } block { $position }
 block-a11y-level = Level { $level }
 block-a11y-document = Drag a block's handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; Escape, then Tab, leaves the editor.

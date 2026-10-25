@@ -18,6 +18,34 @@ use tilo_reference::ResourceRef;
 use ui_core::widget::ChipLead;
 use ui_core::{Arrival, InvocationCall, RemoteActions};
 
+/// Ask the host to open what `href`, a `tilo://open#…` address, names: the
+/// app that keeps that resource shows it, launched first when no window
+/// shows it. An address that names no app of this desktop is refused.
+///
+/// # Errors
+/// Why it cannot be asked: the address names no app, or the window is in no
+/// workspace.
+pub(crate) fn open_link(opener: &Opener, href: &str) -> Result<(), String> {
+    let link = tilo_reference::link::Link::parse_native(href).map_err(|error| error.to_string())?;
+    let address = link
+        .target
+        .resource
+        .ok_or_else(|| "The link names no resource".to_owned())?;
+    let app = match &link.target.record {
+        Some(_) => link.target.app.as_ref().map(|app| app.as_str().to_owned()),
+        None => ui_core::app_surface::app_of_kind(&address.kind),
+    }
+    .ok_or_else(|| "No app of this desktop keeps what the link names".to_owned())?;
+    // `-` is the app's own record of the workspace; any other id names it.
+    let record = link
+        .target
+        .record
+        .as_ref()
+        .map(tilo_reference::link::RecordSegment::provider_part)
+        .filter(|id| !id.is_empty());
+    opener.open(&app, record, &address.into_ref(String::new()))
+}
+
 /// The action a refused open is told as.
 pub(crate) const OPEN: &str = tilo_actions::remote::APPLICATION_OPEN_ACTION;
 
