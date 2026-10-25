@@ -16,6 +16,8 @@
 
 use std::ffi::c_void;
 use std::fmt::Write as _;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -91,6 +93,8 @@ fn record_own_stack() {
         return;
     };
     let tid = super::gettid();
+    #[cfg(test)]
+    wait_for_held_writer(tid);
     let Some(slot) = slots.iter().find(|slot| {
         slot.tid.load(Ordering::Acquire) == tid && slot.asked.load(Ordering::Acquire) == generation
     }) else {
@@ -124,6 +128,8 @@ fn record_own_stack() {
             true
         });
     }
+    #[cfg(test)]
+    pause_if_held(tid);
     slot.start.store(start.min(len), Ordering::Relaxed);
     slot.len.store(len, Ordering::Relaxed);
     slot.answered.store(generation, Ordering::Release);
@@ -275,4 +281,64 @@ fn symbolize(ips: &[usize]) -> String {
         }
     }
     out
+}
+
+/// The thread whose answer a test holds mid-write; 0 when none is held.
+#[cfg(test)]
+static HELD: AtomicI32 = AtomicI32::new(0);
+#[cfg(test)]
+static HELD_WRITING: AtomicBool = AtomicBool::new(false);
+
+/// In a test holding another thread's answer, wait until that answer is
+/// being written, so this one arrives while it is.
+#[cfg(test)]
+fn wait_for_held_writer(tid: i32) {
+    loop {
+        let held = HELD.load(Ordering::Acquire);
+        if held == 0 || held == tid || HELD_WRITING.load(Ordering::Acquire) {
+            return;
+        }
+        // SAFETY: `sched_yield` takes no arguments and is async-signal-safe.
+        unsafe { libc::sched_yield() };
+    }
+}
+
+/// In a test holding `tid`'s answer, wait mid-write until it is released.
+#[cfg(test)]
+fn pause_if_held(tid: i32) {
+    if HELD.load(Ordering::Acquire) != tid {
+        return;
+    }
+    HELD_WRITING.store(true, Ordering::Release);
+    while HELD.load(Ordering::Acquire) == tid {
+        // SAFETY: as above.
+        unsafe { libc::sched_yield() };
+    }
+}
+
+/// A test's hold on one thread's answer: once its handler has begun
+/// writing it, the handler waits there until the hold is released, and
+/// every other answer waits for it to begin, so they all arrive while it is
+/// being written.
+#[cfg(test)]
+pub(super) struct HeldWriter(i32);
+
+#[cfg(test)]
+impl HeldWriter {
+    pub(super) fn hold(tid: i32) -> Self {
+        HELD_WRITING.store(false, Ordering::Release);
+        HELD.store(tid, Ordering::Release);
+        Self(tid)
+    }
+
+    /// Wait until the held thread's handler is writing its answer.
+    pub(super) fn wait_until_writing(&self) {
+        tilo_test_env::wait_until("the held thread to begin writing its answer", || {
+            HELD.load(Ordering::Acquire) == self.0 && HELD_WRITING.load(Ordering::Acquire)
+        });
+    }
+
+    pub(super) fn release(self) {
+        let _ = HELD.compare_exchange(self.0, 0, Ordering::AcqRel, Ordering::Acquire);
+    }
 }
