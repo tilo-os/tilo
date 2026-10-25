@@ -60,9 +60,16 @@ def digest(path: Path) -> str:
 # region, and the tolerance is stated rather than implied.
 TOLERATED_PIXELS = 64
 
+# And a difference of one step in one channel is not a difference: a rounded or
+# gradient-filled edge can land on the other side of a rounding boundary between
+# two runs of the same layout (Settings differs in 5,861 pixels at 1920x1080
+# between two identical layouts, every one of them by exactly 1). Counting those
+# drowns the signal, so a pixel only counts when a channel moves perceptibly.
+IMPERCEPTIBLE_DELTA = 8
 
-def differing_pixels(first: Path, second: Path) -> int:
-    """Pixels that differ between two frames of the same size."""
+
+def differing_pixels(first: Path, second: Path) -> tuple[int, int, int]:
+    """(meaningful, rounding-only, maximum delta) between two frames."""
     try:
         from PIL import Image, ImageChops  # noqa: PLC0415
     except ImportError as error:  # pragma: no cover - environment, not code
@@ -73,9 +80,20 @@ def differing_pixels(first: Path, second: Path) -> int:
     left = Image.open(first).convert("RGB")
     right = Image.open(second).convert("RGB")
     if left.size != right.size:
-        return left.size[0] * left.size[1]
+        return left.size[0] * left.size[1], 0, 255
     difference = ImageChops.difference(left, right)
-    return sum(1 for pixel in difference.get_flattened_data() if pixel != (0, 0, 0))
+    meaningful = 0
+    rounding = 0
+    largest = 0
+    for pixel in difference.get_flattened_data():
+        delta = max(pixel)
+        if delta > largest:
+            largest = delta
+        if delta > IMPERCEPTIBLE_DELTA:
+            meaningful += 1
+        elif delta:
+            rounding += 1
+    return meaningful, rounding, largest
 
 
 def run(binary: Path, arguments: list[str]) -> None:
@@ -94,6 +112,13 @@ def main() -> int:
     which = parser.add_mutually_exclusive_group(required=True)
     which.add_argument("--app", help="app package name, built already")
     which.add_argument("--binary", type=Path, help="an app binary to check")
+    which.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("OPENED", "RESIZED"),
+        type=Path,
+        help="two saved frames: is the difference a layout difference or rounding?",
+    )
     parser.add_argument(
         "--theme", default="dark", help="theme to capture in (default: dark)"
     )
@@ -103,6 +128,16 @@ def main() -> int:
         help="copy the frames that failed here, for a look at what moved",
     )
     arguments = parser.parse_args()
+
+    if arguments.compare:
+        first, second = arguments.compare
+        differing, rounding, largest = differing_pixels(first, second)
+        verdict = "same layout" if differing <= TOLERATED_PIXELS else "DIFFERENT layout"
+        print(
+            f"{verdict}: {differing} differing pixel(s) over the {IMPERCEPTIBLE_DELTA} "
+            f"delta floor, {rounding} rounding-only, max delta {largest}"
+        )
+        return 0 if verdict == "same layout" else 1
 
     binary = arguments.binary
     if binary is None:
@@ -145,14 +180,14 @@ def main() -> int:
             if digest(opened) == digest(resized):
                 print(f"  {name:8} {width}x{height}: same")
                 continue
-            differing = differing_pixels(opened, resized)
+            differing, rounding, largest = differing_pixels(opened, resized)
             same = differing <= TOLERATED_PIXELS
             print(
                 f"  {name:8} {width}x{height}: "
                 + (
-                    f"same ({differing} antialiased pixel(s))"
+                    f"same ({differing} differing, {rounding} rounding-only, max delta {largest})"
                     if same
-                    else f"DIFFERS in {differing} pixels"
+                    else f"DIFFERS in {differing} pixels (max delta {largest})"
                 )
             )
             if not same:
