@@ -338,6 +338,9 @@ struct Setup {
     /// Messages Bo wrote before the bridge first ran: channel, text, when
     /// (Unix ms).
     history: &'static [(&'static str, &'static str, u64)],
+    /// Messages an earlier bridge of this bot posted through its webhook,
+    /// before this one first ran: channel, shown name, text, when.
+    bridged_before: &'static [(&'static str, &'static str, &'static str, u64)],
 }
 
 /// A Discord server laid out before its bridge: a category "Channels" with #general and a
@@ -397,6 +400,10 @@ impl Bridge {
         let bo = User::new("3001", "Bo");
         for (channel, text, at_ms) in setup.history {
             fake.post_written(channel, &bo, text, *at_ms);
+        }
+        for (channel, name, text, at_ms) in setup.bridged_before {
+            let (webhook, _) = fake.create_webhook(channel);
+            fake.post_written_through(&webhook, channel, name, text, *at_ms);
         }
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
@@ -1179,6 +1186,28 @@ async fn a_new_room_takes_on_its_servers_layout_and_history() {
     let categories: Vec<&str> = chat.categories.values().map(|c| c.name.as_str()).collect();
     assert_eq!(categories, ["chat"]);
     assert!(bridge.room.guild().await.tilo_only.is_empty());
+}
+
+/// A room meeting a server that a bridge of the same bot posted in before
+/// reads its history before it adopts that bridge's webhook: what the
+/// bridge posted there is never taken in as written in Discord.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_room_leaves_out_what_its_bot_posted_before() {
+    let (bridge, mut runner) = Bridge::start_with(Setup {
+        room_seeded: true,
+        bridged_before: &[(CHANNEL_GENERAL, "Ada", "from the Lounge", WRITTEN_MS)],
+        history: &[(CHANNEL_GENERAL, "Hi?", WRITTEN_MS + 60_000)],
+        ..Setup::default()
+    })
+    .await;
+    settle(&mut runner, "Bo's history is in Chat", || async {
+        bridge.chat_message("Hi?").await
+    })
+    .await;
+    assert!(
+        bridge.chat_message("from the Lounge").await.is_none(),
+        "the bridge's own post came back in as Discord's"
+    );
 }
 
 /// Opted in, the bridge adds roles of its own and permissions for them, and
