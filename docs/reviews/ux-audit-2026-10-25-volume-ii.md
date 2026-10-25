@@ -38,6 +38,7 @@ chord to reach a capability, that capability is not shipped.
 | 5 | Apps: the promise, the gap, the honest fix | written |
 | 5b | Where my own design was wrong — ten corrections to it | written |
 | 6 | The bets in order, the habit to stop, and what "finished" means | written |
+| 7 | What landed, as commits — and what is still open | written (a snapshot) |
 
 ---
 
@@ -1786,6 +1787,49 @@ saying why the toolkit cannot own it. The repo already asks for declared deviati
 (`allow` attributes, policy exceptions); this is the same discipline applied to interaction.
 
 ---
+
+# 7. What landed, as commits
+
+A snapshot, so this document can be read against the tree rather than trusted. Each entry is a
+commit on `ux-qol-pass` off `3203631d96`; the finding ids are Volume I's.
+
+## 7.1 The toolkit and the evidence
+
+| Commit | What it settles |
+|---|---|
+| `1d9ac537f0` | `T2`: a capture fails rather than sets text in the host's faces. The catalog is found at runtime (host input + the prepared cache), and the 27 labels of the conversation substrate moved into the toolkit's catalogues (`8f0f9ebcf4`). |
+| `f590f7b922`, `8714432af4` | The parity check, and its floor: a layout difference is counted after a 4× downsample, so a fractional glyph offset is not one. Calibrated against the pre-fix Settings binary: 277,493 → 0. |
+| `46192c2bbe` | `T1`: a surface's breakpoint is the rect it is laid out in, every pass. Settings at 390 now draws the same opened narrow and resized narrow; video-editor passes all four presets; `tools/policy/breakpoint_baseline.txt` records the 63 comparisons still deciding for themselves. |
+| `7ed9d2ff9e`, `6041e34e55` | `M2`, `M3`, `M9`: a job has a body, an item that wants a person has a row that cannot exist without an action, and the ledger is where an outcome that needs nobody goes. |
+| `27aafcdc70` | `M1`, `M13`: a measured fact carries its measure and its as-of, and privilege is granted rather than sniffed. `u…Fact` became `Measured` (`09b5e23979`) because two public types called `Fact` is a trap. |
+| `b0e554597b` | The breakpoint check reads code, not string literals (yt-dlp's `[height<=720]` selector was not a layout decision), and three apps declared the capabilities their new code uses. |
+
+## 7.2 The apps
+
+| Commit | Area |
+|---|---|
+| `8d9632f850`, `9afc58dbff`, `bb81004d3e` | Conversations: one substrate under Messages, Chat, Mail and Contacts — day dividers, attachments that open, drafts that survive and show, Enter-to-send, one delivery vocabulary — and the two apps keep their own objects (a person is not a channel). |
+| `c811c9e2df` | Reading: resume, speed, captions, full size, honest staleness; bookmarks ranked in the address bar; a failed subscription stops looking healthy. |
+| `2e174974ef` | Files and the ledger: a change you can take back, and nothing Files says expires. |
+| `e1685dc4e0`, `ec17be0cb0`, `66cebe0c8f`, `81975d93cc`, `1e53c6b0d8` | The decision half of the developer tools: a merge you can save, a branch switch and a conflict, a query you can stop, a request you can replay, a bell you can see. |
+| `dcc5de891d`, `94ecfcd0f8` | The clock answers for the platform, and TOTP asks it instead of shelling out. |
+| `b8c9543bc5` | A slideshow dwell is a preference, not motion timing; copy carries its own punctuation instead of a separator glyph. |
+
+## 7.3 The four splits, which the size policy asked for
+
+`3fadc09937` (chat), `a880927811` (photos), `68eadab54c` (video-player), and tube's, in flight.
+Each is code motion along a seam that already existed, named in the new module's doc comment.
+
+## 7.4 What is still open
+
+- `SHELL-01`, the blocker: no input method on the lock screen. In flight, and the only finding
+  where "not fixed" means some people cannot use the product.
+- `T11`: a capture's output depends on what captured before it. Named, not fixed — so `M10`'s gate
+  is a diagnostic to run by hand until runs are isolated.
+- `SHELL-02..17` (17), and the creation and utility app clusters.
+- `T10`: one antialiased pixel still differs between identical runs of the calculator's graph.
+- Two policy steps fail on a clean base and are not ours: `capnp` bindings (unavailable in a
+  worktree) and one suite test about a fetched bundle.
 
 # Closing: what "finished" means here, and where the head-room ran out
 
