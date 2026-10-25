@@ -90,9 +90,11 @@ mod surface_delta;
 pub use surface_delta::*;
 pub mod audio_output;
 pub mod committed_document;
+pub mod event;
 #[cfg(feature = "client")]
 pub mod live_activity;
 pub mod native_media;
+pub mod route;
 #[cfg(feature = "client")]
 pub mod settings;
 #[cfg(feature = "client")]
@@ -1443,6 +1445,24 @@ impl ChannelHandle {
     /// broker is unavailable.
     pub async fn nearby_transfer_changed(&self, after: u64) -> Result<u64, NotAvailable> {
         let mut request = self.inner.nearby_transfer_changed_request();
+        request.get().set_after(after);
+        let reply = request.send().promise.await?;
+        Ok(reply.get()?.get_change())
+    }
+
+    /// Wait until the drives the shell lists may have changed since
+    /// `after` (0 at first, then what the previous call returned), and
+    /// return the value to wait from next. The answer names nothing: the
+    /// caller asks the tools service for the list again. The call stays
+    /// pending, without traffic, while nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when this route may not list drives, the
+    /// host cannot say when its drives change (an older broker answers
+    /// unimplemented), or the broker is unavailable.
+    pub async fn drives_changed(&self, after: u64) -> Result<u64, NotAvailable> {
+        let mut request = self.inner.drives_changed_request();
         request.get().set_after(after);
         let reply = request.send().promise.await?;
         Ok(reply.get()?.get_change())

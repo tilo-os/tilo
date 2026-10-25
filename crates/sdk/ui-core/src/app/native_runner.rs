@@ -4813,8 +4813,6 @@ impl AppHandler {
         let WindowEvent::Touch(touch) = event else {
             return;
         };
-        self.app
-            .set_interaction_environment(self.app.input.interaction.with_touch_modality());
         let scale = window.scale_factor();
         let app = &self.app;
         let pointer_events = self.touch_pointer.events_claimed(touch, |position| {
@@ -4824,6 +4822,18 @@ impl AppHandler {
             ))
         });
         self.dispatch_touch_pointer(window, touch.device_id, pointer_events);
+        self.settle_touch_modality();
+    }
+
+    /// Lay out for touch once every gesture begun has landed: until then a
+    /// touch is hit-tested against the layout the person saw when it
+    /// began, not the touch-sized one it brings. A raw contact's own touch
+    /// events follow this in the same event, before any frame lays out.
+    fn settle_touch_modality(&mut self) {
+        if self.touch_pointer.settled() {
+            self.app
+                .set_interaction_environment(self.app.input.interaction.with_touch_modality());
+        }
     }
 
     fn dispatch_touch_pointer(
@@ -4844,6 +4854,7 @@ impl AppHandler {
     fn poll_touch_hold(&mut self, window: &Arc<Window>) {
         if let Some((device_id, events)) = self.touch_pointer.poll(crate::time::now()) {
             self.dispatch_touch_pointer(window, device_id, events);
+            self.settle_touch_modality();
             window.request_redraw();
         }
     }

@@ -1,6 +1,7 @@
 //! Inert terminal preparation in the existing private invocation journal.
 use super::{
-    DurableInvocation, InvocationJournal, InvocationKey, InvocationOwner, InvocationUpdate,
+    Durable, DurableInvocation, Injected, InvocationJournal, InvocationKey, InvocationOwner,
+    InvocationUpdate,
 };
 use serde::{Deserialize, Serialize};
 use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
@@ -137,12 +138,38 @@ impl PreparedEffect {
 }
 
 impl InvocationJournal {
+    /// [`Self::stage_prepared_effect`], waiting for the write here.
+    #[cfg(test)]
     pub(crate) fn prepare_effect(
         &mut self,
         key: &InvocationKey,
         update: InvocationUpdate,
         request: &OwnerCommitRequest,
     ) -> Result<PreparedEffect, String> {
+        let (prepared, durable) = self.stage_prepared_effect(key, update, request)?;
+        durable.wait_blocking()?;
+        Ok(prepared)
+    }
+
+    /// [`Self::stage_finished_effect`], waiting for the write here.
+    #[cfg(test)]
+    pub(crate) fn finish_effect(
+        &mut self,
+        key: &InvocationKey,
+        prepared: &PreparedEffect,
+    ) -> Result<DurableInvocation, String> {
+        let (record, durable) = self.stage_finished_effect(key, prepared)?;
+        durable.wait_blocking()?;
+        Ok(record)
+    }
+
+    /// The prepared effect, durable once the returned write resolves.
+    pub(crate) fn stage_prepared_effect(
+        &mut self,
+        key: &InvocationKey,
+        update: InvocationUpdate,
+        request: &OwnerCommitRequest,
+    ) -> Result<(PreparedEffect, Durable), String> {
         self.check()?;
         let prepared = PreparedEffect::new(update, request)?;
         let (at, record) = self
@@ -153,22 +180,25 @@ impl InvocationJournal {
             if previous != &prepared {
                 return Err("prepared terminal receipt changed".into());
             }
-            return Ok(previous.clone());
+            let previous = previous.clone();
+            return Ok((previous, self.in_flight(&key.invocation)));
         }
         if record.update.is_terminal() || record.uncertain {
             return Err("cannot prepare a retired invocation".into());
         }
         record.prepared_effect = Some(prepared.clone());
         self.snapshot.version = self.snapshot.version.max(5);
-        self.commit(at)?;
-        Ok(prepared)
+        let durable = self.commit(at, Injected::default())?;
+        Ok((prepared, durable))
     }
 
-    pub(crate) fn finish_effect(
+    /// The prepared effect's terminal, durable once the returned write
+    /// resolves; the record as that write makes it.
+    pub(crate) fn stage_finished_effect(
         &mut self,
         key: &InvocationKey,
         prepared: &PreparedEffect,
-    ) -> Result<DurableInvocation, String> {
+    ) -> Result<(DurableInvocation, Durable), String> {
         self.check()?;
         let (at, record) = self
             .record_mut(key)
@@ -178,12 +208,18 @@ impl InvocationJournal {
         }
         prepared.validate(record)?;
         if record.update.is_terminal() && !record.uncertain {
-            return Ok(record.clone());
+            let record = record.clone();
+            return Ok((record, self.in_flight(&key.invocation)));
         }
         record.update = prepared.update.clone();
         record.uncertain = false;
-        self.commit(at)?;
-        self.lookup(key)?
-            .ok_or_else(|| "prepared invocation disappeared".into())
+        let durable = self.commit(at, Injected::default())?;
+        let record = self
+            .snapshot
+            .records
+            .get(at)
+            .cloned()
+            .ok_or("prepared invocation disappeared")?;
+        Ok((record, durable))
     }
 }

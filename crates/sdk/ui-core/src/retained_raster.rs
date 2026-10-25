@@ -616,6 +616,9 @@ pub enum Unknown {
     Target,
     /// The frames cannot be compared part by part.
     Unproven(crate::scene_parts::Unproven),
+    /// The renderer dropped geometry from a frame drawn since the target
+    /// was last repainted whole ([`RetainedFrames::note_overflows`]).
+    LostGeometry,
 }
 
 /// The frame a host presented last, to compare the next with. Where a scene
@@ -629,6 +632,11 @@ pub struct RetainedFrames {
     last: Option<(Scene, crate::scene_parts::SectionParts, TargetKey)>,
     /// The target holds the frame last presented, parts or not.
     shown: bool,
+    /// The renderer's overflows ([`crate::render_bump_recovery::Overflows`])
+    /// the target was last repainted whole for.
+    overflows: u64,
+    /// The target may show a frame with geometry missing.
+    lost: bool,
 }
 
 impl RetainedFrames {
@@ -640,6 +648,9 @@ impl RetainedFrames {
         parts: Option<&crate::scene_parts::SectionParts>,
         key: TargetKey,
     ) -> Repaint {
+        if self.lost {
+            return Repaint::Full(Unknown::LostGeometry);
+        }
         let Some(parts) = parts else {
             return Repaint::Full(Unknown::NoParts);
         };
@@ -680,6 +691,26 @@ impl RetainedFrames {
     ) {
         self.last = parts.map(|parts| (scene.clone(), parts.clone(), key));
         self.shown = true;
+        self.lost = false;
+    }
+
+    /// Whether the renderer has collected an overflow, `collected` in all,
+    /// that the target was not yet repainted whole for: a frame it shows may
+    /// have geometry missing.
+    #[must_use]
+    pub const fn shows_lost_geometry(&self, collected: u64) -> bool {
+        self.lost || self.overflows != collected
+    }
+
+    /// The renderer has collected `collected` overflows in all: after a new
+    /// one, the next frame repaints the whole target. Pixels drawn with
+    /// geometry missing stay on it otherwise, since later frames repaint
+    /// only what changes.
+    pub fn note_overflows(&mut self, collected: u64) {
+        if self.overflows != collected {
+            self.overflows = collected;
+            self.lost = true;
+        }
     }
 
     /// The target no longer shows the last frame presented.

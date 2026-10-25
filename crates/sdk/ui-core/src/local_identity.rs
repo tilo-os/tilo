@@ -158,7 +158,7 @@ impl RuntimeIdentity {
     /// Service is a D-Bus round trip (and maybe an unlock prompt). The shell
     /// asks on its broker and network runtimes for every presence frame.
     fn resolve(shell_config: bool) -> Option<LocalIdentity> {
-        let id = runtime_identity::load_metadata().ok().or_else(|| {
+        let id = bound_metadata().or_else(|| {
             shell_config
                 .then(config_identity_path)
                 .flatten()
@@ -169,6 +169,19 @@ impl RuntimeIdentity {
             display_name: id.display_name,
             avatar_color: id.avatar_color,
         })
+    }
+}
+
+#[cfg(feature = "local-daemons")]
+fn bound_metadata() -> Option<runtime_identity::IdentityMetadata> {
+    match runtime_identity::load_metadata() {
+        Ok(metadata) => Some(metadata),
+        Err(runtime_portal::NotAvailable::ServiceFdMissing) => {
+            let environment = crate::host::environment();
+            let path = environment.paths.public_identity_record.as_deref()?;
+            runtime_identity::load_metadata_from_path(path).ok()
+        }
+        Err(_) => None,
     }
 }
 
@@ -255,10 +268,10 @@ mod photo_tests {
     }
 }
 
-// `test` on its own, so clippy reads the module as test code.
 #[cfg(test)]
 #[cfg(all(unix, feature = "local-daemons"))]
 mod active_record_tests {
+    use super::LocalIdentitySource as _;
     use std::os::unix::fs::PermissionsExt as _;
 
     fn private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -266,17 +279,14 @@ mod active_record_tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
     }
 
-    /// A device set up with more than one identity keeps each as
-    /// `identity-<key>.json` beside an `active` selector, with no
-    /// `primary.json`: the person's name is read from the active record, so
-    /// the owner of the desktop is never nameless on it.
     #[test]
     fn the_active_identity_record_is_read_where_there_is_no_primary() {
         let config = tempfile::tempdir().unwrap();
         let dir = config.path().join("tilo").join("identity");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let record = runtime_identity::public_member_record("Ada", [10, 20, 30], [7; 32]).unwrap();
+        let record =
+            runtime_identity_host::public_member_record("Ada", [10, 20, 30], [7; 32]).unwrap();
         private(&dir.join("identity-ada.json"), &record).unwrap();
         private(&dir.join("active"), b"identity-ada\n").unwrap();
 
@@ -284,5 +294,21 @@ mod active_record_tests {
         assert_eq!(path, dir.join("identity-ada.json"));
         let metadata = runtime_identity::load_metadata_from_path(&path).unwrap();
         assert_eq!(metadata.display_name, "Ada");
+
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_SVC_IDENTITY_FD")
+            .remove("TILO_IDENTITY_BROKER_FD")
+            .remove("TILO_USER_IDENTITY")
+            .set("XDG_CONFIG_HOME", config.path());
+        assert_eq!(
+            super::RuntimeIdentity.load(),
+            Some(super::LocalIdentity {
+                group_public_key: [7; 32],
+                display_name: "Ada".into(),
+                avatar_color: [10, 20, 30],
+            })
+        );
+        assert!(super::RuntimeIdentity::resolve(false).is_none());
+        assert!(super::RuntimeIdentity.public_photo().is_none());
     }
 }

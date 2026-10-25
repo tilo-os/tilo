@@ -255,12 +255,26 @@ impl App {
         let (order, trap_active) = root.map_or_else(
             || (Vec::new(), false),
             |root| {
+                // One sweep asks every mapped node, entering each
+                // component's scope once rather than once a node.
+                let sweep = std::cell::RefCell::new(crate::bound_dispatch::NodeSweep::new(
+                    &self.bindings,
+                    &self.layout.node_map,
+                ));
                 crate::focus_navigation::layout_map_order(
                     root,
                     &self.layout.taffy,
                     restrictions,
                     self.history.as_deref(),
-                    |node| self.inspect_node(node, crate::focus_navigation::probe).ok(),
+                    |node| {
+                        // SAFETY: App owns this stable tree and no target reference escapes.
+                        unsafe {
+                            sweep
+                                .borrow_mut()
+                                .inspect(node, crate::focus_navigation::probe)
+                        }
+                        .ok()
+                    },
                 )
             },
         );

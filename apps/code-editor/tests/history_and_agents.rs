@@ -84,12 +84,6 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
         "field-edit",
         serde_json::json!({ "edit": language }),
     );
-    assert!(
-        app.call_by(agent.clone(), &item, "delete", serde_json::json!({}))
-            .is_err(),
-        "deleting asks for confirmation"
-    );
-
     let state = app.state();
     assert_eq!(
         state.path_of(&main.as_str().into()).as_deref(),
@@ -108,6 +102,10 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
         .as_deref(),
         Some("fn main() { run() }\n")
     );
+    // Undo takes a deletion back, so it runs at once.
+    app.call_by(agent.clone(), &item, "delete", serde_json::json!({}))
+        .expect("an undoable delete runs at once");
+    assert_eq!(app.state().path_of(&main.as_str().into()), None);
 
     let entries: Vec<_> = app
         .history()
@@ -129,6 +127,7 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
             "Renamed main.rs to app.rs",
             "Moved app.rs",
             "Set the language of app.rs to Plain Text",
+            "Deleted app.rs",
         ]
     );
     let invoker = entries[0].invoker.as_ref().unwrap();

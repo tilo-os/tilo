@@ -30,8 +30,9 @@ pub mod client;
 pub mod model;
 
 pub use client::{
-    ACTIVE_INTERFACE, BUS_NAME, NmClient, NmError, NmWatch, ROOT_INTERFACE, ROOT_PATH, VpnWatch,
-    WIRELESS_INTERFACE, captive_portal_uri, check_connectivity_now, scan_wifi, state, watch,
+    ACTIVE_INTERFACE, BUS_NAME, NmChanges, NmClient, NmError, NmWatch, ROOT_INTERFACE, ROOT_PATH,
+    VpnWatch, WIRELESS_INTERFACE, captive_portal_uri, check_connectivity_now, scan_wifi, state,
+    watch,
 };
 pub use model::{
     ActiveState, ActiveVpn, LinkKind, NetworkState, NmConnectivity, NmState, PrimaryLink,

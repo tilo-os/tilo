@@ -415,8 +415,13 @@ fn merge_said<T: PartialEq + Copy>(
 /// beside it, how each line ended.
 struct Parsed {
     lines: Vec<String>,
+    /// How each line ends, `None` for a last line without a newline.
+    raw: Vec<Option<Ending>>,
+    /// How each line ends relative to `ending`.
     terms: Vec<Term>,
-    /// The prevailing ending, `None` when no line ends.
+    /// The ending the file speaks for, `None` when no line ends: its
+    /// prevailing ending, or for a side of a merge the one
+    /// [`Parsed::ending_against`] finds.
     ending: Option<Ending>,
     /// Whether the last line ends, `None` for an empty file.
     final_newline: Option<bool>,
@@ -444,7 +449,22 @@ impl Parsed {
             (crlf, lf) if crlf > lf => Some(Ending::CrLf),
             _ => Some(Ending::Lf),
         };
-        let terms = raw
+        let mut parsed = Self {
+            lines,
+            raw,
+            terms: Vec::new(),
+            ending: None,
+            final_newline: (!s.is_empty()).then_some(s.ends_with('\n')),
+        };
+        parsed.relate_to(ending);
+        parsed
+    }
+
+    /// Speak for `ending`: a line that ends otherwise keeps its own ending.
+    fn relate_to(&mut self, ending: Option<Ending>) {
+        self.ending = ending;
+        self.terms = self
+            .raw
             .iter()
             .map(|end| match end {
                 Some(end) if Some(*end) != ending => match end {
@@ -454,11 +474,37 @@ impl Parsed {
                 _ => Term::Native,
             })
             .collect();
-        Self {
-            lines,
-            terms,
-            ending,
-            final_newline: (!s.is_empty()).then_some(s.ends_with('\n')),
+    }
+
+    /// The ending this side gives the file it shares with `base`, aligned by
+    /// `ops`: base's, unless most of the lines it keeps from base now end
+    /// differently, so the side converted the file. Lines a side adds or
+    /// removes never change it, so pasting a few Windows lines into a Unix
+    /// file leaves the other side's lines alone. A side that keeps no
+    /// ended line of base speaks for its own prevailing ending.
+    fn ending_against(&self, base: &Parsed, ops: &[similar::DiffOp]) -> Option<Ending> {
+        let (mut kept, mut converted) = (0usize, 0usize);
+        for op in ops {
+            if let similar::DiffOp::Equal {
+                old_index,
+                new_index,
+                len,
+            } = *op
+            {
+                let was = base.raw.get(old_index..old_index + len).unwrap_or(&[]);
+                let now = self.raw.get(new_index..new_index + len).unwrap_or(&[]);
+                for (was, now) in was.iter().zip(now) {
+                    if let (Some(was), Some(now)) = (was, now) {
+                        kept += 1;
+                        converted += usize::from(was != now);
+                    }
+                }
+            }
+        }
+        if kept == 0 || base.ending.is_none() || converted * 2 > kept {
+            self.ending
+        } else {
+            base.ending
         }
     }
 }
@@ -715,9 +761,9 @@ impl MergeModel {
     /// taken from the side that changed them, and every line keeps its own
     /// ending where it differs from its file's.
     pub fn compute(base: &str, ours: &str, theirs: &str) -> Self {
-        let (base, ours, theirs) = (Parsed::new(base), Parsed::new(ours), Parsed::new(theirs));
-        let ours_align = SideAlign::build(&base.lines, &ours);
-        let theirs_align = SideAlign::build(&base.lines, &theirs);
+        let base = Parsed::new(base);
+        let (ours, ours_align) = SideAlign::of(&base, ours);
+        let (theirs, theirs_align) = SideAlign::of(&base, theirs);
 
         let n = base.lines.len();
         let mut builder = MergeBuilder::new();
@@ -849,20 +895,27 @@ struct SideAlign {
 }
 
 impl SideAlign {
-    fn build(base: &[String], side: &Parsed) -> Self {
-        let n = base.len();
+    /// `text` parsed as a side of a merge with `base`, its endings related
+    /// to the ending it gives the merged file, and aligned against base.
+    fn of(base: &Parsed, text: &str) -> (Parsed, Self) {
+        let mut side = Parsed::new(text);
+        // Diff the split lines themselves, so an op's indices are the
+        // indices of `base.lines` and `side.lines`: re-splitting a joined
+        // text would also break at a lone `\r` inside a line.
+        let ops = similar::capture_diff_slices(Algorithm::Patience, &base.lines, &side.lines);
+        side.relate_to(side.ending_against(base, &ops));
+        let align = Self::build(base.lines.len(), &side, &ops);
+        (side, align)
+    }
+
+    fn build(n: usize, side: &Parsed, ops: &[similar::DiffOp]) -> Self {
         let mut replace: Vec<Option<Run>> = vec![None; n];
         let mut kept: Vec<Term> = vec![Term::Native; n];
         let mut inserts_before: Vec<Run> = vec![Run::default(); n + 1];
 
-        // Diff the split lines themselves, so an op's indices are the
-        // indices of `base` and `side.lines`: re-splitting a joined text
-        // would also break at a lone `\r` inside a line.
-        let ops = similar::capture_diff_slices(Algorithm::Patience, base, &side.lines);
-
         // Walk the structured ops. Each op carries a base (old) range and a
         // side (new) range.
-        for op in &ops {
+        for op in ops {
             use similar::DiffOp::{Delete, Equal, Insert, Replace};
             match *op {
                 Equal {
@@ -1272,6 +1325,20 @@ mod line_ending_tests {
                 "a\r\nb\r\nc\r\n",
                 "a\nb\nC\n",
                 "a\r\nb\r\nC\r\n",
+            ),
+            (
+                "lines pasted with other endings leave the edited lines alone",
+                "a\nx\n",
+                "A\nx\n",
+                "a\nx\nb\r\nc\r\nd\r\n",
+                "A\nx\nb\r\nc\r\nd\r\n",
+            ),
+            (
+                "deleting the lines that set the ending leaves the edited lines alone",
+                "a\r\nx\r\nb\r\nc\r\nd\ne\nf\n",
+                "A\r\nx\r\nb\r\nc\r\nd\ne\nf\n",
+                "a\r\nx\r\nd\ne\nf\n",
+                "A\r\nx\r\nd\ne\nf\n",
             ),
         ];
         for (name, base, ours, theirs, merged) in cases {

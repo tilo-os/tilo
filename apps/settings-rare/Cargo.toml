@@ -43,8 +43,8 @@ os-actions = { path = "../../crates/system/os-actions" }
 tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount", default-features = false }
 # Public identity summaries, as the host's identity actions answer them. The
 # identity store itself is the host's: no record or secret enters Settings.
-runtime-identity = { path = "../../crates/runtime/runtime-identity" }
-runtime-fs = { path = "../../crates/runtime/runtime-fs" }
+runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
+runtime-fs = { package = "tilo-fs-client", path = "../../crates/runtime/tilo-fs-client" }
 # Device role, workspace residency and server relay policy use the same types
 # the tilo-relay daemon loads; Settings never keeps a shadow sync model.
 tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }

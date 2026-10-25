@@ -39,6 +39,8 @@ use crate::shell::i18n::{t, t_args};
 
 pub mod accessibility;
 mod secret_prompts;
+#[cfg(test)]
+mod sim_tests;
 
 use secret_prompts::{authentication_prompt, network_prompt};
 
@@ -174,6 +176,30 @@ pub struct NetworkSecretsRequest {
     /// `Some(default)` offers "Remember on this device", starting ticked
     /// or not; `None` when these secrets cannot be kept.
     pub remember: Option<bool>,
+    /// The request is for a SIM's PIN: asked as one, with what the modem
+    /// says about the SIM. `None` for every other secret.
+    pub sim: Option<SimUnlock>,
+}
+
+/// What a SIM asks for before its modem can be used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimUnlockStep {
+    /// Its PIN, which goes back to NetworkManager.
+    Pin,
+    /// Its PUK and a new PIN, after too many wrong PINs; the compositor
+    /// hands them to ModemManager itself.
+    Puk,
+}
+
+/// A SIM PIN request, with what ModemManager reports about the SIM.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SimUnlock {
+    pub step: SimUnlockStep,
+    /// The attempts the SIM has left for that step, when the modem says.
+    pub attempts_left: Option<u32>,
+    /// ModemManager's object path of the SIM, which a PUK is sent to;
+    /// `None` when ModemManager could not be asked.
+    pub sim_path: Option<String>,
 }
 
 /// The answer to a [`NetworkSecretsRequest`]: one value per field, in order.
@@ -182,7 +208,32 @@ pub enum NetworkSecretsDecision {
         values: Vec<zeroize::Zeroizing<String>>,
         remember: bool,
     },
+    /// The SIM was locked by its PUK and the person unlocked it with the
+    /// PUK and a new PIN: there is no secret to hand NetworkManager, the
+    /// connection is started again on the unlocked SIM.
+    UnlockedWithPuk,
     Cancelled,
+}
+
+/// Why ModemManager did not unlock a SIM with its PUK.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PukRefusal {
+    /// The PUK was wrong; the attempts the SIM has left for it, when the
+    /// modem says.
+    Wrong { attempts_left: Option<u32> },
+    /// Anything else, in the person's words.
+    Failed(String),
+}
+
+/// Unlocks a SIM with its PUK, setting a new PIN. Called off the
+/// compositor thread; blocks until the modem answered.
+pub trait SimUnlocker: Send + Sync {
+    fn send_puk(
+        &self,
+        sim_path: &str,
+        puk: zeroize::Zeroizing<String>,
+        new_pin: zeroize::Zeroizing<String>,
+    ) -> Result<(), PukRefusal>;
 }
 
 impl std::fmt::Debug for NetworkSecretsDecision {
@@ -193,6 +244,7 @@ impl std::fmt::Debug for NetworkSecretsDecision {
                 .field("values", &values.len())
                 .field("remember", remember)
                 .finish(),
+            Self::UnlockedWithPuk => f.write_str("UnlockedWithPuk"),
             Self::Cancelled => f.write_str("Cancelled"),
         }
     }
@@ -913,7 +965,8 @@ impl PortalDialogQueue {
                         required: field.required,
                     })
                     .collect(),
-                remember_offered: request.remember.is_some(),
+                remember_offered: request.remember.is_some() && request.sim.is_none(),
+                sim: request.sim.clone(),
             }),
             PendingDialog::ActionGrant { request, .. } => Some(DialogView::ActionGrant {
                 handle: request.handle.clone(),
@@ -1358,6 +1411,8 @@ pub enum DialogView {
         detail: String,
         fields: Vec<SecretFieldView>,
         remember_offered: bool,
+        /// A SIM's PIN or PUK, with what the modem says.
+        sim: Option<SimUnlock>,
     },
 }
 
@@ -1508,6 +1563,7 @@ impl DialogView {
             Self::UsbDevices { confirm_label, .. } => confirm_label.clone(),
             Self::ActionGrant { .. } => t("portal-allow"),
             Self::Authentication { .. } => t("portal-authenticate"),
+            Self::NetworkSecrets { sim: Some(_), .. } => t("portal-sim-unlock"),
             Self::NetworkSecrets { .. } => t("portal-connect"),
         }
     }
@@ -1608,6 +1664,10 @@ pub struct PortalDialogController {
     /// Where the on-screen keyboard covers the desktop while it is up: the
     /// prompt stays above it.
     keyboard_cover: Option<Rect>,
+    /// Hands a locked SIM's PUK and new PIN to the modem.
+    sim_unlocker: Arc<dyn SimUnlocker>,
+    /// The modem's answer to the PUK the sheet up sent, once it has one.
+    puk_attempt: Option<std::sync::mpsc::Receiver<Result<(), PukRefusal>>>,
 }
 
 fn small_count_as_f64(value: usize) -> f64 {
@@ -1634,7 +1694,17 @@ impl PortalDialogController {
             remember: false,
             entry_error: None,
             keyboard_cover: None,
+            sim_unlocker: Arc::new(crate::network_secrets::ModemManagerUnlock),
+            puk_attempt: None,
         }
+    }
+
+    /// The same controller handing PUKs to `unlocker` instead of
+    /// ModemManager.
+    #[must_use]
+    pub fn with_sim_unlocker(mut self, unlocker: Arc<dyn SimUnlocker>) -> Self {
+        self.sim_unlocker = unlocker;
+        self
     }
     /// The queue this controller shows sheets from.
     pub fn queue(&self) -> &PortalDialogQueue {
@@ -1642,6 +1712,11 @@ impl PortalDialogController {
     }
 
     pub fn pump(&mut self) -> bool {
+        let unlocked = self.settle_puk_attempt();
+        self.pump_sheets() || unlocked
+    }
+
+    fn pump_sheets(&mut self) -> bool {
         // A sheet its requester withdrew (a portal `Close`, polkit's or
         // NetworkManager's cancel) is gone from the queue: let go of it and
         // of anything typed into it, so the next sheet can show.
@@ -2357,31 +2432,59 @@ impl PortalDialogController {
             DialogView::NetworkSecrets {
                 fields,
                 remember_offered,
+                sim,
                 ..
             } => {
-                let inputs = self
-                    .prompt
-                    .iter()
-                    .flat_map(|prompt| prompt.fields().map(|(_, input)| input));
-                state["fields"] = fields
-                    .iter()
-                    .zip(inputs)
-                    .map(|(field, input)| {
-                        let value = input.value();
-                        let mut entry = serde_json::json!({
-                            "key": field.key,
-                            "label": field.label,
-                            "masked": field.masked,
-                            "required": field.required,
-                            "length": value.chars().count(),
-                            "focused": input.is_focused(),
-                        });
-                        if !field.masked {
-                            entry["value"] = value.into();
-                        }
-                        entry
-                    })
-                    .collect();
+                if let Some(sim) = sim {
+                    // A SIM's fields are the prompt's own (a PUK asks three
+                    // where NetworkManager named one), every one masked.
+                    state["sim"] = serde_json::json!({
+                        "step": match sim.step {
+                            SimUnlockStep::Pin => "pin",
+                            SimUnlockStep::Puk => "puk",
+                        },
+                        "attempts_left": sim.attempts_left,
+                        "busy": self.prompt.as_ref().and_then(SecretPrompt::busy).is_some(),
+                    });
+                    state["fields"] = self
+                        .prompt
+                        .iter()
+                        .flat_map(|prompt| prompt.fields())
+                        .map(|(role, input)| {
+                            serde_json::json!({
+                                "key": sim_field_key(role),
+                                "masked": true,
+                                "required": true,
+                                "length": input.value().chars().count(),
+                                "focused": input.is_focused(),
+                            })
+                        })
+                        .collect();
+                } else {
+                    let inputs = self
+                        .prompt
+                        .iter()
+                        .flat_map(|prompt| prompt.fields().map(|(_, input)| input));
+                    state["fields"] = fields
+                        .iter()
+                        .zip(inputs)
+                        .map(|(field, input)| {
+                            let value = input.value();
+                            let mut entry = serde_json::json!({
+                                "key": field.key,
+                                "label": field.label,
+                                "masked": field.masked,
+                                "required": field.required,
+                                "length": value.chars().count(),
+                                "focused": input.is_focused(),
+                            });
+                            if !field.masked {
+                                entry["value"] = value.into();
+                            }
+                            entry
+                        })
+                        .collect();
+                }
                 state["remember"] = if *remember_offered {
                     self.prompt
                         .as_ref()
@@ -2439,6 +2542,7 @@ impl PortalDialogController {
         // Overwrite before release so the freed allocation does not keep
         // the password; the prompt zeroes its fields as it is dropped.
         self.prompt = None;
+        self.puk_attempt = None;
         wipe(&mut self.step_field);
         self.remember = false;
         self.entry_error = None;
@@ -2466,6 +2570,17 @@ impl PortalDialogController {
 
 /// Give `event` to an embedded field; `true` when the field used it. The
 /// fields are local and never write the document.
+/// The `state-dump` name of a SIM prompt's field.
+fn sim_field_key(role: ui::widget::FieldRole) -> &'static str {
+    use ui::widget::FieldRole;
+    match role {
+        FieldRole::Puk => "puk",
+        FieldRole::NewPin => "new-pin",
+        FieldRole::ConfirmPin => "confirm-pin",
+        FieldRole::Pin | FieldRole::Secret | FieldRole::Username | FieldRole::Text => "pin",
+    }
+}
+
 fn forward_to_field(field: &mut TextInput, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
     let used = forward_to_widget(field, event, ctx);
     // The value is read back on confirm; drop the copy this hands out.
@@ -2653,7 +2768,7 @@ fn friendly_app_name(app_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::widget::{FieldRole, SecretKind};
+    use ui::widget::FieldRole;
     use winit::keyboard::{KeyCode, ModifiersState};
     #[test]
     #[allow(
@@ -2991,6 +3106,7 @@ mod tests {
                     },
                 ],
                 remember: None,
+                sim: None,
             })
             .expect("queued");
         assert!(controller.pump());
@@ -3031,7 +3147,10 @@ mod tests {
             .expect("queued");
     }
 
-    fn type_key(controller: &mut PortalDialogController, key: winit::keyboard::Key) -> bool {
+    pub(super) fn type_key(
+        controller: &mut PortalDialogController,
+        key: winit::keyboard::Key,
+    ) -> bool {
         let event = ui::synthetic_input::key_input(&key, winit::event::ElementState::Pressed);
         crate::shell::test_support::with_scratch_event_ctx(|ctx| {
             controller.edit_secret(&event, ctx)
@@ -3066,52 +3185,6 @@ mod tests {
                 secret: "p".into()
             })
         );
-    }
-
-    #[test]
-    fn a_sim_pin_is_asked_with_the_pin_prompt_and_answers_only_digits() {
-        use winit::keyboard::Key;
-
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_network_secrets(NetworkSecretsRequest {
-                handle: "nm:sim".into(),
-                title: "SIM PIN required".into(),
-                detail: "Enter the PIN to unlock the SIM for “Carrier”.".into(),
-                fields: vec![SecretFieldSpec {
-                    key: "pin".into(),
-                    label: "SIM PIN".into(),
-                    masked: true,
-                    required: true,
-                    initial: String::new(),
-                    rule: SecretFieldRule::Any,
-                }],
-                remember: Some(false),
-            })
-            .expect("queued");
-        let mut controller = PortalDialogController::new(queue);
-        assert!(controller.pump());
-        assert!(matches!(
-            controller.prompt().map(SecretPrompt::kind),
-            Some(SecretKind::SimPin { .. })
-        ));
-        for key in ["1", "2", "x", "3", "4"] {
-            assert!(type_key(&mut controller, Key::Character(key.into())));
-        }
-        assert!(controller.confirm());
-        match receiver.blocking_recv() {
-            Ok(NetworkSecretsDecision::Answered { values, remember }) => {
-                assert!(!remember);
-                assert_eq!(
-                    values
-                        .iter()
-                        .map(|value| value.as_str())
-                        .collect::<Vec<_>>(),
-                    ["1234"]
-                );
-            }
-            other => panic!("expected the PIN, got {other:?}"),
-        }
     }
 
     #[test]

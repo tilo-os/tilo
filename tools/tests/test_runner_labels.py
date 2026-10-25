@@ -14,6 +14,23 @@ JSON_RUNNER = re.compile(r'"(?:runner|build_runner)"\s*:\s*"([^"]+)"')
 QUOTED = re.compile(r"'([^']+)'")
 
 
+def markdown_tables(text):
+    """Each Markdown table as its rows of trimmed cells, the separator row left out."""
+    tables, rows = [], None
+    for line in text.splitlines() + ['']:
+        line = line.strip()
+        if not line.startswith('|'):
+            if rows:
+                tables.append(rows)
+            rows = None
+            continue
+        cells = [cell.strip() for cell in line.strip('|').split('|')]
+        rows = rows or []
+        if not all(set(cell) <= set('-: ') for cell in cells):
+            rows.append(cells)
+    return tables
+
+
 def workflow_labels():
     for path in sorted((ROOT / '.forgejo/workflows').glob('*.yml')):
         text = path.read_text()
@@ -39,8 +56,10 @@ class RunnerLabels(unittest.TestCase):
         self.assertIn('runner', seen)
 
     def test_readme_table_matches_the_module(self):
-        readme = (ROOT / 'tools/ci/README.md').read_text()
-        self.assertIn(runner_labels.table(), readme, 'regenerate with python3 tools/ci/runner_labels.py')
+        # Cell by cell: a Markdown formatter may pad the columns.
+        (generated,) = markdown_tables(runner_labels.table())
+        readme = markdown_tables((ROOT / 'tools/ci/README.md').read_text())
+        self.assertIn(generated, readme, 'regenerate with python3 tools/ci/runner_labels.py')
 
     def test_matrix_constants_name_documented_labels(self):
         for mapping in (runner_labels.NATIVE, runner_labels.LARGE):

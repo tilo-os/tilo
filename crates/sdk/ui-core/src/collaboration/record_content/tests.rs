@@ -141,3 +141,32 @@ fn missing_content_reads_where_its_host_says_the_want_stands() {
     lane.stands(other.clone(), ContentState::Unavailable);
     assert_eq!(lane.standing(&other), None);
 }
+
+#[test]
+fn content_reads_arrive_from_the_room_and_content_here_is_ready_at_once() {
+    use crate::arriving::Arrival;
+    let (store, lane) = record_store("read-as-arriving");
+    let here = store.put(b"a picture here").unwrap();
+    let reads = ContentReads::new(store);
+    assert_eq!(
+        reads.read(&here).get(),
+        Arrival::Ready(()),
+        "content on this device opens complete"
+    );
+
+    let bytes = b"bytes on another device".to_vec();
+    let away = tilo_content::hash_bytes(&bytes);
+    let read = reads.read(&away);
+    assert!(read.get().is_pending(), "on its way from the room");
+    assert!(
+        lane.take_requests().wants.contains(&away),
+        "the first read asks the room for it"
+    );
+    lane.stands(away.clone(), ContentState::Unavailable);
+    assert_eq!(reads.read(&away).get(), Arrival::Failed(ContentUnavailable));
+    lane.stands(away.clone(), ContentState::Waiting);
+    assert!(reads.read(&away).get().is_pending());
+    lane.arrive(away.clone(), bytes);
+    assert_eq!(reads.read(&away).get(), Arrival::Ready(()));
+    assert_eq!(read.get(), Arrival::Ready(()), "the one read answers");
+}

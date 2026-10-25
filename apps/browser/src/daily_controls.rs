@@ -1,4 +1,9 @@
 //! Device-local find and zoom state, retained with each browser tab.
+//!
+//! Find runs in the page's engine, which reports how many matches there are
+//! and which one it shows. While the desktop's window bar hosts the window,
+//! its search drives that find ([`DailyControls::search`]); outside a Tilo
+//! session the window's own find bar ([`DailyControls::bar`]) does.
 use ui::{
     LocalState,
     icons::Icon,
@@ -29,6 +34,18 @@ pub(crate) enum Action {
     Next(bool),
     Zoom(i32),
 }
+/// Where the window bar's search stands in the page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum BarSearch {
+    /// Not finding.
+    #[default]
+    Off,
+    /// Finding; the bar has the engine's latest report.
+    Finding,
+    /// Finding; the engine reported since the bar last asked.
+    Reported,
+}
+
 pub(crate) struct DailyControls {
     pub open: bool,
     pub focus_pending: Option<&'static str>,
@@ -40,6 +57,11 @@ pub(crate) struct DailyControls {
     active: i32,
     zoom: f64,
     buffered: bool,
+    /// The window bar's search in the page.
+    search: BarSearch,
+    /// Moves when a page finished loading under the bar's search, so the
+    /// bar finds again in it.
+    revision: u64,
 }
 impl Default for DailyControls {
     fn default() -> Self {
@@ -54,6 +76,8 @@ impl Default for DailyControls {
             active: 0,
             zoom: 0.0,
             buffered: false,
+            search: BarSearch::Off,
+            revision: 0,
         }
     }
 }
@@ -106,6 +130,14 @@ impl DailyControls {
         std::mem::take(&mut self.buffered).then(|| self.query.get().len())
     }
     pub fn navigation_started(&mut self, engine: &SharedEngine) -> bool {
+        if self.search != BarSearch::Off {
+            // The page the matches were in is going: none until the next
+            // one has loaded and the bar finds again.
+            self.count = 0;
+            self.active = 0;
+            self.search = BarSearch::Reported;
+            self.id = self.id % (i32::MAX as u32) + 1;
+        }
         if !self.open {
             return false;
         }
@@ -149,12 +181,15 @@ impl DailyControls {
         match event {
             WebViewEvent::FindResult {
                 id, count, active, ..
-            } if self.open && *id == self.id => {
+            } if (self.open || self.search != BarSearch::Off) && *id == self.id => {
                 if *count >= 0 {
                     self.count = *count;
                 }
                 if *active >= 0 {
                     self.active = *active;
+                }
+                if self.search != BarSearch::Off {
+                    self.search = BarSearch::Reported;
                 }
                 true
             }
@@ -165,6 +200,74 @@ impl DailyControls {
             _ => false,
         }
     }
+    /// Find `query` in the page for the window bar's search; an empty query
+    /// stops finding.
+    pub fn search(&mut self, query: &str, engine: &SharedEngine) {
+        let query: String = query.chars().take(1024).collect();
+        if query.is_empty() {
+            self.stop_search(engine);
+            return;
+        }
+        self.search = BarSearch::Finding;
+        self.sent = query;
+        self.id = self.id % (i32::MAX as u32) + 1;
+        self.count = 0;
+        self.active = 0;
+        engine.send(WebViewCommand::Find {
+            id: self.id,
+            text: self.sent.clone(),
+            forward: true,
+            next: false,
+        });
+    }
+
+    /// Show the next match (or the previous) of the bar's search; whether
+    /// the engine was asked to.
+    pub fn search_step(&mut self, forward: bool, engine: &SharedEngine) -> bool {
+        if self.search == BarSearch::Off || self.sent.is_empty() {
+            return false;
+        }
+        self.act(Action::Next(forward), engine);
+        true
+    }
+
+    /// The bar's search closed: the page shows no matches.
+    pub fn stop_search(&mut self, engine: &SharedEngine) {
+        if self.search != BarSearch::Off {
+            engine.send(WebViewCommand::StopFinding);
+        }
+        self.search = BarSearch::Off;
+        self.sent.clear();
+        self.count = 0;
+        self.active = 0;
+    }
+
+    /// The engine's latest report for the bar's search, once: how many
+    /// matches, and which one (0-based) it shows.
+    pub fn take_search_results(&mut self) -> Option<(usize, Option<usize>)> {
+        if self.search != BarSearch::Reported {
+            return None;
+        }
+        self.search = BarSearch::Finding;
+        let total = usize::try_from(self.count).unwrap_or(0);
+        let current = usize::try_from(self.active)
+            .ok()
+            .and_then(|active| active.checked_sub(1));
+        Some((total, current))
+    }
+
+    /// A page finished loading: the bar's search finds again in it.
+    pub fn page_loaded(&mut self) {
+        if self.search != BarSearch::Off {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    /// Moves when the page under the bar's search changed.
+    pub fn search_revision(&self) -> u64 {
+        self.revision
+    }
+
     /// The closure a command's menu row or button runs: it queues `action`
     /// for the next `sync`, the same hand-off every control here uses.
     pub fn command(&self, action: Action) -> impl FnMut() + 'static {
@@ -256,6 +359,7 @@ impl DailyControls {
             .with_id("browser.find")
             .with_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s1)
             .push(Box::new(
+                // window-bar: fallback, the bar's search finds in the page while it hosts the window
                 TextInput::from_state(&self.query)
                     .with_id(FIND_INPUT)
                     .with_kind(ui::widget::TextInputKind::Search)

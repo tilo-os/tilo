@@ -54,6 +54,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -65,7 +66,7 @@ use zeroize::Zeroizing;
 use crate::a11y::{AccessNode, AccessState, Politeness, Role};
 use crate::caps_lock::CapsLockEstimate;
 use crate::icons::Icon;
-use crate::interaction::{InteractionEnvironment, PointerPrecision};
+use crate::interaction::{InputModality, InteractionEnvironment, PointerPrecision};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -76,6 +77,9 @@ use crate::widget::{
     Button, ButtonFace, ButtonRole, EventCtx, ModalDialog, ModelPath, TaffyTreeExt, TextInput,
     TextInputKind, Widget,
 };
+
+/// The most lines the line under the fields wraps to.
+const NOTICE_MAX_LINES: usize = 3;
 
 /// The digits a SIM's PUK has.
 pub const PUK_DIGITS: usize = 8;
@@ -434,6 +438,10 @@ pub struct SecretPrompt {
     window: Rect,
     rect: Rect,
     resource_h: f64,
+    /// The line under the fields as last measured, and how many lines it
+    /// wraps to: a long refusal is read whole, never cut off.
+    measured_notice: Option<String>,
+    notice_lines: usize,
     /// Whether the keypad showed when the body was last measured.
     measured_keypad: bool,
     layout: PromptLayout,
@@ -442,6 +450,31 @@ pub struct SecretPrompt {
     touch: Option<(u64, Target)>,
     decision: Rc<Cell<Option<Decision>>>,
     theme: Theme,
+    /// Where the secret field's value is kept outside the prompt, for a
+    /// host that builds its tree afresh ([`Self::with_secret_buffer`]).
+    secret_buffer: Option<Arc<Mutex<String>>>,
+    /// The host's default action, run by Enter in a dialog body's last
+    /// field ([`Self::on_submit`]).
+    on_submit: Option<Rc<dyn Fn()>>,
+    /// What the prompt showed around its fields when it was last painted:
+    /// while that holds, only what a field repaints is damage.
+    painted: Option<Chrome>,
+}
+
+/// Everything the prompt paints around its fields' text.
+#[derive(Clone, Debug, PartialEq)]
+struct Chrome {
+    rect: Rect,
+    window: Rect,
+    notice: Option<(String, NoticeTone)>,
+    focus: Stop,
+    has_focus: bool,
+    hovered: Option<Target>,
+    pressed: Option<Target>,
+    choice: usize,
+    option: Option<bool>,
+    keypad: bool,
+    can_submit: bool,
 }
 
 impl SecretPrompt {
@@ -474,6 +507,8 @@ impl SecretPrompt {
             window: Rect::ZERO,
             rect: Rect::ZERO,
             resource_h: 0.0,
+            measured_notice: None,
+            notice_lines: 1,
             measured_keypad: false,
             layout: PromptLayout::default(),
             cursor: None,
@@ -481,6 +516,9 @@ impl SecretPrompt {
             touch: None,
             decision: Rc::new(Cell::new(None)),
             theme: Theme::dark(),
+            secret_buffer: None,
+            on_submit: None,
+            painted: None,
         };
         prompt.fields = kind
             .roles()
@@ -679,6 +717,72 @@ impl SecretPrompt {
         self
     }
 
+    /// Keep the secret (the password, the PIN or the PUK) in `buffer`, and
+    /// start from what it holds: for a host that builds its widget tree
+    /// afresh, so what was typed outlives the prompt that took it. The host
+    /// owns the buffer and zeroes it when the secret is used or dropped.
+    #[must_use]
+    pub fn with_secret_buffer(mut self, buffer: Arc<Mutex<String>>) -> Self {
+        let index = self.secret_field_index();
+        if let Some(field) = self.fields.get_mut(index) {
+            let value =
+                Zeroizing::new(buffer.lock().map(|value| value.clone()).unwrap_or_default());
+            field.input.set_text(&value);
+            // Seeding is not an edit: nothing to clear or publish.
+            drop(field.input.take_dirty().map(Zeroizing::new));
+        }
+        self.secret_buffer = Some(buffer);
+        self
+    }
+
+    /// Show `error` under the field it is about from the start, as
+    /// [`Self::reject`] does but leaving the caret where it is: for a host
+    /// that builds its tree afresh and keeps the last refusal itself.
+    #[must_use]
+    pub fn with_error(mut self, error: Option<String>) -> Self {
+        if let Some(error) = error.filter(|error| !error.trim().is_empty()) {
+            let index = self.secret_field_index();
+            for (i, field) in self.fields.iter_mut().enumerate() {
+                Widget::set_invalid(&mut field.input, i == index);
+            }
+            self.error = Some((index, error));
+        }
+        self
+    }
+
+    /// What the host already knows of Caps Lock, for a prompt built afresh
+    /// while the person types: the notice stays up across the rebuild.
+    #[must_use]
+    pub fn with_caps_lock(mut self, caps: CapsLockEstimate) -> Self {
+        self.caps = caps;
+        self
+    }
+
+    /// What the asker is doing with the answer, from the start
+    /// ([`Self::set_busy`]).
+    #[must_use]
+    pub fn with_busy(mut self, busy: Option<String>) -> Self {
+        self.set_busy(busy);
+        self
+    }
+
+    /// Informational text from the asker, from the start
+    /// ([`Self::set_notice`]).
+    #[must_use]
+    pub fn with_notice(mut self, notice: Option<String>) -> Self {
+        self.set_notice(notice);
+        self
+    }
+
+    /// Run `submit` when Enter is pressed in a dialog body's last field: for
+    /// a host with no dialog around the body whose default action would
+    /// take that Enter.
+    #[must_use]
+    pub fn on_submit(mut self, submit: impl Fn() + 'static) -> Self {
+        self.on_submit = Some(Rc::new(submit));
+        self
+    }
+
     /// A check row under the fields, ticked or not to start with.
     #[must_use]
     pub fn with_option(mut self, label: impl Into<String>, checked: bool) -> Self {
@@ -821,7 +925,12 @@ impl SecretPrompt {
             return Some((error.clone(), NoticeTone::Error));
         }
         if let Some(busy) = &self.busy {
-            return Some((busy.clone(), NoticeTone::Quiet));
+            // What the asker says while it checks (touch the reader) is
+            // what the person needs now; otherwise what is being done.
+            return Some((
+                self.notice.as_ref().unwrap_or(busy).clone(),
+                NoticeTone::Quiet,
+            ));
         }
         if self.caps_lock_on() {
             return Some((crate::i18n!("secret-prompt-caps-lock"), NoticeTone::Warning));
@@ -864,6 +973,11 @@ impl SecretPrompt {
         let was = self.busy.is_some();
         self.busy = busy;
         let now = self.busy.is_some();
+        if now && !was {
+            // What the asker said was about the answer before it was
+            // given; what it says while checking is set after this.
+            self.notice = None;
+        }
         for field in &mut self.fields {
             field.input.set_disabled(now);
         }
@@ -908,7 +1022,9 @@ impl SecretPrompt {
         }
     }
 
-    fn clear_error(&mut self) {
+    /// Take the error down, as typing does: the asker edited the field
+    /// itself.
+    pub fn clear_error(&mut self) {
         if self.error.take().is_some() {
             for field in &mut self.fields {
                 Widget::set_invalid(&mut field.input, false);
@@ -1062,6 +1178,11 @@ impl SecretPrompt {
             // Setting the text of a secret field zeroes the old buffer.
             field.input.set_text("");
         }
+        if let Some(buffer) = &self.secret_buffer
+            && let Ok(mut value) = buffer.lock()
+        {
+            zeroize::Zeroize::zeroize(&mut *value);
+        }
         self.caps = CapsLockEstimate::new();
     }
 
@@ -1123,7 +1244,9 @@ impl SecretPrompt {
         f64::from(theme.tokens.spacing.s2)
     }
 
-    fn field_height(theme: &Theme) -> f64 {
+    /// How tall a field of the prompt stands under `theme`: a host lines a
+    /// control up beside it with this.
+    pub fn field_height(theme: &Theme) -> f64 {
         ControlSize::Regular.height(theme)
     }
 
@@ -1155,6 +1278,20 @@ impl SecretPrompt {
                 text.clamp_to_lines(&self.resource, &style, crate::num::f32_of_f64(width), 3);
             Self::line_height(theme, TextRole::Body) * crate::num::f64_of_usize(lines.len())
         };
+        let notice = self.notice_line().map(|(line, _)| line);
+        self.notice_lines = match &notice {
+            Some(line) if width > 0.0 => text
+                .clamp_to_lines(
+                    line,
+                    &theme.text(TextRole::Caption),
+                    crate::num::f32_of_f64(width),
+                    NOTICE_MAX_LINES,
+                )
+                .len()
+                .max(1),
+            _ => 1,
+        };
+        self.measured_notice = notice;
         self.body_height(theme)
     }
 
@@ -1209,7 +1346,8 @@ impl SecretPrompt {
             y += field_h;
         }
         y += f64::from(spacing.s1);
-        let caption_h = Self::line_height(theme, TextRole::Caption);
+        let caption_h = Self::line_height(theme, TextRole::Caption)
+            * crate::num::f64_of_usize(self.notice_lines.max(1));
         let notice = Rect::new(rect.x0, y, rect.x1, y + caption_h);
         y = notice.y1;
         let option = self.option.as_ref().map(|_| {
@@ -1364,6 +1502,27 @@ impl SecretPrompt {
         }
     }
 
+    fn chrome(&self) -> Chrome {
+        Chrome {
+            rect: self.rect,
+            window: self.window,
+            notice: self.notice_line(),
+            focus: self.focus,
+            has_focus: self.has_focus,
+            hovered: self.cursor.and_then(|point| self.target_at(point)),
+            pressed: self.pressed,
+            choice: self.choice,
+            option: self.option_checked(),
+            keypad: self.shows_keypad(),
+            can_submit: self.can_submit(),
+        }
+    }
+
+    /// Whether anything around the fields changed since the last paint.
+    fn chrome_changed(&self) -> bool {
+        self.painted.as_ref() != Some(&self.chrome())
+    }
+
     fn target_at(&self, point: Point) -> Option<Target> {
         if let Some((key, _)) = self
             .layout
@@ -1468,6 +1627,23 @@ impl SecretPrompt {
         }
         if changed {
             self.clear_error();
+            self.publish_secret();
+        }
+    }
+
+    /// Mirror the secret field into the host's buffer, if it gave one.
+    fn publish_secret(&self) {
+        let Some(buffer) = &self.secret_buffer else {
+            return;
+        };
+        let Some(field) = self.fields.get(self.secret_field_index()) else {
+            return;
+        };
+        if let Ok(mut value) = buffer.lock()
+            && value.as_str() != field.input.value()
+        {
+            zeroize::Zeroize::zeroize(&mut *value);
+            value.push_str(field.input.value());
         }
     }
 
@@ -1552,7 +1728,14 @@ impl SecretPrompt {
                         let last = index.saturating_add(1) >= self.fields.len();
                         if last && dialog {
                             // The dialog's default action answers.
-                            return false;
+                            return match &self.on_submit {
+                                Some(submit) if self.busy.is_none() => {
+                                    submit();
+                                    true
+                                }
+                                Some(_) => true,
+                                None => false,
+                            };
                         }
                         if self.busy.is_none() {
                             self.enter_in_field();
@@ -1754,6 +1937,7 @@ impl SecretPrompt {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.painted = Some(self.chrome());
         let theme = self.effective_theme(theme);
         if let Some(modal) = self.layout.modal.clone() {
             {
@@ -1846,19 +2030,24 @@ impl SecretPrompt {
             };
             let style = theme.text(TextRole::Caption);
             let rect = self.layout.notice;
-            let shown = text.elide_to_width_style(
+            let line_h = Self::line_height(theme, TextRole::Caption);
+            let mut y = rect.y0;
+            for shown in text.clamp_to_lines(
                 &line,
+                &style,
                 crate::num::f32_of_f64(rect.width().max(1.0)),
-                &style,
-            );
-            text.draw_style(
-                scene,
-                &shown,
-                color,
-                transform.pre_translate(Vec2::new(rect.x0, rect.y0)),
-                None,
-                &style,
-            );
+                NOTICE_MAX_LINES,
+            ) {
+                text.draw_style(
+                    scene,
+                    &shown,
+                    color,
+                    transform.pre_translate(Vec2::new(rect.x0, y)),
+                    None,
+                    &style,
+                );
+                y += line_h;
+            }
         }
         if let Some((label, checked)) = &self.option {
             let rect = self.layout.option.unwrap_or(Rect::ZERO);
@@ -2007,7 +2196,9 @@ impl SecretPrompt {
             );
         }
         if let Some((line, tone)) = self.notice_line() {
-            let politeness = if tone == NoticeTone::Error {
+            // A refusal and what the asker says (an instruction that can
+            // need acting on now) interrupt; the rest waits its turn.
+            let politeness = if tone == NoticeTone::Error || self.notice.as_ref() == Some(&line) {
                 Politeness::Assertive
             } else {
                 Politeness::Polite
@@ -2090,6 +2281,9 @@ impl SecretPrompt {
             .with_children(self.access_children());
         if !self.title.is_empty() {
             node = node.with_name(self.title.clone());
+        } else if let [field] = self.fields.as_slice() {
+            // A one-field prompt in a host's form is named by its field.
+            node = node.with_name(field.label.clone());
         }
         if !self.resource.is_empty() {
             node = node.with_description(self.resource.clone());
@@ -2214,12 +2408,42 @@ pub enum NoticeTone {
 impl Drop for SecretPrompt {
     fn drop(&mut self) {
         // Each secret field zeroes its own buffer on drop too; wiping here
-        // also covers a field shown as typed (an echoed secret).
+        // also covers a field shown as typed (an echoed secret). A host's
+        // buffer is the host's: its tree is rebuilt around what it holds.
+        self.secret_buffer = None;
         self.wipe();
     }
 }
 
 impl Widget for SecretPrompt {
+    fn needs_redraw(&self) -> bool {
+        self.chrome_changed() || self.fields.iter().any(|field| field.input.needs_redraw())
+    }
+
+    /// A keystroke repaints its field; the whole prompt only when what is
+    /// around the fields (the line under them, focus, a button) changed.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.chrome_changed() {
+            // A sheet paints its scrim over the whole window.
+            let rect = self
+                .layout
+                .modal
+                .as_ref()
+                .map_or(self.rect, |modal| modal.scrim);
+            regions.push(rect);
+            return;
+        }
+        for field in &self.fields {
+            field.input.collect_damage(regions);
+        }
+    }
+
+    fn mark_drawn(&mut self) {
+        for field in &mut self.fields {
+            field.input.mark_drawn();
+        }
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -2280,7 +2504,9 @@ impl Widget for SecretPrompt {
 
     /// The keypad comes and goes with touch, which changes the height.
     fn layout_needs_measure(&self) -> bool {
-        self.rect == Rect::ZERO || self.measured_keypad != self.shows_keypad()
+        self.rect == Rect::ZERO
+            || self.measured_keypad != self.shows_keypad()
+            || self.measured_notice != self.notice_line().map(|(line, _)| line)
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -2288,6 +2514,11 @@ impl Widget for SecretPrompt {
     }
 
     fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
+        // A prompt raised while touch is the input in use opens with its
+        // keypad; a later switch of input follows it.
+        if environment.modality != self.environment.modality {
+            self.touch_mode = environment.modality == InputModality::Touch;
+        }
         self.environment = environment;
     }
 
@@ -2307,8 +2538,10 @@ impl Widget for SecretPrompt {
         self.rect
     }
 
+    /// A sheet keeps focus while its answer is checked; in a host's form
+    /// the inert prompt leaves the tab order until it can be typed in.
     fn is_focusable(&self) -> bool {
-        true
+        self.busy.is_none() || self.presentation == Presentation::Sheet
     }
 
     fn is_default_keyboard_focus(&self) -> bool {

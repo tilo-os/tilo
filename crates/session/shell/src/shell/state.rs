@@ -1812,7 +1812,7 @@ impl WorkspaceTree {
     /// [`Self::trusted_identity_projection`] marks as agents for Files, so
     /// the workspace's Activity, an app's own history and Files name an
     /// agent alike. Presentation only: nothing is admitted by it.
-    pub fn verified_agents(&self, room: RoomId) -> Vec<ui::history_source::RosterAgent> {
+    pub fn verified_agents(&self, room: RoomId) -> Vec<collab_types::history::RosterAgent> {
         self.trusted_identity_projection(room)
             .humans
             .into_iter()
@@ -1821,7 +1821,7 @@ impl WorkspaceTree {
                 let person_name = human.display_name;
                 human.devices.into_iter().filter_map(move |device| {
                     let agent = device.agent?;
-                    Some(ui::history_source::RosterAgent {
+                    Some(collab_types::history::RosterAgent {
                         device: device.certificate.device_public_key,
                         person,
                         person_name: person_name.clone(),
@@ -1889,6 +1889,23 @@ impl WorkspaceTree {
             .into_iter()
             .filter_map(|(handle, cert)| Some((handle, person_id_of(cert.user_public_key)?)))
             .collect()
+    }
+
+    /// The person behind each of `room`'s sessions that the room itself
+    /// vouches for, keyed by presence handle: every certified device
+    /// ([`Self::room_peer_principals`]), and the endpoint a validated
+    /// invite pinned as the room's governor ([`RoomAuthority::Peer`]) as
+    /// the room's owner when no certificate names its person. A session
+    /// neither covers is nobody in particular, whatever it calls itself.
+    pub fn room_session_principals(&self, room: RoomId) -> std::collections::BTreeMap<u64, UserId> {
+        let mut people = self.room_peer_principals(room);
+        if let RoomAuthority::Peer(governor) = self.room_authority(room)
+            && let Some(handle) = governor.liveness_handle()
+            && let Some(owner) = self.workspace_in_room(room).and_then(Workspace::owner)
+        {
+            people.entry(handle).or_insert_with(|| owner.clone());
+        }
+        people
     }
 
     /// The other devices of this device's person in `room`, keyed by
@@ -8357,7 +8374,7 @@ mod automerge_foundation_tests {
         assert_eq!(author.attribution, None);
 
         let (host, room, scribe) = room_with_ada_and_scribe(&ada);
-        let verified = ui::history_source::RosterAgent {
+        let verified = collab_types::history::RosterAgent {
             device: scribe,
             person: ada.verifying_key().to_bytes(),
             person_name: "Ada Lovelace".into(),

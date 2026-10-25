@@ -1,0 +1,39 @@
+[package]
+name = "tilo-fs-client"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "Capability clients and wire types for Tilo filesystem services."
+
+[dependencies]
+blake3.workspace = true
+runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
+capnp.workspace = true
+capnp-rpc.workspace = true
+tokio = { workspace = true, features = ["rt", "io-util", "macros", "sync", "time"] }
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+
+[target.'cfg(unix)'.dependencies]
+uuid.workspace = true
+fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
+tilo-paths.workspace = true
+libc.workspace = true
+tokio = { workspace = true, features = ["net"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

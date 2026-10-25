@@ -212,9 +212,12 @@ fn draw_frame_content(
         .as_mut()
         .filter(|p| p.is_presented())
     {
+        // The window under its bar: the palette and its scrim leave the
+        // bar (the host's chrome, or outside a session the row of the
+        // window's slots) clear and live.
         let surface = KurboRect::new(
             0.0,
-            0.0,
+            app.layout.safe_area.top + app.layout.slot_bar_inset,
             f64::from(width) / f64::from(scale_factor),
             f64::from(height) / f64::from(scale_factor),
         );
@@ -224,7 +227,7 @@ fn draw_frame_content(
             .map(|window| window.intersect(surface))
             .filter(|window| window.width() > 0.0 && window.height() > 0.0)
             .unwrap_or(surface);
-        let (Point { x: x0, y: y0 }, card_w) = crate::action_palette::placement(window);
+        let (Point { x: x0, y: y0 }, card_w) = ap.place_in(window, &app.theme);
         match app.palette_source {
             PaletteSource::Owned { .. } => ap.layout(&app.theme, Point::new(x0, y0), card_w),
             PaletteSource::Host => ap.layout_with_text(

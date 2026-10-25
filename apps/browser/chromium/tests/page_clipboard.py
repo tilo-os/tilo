@@ -19,6 +19,9 @@ its own alone (src/page_clipboard.h). With real Chromium:
   system clipboard. (Once the person allows a site, its read gets the system
   clipboard's text; this node refuses a site's read without asking, so that
   half is not covered here.)
+- A rich editor's field in a document its page wrote into a frame
+  (srcdoc, about:blank) copies to and pastes from the Browser as the page
+  does.
 - A tab whose embedder did not ask for the page's clipboard sends nothing
   and pastes the engine's own at once.
 """
@@ -64,6 +67,12 @@ let pasted = null;
 field.addEventListener('paste', (e) => { pasted = e.clipboardData.getData('text/plain'); });
 field.addEventListener('input', () => show({value: field.value, pasted}));
 </script></body>'''
+# A rich editor's field, in a document the page wrote into a frame.
+FRAMED = b'''<!doctype html><title>ready</title><body style="margin:0">
+<iframe style="position:absolute;left:0;top:0;width:400px;height:200px;border:0" srcdoc="<body style='margin:0'>
+<textarea id='field' style='position:absolute;left:0;top:0;width:300px;height:80px'></textarea>
+<script>field.addEventListener('input', () => { parent.document.title = JSON.stringify({value: field.value}); });</script>"></iframe>
+</body>'''
 # A page that copies as it loads, with no one there.
 UNASKED = b'''<!doctype html><title>unasked</title><body>words<script>
 navigator.clipboard.writeText('unasked').catch(() => {});
@@ -86,7 +95,7 @@ def state(event):
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        body = UNASKED if self.path == '/unasked' else PAGE
+        body = {'/unasked': UNASKED, '/framed': FRAMED}.get(self.path, PAGE)
         self.send_response(200)
         self.send_header('Content-Type', 'text/html')
         self.send_header('Content-Length', str(len(body)))
@@ -109,14 +118,14 @@ class PageClipboard(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown()
 
-    def start(self, share=True):
+    def start(self, share=True, page='/page'):
         host = Host()
         self.addCleanup(host.close)
         ready = next(e for e in host.seen if e['event'] == 'ready')
         self.assertIs(ready.get('page_clipboard'), True, 'the engine has no clipboard of its own here')
         if share:
             host.send(op='page_clipboard')
-        host.navigate(self.url + '/page')
+        host.navigate(self.url + page)
         host.send(op='focus', focused=True)
         return host
 
@@ -190,6 +199,20 @@ class PageClipboard(unittest.TestCase):
         host.send(op='clipboard_contents', request_id=asked['request_id'], text='from elsewhere')
         shown = state(host.until(lambda e: state(e).get('value') == 'from elsewhere!'))
         self.assertEqual(shown['pasted'], 'from elsewhere')
+
+    def test_a_field_in_a_written_frame_copies_and_pastes_through_the_browser(self):
+        host = self.start(page='/framed')
+        host.settle(1.0)
+        self.click(host, 100, 40)
+        self.key(host, 'v', ctrl=True)
+        asked = host.until(lambda e: e['event'] == 'clipboard_read')
+        host.send(op='clipboard_contents', request_id=asked['request_id'], text='from elsewhere')
+        host.until(lambda e: state(e).get('value') == 'from elsewhere')
+        mark = len(host.seen)
+        self.key(host, 'a', ctrl=True)
+        self.key(host, 'c', ctrl=True)
+        copy = self.copied(host, mark)
+        self.assertEqual((copy['tab'], copy['text'], copy['secret']), (1, 'from elsewhere', False))
 
     def test_a_read_chromium_refuses_asks_nothing_of_the_browser(self):
         # On this node Chromium refuses a site's read without asking, as it

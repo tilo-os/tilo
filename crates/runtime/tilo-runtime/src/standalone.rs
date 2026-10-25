@@ -582,13 +582,15 @@ impl ActionHost for RuntimeActionHost {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
+    ) -> Pending<Result<(), ActionHostError>> {
         if let Some(session) = &self.session {
-            session.check(caller, &self.joined)?;
+            if let Err(error) = session.check(caller, &self.joined) {
+                return Pending::ready(Err(error));
+            }
             return session.host.cancel(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
-            return Err(ActionHostError::UnknownInvocation);
+            return Pending::ready(Err(ActionHostError::UnknownInvocation));
         }
         self.broker
             .state()

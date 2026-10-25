@@ -317,7 +317,6 @@ fn recovery_key_answers(theme: &Theme, copy: &RecoveryKeyCopy) -> Column {
             .with_id(&format!("onboarding.backup.recovery-key.word-{position}"))
             .with_external_buffer(Arc::clone(answer))
             .with_accessible_name(label.clone())
-            .with_placeholder(label.clone())
             .with_mono()
             .with_spellcheck(false)
             .with_autocorrect(false)

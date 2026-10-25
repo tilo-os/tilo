@@ -15,10 +15,10 @@
 //! holds ([`crate::lease`]) because it chose the tree and has not mounted it
 //! yet, is never removed: retiring it leaves it in place, and
 //! [`PackageStore::collect_orphans`] removes it once nothing holds it. The
-//! size sweep never evicts a running app, nor one a launch is opening. A
-//! tree leaves `pkgs/` in one rename into `tmp/` before any of its files is
-//! deleted, so a removal stopped halfway never leaves a partial tree where a
-//! launch looks.
+//! size sweep never evicts a running app, even one running a build an
+//! update replaced, nor one a launch is opening. A tree leaves `pkgs/` in
+//! one rename into `tmp/` before any of its files is deleted, so a removal
+//! stopped halfway never leaves a partial tree where a launch looks.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -1321,6 +1321,32 @@ impl PackageStore {
         self.sweep_keeping(max_bytes, &[])
     }
 
+    /// Apps open on a tree an update replaced. The row names the new tree,
+    /// which no launch holds and no sandbox mounts yet, but the app runs on
+    /// the replaced one, whose lease its launch holds until the sandbox exits
+    /// (`crate::lease`): every held lease no row names is such a tree, and
+    /// its record says whose. Rare, so only those records are read.
+    fn open_on_replaced_trees(&self, registry: &Registry) -> BTreeSet<String> {
+        let named: BTreeSet<PackageId> = registry
+            .entries()
+            .iter()
+            .filter_map(|row| self.layout.materialised_id(&row.payload_root))
+            .collect();
+        let Ok(leases) = std::fs::read_dir(self.layout.root().join(crate::layout::LEASES_DIR))
+        else {
+            return BTreeSet::new();
+        };
+        leases
+            .filter_map(|entry| crate::layout::parse_id_hex(entry.ok()?.file_name().to_str()?))
+            .filter(|id| !named.contains(id) && lease::busy(&self.layout, *id).unwrap_or(true))
+            .filter_map(|id| {
+                let raw = std::fs::read_to_string(self.layout.manifest(id)).ok()?;
+                let manifest = tilo_app_package::Manifest::from_toml_str(&raw).ok()?;
+                Some(manifest.package.id)
+            })
+            .collect()
+    }
+
     /// [`Self::sweep`], never evicting the apps `keep` names: what the
     /// change the sweep follows just installed, which the person is about to
     /// open and which no launch holds yet. A store whose kept and pinned
@@ -1348,6 +1374,7 @@ impl PackageStore {
                 kept.insert(row.id.clone());
             }
         }
+        kept.extend(self.open_on_replaced_trees(&registry));
         let plan = plan_eviction(&self.usage_index(&registry), max_bytes, &kept);
         if plan.is_empty() {
             return Ok(plan);

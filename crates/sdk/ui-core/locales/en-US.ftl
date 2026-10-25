@@ -231,12 +231,14 @@ arriving-loading = Loading
 arriving-from = From { $source }
 arriving-failed = Couldn’t load this
 arriving-retry = Try again
+content-unavailable = None of the connected devices has it
 room-sync-connecting = Connecting to { $workspace }…
 room-sync-connecting-unnamed = Connecting…
 room-sync-host-needs-update = This workspace’s host needs to update
 room-sync-host-needs-update-body = Nothing here syncs until it has. Your changes stay on this device and reach it then.
 room-sync-device-needs-update = Tilo needs to update to sync this workspace
 room-sync-device-needs-update-body = The update is on its way. Your changes stay on this device until then.
+room-sync-shell-gone = This window lost its connection to Tilo, so what this room holds can’t reach it. Open it again.
 history-local-action-not-saved = Couldn't save this change to your history.
 history-local-action-retry = Retry
 history-local-action-unrecorded = Your changes in this window are saved, but your history doesn't record them.
@@ -699,6 +701,11 @@ dictation-cancel = Cancel
 
 widget-sidebar-resize = Resize sidebar
 widget-inspector-resize = Resize inspector
+widget-inspector = Inspector
+widget-sheet-height = Height
+widget-sheet-peek = Lowered
+widget-sheet-half = Half height
+widget-sheet-full = Full height
 
 dictation-copy-transcript = Copy transcript
 dictation-discard-transcript = Discard transcript

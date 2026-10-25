@@ -7,6 +7,7 @@ use ui::application::ApplicationDefinition;
 #[must_use]
 pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
     vec![
+        activity::definition(),
         api_tester::definition(),
         calculator::definition(),
         calendar::definition(),

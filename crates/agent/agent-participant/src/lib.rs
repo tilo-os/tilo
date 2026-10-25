@@ -43,6 +43,7 @@ pub mod apps;
 pub mod bot;
 pub mod control;
 mod desk;
+pub mod facts;
 pub mod host;
 pub mod message_lines;
 pub mod model;

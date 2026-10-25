@@ -126,7 +126,7 @@ pub(super) fn install(
     let pane = pane.clone();
     let navigation = navigation.clone();
     cx.effects::<PackageReview>(move |effect, cx| {
-        if pane.get().busy {
+        if pane.get().busy.is_some() {
             return Err("A registry operation is running; wait for it to finish.".into());
         }
         if let PackageReview::PackagePage { page } = effect {
@@ -271,14 +271,14 @@ fn start(
 ) -> EffectAnswer {
     let selected = selection(&pane.get(), &effect)?;
     let mut state = pane.get();
-    state.busy = true;
+    state.busy = Some(ui::time::now());
     state.error = None;
     pane.set(state);
     let directory = directory.to_owned();
     let pane = pane.clone();
     let navigation = navigation.clone();
     Ok(cx.thread(move |_| run(&directory, effect, selected), move |(), result, cx| {
-        let mut state = pane.get(); state.busy = false;
+        let mut state = pane.get(); state.busy = None;
         let result = match result {
             Ok(Outcome::Queue(packages)) => {
                 state.packages = packages; state.package_selected = None; state.package_page = 0; state.packages_loaded = true;
@@ -313,7 +313,9 @@ pub(super) fn queue(cx: &ViewCx<Draft>, pane: &Pane) -> Element {
             Button::new("refresh-packages", "package-review-refresh"),
             &PackageReview::RefreshPackages,
         )));
-    if pane.packages_loaded && pane.packages.is_empty() {
+    if let Some(since) = pane.busy.filter(|_| !pane.packages_loaded) {
+        body = body.push(super::on_its_way(since));
+    } else if pane.packages_loaded && pane.packages.is_empty() {
         body = body.push(Box::new(Text::new("package-review-empty")));
     }
     for pending in pane

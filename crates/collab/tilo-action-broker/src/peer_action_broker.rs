@@ -296,6 +296,7 @@ impl CapnpBrokerState {
             }
             ActionMessage::Cancel { invocation } => {
                 self.cancel_verified_invocation(&caller, *invocation)
+                    .await
                     .map_err(|_| PeerRefusal::NotCancellable)?;
                 Ok(ActionMessage::CancellationRequested {
                     invocation: *invocation,
@@ -426,7 +427,7 @@ impl CapnpBrokerState {
                         confirmation,
                     )
                     .map_err(|_| PeerRefusal::ConfirmationRequired)?;
-                self.dispatch_invocation_from_offered(
+                let staged = self.dispatch_invocation_from_offered(
                     request.peer_id,
                     offered,
                     InvocationInputs {
@@ -442,7 +443,10 @@ impl CapnpBrokerState {
                     Some((&caller, &request)),
                     revision.as_deref(),
                 )?;
+                // Answered once durable; the admission lock is not held
+                // across the wait.
                 drop(admission);
+                drop(staged.start(self).await?);
                 Ok(self.peer_observation(&caller, *invocation).await?)
             }
             _ => Err(PeerRefusal::InvalidRequest),

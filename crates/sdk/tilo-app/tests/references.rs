@@ -85,8 +85,12 @@ impl ActionHost for Door {
         None
     }
 
-    fn cancel(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Result<(), ActionHostError> {
-        Ok(())
+    fn cancel(
+        &self,
+        _: &Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 

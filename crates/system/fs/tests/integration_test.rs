@@ -2321,16 +2321,8 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
             .expect("the keeper serves the file")
     };
     assert!(read == data, "the file's bytes");
-    let stored = mount
-        .availability
-        .lock()
-        .unwrap()
-        .get(record)
-        .cloned()
-        .expect("the read that completed the file wrote its record");
-    assert_eq!(stored.residency, Residency::Resident { bytes: len });
-    assert_eq!(stored.current_version, Some(version));
 
+    // Written a moment after the read, with any other file found whole.
     let (event, _events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
         .await
         .unwrap();
@@ -2341,6 +2333,15 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
         event.paths.iter().any(|path| path == &docs),
         "the event names the file's folder: {event:?}"
     );
+    let stored = mount
+        .availability
+        .lock()
+        .unwrap()
+        .get(record)
+        .cloned()
+        .expect("the read that completed the file wrote its record");
+    assert_eq!(stored.residency, Residency::Resident { bytes: len });
+    assert_eq!(stored.current_version, Some(version));
     assert_eq!(
         availability(&film).residency,
         Residency::Resident { bytes: len },

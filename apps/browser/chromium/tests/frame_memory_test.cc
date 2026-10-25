@@ -3,12 +3,19 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
+#include <string>
 using namespace tilo;
 namespace {
-// Memory of `size` bytes, as a descriptor the way the app hands it over.
+// Memory of `size` bytes, created as the app creates it (tilo-process's
+// shared_memory): a memfd on Linux, an unlinked POSIX shared memory object on
+// macOS, whose size macOS reports rounded up to its page.
 int Memory(off_t size) {
-  char path[]="/tmp/tilo-frame-memory-XXXXXX";
-  const int fd=mkstemp(path);assert(fd>2);unlink(path);
+#if defined(__APPLE__)
+  const std::string name="/tilo-fm-"+std::to_string(getpid());
+  const int fd=shm_open(name.c_str(),O_RDWR|O_CREAT|O_EXCL,0600);assert(fd>2);shm_unlink(name.c_str());
+#else
+  const int fd=memfd_create("tilo-frame-memory-test",MFD_CLOEXEC);assert(fd>2);
+#endif
   assert(ftruncate(fd,size)==0);return fd;
 }
 uint32_t State(const FrameMemory& memory,uint32_t slot) {
@@ -19,10 +26,13 @@ void Free(FrameMemory& memory,uint32_t slot) {
 }
 }
 int main() {
-  // Only exactly the app's memory is taken, and its descriptor is closed either way.
+  // Only the app's memory is taken, and its descriptor is closed either way.
+  // Memory a page or more past it is not the app's.
   assert(!FrameMemory::Map(-1) && !FrameMemory::Map(2));
   { const int fd=Memory(4096);assert(!FrameMemory::Map(fd));assert(fcntl(fd,F_GETFD)<0); }
-  { const int fd=Memory(kFrameMemoryBytes+1);assert(!FrameMemory::Map(fd));assert(fcntl(fd,F_GETFD)<0); }
+  { const int fd=Memory(kFrameMemoryBytes+sysconf(_SC_PAGESIZE));assert(!FrameMemory::Map(fd));assert(fcntl(fd,F_GETFD)<0); }
+  // The app's memory is taken where the system rounds its size up to a page
+  // larger than the header, as macOS does on Apple silicon.
   const int fd=Memory(kFrameMemoryBytes);
   auto memory=FrameMemory::Map(fd);assert(memory);assert(fcntl(fd,F_GETFD)<0);
 

@@ -732,7 +732,8 @@ impl DesktopSurface {
         self.search.palette().get_rect()
     }
 
-    /// The window a search over one window (`search_window`) stands over.
+    /// The window a search over one window (`search_window`) stands over,
+    /// under its bar, which the palette keeps clear.
     fn searched_window_rect(&self) -> Option<Rect> {
         let (strip, group) = self.search_window?;
         self.rows
@@ -740,7 +741,15 @@ impl DesktopSurface {
             .groups
             .iter()
             .find(|candidate| candidate.id == group)
-            .map(Widget::get_rect)
+            .map(|group| {
+                let window = group.get_rect();
+                Rect::new(
+                    window.x0,
+                    group.bar_rect().y1.clamp(window.y0, window.y1),
+                    window.x1,
+                    window.y1,
+                )
+            })
             .filter(|rect| rect.area() > 0.0)
     }
 
@@ -767,7 +776,7 @@ impl DesktopSurface {
         let mut style = taffy.style(node).cloned().unwrap_or_default();
         style.position = ui::taffy::Position::Absolute;
         if let Some(window) = self.searched_window_rect() {
-            let (origin, _) = ui::action_palette::placement(window);
+            let (origin, _) = ui::action_palette::placement(window, theme);
             let x0 = (window.center().x - width / 2.0)
                 .min(surface.x1 - width - PALETTE_EDGE)
                 .max(surface.x0 + PALETTE_EDGE);

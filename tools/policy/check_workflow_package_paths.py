@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Sequence
 from typing import Any
 
 
@@ -106,7 +107,7 @@ def _resolve_graph_directories(
 
 
 def _cargo_tree_directories(
-    metadata: dict[str, Any], root: Path, package: str
+    metadata: dict[str, Any], root: Path, package: str, cargo_args: Sequence[str] = ()
 ) -> set[str]:
     """Directories linked by a normal build of ``package`` (no dev/build edges).
 
@@ -116,6 +117,8 @@ def _cargo_tree_directories(
     Containerfiles, so path filters rebuild when the image's inputs change and
     stay quiet for pure test-harness edges. Both Linux architectures are
     named, so the graph doesn't depend on the machine resolving it.
+    ``cargo_args`` select the features the image builds with, such as
+    ``--no-default-features``.
     """
     output = subprocess.check_output(
         [
@@ -132,6 +135,7 @@ def _cargo_tree_directories(
             "x86_64-unknown-linux-gnu",
             "--target",
             "aarch64-unknown-linux-gnu",
+            *cargo_args,
         ],
         cwd=root,
         text=True,
@@ -147,7 +151,7 @@ def _cargo_tree_directories(
 
 
 def dependency_directories(
-    metadata: dict[str, Any], root: Path, package: str
+    metadata: dict[str, Any], root: Path, package: str, cargo_args: Sequence[str] = ()
 ) -> set[str]:
     roots = [item["id"] for item in metadata["packages"] if item["name"] == package]
     if len(roots) != 1:
@@ -158,7 +162,7 @@ def dependency_directories(
     # keep the resolve-graph walk so unit tests do not need a Cargo tree.
     if not str(roots[0]).startswith("path+file://"):
         return _resolve_graph_directories(metadata, root, package)
-    return _cargo_tree_directories(metadata, root, package)
+    return _cargo_tree_directories(metadata, root, package, cargo_args)
 
 
 def pattern_covers(directory: str, pattern: str) -> bool:
@@ -200,8 +204,9 @@ def audit(
     package: str,
     workflow_text: str,
     blocks: list[set[str]] | None = None,
+    cargo_args: Sequence[str] = (),
 ) -> list[Violation]:
-    directories = dependency_directories(metadata, root, package)
+    directories = dependency_directories(metadata, root, package, cargo_args)
     if blocks is None:
         blocks = workflow_path_blocks(workflow_text)
     if not blocks:

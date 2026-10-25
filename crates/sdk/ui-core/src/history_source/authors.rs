@@ -68,26 +68,10 @@ pub struct HistoryAgent {
     pub person: String,
 }
 
-/// A delegated agent on a room's roster, as the session verified it: its
-/// own device key, the person whose root signed its delegation for exactly
-/// that device, and how it is shown. Only the session produces these, after
-/// checking that delegation; history uses them to name who wrote and never
-/// to decide what anyone may do.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RosterAgent {
-    /// The agent's own device key: the actor its signed changes carry.
-    pub device: [u8; 32],
-    /// The root key of the person it acts for.
-    pub person: [u8; 32],
-    /// That person's name as the room's governance records it.
-    pub person_name: String,
-    /// The delegation's stable agent id.
-    pub agent_id: String,
-    /// The agent's display name.
-    pub label: String,
-    /// Its cursor colour, sRGB.
-    pub color: [u8; 3],
-}
+/// A delegated agent on a room's roster, defined beside the history ids in
+/// the collaboration types so the session's services name it without the
+/// toolkit.
+pub use collab_types::history::RosterAgent;
 
 /// The directory key of a principal: the hex of its UTF-8, the actor id a
 /// process writing under that principal's handle has.
@@ -870,18 +854,11 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn the_local_identity_is_read_from_firstboot_json_or_left_unknown() {
-        // phase: local_identity_is_read_from_the_firstboot_json_shape
-        // An on-disk identity file is read and turned into an author.
-        //
-        // The record is minted by the writer `shell::firstboot` calls. This schema
-        // is declared twice on purpose
-        // (`tilo_identity_ceremony::IdentityRecord` serialises it,
-        // `runtime_identity` re-declares it rather than depending on `ui`), so
-        // so the fixture checks that the reader accepts the writer's output.
         {
             let (bytes, public_key) = firstboot_identity_bytes("ada", [0, 255, 0]);
 
-            let id = runtime_identity::load_from_bytes(&bytes).expect("firstboot shape parses");
+            let id =
+                runtime_identity_host::load_from_bytes(&bytes).expect("firstboot shape parses");
             assert_eq!(id.display_name(), "ada");
             assert_eq!(id.avatar_color(), [0, 255, 0]);
             assert_eq!(
@@ -911,11 +888,6 @@ mod tests {
             assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
             assert_eq!(author.identity_short.len(), SHORT_LEN);
         }
-        // phase: a_freshly_provisioned_identity_renders_as_unknown_rather_than_blank
-        // First boot writes an empty display name and neutral grey — the user
-        // names and colours themselves later. That record must still load, and
-        // must render as the unknown-participant label rather than as a
-        // blank row.
         {
             let (bytes, public_key) = firstboot_identity_bytes("", [128, 128, 128]);
 

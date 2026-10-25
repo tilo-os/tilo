@@ -99,6 +99,17 @@ bool IsExtensionDocument(CefRefPtr<CefFrame> frame) {
   CefURLParts parts;
   return frame && CefParseURL(frame->GetURL(), parts) && CefString(&parts.scheme).ToString()=="chrome-extension";
 }
+// A document a page wrote into one of its frames (about:blank,
+// about:srcdoc), as rich editors write the one they edit in: what is copied
+// and pasted there is the page's. The host's gates (the person's activation
+// for a copy, the site's setting for a read) do not rest on the document's
+// address. A tab's own blank page is no page's.
+bool IsWrittenDocument(CefRefPtr<CefFrame> frame) {
+  CefURLParts parts;
+  if(!frame || frame->IsMain() || !CefParseURL(frame->GetURL(), parts) || CefString(&parts.scheme).ToString()!="about") return false;
+  const auto path=CefString(&parts.path).ToString();
+  return path=="blank" || path=="srcdoc";
+}
 // Whether this renderer's engine has no clipboard of its own (page_clipboard.h).
 bool PageClipboard() {
   static const bool enabled=CefCommandLine::GetGlobalCommandLine()->HasSwitch(tilo::kPageClipboardSwitch);
@@ -148,7 +159,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
   void OnContextCreated(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefV8Context> context) override {
     TraceCredential(IsWebDocument(frame)?"web-context-created":"nonweb-context-created",browser->GetIdentifier());
     // The page's own world only: the host's isolated worlds share its events.
-    if(PageClipboard() && (IsWebDocument(frame) || IsExtensionDocument(frame))) {
+    if(PageClipboard() && (IsWebDocument(frame) || IsExtensionDocument(frame) || IsWrittenDocument(frame))) {
       auto main=frame->GetV8Context();
       if(main && main->IsSame(context)) InstallClipboard(frame,context);
     }

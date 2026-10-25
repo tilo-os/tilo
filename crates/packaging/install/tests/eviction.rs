@@ -253,3 +253,30 @@ fn the_use_recorded_when_an_app_closes_decides_what_is_evicted() {
     assert_eq!(report.evicted, [OPENED_ONCE]);
     assert!(fx.opens(KEPT_OPEN));
 }
+
+/// The person opened an app long ago and kept it open; an update replaced
+/// the build it runs on. Its row now names the new build, which nothing
+/// runs or holds, but the app is open: the sweep after a later change must
+/// evict the idle app, not the open one.
+#[test]
+fn an_app_updated_while_open_is_not_evicted() {
+    const OPEN: &str = "so.tilo.eviction-open";
+    const IDLE: &str = "so.tilo.eviction-idle";
+    let fx = Fixture::new();
+    fx.fill(&[(OPEN, 10), (IDLE, 20)]);
+    let row = fx.store.registry().unwrap().find(OPEN).cloned().unwrap();
+    let launch = package_store::lease::hold_payload_in(fx.store.layout(), &row.payload_root)
+        .unwrap()
+        .expect("a tree of the user's store is held");
+    launch.file().set_modified(long_ago()).unwrap();
+    let updated = fx.install(OPEN, "2.0.0", 77, APP_BYTES);
+    assert_ne!(updated.payload_root, row.payload_root, "a new build");
+    assert!(row.payload_root.is_dir(), "the open build stays");
+    assert_eq!(fx.store.last_used(&updated), 10, "an update is not a use");
+
+    let report = fx.collect(cap(1), Vec::new());
+
+    assert_eq!(report.evicted, [IDLE]);
+    assert!(fx.installed(OPEN));
+    drop(launch);
+}

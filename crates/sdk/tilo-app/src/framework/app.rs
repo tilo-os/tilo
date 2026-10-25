@@ -669,11 +669,18 @@ pub(crate) fn build_root<A: ResourceApp>(
     } else {
         runs_invoked_effects.then(|| Effects::invoked(dispatch.clone(), live.clone()))
     };
+    let awaiting = run.room.clone();
     let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);
     if let Some(effects) = effects {
         cx.env.effects = effects;
     }
-    let content = A::view(&mut cx);
+    // A record the room may hold shows once the room's holdings arrived;
+    // the app's view says nothing about it. Holdings already here (no
+    // shell hosts the window, or the room synced) need no stand-in.
+    let content: Element = match awaiting {
+        Some(holdings) if room_pending(&holdings) => cx.arriving_room(&holdings, A::view),
+        _ => A::view(&mut cx),
+    };
     let live = permissions.is_some();
     let root = ResourceRoot::new(app.title, icon(app), label, cx, alive, content)
         .following(permissions, scope)
@@ -686,6 +693,13 @@ pub(crate) fn build_root<A: ResourceApp>(
         return root.drawing_past(super::preview::draw_past::<A>);
     }
     root
+}
+
+/// Whether the room's holdings are still on their way.
+fn room_pending(
+    holdings: &ui_core::arriving::Arriving<(), ui_core::room_sync::RoomUnreachable>,
+) -> bool {
+    holdings.with(|room| room.ready().is_none())
 }
 
 /// The decoders of every edit `A`'s document takes: its resource's actions
@@ -971,7 +985,13 @@ fn create_component(
     let run = match context.capture().cloned() {
         Some(capture) => (app.prepare_capture)(&mut context, capture.scenario())?
             .driven_by_drive(capture.is_driven()),
-        None => Run::live(context.content().cloned()).in_private(context.is_private()),
+        // The room's record, not on this device when the window opened:
+        // the room may hold it, so the view waits for what the room holds.
+        None => Run::live(context.content().cloned())
+            .in_private(context.is_private())
+            .awaiting_room(
+                matches!(target, LaunchTarget::PrimaryNew).then(ui_core::room_sync::holdings),
+            ),
     };
     if let Some(file) = &file {
         file.report_opened(app.kind);

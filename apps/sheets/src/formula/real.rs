@@ -123,4 +123,37 @@ mod tests {
             other => panic!("expected a number, got {other:?}"),
         }
     }
+
+    /// Words Rust's float parser reads as numbers ("Infinity", "NaN") and
+    /// literals that overflow stay out of the numbers: typed into a cell they
+    /// are text, VALUE refuses them, and `=1E400` is an error value, so no
+    /// cell holds a NaN or an infinity that IFERROR cannot catch.
+    #[test]
+    fn infinite_and_nan_text_is_not_a_number() {
+        let m = run(&[
+            ("A1", "Infinity"),
+            ("A2", "NaN"),
+            ("A3", "1e400"),
+            ("A4", "-inf%"),
+            ("A5", "=1E400"),
+            ("A6", "=VALUE(\"inf\")"),
+            ("A7", "=\"nan\"+1"),
+            ("A8", "=A1*2"),
+            ("A9", "=IFERROR(1E400,\"big\")"),
+            ("B1", "=VALUE(\"1e3\")"),
+            ("B2", "1e3"),
+        ]);
+        assert_eq!(val(&m, "A1"), CellValue::Text("Infinity".into()));
+        assert_eq!(val(&m, "A2"), CellValue::Text("NaN".into()));
+        assert_eq!(val(&m, "A3"), CellValue::Text("1e400".into()));
+        assert_eq!(val(&m, "A4"), CellValue::Text("-inf%".into()));
+        assert_eq!(val(&m, "A5"), CellValue::Error(FormulaError::Num));
+        assert_eq!(val(&m, "A6"), CellValue::Error(FormulaError::Value));
+        assert_eq!(val(&m, "A7"), CellValue::Error(FormulaError::Value));
+        assert_eq!(val(&m, "A8"), CellValue::Error(FormulaError::Value));
+        assert_eq!(val(&m, "A9"), CellValue::Text("big".into()));
+        // Ordinary numbers in exponent form still read as numbers.
+        assert_eq!(val(&m, "B1"), CellValue::Number(1000.0));
+        assert_eq!(val(&m, "B2"), CellValue::Number(1000.0));
+    }
 }

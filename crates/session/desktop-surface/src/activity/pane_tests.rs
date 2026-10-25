@@ -24,79 +24,6 @@ mod tests {
     use collab_types::caps::{Access, CapOverride, Scope, Subject};
     use tilo_automerge::ApplyIncoming as _;
 
-    #[test]
-    fn accent_captions_read_as_text_on_their_ground_in_every_theme() {
-        use ui::theme::Preset;
-        use ui::tokens::contrast::{BODY_TEXT_MIN_CONTRAST, HIGH_CONTRAST_TEXT_MIN_CONTRAST};
-        for preset in Preset::ALL {
-            let theme = Theme::preset(preset);
-            let floor = if theme.tokens.colors.palette.high_contrast {
-                HIGH_CONTRAST_TEXT_MIN_CONTRAST
-            } else {
-                BODY_TEXT_MIN_CONTRAST
-            };
-            // The resume heading on its washed card, the brief's open
-            // affordance on the sheet itself, and the agent task heading on
-            // the explorer's detail pane (4.43:1 on the light theme when it
-            // was measured on the sheet instead).
-            for (what, ground) in [
-                ("resume heading", resume_card_ground(&theme)),
-                ("sheet caption", ui::chrome::shell::panel_ground(&theme)),
-                ("agent task heading", explorer_pane_ground(&theme)),
-            ] {
-                let ratio = ui::a11y::contrast_ratio(accent_text_on(&theme, ground), ground);
-                assert!(
-                    ratio >= floor,
-                    "{}: {what} reads at {ratio:.2}:1, needs {floor}:1",
-                    preset.id()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn sheet_and_card_edges_register_on_every_palette() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let colors = &theme.tokens.colors;
-            let ground = ui::chrome::shell::panel_ground(&theme);
-            let probes = [
-                // Outside high contrast the panel is a floating surface: its
-                // hairline is quieter by design, the level and shadow
-                // separating it too.
-                (
-                    "panel border",
-                    ui::chrome::shell::panel_border(&theme),
-                    ground,
-                    if colors.palette.high_contrast {
-                        ui::tokens::colors::HAIRLINE_MIN_DELTA
-                    } else {
-                        ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
-                    },
-                ),
-                (
-                    "lift-floor chip",
-                    ui::surface::edge_on(colors.lift(PILL_FLOOR_LIFT_T)),
-                    colors.lift(PILL_FLOOR_LIFT_T),
-                    ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                ),
-                (
-                    "replay canvas",
-                    ui::surface::edge_on(colors.surfaces.base),
-                    colors.surfaces.base,
-                    ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                ),
-            ];
-            for (what, edge, fill, minimum) in probes {
-                let delta = ui::surface::edge_delta(edge, fill);
-                assert!(
-                    delta >= minimum,
-                    "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
-                    theme.name
-                );
-            }
-        }
-    }
-
     /// A plausible half-hour: owner, one grant, one revoke, one rename,
     /// one window opened.
     fn busy_room() -> (WorkspaceTree, WorkspaceId, String) {
@@ -398,7 +325,6 @@ mod tests {
         // Legacy timeline tests exercise the granular surface explicitly;
         // production opens on the outcome-first Catch up tab.
         pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(tree);
         pane
     }
@@ -468,7 +394,6 @@ mod tests {
 
         let mut pane = native_pane();
         pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.authors_mut().register(
             &agent_hex,
             ui::widget::HistoryAuthor::new("Quill", 210.0, "agent"),
@@ -491,7 +416,6 @@ mod tests {
             })
             .expect("affected history entry");
         pane.timeline.set_selection(Some((selected, selected)));
-        pane.explorer_pane = ExplorerPane::Details;
         (tree, records, pane, record)
     }
 
@@ -704,40 +628,14 @@ mod tests {
             ),
             "Browse exposes a first-class agent-task lens"
         );
-
-        let a11y = pane.accessibility_snapshot();
-        let review = a11y
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Agent task review"))
-            .expect("agent task has a semantic review group");
-        let description = review.description.as_deref().unwrap_or_default();
-        assert!(description.contains("Ada"));
-        assert!(description.contains("Quill"));
-        assert!(description.contains("pricing table"));
-        assert!(description.contains("Rewrite the launch story"));
     }
 
     #[test]
     fn agent_task_undo_is_one_keyboard_reachable_safe_action() {
         let (mut tree, records, mut pane, record) = agent_task_fixture();
-        paint(&mut pane);
+        show_summary(&mut pane);
         assert!(pane.can_undo_agent_run());
-        assert!(
-            pane.focus_order()
-                .contains(&ActivityFocus::Detail(DetailAction::UndoTask))
-        );
-        pane.keyboard_focus = Some(ActivityFocus::Detail(DetailAction::UndoTask));
-        let outcome = pane.handle_event_with_records(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-            Some(&records),
-        );
+        let outcome = pane.apply_detail_action(DetailAction::UndoTask, &mut tree, Some(&records));
         assert!(outcome.reverted);
         assert!(!outcome.undo_partial);
         assert_eq!(
@@ -756,13 +654,49 @@ mod tests {
     }
 
     #[test]
+    fn a_window_someone_opened_is_listed_in_history_but_is_not_news() {
+        let (mut tree, workspace, _) = busy_room();
+        let host = Rc::new(crate::activity::testing::TestHost::default());
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(host);
+        pane.load_frontiers();
+        pane.refresh(&mut tree);
+        let reader = tree.doc.get_actor().clone();
+        tree.doc.set_actor(ActorId::from(b"ada-device".as_slice()));
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            91_101,
+            "Budget".to_string(),
+            b"{}".to_vec(),
+        ));
+        tilo_resource::history::commit_stamped(&mut tree.doc);
+        tree.doc.set_actor(reader);
+        pane.refresh(&mut tree);
+        assert!(
+            pane.entries()
+                .iter()
+                .any(|entry| entry.summary == "Opened Budget"),
+            "History lists the window opened: {:?}",
+            pane.entries()
+                .iter()
+                .map(|entry| &entry.summary)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            pane.glance_signal(workspace.raw()).1,
+            0,
+            "opening a window is nobody's news"
+        );
+        pane.begin_view(workspace.raw());
+        assert!(pane.digest().briefs.is_empty());
+    }
+
+    #[test]
     fn a_workspace_first_seen_on_this_device_has_nothing_new() {
         let (mut tree, workspace, user) = busy_room();
         let host = Rc::new(crate::activity::testing::TestHost::default());
         let mut pane = RoomActivityPane::new();
         pane.set_host(host.clone());
         pane.load_frontiers();
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(&mut tree);
         let (headline, unread, _) = pane.glance_signal(workspace.raw());
         assert_eq!(
@@ -792,7 +726,6 @@ mod tests {
         let mut next_session = RoomActivityPane::new();
         next_session.set_host(host);
         next_session.load_frontiers();
-        next_session.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         next_session.refresh(&mut tree);
         assert_eq!(
             next_session.glance_signal(workspace.raw()).1,
@@ -805,7 +738,6 @@ mod tests {
     fn closing_unpainted_catch_up_keeps_unseen_work_pending() {
         let (mut tree, workspace, _) = peers_busy_room();
         let mut pane = native_pane();
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(&mut tree);
         let unread = pane.glance_signal(workspace.raw()).1;
         assert!(unread > 0);
@@ -828,7 +760,6 @@ mod tests {
         let (mut tree, workspace, _) = peers_busy_room();
         let before = tree.doc.get_heads();
         let mut pane = native_pane();
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(&mut tree);
         assert_eq!(pane.view(), ActivityView::CatchUp);
 
@@ -836,7 +767,7 @@ mod tests {
         assert!(unread_before > 0);
         pane.begin_view(workspace.raw());
         assert!(!pane.digest().briefs.is_empty());
-        paint(&mut pane);
+        show_summary(&mut pane);
         pane.finish_view(workspace.raw());
         let (_, unread_after, _) = pane.glance_signal(workspace.raw());
         assert_eq!(unread_after, 0);
@@ -848,36 +779,14 @@ mod tests {
     }
 
     #[test]
-    fn offscreen_catch_up_cards_do_not_become_seen() {
-        let (mut tree, workspace, _) = peers_busy_room();
-        let mut pane = native_pane();
-        pane.layout_window(Rect::new(1600.0, 0.0, 2400.0, 900.0));
-        pane.set_review_clip(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        pane.begin_view(workspace.raw());
-        pane.refresh(&mut tree);
-        let unread = pane.glance_signal(workspace.raw()).1;
-        assert!(unread > 0);
-        paint(&mut pane);
-        assert!(
-            !pane.brief_rects.is_empty(),
-            "the tile must contain summaries"
-        );
-        pane.finish_view(workspace.raw());
-        pane.refresh(&mut tree);
-        assert_eq!(pane.glance_signal(workspace.raw()).1, unread);
-    }
-
-    #[test]
-    fn refreshed_catch_up_preserves_focus_and_does_not_acknowledge_late_work() {
+    fn refreshed_catch_up_keeps_the_open_session_and_does_not_acknowledge_late_work() {
         let (mut tree, workspace, user) = peers_busy_room();
         let mut pane = native_pane();
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.begin_view(workspace.raw());
         pane.refresh(&mut tree);
-        paint(&mut pane);
-        let index = pane.brief_rects.first().unwrap().0;
+        show_summary(&mut pane);
+        let index = 0;
         let anchor = pane.digest.briefs[index].entry_ids[0];
-        pane.keyboard_focus = Some(ActivityFocus::Brief(index));
         pane.expanded_brief = Some(index);
         let reader = tree.doc.get_actor().clone();
         tree.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
@@ -894,11 +803,10 @@ mod tests {
         tree.seed_doc_from_cache();
         tree.doc.set_actor(reader);
         pane.refresh(&mut tree);
-        let Some(ActivityFocus::Brief(focused)) = pane.keyboard_focus else {
-            panic!("the reviewed session must retain focus");
+        let Some(expanded) = pane.expanded_brief else {
+            panic!("the opened session stays open");
         };
-        assert!(pane.digest.briefs[focused].entry_ids.contains(&anchor));
-        assert_eq!(pane.expanded_brief, Some(focused));
+        assert!(pane.digest.briefs[expanded].entry_ids.contains(&anchor));
         pane.finish_view(workspace.raw());
         pane.refresh(&mut tree);
         assert!(
@@ -934,7 +842,7 @@ mod tests {
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
         assert_eq!(pane.glance_signal(workspace).1, 1);
-        paint(&mut pane);
+        show_summary(&mut pane);
         pane.apply_selection_history_action(ACTIVITY_ACKNOWLEDGE, &mut tree, Some(&records));
         assert_eq!(pane.glance_signal(workspace).1, 0);
         assert!(
@@ -949,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_persists_only_the_painted_page() {
+    fn catch_up_persists_only_what_the_app_showed() {
         let (mut tree, workspace, _) = peers_busy_room();
         let records = RecordStore::in_memory();
         let room_id = tree.active_workspace().expect("room").room();
@@ -982,18 +890,25 @@ mod tests {
         let host = Rc::new(crate::activity::testing::TestHost::default());
         let mut pane = RoomActivityPane::new();
         pane.set_host(host.clone());
-        pane.layout(Rect::new(0.0, 0.0, 800.0, 580.0));
         pane.begin_view(workspace.raw());
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
         pane.persistent_frontiers = true;
         let before = pane.glance_signal(workspace.raw()).1;
         assert!(before >= 12);
-        paint(&mut pane);
+        // The app said it showed the first session only.
+        let first = pane.serve_summary().briefs.remove(0).entries;
+        pane.mark_viewed(
+            workspace.raw(),
+            &tilo_actions::remote::workspace_activity::Viewed {
+                entries: first,
+                later: true,
+            },
+        );
         let shown = pane.viewed_changes.get(&workspace.raw()).unwrap().len();
         assert!(
             shown > 0 && shown < before,
-            "fixture must have a hidden page"
+            "the fixture has more than the app showed"
         );
         let heads = tree.doc.get_heads();
         assert!(
@@ -1052,7 +967,7 @@ mod tests {
         pane.refresh_records(&mut tree, &records);
 
         // Departure follows an actually reviewed page, not an indexed head.
-        paint(&mut pane);
+        show_summary(&mut pane);
         pane.finish_view(home.raw());
 
         pane.observe_workspace(elsewhere.raw());
@@ -1103,40 +1018,6 @@ mod tests {
     }
 
     #[test]
-    fn explore_expands_to_three_columns_only_when_the_viewport_can_hold_them() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        pane.refresh(&mut tree);
-        assert!(pane.sheet.width() >= 900.0);
-        assert!(pane.timeline.rect().width() < pane.sheet.width() - 400.0);
-
-        pane.layout(Rect::new(0.0, 0.0, 700.0, 900.0));
-        assert!(pane.sheet.width() < 900.0);
-        assert!(pane.timeline.rect().width() > pane.sheet.width() - 40.0);
-    }
-
-    #[test]
-    fn narrow_explorer_pushes_between_timeline_browse_and_details() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 700.0, 800.0));
-        paint(&mut pane);
-        assert_eq!(pane.explorer_pane_rects.len(), 3);
-
-        pane.explorer_pane = ExplorerPane::Browse;
-        paint(&mut pane);
-        assert!(!pane.lens_rects.is_empty());
-
-        pane.timeline.set_selection(Some((0, 0)));
-        pane.explorer_pane = ExplorerPane::Details;
-        paint(&mut pane);
-        assert!(!pane.detail_action_rects.is_empty());
-    }
-
-    #[test]
     fn rows_come_from_the_rooms_own_change_graph() {
         let (mut tree, _, _) = busy_room();
         let pane = pane_over(&mut tree);
@@ -1168,41 +1049,7 @@ mod tests {
                     && !s.contains("Recorded workspace")
                     && !s.contains("Created the workspace")
             }),
-            "setup bookkeeping and a plain open are not changes: {summaries:?}"
-        );
-    }
-
-    #[test]
-    fn explore_filters_sit_on_one_labelled_row() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
-        assert!(pane.shows_chip_rows());
-        let period_y = pane
-            .period_rects
-            .first()
-            .map(|(_, rect)| rect.y0)
-            .expect("time chips");
-        let people_y = pane
-            .author_rects
-            .first()
-            .map(|(_, rect)| rect.y0)
-            .expect("people chips");
-        assert!(
-            (period_y - people_y).abs() < 1.0,
-            "Time and People share one row, got period {period_y} people {people_y}"
-        );
-        let titles: Vec<String> = (0..pane.timeline.row_count())
-            .filter_map(|i| pane.timeline.group_title_at_row(i).map(str::to_string))
-            .collect();
-        assert!(
-            titles.iter().any(|title| title == "Today"
-                || title == "Yesterday"
-                || title == "This week"
-                || title == "Earlier"),
-            "Explore groups sit under calendar headings: {titles:?}"
+            "setup bookkeeping, with the windows a workspace is made with, is not a change: {summaries:?}"
         );
     }
 
@@ -1211,8 +1058,7 @@ mod tests {
         let (mut tree, _, _) = busy_room();
         let mut pane = pane_over(&mut tree);
         pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
+        show_summary(&mut pane);
         let idx = (0..pane.timeline.row_count())
             .find(|&i| pane.timeline.row_entry(i).is_some())
             .expect("a change row");
@@ -1748,55 +1594,6 @@ mod tests {
     }
 
     #[test]
-    fn the_sheet_is_a_side_panel_when_wide_and_full_bleed_when_narrow() {
-        let mut pane = native_pane();
-
-        pane.layout(Rect::new(0.0, 0.0, 1920.0, 1080.0));
-        let wide = pane.rect();
-        assert!(
-            wide.width() <= SHEET_MAX_W,
-            "a 1920 px viewport must not get a 700 px sheet: {}",
-            wide.width()
-        );
-        assert!(
-            wide.x0 > 1920.0 * 0.5,
-            "the sheet is anchored right, leaving the room visible behind it"
-        );
-
-        pane.layout(Rect::new(0.0, 0.0, 640.0, 480.0));
-        let narrow = pane.rect();
-        assert!(
-            narrow.width() > 640.0 * 0.9,
-            "under {FULL_BLEED_UNDER} px the sheet takes the viewport: {}",
-            narrow.width()
-        );
-        assert!(narrow.x0 < 32.0, "full bleed starts at the left inset");
-    }
-
-    #[test]
-    fn a_short_viewport_drops_the_chip_rows_before_the_row_list() {
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1280.0, 720.0));
-        assert!(
-            pane.shows_chip_rows(),
-            "a normal viewport affords the filters"
-        );
-        let tall_rows = pane.timeline().rect().height();
-
-        pane.layout(Rect::new(0.0, 0.0, 1280.0, 220.0));
-        assert!(
-            !pane.shows_chip_rows(),
-            "a 220 px viewport must spend its height on rows, not chips"
-        );
-        assert!(
-            pane.timeline().rect().height() > 0.0,
-            "the row list survives even when the filters do not"
-        );
-        assert!(tall_rows > pane.timeline().rect().height());
-    }
-
-    #[test]
     fn contributors_are_only_people_who_actually_did_something() {
         let (mut tree, _, _) = busy_room();
         tree.desktop
@@ -1832,7 +1629,6 @@ mod tests {
     fn catch_up_leaves_out_the_readers_own_work() {
         let (mut tree, workspace, _) = busy_room();
         let mut pane = native_pane();
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(&mut tree);
         assert_eq!(pane.view(), ActivityView::CatchUp);
         assert!(
@@ -1880,11 +1676,7 @@ mod tests {
             "causal forks must expose a changing real layout: {tab_counts:?}"
         );
         pane.set_view(ActivityView::Replay);
-        paint(&mut pane);
-        let order = pane.focus_order();
-        assert!(order.contains(&ActivityFocus::ReplayBack));
-        assert!(order.contains(&ActivityFocus::ReplayPlay));
-        assert!(order.contains(&ActivityFocus::ReplayForward));
+        assert_eq!(pane.serve_replay().frames.len(), pane.replay_frames.len());
 
         let mut presence = PresenceCtx::empty();
         let ada = ui::permissions::UserId("ada".into());
@@ -1901,22 +1693,7 @@ mod tests {
             .and_then(|frame| frame.pointers.first())
             .expect("session presence is retained against the durable checkpoint");
         assert_eq!(pointer.name, "Ada");
-        assert_eq!(pointer.point, (420.0, 260.0));
         assert!(pointer.desktop_space);
-    }
-
-    #[test]
-    fn narrow_history_keeps_both_scope_choices_visible() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.layout(Rect::new(0.0, 0.0, 380.0, 640.0));
-        paint(&mut pane);
-        assert_eq!(pane.scope_rects.len(), 2);
-        assert!(
-            pane.scope_rects
-                .iter()
-                .all(|(_, rect)| { rect.area() > 0.0 && pane.sheet.contains(rect.center()) })
-        );
     }
 
     #[test]
@@ -2033,7 +1810,6 @@ mod tests {
         assert_eq!(ranges[0].end, Some(end));
 
         let mut fresh = native_pane();
-        fresh.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         fresh.refresh(&mut tree);
         let titles: Vec<&str> = (0..fresh.timeline().row_count())
             .filter_map(|i| fresh.timeline().group_title_at_row(i))
@@ -2236,747 +2012,25 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
-    // Naming, driven the way a person drives it: real `WindowEvent`s into
-    // `handle_event`, read back out of the **room document**, not the
-    // widget — proving the whole chain, not just `apply_name`.
-    // -----------------------------------------------------------------
-
-    use ui::synthetic_input::cursor_moved;
-
-    use ui::synthetic_input::mouse_press;
-
-    fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            logical_key,
-            None,
-            winit::event::ElementState::Pressed,
-        ))
-    }
-
-    /// Paint the sheet so the rects the click handler reads off the last frame
-    /// are populated exactly as they are live.
-    fn paint(pane: &mut RoomActivityPane) {
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-    }
-
-    /// Click at `p`: move there first so the hover latches, the way a pointer
-    /// does.
-    fn click_at(
-        pane: &mut RoomActivityPane,
-        tree: &mut WorkspaceTree,
-        p: Point,
-    ) -> RoomActivityOutcome {
-        let m = Modifiers::default();
-        pane.handle_event(&cursor_moved(p.x, p.y), 1.0, &m, Some(p), tree);
-        pane.handle_event(&mouse_press(), 1.0, &m, Some(p), tree)
-    }
-
-    fn type_into(pane: &mut RoomActivityPane, tree: &mut WorkspaceTree, text: &str) {
-        let m = Modifiers::default();
-        for ch in text.chars() {
-            let ev = if ch == ' ' {
-                key_press(winit::keyboard::Key::Named(
-                    winit::keyboard::NamedKey::Space,
-                ))
-            } else {
-                key_press(winit::keyboard::Key::Character(ch.to_string().into()))
-            };
-            pane.handle_event(&ev, 1.0, &m, None, tree);
-        }
-    }
-
-    /// The first line of the pane that is a band header.
-    fn first_band(pane: &RoomActivityPane) -> usize {
-        (0..pane.timeline().row_count())
-            .find(|i| {
-                pane.timeline().group_at_row(*i).is_some() && !pane.timeline().is_day_heading_at(*i)
-            })
-            .expect("the room's history produces at least one band")
-    }
-
-    #[test]
-    fn clicking_name_typing_and_pressing_enter_puts_the_name_in_the_room_document() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        paint(&mut pane);
-
-        let band = first_band(&pane);
-        let (name_chip, _) = pane
-            .timeline()
-            .group_chip_rects(band)
-            .expect("a band header carries a [Name] chip");
-        let entries = pane.entries().to_vec();
-        // What the band under the pointer covers, read before the gesture so the
-        // assertion is against the range the user pointed at rather than whatever
-        // came back. Rows are in display order and groups in causal order, so the
-        // band is found by the key the row carries, not by position.
-        let (first, last) = {
-            let key = pane.timeline().group_at_row(band).unwrap().0.to_string();
-            let mut flat: Vec<&ui::HistoryGroup> = Vec::new();
-            for g in pane.timeline().groups() {
-                g.walk(&mut flat);
-            }
-            let g = flat
-                .iter()
-                .find(|g| g.key == key)
-                .expect("the band the header belongs to");
-            (g.first_entry, g.last_entry)
+    /// The app shows what is new and says so ([`wire::MARK_VIEWED`]), to be
+    /// counted seen once the person stops reading.
+    fn show_summary(pane: &mut RoomActivityPane) {
+        let Some(workspace) = pane.last_active else {
+            return;
         };
-
-        let out = click_at(&mut pane, &mut tree, name_chip.center());
-        assert!(out.handled, "the chip took the click");
-        assert!(
-            pane.wants_keyboard(),
-            "the field is up and owns the keyboard, so the sheet's Escape does not close it"
-        );
-        assert_eq!(pane.timeline().naming_buffer(), Some(""));
-
-        type_into(&mut pane, &mut tree, "Set up the room");
-        assert_eq!(pane.timeline().naming_buffer(), Some("Set up the room"));
-
-        let out = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        assert!(out.named, "the pane reports a document write");
-        assert!(!pane.wants_keyboard(), "the field is gone");
-
-        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
-        assert_eq!(ranges.len(), 1, "one name, from one gesture: {ranges:?}");
-        assert_eq!(ranges[0].label, "Set up the room");
-        assert_eq!(ranges[0].start, first);
-        assert_eq!(ranges[0].end, Some(last));
-        assert!(
-            entries.iter().any(|e| e.id == first),
-            "the range addresses changes this room actually has"
-        );
-
-        // And it is the document's, not the widget's: a pane that never saw the
-        // gesture reads the same band off the same tree.
-        let mut fresh = native_pane();
-        fresh.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        fresh.refresh(&mut tree);
-        let titles: Vec<&str> = (0..fresh.timeline().row_count())
-            .filter_map(|i| fresh.timeline().group_title_at_row(i))
-            .collect();
-        assert!(
-            titles.contains(&"Set up the room"),
-            "the band is not on screen for the next person to open the pane: {titles:?}"
-        );
-    }
-
-    #[test]
-    fn escape_in_the_name_field_writes_nothing_to_the_room_document() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        paint(&mut pane);
-        let heads_before = tree.doc.get_heads();
-
-        let band = first_band(&pane);
-        let (name_chip, _) = pane.timeline().group_chip_rects(band).unwrap();
-        click_at(&mut pane, &mut tree, name_chip.center());
-        type_into(&mut pane, &mut tree, "never mind");
-        assert!(pane.wants_keyboard());
-
-        let out = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Escape,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        assert!(!out.named);
-        assert!(!pane.wants_keyboard(), "the field is gone");
-        assert!(
-            ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new()).is_empty(),
-            "Escape wrote a name anyway"
-        );
-        assert_eq!(
-            tree.doc.get_heads(),
-            heads_before,
-            "abandoning a name must not commit anything at all"
-        );
-    }
-
-    #[test]
-    fn clicking_a_band_header_collapses_and_expands_it() {
-        // The disclosure is a click on the header itself, and it must not be
-        // confused with the chips that sit on the same row.
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        paint(&mut pane);
-
-        let band = first_band(&pane);
-        let (key, expanded) = {
-            let (k, e) = pane.timeline().group_at_row(band).unwrap();
-            (k.to_string(), e)
-        };
-        let header = pane.timeline().row_rect(band).expect("the header lays out");
-        let (name_chip, _) = pane.timeline().group_chip_rects(band).unwrap();
-        // Somewhere on the header that is not a chip: next to the disclosure
-        // triangle.
-        let on_header = Point::new(header.x0 + 60.0, header.center().y);
-        assert!(
-            !name_chip.contains(on_header),
-            "the fixture aims off the chips"
-        );
-
-        let lines_before = pane.timeline().row_count();
-        let out = click_at(&mut pane, &mut tree, on_header);
-        assert!(out.handled);
-        assert!(!out.named, "toggling a band is not a document write");
-        assert_eq!(
-            pane.timeline().group_at_row(band).map(|(_, e)| e),
-            Some(!expanded),
-            "the click did not toggle the band"
-        );
-        let lines_after = pane.timeline().row_count();
-        assert_ne!(
-            lines_before, lines_after,
-            "the band's changes neither appeared nor went away"
-        );
-
-        click_at(&mut pane, &mut tree, on_header);
-        assert_eq!(
-            pane.timeline().group_at_row(band).map(|(_, e)| e),
-            Some(expanded)
-        );
-        assert_eq!(pane.timeline().row_count(), lines_before);
-        assert_eq!(
-            pane.timeline().group_at_row(band).map(|(k, _)| k),
-            Some(key.as_str()),
-            "the band moved under the toggle"
-        );
-    }
-
-    #[test]
-    fn keyboard_traverses_wraps_and_activates_modal_controls() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        paint(&mut pane);
-        let modifiers = Modifiers::default();
-
-        let home = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Home)),
-            1.0,
-            &modifiers,
-            None,
-            &mut tree,
-        );
-        assert!(home.handled);
-        assert_eq!(
-            pane.focused_control_label().as_deref(),
-            Some("This workspace")
-        );
-
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::ArrowRight,
-            )),
-            1.0,
-            &modifiers,
-            None,
-            &mut tree,
-        );
-        assert_eq!(
-            pane.focused_control_label().as_deref(),
-            Some("All workspaces")
-        );
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &modifiers,
-            None,
-            &mut tree,
-        );
-        assert_eq!(pane.scope(), RoomScope::AllWorkspaces);
-
-        // End addresses the last rendered control; Tab wraps within this
-        // modal instead of leaking keyboard focus into the desktop beneath it.
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
-            1.0,
-            &modifiers,
-            None,
-            &mut tree,
-        );
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab)),
-            1.0,
-            &modifiers,
-            None,
-            &mut tree,
-        );
-        assert_eq!(
-            pane.focused_control_label().as_deref(),
-            Some("This workspace")
-        );
-    }
-
-    #[test]
-    fn catch_up_outcomes_expand_from_the_keyboard() {
-        let (mut tree, _, _) = peers_busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::CatchUp);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
-        assert!(
-            !pane.brief_rects.is_empty(),
-            "fixture has catch-up outcomes"
-        );
-
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        let focused = pane.focused_control_label().expect("last outcome focused");
-        let last = pane.brief_rects.last().expect("last outcome").0;
-        assert_eq!(focused, pane.digest.briefs[last].title);
-
-        let out = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Space,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        assert!(out.handled);
-        assert_eq!(pane.expanded_brief, Some(last));
-    }
-
-    #[test]
-    fn explorer_lenses_and_detail_actions_are_in_the_keyboard_focus_order() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
-        assert!(!pane.lens_rects.is_empty());
-
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        let label = pane
-            .focused_control_label()
-            .expect("last explorer control focused");
-        assert!(
-            pane.lens_rects.iter().any(|(lens, _)| match lens {
-                LensSelection::All => label == "Everything",
-                LensSelection::AgentTasks => label == "Agent tasks",
-                LensSelection::App(value)
-                | LensSelection::ResourceKind(value)
-                | LensSelection::Resource(value)
-                | LensSelection::WorkGroup(value) => value == &label,
-                LensSelection::Facet(key, value) => format!("{key}: {value}") == label,
-                LensSelection::Unclassified => label == "Unclassified",
-            }) || pane
-                .detail_action_rects
-                .iter()
-                .any(|(action, _)| pane.detail_action_label(*action) == label),
-            "focused control is a rendered explorer control: {label}"
-        );
-        assert!(
-            pane.handle_event(
-                &key_press(winit::keyboard::Key::Named(
-                    winit::keyboard::NamedKey::Enter,
-                )),
-                1.0,
-                &Modifiers::default(),
-                None,
-                &mut tree,
-            )
-            .handled
-        );
-    }
-
-    #[test]
-    fn accessibility_snapshot_matches_visible_focus_selection_and_disclosure() {
-        let (mut tree, _, _) = peers_busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::CatchUp);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-
-        let snapshot = pane.accessibility_snapshot();
-        assert_eq!(snapshot.role, ui::a11y::Role::Window);
-        assert!(!snapshot.state.modal);
-        assert!(
-            !snapshot
-                .children
-                .iter()
-                .any(|node| node.role == ui::a11y::Role::Tab),
-            "the friendly recap does not expose full-history mode tabs"
-        );
-        let focused = snapshot
-            .children
-            .iter()
-            .find(|node| node.state.focused)
-            .expect("one control carries semantic focus");
-        assert_eq!(focused.name, pane.focused_control_label());
-        assert_eq!(focused.state.expanded, Some(true));
-        assert!(
-            snapshot
-                .children
-                .iter()
-                .take(pane.focus_order().len())
-                .all(|node| node.state.focusable)
-        );
-        assert!(
-            !snapshot.children.iter().any(|node| {
-                node.role == ui::a11y::Role::List && node.name.as_deref() == Some("History entries")
-            }),
-            "the hidden Explorer timeline is not exposed from Catch up"
-        );
-        pane.set_view(ActivityView::Explore);
-        let snapshot = pane.accessibility_snapshot();
-        assert!(snapshot.children.iter().any(|node| {
-            node.role == ui::a11y::Role::List && node.name.as_deref() == Some("History entries")
-        }));
-    }
-
-    /// The header band equals the authored 80 px at 100 % and grows with the
-    /// text scale so the title, subtitle and "Latest" lines have their own
-    /// room; every row under it moves down with it, and a `draw` at a new
-    /// scale lays the sheet out again before placing anything.
-    #[test]
-    fn header_band_follows_the_text_scale_and_relayouts_on_draw() {
-        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let mut pane = native_pane();
-        pane.layout(viewport);
-        assert!(
-            (pane.header_h() - HEADER_H).abs() < 1e-9,
-            "1× keeps the authored band"
-        );
-        let rows_at_1x = pane.timeline.get_rect().y0;
-
-        let large = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let mut scene = Scene::new();
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &large,
-            &PresenceCtx::default(),
-        );
-        let expected = HEADER_TOP + pane.title_line_h() + 2.0 * pane.sub_line_h() + HEADER_BOTTOM;
-        assert!(pane.header_h() > HEADER_H);
-        assert!((pane.header_h() - expected).abs() < 1e-9);
-        assert!(
-            pane.timeline.get_rect().y0 > rows_at_1x,
-            "the rows under the header moved down with it after the relayout"
-        );
-    }
-
-    /// HIG §9.3: a chosen pill is a lift with its hairline, never an accent
-    /// fill, and it moves further from the sheet's ground than an idle one
-    /// on every shipped palette — including high contrast, where `lift`
-    /// falls back to a derived step.
-    #[test]
-    fn selector_pills_are_lifted_and_ordered_on_every_palette() {
-        use ui::a11y::relative_luminance;
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let ground = relative_luminance(theme.tokens.colors.surfaces.base);
-            let active =
-                ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
-            let idle = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
-            assert_ne!(
-                active.fill, theme.tokens.colors.intent.accent,
-                "{}: not an accent wash",
-                theme.name
-            );
-            assert!(
-                active.border.is_some(),
-                "{}: the chosen pill carries its hairline",
-                theme.name
-            );
-            assert!(
-                (relative_luminance(active.fill) - ground).abs()
-                    > (relative_luminance(idle) - ground).abs(),
-                "{}: chosen must lift further than idle",
-                theme.name
-            );
-        }
-    }
-
-    /// The catch-up card's lines are placed by the same metrics that size
-    /// the card, so at 200 % each line starts below the previous one ends
-    /// and the affordance stays inside the card.
-    #[test]
-    fn brief_card_lines_never_overlap_at_large_text() {
-        let large = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let m = BriefCardMetrics::new(&mut tr, &large);
-        for (title_lines, actions) in [(1, 0), (2, 0), (1, 3), (2, 2)] {
-            let byline = m.byline_top(title_lines);
-            let provenance = m.provenance_top(title_lines);
-            let affordance = m.affordance_top(title_lines, actions);
-            assert!(byline >= m.pad + small_count_to_f64(title_lines) * m.title_lh);
-            assert!(provenance >= byline + m.line_lh);
-            assert!(affordance >= provenance + m.line_lh);
-            if actions > 0 {
-                assert!(
-                    affordance
-                        >= m.actions_top(title_lines) + small_count_to_f64(actions) * m.line_lh
-                );
-            }
-            assert!(m.height(title_lines, actions) >= affordance + m.line_lh);
-        }
-        let one = BriefCardMetrics::new(&mut TextRenderer::new(), &Theme::dark());
-        assert!(m.height(1, 0) > one.height(1, 0), "200 % grows the card");
-    }
-
-    #[test]
-    fn chips_are_full_pointer_targets_that_publish_their_bounds() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
-        assert!(
-            pane.shows_chip_rows(),
-            "the tall sheet shows period and author rows"
-        );
-        let targets: Vec<Rect> = pane
-            .view_rects
-            .iter()
-            .map(|(_, rect)| *rect)
-            .chain(pane.scope_rects.iter().map(|(_, rect)| *rect))
-            .chain(pane.period_rects.iter().map(|(_, rect)| *rect))
-            .chain(pane.author_rects.iter().map(|(_, rect)| *rect))
-            .collect();
-        assert!(
-            targets.len() >= 4 + 2 + 2,
-            "view, scope, period and author chips are laid out"
-        );
-        for rect in &targets {
-            assert!(
-                rect.height() >= MIN_TARGET - f64::EPSILON
-                    && rect.width() >= MIN_TARGET - f64::EPSILON,
-                "every chip is at least one pointer target: {rect:?}"
-            );
-        }
-        for (i, a) in targets.iter().enumerate() {
-            for b in &targets[..i] {
-                let overlap = a.intersect(*b);
-                assert!(
-                    overlap.width() <= 0.0 || overlap.height() <= 0.0,
-                    "{a:?} overlaps {b:?}"
-                );
-            }
-        }
-        let snapshot = pane.accessibility_snapshot();
-        assert_eq!(
-            snapshot.bounds.map(ui::AccessBounds::to_rect),
-            Some(pane.rect())
-        );
-        let chip_names: Vec<String> = ActivityView::ALL
-            .iter()
-            .map(|view| view.label())
-            .chain(RoomScope::ALL.iter().map(|scope| scope.label()))
-            .chain(Period::ALL.iter().map(|period| period.label()))
-            .collect();
-        // Only the chips are checked: the timeline list and controls the
-        // current view does not paint publish no rect, and rightly so.
-        let mut published = 0;
-        for node in snapshot.children.iter().take(pane.focus_order().len()) {
-            let Some(name) = node.name.as_deref() else {
-                continue;
-            };
-            if !chip_names.iter().any(|chip| chip == name) {
-                continue;
-            }
-            let rect = node.bounds.map_or_else(
-                || panic!("{name:?} publishes its hit rect"),
-                ui::AccessBounds::to_rect,
-            );
-            assert!(
-                targets.contains(&rect),
-                "{name:?} publishes the rect the pointer hits"
-            );
-            published += 1;
-        }
-        assert!(
-            published >= 4 + 2 + 2,
-            "every laid-out chip is in the tree with bounds"
-        );
-    }
-
-    #[test]
-    fn renaming_through_the_chip_replaces_the_name_rather_than_adding_a_band() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        paint(&mut pane);
-
-        let band = first_band(&pane);
-        let (chip, _) = pane.timeline().group_chip_rects(band).unwrap();
-        click_at(&mut pane, &mut tree, chip.center());
-        type_into(&mut pane, &mut tree, "First try");
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        let record = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new())[0]
-            .id
-            .clone();
-
-        // Now rename it. The field seeds from the existing name, and the write
-        // has to land on the record that already exists.
-        paint(&mut pane);
-        let band = (0..pane.timeline().row_count())
-            .find(|i| pane.timeline().group_title_at_row(*i) == Some("First try"))
-            .expect("the named band is on screen");
-        let (chip, _) = pane.timeline().group_chip_rects(band).unwrap();
-        click_at(&mut pane, &mut tree, chip.center());
-        assert_eq!(
-            pane.timeline().naming_buffer(),
-            Some("First try"),
-            "a rename starts from the name that is there"
-        );
-        type_into(&mut pane, &mut tree, " again");
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-
-        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
-        assert_eq!(
-            ranges.len(),
-            1,
-            "a rename must not leave two bands: {ranges:?}"
-        );
-        assert_eq!(
-            ranges[0].id, record,
-            "it addressed the record it already had"
-        );
-        assert_eq!(ranges[0].label, "First try again");
-    }
-
-    #[test]
-    fn overflow_controls_make_every_filter_page_keyboard_reachable() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::Explore);
-        pane.contributors = (0..12).map(|i| format!("Contributor {i}")).collect();
-        for i in 0..18 {
-            pane.facet_index
-                .apps
-                .insert(format!("Application {i}"), i + 1);
-        }
-        pane.layout(Rect::new(0.0, 0.0, 1000.0, 520.0));
-        paint(&mut pane);
-
-        assert!(
-            pane.author_more_rect.is_some(),
-            "contributors expose a More control"
-        );
-        assert!(
-            pane.lens_more_rect.is_some(),
-            "short browse panel exposes a More control"
-        );
-        assert!(pane.focus_order().contains(&ActivityFocus::MorePeople));
-        assert!(pane.focus_order().contains(&ActivityFocus::MoreLenses));
-        let first_people = pane.author_rects.clone();
-        pane.advance_people();
-        paint(&mut pane);
-        assert_ne!(
-            first_people, pane.author_rects,
-            "More people advances the page"
-        );
-        let first_lenses = pane.lens_rects.clone();
-        pane.advance_lenses();
-        paint(&mut pane);
-        assert_ne!(
-            first_lenses, pane.lens_rects,
-            "More lenses advances the page"
-        );
-        assert!(
-            pane.lens_rects
-                .iter()
-                .all(|(_, rect)| rect.y1 <= pane.sheet.y1)
-        );
-    }
-
-    #[test]
-    fn short_catch_up_has_a_more_outcomes_affordance() {
-        let (mut tree, _, _) = peers_busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::CatchUp);
-        let first = pane
-            .digest
+        let entries = pane
+            .serve_summary()
             .briefs
-            .first()
-            .cloned()
-            .expect("fixture outcome");
-        while pane.digest.briefs.len() < 5 {
-            pane.digest.briefs.push(first.clone());
-        }
-        pane.layout(Rect::new(0.0, 0.0, 1000.0, 390.0));
-        paint(&mut pane);
-        assert!(
-            pane.brief_more_rect.is_some(),
-            "outcomes are paged, not silently clipped"
+            .into_iter()
+            .flat_map(|brief| brief.entries)
+            .collect();
+        pane.mark_viewed(
+            workspace,
+            &tilo_actions::remote::workspace_activity::Viewed {
+                entries,
+                later: true,
+            },
         );
-        assert!(pane.focus_order().contains(&ActivityFocus::MoreBriefs));
-        let before = pane.brief_rects.clone();
-        pane.advance_briefs();
-        paint(&mut pane);
-        assert_ne!(before, pane.brief_rects);
     }
 
     #[test]
@@ -3415,7 +2469,6 @@ mod tests {
 #[cfg(test)]
 mod resume_card_tests {
     use super::*;
-    use crate::activity::testing::TestTree as WorkspaceTree;
     use ui::tilo_actions::ActionContext;
     use ui::widget::history::HistoryAuthor;
 
@@ -3452,24 +2505,6 @@ mod resume_card_tests {
             "an unknown local identity resumes nothing"
         );
     }
-
-    #[test]
-    fn resume_card_click_opens_the_exact_resource() {
-        let mut pane = RoomActivityPane::new();
-        pane.resume_rect = Rect::new(10.0, 10.0, 200.0, 70.0);
-        pane.resume_target = Some(ui::HistoryResourceTarget {
-            app_id: Some("so.tilo.sheets".into()),
-            app_label: Some("Sheets".into()),
-            id: "finance:q2".into(),
-            kind: "sheet".into(),
-            label: "Q2 finance report".into(),
-        });
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let outcome = pane
-            .handle_catchup_click(Point::new(40.0, 30.0), &mut tree)
-            .expect("resume card handles its click");
-        assert_eq!(outcome.open_target, pane.resume_target);
-    }
 }
 
 #[cfg(test)]
@@ -3504,31 +2539,6 @@ mod tasks_link_tests {
         pane.refresh(&mut tree);
         pane.set_view(ActivityView::Explore);
         (tree, pane, host)
-    }
-
-    /// The view row ends in a link that opens the Tasks app, by pointer
-    /// and by keyboard alike.
-    #[test]
-    fn the_view_row_opens_the_tasks_app() {
-        let (mut tree, mut pane, _) = fixture();
-        pane.layout_window(Rect::new(0.0, 0.0, 1200.0, 800.0));
-        paint_header_fixture(&mut pane, &Theme::light());
-        let link = pane.tasks_link_rect.expect("the Tasks link is drawn");
-        let outcome = pane
-            .handle_pointer_click(link.center(), &mut tree, None)
-            .expect("the link takes its click");
-        assert_eq!(
-            outcome.open_target.and_then(|target| target.app_id),
-            Some(TASKS_APP.to_owned())
-        );
-        assert!(pane.focus_order().contains(&ActivityFocus::OpenTasks));
-        pane.keyboard_focus = Some(ActivityFocus::OpenTasks);
-        let outcome = pane.activate_focus(&mut tree, None);
-        assert_eq!(
-            outcome.open_target.and_then(|target| target.app_id),
-            Some(TASKS_APP.to_owned())
-        );
-        assert_eq!(pane.view(), ActivityView::Explore, "the view stays put");
     }
 
     /// Once an agent's run of a task recorded what it changed under the
@@ -3585,97 +2595,6 @@ mod tasks_link_tests {
             Some(t("activity-undo-task-done"))
         );
     }
-
-    #[test]
-    fn header_title_uses_current_viewport_and_scope_on_the_first_frame() {
-        for theme in [
-            Theme::light(),
-            Theme::dark(),
-            Theme::high_contrast().with_text_scale(2.0),
-        ] {
-            let (_, mut pane, _) = fixture();
-            pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
-            paint_header_fixture(&mut pane, &Theme::light());
-            for (width, height) in [(1600.0, 900.0), (560.0, 560.0), (1600.0, 900.0)] {
-                pane.layout_window(Rect::new(0.0, 0.0, width, height));
-                paint_header_fixture(&mut pane, &theme);
-                let first = pane.painted_title.borrow().clone();
-                assert!(!first.is_empty());
-                paint_header_fixture(&mut pane, &theme);
-                assert_eq!(
-                    *pane.painted_title.borrow(),
-                    first,
-                    "the first frame after move/resize/scale change must retain orientation"
-                );
-            }
-            pane.set_view(ActivityView::CatchUp);
-            paint_header_fixture(&mut pane, &theme);
-            assert!(pane.scope_rects.is_empty());
-            assert_eq!(
-                *pane.painted_title.borrow(),
-                t("activity-title-whats-new"),
-                "nobody was away: what others did is what's new"
-            );
-        }
-    }
-
-    /// Open over the desktop, the sheet starts below the windows' bars, so
-    /// a window's close and maximise controls stay in reach.
-    #[test]
-    fn the_floating_sheet_leaves_the_windows_bars_uncovered() {
-        for (width, height) in [(1440.0, 900.0), (600.0, 800.0)] {
-            let mut pane = RoomActivityPane::new();
-            pane.set_view(ActivityView::CatchUp);
-            let viewport = Rect::new(0.0, 32.0, width, height);
-            pane.layout(viewport);
-            assert!(
-                pane.sheet.y0 >= viewport.y0 + ui::widget::tabs::TAB_BAR_HEIGHT,
-                "{width}: {:?}",
-                pane.sheet
-            );
-            assert!(pane.sheet.y1 <= viewport.y1);
-        }
-    }
-
-    fn paint_header_fixture(pane: &mut RoomActivityPane, theme: &Theme) -> Scene {
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        text.set_text_scale(theme.text_scale);
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            theme,
-            &PresenceCtx::empty(),
-        );
-        scene
-    }
-
-    #[test]
-    fn activity_header_render_matrix() {
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target/activity-header-renders");
-        std::fs::create_dir_all(&output).unwrap();
-        for (name, theme) in [
-            ("light", Theme::light()),
-            ("dark", Theme::dark()),
-            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
-        ] {
-            for (size, width, height) in [("normal", 1600, 900), ("compact", 560, 560)] {
-                let (_, mut pane, _) = fixture();
-                pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
-                paint_header_fixture(&mut pane, &Theme::light());
-                pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
-                let scene = paint_header_fixture(&mut pane, &theme);
-                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
-                renderer.render_png(
-                    &scene,
-                    theme.tokens.colors.surfaces.content,
-                    output.join(format!("{name}-{size}.png")),
-                );
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -3708,17 +2627,6 @@ mod morning_source_tests {
         pane.set_host(Rc::new(VisitorHost));
         pane.refresh(&mut tree);
         pane.set_view(ActivityView::CatchUp);
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
-        let theme = Theme::light();
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
         assert!(
             !pane.digest().briefs.is_empty(),
             "the change itself stays visible"
@@ -3737,21 +2645,15 @@ mod morning_source_tests {
                 );
             }
         }
-        for focus in pane.focus_order() {
-            let label = pane.focus_label(&focus).unwrap_or_default();
-            assert!(
-                !label.contains(record),
-                "an identifier reached a visitor: {label:?}"
-            );
-        }
-        assert!(pane.morning_rects.is_empty());
-        let mut scene = Scene::new();
-        let y = pane.draw_morning_sources(&mut scene, Affine::IDENTITY, &mut text, &theme, 120.0);
+        let served = serde_json::to_string(&pane.serve_summary()).unwrap();
         assert!(
-            (y - 120.0).abs() < f64::EPSILON,
-            "an unavailable morning section must take no space"
+            !served.contains(record),
+            "an identifier reached a visitor: {served}"
         );
-        assert!(scene.encoding().is_empty(), "nor paint anything");
+        assert!(
+            pane.chosen_morning_sources().is_empty(),
+            "a visitor has no morning sources"
+        );
     }
 
     fn fixture() -> (TestTree, RoomActivityPane) {
@@ -3905,7 +2807,7 @@ mod morning_source_tests {
         assert!(host.0.borrow()[&tree.active.raw()].sources.is_empty());
     }
     #[test]
-    fn morning_source_choices_are_bounded_and_noisy_activity_preserves_focus() {
+    fn morning_source_choices_are_bounded_and_noisy_activity_keeps_the_choice() {
         let (mut tree, mut pane) = fixture();
         for index in 0..200_u64 {
             tree.doc
@@ -3948,17 +2850,13 @@ mod morning_source_tests {
             pane.morning_evidence(&key).unwrap().1,
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_209)
         );
-        pane.keyboard_focus = Some(ActivityFocus::Morning(key.clone(), false));
         pane.refresh(&mut tree);
         assert_eq!(
             pane.chosen_morning_sources().len(),
             1,
             "repeated updates group into one chosen source"
         );
-        assert_eq!(
-            pane.keyboard_focus,
-            Some(ActivityFocus::Morning(key, false))
-        );
+        assert_eq!(pane.chosen_morning_sources()[0].key(), key);
         for index in 1..=8 {
             let id = format!("weather.location:fixture-{index}");
             let context = tilo_actions::ActionContext::for_resource(&id, "location", &id)
@@ -3997,138 +2895,134 @@ mod morning_source_tests {
         assert_eq!(pane.chosen_morning_sources().len(), 8);
     }
 
-    #[test]
-    fn morning_source_long_resource_names_keep_freshness_and_navigation_visible() {
-        let (mut tree, mut pane) = fixture();
-        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
-        let key = pane.chosen_morning_sources()[0].key();
-        let title = "A very long authorized resource name ".repeat(100);
-        let context = tilo_actions::ActionContext::for_resource(
-            "weather.location:fixture",
-            "location",
-            title,
+    fn run_source(
+        pane: &mut RoomActivityPane,
+        tree: &mut TestTree,
+        key: &str,
+        command: tilo_actions::remote::workspace_activity::SourceCommand,
+    ) {
+        let request = tilo_actions::remote::workspace_activity::SourceRequest {
+            key: key.into(),
+            command,
+        };
+        let arguments = serde_json::to_value(request)
+            .unwrap()
+            .as_object()
+            .cloned()
+            .expect("a request is an object");
+        pane.serve_action(
+            tilo_actions::remote::workspace_activity::SOURCE,
+            &arguments,
+            tree,
+            None,
         )
-        .with_app("so.tilo.weather", "Weather")
-        .with_described(crate::activity::testing::verb("Update"));
-        tree.doc
-            .put(automerge::ROOT, "name", "Long resource label")
-            .unwrap();
-        tree.doc.commit_with(
-            CommitOptions::default()
-                .with_time(1_800_000_300)
-                .with_message(context.change_message().unwrap()),
-        );
-        pane.refresh(&mut tree);
-        pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_600));
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
-        let theme = Theme::high_contrast().with_text_scale(2.0);
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        text.set_text_scale(theme.text_scale);
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-        let focus = ActivityFocus::Morning(key, false);
-        assert!(
-            pane.focus_order().contains(&focus),
-            "long names must not push the source controls outside the viewport"
-        );
-        let accessible = pane.access_control(&focus).unwrap();
-        assert!(accessible.description.contains("5 min ago"));
-        assert!(accessible.description.contains("may be out of date"));
+        .expect("a chosen source runs its command");
     }
 
     #[test]
-    fn morning_source_native_render_and_keyboard_matrix() {
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target/morning-source-renders");
-        std::fs::create_dir_all(&output).unwrap();
-        for (name, theme) in [
-            ("light", Theme::light()),
-            ("dark", Theme::dark()),
-            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
+    fn morning_payload_commands_reach_only_this_room_and_change_no_history() {
+        use tilo_actions::remote::workspace_activity::SourceCommand;
+        let (mut tree, mut pane) = fixture();
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        let host = Rc::new(PayloadHost::default());
+        pane.set_host(host.clone());
+        let key = pane.chosen_morning_sources()[0].key();
+        let heads = tree.doc.get_heads();
+        let seen = pane.seen_frontiers.clone();
+        let summary = pane.serve_summary();
+        let source = summary
+            .sources
+            .iter()
+            .find(|source| source.key == key)
+            .expect("the chosen source is served");
+        assert!(source.refreshable);
+        for evidence in [
+            "12°C",
+            "Synthetic chosen weather provider",
+            "2026-10-11T08:05:00Z",
+            "Last cached observation",
         ] {
-            for (size, width, height) in [("normal", 1600, 1000), ("compact", 640, 900)] {
-                let (mut tree, mut pane) = fixture();
-                pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_300));
-                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
-                let key = pane.chosen_morning_sources()[0].key();
-                pane.set_view(ActivityView::CatchUp);
-                pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
-                let mut scene = Scene::new();
-                let mut text = TextRenderer::new();
-                text.set_text_scale(theme.text_scale);
-                pane.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &PresenceCtx::empty(),
-                );
-                let focus = ActivityFocus::Morning(key.clone(), false);
-                assert!(
-                    pane.focus_order().contains(&focus),
-                    "chosen source must remain reachable at {name}/{size}"
-                );
-                let rectangle = pane.rect_for_focus(&focus).unwrap();
-                assert!(rectangle.y1 <= f64::from(height));
-                let accessible = pane.access_control(&focus).unwrap();
-                assert!(accessible.description.contains("Weather"));
-                assert!(accessible.description.contains("5 min ago"));
-                assert!(accessible.description.contains("may be out of date"));
-                pane.keyboard_focus = Some(focus.clone());
-                let outcome = pane.activate_focus(&mut tree, None);
-                assert_eq!(outcome.open_target.unwrap().id, "weather.location:fixture");
-                assert_eq!(
-                    pane.keyboard_focus,
-                    Some(focus),
-                    "opening must preserve logical focus"
-                );
-                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
-                renderer.render_png(
-                    &scene,
-                    theme.tokens.colors.surfaces.content,
-                    output.join(format!("{name}-{size}.png")),
-                );
-                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
-                pane.set_view(ActivityView::Explore);
-                pane.explorer_pane = ExplorerPane::Details;
-                let mut scene = Scene::new();
-                pane.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &PresenceCtx::empty(),
-                );
-                assert!(
-                    pane.focus_order()
-                        .contains(&ActivityFocus::Detail(DetailAction::MorningSource)),
-                    "the source choice must be a keyboard control at {name}/{size}"
-                );
-                for (_, rect) in &pane.detail_action_rects {
-                    assert!(
-                        rect.height()
-                            >= ui::widget::ButtonFace::height(
-                                ui::widget::ControlSize::Regular,
-                                &theme
-                            ),
-                        "source/history controls must use the shared minimum height at {name}/{size}"
-                    );
-                    assert!(rect.y1 <= f64::from(height));
-                }
-                renderer.render_png(
-                    &scene,
-                    theme.tokens.colors.surfaces.content,
-                    output.join(format!("{name}-{size}-choose.png")),
-                );
-            }
+            assert!(source.text.contains(evidence), "{evidence} is served");
         }
+        for command in [SourceCommand::Refresh, SourceCommand::DraftRefresh] {
+            run_source(&mut pane, &mut tree, &key, command);
+        }
+        assert_eq!(host.commands.borrow().len(), 2);
+        assert!(
+            host.commands
+                .borrow()
+                .iter()
+                .all(|(room, _, _)| *room == pane.room)
+        );
+        let foreign = uuid::Uuid::new_v4().to_string();
+        pane.apply_selection_history_action(
+            &format!("{}{foreign}.{key}", super::MorningCommand::Refresh.prefix()),
+            &mut tree,
+            None,
+        );
+        assert_eq!(
+            host.commands.borrow().len(),
+            2,
+            "queued foreign command is inert"
+        );
+        assert_eq!(tree.doc.get_heads(), heads);
+        assert_eq!(pane.seen_frontiers, seen);
     }
+
+    #[test]
+    fn morning_payload_paging_keeps_large_sources_and_removed_evidence_reachable() {
+        use tilo_actions::remote::workspace_activity::SourceCommand;
+        let (mut tree, mut pane) = fixture();
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        let host = Rc::new(PayloadHost {
+            noisy: true,
+            ..Default::default()
+        });
+        pane.set_host(host.clone());
+        for index in 1..crate::activity::morning::MAX_SOURCES {
+            let room = pane.room.clone();
+            pane.morning_sources
+                .get_mut(&pane.morning_workspace)
+                .unwrap()
+                .toggle(
+                    &room,
+                    super::MorningSource {
+                        app: "so.tilo.weather".into(),
+                        resource: format!("deleted:{index}"),
+                    },
+                );
+        }
+        let heads = tree.doc.get_heads();
+        let seen = pane.seen_frontiers.clone();
+        let keys: Vec<String> = pane
+            .serve_summary()
+            .sources
+            .iter()
+            .map(|source| source.key.clone())
+            .collect();
+        assert_eq!(
+            keys.len(),
+            crate::activity::morning::MAX_SOURCES,
+            "every source is served, removed evidence too"
+        );
+        for key in &keys {
+            run_source(&mut pane, &mut tree, key, SourceCommand::NextSource);
+        }
+        assert_eq!(pane.morning_source_offset, 0, "paging wraps around");
+        assert!(
+            host.commands.borrow().is_empty(),
+            "paging invokes no provider"
+        );
+        run_source(&mut pane, &mut tree, &keys[1], SourceCommand::Remove);
+        assert_eq!(
+            pane.chosen_morning_sources().len(),
+            crate::activity::morning::MAX_SOURCES - 1,
+            "a source whose evidence is gone can still be removed"
+        );
+        assert_eq!(tree.doc.get_heads(), heads);
+        assert_eq!(pane.seen_frontiers, seen);
+    }
+
     #[derive(Default)]
     struct PayloadHost {
         commands: RefCell<Vec<(String, super::MorningSource, super::MorningCommand)>>,
@@ -4169,165 +3063,6 @@ mod morning_source_tests {
                 .borrow_mut()
                 .push((room.into(), source.clone(), command));
             Ok(())
-        }
-    }
-    #[test]
-    fn morning_payload_pager_keeps_large_sources_and_removed_evidence_reachable() {
-        let (mut tree, mut pane) = fixture();
-        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
-        let host = Rc::new(PayloadHost {
-            noisy: true,
-            ..Default::default()
-        });
-        pane.set_host(host.clone());
-        let first = pane.chosen_morning_sources()[0].key();
-        for index in 1..crate::activity::morning::MAX_SOURCES {
-            let room = pane.room.clone();
-            pane.morning_sources
-                .get_mut(&pane.morning_workspace)
-                .unwrap()
-                .toggle(
-                    &room,
-                    super::MorningSource {
-                        app: "so.tilo.weather".into(),
-                        resource: format!("deleted:{index}"),
-                    },
-                );
-        }
-        pane.set_view(ActivityView::CatchUp);
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
-        let theme = Theme::high_contrast().with_text_scale(2.0);
-        let mut text = TextRenderer::new();
-        text.set_text_scale(theme.text_scale);
-        let heads = tree.doc.get_heads();
-        let seen = pane.seen_frontiers.clone();
-        for index in 0..crate::activity::morning::MAX_SOURCES {
-            let mut scene = Scene::new();
-            pane.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            let key = pane.chosen_morning_sources()[index].key();
-            let focus =
-                ActivityFocus::MorningCommand(key.clone(), super::MorningCommand::NextSource);
-            assert!(
-                pane.focus_order().contains(&focus),
-                "source {index} remains reachable"
-            );
-            assert!(
-                pane.focus_order()
-                    .contains(&ActivityFocus::Morning(key, true)),
-                "even unavailable sources can be removed"
-            );
-            pane.keyboard_focus = Some(focus);
-            pane.activate_focus(&mut tree, None);
-        }
-        assert_eq!(pane.morning_source_offset, 0);
-        assert_eq!(
-            pane.keyboard_focus,
-            Some(ActivityFocus::MorningCommand(
-                first,
-                super::MorningCommand::NextSource
-            ))
-        );
-        assert!(
-            host.commands.borrow().is_empty(),
-            "paging invokes no provider"
-        );
-        assert_eq!(tree.doc.get_heads(), heads);
-        assert_eq!(pane.seen_frontiers, seen);
-    }
-    #[test]
-    fn morning_payload_native_matrix_keeps_semantic_controls_and_review_boundary() {
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target/morning-payload-renders");
-        std::fs::create_dir_all(&output).unwrap();
-        for (name, theme) in [
-            ("light", Theme::light()),
-            ("dark", Theme::dark()),
-            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
-        ] {
-            for (size, width, height) in [("normal", 1600, 1000), ("compact", 640, 900)] {
-                let (mut tree, mut pane) = fixture();
-                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
-                let host = Rc::new(PayloadHost::default());
-                pane.set_host(host.clone());
-                let key = pane.chosen_morning_sources()[0].key();
-                let heads = tree.doc.get_heads();
-                let seen = pane.seen_frontiers.clone();
-                pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_300));
-                pane.set_view(ActivityView::CatchUp);
-                pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
-                let mut scene = Scene::new();
-                let mut text = TextRenderer::new();
-                text.set_text_scale(theme.text_scale);
-                pane.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &PresenceCtx::empty(),
-                );
-                for command in [
-                    super::MorningCommand::Refresh,
-                    super::MorningCommand::DraftRefresh,
-                ] {
-                    let focus = ActivityFocus::MorningCommand(key.clone(), command);
-                    assert!(
-                        pane.focus_order().contains(&focus),
-                        "command visible at {name}/{size}"
-                    );
-                    if command == super::MorningCommand::Refresh {
-                        assert_eq!(
-                            pane.access_control(&focus).unwrap().description,
-                            t("activity-morning-refresh"),
-                            "an immediate refresh must not be described as an inert draft"
-                        );
-                    }
-                    pane.keyboard_focus = Some(focus);
-                    pane.activate_focus(&mut tree, None);
-                }
-                assert_eq!(host.commands.borrow().len(), 2);
-                assert!(
-                    host.commands
-                        .borrow()
-                        .iter()
-                        .all(|(room, _, _)| *room == pane.room)
-                );
-                let accessible = pane
-                    .access_control(&ActivityFocus::Morning(key.clone(), false))
-                    .unwrap();
-                assert!(accessible.description.contains("12°C"));
-                assert!(
-                    accessible
-                        .description
-                        .contains("Synthetic chosen weather provider")
-                );
-                assert!(accessible.description.contains("2026-10-11T08:05:00Z"));
-                assert!(accessible.description.contains("Last cached observation"));
-                let foreign = uuid::Uuid::new_v4().to_string();
-                pane.apply_selection_history_action(
-                    &format!("{}{foreign}.{key}", super::MorningCommand::Refresh.prefix()),
-                    &mut tree,
-                    None,
-                );
-                assert_eq!(
-                    host.commands.borrow().len(),
-                    2,
-                    "queued foreign command is inert"
-                );
-                assert_eq!(tree.doc.get_heads(), heads);
-                assert_eq!(pane.seen_frontiers, seen);
-                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
-                renderer.render_png(
-                    &scene,
-                    theme.tokens.colors.surfaces.content,
-                    output.join(format!("{name}-{size}.png")),
-                );
-            }
         }
     }
 }

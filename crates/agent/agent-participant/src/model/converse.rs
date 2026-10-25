@@ -721,9 +721,15 @@ fn lost_reasoning(response: &ModelResponse) -> Option<String> {
 pub(crate) const VALUES_NOTE: &str = " Any argument may quote a value a document holds as \
     {{Sheet1!B2}} (a range: {{Sheet1!B2:B9}}) or {{<app>:<record>/<read>#/json/pointer}}, or \
     compute one as {{= expr }} (+ - * / %, sum, avg, min, max, round, abs, and dates: \
-    workday(date, n) for n business days, add_days, days_between), with references such as \
-    Sheet1!B2 as operands and an optional format after | ($, %, 0.00, long): the host fills it \
-    in when the step runs. Never work numbers or dates out yourself. To quote one item of a \
+    workday(date, n) for n business days, add_days, add_months, days_between, \
+    days_inclusive(start, end, …) totalling ranges with both ends counted, \
+    days_within(from, to, start, end, …) counting only their days inside a window), with \
+    references such as Sheet1!B2 as operands and an optional format after | ($, %, 0.00, \
+    long): the host fills it in when the step runs. A date or number argument may also be \
+    written as arithmetic in words (10 business days after 2026-10-14, 289 - 50, 4 x 38.50, \
+    sum of 120, 80 and 45): the host computes it. Never work numbers or dates out yourself; \
+    a date a document writes is noted after it as the host reads it (03/04/1988 \
+    [1988-04-03]): use that. To quote one item of a \
     list, say which in [ ] after the pointer and the host picks it: \
     {{mail/read#/messages[from~Ada, after 2026-10-14T09:15Z, newest]/subject}}, \
     {{Sheet1!A1:H9[Invoice=INV-7]/Status}} (field=value, field~text, !=, after/before \
@@ -732,15 +738,78 @@ pub(crate) const VALUES_NOTE: &str = " Any argument may quote a value a document
     an item by its fields (field-edit upsert-item {match: {field: value}, value}), never by \
     position.";
 
+/// How the `plan` tool's checklist is used, told once in its description so
+/// every turn and task sends the same bytes.
+pub(crate) const OBLIGATIONS_NOTE: &str = " When a request asks for more than one thing, its \
+    first plan lists in `obligations` each deliverable it asks for, in order, a few words each \
+    (\"set LR-2041 status Signed in\", \"add LR-2041 session row\", \"post 'LR-2041 signed in' \
+    in #logins\"): the changes, posts, messages and files it wants, never reads, waits or your \
+    reply. Give each step that fulfils one its number in `for`. Every later plan is shown the \
+    list with what is still to do: plan those too, tagged the same way. The task cannot finish \
+    while one is open: when it is about to, you are shown the open ones and may set one aside \
+    in `set_aside` with a short reason (\"already done by …\", \"not possible: …\"). One set \
+    aside before then stays open, so never set aside what a wait or a later step will do.";
+
+/// How a record is checked, told once in the `plan` tool's description.
+pub(crate) const FACTS_NOTE: &str = " To check a record against a request, read its `facts` \
+    (with `read_view`, where the record offers it): what it holds as plain values (times, names, \
+    text, counts) to compare with the request item by item, rather than judging from a picture.";
+
+/// The `plan` schema's checklist: `obligations`, each step's `for` and
+/// `set_aside` ([`OBLIGATIONS_NOTE`]).
+fn add_obligations(properties: &mut serde_json::Map<String, serde_json::Value>) {
+    if let Some(step) = properties
+        .get_mut("steps")
+        .and_then(|steps| steps.pointer_mut("/items/properties"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        step.insert(
+            "for".into(),
+            serde_json::json!({
+                "type": "integer",
+                "description": "The number of the obligation this step fulfils, if any."
+            }),
+        );
+    }
+    properties.insert(
+        "obligations".into(),
+        serde_json::json!({
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "On the request's first plan only: what it asks for, one short item \
+                each, in order, numbered from 1."
+        }),
+    );
+    properties.insert(
+        "set_aside".into(),
+        serde_json::json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "item": {"type": "integer"},
+                    "reason": {"type": "string"}
+                },
+                "required": ["item", "reason"],
+                "additionalProperties": false
+            },
+            "description": "Obligations you will not plan, by number, each with why in a few words."
+        }),
+    );
+}
+
 /// The [`READ_VIEW`] tool definition.
 fn read_view_definition() -> ToolDefinition {
     ToolDefinition {
         name: READ_VIEW.into(),
         description: "Run a view or read of a document that is open now (inspect, read-text, \
-             read-cells, read, look…: an operation listed for an open document that changes \
-             nothing) and get its answer here, before you plan. Use it when the plan needs \
-             what the document holds and the request does not show it; then plan with the \
-             answer. Operations that change or export something are refused here: plan them."
+             read-cells, read, facts, look…: an operation listed for an open document that \
+             changes nothing) and get its answer here, before you plan. Use it when the plan \
+             needs what the document holds and the request does not show it; then plan with \
+             the answer. With `compare`, the read runs again with those arguments and the answer \
+             lists what differs from that one to this (facts now against {\"version\": the \
+             version an export answered}: what changed since that export). Operations that \
+             change or export something are refused here: plan them."
             .into(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -752,6 +821,11 @@ fn read_view_definition() -> ToolDefinition {
                 "arguments": {
                     "type": "object",
                     "description": "Its argument object; {} for its defaults."
+                },
+                "compare": {
+                    "type": "object",
+                    "description": "Another argument object for the same read, to list what \
+                        differs from its answer to this one."
                 }
             },
             "required": ["operation"],
@@ -813,6 +887,8 @@ pub(crate) fn planning_tools(
             continue;
         }
         tool.description.push_str(VALUES_NOTE);
+        tool.description.push_str(OBLIGATIONS_NOTE);
+        tool.description.push_str(FACTS_NOTE);
         let schema = &mut tool.input_schema;
         if let Some(properties) = schema
             .get_mut("properties")
@@ -837,6 +913,7 @@ pub(crate) fn planning_tools(
                         part, planned once the app is open. Never work the steps could do now."
                 }),
             );
+            add_obligations(properties);
         }
         if let Some(required) = schema
             .get_mut("required")
@@ -875,7 +952,12 @@ pub(crate) fn read_view_answer(
         Some(serde_json::Value::Object(arguments)) => arguments.clone(),
         Some(_) => return Seen::from("Not read: `arguments` is an object.".to_owned()),
     };
-    match read.read(&id, &arguments) {
+    let found = match input.get("compare") {
+        None | Some(serde_json::Value::Null) => read.read(&id, &arguments),
+        Some(serde_json::Value::Object(against)) => read.compare(&id, &arguments, against),
+        Some(_) => return Seen::from("Not read: `compare` is an object.".to_owned()),
+    };
+    match found {
         Ok(found) => found,
         Err(why) => format!("Not read: {why}").into(),
     }

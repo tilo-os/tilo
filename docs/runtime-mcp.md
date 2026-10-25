@@ -205,10 +205,27 @@ after a pause that doubles from 5 ms up to 200 ms, for at most 5 seconds.
 (with the action's parameters after an `invalid_arguments`), or `pending <id>`
 when it ran past `wait_ms`; there is no receipt to poll for an action that
 finishes. `calls: [{path, args}, …]` runs several in order and stops at the
-first failure. `notes#open` starts an installed app and lists it. `tilo_find`
+first failure. `notes#open` starts an installed app and lists it.
+
+`tilo_ls {}` lists the apps running in the workspace the agent was admitted
+to, then every app installed there. The workspace answers the installed apps
+by their kind (`applications.app`), whole, so its other rows never push them
+off the page. An agent of this machine is told an app it may not open too,
+as `installed, not yours to open`: an observer may read the room but opens
+nothing until the person grants it an app, and an empty list would have told
+it there were none. Opening one says who decides instead of starting it.
+`none: …` means nothing runs and nothing is installed. When the session
+cannot answer for the agent at all (its membership was removed, the
+workspace is gone from the device, the session's workspaces or policy clock
+are not available), the broker refuses with that reason and the agent reads
+it; a list of installed apps that could not be read is named with its reason
+under the running ones.
+
+`tilo_find`
 narrows to one app by the name `tilo_ls` lists (`notes`) or its id
 (`so.tilo.notes`), and an app that is neither running nor installed is an
-error naming the apps there are. It searches apps by name, then resources, then actions named as searched, then
+error naming the apps there are, or saying the installed apps could not be
+read when they could not. It searches apps by name, then resources, then actions named as searched, then
 actions described so; it does not search files. It asks every running app at
 once, and an app that does not answer is named as not searched rather than
 failing the search; a search that no app answered fails and says so. Listings

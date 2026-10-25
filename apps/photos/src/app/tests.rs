@@ -1186,9 +1186,20 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         crate::test_doc::set_library(&mut doc, &library);
         app.show_library();
         sync(&mut app, &mut doc);
+        let new_album = bar_command(&app, &tr("photos-new-album")).expect("New album is offered");
+        if let Some(open) = bar_command(&app, &tr("photos-open")) {
+            assert_ne!(
+                open.icon, new_album.icon,
+                "Open and New album look different"
+            );
+        }
         app.begin_new_album();
         sync(&mut app, &mut doc);
         assert!(app.album_editor);
+        assert!(
+            bar_command(&app, &tr("photos-new-album")).is_none(),
+            "while an album is being made, its editor stands for New album"
+        );
         app.sync_inspector();
         assert!(
             app.chrome.inspector.is_open(),
@@ -1467,6 +1478,9 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
 
     eprintln!("phase metadata_sheet_footer_never_covers_a_focused_field");
     {
+        // Laid out frame by frame with no clock between: the panel at rest,
+        // not caught mid-rise from the foot of a narrow window.
+        let _settled = ui::motion::testing::settled();
         for (scale, (w, h)) in [(1.0_f32, (1200.0_f32, 800.0_f32)), (2.0, (800.0, 900.0))] {
             let mut app = test_app();
             let mut doc = crate::test_doc::new_doc();
@@ -2478,8 +2492,8 @@ impl tilo_actions::remote::ActionHost for LinkHost {
         &self,
         _: &tilo_actions::remote::Caller,
         _: &tilo_actions::InvocationId,
-    ) -> Result<(), tilo_actions::remote::ActionHostError> {
-        Ok(())
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 
@@ -2730,10 +2744,12 @@ fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
 }
 
 /// The album panel never hides the way to fill an empty library: where the
-/// timeline keeps its readable width beside it, it docks; narrower, it floats
-/// and the empty state's Open stands in the part it leaves.
+/// timeline keeps its readable width beside it, it docks; narrower, it rises
+/// as a sheet from the window's foot and the empty state's Open stands in the
+/// part above it.
 #[test]
 fn the_album_panel_leaves_an_empty_librarys_open_in_view() {
+    let _settled = ui::motion::testing::settled();
     for (width, docks) in [(1_160.0, true), (716.0, false)] {
         let size = (width as u32, 800);
         let mut harness =
@@ -2756,16 +2772,189 @@ fn the_album_panel_leaves_an_empty_librarys_open_in_view() {
             .as_ref()
             .expect("an empty library shows its empty state")
             .action_rect();
-        let panel_left = app.rect.x1
-            - app
+        assert!(open.width() > 0.0, "{width}px: the empty state offers Open");
+        if docks {
+            let panel_left = app.chrome.inspector.sidebar_rect().x0;
+            assert!(
+                open.x1 <= panel_left,
+                "{width}px: Open ({open:?}) stands clear of the panel from x {panel_left}"
+            );
+        } else {
+            let sheet = app
                 .chrome
                 .inspector
-                .resolved_overlay_width()
-                .max(app.chrome.inspector.sidebar_rect().width());
-        assert!(open.width() > 0.0, "{width}px: the empty state offers Open");
+                .sheet()
+                .expect("a narrow window's panel is a sheet")
+                .placed()
+                .panel;
+            assert!(
+                sheet.height() > 0.0,
+                "{width}px: the sheet stands at the foot"
+            );
+            assert!(
+                open.y1 <= sheet.y0,
+                "{width}px: Open ({open:?}) stands above the sheet from y {}",
+                sheet.y0
+            );
+        }
+    }
+}
+
+/// Photos opened in a narrow window draws its timeline on the first frame,
+/// as it does when a wide window narrows, with its places listed for the
+/// screen behind Back.
+#[test]
+fn photos_opened_narrow_draws_its_grid_on_the_first_frame() {
+    for viewport in [(1280, 800), (420, 800)] {
+        let mut app = ui::framework::testing::TestApp::<crate::resource::PhotosShell>::capture_at(
+            Some("library"),
+            viewport,
+        )
+        .expect("the library captures");
+        let photos = app
+            .harness()
+            .widget_mut::<PhotosApp>()
+            .unwrap_or_else(|| panic!("{viewport:?}: the window shows the library"));
         assert!(
-            open.x1 <= panel_left,
-            "{width}px: Open ({open:?}) stands clear of the panel from x {panel_left}"
+            !photos.library_cards.is_empty(),
+            "{viewport:?}: the timeline shows photographs on the first frame"
         );
+        let (_, selected) = photos
+            .chrome
+            .places
+            .shown()
+            .unwrap_or_else(|| panic!("{viewport:?}: the places are listed"));
+        assert!(
+            selected.is_some(),
+            "{viewport:?}: the open place is chosen in the list"
+        );
+    }
+}
+
+/// In a narrow window the album editor rises as a sheet at half height, and
+/// the timeline above it stays live: a press on a photograph there adds it
+/// to the album, or takes it out.
+#[test]
+fn a_narrow_album_editor_leaves_the_timeline_above_it_live() {
+    let _settled = ui::motion::testing::settled();
+    let mut app = ui::framework::testing::TestApp::<crate::resource::PhotosShell>::capture_at(
+        Some("album-manage"),
+        (420, 800),
+    )
+    .expect("the album editor captures");
+    // A narrow window shows one pane: the timeline, under the editor.
+    app.with_widget(|shell: &mut ui::widget::NavShell| {
+        shell.show(ui::widget::NavPane::Content);
+    })
+    .expect("Photos stands in a NavShell");
+    app.harness().relayout();
+    let photos = app.surface_mut::<PhotosApp>();
+    assert_eq!(
+        photos.chrome.inspector.sheet_detent(),
+        Some(ui::widget::SheetDetent::Half),
+        "the editor rises to half height"
+    );
+    let sheet = photos
+        .chrome
+        .inspector
+        .sheet()
+        .expect("the editor is a sheet")
+        .placed()
+        .panel;
+    assert!(sheet.height() > 0.0 && sheet.y0 > 0.0, "{sheet:?}");
+    let (id, card) = photos
+        .library_cards
+        .iter()
+        .find(|(_, rect, _)| rect.y1 < sheet.y0 && rect.height() > 0.0)
+        .map(|(id, rect, _)| (id.clone(), *rect))
+        .expect("a photograph shows above the sheet");
+    let was_member = photos.album_editor_members.contains(&id);
+    let at = card.center();
+    app.harness().click_at(at.x, at.y);
+    let photos = app.surface_mut::<PhotosApp>();
+    assert!(photos.album_editor, "the editor stays open");
+    assert_ne!(
+        photos.album_editor_members.contains(&id),
+        was_member,
+        "the press above the sheet chose the photograph"
+    );
+}
+
+/// What takes Back's step: the window bar's Back, Escape, or the system's
+/// back gesture.
+#[derive(Clone, Copy, Debug)]
+enum BackInput {
+    Bar,
+    Escape,
+    Gesture,
+}
+
+/// In a narrow window Back, Escape and the system's back gesture each take
+/// the album editor's sheet down from the whole window to half, and from
+/// half or peeking put the editor away, before anything navigates.
+#[test]
+fn back_lowers_or_puts_away_the_narrow_album_editor_before_it_goes_anywhere() {
+    use ui::widget::SheetDetent;
+    let _settled = ui::motion::testing::settled();
+    for input in [BackInput::Bar, BackInput::Escape, BackInput::Gesture] {
+        for (from, after) in [
+            (SheetDetent::Full, Some(SheetDetent::Half)),
+            (SheetDetent::Half, None),
+            (SheetDetent::Peek, None),
+        ] {
+            let mut app =
+                ui::framework::testing::TestApp::<crate::resource::PhotosShell>::capture_at(
+                    Some("album-manage"),
+                    (420, 800),
+                )
+                .expect("the album editor captures");
+            app.with_widget(|shell: &mut ui::widget::NavShell| {
+                shell.show(ui::widget::NavPane::Content);
+            })
+            .expect("Photos stands in a NavShell");
+            app.surface_mut::<PhotosApp>()
+                .chrome
+                .inspector
+                .snap_sheet(from);
+            app.harness().relayout();
+            let photos = app.surface_mut::<PhotosApp>();
+            assert_eq!(photos.chrome.inspector.sheet_detent(), Some(from));
+            assert!(
+                photos
+                    .window_bar()
+                    .leading
+                    .iter()
+                    .any(|action| action.id == ui::widget::WINDOW_BACK),
+                "the bar offers Back while the editor's sheet shows"
+            );
+            match input {
+                BackInput::Bar => {
+                    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+                        id: ui::widget::WINDOW_BACK.into(),
+                    });
+                    photos.apply_window_toolbar();
+                }
+                BackInput::Escape => app.harness().key("Escape"),
+                BackInput::Gesture => assert!(
+                    app.harness().nav_gesture(ui::gesture::NavDirection::Back),
+                    "the sheet takes the back gesture"
+                ),
+            }
+            app.harness().relayout();
+            let photos = app.surface_mut::<PhotosApp>();
+            let shown = photos
+                .album_editor
+                .then(|| photos.chrome.inspector.sheet_detent())
+                .flatten();
+            assert_eq!(shown, after, "{input:?} from {from:?}");
+            let front = app
+                .with_widget(|shell: &mut ui::widget::NavShell| shell.front_pane())
+                .expect("Photos stands in a NavShell");
+            assert_eq!(
+                front,
+                ui::widget::NavPane::Content,
+                "{input:?} from {from:?} takes the sheet's step, not a screen's"
+            );
+        }
     }
 }

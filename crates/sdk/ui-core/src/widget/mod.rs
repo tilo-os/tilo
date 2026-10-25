@@ -3041,6 +3041,8 @@ mod link;
 pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
 mod flap;
 pub use flap::{FlapState, SplitLayout};
+mod bottom_sheet;
+pub use bottom_sheet::{BottomSheet, SheetDetent, SheetFrame, SheetGeometry, SheetInput};
 mod sidebar;
 pub use sidebar::{
     DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_DOCKED_WIDTH, DEFAULT_DRAWER_WIDTH, SidebarDrawer,
@@ -3077,8 +3079,8 @@ pub mod window_controls;
 pub mod window_header;
 pub(crate) mod window_toolbar_row;
 pub use nav_shell::{
-    ContentKind, InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
-    SidebarPlacement, WindowBarLink,
+    ContentKind, InspectorFrame, InspectorLink, InspectorPlacement, NavGeometry, NavMode, NavPane,
+    NavShell, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WindowBarLink,
 };
 pub use window_header::{
     HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
@@ -3406,7 +3408,7 @@ pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
 pub mod arriving_rows;
 pub mod arriving_view;
 pub use arriving_rows::{ArrivingRows, RowFade};
-pub use arriving_view::{ArrivalFace, ArrivingView, Showing};
+pub use arriving_view::{ArrivalFace, ArrivingView, NamedOnce, ReservedShape, Showing};
 pub mod stepper;
 pub use stepper::{Stepper, StepperFace};
 pub mod property_list;
@@ -3416,8 +3418,8 @@ pub use property_list::{
 };
 pub mod list_row;
 pub use list_row::{
-    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowStatus, RowValue, SwipeAction,
-    badge_column_width,
+    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowLeadingShape, RowShape, RowStatus,
+    RowValue, SwipeAction, badge_column_width,
 };
 pub mod toggle_group;
 pub use toggle_group::{

@@ -156,3 +156,74 @@ fn an_apps_dialog_centres_inside_its_window_not_the_screen() {
         "the screen's viewport is restored for the next window"
     );
 }
+
+/// An app that notes which window was current whenever the host reached
+/// it to run its callbacks or a wake.
+struct WindowProbe {
+    reached_in: std::rc::Rc<std::cell::RefCell<Vec<Option<usize>>>>,
+}
+
+impl Widget for WindowProbe {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &Theme,
+        _: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.new_leaf(Style::default()).unwrap()
+    }
+    fn visit_components(
+        &mut self,
+        _: &mut crate::bound_dispatch::ComponentRequest<'_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        self.reached_in
+            .borrow_mut()
+            .push(crate::window_toolbar::current_window());
+        Ok(())
+    }
+    fn name(&self) -> &'static str {
+        "WindowProbe"
+    }
+}
+
+impl crate::widget::app_widget::AppWidget for WindowProbe {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Probe"
+    }
+    fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+        crate::widget::app_widget::IconDescriptor::Glyph("P")
+    }
+}
+
+/// A wake or a bound callback reaches the app through the host's component
+/// visit, and runs in the app's window as every other pass does: a shell
+/// rebuilt there otherwise read its window as having no bar, painted its
+/// own header and toggle under the bar's, and declared its slots to the
+/// thread rather than the window.
+#[test]
+fn a_wake_or_callback_runs_in_the_apps_own_window() {
+    let window = crate::hosted_window::HostedWindow::new();
+    let reached_in = std::rc::Rc::default();
+    let mut host = TileHost::new(TileContent::App(Box::new(WindowProbe {
+        reached_in: std::rc::Rc::clone(&reached_in),
+    })));
+    host.set_hosted_window(window.clone());
+    let mut visit = |_: &crate::bound_dispatch::CallbackBinding,
+                     _: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| None;
+    host.visit_components(&mut crate::bound_dispatch::ComponentRequest {
+        target: None,
+        found: false,
+        visit: &mut visit,
+    })
+    .unwrap();
+    assert_eq!(*reached_in.borrow(), [Some(window.identity())]);
+    assert_eq!(
+        crate::window_toolbar::current_window(),
+        None,
+        "the window stops being current once the visit returns"
+    );
+}

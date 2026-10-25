@@ -126,6 +126,7 @@ impl FrameHarness {
     /// A node that cannot be inspected is invalidated too: stale is worse than
     /// a redundant measure. Returns `(marked nodes, marked childless nodes)`.
     pub(super) fn mark_layout_dirty_nodes(&mut self) -> (usize, usize) {
+        let mut sweep = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
         let dirty: Vec<NodeId> = self
             .node_map
             .keys()
@@ -134,12 +135,9 @@ impl FrameHarness {
                 // SAFETY: these maps describe this exclusive runner's current
                 // admitted tree; the callback only reads widget flags.
                 let flagged = unsafe {
-                    crate::bound_dispatch::inspect_bound_node(
-                        &self.bindings,
-                        &self.node_map,
-                        node,
-                        |widget| widget.is_layout_dirty() || widget.layout_needs_measure(),
-                    )
+                    sweep.inspect(node, |widget| {
+                        widget.is_layout_dirty() || widget.layout_needs_measure()
+                    })
                 }
                 .unwrap_or(true);
                 // Hidden layout subtrees are not measured by Taffy. Their
@@ -165,6 +163,7 @@ impl FrameHarness {
                 }
             })
             .collect();
+        drop(sweep);
         let mut leaves = 0usize;
         for node in &dirty {
             if self

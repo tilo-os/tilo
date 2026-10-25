@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use collab_types::presence::PresenceKey;
 use collab_types::presence::PresencePayload;
-use ui::collaboration::CollabEvent;
+use runtime_collab::event::CollabEvent;
 use ui::presence::PresenceCtx;
 
 use crate::shell::collab_broker::{BrokerHandle, RoomSubscription};
@@ -46,7 +46,7 @@ mod principal;
 pub use desk_pointers::{
     HeardPointer, desk_layout, fold_live_desk_pointers, place_heard_pointers, place_pointers,
 };
-pub use principal::{PresencePrincipal, presence_id, resolve_presence_principal};
+pub use principal::{PresencePrincipal, certified_role, presence_id, resolve_presence_principal};
 
 /// A room's last-published cursor and when it went out, keyed by room —
 /// what [`should_publish_cursor`] rate-limits against.
@@ -1232,7 +1232,7 @@ impl PeerPresence {
                     .into_iter()
                     .filter(|handle| !absent.contains(handle)),
             );
-            let principals = tree.room_peer_principals(ws.room());
+            let principals = tree.room_session_principals(ws.room());
             let own_devices = tree.room_own_devices(ws.room());
             let mut rows = room_roster(ws, &labels, &arrived, local, &principals, &own_devices);
             let apps = self.net.live_apps_of(&room);
@@ -1515,13 +1515,13 @@ pub const POINTER_STAYS: Duration = Duration::MAX;
 /// promote its own row. `local` is dropped — the roster is who *else*
 /// is here.
 ///
-/// The role chip comes from the policy, asked about the person a handle's
-/// certified device belongs to (`principals`, from
-/// [`crate::shell::state::WorkspaceTree::room_peer_principals`]) — the key
-/// membership capabilities are written under. A label is what a person is
-/// *called*, not who they are; it is asked only for a handle with no
-/// certified person, which covers the owner's own endpoint, labelled with
-/// its user id.
+/// The role chip is [`certified_role`]: the policy, asked about the person
+/// the room vouches for at a handle (`principals`, from
+/// [`crate::shell::state::WorkspaceTree::room_session_principals`]) — the
+/// key membership capabilities are written under. A label is what a person
+/// is *called*, not who they are, and on the live plane they choose it
+/// themselves, so it never lends a role: a handle the room vouches for
+/// nobody at shows none.
 ///
 /// A handle in `own_devices` is another device of this person: its row is
 /// named by that device and marked as one, so it shows among the person's
@@ -1543,10 +1543,7 @@ pub fn room_roster(
             // Same principal as the presence path, so avatar and cursor share an id.
             let PresencePrincipal { id, name } = resolve_presence_principal(labels, handle);
             let name = name.unwrap_or_else(|| id.clone());
-            let role = match principals.get(&handle) {
-                Some(person) => ws.role_of(person),
-                None => ws.role_of(&name),
-            };
+            let role = certified_role(ws, principals, handle);
             let who = match own_devices.get(&handle) {
                 Some(device) => crate::shell::state::Collaborator::new(id, device).as_own_device(),
                 None => crate::shell::state::Collaborator::new(id, name),
@@ -2445,115 +2442,8 @@ mod tests {
         a_session_that_names_nobody_is_labelled_with_its_handle();
     }
 
-    /// A workspace `owner` owns, whose room admits `member` as `role` —
-    /// the membership invite redemption writes, keyed by the person's key
-    /// hex.
-    fn room_admitting(
-        owner: &str,
-        member: &str,
-        role: crate::shell::state::CapRole,
-    ) -> crate::shell::state::Workspace {
-        use crate::shell::state::{Workspace, WorkspaceId};
-        let mut ws = Workspace::in_room(
-            WorkspaceId(1),
-            crate::shell::state::RoomId::new(),
-            "Design review",
-        );
-        ws.set_owner(owner.to_string());
-        ws.govern_as_at(
-            owner,
-            tilo_action_policy::Change::AddMember {
-                person: member.to_owned(),
-                role,
-            },
-            tilo_clock::unix_now(),
-        )
-        .expect("the owner admits the member");
-        ws
-    }
-
-    #[test]
-    fn room_roster_takes_roles_from_the_certified_principal_not_the_label() {
-        use crate::shell::state::{CapRole, role_id};
-        let bob = crate::shell::state::person_id_of([0xb0; 32]).expect("a person key");
-        let handle = 7_u64;
-        let arrived = std::collections::BTreeSet::from([handle]);
-        let none = std::collections::BTreeMap::new();
-
-        // Phase `an_invited_member_shows_their_policy_role`. Bob was
-        // invited as an editor; the room calls him "Bob" and his
-        // certified device belongs to his key. The chip is the policy's.
-        {
-            let ws = room_admitting("ada", &bob, CapRole::Editor);
-            let labels = PeerLabels::from([(handle, "Bob".to_string())]);
-            let principals = std::collections::BTreeMap::from([(handle, bob.clone())]);
-            let rows = room_roster(&ws, &labels, &arrived, 1, &principals, &none);
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].name, "Bob", "the label is still what he is called");
-            assert_eq!(
-                rows[0].role_id.as_deref(),
-                Some(role_id(CapRole::Editor)),
-                "an invited editor's row carries the role the Members tab shows",
-            );
-        }
-
-        // Phase `a_label_spelling_somebody_else_s_id_does_not_borrow_their_role`.
-        // A certified device is asked about by its person only: a label
-        // that happens to read as the owner's id lends it nothing.
-        {
-            let ws = room_admitting("ada", &bob, CapRole::Viewer);
-            let labels = PeerLabels::from([(handle, "ada".to_string())]);
-            let principals = std::collections::BTreeMap::from([(handle, bob.clone())]);
-            let rows = room_roster(&ws, &labels, &arrived, 1, &principals, &none);
-            assert_eq!(
-                rows[0].role_id.as_deref(),
-                Some(role_id(CapRole::Viewer)),
-                "the chip is the certified person's, not whoever the label spells",
-            );
-        }
-
-        // Phase `the_owner_endpoint_named_with_the_user_id_keeps_owner_role`.
-        // The inviter labels its own endpoint with its user id and has no
-        // certified device in the room; that row keeps the owner chip.
-        {
-            let ws = room_admitting("ada", &bob, CapRole::Editor);
-            let labels = PeerLabels::from([(handle, "ada".to_string())]);
-            let rows = room_roster(
-                &ws,
-                &labels,
-                &arrived,
-                1,
-                &std::collections::BTreeMap::new(),
-                &none,
-            );
-            assert_eq!(
-                rows[0].role_id.as_deref(),
-                Some(role_id(CapRole::Owner)),
-                "an uncertified endpoint labelled with the owner's id keeps the owner chip",
-            );
-        }
-
-        {
-            let ws = room_admitting("ada", "someone-else", CapRole::Editor);
-            let labels = PeerLabels::from([(handle, "Bob".to_string())]);
-            let principals = std::collections::BTreeMap::from([(handle, bob)]);
-            let rows = room_roster(&ws, &labels, &arrived, 1, &principals, &none);
-            assert_eq!(
-                rows[0].role_id, None,
-                "a certified person the room never admitted has no role to show",
-            );
-        }
-
-        // Phase `another_device_of_this_person_is_that_device_not_someone`.
-        {
-            let ws = room_admitting("ada", "bob", CapRole::Editor);
-            let labels = PeerLabels::from([(handle, "Ada".to_string())]);
-            let own = std::collections::BTreeMap::from([(handle, "Orange Pi".to_string())]);
-            let rows = room_roster(&ws, &labels, &arrived, 1, &none, &own);
-            assert!(rows[0].own_device, "the row is one of the person's devices");
-            assert_eq!(rows[0].name, "Orange Pi", "named by the device");
-        }
-    }
+    #[path = "roster_role_tests.rs"]
+    mod roster_role;
 }
 
 /// Two sessions, and a pointer that has to get from one to the other.
@@ -2711,18 +2601,28 @@ mod two_sessions {
     /// A session that has joined `room`, with names replicated out of
     /// the room's document the way production does it.
     fn guest_joining(host: &mut WorkspaceTree, room: RoomId) -> WorkspaceTree {
+        // Its invite pins the host (hub 1) as the room's governor.
+        guest_invited_by(host, room, &PeerOrigin::hub(1))
+    }
+
+    /// [`guest_joining`], with the invite pinning `governor` as the room's
+    /// governor: the host's own endpoint, as a real invite names it.
+    fn guest_invited_by(
+        host: &mut WorkspaceTree,
+        room: RoomId,
+        governor: &PeerOrigin,
+    ) -> WorkspaceTree {
         let mut tree = WorkspaceTree::default();
         let ws = tree.append_empty_workspace("Mine");
         assert!(
             tree.stand_in_room(ws, room),
             "the guest has to end up in the room it joined",
         );
-        // Its invite pins the host (hub 1) as the room's governor.
-        assert!(tree.pin_room_authority(room, PeerOrigin::hub(1)));
+        assert!(tree.pin_room_authority(room, governor.clone()));
         let changes = host
             .export_room_changes_since(room, &[])
             .expect("the host is in the room it governs");
-        tree.apply_room_changes(room, &changes, &PeerOrigin::hub(1))
+        tree.apply_room_changes(room, &changes, governor)
             .expect("the host's governance merges into the guest");
         tree
     }
@@ -3534,7 +3434,8 @@ mod two_sessions {
             let host_peer = peer_id(51);
             let guest_peer = peer_id(52);
             let (mut host_tree, room) = host_naming(&[(&host_peer, OWNER)]);
-            let mut guest_tree = guest_joining(&mut host_tree, room);
+            let mut guest_tree =
+                guest_invited_by(&mut host_tree, room, &PeerOrigin::peer_id(&host_peer));
             looking_at_its_room(&mut guest_tree);
             let guest_handle = guest_tree.shared();
 
@@ -3919,6 +3820,57 @@ mod two_sessions {
                 .map(|(name, _, _)| name)
                 .collect::<Vec<_>>(),
             vec!["Ada Lovelace".to_owned()]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A role chip is authority, so it comes from who the room vouches for
+    /// at a session, never from what the session is called. A member the
+    /// room never certified names herself after the owner on the live
+    /// plane; she is called that, but wears no role, and the owner's own
+    /// endpoint, which the invite pinned as the room's governor, keeps the
+    /// owner chip.
+    #[test]
+    fn a_name_a_member_gives_herself_never_wears_the_owners_role() {
+        use crate::shell::state::{CapRole, role_id};
+        let governor = peer_id(81);
+        let mallory = peer_id(82);
+        // The host calls its own endpoint by its user id, as inviting does.
+        let (mut host_tree, room) = host_naming(&[(&governor, OWNER), (&mallory, "Mallory")]);
+        let mut guest_tree =
+            guest_invited_by(&mut host_tree, room, &PeerOrigin::peer_id(&governor));
+        looking_at_its_room(&mut guest_tree);
+        let guest_handle = guest_tree.shared();
+        let dir = std::env::temp_dir().join(format!("tilo-roster-role-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (guest, guest_net, _guest_cmds) = session(&dir, "r.sock", &guest_handle, &peer_id(83));
+        guest_net.hear_live_label_for_test(&room.to_string(), handle_of(&mallory), OWNER);
+        assert!(guest.refresh_roster(&PresenceCtx::default()));
+
+        let rows = guest_handle
+            .read()
+            .desktop
+            .active_workspace()
+            .expect("the room is on screen")
+            .collaborators
+            .clone();
+        let row_of = |peer: &str| {
+            rows.iter()
+                .find(|row| row.session == Some(handle_of(peer)))
+                .unwrap_or_else(|| panic!("{peer} is on the roster: {rows:?}"))
+        };
+        let impostor = row_of(&mallory);
+        assert_eq!(impostor.name, OWNER, "she is called what she calls herself");
+        assert_eq!(
+            impostor.role_id, None,
+            "and wears no role: the owner's name is not the owner's authority",
+        );
+        let owner = row_of(&governor);
+        assert_eq!(owner.name, OWNER);
+        assert_eq!(
+            owner.role_id.as_deref(),
+            Some(role_id(CapRole::Owner)),
+            "the room's governor keeps the owner chip",
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

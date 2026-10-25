@@ -24,7 +24,9 @@ use tilo_actions::door::ActionAddress;
 use tilo_browser_peer::DocumentRoute;
 
 use crate::control::AgentControl;
-use crate::planner::{PlanContext, Planner, Reads, Step, observation, rendered_picture};
+use crate::planner::{
+    Obligations, PlanContext, Planner, Reads, Step, observation, rendered_picture,
+};
 
 /// One plan asked of the planner's thread.
 struct Job {
@@ -52,6 +54,8 @@ pub(super) struct Planned {
     pub ready_at: Instant,
     /// Whether a model made it (not steps written out or stated outright).
     pub by_model: bool,
+    /// The checklist it declared.
+    pub obligations: Obligations,
 }
 
 /// A read the planner's thread asks of the loop while it plans.
@@ -177,6 +181,7 @@ impl Planning {
                         rendered: loop_reads.rendered,
                         ready_at: Instant::now(),
                         by_model: planner.last_planned_by_model(),
+                        obligations: planner.take_obligations(),
                     };
                     if made.send(answer).is_err() {
                         return;
@@ -245,6 +250,7 @@ impl Planning {
                 rendered: Vec::new(),
                 ready_at: Instant::now(),
                 by_model: false,
+                obligations: Obligations::default(),
             },
         };
         if self.pending.as_deref() == Some(planned.task.as_str()) {

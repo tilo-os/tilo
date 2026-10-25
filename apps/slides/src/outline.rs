@@ -16,6 +16,10 @@
 //! The first text box is the title and the second the body (what `add-slide`
 //! and `set-slide-text` fill); a line break inside a text box reads as `↵`.
 //! Other elements appear by kind, and speaker notes close the block.
+//!
+//! [`facts`] states the same deck as data to check it against a request:
+//! each slide's title, the rest of its text, how many pictures and shapes
+//! it holds, and its notes, with no ids.
 
 use std::fmt::Write as _;
 
@@ -68,6 +72,59 @@ pub fn of_deck(deck: &Deck) -> String {
     out
 }
 
+/// The deck's facts (`#[resource(facts = path)]`): its title and each
+/// slide in order, as [`facts_of_deck`] states them.
+///
+/// # Errors
+/// Never; the signature is the one the resource option takes.
+pub fn facts(deck: &crate::deck::Deck) -> Result<serde_json::Value, String> {
+    Ok(facts_of_deck(&crate::deck::mirror(deck)))
+}
+
+/// `deck` as a brief would state it: per slide, the first text box as its
+/// title, the other text boxes' words, the pictures and shapes it holds and
+/// its speaker notes.
+#[must_use]
+pub fn facts_of_deck(deck: &Deck) -> serde_json::Value {
+    let slides: Vec<serde_json::Value> = deck
+        .slides
+        .iter()
+        .map(|slide| {
+            let mut texts = slide
+                .elements
+                .iter()
+                .filter(|element| element.kind == ElementKind::Text)
+                .map(|element| element.text.trim().to_owned())
+                .filter(|text| !text.is_empty());
+            let title = texts.next().unwrap_or_default();
+            let count = |kind: ElementKind| {
+                slide
+                    .elements
+                    .iter()
+                    .filter(|element| element.kind == kind)
+                    .count()
+            };
+            let shapes = slide
+                .elements
+                .iter()
+                .filter(|element| !matches!(element.kind, ElementKind::Text | ElementKind::Image))
+                .count();
+            serde_json::json!({
+                "layout": slide.layout.as_str(),
+                "title": title,
+                "text": texts.collect::<Vec<_>>(),
+                "pictures": count(ElementKind::Image),
+                "shapes": shapes,
+                "notes": slide.notes.trim(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "title": deck.title.trim(),
+        "slides": slides,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,7 +132,7 @@ mod tests {
     use crate::model::Element;
 
     #[test]
-    fn titles_bodies_shapes_and_notes_read_in_deck_order_with_their_ids() {
+    fn a_deck_reads_in_order_as_an_outline_with_ids_and_as_facts_without() {
         let mut cover = authored_slide(
             Some("Product Launch"),
             Some("October 2026"),
@@ -107,5 +164,21 @@ mod tests {
             cover.id, c[0], c[1], agenda.id, a[0], a[1], a[2], a[3]
         );
         assert_eq!(of_deck(&deck), expected);
+        assert_eq!(
+            facts_of_deck(&deck),
+            serde_json::json!({
+                "title": "Launch",
+                "slides": [
+                    {
+                        "layout": "title", "title": "Product Launch", "text": ["October 2026"],
+                        "pictures": 0, "shapes": 0, "notes": "Welcome everyone",
+                    },
+                    {
+                        "layout": "title-content", "title": "Agenda", "text": ["Goals\nTimeline"],
+                        "pictures": 1, "shapes": 1, "notes": "",
+                    },
+                ],
+            })
+        );
     }
 }

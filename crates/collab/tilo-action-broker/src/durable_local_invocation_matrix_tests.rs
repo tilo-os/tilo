@@ -493,9 +493,7 @@ mod durable_local_matrix {
     async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                use tilo_actions::remote::{
-                    InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
-                };
+                use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
                 let env = Environment::new();
                 let rig = Rig::new(&env).await;
                 let room = env.route.cluster_id.clone();
@@ -574,15 +572,15 @@ mod durable_local_matrix {
                 assert!(matches!(
                     rig.state
                         .action_invoke(&continued, Some(903), None, &edit("edit"))
-                        .poll_ready(),
-                    PendingPoll::Ready(Ok(_))
+                        .await,
+                    Some(Ok(_))
                 ));
                 assert_eq!(app.try_recv().unwrap().actor, "agent:scribe");
                 assert!(!matches!(
                     rig.state
                         .action_invoke(&continued, Some(903), None, &edit("erase"))
-                        .poll_ready(),
-                    PendingPoll::Ready(Ok(_))
+                        .await,
+                    Some(Ok(_))
                 ));
                 assert!(app.try_recv().is_err(), "the denied edit reaches no app");
 

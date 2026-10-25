@@ -77,16 +77,16 @@ impl CrdtRoute {
 
     /// The channel this route names, as one string — the capnp
     /// transport subscribes by channel id. Encoding lives in
-    /// [`ui::collaboration::channel_key`] (shared with the SDK) so both
+    /// [`runtime_collab::route::channel_key`] (shared with the SDK) so both
     /// ends can't drift.
     pub fn channel_key(&self) -> String {
-        ui::collaboration::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
+        runtime_collab::route::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
     }
 
     /// Split a capnp `channelId` back into its route — the inverse of
     /// [`Self::channel_key`].
     pub fn from_channel_key(key: &str) -> Self {
-        let (app_id, cluster_id, record_id) = ui::collaboration::channel_key::parse(key);
+        let (app_id, cluster_id, record_id) = runtime_collab::route::channel_key::parse(key);
         Self {
             app_id,
             cluster_id,

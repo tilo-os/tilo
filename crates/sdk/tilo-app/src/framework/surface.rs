@@ -263,6 +263,26 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         let _ = (participant, place);
     }
 
+    /// Whether the surface is told of the actions applied here
+    /// ([`applied`](Self::applied)). A surface that implements it says so
+    /// here; no other surface's window keeps them.
+    const APPLIED: bool = false;
+
+    /// `action` was applied to the resource here through the door: invoked
+    /// from the palette, a script or an agent, or submitted by the surface's
+    /// own control, and only once the person agreed when it asks first.
+    /// Called after [`present`](Self::present) showed the state holding it;
+    /// never for a collaborator's change merged in, nor for an undo or a
+    /// restore.
+    ///
+    /// What an action means on this device beyond the document (a file
+    /// grant a removal forgets) is carried out here, so it happens when the
+    /// action applies and never when the person cancelled it. Asked only of
+    /// a surface that sets [`APPLIED`](Self::APPLIED).
+    fn applied(&mut self, action: &R::Action) {
+        let _ = action;
+    }
+
     /// The participant's permission to edit changed while the app runs: a
     /// role granted or taken away. Present accordingly. The dispatcher already
     /// refuses or accepts edits under the new permissions.
@@ -759,6 +779,9 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
     presented: (u64, u64),
     /// The number of the next landing to tell the surface of.
     landings: u64,
+    /// The number of the next action applied here to tell the surface of,
+    /// when it follows them ([`ResourceSurface::APPLIED`]).
+    applied: Option<u64>,
     dispatch: Dispatcher<R>,
     read_only: bool,
     /// A scenario to stage on the next sync.
@@ -776,6 +799,9 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
 impl<R: Resource, S, E> Drop for SurfaceHost<R, S, E> {
     fn drop(&mut self) {
         self.scope.retire();
+        if self.applied.is_some() {
+            self.live.unfollow_applied();
+        }
     }
 }
 
@@ -814,6 +840,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
         Self {
             presented: (live.revision(), live.loads()),
             landings: live.next_landing(),
+            applied: S::APPLIED.then(|| live.follow_applied()),
             live,
             read_only: dispatch.read_only(),
             dispatch,
@@ -910,6 +937,13 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
         self.landings = next;
         for (participant, place) in &landed {
             self.surface.landed(participant, place);
+        }
+        if let Some(from) = self.applied {
+            let (applied, next) = self.live.applied_since(from);
+            self.applied = Some(next);
+            for action in &applied {
+                self.surface.applied(action);
+            }
         }
         let staged = self.staging.borrow_mut().take();
         if let Some(scenario) = staged {

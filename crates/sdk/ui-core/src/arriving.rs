@@ -476,6 +476,12 @@ impl<T, E> Arriving<T, E> {
         *self.began.lock_recover()
     }
 
+    /// Which read this is: the same for every clone of it, and for no other
+    /// read while it lives.
+    pub(crate) fn identity(&self) -> usize {
+        Arc::as_ptr(&self.began).addr()
+    }
+
     /// The timing of the read now pending; `None` once it settled.
     #[must_use]
     pub fn clock(&self) -> Option<ArrivalClock> {
@@ -515,6 +521,17 @@ impl<T, E> Arriving<T, E> {
     pub fn on_retry(self, retry: impl Fn(&Self) + Send + Sync + 'static) -> Self {
         *self.retry.lock_recover() = Some(Arc::new(retry));
         self
+    }
+
+    /// Say where the read stands, from the thread that holds its data (a
+    /// record the window follows), with no worker to publish through. A
+    /// read that settled and is pending again was asked now; one still
+    /// pending keeps when it was asked, now waiting on `from`.
+    pub fn stand(&self, arrival: Arrival<T, E>) {
+        if arrival.is_pending() && !self.with(Arrival::is_pending) {
+            self.mark_began();
+        }
+        self.task.state().set(arrival);
     }
 
     fn mark_began(&self) {

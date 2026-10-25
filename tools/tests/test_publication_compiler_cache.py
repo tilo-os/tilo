@@ -1,7 +1,8 @@
-"""Which publications compile through the shared compiler cache, and how.
+"""Which publications compile through a compiler cache, and how.
 
 A signed OS image or kernel compiled through a shared cache could carry planted
-compiler output unless an independent uncached rebuild must agree with it.
+compiler output unless an independent uncached rebuild must agree with it. The
+kernel's cache is not shared: a check of the same run compiles it from empty.
 """
 from pathlib import Path
 import os
@@ -9,6 +10,7 @@ import re
 import subprocess
 import tempfile
 import textwrap
+import tomllib
 import unittest
 
 
@@ -62,30 +64,59 @@ def run_script(step: str, env: dict[str, str], files: dict[str, str] | None = No
 
 
 class KernelPublicationTests(unittest.TestCase):
-    """t's image-kernel-<arch> (tools/ci/publish/kernel.sh build) compiles the kernel t signs."""
+    """t's image-kernel-<arch> (tools/ci/publish/kernel.sh build) compiles the kernel t signs.
+
+    It compiles through one compiler cache only: the ccache directory image-kernel-cache-<arch>
+    (kernel.sh compile-cache) filled from empty, handed over as that check's output. In a trusted
+    run t serves both only from trusted runs, so nothing an untrusted build wrote reaches a signed
+    kernel, and no remote cache, credential or other job's writes reach either.
+    """
 
     def setUp(self):
         self.script = KERNEL_BUILD.read_text()
         self.build = self.script.split("  build)\n", 1)[1].split("\n    ;;", 1)[0]
+        self.compile_cache = self.script.split("  compile-cache)\n", 1)[1].split("\n    ;;", 1)[0]
+        checks = tomllib.loads((ROOT / "t.toml").read_text())["check"]
+        self.checks = {c["name"]: c for c in checks}
 
-    def test_published_kernels_never_read_the_cache(self):
-        with self.subTest(phase='every kernel build compiles with the cache off'):
-            self.assertIn("--build-arg TILO_COMPILER_CACHE=off --build-arg TILO_REQUIRE_COMPILER_CACHE=0)",
+    def test_kernel_builds_read_only_the_cache_their_run_compiled(self):
+        with self.subTest(phase='the build reads the cache only as image-kernel-cache gives it'):
+            kernel = self.checks["image-kernel-{arch}"]
+            self.assertIn("image-kernel-cache-{arch}", kernel["needs"])
+            self.assertTrue(kernel["run"].endswith(
+                " /target/publish/kernel-cache/{arch}/compiler-cache.tar"), kernel["run"])
+            self.assertIn('args+=(--build-arg TILO_COMPILER_CACHE=local --volume "$cache:/work/compiler-cache")',
                           self.build)
-            builds = re.findall(r'^    b build .*', self.build.replace("\\\n", " "), re.M)
-            self.assertEqual(len(builds), 2, builds)
+            self.assertIn("args+=(--build-arg TILO_COMPILER_CACHE=off)", self.build)
+        with self.subTest(phase='the cache is compiled from empty by a check that takes no other'):
+            cache = self.checks["image-kernel-cache-{arch}"]
+            self.assertEqual(cache["run"],
+                             "bash tools/ci/publish/kernel.sh compile-cache {arch} /target/publish/kernel-cache/{arch}")
+            self.assertEqual(set(cache["needs"]), {"os-assets", "signing-tools"})
+            for field in ("secrets", "id_token", "reads_pointers", "env"):
+                self.assertNotIn(field, cache)
+            self.assertIn('rm -rf "$cache" && mkdir -p "$cache"', self.compile_cache)
+        with self.subTest(phase='the cache outlives patch and configuration changes, not the toolchain'):
+            inputs = self.checks["image-kernel-cache-{arch}"]["inputs"]
+            for kept in ("os/kernel-buildroot-snapshot.env", "os/kernel/cc-wrapper.sh",
+                         "tools/ci/publish/kernel.sh"):
+                self.assertIn(kept, inputs)
+            self.assertFalse([i for i in inputs if "patches" in i or "config" in i or i == "os/kernel/**"],
+                             inputs)
+        with self.subTest(phase='no remote cache or credential reaches a kernel build'):
+            for path in ("tools/ci/publish/kernel.sh", "os/kernel/Containerfile", "os/kernel/build-support.sh"):
+                text = (ROOT / path).read_text()
+                for forbidden in ("--secret", "ACTIONS_CACHE_URL", "ACTIONS_RUNTIME_TOKEN", "SCCACHE_",
+                                  "CCACHE_REMOTE", "remote_storage", "aws_access_key_id",
+                                  "compiler_cache_env.sh", "--cache-from"):
+                    self.assertNotIn(forbidden, text, path)
+        with self.subTest(phase='both share one compile stage and its arguments'):
+            joined = (self.compile_cache + "\n" + self.build).replace("\\\n", " ")
+            builds = re.findall(r'^    +b build .*', joined, re.M)
+            self.assertEqual(len(builds), 5, builds)
             for build in builds:
-                self.assertIn('"${args[@]}"', build)
-        with self.subTest(phase='populate compiles every object before writing it'):
-            text = (ROOT / "os/kernel/Containerfile").read_text()
-            self.assertIn("populate:0) export SCCACHE_IGNORE_SERVER_IO_ERROR=1 SCCACHE_RECACHE=1 ;;", text)
-        with self.subTest(phase='kernel builds pass no cache credentials'):
-            for forbidden in ("--secret", "ACTIONS_CACHE_URL", "ACTIONS_RUNTIME_TOKEN", "SCCACHE_AWS",
-                              "SCCACHE_BUCKET", "aws_access_key_id", "compiler_cache_env.sh",
-                              "TILO_COMPILER_CACHE=shared", "TILO_COMPILER_CACHE=populate"):
-                self.assertNotIn(forbidden, self.script)
-        with self.subTest(phase='a published kernel imports no layer cache'):
-            self.assertNotIn("--cache-from", self.script)
+                if "--target publish-cross" not in build:
+                    self.assertIn('"${args[@]}"', build)
 
 
 class AppCollectionPublicationTests(unittest.TestCase):
@@ -151,13 +182,16 @@ class DesktopPayloadPublicationTests(unittest.TestCase):
 
 
 class ContainerfileTests(unittest.TestCase):
-    def test_off_refuses_cache_settings_and_runs_no_wrapper(self):
+    def test_off_runs_no_wrapper_and_local_reads_only_its_directory(self):
         text = (ROOT / "os/kernel/Containerfile").read_text()
-        self.assertIn("ARG TILO_COMPILER_CACHE=shared", text)
-        self.assertRegex(text, r'shared:0\|off:0(\|publication:0)?\)')
-        self.assertIn('if [ "$TILO_COMPILER_CACHE" = off ]; then', text)
-        # Refuses the runner's cache URL and token.
-        self.assertRegex(text, r'\$\{ACTIONS_CACHE_URL\}\$\{ACTIONS_RUNTIME_TOKEN\}')
+        self.assertIn("ARG TILO_COMPILER_CACHE=off", text)
+        self.assertIn('off) echo "compiling the kernel without a compiler cache" >&2 ;;', text)
+        self.assertIn("local) export TILO_KERNEL_COMPILER_CACHE=/work/compiler-cache ;;", text)
+        self.assertIn('*) echo "TILO_COMPILER_CACHE must be off or local" >&2; exit 1 ;;', text)
+        helper = (ROOT / "os/kernel/build-support.sh").read_text()
+        # ccache's only storage is the directory it was given.
+        self.assertIn('export CCACHE_DIR="$cache" CCACHE_MAXSIZE=0 TILO_KERNEL_CC_LAUNCHER=ccache', helper)
+        self.assertEqual(sorted(set(re.findall(r"CCACHE_[A-Z_]+", helper))), ["CCACHE_DIR", "CCACHE_MAXSIZE"])
         # The OS image compiles outside any image build, in os/image/compile.sh.
         compile_sh = (ROOT / "os/image/compile.sh").read_text()
         off = compile_sh.split("if [[ $TILO_COMPILER_CACHE == off ]]; then", 1)[1].split("elif", 1)[0]

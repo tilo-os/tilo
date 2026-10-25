@@ -430,7 +430,16 @@ impl CertifiedActionSession {
         &self,
         invocation: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
-        self.host.cancel(&self.caller, invocation)
+        self.host
+            .cancel(&self.caller, invocation)
+            .wait_timeout(std::time::Duration::from_secs(5))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                Err(ActionHostError::Unavailable {
+                    reason: "the host did not answer".into(),
+                })
+            })
     }
 
     pub(crate) fn invoke_job(
@@ -502,8 +511,12 @@ mod forwarding_tests {
             self.check(caller);
             Some(Pending::ready(()))
         }
-        fn cancel(&self, _: &Caller, _: &InvocationId) -> Result<(), ActionHostError> {
-            Err(ActionHostError::NotPermitted)
+        fn cancel(
+            &self,
+            _: &Caller,
+            _: &InvocationId,
+        ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+            tilo_actions::remote::Pending::ready(Err(ActionHostError::NotPermitted))
         }
     }
 

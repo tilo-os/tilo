@@ -18,6 +18,13 @@
 # Every command is safe to re-run on a tree it already prepared or built:
 # the release build runs each once on a pristine tree, the dev build re-runs
 # them on a persistent one and Kbuild recompiles only what changed.
+#
+# The architecture argument is the kernel's. It is the builder's own, or
+# aarch64 on an x86_64 builder: the release build cross-compiles the aarch64
+# kernel on the x86 machines, with the cross toolchain the x86_64 kernel
+# buildroot carries (os/Containerfile.kernel-buildroot). Kbuild then runs with
+# ARCH and CROSS_COMPILE set; everything else, the host programs, the module
+# signer and the packaging, runs on the builder.
 set -eu
 
 command=${1:?expected validate-arch, check-config, stage-boot, signing-key, prepare-source, compile or stage-modules}
@@ -29,6 +36,22 @@ case "$arch" in
 esac
 
 self=$0
+
+# Kbuild's ARCH and CROSS_COMPILE for a kernel of another architecture than
+# the builder's, before the first make on a tree. A native build sets nothing.
+cross_environment() {
+    host=$(uname -m)
+    [ "$host" != "$arch" ] || return 0
+    case "$host:$arch" in
+        x86_64:aarch64) prefix=aarch64-linux-gnu- ;;
+        *) echo "the $arch kernel builds natively or on x86_64, not on $host" >&2; exit 1 ;;
+    esac
+    command -v "${prefix}gcc" >/dev/null || {
+        echo "no ${prefix}gcc: this kernel buildroot carries no $arch cross toolchain" >&2
+        exit 1
+    }
+    export ARCH=arm64 CROSS_COMPILE="$prefix"
+}
 
 positive_jobs() {
     case "$1" in ''|*[!0-9]*|0) echo "KERNEL_BUILD_JOBS must be a positive integer" >&2; exit 1 ;; esac
@@ -138,6 +161,7 @@ case "$command" in
         # resolved config. A Fedora rename or dependency change therefore fails
         # here instead of silently dropping a hardening or performance knob.
         ksrc=${3:?expected prepared kernel source directory}
+        cross_environment
         cd "$ksrc"
         # The patch set applied to this tree is recorded beside it, so a
         # persistent dev tree moves from the old set to the new one (reverse
@@ -147,7 +171,15 @@ case "$command" in
         # already carries fails here, before it fails to apply.
         python3 /work/check-patches.py /work/kernel-patches.toml /work/kernel-patches \
             --fedora-srpm /usr/lib/tilo/kernel-buildroot-srpm.txt
-        if [ -d "$applied" ] && diff -r "$applied" /work/kernel-patches >/dev/null 2>&1; then
+        # The patches to apply: all but those Fedora's kernel already has as
+        # a stable backport (check-patches.py --carried).
+        carried=$(python3 /work/check-patches.py /work/kernel-patches.toml /work/kernel-patches \
+            --fedora-srpm /usr/lib/tilo/kernel-buildroot-srpm.txt --carried)
+        wanted=$(mktemp -d)
+        for patch in /work/kernel-patches/*.patch; do
+            printf '%s\n' "$carried" | grep -Fxq "${patch##*/}" || cp "$patch" "$wanted/"
+        done
+        if [ -d "$applied" ] && diff -r "$applied" "$wanted" >/dev/null 2>&1; then
             echo "kernel patches unchanged since the last prepare"
         else
             if [ -d "$applied" ]; then
@@ -163,7 +195,7 @@ case "$command" in
             # against the unpatched tree. A patch that does not apply takes
             # back the ones before it, so the tree is left unpatched.
             done_patches=""
-            for patch in /work/kernel-patches/*.patch; do
+            for patch in "$wanted"/*.patch; do
                 if ! git apply "$patch"; then
                     echo "kernel patch does not apply: ${patch##*/}" >&2
                     for undo in $done_patches; do
@@ -174,8 +206,9 @@ case "$command" in
                 done_patches="$patch $done_patches"
             done
             mkdir "$applied"
-            cp /work/kernel-patches/*.patch "$applied/"
+            cp "$wanted"/*.patch "$applied/"
         fi
+        rm -rf "$wanted"
         # Do not compile upstream's libcrypto-backed sign-file/extract-cert.
         # Kbuild still asks extract-cert for our CONFIG_MODULE_SIG_KEY, so provide
         # the already-validated DER certificate through a deliberately tiny shim.
@@ -351,17 +384,42 @@ case "$command" in
         jobs=${4:?expected a job count}
         extmod=${5:?expected the v4l2loopback source directory}
         positive_jobs "$jobs"
+        cross_environment
         cd "$ksrc"
-        # An optional compiler launcher (sccache in CI) wraps the target and
-        # host compiler for both the tree and the out-of-tree module. Bypass it
+        # A compiler cache directory (TILO_KERNEL_COMPILER_CACHE, the release
+        # build's): ccache keeps every object there and serves the ones it
+        # holds, found by the compiler, its flags and the source and headers it
+        # reads (or, when a header such as the configuration changed, the
+        # preprocessed source). ccache rather than sccache: sccache's server
+        # reads its local cache one entry at a time, so a build of hits ran no
+        # faster than one that compiled everything.
+        cache=${TILO_KERNEL_COMPILER_CACHE:-}
+        if [ -n "$cache" ] && ! command -v ccache >/dev/null; then
+            # A buildroot from before ccache joined it.
+            echo "this kernel buildroot has no ccache; compiling without the compiler cache" >&2
+            cache=
+        fi
+        if [ -n "$cache" ]; then
+            [ -d "$cache" ] && [ -w "$cache" ] || { echo "no writable compiler cache directory at $cache" >&2; exit 1; }
+            # The directory is the build's alone, so no size limit evicts what
+            # it was given.
+            export CCACHE_DIR="$cache" CCACHE_MAXSIZE=0 TILO_KERNEL_CC_LAUNCHER=ccache
+            ccache --zero-stats >/dev/null
+        fi
+        # An optional compiler launcher (ccache) wraps the target and host
+        # compiler for both the tree and the out-of-tree module. Bypass it
         # for system_certificates.S, whose .incbin input changes with each
         # ephemeral signing key and is not reliably part of a cache key.
         if [ -n "${TILO_KERNEL_CC_LAUNCHER:-}" ]; then
-            make -j"$jobs" CC="sh /work/kernel-cc-wrapper.sh gcc" HOSTCC="sh /work/kernel-cc-wrapper.sh gcc" all
-            make -C "$ksrc" M="$extmod" -j"$jobs" CC="sh /work/kernel-cc-wrapper.sh gcc" HOSTCC="sh /work/kernel-cc-wrapper.sh gcc" modules
+            cc="sh /work/kernel-cc-wrapper.sh ${CROSS_COMPILE:-}gcc"
+            make -j"$jobs" CC="$cc" HOSTCC="sh /work/kernel-cc-wrapper.sh gcc" all
+            make -C "$ksrc" M="$extmod" -j"$jobs" CC="$cc" HOSTCC="sh /work/kernel-cc-wrapper.sh gcc" modules
         else
             make -j"$jobs" all
             make -C "$ksrc" M="$extmod" -j"$jobs" modules
+        fi
+        if [ -n "$cache" ]; then
+            ccache --show-stats --verbose >&2
         fi
         make -s kernelrelease
         ;;
@@ -375,6 +433,7 @@ case "$command" in
         signing=${7:?expected the module signing directory}
         jobs=${8:?expected a job count}
         positive_jobs "$jobs"
+        cross_environment
         case "$stage" in /*) ;; *) echo "kernel staging directory must be absolute" >&2; exit 1 ;; esac
         rm -rf "$stage"
         mkdir -p "$stage/lib/modules/$kver"
@@ -401,7 +460,7 @@ case "$command" in
         make -j"$jobs" INSTALL_MOD_PATH="$stage" INSTALL_MOD_STRIP=1 modules_install
         install -Dm0644 "$extmod/v4l2loopback.ko" \
           "$stage/lib/modules/$kver/extra/v4l2loopback.ko"
-        strip --strip-debug "$stage/lib/modules/$kver/extra/v4l2loopback.ko"
+        "${CROSS_COMPILE:-}strip" --strip-debug "$stage/lib/modules/$kver/extra/v4l2loopback.ko"
         test "$(modinfo -F name "$stage/lib/modules/$kver/extra/v4l2loopback.ko")" = v4l2loopback
         case "$(modinfo -F vermagic "$stage/lib/modules/$kver/extra/v4l2loopback.ko")" in
           "$kver "*) ;;

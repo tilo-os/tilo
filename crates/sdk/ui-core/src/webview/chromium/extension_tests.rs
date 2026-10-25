@@ -8,6 +8,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
         permissions: vec!["tabs".into()],
         hosts: vec!["https://*/*".into()],
         scriptable: vec!["<all_urls>".into()],
+        framed: vec!["https://*/*".into()],
         token: Some("f".repeat(48)),
         commands: Some(json!({"_execute_action":{"suggested_key":{"default":"Ctrl+Shift+Y"}}})),
     };
@@ -16,7 +17,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
         encode_command(access),
         Some(
             json!({"op":"extension_access","id":id,"permissions":["tabs"],"hosts":["https://*/*"],
-                "scriptable":["<all_urls>"],"token":"f".repeat(48),
+                "scriptable":["<all_urls>"],"framed":["https://*/*"],"token":"f".repeat(48),
                 "commands":{"_execute_action":{"suggested_key":{"default":"Ctrl+Shift+Y"}}}})
         )
     );
@@ -48,6 +49,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             permissions: Vec::new(),
             hosts: Vec::new(),
             scriptable: Vec::new(),
+            framed: Vec::new(),
             token: Some("f".into()),
             commands: None,
         },
@@ -56,6 +58,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             permissions: vec![String::new(); 513],
             hosts: Vec::new(),
             scriptable: Vec::new(),
+            framed: Vec::new(),
             token: None,
             commands: None,
         },
@@ -64,6 +67,16 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             permissions: Vec::new(),
             hosts: Vec::new(),
             scriptable: vec!["x".repeat(2049)],
+            framed: Vec::new(),
+            token: None,
+            commands: None,
+        },
+        WebViewCommand::ExtensionAccess {
+            id: id.into(),
+            permissions: Vec::new(),
+            hosts: Vec::new(),
+            scriptable: Vec::new(),
+            framed: vec!["x".repeat(2049)],
             token: None,
             commands: None,
         },
@@ -73,6 +86,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             permissions: Vec::new(),
             hosts: Vec::new(),
             scriptable: Vec::new(),
+            framed: Vec::new(),
             token: None,
             commands: Some(json!(["_execute_action"])),
         },
@@ -81,6 +95,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             permissions: Vec::new(),
             hosts: Vec::new(),
             scriptable: Vec::new(),
+            framed: Vec::new(),
             token: None,
             commands: Some(json!({"long": {"description": "x".repeat(70 * 1024)}})),
         },
@@ -504,6 +519,19 @@ fn an_extensions_request_for_more_access_reaches_the_browser_and_its_answer_the_
             granted: set(&[], &[]),
         })
     );
+    // The page that asked closed before the person answered.
+    assert_eq!(
+        event(json!({"event":"extension_permission_closed","tab":2,"request":4})),
+        Some(WebViewEvent::ExtensionPermissionClosed { request: 4 })
+    );
+    for bad in [
+        json!({"event":"extension_permission_closed","tab":2}),
+        json!({"event":"extension_permission_closed","tab":2,"request":0}),
+        json!({"event":"extension_permission_closed","tab":2,"request":"4"}),
+        json!({"event":"extension_permission_closed","tab":2,"request":4_294_967_296_u64}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
     // A request for nothing, without its number, from no extension, or of
     // another shape: refused.
     for bad in [

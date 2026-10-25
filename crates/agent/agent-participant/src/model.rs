@@ -26,8 +26,8 @@ use tilo_browser_peer::DocumentRoute;
 pub use tilo_model_gateway::host_backend::ApiKey;
 
 use crate::planner::{
-    NoReads, PlanContext, Planner, Reads, Step, StepAction, Wait, observation_within, readable,
-    rendered_picture, written_steps,
+    NoReads, Obligations, PlanContext, Planner, Reads, Step, StepAction, Wait, observation_within,
+    readable, rendered_picture, written_steps,
 };
 use crate::vision::{Picture, Seen};
 
@@ -130,6 +130,23 @@ pub trait PlanReads {
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Seen, String>;
+
+    /// Run the read `id` names twice, with `arguments` and with `against`,
+    /// answering with what the first found and what differs from the second
+    /// answer to it ([`crate::facts::changes`]).
+    ///
+    /// # Errors
+    ///
+    /// Why either was not run.
+    fn compare(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        against: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Seen, String> {
+        let _ = (id, arguments, against);
+        Err("no document can be read here".into())
+    }
 
     /// The picture kept as content at `address`, as the model is shown it.
     ///
@@ -284,6 +301,8 @@ pub struct ModelPlanner {
     /// The rest this planner last handed back as a
     /// [`StepAction::Continue`], and how many re-plans in a row led to it.
     continued: Option<(String, usize)>,
+    /// The checklist the last plan declared, until it is taken.
+    obligations: Obligations,
 }
 
 impl ModelPlanner {
@@ -295,6 +314,7 @@ impl ModelPlanner {
             checks_work: false,
             by_model: false,
             continued: None,
+            obligations: Obligations::default(),
         }
     }
 
@@ -897,16 +917,15 @@ impl<'a> PlanningReads<'a> {
     }
 }
 
-impl PlanReads for PlanningReads<'_> {
-    /// Run the read `id` names with `arguments`: only on an open record,
-    /// only an operation that only reads ([`readable`]), and at most
-    /// [`MOST_READS`] a plan. Answers with what it found, summarised, and
-    /// the picture it rendered (a canvas look) when the model sees.
-    fn read(
+impl PlanningReads<'_> {
+    /// The record `id` names a read of, and the read's answer to
+    /// `arguments`: only on an open record, only an operation that only
+    /// reads ([`readable`]), and at most [`MOST_READS`] a plan.
+    fn run(
         &mut self,
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Seen, String> {
+    ) -> Result<(DocumentRoute, ActionAddress, tilo_actions::ActionOutput), String> {
         let Some(Target::Record(route)) = self.targets.get(id) else {
             return Err(format!(
                 "{id} is not an operation of a document open now; plan it as a step"
@@ -938,6 +957,20 @@ impl PlanReads for PlanningReads<'_> {
         }
         self.left = self.left.saturating_sub(1);
         let output = self.reads.read(route, &address, arguments)?;
+        Ok((route.clone(), address, output))
+    }
+}
+
+impl PlanReads for PlanningReads<'_> {
+    /// Run the read `id` names with `arguments` ([`PlanningReads::run`]).
+    /// Answers with what it found, summarised, and the picture it rendered
+    /// (a canvas look) when the model sees.
+    fn read(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Seen, String> {
+        let (route, address, output) = self.run(id, arguments)?;
         let mut text = observation_within(&route.app_id, &address, &output, MOST_READ_CHARS)
             .unwrap_or_else(|| format!("{id} answered nothing"));
         let mut pictures = Vec::new();
@@ -961,6 +994,29 @@ impl PlanReads for PlanningReads<'_> {
             }
         }
         Ok(Seen { text, pictures })
+    }
+
+    /// Run the read `id` names with `arguments` and with `against`: what
+    /// the first found, and what differs from the second's answer to it.
+    fn compare(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        against: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Seen, String> {
+        let (route, address, output) = self.run(id, arguments)?;
+        let (_, _, other) = self.run(id, against)?;
+        let null = serde_json::Value::Null;
+        let changed = crate::facts::changes_text(
+            other.value.as_ref().unwrap_or(&null),
+            output.value.as_ref().unwrap_or(&null),
+        );
+        let text = observation_within(&route.app_id, &address, &output, MOST_READ_CHARS)
+            .unwrap_or_else(|| format!("{id} answered nothing"));
+        let against = serde_json::Value::Object(against.clone());
+        Ok(Seen::from(format!(
+            "{text}\nChanged from its answer to {against} to this one: {changed}"
+        )))
     }
 
     /// The picture at `address`: one an app rendered for this task, or —
@@ -1007,6 +1063,10 @@ impl Planner for ModelPlanner {
         self.by_model
     }
 
+    fn take_obligations(&mut self) -> Obligations {
+        std::mem::take(&mut self.obligations)
+    }
+
     fn plan_reading(
         &mut self,
         task: &str,
@@ -1015,6 +1075,7 @@ impl Planner for ModelPlanner {
     ) -> Result<Vec<Step>, String> {
         // A task that is exactly the rest this planner last deferred is that
         // task planned again; anything else is a new task.
+        self.obligations = Obligations::default();
         let replans = match self.continued.take() {
             Some((rest, replans)) if rest == task => replans.saturating_add(1),
             _ => 0,
@@ -1046,6 +1107,10 @@ impl Planner for ModelPlanner {
         if let Some(refused) = planned_nothing(&answer, context) {
             return Err(refused);
         }
+        self.obligations = Obligations {
+            items: answer.obligations.clone(),
+            set_aside: answer.set_aside.clone(),
+        };
         let (mut steps, rest, wait) = answer_steps(
             answer,
             task,
@@ -1061,6 +1126,7 @@ impl Planner for ModelPlanner {
                 record: None,
                 action: StepAction::Wait(Wait::planned(wait, rest)?),
                 carries: None,
+                serves: None,
             });
             return Ok(steps);
         }
@@ -1080,6 +1146,7 @@ impl Planner for ModelPlanner {
                 record: None,
                 action: StepAction::Continue(rest),
                 carries: None,
+                serves: None,
             });
         }
         Ok(steps)
@@ -1133,6 +1200,7 @@ fn answer_steps(
     let mut steps = Vec::with_capacity(answer.actions.len().saturating_add(1));
     let mut rest = answer.then.clone();
     let mut wait = answer.wait;
+    let serves = answer.serves;
     let mut pictured = false;
     let planned: Vec<(&String, serde_json::Map<String, serde_json::Value>)> =
         answer.actions.iter().zip(answer.arguments).collect();
@@ -1175,17 +1243,20 @@ fn answer_steps(
         }
         pictured |= shows_picture(&address);
         let arguments = arguments.clone();
+        let tag = serves.get(at).copied().flatten();
         match targets.get(*id) {
             Some(Target::Record(route)) => steps.push(Step {
                 app: route.app_id.clone(),
                 record: Some(route.record.clone()),
                 carries: context.content_param(&route.app_id, Some(&route.record), &address),
+                serves: tag,
                 action: StepAction::Invoke { address, arguments },
             }),
             Some(Target::New(app)) => steps.push(Step {
                 app: app.clone(),
                 record: None,
                 carries: context.preview_content_param(app, &address),
+                serves: tag,
                 action: StepAction::Invoke { address, arguments },
             }),
             Some(Target::Open(app)) => steps.push(Step {
@@ -1193,12 +1264,14 @@ fn answer_steps(
                 record: None,
                 action: StepAction::Open,
                 carries: None,
+                serves: tag,
             }),
             Some(Target::OpenRecord(route)) => steps.push(Step {
                 app: route.app_id.clone(),
                 record: Some(route.record.clone()),
                 action: StepAction::Open,
                 carries: None,
+                serves: tag,
             }),
             None => return Err(format!("the model named {id:?}, which was not offered")),
         }
@@ -1281,6 +1354,8 @@ const PRODUCED_INTRO: &str = "Content produced so far:";
 const OBSERVED_INTRO: &str = "What the steps so far answered";
 /// What a re-plan's rest is followed by: the task as it was given.
 const ORIGINAL_INTRO: &str = "The original request (for reference):";
+/// What opens a re-plan's paragraph on the task's checklist.
+pub(crate) const OBLIGATIONS_INTRO: &str = "The request's obligations";
 
 /// What an open record's view is said to do, so the model plans a view
 /// whose answer a later step needs rather than asking for the value.
@@ -1327,6 +1402,9 @@ fn with_results(task: &str, context: &PlanContext) -> String {
             text.push_str(observed);
         }
     }
+    if !context.obligations.is_empty() {
+        let _ = write!(text, "\n\n{}", context.obligations);
+    }
     text
 }
 
@@ -1334,10 +1412,15 @@ fn with_results(task: &str, context: &PlanContext) -> String {
 /// request as given, the content produced and what was answered are
 /// context, not more to do.
 fn requested(task: &str) -> &str {
-    [ORIGINAL_INTRO, PRODUCED_INTRO, OBSERVED_INTRO]
-        .iter()
-        .filter_map(|intro| task.find(&format!("\n\n{intro}")))
-        .min()
-        .and_then(|at| task.get(..at))
-        .unwrap_or(task)
+    [
+        ORIGINAL_INTRO,
+        PRODUCED_INTRO,
+        OBSERVED_INTRO,
+        OBLIGATIONS_INTRO,
+    ]
+    .iter()
+    .filter_map(|intro| task.find(&format!("\n\n{intro}")))
+    .min()
+    .and_then(|at| task.get(..at))
+    .unwrap_or(task)
 }

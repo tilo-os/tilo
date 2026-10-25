@@ -33,6 +33,7 @@ agent = { path = "../../../apps/agent" }
 # The apps an agent can open in a browser session: the browser desktop's
 # registry, generated from the app manifests.
 # generated apps: begin (tools/web/generate_web_desktop.py)
+activity = { path = "../../../apps/activity" }
 api-tester = { path = "../../../apps/api-tester" }
 calculator = { path = "../../../apps/calculator" }
 calendar = { path = "../../../apps/calendar", default-features = false, features = [] }

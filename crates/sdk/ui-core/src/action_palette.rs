@@ -68,22 +68,8 @@ const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
 /// The group "Search in" rows are listed under.
 const SCOPES_KIND: &str = "Search in";
 
-/// Card geometry, matched to the shared search surface (`search_showcase`).
-/// The query field is a large control: the palette exists to be typed into.
-/// Where the palette's card stands in `window`, the window it belongs to:
-/// its top-left corner and its width. Centred across the window, a little
-/// below its top, and never wider than the window, so a palette of an app
-/// in a window narrower than the screen stays inside that window.
-#[must_use]
-pub fn placement(window: Rect) -> (Point, f64) {
-    const EDGE: f64 = 8.0;
-    let width = (window.width() * 0.6)
-        .clamp(360.0, 640.0)
-        .min((window.width() - 2.0 * EDGE).max(1.0));
-    let x0 = window.x0 + ((window.width() - width) / 2.0).max(0.0);
-    let y0 = window.y0 + (window.height() * 0.12).max(24.0);
-    (Point::new(x0, y0), width)
-}
+mod window_place;
+pub use window_place::placement;
 
 /// The window a palette was asked for from, when a host lays several app
 /// tiles out in one tree (the desktop's strip of windows): the innermost
@@ -432,6 +418,12 @@ pub struct ActionPalette {
     /// Its arrival (`motion::Appear`, from its centre): a shortcut opens it
     /// at once, a click brings it in.
     appear: crate::motion::Appearing,
+    /// The window it stands in, under the window's bar, which its modal
+    /// scrim dims ([`Self::place_in`]); `None` where a host lays it out as
+    /// a widget of its own.
+    scrim: Option<Rect>,
+    /// Where the pointer last was, for a press on the scrim.
+    scrim_pointer: Point,
 }
 
 enum PaletteFieldSource {
@@ -626,6 +618,8 @@ impl ActionPalette {
             controls_node: None,
             command,
             appear: crate::motion::Appearing::closed(),
+            scrim: None,
+            scrim_pointer: Point::new(f64::NAN, f64::NAN),
         }
     }
 
@@ -865,6 +859,9 @@ impl ActionPalette {
                 Some(SheetResponse::Action(_) | SheetResponse::Dismiss) => self.close(),
                 None => {}
             }
+            return true;
+        }
+        if self.dismissed_on_scrim(event, scale) {
             return true;
         }
         let mut handled = false;
@@ -2192,6 +2189,7 @@ impl ActionPalette {
             .filter(|fa| {
                 fa.action.contract.availability.is_available()
                     && fa.action.reaches_people()
+                    && !shows_a_hit(fa.action)
                     && parsed.in_scope(fa.resource_id.as_str())
             })
             .collect();
@@ -2230,11 +2228,7 @@ impl ActionPalette {
                 fa.resource_id.as_str(),
                 fa.action.id.as_str(),
             ));
-            candidates.push((
-                r,
-                found_by(&row, &fa.resource_label, fa.action.description.as_deref()),
-                resolution,
-            ));
+            candidates.push((r, found_by(&row, &fa.resource_label), resolution));
         }
 
         for snapshot in &self.bound_resources {
@@ -2247,6 +2241,7 @@ impl ActionPalette {
                 for fa in flatten(&[resource]) {
                     if !fa.action.contract.availability.is_available()
                         || !fa.action.reaches_people()
+                        || shows_a_hit(fa.action)
                     {
                         continue;
                     }
@@ -2275,7 +2270,7 @@ impl ActionPalette {
                     }
                     candidates.push((
                         result,
-                        found_by(&row, &fa.resource_label, fa.action.description.as_deref()),
+                        found_by(&row, &fa.resource_label),
                         RowResolution::Bound(target),
                     ));
                 }
@@ -2452,6 +2447,12 @@ impl ActionPalette {
         if !self.facet_chips.is_empty() {
             top += FACET_H + GAP;
         }
+        // The card ends as far above the window's bottom as it starts below
+        // the window's top; rows past that scroll.
+        self.results.set_max_height(
+            self.scrim
+                .map(|window| (window.y1 - (origin.y - window.y0).max(0.0) - top).max(0.0)),
+        );
         let h = self.results.desired_height();
         self.results
             .set_rect(Rect::new(origin.x, top, origin.x + width, top + h));
@@ -2620,6 +2621,7 @@ impl ActionPalette {
             self.draw_confirmation(scene, transform, text_renderer, theme, presence);
             return;
         }
+        self.paint_scrim(scene, transform, theme);
         // It arrives from its centre (`motion::Appear`).
         let pose = self.appear.pose(self.rect, self.rect.center());
         let bounds = crate::widget::floating_surface::painted_bounds(self.rect, theme);
@@ -2691,6 +2693,9 @@ impl ActionPalette {
             return self.route_event(event, scale, modifiers, doc, root);
         }
         if self.handle_key(event, &modifiers, doc, root) {
+            return true;
+        }
+        if self.dismissed_on_scrim(event, scale) {
             return true;
         }
         let normalized;
@@ -3172,20 +3177,23 @@ fn without_token(text: &str, filter: &FacetFilter) -> String {
 }
 
 /// The words besides its title a row is found by: what it acts on (named
-/// under it or not: "Apply" of the open "Sealed" is found by "sealed"), and
-/// what it means.
-fn found_by(
-    row: &tilo_actions::ListedRow,
-    resource: &str,
-    description: Option<&str>,
-) -> Option<String> {
+/// under it or not: "Apply" of the open "Sealed" is found by "sealed"). Never
+/// its description, which is written for agents and would pull unrelated
+/// actions into a query.
+fn found_by(row: &tilo_actions::ListedRow, resource: &str) -> Option<String> {
     let resource = Some(resource).filter(|name| Some(*name) != row.subtitle.as_deref());
-    let words = [row.subtitle.as_deref(), resource, description]
+    let words = [row.subtitle.as_deref(), resource]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
         .join(" ");
     (!words.is_empty()).then_some(words)
+}
+
+/// Whether `action` only shows an item as picking its search hit does: the
+/// hit is the row for that, so the palette lists no second one.
+fn shows_a_hit(action: &tilo_actions::ActionSpec) -> bool {
+    action.operation_type.as_deref() == Some(tilo_actions::remote::APPLICATION_OPEN_TYPE)
 }
 
 /// Rank `rows` by fit against `query` and bucket by kind. Uses the shared
@@ -3503,7 +3511,7 @@ mod tests {
             Rect::new(480.0, 40.0, 1440.0, 900.0),
             Rect::new(100.0, 40.0, 420.0, 600.0),
         ] {
-            let (origin, width) = placement(window);
+            let (origin, width) = placement(window, &Theme::dark());
             assert!(
                 (origin.x + width / 2.0 - window.center().x).abs() < 1e-9,
                 "centred across {window:?}"

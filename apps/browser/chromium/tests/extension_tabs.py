@@ -78,7 +78,9 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   it, a later one too; one no frame answers comes back with nothing. A
   script injected into every frame the extension may script, where it has
   no content script, gets a world in each frame of the page's site, hears
-  such a message, and names its frame and document as Chromium does.
+  such a message, and names its frame and document as Chromium does. Such a
+  message keeps no session to another site's frame that the extension's
+  content scripts skip (they run in the main frame alone).
 - A keyboard shortcut an extension's manifest suggests runs its command with
   the page it was pressed on, which it may then script (activeTab), and the
   page does not get the key; its toolbar button's command asks the Browser
@@ -615,11 +617,15 @@ class ExtensionTabs(unittest.TestCase):
                        'scriptable': scriptable[0] if scriptable else []}
             if token:
                 command['token'] = token
-            # Its keyboard shortcuts, as its manifest declares them
+            # Its keyboard shortcuts, as its manifest declares them, and
+            # where its content scripts run in frames too (all_frames)
             # (extension_toolbar.rs, access).
-            commands = json.loads((path / 'manifest.json').read_text()).get('commands')
+            manifest = json.loads((path / 'manifest.json').read_text())
+            commands = manifest.get('commands')
             if isinstance(commands, dict):
                 command['commands'] = commands
+            command['framed'] = sorted({site for script in manifest.get('content_scripts', [])
+                                        if script.get('all_frames') is True for site in script.get('matches', [])})
             if name in withhold:
                 self.withheld = {**getattr(self, 'withheld', {}), name: command}
                 continue
@@ -653,21 +659,24 @@ class ExtensionTabs(unittest.TestCase):
         self.assertIsNotNone(read, 'the extension has no worker running')
         return json.loads(read)
 
+    def devtools(self, host, method, params, session=None):
+        """A DevTools call on the engine's own pipe, as the toolbar makes it."""
+        self.calls = getattr(self, 'calls', 0) + 1
+        request = self.calls
+        command = {'op': 'devtools_call', 'request_id': request, 'method': method, 'params': params}
+        if session:
+            command['session'] = session
+        host.send(**command)
+        reply = host.until(lambda e: e['event'] == 'devtools_result' and e['request_id'] == request)
+        self.assertTrue(reply['ok'], reply)
+        return json.loads(reply['body'])
+
     def in_worker(self, host, extension, expression):
         """`expression`'s value in the extension's running worker, read as the
         toolbar reads it."""
-        self.calls = getattr(self, 'calls', 0)
 
         def call(method, params, session=None):
-            self.calls += 1
-            request = self.calls
-            command = {'op': 'devtools_call', 'request_id': request, 'method': method, 'params': params}
-            if session:
-                command['session'] = session
-            host.send(**command)
-            reply = host.until(lambda e: e['event'] == 'devtools_result' and e['request_id'] == request)
-            self.assertTrue(reply['ok'], reply)
-            return json.loads(reply['body'])
+            return self.devtools(host, method, params, session)
 
         prefix = f'chrome-extension://{extension}/'
         target = next((t['targetId'] for t in call('Target.getTargets', {})['targetInfos']
@@ -1035,6 +1044,10 @@ class ExtensionTabs(unittest.TestCase):
         # Its popup closes with the window, the question unanswered.
         host.send(op='close_tab', tab=2)
         host.until(lambda e: e['event'] == 'closed' and e.get('tab') == 2)
+        # The window under it, which still shows the question, is told it is
+        # gone, so the person is not left answering it.
+        gone = self.told(host, lambda e: e['event'] == 'extension_permission_closed')
+        self.assertEqual((gone.get('tab'), gone['request']), (1, first['request']))
         # Opened again, it may ask again, and the person's answer counts.
         self.panel(host, 3, f'chrome-extension://{permit}/popup.html')
         self.title(host, 3, 'ready:')
@@ -1274,6 +1287,26 @@ class ExtensionTabs(unittest.TestCase):
         # It waited for the world Chromium made for them, with Chromium's
         # `chrome`, rather than run in one the host made.
         self.assertEqual(self.report('awaiter'), {'connect': 'function', 'declared': True})
+
+    def test_a_script_injected_into_a_loaded_page_its_content_scripts_left_out_does_not_wait(self):
+        host, ids = self.start('awaiter', access={'awaiter': (['scripting'], ['http://127.0.0.1/*'], ['http://127.0.0.1/*'])})
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, ids['awaiter'], 'typeof timed') != 'function':
+            self.assertLess(time.monotonic(), deadline, 'the worker never started')
+            host.settle(0.25)
+        # Declared for the site, but their `exclude_matches` leave this page
+        # out: Chromium makes their world in it neither now nor later.
+        host.navigate(self.url + '/unscripted')
+        self.title(host, 1, 'page /unscripted')
+        status = "chrome.tabs.query({}).then((tabs) => tabs[0].status)"
+        while self.in_worker(host, ids['awaiter'], status) != 'complete':
+            self.assertLess(time.monotonic(), deadline, 'the page never finished loading')
+            host.settle(0.1)
+        found = json.loads(self.in_worker(host, ids['awaiter'], 'timed()'))
+        self.assertEqual({key: found[key] for key in ('connect', 'declared')}, {'connect': 'function', 'declared': False})
+        # It ran at once in a world the host made, without the wait for one
+        # of theirs that a page still loading gets (kDeclaredWorldWaitMs).
+        self.assertLess(found['ms'], 1500, found)
 
     def test_an_extension_follows_navigations_and_tab_events_by_the_tabs_ids(self):
         host, ids = self.start('navigator', access={'navigator': (['webNavigation', 'tabs'], [])})
@@ -1552,6 +1585,21 @@ class ExtensionTabs(unittest.TestCase):
             'results': [[path, True, True] for path in every],
         })
 
+    def test_a_message_to_the_tab_costs_no_session_in_a_frame_its_scripts_skip(self):
+        # Its content scripts match both sites but run in the main frame
+        # alone: the other site's frame cannot hold its world.
+        host, ids = self.start('topmost', access={'topmost': ([], [], ['http://127.0.0.1/*', 'http://localhost/*'])})
+        host.navigate(self.url + '/framed')
+        # While the main frame holds the message unanswered, the engine
+        # keeps no session to the other site's frame for it.
+        self.report('holding')
+        outer = [target for target in self.devtools(host, 'Target.getTargets', {})['targetInfos']
+                 if target['type'] == 'iframe' and urllib.parse.urlsplit(target['url']).path == '/outer']
+        self.assertEqual(len(outer), 1, 'the other site\'s frame is a target of its own')
+        self.assertFalse(outer[0]['attached'])
+        # And the main frame's answer answers it.
+        self.assertEqual(self.report('topmost'), {'answer': '/framed'})
+
     def test_a_script_injected_into_every_frame_hears_the_tab(self):
         host, ids = self.start('spreader', access={'spreader': (['scripting', 'webNavigation'], ['http://127.0.0.1/*'])})
         host.navigate(self.url + '/framed')
@@ -1714,8 +1762,10 @@ class ExtensionTabs(unittest.TestCase):
         host.navigate(page)
         ours = {'Mark the page', 'Look up "selected words"', 'Mark the link', 'Mark the image', 'Remember the page', 'Everywhere'}
 
-        # The page itself: its items, and those for every context.
-        menu, items = self.page_menu(host, 400, 400, 'Mark the page')
+        # The page itself: its items, and those for every context. The
+        # worker makes its items one after another; the last it makes says
+        # they are all there.
+        menu, items = self.page_menu(host, 400, 400, 'Save && share')
         self.assertEqual(ours & set(items), {'Mark the page', 'Remember the page', 'Everywhere'})
         self.assertFalse({'Elsewhere', 'Gone', 'Before'} & set(items), items)
         self.close_menu(host, menu)
@@ -2035,6 +2085,9 @@ class ExtensionTabs(unittest.TestCase):
         host, ids = self.start('downloader', access={'downloader': (['downloads', 'downloads.open'], [])})
         host.navigate(self.url + '/page')
         worker = lambda expression: self.in_worker(host, ids['downloader'], f'outcome({expression})')
+        # A worker attached to as it starts has not yet run its script,
+        # which makes `outcome`.
+        self.worker_value(host, ids['downloader'], 'typeof globalThis.outcome', lambda kind: kind == 'function')
 
         def first(match):
             """The first event since the last one `first` returned that

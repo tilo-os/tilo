@@ -706,6 +706,55 @@ impl LinkStatus {
     }
 }
 
+/// Following `NetworkManager` for [`follow_network_changes`]; it stops when
+/// this is dropped.
+#[derive(Debug)]
+pub struct NetworkFollow {
+    task: tilo_rt::JoinHandle<()>,
+}
+
+impl Drop for NetworkFollow {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Call `on_change` on the app runtime each time `NetworkManager` reports a
+/// change network settings shows ([`tilo_nm::NmClient::watch_changes`]):
+/// a reader re-reads then, instead of on a timer. Nothing polls.
+///
+/// # Errors
+///
+/// When the app runtime cannot start. A system bus that cannot be reached
+/// is logged and followed no further.
+pub fn follow_network_changes(
+    on_change: impl Fn() + Send + Sync + 'static,
+) -> Result<NetworkFollow, String> {
+    // Not generic past here: the runtime holds the follower, its D-Bus
+    // connection and its tasks once, rather than every app calling it.
+    follow_network_changes_boxed(Box::new(on_change))
+}
+
+fn follow_network_changes_boxed(
+    on_change: Box<dyn Fn() + Send + Sync>,
+) -> Result<NetworkFollow, String> {
+    let runtime = tilo_rt::try_app().map_err(|error| error.to_string())?;
+    let task = runtime.spawn(async move {
+        let watched = async { tilo_nm::NmClient::system().await?.watch_changes().await }.await;
+        let mut changes = match watched {
+            Ok(changes) => changes,
+            Err(error) => {
+                tracing::warn!(%error, "could not follow NetworkManager's changes");
+                return;
+            }
+        };
+        while changes.changed().await.is_some() {
+            on_change();
+        }
+    });
+    Ok(NetworkFollow { task })
+}
+
 /// Read the primary connection from `NetworkManager`'s state: one D-Bus read, never a scan.
 /// Long-lived readers follow [`tilo_nm::watch`] instead and map each reading with
 /// [`link_status_from_state`].

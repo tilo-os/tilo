@@ -294,7 +294,12 @@ fn sort_control(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
     Box::new(
         ui::widget::Row::new()
             .with_id("contacts.sort-row")
-            .with_padding_rhythm(None, Some(ui::tokens::Rhythm::Related))
+            // The list's rows stand a tight inset in from the pane's edge;
+            // the dropdown starts where their faces do.
+            .with_padding_rhythm(
+                Some(ui::tokens::Rhythm::Tight),
+                Some(ui::tokens::Rhythm::Related),
+            )
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_align_items(taffy::AlignItems::Center)
             .push(Box::new(sort.control_size(ControlSize::Regular))),
@@ -1222,7 +1227,8 @@ impl ContactsApp {
         let mut actions = Vec::new();
         if self.mode == Mode::Edit && self.form.is_some() {
             actions.push(ToolbarAction::new(BAR_SAVE, "check", "Save"));
-            actions.push(ToolbarAction::new(BAR_CANCEL, "x", "Cancel"));
+            // Not the window's own ✕: Cancel leaves the form, not the window.
+            actions.push(ToolbarAction::new(BAR_CANCEL, "undo-2", "Cancel"));
         } else {
             actions.push(ToolbarAction::new(BAR_NEW, "plus", "New contact"));
             if let Some(contact) = self
@@ -1233,7 +1239,9 @@ impl ContactsApp {
                 actions.push(
                     ToolbarAction::new(BAR_FAVORITE, "star", "Favorite").on(contact.favorite),
                 );
-                actions.push(ToolbarAction::new(BAR_EDIT, "pencil", "Edit"));
+                // Named for the whole contact: each field's pencil edits
+                // only that field.
+                actions.push(ToolbarAction::new(BAR_EDIT, "pencil", "Edit contact"));
                 actions.push(ToolbarAction::new(BAR_DELETE, "trash-2", "Delete contact"));
             }
         }

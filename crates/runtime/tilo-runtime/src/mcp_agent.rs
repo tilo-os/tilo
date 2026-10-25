@@ -55,6 +55,8 @@ const DESCRIPTION_CHARS: usize = 200;
 const NAMES_LISTED: usize = 12;
 /// What a bound UI resource's id starts with (ui-core's publication prefix).
 const BOUND_PREFIX: &str = "tilo-ui-bound:v1:";
+/// Pages of installed apps read at most: a page holds 256.
+const INSTALLED_PAGES: usize = 4;
 
 /// The agent tools, built once.
 pub(super) fn tool_definitions() -> &'static [Value] {
@@ -502,6 +504,16 @@ fn pick_action<'a>(
     })
 }
 
+/// [`list_names`], or `none` for no names: an empty list reads as a
+/// sentence cut short.
+fn list_or_none(names: &[String]) -> String {
+    if names.is_empty() {
+        "none".to_owned()
+    } else {
+        list_names(names)
+    }
+}
+
 fn list_names(names: &[String]) -> String {
     let mut shown: Vec<&str> = names
         .iter()
@@ -922,8 +934,24 @@ fn next_cursor(value: &Value) -> Option<String> {
 
 /// What an app name names.
 enum AppRef {
-    Running { app_id: String, provider: String },
-    Installed { app_id: String },
+    Running {
+        app_id: String,
+        provider: String,
+    },
+    /// `opens` when this caller may start it.
+    Installed {
+        app_id: String,
+        opens: bool,
+    },
+}
+
+/// An app installed for the workspace, as the workspace lists it.
+struct InstalledApp {
+    app_id: String,
+    label: String,
+    /// Whether this caller may open it: the workspace names an app it may
+    /// not open without the action.
+    opens: bool,
 }
 
 /// A directory read once per call.
@@ -1044,49 +1072,91 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Err(error) if error.contains("names several") => return Err(error),
             Err(_) => {}
         }
-        let installed = self.installed().await.unwrap_or_default();
+        // An installed list that could not be read is said, never taken for
+        // an empty one: the agent would conclude the app does not exist.
+        let installed = self.installed().await.map_err(|reason| {
+            format!(
+                "no running app is named {name}, and the installed apps could not be read: {reason}"
+            )
+        })?;
         let ids = installed
             .iter()
-            .map(|(id, _)| id.as_str())
+            .map(|app| app.app_id.as_str())
             .collect::<Vec<_>>();
         match page::app_named(name, &ids) {
-            Ok(app_id) => Ok(AppRef::Installed { app_id }),
+            Ok(app_id) => {
+                let opens = installed
+                    .iter()
+                    .any(|app| app.app_id == app_id && app.opens);
+                Ok(AppRef::Installed { app_id, opens })
+            }
             Err(error) if error.contains("names several") => Err(error),
             Err(_) => Err(format!(
                 "no app {name}: running {}; installed {}",
-                list_names(&app_names(
+                list_or_none(&app_names(
                     &running
                         .iter()
                         .filter_map(|(_, app)| app["app_id"].as_str().map(str::to_owned))
                         .collect::<Vec<_>>()
                 )),
-                list_names(&app_names(
+                list_or_none(&app_names(
                     &installed
                         .iter()
-                        .map(|(id, _)| id.clone())
+                        .map(|app| app.app_id.clone())
                         .collect::<Vec<_>>()
                 )),
             )),
         }
     }
 
-    /// The apps the workspace offers to open, with their labels.
-    async fn installed(&self) -> Result<Vec<(String, String)>, String> {
+    /// The apps installed for this workspace, with their labels and whether
+    /// this caller may open them. The workspace answers them by their kind,
+    /// whole, wherever they fall among its other rows (governance, shortcuts),
+    /// so a workspace with many of those still lists every app.
+    async fn installed(&self) -> Result<Vec<InstalledApp>, String> {
         let provider = tilo_actions::remote::workspace_provider(&self.room);
-        let rows = self.top_resources(&provider).await?;
-        let mut apps: Vec<(String, String)> = Vec::new();
-        for row in rows {
-            let Some(app_id) = row
-                .resource
-                .id
-                .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
-                .filter(|app_id| !app_id.starts_with("host:"))
-            else {
-                continue;
-            };
-            if !apps.iter().any(|(id, _)| id == app_id) {
-                apps.push((app_id.to_owned(), row.resource.label.clone()));
+        let mut apps: Vec<InstalledApp> = Vec::new();
+        let mut cursor = Vec::new();
+        let mut revision = None;
+        for _ in 0..INSTALLED_PAGES {
+            let page = self
+                .ask(CatalogueQuery {
+                    provider: Some(provider.clone()),
+                    resource_name: Some(tilo_actions::remote::APPLICATION_RESOURCE_KIND.to_owned()),
+                    max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                    cursor: std::mem::take(&mut cursor),
+                    revision: revision.take(),
+                    ..CatalogueQuery::default()
+                })
+                .await?;
+            for row in page.rows {
+                let Some(app_id) = row
+                    .resource
+                    .id
+                    .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+                    .filter(|app_id| !app_id.starts_with("host:"))
+                else {
+                    continue;
+                };
+                // The workspace offers an action on an app (open, or close
+                // while it runs) only to a caller that may use it, and names
+                // one it may not without any: a running app shows only its
+                // close, and is still this caller's to open.
+                let opens = row.action.is_some();
+                match apps.iter_mut().find(|app| app.app_id == app_id) {
+                    Some(app) => app.opens |= opens,
+                    None => apps.push(InstalledApp {
+                        app_id: app_id.to_owned(),
+                        label: row.resource.label.clone(),
+                        opens,
+                    }),
+                }
             }
+            if page.exhausted || page.next_cursor.is_empty() {
+                break;
+            }
+            cursor = page.next_cursor;
+            revision = Some(page.revision);
         }
         Ok(apps)
     }
@@ -1222,7 +1292,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             AppRef::Running { app_id, provider } => {
                 Ok(Ok(self.resolve_in(parsed, app_id, provider).await?))
             }
-            AppRef::Installed { .. } => Ok(Err(Self::not_running_note(&parsed.app))),
+            AppRef::Installed { opens, .. } => Ok(Err(Self::not_running_note(&parsed.app, opens))),
         }
     }
 
@@ -1290,10 +1360,25 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         })
     }
 
-    fn not_running_note(name: &str) -> String {
+    fn not_running_note(name: &str, opens: bool) -> String {
+        if opens {
+            format!(
+                "{name} is installed but not running; start it with tilo_do {{path: \"{}#open\"}}",
+                path_name(name)
+            )
+        } else {
+            format!(
+                "{name} is installed but not running, and {}",
+                Self::may_not_open(name)
+            )
+        }
+    }
+
+    /// Why an installed app this agent may not open stays closed, and who
+    /// changes that.
+    fn may_not_open(name: &str) -> String {
         format!(
-            "{name} is installed but not running; start it with tilo_do {{path: \"{}#open\"}}",
-            path_name(name)
+            "this agent may not open {name}: the person decides which apps an agent may use in this workspace"
         )
     }
 }
@@ -1318,15 +1403,19 @@ fn path_in(node: &Node, pool: &[Node]) -> String {
 /// The ids of the apps `name` names among those `running` and `installed`:
 /// its whole id or the name `tilo_ls` lists it by, any case. An error naming
 /// the apps there are when it names none, so a search narrowed to an app
-/// that is not there does not answer that nothing matches.
+/// that is not there does not answer that nothing matches. `unread` is why
+/// the installed apps could not be read, when they could not: an app that
+/// is not running may then be installed, and the error says why the agent
+/// cannot know rather than that there is no such app.
 fn searched_apps(
     name: &str,
     running: &[String],
-    installed: &[(String, String)],
+    installed: &[InstalledApp],
+    unread: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let known = running
         .iter()
-        .chain(installed.iter().map(|(app_id, _)| app_id));
+        .chain(installed.iter().map(|app| &app.app_id));
     let mut meant: Vec<String> = Vec::new();
     let mut all: Vec<String> = Vec::new();
     for app_id in known {
@@ -1340,6 +1429,11 @@ fn searched_apps(
     }
     if !meant.is_empty() {
         return Ok(meant);
+    }
+    if let Some(reason) = unread {
+        return Err(format!(
+            "no running app is named {name}, and the installed apps could not be read: {reason}"
+        ));
     }
     let listed = app_names(&all);
     Err(if listed.is_empty() {
@@ -1380,7 +1474,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Err(error) => Err(error),
             },
             "tilo_status" => match parse(args) {
-                Ok(args) => self.agent_status(&args),
+                Ok(args) => self.agent_status(&args).await,
                 Err(error) => Err(error),
             },
             _ => Err("Unknown tool".to_owned()),
@@ -1458,7 +1552,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(Reply::ok(text))
     }
 
-    /// The apps: running ones first, then the installed ones to open.
+    /// The apps: running ones first, then the installed ones to open. An
+    /// installed list that could not be read is said, with why: read as
+    /// empty it would tell the agent there are no apps.
     async fn list_apps(&self, offset: usize, limit: usize) -> Result<Reply, String> {
         let (_, running) = self.instances().await?;
         let mut lines: Vec<String> = Vec::new();
@@ -1471,22 +1567,33 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 running_ids.push(app_id.to_owned());
             }
         }
-        let installed = self.installed().await.unwrap_or_default();
+        let (installed, unread) = match self.installed().await {
+            Ok(installed) => (installed, None),
+            Err(reason) => (Vec::new(), Some(reason)),
+        };
         for app_id in &running_ids {
             let label = installed
                 .iter()
-                .find(|(id, _)| id == app_id)
-                .map_or("", |(_, label)| label.as_str());
+                .find(|app| app.app_id == *app_id)
+                .map_or("", |app| app.label.as_str());
             lines.push(format!(
                 "{}  {label}  running",
                 app_names(std::slice::from_ref(app_id)).join("")
             ));
         }
-        for (app_id, label) in &installed {
-            if !running_ids.contains(app_id) {
+        let mut unopened = false;
+        for app in &installed {
+            if !running_ids.contains(&app.app_id) {
+                let state = if app.opens {
+                    "installed"
+                } else {
+                    unopened = true;
+                    "installed, not yours to open"
+                };
                 lines.push(format!(
-                    "{}  {label}  installed",
-                    app_names(std::slice::from_ref(app_id)).join("")
+                    "{}  {}  {state}",
+                    app_names(std::slice::from_ref(&app.app_id)).join(""),
+                    app.label
                 ));
             }
         }
@@ -1503,6 +1610,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "\n… {} more: cursor \"{end}\"",
                 total.saturating_sub(end)
             );
+        }
+        if let Some(reason) = unread {
+            let _ = write!(text, "\nthe installed apps could not be read: {reason}");
+        } else if total == 0 {
+            text.push_str("\nnone: no app runs in this workspace and none is installed");
+        }
+        if unopened {
+            text.push_str("\nthe person decides which apps an agent may open in this workspace");
         }
         Ok(Reply::ok(text))
     }
@@ -1715,7 +1830,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // The app is looked up once: resolving the path in it does not ask
         // again which apps run.
         let (app_id, provider) = match self.app_ref(&parsed.app).await? {
-            AppRef::Installed { app_id } => {
+            AppRef::Installed { app_id, opens } => {
+                if !opens {
+                    return Err(Self::not_running_note(&parsed.app, false));
+                }
                 return self
                     .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
                     .await;
@@ -1758,7 +1876,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         wait_ms: Option<u64>,
     ) -> Result<Reply, String> {
         if !parsed.segments.is_empty() || action != tilo_actions::remote::APPLICATION_OPEN_ACTION {
-            return Err(Self::not_running_note(&parsed.app));
+            return Err(Self::not_running_note(&parsed.app, true));
         }
         let value = Box::pin(self.invoke_one(OneCall {
             provider: Addressed {
@@ -1799,11 +1917,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(reply)
     }
 
-    fn agent_status(&self, args: &AgentStatusArgs) -> Result<Reply, String> {
+    async fn agent_status(&self, args: &AgentStatusArgs) -> Result<Reply, String> {
         let invocation = invocation_id(&args.invocation_id)?;
         if args.cancel {
             self.host()
                 .cancel(&self.caller(), &invocation)
+                .await
+                .ok_or("the host dropped the request")?
                 .map_err(|error| error.to_string())?;
         }
         let value = self.status(invocation)?;
@@ -1817,7 +1937,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         let limit = args.limit.unwrap_or(FIND_HITS).clamp(1, 100);
         let (_, running) = self.instances().await?;
-        let installed = self.installed().await.unwrap_or_default();
+        // Apps are found by name among those the workspace lists; a list
+        // that could not be read leaves them out but still searches the
+        // running apps.
+        let installed = self.installed().await;
+        let unread = installed.as_ref().err().cloned();
+        let installed = installed.unwrap_or_default();
         let mut hits: Vec<Hit> = Vec::new();
         // Apps by name.
         let mut seen: Vec<String> = Vec::new();
@@ -1834,10 +1959,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .map(str::trim)
             .filter(|app| !app.is_empty())
         {
-            Some(app) => Some(searched_apps(app, &seen, &installed)?),
+            Some(app) => Some(searched_apps(app, &seen, &installed, unread.as_deref())?),
             None => None,
         };
-        for (app_id, label) in &installed {
+        for InstalledApp { app_id, label, .. } in &installed {
             let name = app_names(std::slice::from_ref(app_id)).join("");
             let matches = words.iter().all(|word| {
                 name.starts_with(word.as_str()) || label.to_lowercase().starts_with(word.as_str())

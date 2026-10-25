@@ -1,4 +1,5 @@
 use super::context::naming_text;
+use super::obligations::MOST_REMINDERS;
 use super::running::{
     BEFORE_CHANGE, CHECK_LEFT, CHECK_RAN, CHECK_WORK, EXPORT_MISSING, READS_ANSWERED, asks_export,
     step_brief,
@@ -16,6 +17,7 @@ fn invoke(app: &str, resource: &str, action: &str) -> Step {
             arguments: serde_json::Map::new(),
         },
         carries: Some(tilo_actions::PROMPTED_PARAM.to_owned()),
+        serves: None,
     }
 }
 
@@ -460,6 +462,7 @@ fn open_step(app: &str) -> Step {
         record: None,
         action: StepAction::Open,
         carries: None,
+        serves: None,
     }
 }
 
@@ -643,6 +646,7 @@ fn a_waiting_task_plans_again_with_the_message_that_arrived() {
                 record: None,
                 action: StepAction::Wait(wait.clone()),
                 carries: None,
+                serves: None,
             },
         ],
         Vec::new(),
@@ -1321,4 +1325,242 @@ fn a_member_asking_for_room_content_is_answered_from_the_rooms_store() {
         assert_eq!(frames.len(), 1, "one word that it is not here");
         assert!(wants.piece(&person, &frames[0]).is_none());
     }
+}
+
+fn post_serving(text: &str, obligation: usize) -> Step {
+    let mut step = invoke_with(
+        "so.tilo.chat",
+        "chat.channel:logins",
+        "post",
+        serde_json::json!({"text": text}),
+    );
+    step.serves = Some(obligation);
+    step
+}
+
+fn with_obligations(items: &[&str]) -> Running {
+    let mut running = Running::new("t1".into(), "post them".into(), Vec::new(), Vec::new());
+    running.by_model = true;
+    running.checklist.adopt(
+        crate::planner::Obligations {
+            items: items.iter().map(|item| (*item).to_owned()).collect(),
+            set_aside: Vec::new(),
+        },
+        false,
+    );
+    running
+}
+
+/// The re-plan a reminder queued, as the loop takes it to plan.
+fn take_reminder(running: &mut Running) -> String {
+    let Some(Step {
+        action: StepAction::Continue(brief),
+        ..
+    }) = running.steps.pop_front()
+    else {
+        panic!("a reminder: {:?}", running.steps);
+    };
+    brief
+}
+
+/// A task whose steps ran out with an obligation open is planned for it,
+/// told what ran and shown what is done; a step of that plan that ran
+/// already is dropped and counts for its obligation, and the task then
+/// finishes with nothing left undone.
+#[test]
+fn a_task_with_an_open_obligation_is_reminded_before_it_finishes() {
+    let mut running = with_obligations(&["post A", "post B", "post C"]);
+    running.ran_step(&post_serving("A", 1), None, Vec::new(), true);
+    running.ran_step(
+        &invoke_with(
+            "so.tilo.chat",
+            "chat.channel:logins",
+            "post",
+            serde_json::json!({"text": "B"}),
+        ),
+        None,
+        Vec::new(),
+        true,
+    );
+    running.plan_more(false);
+    assert!(running.steps.is_empty());
+    assert!(running.remind_open());
+    let brief = take_reminder(&mut running);
+    assert!(
+        brief.starts_with(super::obligations::OBLIGATIONS_LEFT),
+        "{brief}"
+    );
+    assert!(
+        brief.contains("post {\"text\":\"B\"}"),
+        "what ran is said: {brief}"
+    );
+    let shown = running.checklist.shown();
+    assert!(
+        shown.contains("1. post A (done); 2. post B; 3. post C.")
+            && shown.contains("Still to do: 2. post B; 3. post C."),
+        "{shown}"
+    );
+
+    running.queue_rest(vec![post_serving("B", 2), post_serving("C", 3)]);
+    assert_eq!(running.steps.len(), 1, "B already ran: {:?}", running.steps);
+    let step = running.steps.pop_front().unwrap();
+    running.ran_step(&step, None, Vec::new(), true);
+    assert!(!running.remind_open(), "nothing is open");
+    assert_eq!(running.done(), "Done: 3 actions.");
+}
+
+/// Reminders are bounded: none after one that closed nothing, at most
+/// [`MOST_REMINDERS`], and what is still open is the task's result.
+#[test]
+fn obligations_open_after_the_reminders_are_reported_undone() {
+    let mut running = with_obligations(&["post A", "post B"]);
+    assert!(running.remind_open());
+    running.steps.clear();
+    assert!(!running.remind_open(), "the reminder closed nothing");
+    assert_eq!(
+        running.done(),
+        "Done: 0 actions. Left undone: 1. post A; 2. post B."
+    );
+
+    let mut running = with_obligations(&["post A", "post B", "post C", "post D"]);
+    assert!(running.remind_open());
+    running.checklist.tick(1);
+    assert!(running.remind_open(), "the first reminder closed one");
+    running.checklist.tick(2);
+    assert!(!running.remind_open(), "at most {MOST_REMINDERS}");
+    assert!(
+        running
+            .done()
+            .ends_with("Left undone: 3. post C; 4. post D.")
+    );
+}
+
+/// An obligation set aside with a reason, by a plan that judged the
+/// finished work, is not open: the task finishes, its result saying what
+/// was set aside and why. One set aside mid-task stays open, and a later
+/// list does not replace the first, whose numbers the steps were tagged
+/// with.
+#[test]
+fn an_obligation_set_aside_lets_the_task_finish() {
+    let mut running = with_obligations(&["post A", "post B"]);
+    running.checklist.tick(1);
+    let declared = crate::planner::Obligations {
+        items: vec!["something else".into()],
+        set_aside: vec![(2, "not possible: no such channel".into())],
+    };
+    running.checklist.adopt(declared.clone(), false);
+    assert!(
+        running
+            .checklist
+            .shown()
+            .contains("Still to do: 2. post B."),
+        "set aside mid-task: {}",
+        running.checklist.shown()
+    );
+    running.checklist.adopt(declared, true);
+    assert!(!running.remind_open());
+    assert_eq!(
+        running.done(),
+        "Done: 0 actions. Set aside: 2. post B (not possible: no such channel)."
+    );
+    assert!(
+        running
+            .checklist
+            .shown()
+            .contains("1. post A (done); 2. post B (set aside")
+    );
+    running.checklist.tick(2);
+    assert_eq!(
+        running.done(),
+        "Done: 0 actions.",
+        "a step did it after all"
+    );
+}
+
+/// A task whose plan listed no obligations finishes as it always did.
+#[test]
+fn a_task_without_obligations_is_not_reminded() {
+    let mut running = Running::new("t1".into(), "post A".into(), Vec::new(), Vec::new());
+    running.by_model = true;
+    running.ran_step(&post_serving("A", 1), None, Vec::new(), true);
+    running.plan_more(false);
+    assert!(!running.remind_open());
+    assert!(running.checklist.shown().is_empty());
+    assert_eq!(running.done(), "Done: 1 action.");
+}
+
+/// A reminder that fails to plan leaves the task done, as it was
+/// finishing when it was reminded, its open obligations reported.
+#[test]
+fn a_reminder_that_cannot_plan_leaves_the_task_done() {
+    let mut running = with_obligations(&["post A"]);
+    assert!(!running.done_despite("the model exhausted its discovery turns"));
+    assert!(running.remind_open());
+    assert!(running.done_despite("the model exhausted its discovery turns"));
+    assert!(!running.remind_open(), "the reminder closed nothing");
+    assert!(running.done().ends_with("Left undone: 1. post A."));
+}
+
+fn boxed(kind: [u8; 4], payload: &[u8]) -> Vec<u8> {
+    let size = u32::try_from(payload.len().saturating_add(8)).unwrap();
+    let mut bytes = size.to_be_bytes().to_vec();
+    bytes.extend_from_slice(&kind);
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+/// An MP4 header of a 6 s, 320×180 video at 30 fps: what its probe reads.
+fn mp4_header() -> Vec<u8> {
+    let mut movie = vec![0_u8; 20];
+    movie[12..16].copy_from_slice(&1000_u32.to_be_bytes());
+    movie[16..20].copy_from_slice(&6000_u32.to_be_bytes());
+    let mut track = vec![0_u8; 84];
+    track[76..80].copy_from_slice(&(320_u32 << 16).to_be_bytes());
+    track[80..84].copy_from_slice(&(180_u32 << 16).to_be_bytes());
+    let mut handler = vec![0_u8; 12];
+    handler[8..12].copy_from_slice(b"vide");
+    let mut codec = vec![0, 0, 0, 0];
+    codec.extend_from_slice(&1_u32.to_be_bytes());
+    codec.extend_from_slice(&16_u32.to_be_bytes());
+    codec.extend_from_slice(b"avc1");
+    let mut timing = vec![0, 0, 0, 0];
+    for word in [1_u32, 180, 1000] {
+        timing.extend_from_slice(&word.to_be_bytes());
+    }
+    let mut clock = vec![0_u8; 20];
+    clock[12..16].copy_from_slice(&30_000_u32.to_be_bytes());
+    clock[16..20].copy_from_slice(&180_000_u32.to_be_bytes());
+    let table = boxed(
+        *b"stbl",
+        &[boxed(*b"stsd", &codec), boxed(*b"stts", &timing)].concat(),
+    );
+    let media = boxed(
+        *b"mdia",
+        &[
+            boxed(*b"mdhd", &clock),
+            boxed(*b"hdlr", &handler),
+            boxed(*b"minf", &table),
+        ]
+        .concat(),
+    );
+    let tracks = boxed(*b"trak", &[boxed(*b"tkhd", &track), media].concat());
+    let mut file = boxed(*b"ftyp", b"isom\0\0\0\0isom");
+    file.extend(boxed(*b"moov", &[boxed(*b"mvhd", &movie), tracks].concat()));
+    file
+}
+
+/// A video a task names is stated by its length, frame, rate and sound
+/// beside a picture's size, so a check of an export needs no look at it.
+#[test]
+fn a_video_the_task_names_is_stated_by_what_its_container_says() {
+    let content = tilo_content::ContentStore::memory();
+    let video = mp4_header();
+    let hash = content.put(&video).unwrap();
+    let facts = super::context::content_facts(&format!("check tilo.content:{hash}"), &content);
+    let expected = format!(
+        "tilo.content:{hash} is a video of 6.00 s, 320×180 at 30 fps, without sound, {}.",
+        ui::format::size(u64::try_from(video.len()).unwrap())
+    );
+    assert_eq!(facts, vec![expected]);
+    assert_eq!(super::context::video_facts(b"not a video"), None);
 }

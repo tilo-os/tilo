@@ -3,7 +3,7 @@ name = "tilo-cli-kit"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 description = "SDK helpers for Tilo CLI apps — stdio, workspace paths, terminal-aware output."
 repository.workspace = true
 homepage.workspace = true
@@ -32,7 +32,7 @@ anyhow.workspace = true
 [target.'cfg(unix)'.dependencies]
 # Direct service-FD access is a Unix capability. Native Windows callers keep
 # the same path helpers and gracefully run without an RPC filesystem client.
-runtime-fs       = { version = "0.1.0", path = "../runtime-fs" }
+runtime-fs       = { package = "tilo-fs-client", version = "0.1.0", path = "../tilo-fs-client" }
 
 [dev-dependencies]
 tempfile.workspace = true

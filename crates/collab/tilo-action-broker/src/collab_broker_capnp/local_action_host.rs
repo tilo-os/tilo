@@ -400,6 +400,9 @@ impl CertifiedActionLifecycle {
                 .can_cancel_for_owner(id, &self.0.admission.owner())
     }
 
+    /// Answered once the request is durable: blocks the calling thread for
+    /// that write, so never call it on the broker's loop.
+    ///
     /// # Errors
     /// Refuses revoked custody, foreign ownership and non-cancellable jobs.
     pub fn cancel(&self, id: u64) -> Result<(), String> {
@@ -407,7 +410,8 @@ impl CertifiedActionLifecycle {
             .ok_or("the invocation is unavailable in this session")?;
         self.0
             .state
-            .request_cancellation_for_owner(id, &self.0.admission.owner())
+            .request_cancellation_for_owner(id, &self.0.admission.owner())?
+            .wait_blocking()
     }
 
     fn permitted_job(
@@ -738,15 +742,17 @@ impl ActionHost for CertifiedLocalActionHost {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        self.check(caller)?;
-        let job = self
-            .state
-            .remote_job(&self.effective, id)
-            .ok_or(ActionHostError::UnknownInvocation)?;
-        self.state
-            .request_cancellation_for_owner(job, &self.admission.owner())
-            .map_err(|reason| ActionHostError::NotCancellable { reason })
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        let staged = self.check(caller).and_then(|_| {
+            let job = self
+                .state
+                .remote_job(&self.effective, id)
+                .ok_or(ActionHostError::UnknownInvocation)?;
+            self.state
+                .request_cancellation_for_owner(job, &self.admission.owner())
+                .map_err(|reason| ActionHostError::NotCancellable { reason })
+        });
+        super::action_host::answered_when_durable(staged)
     }
 }
 

@@ -1742,6 +1742,19 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             .iter()
             .map(|row| self.row_motion.pose(&row.key, now))
             .collect();
+        // A pending row draws the kind of row the list's ready rows are; a
+        // list with none ready yet, a line in the row's slot.
+        let pending_shape = self
+            .mounted
+            .iter()
+            .filter(|row| matches!(row.state, MountedRowState::Ready))
+            .find_map(|row| {
+                crate::widget::capability::capability::<dyn crate::widget::ReservedShape>(
+                    row.widget.as_ref(),
+                )
+                .map(crate::widget::ReservedShape::reserved_shape)
+            })
+            .unwrap_or(SkeletonShape::Text { lines: 1 });
         for (((row, row_rect), selection), (dy, alpha)) in self
             .mounted
             .iter_mut()
@@ -1795,7 +1808,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             let slot = row.widget.get_rect() + vello::kurbo::Vec2::new(0.0, dy);
             self.arrivals.paint(
                 &row.key,
-                SkeletonShape::Row,
+                pending_shape,
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 slot,
                 now,

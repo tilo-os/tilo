@@ -411,6 +411,28 @@ impl JournalLoadError {
     }
 }
 
+/// One read of the journal: its records, oldest first, and the cursor of
+/// the last one in the journal's order, where the next tail read starts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Page {
+    pub entries: Vec<LogEntry>,
+    pub cursor: Option<String>,
+}
+
+/// `journalctl`'s arguments for `limit` records: the most recent ones, or,
+/// `after` a cursor, the first ones written since it.
+pub fn read_args(after: Option<&str>, limit: usize) -> Vec<String> {
+    let mut args: Vec<String> = ["-o", "json", "--no-pager", "-n"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    args.push(limit.to_string());
+    if let Some(cursor) = after {
+        args.push(format!("--after-cursor={cursor}"));
+    }
+    args
+}
+
 /// Run `journalctl -o json` and parse the most recent `limit` records.
 ///
 /// The error is intentionally classified rather than returning process
@@ -421,14 +443,30 @@ impl JournalLoadError {
 ///
 /// Returns a safe classification when `journalctl` is unavailable, denied, or
 /// otherwise fails. It never returns the command's stderr.
-pub fn load_live(limit: usize) -> Result<Vec<LogEntry>, JournalLoadError> {
-    let limit_arg = limit.to_string();
+pub fn load_live(limit: usize) -> Result<Page, JournalLoadError> {
+    read(None, limit)
+}
+
+/// The records written after `cursor`, at most `limit` of them: what live
+/// tail reads each second, so a quiet journal costs an empty answer rather
+/// than the whole page parsed again.
+///
+/// # Errors
+///
+/// As [`load_live`].
+pub fn load_after(cursor: &str, limit: usize) -> Result<Page, JournalLoadError> {
+    read(Some(cursor), limit)
+}
+
+fn read(after: Option<&str>, limit: usize) -> Result<Page, JournalLoadError> {
+    let args = read_args(after, limit);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let output_limit = limit
         .saturating_mul(64 * 1024)
         .clamp(1024 * 1024, 32 * 1024 * 1024);
     let output = bounded_command::run(
         "journalctl",
-        &["-o", "json", "--no-pager", "-n", &limit_arg],
+        &args,
         None,
         output_limit,
         Duration::from_secs(5),
@@ -454,7 +492,7 @@ pub fn load_live(limit: usize) -> Result<Vec<LogEntry>, JournalLoadError> {
             },
         );
     }
-    Ok(parse_json_stream(&String::from_utf8_lossy(&output.stdout)))
+    Ok(parse_page(&String::from_utf8_lossy(&output.stdout)))
 }
 
 /// Export a pre-filtered local cache as JSON Lines.
@@ -491,14 +529,27 @@ pub fn export_json_lines(entries: &[&LogEntry], path: &Path) -> Result<(), Strin
 /// Parse a newline-delimited `journalctl -o json` stream into entries,
 /// sorted oldest → newest. Malformed lines are skipped, not fatal.
 pub fn parse_json_stream(text: &str) -> Vec<LogEntry> {
-    let mut out: Vec<LogEntry> = text
+    parse_page(text).entries
+}
+
+/// Parse a `journalctl -o json` stream into a [`Page`]: its entries sorted
+/// oldest → newest, and the cursor of the last record as journalctl wrote
+/// them.
+pub fn parse_page(text: &str) -> Page {
+    let mut cursor = None;
+    let mut entries: Vec<LogEntry> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter_map(|v| entry_from_json(&v))
+        .filter_map(|v| {
+            if let Some(at) = field(&v, "__CURSOR") {
+                cursor = Some(at);
+            }
+            entry_from_json(&v)
+        })
         .collect();
-    out.sort_by_key(|e| e.realtime_us);
-    out
+    entries.sort_by_key(|e| e.realtime_us);
+    Page { entries, cursor }
 }
 
 /// Read a journal field that may be a JSON string, an integer, or a byte
@@ -743,6 +794,43 @@ mod tests {
         let parsed = parse_json_stream(stream);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].message, "ok");
+    }
+
+    /// A tail read starts after the newest record's cursor, which a page
+    /// takes from the last record journalctl wrote.
+    #[test]
+    fn a_page_keeps_the_last_cursor_and_a_tail_read_starts_after_it() {
+        let stream = concat!(
+            r#"{"__CURSOR":"s=a;i=1","__REALTIME_TIMESTAMP":"20","MESSAGE":"one"}"#,
+            "\n",
+            r#"{"__CURSOR":"s=a;i=2","__REALTIME_TIMESTAMP":"10","MESSAGE":"two"}"#,
+            "\n",
+        );
+        let page = parse_page(stream);
+        assert_eq!(page.cursor.as_deref(), Some("s=a;i=2"), "journal order");
+        assert_eq!(page.entries[0].message, "two", "entries by time");
+        assert!(
+            page.entries
+                .iter()
+                .all(|entry| { entry.extra.iter().all(|(key, _)| key != "__CURSOR") })
+        );
+        assert_eq!(parse_page("").cursor, None);
+
+        assert_eq!(
+            read_args(None, 2000),
+            ["-o", "json", "--no-pager", "-n", "2000"]
+        );
+        assert_eq!(
+            read_args(Some("s=a;i=2"), 2000),
+            [
+                "-o",
+                "json",
+                "--no-pager",
+                "-n",
+                "2000",
+                "--after-cursor=s=a;i=2"
+            ]
+        );
     }
 
     #[test]

@@ -382,6 +382,62 @@ fn the_web_renderer_awaits_only_the_first_frame_s_pipelines() {
     );
 }
 
+/// The web's deferred pipelines compile one at a time, each started once the
+/// one before it is in: a browser does not cancel a closed page's compiles,
+/// so all of them at once kept other pages from drawing. A frame that
+/// dispatches one still queued does not wait for the queue: it creates that
+/// one at once.
+#[test]
+fn the_web_renderer_compiles_deferred_pipelines_one_at_a_time_but_a_frame_takes_its_own_at_once() {
+    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let mut eager = Renderer::new(&gpu.device, options()).unwrap();
+    let clips = many_clips_scene();
+    let expected_clips = draw(&gpu, &mut eager, &clips);
+    let mut web = pollster::block_on(Renderer::new_async_deferring(
+        &gpu.device,
+        options(),
+        PipelineDeferral::Unused,
+    ))
+    .unwrap();
+    let _ = draw(&gpu, &mut web, &window_scene());
+    let deferred = web.deferred_pipelines().pending;
+    assert!(deferred > 2, "{deferred}");
+
+    web.start_deferred_pipelines_async(&gpu.device);
+    // Natively a compile is in as soon as it starts; still, each poll
+    // installs only the one compiling and starts the next.
+    assert_eq!(web.deferred_pipelines().pending, deferred - 1);
+    assert_eq!(web.deferred_pipelines().pending, deferred - 2);
+
+    assert_same(
+        "many clips with compiles queued",
+        &draw(&gpu, &mut web, &clips),
+        &expected_clips,
+    );
+    let after_clips = web.deferred_pipelines();
+    assert!(
+        after_clips.built_inline >= 1,
+        "the clip reduce was created for the frame, not left behind the queue: {after_clips:?}"
+    );
+
+    let mut last = after_clips.pending;
+    let started = crate::time::now();
+    while last > 0 {
+        assert!(
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "the deferred pipelines never arrived"
+        );
+        let now = web.deferred_pipelines().pending;
+        assert!(last - now <= 1, "one at a time: {last} to {now}");
+        last = now;
+    }
+    assert_same(
+        "after the compiles",
+        &draw(&gpu, &mut web, &clips),
+        &expected_clips,
+    );
+}
+
 #[test]
 fn a_window_s_damage_only_frame_builds_no_pipeline_once_the_deferred_build_is_done() {
     let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");

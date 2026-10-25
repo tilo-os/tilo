@@ -1851,3 +1851,32 @@ fn a_keystroke_beside_a_navigation_list_walks_the_same_nodes_however_long_it_is(
          beside {many_rows}, ({many_built}, {many_compared})"
     );
 }
+
+#[test]
+fn the_first_tap_after_pointer_use_chooses_the_row_it_landed_on() {
+    let chosen = Rc::new(Cell2::new(Vec::<String>::new()));
+    let seen = Rc::clone(&chosen);
+    let items = (0..8)
+        .map(|row| NavItem::new(format!("row-{row}"), format!("Row {row}")))
+        .collect();
+    let list = NavList::new(vec![NavSection::untitled("all", items)])
+        .on_select(move |id| seen.borrow_mut().push(id));
+    let mut h = harness(list, Theme::dark());
+    let seen_row = h.root::<NavList>().row_rect("row-5").expect("row 5 shown");
+
+    h.tap_at(seen_row.center().x, seen_row.center().y);
+
+    assert_eq!(
+        chosen.borrow().as_slice(),
+        ["row-5"],
+        "the tap chooses the row the person saw under their finger, not the one \
+         the touch-sized rows put there"
+    );
+    let touch_row = h.root::<NavList>().row_rect("row-5").expect("row 5 shown");
+    assert!(
+        touch_row.height() > seen_row.height()
+            && touch_row.height() + 0.5
+                >= f64::from(crate::InteractionEnvironment::TOUCH.minimum_collection_row()),
+        "once the tap has landed the rows are touch-sized: {seen_row:?} then {touch_row:?}"
+    );
+}

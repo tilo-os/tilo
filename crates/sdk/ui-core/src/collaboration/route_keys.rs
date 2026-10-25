@@ -11,7 +11,7 @@
 //! Once a route holds keys it asks again only when told its channel changed
 //! (`channelKeysChanged`), when ciphertext arrives that its keys can't open,
 //! or when the broker refuses an edit sealed under them; see
-//! `broker::KeySchedule`.
+//! `broker::key_schedule::KeySchedule`.
 //!
 //! Only an endpoint with no identity service at all (an explicit test
 //! harness) stays plaintext, and only until a group is installed on it.

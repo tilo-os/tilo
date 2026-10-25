@@ -419,7 +419,13 @@ fn search_finds_subscriptions_and_articles() {
         hit("Engines").anchor.as_deref(),
         Some(item_resource_id::<Library>("articles", &engines).as_str())
     );
-    assert!(hit("Engines").text.contains("Ada Lovelace"));
+    assert!(
+        hit("Engines")
+            .fields
+            .iter()
+            .any(|(text, _)| text == "Ada Lovelace"),
+        "an article is found by its author"
+    );
     assert_eq!(
         hit("Analytical").anchor.as_deref(),
         Some(item_resource_id::<Library>("feeds", &feed).as_str())

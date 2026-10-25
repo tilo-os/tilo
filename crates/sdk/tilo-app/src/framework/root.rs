@@ -37,6 +37,7 @@ use super::stage::Stages;
 use super::surface::SurfacePublication;
 use super::view::ViewCx;
 
+mod facts;
 mod live_head;
 mod shared_tree;
 mod typed;
@@ -88,6 +89,9 @@ pub(crate) struct ResourceRoot {
     unreadable: Option<(String, Element)>,
     /// The view was swapped for the unreadable state or back since layout.
     swapped: bool,
+    /// What keeps the bindings of the app's view alive once it stands in
+    /// the place of the window's arrival ([`Self::settle_arrival`]).
+    arrived: Option<Rc<()>>,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
@@ -139,7 +143,7 @@ impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
 
 /// The operation type of the framework's `open` view: show the item at an
 /// anchor, as picking a search hit does.
-pub(crate) const OPEN_TYPE: &str = "tilo.app.open";
+pub(crate) const OPEN_TYPE: &str = tilo_actions::remote::APPLICATION_OPEN_TYPE;
 
 /// The parameter of `open` naming what to show.
 const OPEN_ANCHOR: &str = "anchor";
@@ -234,7 +238,7 @@ fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut tilo_actions::Resou
 
 /// The ids of the actions the framework publishes on every app's resource
 /// beside the app's own: the generic `apply`, `group` and `field-edit`, the
-/// views `open` and `read`, history, and the presentation operations. An app
+/// views `open`, `read` and `facts`, history, and the presentation operations. An app
 /// verb, effect or view under one of these ids shadows the framework's or is
 /// shadowed by it, so `tilo-app check` refuses it.
 #[must_use]
@@ -249,6 +253,7 @@ pub fn reserved_action_ids() -> Vec<String> {
     .collect();
     ids.push(open_spec().id);
     ids.push(read_spec().id);
+    ids.push(facts::FACTS.to_owned());
     ids.push(tilo_resource::share::SHARE_LINK.to_owned());
     ids.push(tilo_resource::share::SHARE_INVITE_LINK.to_owned());
     ids.extend(super::history::specs().into_iter().map(|spec| spec.id));
@@ -370,7 +375,78 @@ fn read(
     })
 }
 
+/// The window's arrival: the app's view, shown once the room's holdings
+/// arrived ([`super::app`]'s `build_root`).
+type RoomArrival = ui_core::widget::ArrivingView;
+
+/// The app's view in `content`, once it shows: `content` itself, or the
+/// view standing in the window's arrival once that arrived. The arrival
+/// answers for nothing of the view (a traversal meets the view as its
+/// descendant, once), so what the root asks of the app's view it asks here.
+fn app_view_in(content: &dyn Widget) -> Option<&dyn Widget> {
+    let Some(arrival) = content
+        .as_any()
+        .and_then(|any| any.downcast_ref::<RoomArrival>())
+    else {
+        return Some(content);
+    };
+    let switch = arrival
+        .answer()?
+        .as_any()?
+        .downcast_ref::<super::switch::Switch>()?;
+    Some(switch.part())
+}
+
+/// `visit` the app's view in `content` ([`app_view_in`]); `content` itself
+/// while the view is on its way, where nothing of it answers.
+fn with_app_view_mut<R>(content: &mut Element, visit: impl FnOnce(&mut dyn Widget) -> R) -> R {
+    let arrived = content
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<RoomArrival>())
+        .and_then(RoomArrival::answer_mut)
+        .and_then(|answer| answer.as_any_mut()?.downcast_mut::<super::switch::Switch>());
+    match arrived {
+        Some(switch) => visit(switch.part_mut()),
+        None => visit(content.as_mut()),
+    }
+}
+
 impl ResourceRoot {
+    /// Once the window's arrival settled (the app's view shows, its
+    /// cross-fade over), the view stands in the arrival's place: the root
+    /// is the app's view plus what the framework adds again, and nothing of
+    /// the arrival stays between them.
+    fn settle_arrival(&mut self) {
+        let Some(arrival) = self
+            .content
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<RoomArrival>())
+        else {
+            return;
+        };
+        let Some(mut answer) = arrival.take_answer(ui_core::motion::frame_now()) else {
+            return;
+        };
+        let empty = || -> Element { Box::new(ui_core::widget::Spacer::fixed(0.0)) };
+        self.content = match answer
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<super::switch::Switch>())
+        {
+            Some(switch) => {
+                let (view, alive) = switch.take_part(empty());
+                self.arrived = Some(alive);
+                view
+            }
+            None => answer,
+        };
+        self.swapped = true;
+    }
+
+    /// The app's view: what the root asks the view for ([`app_view_in`]).
+    fn app_view(&self) -> &dyn Widget {
+        app_view_in(self.content.as_ref()).unwrap_or_else(|| self.content.as_ref())
+    }
+
     /// The window ground is the framework's: an app never fills it, and one
     /// that paints nothing still stands on it.
     fn paint_ground(
@@ -482,6 +558,7 @@ impl ResourceRoot {
             content,
             unreadable: None,
             swapped: false,
+            arrived: None,
             presentation: Vec::new(),
             search: Rc::default(),
             publication_tree: std::cell::RefCell::new(None),
@@ -994,8 +1071,9 @@ impl ResourceRoot {
     fn with_framework_specs(&self, mut resource: tilo_actions::Resource) -> tilo_actions::Resource {
         let specs = framework_specs();
         let read = self.resource.readable.then_some(&specs.read);
+        let facts = self.resource.facts.then_some(&specs.facts);
         let history = specs.history.iter().filter(|_| self.history);
-        for spec in specs.native.iter().chain(read).chain(history) {
+        for spec in specs.native.iter().chain(read).chain(facts).chain(history) {
             if !resource
                 .actions
                 .iter()
@@ -1105,6 +1183,7 @@ struct BindingBase {
 struct FrameworkSpecs {
     native: Vec<tilo_actions::ActionSpec>,
     read: tilo_actions::ActionSpec,
+    facts: tilo_actions::ActionSpec,
     history: Vec<tilo_actions::ActionSpec>,
 }
 
@@ -1126,6 +1205,7 @@ fn framework_specs() -> Rc<FrameworkSpecs> {
         let specs = Rc::new(FrameworkSpecs {
             native: with_native_presentations(tilo_actions::Resource::new("", "", "")).actions,
             read: read_spec(),
+            facts: facts::facts_spec(),
             history: super::history::specs(),
         });
         *kept = Some((locale, Rc::clone(&specs)));
@@ -1886,9 +1966,15 @@ impl ResourceSearch {
                 {
                     result = result.with_icon(icon);
                 }
-                if !entry.text.is_empty() {
-                    result = result.with_preview(entry.text.clone());
-                }
+                result = match &entry.preview {
+                    Some(preview) => result.with_preview(ui_core::search::SearchPreview {
+                        title: preview.title.clone(),
+                        facts: preview.facts.clone(),
+                        lines: preview.lines.clone(),
+                        body: preview.body.clone(),
+                    }),
+                    None => result.with_preview(entry.text.clone()),
+                };
                 if let Some(within) = &entry.within {
                     result = result.within(within.clone());
                 }
@@ -1967,6 +2053,7 @@ impl RootModel for ResourceRoot {
             let _profile = tilo_resource::profiling::Phase::start("framework.content_sync");
             self.content.sync(state, path);
         }
+        self.settle_arrival();
         self.follow_search();
         // What the view's sync changed (a surface's bound edits, its
         // availability) reaches the bindings; the document-owned head is
@@ -2052,6 +2139,9 @@ impl RootModel for ResourceRoot {
         if self.resource.readable {
             handlers.insert(READ_TYPE.to_owned());
         }
+        if self.resource.facts {
+            handlers.insert(facts::FACTS_TYPE.to_owned());
+        }
         handlers.extend(
             self.typed
                 .effect_operations()
@@ -2087,13 +2177,15 @@ impl RootModel for ResourceRoot {
         self.typed
             .poll_effect(invocation, cancellation_requested)
             .or_else(|| {
-                ui_core::host_operation::poll_resource_operation(
-                    self.content.as_mut(),
-                    invocation,
-                    cancellation_requested,
-                    doc,
-                    path,
-                )
+                with_app_view_mut(&mut self.content, |view| {
+                    ui_core::host_operation::poll_resource_operation(
+                        view,
+                        invocation,
+                        cancellation_requested,
+                        doc,
+                        path,
+                    )
+                })
             })
     }
 
@@ -2103,10 +2195,9 @@ impl RootModel for ResourceRoot {
         doc: &mut ui_core::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
-        if let Some(output) =
-            self.native_presentation
-                .start_operation(op, doc, self.content.as_mut())?
-        {
+        if let Some(output) = with_app_view_mut(&mut self.content, |view| {
+            self.native_presentation.start_operation(op, doc, view)
+        })? {
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
@@ -2116,6 +2207,20 @@ impl RootModel for ResourceRoot {
             && request.type_id == READ_TYPE
         {
             let output = read(
+                self.typed.as_ref(),
+                &*self.typed.state(),
+                doc,
+                request.payload,
+            )?;
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
+        }
+        if self.resource.facts
+            && let Some(request) = op.unscoped()
+            && request.type_id == facts::FACTS_TYPE
+        {
+            let output = facts::answer(
                 self.typed.as_ref(),
                 &*self.typed.state(),
                 doc,
@@ -2361,11 +2466,11 @@ impl ui_core::widget::Collaborative for ResourceRoot {
                 &mut door,
             ));
         }
-        if let Some(content) =
-            capability_mut::<dyn ui_core::widget::Collaborative>(self.content.as_mut())
-        {
-            requests.extend(content.take_collab_requests());
-        }
+        with_app_view_mut(&mut self.content, |view| {
+            if let Some(content) = capability_mut::<dyn ui_core::widget::Collaborative>(view) {
+                requests.extend(content.take_collab_requests());
+            }
+        });
         requests
     }
 
@@ -2374,11 +2479,11 @@ impl ui_core::widget::Collaborative for ResourceRoot {
         if let Some(mut door) = self.dispatch.opener.door() {
             ui_core::widget::Collaborative::handle_collab_event(&mut door, event);
         }
-        if let Some(content) =
-            capability_mut::<dyn ui_core::widget::Collaborative>(self.content.as_mut())
-        {
-            content.handle_collab_event(event);
-        }
+        with_app_view_mut(&mut self.content, |view| {
+            if let Some(content) = capability_mut::<dyn ui_core::widget::Collaborative>(view) {
+                content.handle_collab_event(event);
+            }
+        });
     }
 }
 
@@ -2459,12 +2564,9 @@ impl RootSearch for ResourceRoot {
         path: &ModelPath,
     ) {
         if self.stages.open(action_id).is_err() {
-            ui_core::search::capability::activate_search_result(
-                self.content.as_mut(),
-                action_id,
-                doc,
-                path,
-            );
+            with_app_view_mut(&mut self.content, |view| {
+                ui_core::search::capability::activate_search_result(view, action_id, doc, path);
+            });
         }
     }
 }
@@ -2495,12 +2597,11 @@ impl RootPublishes for ResourceRoot {
         // never a document action: those are the resource's own. A hosted
         // surface has already admitted what it adds. One naming the resource
         // joins it rather than publishing it twice.
-        let surface = ui_core::widget::capability::capability::<dyn SurfacePublication>(
-            self.content.as_ref(),
-        )
-        .is_some_and(|surface| surface.resource() == self.resource.id);
+        let surface =
+            ui_core::widget::capability::capability::<dyn SurfacePublication>(self.app_view())
+                .is_some_and(|surface| surface.resource() == self.resource.id);
         let mut extras = Vec::new();
-        for extra in ui_core::resources::resources_for(self.content.as_ref(), participant, doc) {
+        for extra in ui_core::resources::resources_for(self.app_view(), participant, doc) {
             let extra = if surface {
                 extra
             } else {
@@ -2583,7 +2684,7 @@ impl RootPublishes for ResourceRoot {
         // Last, what the content resolves by id beyond what it publishes (a
         // place, a record past the published page), without a document
         // action: those are the resource's own.
-        ui_core::resources::resource_for(self.content.as_ref(), None, doc, id)
+        ui_core::resources::resource_for(self.app_view(), None, doc, id)
             .map(super::rows::resolved_outside_document)
     }
     fn document_action_result(
@@ -2609,7 +2710,7 @@ impl RootPublishes for ResourceRoot {
                 .answer(doc, &address.action, changes)
                 .or_else(|| {
                     ui_core::resources::document_action_result(
-                        self.content.as_ref(),
+                        self.app_view(),
                         doc,
                         address,
                         changes,
@@ -2625,7 +2726,7 @@ impl RootPublishes for ResourceRoot {
                 None => Some(serde_json::json!({ "minted": minted })),
             };
         }
-        ui_core::resources::document_action_result(self.content.as_ref(), doc, address, changes)
+        ui_core::resources::document_action_result(self.app_view(), doc, address, changes)
     }
 }
 
@@ -2683,7 +2784,7 @@ impl RootControls for ResourceRoot {
     }
     fn has_pending_control_invocation(&self) -> bool {
         self.dispatch.has_pending()
-            || ui_core::widget::controls::has_pending_control_invocation(self.content.as_ref())
+            || ui_core::widget::controls::has_pending_control_invocation(self.app_view())
     }
 }
 
@@ -2708,28 +2809,28 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
                 ui_core::history_mode::HistoryRegistration::new(definition, scopes.collect())
                     .map(Some)
             }
-            None => ui_core::history_mode::capability::history_registration(self.content.as_ref()),
+            None => ui_core::history_mode::capability::history_registration(self.app_view()),
         }
     }
 
     fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
         ui_core::widget::capability::capability::<
             dyn ui_core::history_mode::capability::DocumentHistory,
-        >(self.content.as_ref())
+        >(self.app_view())
         .map_or(Ok(()), |content| content.history_restore_readiness(scope))
     }
 
     fn document_history_definition(
         &self,
     ) -> Option<&'static ui_core::history_mode::HistoryDefinition> {
-        ui_core::history_mode::capability::document_history_definition(self.content.as_ref())
+        ui_core::history_mode::capability::document_history_definition(self.app_view())
     }
 
     fn provides_document_history(&self) -> bool {
         !self.history
             || ui_core::widget::capability::capability::<
                 dyn ui_core::history_mode::capability::DocumentHistory,
-            >(self.content.as_ref())
+            >(self.app_view())
             .is_some_and(
                 ui_core::history_mode::capability::DocumentHistory::provides_document_history,
             )
@@ -2755,12 +2856,17 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
         if let Some(participant) = ui_core::invocation_scope::current_participant() {
             self.typed.note_applied(&participant, action);
         }
-        if let Some(content) = ui_core::widget::capability::capability_mut::<
-            dyn ui_core::history_mode::capability::DocumentHistory,
-        >(self.content.as_mut())
-        {
-            content.document_action_applied(action, before, doc, path);
-        }
+        // Whoever applied it here, a surface that carries out what it means
+        // on this device is told once the state holds it.
+        self.typed.note_applied_here(action);
+        with_app_view_mut(&mut self.content, |view| {
+            if let Some(content) = ui_core::widget::capability::capability_mut::<
+                dyn ui_core::history_mode::capability::DocumentHistory,
+            >(view)
+            {
+                content.document_action_applied(action, before, doc, path);
+            }
+        });
     }
 }
 
@@ -2880,7 +2986,7 @@ impl RootApp for ResourceRoot {
     // A surface that keeps presentation of its own across restarts (the
     // open item, the caret) saves it as the window's.
     fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
-        capability::<dyn ApplicationViewState>(self.content.as_ref())
+        capability::<dyn ApplicationViewState>(self.app_view())
             .map_or(Ok(None), ApplicationViewState::capture_application_view)
     }
 
@@ -2889,19 +2995,23 @@ impl RootApp for ResourceRoot {
         local: &ApplicationLocalView,
         doc: &AutoCommit,
     ) -> Result<ApplicationFocusRestore, ThawError> {
-        match capability_mut::<dyn ApplicationViewState>(self.content.as_mut()) {
-            Some(view) => view.restore_application_view(local, doc),
-            None => Err(ThawError::State(
-                "application-local restoration unsupported".into(),
-            )),
-        }
+        with_app_view_mut(&mut self.content, |view| {
+            match capability_mut::<dyn ApplicationViewState>(view) {
+                Some(view) => view.restore_application_view(local, doc),
+                None => Err(ThawError::State(
+                    "application-local restoration unsupported".into(),
+                )),
+            }
+        })
     }
 
     fn finish_application_view_restore(&mut self) -> Result<(), ThawError> {
-        capability_mut::<dyn ApplicationViewState>(self.content.as_mut()).map_or(
-            Ok(()),
-            ApplicationViewState::finish_application_view_restore,
-        )
+        with_app_view_mut(&mut self.content, |view| {
+            capability_mut::<dyn ApplicationViewState>(view).map_or(
+                Ok(()),
+                ApplicationViewState::finish_application_view_restore,
+            )
+        })
     }
 }
 

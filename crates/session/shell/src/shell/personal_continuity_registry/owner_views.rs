@@ -3,8 +3,8 @@
 use super::{AppInstanceId, LaunchIntent, ResumeMetadata, RoomId};
 use crate::shell::network::AuthenticatedPersonalRoute;
 use crate::shell::personal_continuity::ContinuityStamp;
+use collab_types::handoff::{OwnerProjection, OwnerView};
 use std::collections::BTreeMap;
-use ui::collaboration::owner_view::{OwnerProjection, OwnerView};
 
 type Key = (RoomId, String, AppInstanceId);
 #[derive(Clone, Debug)]

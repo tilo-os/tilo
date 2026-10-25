@@ -512,7 +512,8 @@ fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves(
                 fanout.subscribe_rooms(
                     vec![subscribed_room],
                     Box::new(move |event, _| {
-                        if let ui::collaboration::CollabEvent::FollowChanged { peer_id } = event {
+                        if let runtime_collab::event::CollabEvent::FollowChanged { peer_id } = event
+                        {
                             events.lock().unwrap().push((app, peer_id.clone()));
                         }
                     }),

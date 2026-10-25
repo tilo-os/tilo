@@ -817,6 +817,51 @@ struct PromptQueueState {
     /// this beside the queue closes the close/enqueue race without ever
     /// cancelling an unrelated prompt.
     cancelled: HashSet<String>,
+    /// The questions on screen or waiting for it, one per app, room and
+    /// capability: an app asking again before the person answered gets no
+    /// second sheet ([`PromptQueueHandle::begin_asking`]).
+    asking: HashSet<String>,
+    /// Request-owned prompts whose resolver is still waiting, by request
+    /// key. Once the sheet has left `pending` for the screen its reply
+    /// sender travels with it, so `Request.Close` reaches the waiting
+    /// resolver through this instead ([`PromptQueueHandle::watch_withdrawal`]).
+    withdrawals: HashMap<String, oneshot::Sender<()>>,
+}
+
+/// Wakes a request-owned prompt's resolver when its request is closed, even
+/// after the sheet was taken onto the screen. The resolver then drops its
+/// reply receiver, which retires the sheet, and gives up its place in
+/// [`PromptQueueState::asking`].
+struct Withdrawal {
+    state: Arc<Mutex<PromptQueueState>>,
+    key: String,
+    withdrawn: oneshot::Receiver<()>,
+}
+
+impl Drop for Withdrawal {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.withdrawals.remove(&self.key);
+            // A close that raced the enqueue left its key behind; the
+            // request is over either way.
+            state.cancelled.remove(&self.key);
+        }
+    }
+}
+
+/// Holds one question's place in [`PromptQueueState::asking`] until the
+/// person answers it or its request goes away.
+struct Asking {
+    state: Arc<Mutex<PromptQueueState>>,
+    key: String,
+}
+
+impl Drop for Asking {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.asking.remove(&self.key);
+        }
+    }
 }
 
 impl PromptQueueHandle {
@@ -884,18 +929,52 @@ impl PromptQueueHandle {
         rx
     }
 
+    /// Claim the one prompt `consent_key` (an app, its room and a
+    /// capability) may have pending. `None` while that same question is
+    /// already waiting for the person: an app that repeats it before they
+    /// answer is refused instead of stacking sheet after sheet.
+    fn begin_asking(&self, consent_key: &str) -> Option<Asking> {
+        let mut state = self.state.lock().ok()?;
+        state.asking.insert(consent_key.to_owned()).then(|| Asking {
+            state: self.state.clone(),
+            key: consent_key.to_owned(),
+        })
+    }
+
+    /// Watch for `request_key`'s request being closed while its prompt waits
+    /// for the person ([`Self::cancel_request`]).
+    fn watch_withdrawal(&self, request_key: &str) -> Withdrawal {
+        let (tx, withdrawn) = oneshot::channel();
+        if let Ok(mut state) = self.state.lock() {
+            state.withdrawals.insert(request_key.to_owned(), tx);
+        }
+        Withdrawal {
+            state: self.state.clone(),
+            key: request_key.to_owned(),
+            withdrawn,
+        }
+    }
+
     /// Cancel precisely one request-owned prompt. The removed receiver is
-    /// resolved as Deny so the D-Bus method returns promptly; unkeyed prompts
-    /// and other request handles remain untouched.
+    /// resolved as Deny so the D-Bus method returns promptly; a sheet already
+    /// on screen is withdrawn by waking its resolver, which stops waiting for
+    /// it. Unkeyed prompts and other request handles remain untouched.
     pub fn cancel_request(&self, request_key: &str) -> bool {
-        let removed = self.state.lock().ok().and_then(|mut state| {
-            state.cancelled.insert(request_key.into());
-            state
+        let (removed, waiting) = self.state.lock().ok().map_or((None, None), |mut state| {
+            let removed = state
                 .pending
                 .iter()
                 .position(|pending| pending.request_key.as_deref() == Some(request_key))
-                .map(|index| state.pending.remove(index))
+                .map(|index| state.pending.remove(index));
+            if removed.is_some() {
+                return (removed, None);
+            }
+            state.cancelled.insert(request_key.into());
+            (None, state.withdrawals.remove(request_key))
         });
+        if let Some(waiting) = waiting {
+            let _ = waiting.send(());
+        }
         if let Some(pending) = removed {
             let _ = pending.reply.send(PromptOutcome::Deny);
             true
@@ -1080,8 +1159,8 @@ impl ConsentContext for PortalContext {
 
 pub mod flow {
     use super::{
-        Capability, CapabilityKind, ConsentContext, GRANT_ALWAYS, GRANT_ONCE, PortalCaller,
-        PromptOutcome,
+        Capability, CapabilityKind, ConsentContext, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
+        PortalCaller, PromptOutcome,
     };
 
     pub async fn resolve(
@@ -1115,14 +1194,34 @@ pub mod flow {
         let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
             return PromptOutcome::Deny;
         };
-        // Fast path — `Always`-scoped grant already present.
-        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
-            return PromptOutcome::AllowAlways;
+        // An answer that still stands is not asked again: "Always", and
+        // "This session" until the session ends.
+        match ctx.grants().lookup(&caller, kind) {
+            Some(GRANT_ALWAYS) => return PromptOutcome::AllowAlways,
+            Some(GRANT_SESSION) => return PromptOutcome::AllowSession,
+            _ => {}
         }
+        let Some(_asking) = ctx.prompts().begin_asking(&consent_key) else {
+            return PromptOutcome::Deny;
+        };
+        // Watch before enqueueing, so no close can fall between the two.
+        let withdrawal = request_key
+            .as_deref()
+            .map(|key| ctx.prompts().watch_withdrawal(key));
         let rx = ctx
             .prompts()
             .enqueue_inner(caller.clone(), cap_template, request_key);
-        match rx.await {
+        let answered = match withdrawal {
+            // An answer that arrived first still counts; a withdrawn request
+            // stops waiting, which takes its sheet off the screen.
+            Some(mut withdrawal) => tokio::select! {
+                biased;
+                answered = rx => answered,
+                Ok(()) = &mut withdrawal.withdrawn => return PromptOutcome::Deny,
+            },
+            None => rx.await,
+        };
+        match answered {
             Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
             // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
             Err(_) => PromptOutcome::Deny,
@@ -1424,6 +1523,171 @@ mod tests {
 
     fn empty_ws(id: u64) -> Workspace {
         Workspace::new(WorkspaceId(id), "t")
+    }
+
+    #[tokio::test]
+    async fn this_session_is_not_asked_again_until_the_session_ends() {
+        let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(41));
+        let queue = PromptQueueHandle::new(PromptResolver::Channel);
+        let ctx = (store.clone(), queue.clone());
+        let caller = PortalCaller::new(id, "org.example.Meet");
+        let ask = || {
+            flow::resolve_for_request(
+                &ctx,
+                caller.clone(),
+                CapabilityKind::Camera,
+                Capability::Camera { scope: GRANT_ONCE },
+                "/request/camera".into(),
+            )
+        };
+        let first = ask();
+        tokio::pin!(first);
+        assert!(futures_util::poll!(&mut first).is_pending());
+        let prompts = queue.drain();
+        assert_eq!(prompts.len(), 1);
+        for prompt in prompts {
+            let _ = prompt.reply.send(PromptOutcome::AllowSession);
+        }
+        assert_eq!(first.await, PromptOutcome::AllowSession);
+
+        let again = ask();
+        tokio::pin!(again);
+        assert_eq!(
+            futures_util::poll!(&mut again),
+            std::task::Poll::Ready(PromptOutcome::AllowSession),
+            "an app allowed for this session must not be asked again"
+        );
+        assert_eq!(queue.queued_len(), 0);
+
+        // A different capability is its own question.
+        let microphone = flow::resolve(
+            &ctx,
+            caller.clone(),
+            CapabilityKind::Microphone,
+            Capability::Microphone { scope: GRANT_ONCE },
+        );
+        tokio::pin!(microphone);
+        assert!(futures_util::poll!(&mut microphone).is_pending());
+        assert_eq!(queue.queued_len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_app_repeating_a_question_gets_one_sheet_until_it_is_answered() {
+        let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(42));
+        let queue = PromptQueueHandle::new(PromptResolver::Channel);
+        let ctx = (store, queue.clone());
+        let caller = PortalCaller::new(id, "org.example.Nag");
+        let ask = || {
+            flow::resolve(
+                &ctx,
+                caller.clone(),
+                CapabilityKind::Camera,
+                Capability::Camera { scope: GRANT_ONCE },
+            )
+        };
+        let first = ask();
+        tokio::pin!(first);
+        assert!(futures_util::poll!(&mut first).is_pending());
+        for _ in 0..20 {
+            assert_eq!(
+                ask().await,
+                PromptOutcome::Deny,
+                "a repeat of a question still on screen is refused, not stacked"
+            );
+        }
+        assert_eq!(queue.queued_len(), 1, "one sheet, however often it asks");
+
+        // Another app, or another question, is not held back by it.
+        let other = PortalCaller::new(id, "org.example.Other");
+        let other_camera = flow::resolve(
+            &ctx,
+            other,
+            CapabilityKind::Camera,
+            Capability::Camera { scope: GRANT_ONCE },
+        );
+        tokio::pin!(other_camera);
+        assert!(futures_util::poll!(&mut other_camera).is_pending());
+        let microphone = flow::resolve(
+            &ctx,
+            caller.clone(),
+            CapabilityKind::Microphone,
+            Capability::Microphone { scope: GRANT_ONCE },
+        );
+        tokio::pin!(microphone);
+        assert!(futures_util::poll!(&mut microphone).is_pending());
+        assert_eq!(queue.queued_len(), 3);
+
+        // Once the person has answered, the app may ask again.
+        let prompts = queue.drain();
+        let first_prompt = prompts
+            .into_iter()
+            .find(|prompt| {
+                prompt.caller.app_id.as_str() == "org.example.Nag"
+                    && matches!(prompt.capability, Capability::Camera { .. })
+            })
+            .expect("the first camera question is queued");
+        first_prompt.reply.send(PromptOutcome::Deny).unwrap();
+        assert_eq!(first.await, PromptOutcome::Deny);
+        {
+            let again = ask();
+            tokio::pin!(again);
+            assert!(futures_util::poll!(&mut again).is_pending());
+            assert_eq!(queue.queued_len(), 1);
+        }
+
+        // A sheet that could not be shown gives its place up too.
+        let _ = queue.drain();
+        let after_unshown = ask();
+        tokio::pin!(after_unshown);
+        assert!(futures_util::poll!(&mut after_unshown).is_pending());
+        assert_eq!(queue.queued_len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_request_closed_while_its_sheet_is_up_takes_the_sheet_down() {
+        let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(43));
+        let queue = PromptQueueHandle::new(PromptResolver::Channel);
+        let ctx = (store, queue.clone());
+        let caller = PortalCaller::new(id, "org.example.Meet");
+        let ask = |request: &'static str| {
+            flow::resolve_for_request(
+                &ctx,
+                caller.clone(),
+                CapabilityKind::Camera,
+                Capability::Camera { scope: GRANT_ONCE },
+                request.into(),
+            )
+        };
+        let first = ask("/request/first");
+        tokio::pin!(first);
+        assert!(futures_util::poll!(&mut first).is_pending());
+        // The compositor takes the sheet onto the screen.
+        let on_screen = queue.drain();
+        assert_eq!(on_screen.len(), 1);
+
+        // Closing someone else's request leaves this one waiting.
+        assert!(queue.cancel_request("/request/elsewhere"));
+        assert!(futures_util::poll!(&mut first).is_pending());
+        assert!(!on_screen[0].reply.is_closed());
+
+        // The app withdraws its request while the person has not answered.
+        assert!(queue.cancel_request("/request/first"));
+        assert_eq!(
+            first.await,
+            PromptOutcome::Deny,
+            "a withdrawn request stops waiting for its sheet"
+        );
+        assert!(
+            on_screen[0].reply.is_closed(),
+            "the withdrawn request's sheet leaves the screen"
+        );
+
+        // The app asks again: it gets a sheet, not a refusal held over from
+        // the question it withdrew.
+        let again = ask("/request/second");
+        tokio::pin!(again);
+        assert!(futures_util::poll!(&mut again).is_pending());
+        assert_eq!(queue.queued_len(), 1);
     }
 
     #[tokio::test]

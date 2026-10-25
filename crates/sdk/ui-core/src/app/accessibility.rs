@@ -598,7 +598,7 @@ impl App {
         sweep.nodes.clear();
         sweep.any_unbound = false;
         for &node in self.layout.node_map.keys() {
-            sweep.any_unbound |= self.bindings.binding_for(node).is_none();
+            sweep.any_unbound |= self.bindings.binding_ref(node).is_none();
             // SAFETY: the admitted layout is unchanged and nothing escapes.
             let takes_part = self.bindings.has_owner(node)
                 || unsafe {

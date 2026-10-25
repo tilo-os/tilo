@@ -105,6 +105,21 @@ pub struct ExportedAction {
     pub input: ExportedInput,
 }
 
+/// One application connection's exported actions, as the broker's action
+/// catalogue lists them to an application.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct BrokerActionSurface {
+    pub peer_id: u64,
+    /// Stable route for retained offers; not a connection or trusted publisher.
+    #[serde(default)]
+    pub provider: Option<String>,
+    pub app_id: String,
+    pub cluster_id: String,
+    pub record_id: String,
+    pub live: bool,
+    pub actions: Vec<ExportedAction>,
+}
+
 impl ExportedAction {
     /// The typed descriptor this action exports, run at `locus`: the wire
     /// carries no locus of its own.

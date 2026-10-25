@@ -1638,25 +1638,15 @@ impl ChatApp {
             }
             Attachment::Image { blob, .. } => {
                 let image = self.images.get(&crate::images::blob_key(blob));
-                let status = if image.is_some() {
-                    None
-                } else if blob.starts_with(crate::images::DEMO_SCHEME) {
-                    Some("Loading")
-                } else {
-                    Some(match self.content.state(blob) {
-                        tilo_content::ContentState::Pending => "Loading",
-                        tilo_content::ContentState::Waiting => "Waiting for a device that has it",
-                        tilo_content::ContentState::Unavailable => "Unavailable",
-                        tilo_content::ContentState::Resolved => "Opening",
-                    })
-                };
                 let mut meta = media_meta(att);
-                if let Some(status) = status {
-                    meta.push(status.to_owned());
-                }
-                let art = image
-                    .as_ref()
-                    .map_or(MediaArt::Placeholder, MediaArt::Image);
+                let step = (image.is_none() && !blob.starts_with(crate::images::DEMO_SCHEME))
+                    .then(|| self.image_arrival(blob, &mut meta))
+                    .flatten();
+                let art = match (&image, step) {
+                    (Some(image), _) => MediaArt::Image(image),
+                    (None, Some(step)) => MediaArt::Arriving(step),
+                    (None, None) => MediaArt::Placeholder,
+                };
                 let (w, face) = media_face(att, art, &meta, max_w, theme);
                 let h = face.height(ctx.text, theme, w);
                 face.paint(
@@ -2124,7 +2114,7 @@ impl ChatApp {
     }
 
     /// A detail panel's part of the header row: its title, and its close
-    /// control (Back on a pushed page). Returns the header band.
+    /// control. Returns the header band.
     fn draw_panel_header(
         &self,
         paint: PaintCtx<'_>,
@@ -2147,53 +2137,25 @@ impl ChatApp {
             panel.y0 + self.chrome.header_h,
         );
         let target = ButtonFace::height(ControlSize::Regular, theme);
-        let page = self.thread_is_page();
-        let back_label = if matches!(&close_hit, Hit::CloseThread) {
-            crate::i18n::t("chat-thread-back")
-        } else {
-            "Back".into()
-        };
         let close_label = if matches!(&close_hit, Hit::CloseThread) {
             crate::i18n::t("chat-thread-close")
         } else {
             "Close".into()
         };
-        let mut title_x = head.x0 + f64::from(sp.s4);
-        let close = if page {
-            let back = square(
-                Point::new(head.x0 + f64::from(sp.s3) + target / 2.0, head.center().y),
-                target,
-            );
-            title_x = back.x1 + f64::from(sp.s2);
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::icon_only(back, Icon::ChevronLeft, &back_label)
-                    .hovered(self.hovered(back)),
-            );
-            back
-        } else {
-            let x = square(
-                Point::new(head.x1 - f64::from(sp.s3) - target / 2.0, head.center().y),
-                target,
-            );
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::icon_only(x, Icon::X, &close_label).hovered(self.hovered(x)),
-            );
-            x
-        };
+        let title_x = head.x0 + f64::from(sp.s4);
+        let close = square(
+            Point::new(head.x1 - f64::from(sp.s3) - target / 2.0, head.center().y),
+            target,
+        );
+        Button::paint(
+            scene,
+            tf,
+            tr,
+            theme,
+            &ButtonFace::icon_only(close, Icon::X, &close_label).hovered(self.hovered(close)),
+        );
         ChatApp::push_hit(hits, close, close_hit);
-        let right = if page {
-            head.x1 - f64::from(sp.s4)
-        } else {
-            close.x0 - f64::from(sp.s2)
-        };
+        let right = close.x0 - f64::from(sp.s2);
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         line_in(
             &mut ctx,
@@ -2216,6 +2178,25 @@ impl ChatApp {
         head
     }
 
+    /// The open thread's title: its agent work's state, else Thread.
+    pub(crate) fn thread_title(&self) -> String {
+        self.messages
+            .iter()
+            .rev()
+            .filter(|message| {
+                self.thread_open.as_deref().is_some_and(|parent| {
+                    message.id == parent || message.parent.as_deref() == Some(parent)
+                })
+            })
+            .find_map(|message| message.work.as_ref()?.stream.as_ref())
+            .map_or_else(
+                || crate::i18n::t("chat-thread-title"),
+                |stream| crate::i18n::t(stream.status_key()),
+            )
+    }
+
+    /// The thread panel's header; a thread that fills the window has none:
+    /// the window bar leads it with Back and names it.
     fn draw_thread_header(
         &self,
         scene: &mut Scene,
@@ -2225,23 +2206,13 @@ impl ChatApp {
         panel: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> Rect {
+        if self.thread_is_page() {
+            return Rect::new(panel.x0, panel.y0, panel.x1, panel.y0);
+        }
         self.draw_panel_header(
             PaintCtx::new(scene, tf, tr, theme),
             panel,
-            &self
-                .messages
-                .iter()
-                .rev()
-                .filter(|message| {
-                    self.thread_open.as_deref().is_some_and(|parent| {
-                        message.id == parent || message.parent.as_deref() == Some(parent)
-                    })
-                })
-                .find_map(|message| message.work.as_ref()?.stream.as_ref())
-                .map_or_else(
-                    || crate::i18n::t("chat-thread-title"),
-                    |stream| crate::i18n::t(stream.status_key()),
-                ),
+            &self.thread_title(),
             Hit::CloseThread,
             hits,
         )

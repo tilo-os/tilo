@@ -742,6 +742,8 @@ pub enum WebViewCommand {
         /// Where its declared content scripts run, which, as in Chrome, gives
         /// no access to the tab APIs.
         scriptable: Vec<String>,
+        /// Where they run in a page's frames too (`all_frames`).
+        framed: Vec<String>,
         /// What its service worker shows the engine to be known as its.
         token: Option<String>,
         /// Its keyboard shortcuts: the manifest's `commands` object, whose
@@ -932,6 +934,12 @@ pub enum WebViewEvent {
     ExtensionPermissions {
         id: String,
         granted: ExtensionPermissionSet,
+    },
+    /// The page an extension asked for more access on closed before the
+    /// person answered: the extension was told no, and the question
+    /// ([`WebViewEvent::ExtensionPermissionRequest`]) goes unanswered.
+    ExtensionPermissionClosed {
+        request: u32,
     },
     /// An extension asked to open one of the engine's complete downloads
     /// (`chrome.downloads.open`), or show it in its folder (`reveal`,

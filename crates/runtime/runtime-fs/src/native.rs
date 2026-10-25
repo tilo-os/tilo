@@ -23,10 +23,7 @@ use crate::{EntryKind, MAX_READ_CHUNK, MAX_WRITE_CHUNK, Metadata};
 use cap_std::fs::{Dir, File, MetadataExt};
 use rustix::fs::OFlags;
 
-// Metadata and the wire protocol use u32; Darwin's libc mode_t is u16.
-pub(crate) fn mode_bits(mode: impl Into<u32>) -> u32 {
-    mode.into()
-}
+pub(crate) use tilo_fs_client::directory_types::mode_bits;
 
 #[path = "native/history_read_subject.rs"]
 mod history_read_subject;

@@ -405,6 +405,7 @@ impl SlideData {
     label = "Deck",
     initialize = Deck::starter,
     search = crate::search::entries,
+    facts = crate::outline::facts,
     answer = Deck::outline
 )]
 impl Deck {

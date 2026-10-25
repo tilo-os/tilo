@@ -719,6 +719,8 @@ pub struct QuickFS {
     /// Durable local pin/replica/transfer registry. The FUSE path only reads
     /// its in-memory state; persistence happens at mutation points.
     availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
+    /// Files reads found whole, written to `availability` together.
+    stored_writes: Arc<unavailable::StoredWrites>,
     /// One bounded worker owns automatic hydration for durable file/folder
     /// pins. It is woken by policy changes and also reconciles periodically so
     /// later descendants and later immutable versions inherit the promise.
@@ -804,6 +806,7 @@ impl QuickFS {
             enforcement: None,
             thumbs: None,
             availability: None,
+            stored_writes: Arc::default(),
             pinned_hydration: None,
             eviction_queue: None,
             share_authority: None,
@@ -1713,6 +1716,7 @@ impl QuickFS {
                     hydrator: Arc::clone(&self.hydrator),
                     hash,
                     version: revision.version_id,
+                    stored: Arc::clone(&self.stored_writes),
                 }
             })
         });

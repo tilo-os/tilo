@@ -176,6 +176,12 @@ pub(super) struct ActiveTurn {
     completed: usize,
     /// Calls the stream has begun, by index.
     begun: HashSet<usize>,
+    /// Stops the turn when the loop lets go of it.
+    #[allow(
+        dead_code,
+        reason = "held only to be dropped: letting go of the turn stops its model call"
+    )]
+    stop: Option<crate::model::TurnStop>,
 }
 
 impl ActiveTurn {
@@ -190,6 +196,7 @@ impl ActiveTurn {
             published_at: ui::time::now(),
             completed: 0,
             begun: HashSet::new(),
+            stop: None,
         }
     }
 
@@ -208,7 +215,7 @@ impl ActiveTurn {
                 }
             }
             TurnEvent::Frame { event, output } => {
-                if event == tilo_model_gateway::EVENT_TOOL_CALL_DELTA {
+                if event == tilo_model_client::EVENT_TOOL_CALL_DELTA {
                     if let Ok(frame) = serde_json::from_str::<Value>(&output)
                         && let Some(index) = frame
                             .get("index")
@@ -218,7 +225,7 @@ impl ActiveTurn {
                     {
                         self.begun.insert(index);
                     }
-                } else if event == tilo_model_gateway::EVENT_TOOL_CALL
+                } else if event == tilo_model_client::EVENT_TOOL_CALL
                     && let Some(call) = streamed_call(&output, self.completed)
                 {
                     self.completed += 1;
@@ -1155,8 +1162,9 @@ impl Session {
         // the host and is not waited for: its answer is read while the model
         // thinks, and before any step of this turn reaches the host.
         let turn_began = ui::time::now();
-        let rx = self.chooser.start_turn(body, timeout, turn);
+        let (rx, stop) = self.chooser.start_turn(body, timeout, turn);
         let mut active = ActiveTurn::new(rx);
+        active.stop = Some(stop);
         active.presentation_run = format!("{}:{turn}", run.run_id);
         self.turn = Some(active);
         self.poll_cancellation(run)?;
@@ -1289,7 +1297,7 @@ impl Session {
             Ok(body) => body,
             Err(error) => {
                 self.chooser
-                    .mark(tilo_model_gateway::TraceEvent::PlanFailed, turn);
+                    .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
                 if let Some(end) = state.finished_despite_failed_plan(&error) {
                     return Ok(Some(end));
                 }
@@ -1314,7 +1322,7 @@ impl Session {
             }
             Err(error) => {
                 self.chooser
-                    .mark(tilo_model_gateway::TraceEvent::PlanFailed, turn);
+                    .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
                 if let Some(end) = state.finished_despite_failed_plan(&error) {
                     return Ok(Some(end));
                 }
@@ -1429,7 +1437,7 @@ impl Session {
         match finish {
             Some(Finishing { said, .. }) if !failed => {
                 self.chooser
-                    .mark(tilo_model_gateway::TraceEvent::PlanReady, turn);
+                    .mark(tilo_model_client::TraceEvent::PlanReady, turn);
                 Ok(Some(LoopEnd::Finished(said, state.completed)))
             }
             _ => Ok(None),
@@ -1854,7 +1862,7 @@ impl Session {
             index,
         } = succeeded;
         self.chooser
-            .mark(tilo_model_gateway::TraceEvent::ActionSettled, index);
+            .mark(tilo_model_client::TraceEvent::ActionSettled, index);
         state.completed += 1;
         state.previous = Some(outcome.clone());
         let view = offer.descriptor.kind == tilo_actions::OperationKind::View;
@@ -1948,7 +1956,7 @@ impl Session {
         }
         let index = state.completed + state.in_flight.len();
         self.chooser
-            .mark(tilo_model_gateway::TraceEvent::ActionSubmitted, index);
+            .mark(tilo_model_client::TraceEvent::ActionSubmitted, index);
         let started = self.start_task_invocation(run, &prepared.action, &prepared.arguments)?;
         state.step_index += 1;
         match started {
@@ -2559,7 +2567,7 @@ mod tests {
                     end += 1;
                 }
                 events.push(TurnEvent::Frame {
-                    event: tilo_model_gateway::EVENT_TOOL_CALL_DELTA.into(),
+                    event: tilo_model_client::EVENT_TOOL_CALL_DELTA.into(),
                     output: serde_json::json!({
                         "index": index, "id": id, "name": name, "delta": &text[start..end]
                     })
@@ -2568,7 +2576,7 @@ mod tests {
                 start = end;
             }
             events.push(TurnEvent::Frame {
-                event: tilo_model_gateway::EVENT_TOOL_CALL.into(),
+                event: tilo_model_client::EVENT_TOOL_CALL.into(),
                 output: serde_json::json!({"id": id, "name": name, "arguments": text}).to_string(),
             });
             tool_calls.push(serde_json::json!({
@@ -2602,7 +2610,7 @@ mod tests {
                     end += 1;
                 }
                 events.push(TurnEvent::Frame {
-                    event: tilo_model_gateway::EVENT_TOOL_CALL_DELTA.into(),
+                    event: tilo_model_client::EVENT_TOOL_CALL_DELTA.into(),
                     output: serde_json::json!({
                         "index": index, "id": id, "name": name, "delta": &text[start..end]
                     })
@@ -2611,7 +2619,7 @@ mod tests {
                 start = end;
             }
             events.push(TurnEvent::Frame {
-                event: tilo_model_gateway::EVENT_TOOL_CALL.into(),
+                event: tilo_model_client::EVENT_TOOL_CALL.into(),
                 output: serde_json::json!({"id": id, "name": name, "arguments": text}).to_string(),
             });
             content.push(serde_json::json!({

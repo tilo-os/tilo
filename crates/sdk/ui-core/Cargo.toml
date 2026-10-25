@@ -3,7 +3,7 @@ name = "tilo-ui"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 autoexamples = false
@@ -194,7 +194,7 @@ runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", def
 capnp = { workspace = true, optional = true }
 capnp-rpc = { workspace = true, optional = true }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
-runtime-identity = { version = "0.1.0", path = "../../runtime/runtime-identity", optional = true }
+runtime-identity = { package = "tilo-identity-client", version = "0.1.0", path = "../../runtime/tilo-identity-client", optional = true }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
@@ -358,6 +358,7 @@ windows = { version = "0.62.2", optional = true, features = [
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [dev-dependencies]
+runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 # Deterministic swapchain lifecycle tests, without a display or GPU.
 wgpu = { workspace = true, features = ["custom", "noop"] }
 serial_test.workspace = true

@@ -9816,6 +9816,7 @@ impl Collaborative for FileExplorerWidget {
         }
         self.selected_open.event(event);
         self.poll_selected_open();
+        self.drives.event(event);
         let changed = self.handle_shortcut_event(event);
         let nearby_changed = self.handle_nearby_event(event);
         if changed || nearby_changed {
@@ -9996,7 +9997,7 @@ impl Widget for FileExplorerWidget {
             | listed
             | self.poll_cloud()
             | self.poll_mounted_cloud()
-            | self.poll_drives(ui::time::now())
+            | self.poll_drives()
             | self.poll_applications(ui::time::now())
     }
 
@@ -10409,6 +10410,14 @@ impl Widget for FileExplorerWidget {
             &self.submenu,
         ];
         v
+    }
+
+    /// The shell is laid out whether or not a panel covers it, so the
+    /// retained layout check walks it even while the panel keeps it from
+    /// routing.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.nav);
+        true
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {

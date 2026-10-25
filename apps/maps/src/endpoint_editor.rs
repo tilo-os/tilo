@@ -26,6 +26,8 @@ use crate::canvas::{self, MapPalette};
 use crate::model::Place;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
+/// Where typed places come from, as their placeholder names it.
+pub(crate) const GEOCODER: &str = "OpenStreetMap";
 const OVERLAY_MAX: usize = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +60,9 @@ struct Field {
     rect: Option<Rect>,
     /// Whether the geocoder has answered the current draft.
     searched: bool,
+    /// Since when the places for the current draft are on their way: the
+    /// keystroke that made it.
+    asked: Option<Instant>,
 }
 
 impl Field {
@@ -75,6 +80,7 @@ impl Field {
             results: Vec::new(),
             rect: None,
             searched: false,
+            asked: None,
         }
     }
 
@@ -95,13 +101,19 @@ impl Field {
             })
             .collect();
         self.input.set_suggestions_open(suggestions);
-        if editing && self.results.is_empty() && !self.query.trim().is_empty() {
-            let status = if self.searched {
-                "No places found"
-            } else {
-                "Searching…"
-            };
-            self.input.set_status(Some(status.to_string()));
+        let waiting = self.results.is_empty() && !self.query.trim().is_empty();
+        // The geocoder's places on their way: the list's placeholder
+        // stands where the first will be, and says where they come from.
+        self.input.set_arriving(
+            self.asked
+                .filter(|_| waiting && !self.searched)
+                .map(|asked| {
+                    ui::arriving::ArrivalClock::new(asked, ui::arriving::Source::host(GEOCODER))
+                }),
+        );
+        if editing && waiting {
+            self.input
+                .set_status(self.searched.then(|| "No places found".to_string()));
             self.input.open();
         }
     }
@@ -203,6 +215,14 @@ impl EndpointEditor {
     /// When the focused endpoint's typed query settles into a live geocode.
     pub(super) const fn query_deadline(&self) -> Option<Instant> {
         self.deadline
+    }
+
+    /// When a field's placeholder for places on their way steps on next.
+    pub(super) fn arriving_deadline(&self) -> Option<Instant> {
+        [&self.origin, &self.destination]
+            .into_iter()
+            .filter_map(|field| field.input.next_wake_deadline())
+            .min()
     }
 
     #[cfg(test)]
@@ -333,6 +353,7 @@ impl EndpointEditor {
         }
         text.clone_into(&mut field.query);
         field.searched = false;
+        field.asked = (!text.trim().is_empty()).then(ui::time::now);
         self.deadline = if text.trim().is_empty() {
             None
         } else {
@@ -394,6 +415,7 @@ impl EndpointEditor {
         field.query.clear();
         field.results.clear();
         field.searched = false;
+        field.asked = None;
         field.input.set_text("");
         field.input.begin_edit();
     }

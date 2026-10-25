@@ -169,19 +169,22 @@ jobs:
                 relay_inputs <= relay_blocks[0],
                 f"image-relay misses direct build/signing inputs: {sorted(relay_inputs - relay_blocks[0])}",
             )
+            # The kernel recipe builds tilo-crypto without default features
+            # (os/kernel/Containerfile, os/kernel/project-crate.py).
+            kernel_signer = ("--no-default-features",)
             pairs = (
-                ("tilo-relay", "image-relay"),
-                ("tilo-fs", "image-relay"),
-                ("tilo-crypto", "image-kernel-x86_64"),
-                ("tilo-crypto", "image-kernel-aarch64"),
+                ("tilo-relay", "image-relay", ()),
+                ("tilo-fs", "image-relay", ()),
+                ("tilo-crypto", "image-kernel-x86_64", kernel_signer),
+                ("tilo-crypto", "image-kernel-aarch64", kernel_signer),
             )
             violations: list[str] = []
-            for package, check in pairs:
+            for package, check, cargo_args in pairs:
                 blocks = t_check_blocks(t_text, check, package)
                 self.assertTrue(blocks, f"{check} names {package} in cargo_packages; audit its inputs instead")
                 violations.extend(
                     f"t.toml#{check}: {item}"
-                    for item in audit(repository_metadata, ROOT, package, "", blocks)
+                    for item in audit(repository_metadata, ROOT, package, "", blocks, cargo_args)
                 )
             self.assertEqual(violations, [])
         with self.subTest(phase='relay image inputs exclude test-only workspace edges'):
