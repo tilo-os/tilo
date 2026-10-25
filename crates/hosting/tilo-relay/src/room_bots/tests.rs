@@ -1415,3 +1415,29 @@ async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_
         "goal stands apart, as in Discord: {layout:?}"
     );
 }
+
+/// The image ships the Discord bridge as a program file; installing from it
+/// keeps the path as where the bot came from, and the program's own name as
+/// its name, rather than naming the bot after the path.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_installed_from_a_program_file_is_named_for_itself_not_its_path() {
+    let scratch = tempfile::tempdir().unwrap();
+    let program = scratch.path().join("discord-bridge.json");
+    std::fs::write(
+        &program,
+        include_str!("../../../../../apps/discord/bridge/program.json"),
+    )
+    .unwrap();
+    let file = program.to_str().unwrap();
+    let installed = installed::install(&scratch.path().join("bot"), file, serde_json::Map::new())
+        .await
+        .unwrap();
+    assert_eq!(installed.entry, file, "the program file it came from");
+    assert_eq!(installed.name, "Discord Bridge", "the program's own name");
+
+    // Kept, and read back unchanged: a restart installs nothing new.
+    let kept = installed::install(&scratch.path().join("bot"), file, serde_json::Map::new())
+        .await
+        .unwrap();
+    assert_eq!(kept, installed);
+}
