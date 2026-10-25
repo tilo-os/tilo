@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 # rollback_luks_device (os/usr/libexec/tilo-rollback-common) finds the LUKS2
 # partition under the root by content, through sysfs, as the TPM lockout
-# hardening, generation confirmation and repair mode need it. Needs cryptsetup.
+# hardening, generation confirmation and repair mode need it.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 W="$(mktemp -d)"
@@ -20,15 +20,16 @@ check() {
 
 # A booted composefs root: / is composefs (no block device), /sysroot is the
 # open LUKS2 mapping root (dm-0) on vda3. The kernel's record of that lives in
-# sysfs; a fake one with a real LUKS2 header for vda3 stands in for it.
+# sysfs; a fake one stands in for it. cryptsetup isLuks is answered from the
+# LUKS magic at the start of the device, so the suite needs no cryptsetup.
+cryptsetup() {
+  [ "$1" = isLuks ] && [ "$(head -c 6 "$2" | od -An -tx1 | tr -d ' \n')" = 4c554b53babe ]
+}
 fake="$W/fake-root"
 mkdir -p "$fake/sys/dev/block/253:0/dm" "$fake/sys/dev/block/253:0/slaves" "$fake/sys/dev/block/252:3" "$fake/dev"
 printf 'CRYPT-LUKS2-0123456789abcdef0123456789abcdef-root\n' >"$fake/sys/dev/block/253:0/dm/uuid"
 ln -s ../../252:3 "$fake/sys/dev/block/253:0/slaves/vda3"
-truncate -s 32M "$fake/dev/vda3"
-printf 'pass' >"$W/fake.key"
-cryptsetup luksFormat --type luks2 --batch-mode --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
-  --key-file "$W/fake.key" "$fake/dev/vda3" >/dev/null
+printf 'LUKS\272\276\000\002' >"$fake/dev/vda3"
 mounts() { # findmnt -nro MAJ:MIN MOUNT, from $FAKE_SYSROOT and $FAKE_ROOT
   case "$3" in /sysroot) [ -n "$FAKE_SYSROOT" ] && echo "$FAKE_SYSROOT" ;; /) echo "$FAKE_ROOT" ;; esac
 }
