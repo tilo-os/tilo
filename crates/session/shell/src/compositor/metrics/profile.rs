@@ -10,6 +10,8 @@
 //!   ([`super::CSV_HEADER`]), written by the same [`super::FrameRecorder`].
 //! - `phases.csv`: every pump phase and checkpoint `TILO_LOOP_TIMING` times,
 //!   keyed by the tick's `seq`, not only the slow ones it logs.
+//! - `work.csv`: integer work counters keyed by the same tick; unlike wall
+//!   time, these can be compared across machines for an identical workload.
 //! - `threads.csv`: each thread's CPU, sampled from `/proc/self/task` by a
 //!   thread of the profile's own, so the presenter, GPU and worker threads
 //!   are seen as well as the loop.
@@ -18,7 +20,7 @@
 //!
 //! Nothing here reaches outside the process: no ptrace, no
 //! `perf_event_open`, only what the process can already read about itself.
-//! While no profile runs, the loop's only cost is one atomic load per tick.
+//! While no profile runs, each recording site pays only an atomic load.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{DirBuilder, File, OpenOptions};
@@ -49,6 +51,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 const PHASES_HEADER: &str = "seq,phase,elapsed_us,items";
 const THREADS_HEADER: &str = "t_us,tid,thread,cpu_us";
+const WORK_HEADER: &str = "seq,counter,items";
 
 /// Whether a profile is recording: the one load the loop pays per tick.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -130,6 +133,18 @@ pub(crate) fn record_phase(name: &'static str, elapsed: Duration, items: Option<
     }
     if let Some(capture) = lock().capture.as_mut() {
         capture.phase(name, elapsed, items);
+    }
+}
+
+/// Record integer work, not elapsed time. Names describe operations only;
+/// never include queries, resource labels or application/document identities.
+/// A zero sample means observed no work; an absent counter is not a zero.
+pub(crate) fn record_work(name: &'static str, items: usize) {
+    if !active() {
+        return;
+    }
+    if let Some(capture) = lock().capture.as_mut() {
+        capture.work(name, items);
     }
 }
 
@@ -215,6 +230,13 @@ struct PhaseTotal {
     max_us: u64,
 }
 
+#[derive(Default, serde::Serialize)]
+struct WorkTotal {
+    samples: u64,
+    total: u64,
+    max: u64,
+}
+
 /// One profile being recorded.
 struct Capture {
     dir: PathBuf,
@@ -226,10 +248,12 @@ struct Capture {
     frames: TraceWriter,
     phases: TraceWriter,
     phase_totals: BTreeMap<&'static str, PhaseTotal>,
+    work: TraceWriter,
+    work_totals: BTreeMap<&'static str, WorkTotal>,
     /// Every tick, for the summary. A profile is at most [`MAX_SECONDS`].
     samples: Vec<FrameSample>,
     target_period_us: u32,
-    sampler: Option<Sampler>,
+    sampler: Sampler,
 }
 
 impl Capture {
@@ -239,10 +263,15 @@ impl Capture {
         let dir = new_profile_dir(root)?;
         let frames = csv_writer(&dir.join("frames.csv"), super::CSV_HEADER)?;
         let phases = csv_writer(&dir.join("phases.csv"), PHASES_HEADER)?;
+        let work = csv_writer(&dir.join("work.csv"), WORK_HEADER)?;
         let threads = private_file(&dir.join("threads.csv"))?;
         let started = Instant::now();
+        // A profile without its thread sampler could never publish a
+        // complete summary, so the start fails here instead of recording a
+        // profile whose threads.csv is never written.
+        let sampler = Sampler::spawn(io::BufWriter::new(threads), started)?;
         Ok(Self {
-            sampler: Sampler::spawn(threads, started),
+            sampler,
             dir,
             started,
             deadline: started.checked_add(length).unwrap_or(started),
@@ -252,6 +281,8 @@ impl Capture {
             frames,
             phases,
             phase_totals: BTreeMap::new(),
+            work,
+            work_totals: BTreeMap::new(),
             samples: Vec::new(),
             target_period_us: 0,
         })
@@ -267,6 +298,15 @@ impl Capture {
         total.max_us = total.max_us.max(us);
     }
 
+    fn work(&mut self, name: &'static str, items: usize) {
+        let items = u64::try_from(items).unwrap_or(u64::MAX);
+        let _ = writeln!(self.work, "{},{name},{items}", self.seq);
+        let total = self.work_totals.entry(name).or_default();
+        total.samples = total.samples.saturating_add(1);
+        total.total = total.total.saturating_add(items);
+        total.max = total.max.max(items);
+    }
+
     fn tick(&mut self, sample: &FrameSample, target_period_us: u32, now: Instant) {
         let _ = sample.write_csv_row(&mut self.frames);
         self.samples.push(*sample);
@@ -275,6 +315,7 @@ impl Capture {
         if now >= self.next_flush {
             let _ = self.frames.flush();
             let _ = self.phases.flush();
+            let _ = self.work.flush();
             self.next_flush = now.checked_add(FLUSH_INTERVAL).unwrap_or(now);
         }
     }
@@ -284,6 +325,7 @@ impl Capture {
     fn close(mut self, wait: bool) -> Finished {
         let _ = self.frames.flush();
         let _ = self.phases.flush();
+        let _ = self.work.flush();
         let seconds = self.started.elapsed().as_secs_f64();
         let finished = Finished {
             dir: self.dir.clone(),
@@ -294,17 +336,22 @@ impl Capture {
             "seconds": seconds,
             "frames": super::summarize(&self.samples, self.target_period_us),
             "phases": self.phase_totals,
+            "work_schema": 1,
+            "work": self.work_totals,
+            "build": {
+                "debug_assertions": cfg!(debug_assertions),
+                "target_arch": std::env::consts::ARCH,
+                "target_os": std::env::consts::OS,
+            },
         });
         let closing = Closing {
             frames: self.frames,
             phases: self.phases,
+            work: self.work,
             summary,
             dir: self.dir,
         };
-        match self.sampler.take() {
-            Some(sampler) => sampler.close(closing, wait),
-            None => closing.complete(BTreeMap::new()),
-        }
+        self.sampler.close(closing, wait);
         finished
     }
 }
@@ -313,6 +360,7 @@ impl Capture {
 struct Closing {
     frames: TraceWriter,
     phases: TraceWriter,
+    work: TraceWriter,
     summary: serde_json::Value,
     dir: PathBuf,
 }
@@ -321,8 +369,14 @@ impl Closing {
     /// Wait for the rows to reach their files, then write the summary, last
     /// and whole, so its presence means the profile is complete.
     fn complete(mut self, threads: BTreeMap<String, ThreadTotal>) {
-        let _ = self.frames.close();
-        let _ = self.phases.close();
+        let traces = [self.frames.close(), self.phases.close(), self.work.close()];
+        if let Some(error) = traces.into_iter().find_map(Result::err) {
+            eprintln!(
+                "compositor-profile: incomplete traces at {}: {error}",
+                self.dir.display()
+            );
+            return;
+        }
         let mut threads = threads.into_iter().collect::<Vec<_>>();
         threads.sort_by_key(|(_, total)| std::cmp::Reverse(total.cpu_us));
         let threads = threads
@@ -368,59 +422,103 @@ struct Sampler {
 }
 
 impl Sampler {
-    fn spawn(file: File, started: Instant) -> Option<Self> {
+    /// Sample into `out` on a thread of its own. Failing to spawn it is the
+    /// caller's error: without it the profile has no thread trace.
+    fn spawn(out: impl Write + Send + 'static, started: Instant) -> io::Result<Self> {
         let (closing, receive) = channel();
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("compositor-profile".to_owned())
-            .spawn(move || sample_threads(file, started, &receive))
-            .ok()
-            .map(|thread| Self { closing, thread })
+            .spawn(move || sample_threads(out, started, &receive))?;
+        Ok(Self { closing, thread })
     }
 
-    /// Hand the profile's completion to the sampler thread; `wait` for it.
+    /// Hand the profile's completion to the sampler thread, which finishes
+    /// the thread trace and then writes the summary; `wait` for it. A sampler
+    /// that is gone (it stopped on a trace write, or panicked) writes no
+    /// summary: its trace is short, so the profile is incomplete.
     fn close(self, closing: Closing, wait: bool) {
-        if let Err(unsent) = self.closing.send(closing) {
-            unsent.0.complete(BTreeMap::new());
-        } else if wait {
-            let _ = self.thread.join();
+        let dir = closing.dir.clone();
+        if self.closing.send(closing).is_err() {
+            // Nobody is left to finish the profile, and the hand-over closes
+            // the trace writers as it drops. The traces may be short, so no
+            // summary may claim the profile complete.
+            eprintln!(
+                "compositor-profile: thread sampler stopped; {} left incomplete",
+                dir.display()
+            );
+        }
+        if wait && self.thread.join().is_err() {
+            eprintln!(
+                "compositor-profile: thread sampler panicked; {} left incomplete",
+                dir.display()
+            );
         }
     }
 }
 
-fn sample_threads(file: File, started: Instant, closing: &Receiver<Closing>) {
-    let mut out = io::BufWriter::new(file);
-    let _ = writeln!(out, "{THREADS_HEADER}");
+/// Sample every thread's CPU into `out` until the profile ends. The trace is
+/// the sampler's to its last byte: a row or the final flush that cannot be
+/// written leaves it short, so no summary may claim the profile complete.
+fn sample_threads(mut out: impl Write, started: Instant, closing: &Receiver<Closing>) {
     // Each thread's CPU clock at the previous sample, and its name.
     let mut seen: HashMap<u32, (String, u64)> = HashMap::new();
     let mut totals: BTreeMap<String, ThreadTotal> = BTreeMap::new();
+    let mut error = writeln!(out, "{THREADS_HEADER}").err();
     loop {
-        let t_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-        for (tid, cpu_us) in thread_cpu_clocks() {
-            let (name, previous) = seen
-                .entry(tid)
-                .or_insert_with(|| (thread_name(tid), cpu_us));
-            let delta = cpu_us.saturating_sub(*previous);
-            *previous = cpu_us;
-            if delta > 0 {
-                let _ = writeln!(out, "{t_us},{tid},{name},{delta}");
-                let total = totals.entry(name.clone()).or_default();
-                total.cpu_us = total.cpu_us.saturating_add(delta);
+        if error.is_none() {
+            let t_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            for (tid, cpu_us) in thread_cpu_clocks() {
+                let (name, previous) = seen
+                    .entry(tid)
+                    .or_insert_with(|| (thread_name(tid), cpu_us));
+                let delta = cpu_us.saturating_sub(*previous);
+                *previous = cpu_us;
+                if delta > 0 {
+                    if let Err(failed) = writeln!(out, "{t_us},{tid},{name},{delta}") {
+                        error = Some(failed);
+                        break;
+                    }
+                    let total = totals.entry(name.clone()).or_default();
+                    total.cpu_us = total.cpu_us.saturating_add(delta);
+                }
             }
         }
-        match closing.recv_timeout(SAMPLE_INTERVAL) {
-            Ok(done) => {
-                let _ = out.flush();
-                drop(out);
+        // Wait for the profile's end, waking every interval to sample. After
+        // a failed write, keep waiting here rather than exiting, so the loop
+        // still hands the completion over and never waits on the disk itself.
+        let done = if error.is_none() {
+            match closing.recv_timeout(SAMPLE_INTERVAL) {
+                Ok(done) => Some(done),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        } else {
+            match closing.recv() {
+                Ok(done) => Some(done),
+                Err(_) => return,
+            }
+        };
+        let Some(done) = done else {
+            continue;
+        };
+        if error.is_none() {
+            error = out.flush().err();
+        }
+        drop(out);
+        match error {
+            Some(error) => eprintln!(
+                "compositor-profile: thread trace for {} incomplete: {error}",
+                done.dir.display()
+            ),
+            None => {
                 for (name, _) in seen.values() {
                     let total = totals.entry(name.clone()).or_default();
                     total.tids = total.tids.saturating_add(1);
                 }
                 done.complete(totals);
-                return;
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return,
         }
+        return;
     }
 }
 
@@ -557,6 +655,102 @@ fn prune(root: &Path, keep: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn work_counts_preserve_zero_samples_and_tick_attribution() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut capture = Capture::create(root.path(), Duration::from_secs(1)).expect("capture");
+        capture.seq = 7;
+        capture.work("test/candidates", 0);
+        capture.work("test/candidates", 5);
+        capture.seq = 9;
+        capture.work("test/candidates", 2);
+        let finished = capture.close(true);
+        let summary: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(finished.dir.join("summary.json")).expect("completed profile"),
+        )
+        .expect("summary");
+        assert_eq!(summary["work_schema"], 1);
+        assert_eq!(
+            summary["work"]["test/candidates"],
+            serde_json::json!({"samples": 3, "total": 7, "max": 5})
+        );
+        assert!(summary["work"].get("not-observed").is_none());
+        assert_eq!(
+            std::fs::read_to_string(finished.dir.join("work.csv")).expect("work trace"),
+            "seq,counter,items\n7,test/candidates,0\n7,test/candidates,5\n9,test/candidates,2\n"
+        );
+    }
+
+    fn replace_sampler(capture: &mut Capture, sampler: Sampler) {
+        let previous = std::mem::replace(&mut capture.sampler, sampler);
+        drop(previous.closing);
+        previous.thread.join().expect("previous sampler stopped");
+    }
+
+    #[test]
+    fn a_failed_sampler_exits_when_its_recording_is_abandoned() {
+        let (closing, receive) = channel::<Closing>();
+        drop(closing);
+        // A zero-sized output refuses the header. A disconnected recording
+        // must still end the sampler rather than spinning on the closed channel.
+        sample_threads(&mut [][..], Instant::now(), &receive);
+    }
+
+    /// A threads.csv sink that accepts every row, then refuses the last flush.
+    struct RefusesFlush;
+
+    impl Write for RefusesFlush {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("threads.csv flush failed"))
+        }
+    }
+
+    #[test]
+    fn a_thread_trace_that_cannot_flush_cannot_publish_a_complete_profile() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut capture = Capture::create(root.path(), Duration::from_secs(1)).expect("capture");
+        replace_sampler(
+            &mut capture,
+            Sampler::spawn(RefusesFlush, Instant::now()).expect("sampler"),
+        );
+        let finished = capture.close(true);
+        assert!(!finished.dir.join("summary.json").exists());
+    }
+
+    #[test]
+    fn a_sampler_that_is_gone_cannot_publish_a_complete_profile() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut capture = Capture::create(root.path(), Duration::from_secs(1)).expect("capture");
+        // The sampling thread stopped before the profile ended: its end of the
+        // channel is gone, as it is when the thread panics. The hand-over used
+        // to answer that by writing a summary with no threads in it.
+        let (closing, receive) = channel::<Closing>();
+        drop(receive);
+        replace_sampler(
+            &mut capture,
+            Sampler {
+                closing,
+                thread: std::thread::spawn(|| {}),
+            },
+        );
+        let finished = capture.close(false);
+        assert!(!finished.dir.join("summary.json").exists());
+    }
+
+    #[test]
+    fn a_failed_trace_cannot_publish_a_complete_profile() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut capture = Capture::create(root.path(), Duration::from_secs(1)).expect("capture");
+        capture.work = TraceWriter::with_sink(|_| Err(io::Error::other("failed sink")));
+        capture.work("test/candidates", 1);
+        let finished = capture.close(true);
+        assert!(!finished.dir.join("summary.json").exists());
+    }
 
     #[test]
     fn stat_and_schedstat_parse_to_microseconds() {

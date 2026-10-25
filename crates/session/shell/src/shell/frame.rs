@@ -1357,6 +1357,7 @@ impl FrameBuilder {
     }
 
     fn rebuild_layout_tree(&mut self) {
+        crate::compositor::metrics::profile::record_work("layout/tree-builds", 1);
         #[cfg(test)]
         {
             self.layout_tree_builds = self
@@ -1954,6 +1955,7 @@ impl FrameBuilder {
     /// re-runs, unless `take_structure_dirty()` says otherwise, in which
     /// case the taffy tree rebuilds first.
     pub fn relayout(&mut self) {
+        crate::compositor::metrics::profile::record_work("layout/solves", 1);
         #[cfg(test)]
         {
             self.layout_passes = self

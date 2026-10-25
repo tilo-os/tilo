@@ -1539,6 +1539,11 @@ impl SearchRegistry {
                         budget,
                     )
                 };
+                crate::compositor::metrics::profile::record_work("search/provider-pages", 1);
+                crate::compositor::metrics::profile::record_work(
+                    "search/provider-rows",
+                    page.results.len(),
+                );
                 pages = pages.saturating_add(1);
                 advanced = true;
                 source.note_page(&page);

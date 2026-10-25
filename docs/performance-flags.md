@@ -332,13 +332,71 @@ kept. It reuses the loop's own instruments:
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `frames.csv`   | One row per loop tick, the `TILO_FRAME_TRACE` columns (`--resummarize` above reads it).                                                                                                                                                                                                       |
 | `phases.csv`   | `seq,phase,elapsed_us,items`: every pump phase and checkpoint `TILO_LOOP_TIMING` times, the widget pump's parts (`widget-pump/*`), the overlay host's update steps and the retained scene build's (`scene/*`), joined to `frames.csv` on `seq`. `TILO_LOOP_TIMING` alone logs only slow ones. |
+| `work.csv` | `seq,counter,items`: integer work counts joined to the same tick. Counter names contain no application or document identities. |
 | `threads.csv`  | `t_us,tid,thread,cpu_us`: CPU each thread used since the previous sample, read from `/proc/self/task` every 50 ms by the profile's own `compositor-profile` thread (which appears in it). Presenter, GPU and worker threads show here, not only the loop.                                     |
-| `summary.json` | Frame summary (as `TILO_FRAME_SUMMARY`), per-phase count/total/max, per-thread CPU totals. Written last; the profile is complete once it exists.                                                                                                                                              |
+| `summary.json` | Frame summary (as `TILO_FRAME_SUMMARY`), per-phase count/total/max, per-thread CPU totals, and work-counter samples/total/max (`work_schema: 1`). Includes target OS/architecture and assertion mode. Written last, only after all trace writers close successfully; missing means incomplete.                                                                                                                                              |
 
-While no profile records, the loop pays one atomic load per tick. Rows are
+While no profile records, each recording site pays only an atomic load. Rows are
 handed to writer threads once a second, so a profile never puts the loop in the
 disk's queue. Nothing records application content: the trace names which app ids
-committed frames, which is why the files are private.
+committed frames, which is why the files are private. Completion establishes
+that the recorded traces were written, not that every thread CPU clock was
+observable: `/proc` sampling remains best-effort. Missing observations must not
+be interpreted as zero CPU usage.
+
+### Comparing work across computing environments
+
+Treat elapsed time, amount of work, and workload identity as separate evidence.
+A faster machine can hide redundant work; a lower operation count does not by
+itself prove lower latency. Neither CPU cycles nor retired instructions are
+fully portable: compiler, architecture, inputs and cache state affect them.
+
+For reproducible comparisons:
+
+1. Fix the workload: the same fixture, operation sequence and operation count,
+   locale, theme, viewport, scale, source sizes and result limits. Warm up
+   outside the recording, and measure cold start separately. A fresh process
+   does not imply cold filesystem or shader caches; record their actual state.
+   Use semantic
+   actions where possible: pointer-event coalescing can differ across hosts.
+2. Start the existing owner profile, replay the fixed operations, then stop it.
+   Do not compare "as many operations as possible in 30 seconds" as equal work.
+   Keep the binary hash, compiler, features and build flags with the results;
+   assertion mode alone does not identify an optimisation profile.
+3. Compare `work` totals and counts per replayed operation first. A recorded
+   zero is observed zero work; a missing counter is unknown, not zero. Compare
+   only compatible counter schemas and definitions. Counts include only the
+   instrumented work, not an estimate of all CPU instructions.
+4. For timing, alternate before/after runs on the **same** host, keep cold and
+   warm samples separate, report median and tails, and retain the raw traces.
+   CPU time helps distinguish computation from scheduling or I/O waits, but
+   is not a hardware-independent score. Validate representative changes in
+   both debug and release before making claims about their relative speed.
+5. Use the owner profile's phase and thread CPU breakdowns to narrow the
+   expensive area; it is not a stack sampler or a GPU timestamp capture. Do
+   not weaken Tilo's ptrace or perf restrictions. On a host that permits it,
+   launch a controlled CPU benchmark under a stack sampler to locate hot
+   functions, or use Callgrind/Cachegrind instruction and simulated cache counts
+   with a fixed binary and simulator configuration. Those counts describe
+   that model, not actual GPU performance or panel latency.
+
+Current work counters:
+
+| Counter | Meaning |
+| --- | --- |
+| `layout/tree-builds` | Layout-tree rebuild attempts. |
+| `layout/solves` | Layout solve attempts. |
+| `search/provider-pages` | Provider page queries, including empty or stale replies. |
+| `search/provider-rows` | Rows returned by those queries, before registry filtering. |
+| `host-apps/dedup-inputs` | Host entries passed to alias deduplication. |
+| `host-apps/dedup-candidates` | Previously retained apps examined for a duplicate, after name grouping. |
+
+For example, 512 host entries with distinct names previously required 130,816
+candidate comparisons. The grouped algorithm examines zero duplicate candidates
+and retains all 512 entries; it still performs name hashing and output
+construction. This is a portable algorithmic regression check, not a claim of
+zero runtime or a measured speedup. Many distinct launch modes sharing one name
+can still require multiple comparisons within that name's group.
 
 ### Projector capture workload
 

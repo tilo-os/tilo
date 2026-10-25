@@ -17,6 +17,7 @@
 //! that one: X11 has no client isolation, so one X server never spans two
 //! workspaces.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -304,16 +305,68 @@ pub fn host_apps_generation() -> u64 {
 /// window identity is. Prefer Flatpak when a user/system export and a distro
 /// file both describe the same app because it retains its original sandbox.
 pub(crate) fn deduplicate(apps: Vec<HostApp>) -> Vec<HostApp> {
+    if !crate::compositor::metrics::profile::active() {
+        return deduplicate_pass::<false>(apps).0;
+    }
+    let inputs = apps.len();
+    let (deduplicated, candidates) = deduplicate_pass::<true>(apps);
+    crate::compositor::metrics::profile::record_work("host-apps/dedup-inputs", inputs);
+    crate::compositor::metrics::profile::record_work("host-apps/dedup-candidates", candidates);
+    deduplicated
+}
+
+/// Whether the two entries say they are the same app, ignoring ASCII case. An
+/// entry declaring no window identity is never the same app as another: it
+/// names nothing a window could announce.
+fn shares_window_identity(kept: &HostApp, incoming: &HostApp) -> bool {
+    kept.window_identities.iter().any(|identity| {
+        incoming
+            .window_identities
+            .iter()
+            .any(|other| identity.eq_ignore_ascii_case(other))
+    })
+}
+
+/// Deduplicate `apps`, counting candidate comparisons only when `COUNT` is
+/// `true`.
+///
+/// A duplicate must match on display name *and* window identity, so only kept
+/// apps under the incoming entry's ASCII case-folded name can be it. Those are
+/// indexed by that fold and compared in the order they were kept, so the first
+/// matching slot still wins without visiting app slots of other names. The
+/// index holds current state: when a Flatpak takes a slot it is its own
+/// identities that later entries are compared against.
+///
+/// `COUNT` is a compile-time choice, so the unprofiled pass carries no
+/// per-comparison counting instruction.
+fn deduplicate_pass<const COUNT: bool>(apps: Vec<HostApp>) -> (Vec<HostApp>, usize) {
     let mut out: Vec<HostApp> = Vec::new();
+    let mut kept_by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut candidates: usize = 0;
     for app in apps {
-        let duplicate = out.iter().position(|existing| {
-            existing.name.eq_ignore_ascii_case(&app.name)
-                && existing.window_identities.iter().any(|left| {
-                    app.window_identities
-                        .iter()
-                        .any(|right| left.eq_ignore_ascii_case(right))
-                })
-        });
+        // An entry declaring no window identity names nothing a window could
+        // announce, so it is never another app's alias and it is no candidate
+        // for a later one either: keep it without asking the index.
+        if app.window_identities.is_empty() {
+            out.push(app);
+            continue;
+        }
+        let folded = app.name.to_ascii_lowercase();
+        let mut duplicate = None;
+        if let Some(slots) = kept_by_name.get(&folded) {
+            for &index in slots {
+                if COUNT {
+                    candidates = candidates.saturating_add(1);
+                }
+                let Some(existing) = out.get(index) else {
+                    continue;
+                };
+                if shares_window_identity(existing, &app) {
+                    duplicate = Some(index);
+                    break;
+                }
+            }
+        }
         if let Some(index) = duplicate {
             if let Some(existing) = out.get_mut(index)
                 && app.is_flatpak()
@@ -322,10 +375,11 @@ pub(crate) fn deduplicate(apps: Vec<HostApp>) -> Vec<HostApp> {
                 *existing = app;
             }
         } else {
+            kept_by_name.entry(folded).or_default().push(out.len());
             out.push(app);
         }
     }
-    out
+    (out, candidates)
 }
 
 pub fn invalidate_cache() {
@@ -1170,3 +1224,6 @@ mod unavailable_provider_tests {
         assert_eq!(command.portal_workspace_id.as_deref(), Some("room"));
     }
 }
+
+#[cfg(test)]
+mod dedup_tests;

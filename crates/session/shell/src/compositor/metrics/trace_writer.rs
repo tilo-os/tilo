@@ -25,7 +25,8 @@ pub(super) enum Job {
 pub(super) struct TraceWriter {
     pending: Vec<u8>,
     jobs: Option<Sender<Job>>,
-    worker: Option<JoinHandle<()>>,
+    /// `Err` when the thread could not be spawned; `None` once closed.
+    worker: Option<io::Result<JoinHandle<io::Result<()>>>>,
 }
 
 impl TraceWriter {
@@ -43,24 +44,26 @@ impl TraceWriter {
     }
 
     /// Hand every job to `sink` on a thread of its own, in order. The sink
-    /// failing ends the thread; the next hand-over then reports a broken pipe.
+    /// failing ends the thread; a later hand-over reports a broken pipe, and
+    /// [`Self::close`] waits for the thread and reports the sink's error.
     pub(super) fn with_sink(mut sink: impl FnMut(Job) -> io::Result<()> + Send + 'static) -> Self {
         let (jobs, received) = channel::<Job>();
         let worker = std::thread::Builder::new()
             .name("frame-trace".to_owned())
-            .spawn(move || {
+            .spawn(move || -> io::Result<()> {
                 for job in received {
                     if let Err(error) = sink(job) {
                         eprintln!("frame-metrics: trace write failed ({error}); disabling trace");
-                        return;
+                        return Err(error);
                     }
                 }
-            })
-            .ok();
+                Ok(())
+            });
+        let jobs = worker.is_ok().then_some(jobs);
         Self {
             pending: Vec::new(),
-            jobs: worker.is_some().then_some(jobs),
-            worker,
+            jobs,
+            worker: Some(worker),
         }
     }
 
@@ -72,11 +75,17 @@ impl TraceWriter {
 
     /// Hand over what is pending and wait for the file to have it. Only for
     /// the end of a session, when nothing is waiting on the loop any more.
+    /// Reports the queued hand-over, spawn, panic or sink failure; closing
+    /// again afterwards is harmless.
     pub(super) fn close(&mut self) -> io::Result<()> {
         let handed = self.flush();
         self.jobs = None;
         if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+            let worker = worker?;
+            let result = worker
+                .join()
+                .map_err(|_| io::Error::other("trace writer thread panicked"))?;
+            result?;
         }
         handed
     }
@@ -164,5 +173,19 @@ mod tests {
             writeln!(trace, "row").expect("format");
             trace.flush().is_err()
         });
+    }
+
+    #[test]
+    fn close_reports_the_final_queued_write_failing() {
+        // The only write never reaches the file: the worker exits with the
+        // sink's error. close() must wait for it and return that error rather
+        // than only the enqueue result, which succeeded.
+        let mut trace = TraceWriter::with_sink(|_| Err(io::Error::other("disk gone")));
+        writeln!(trace, "row").expect("format");
+        let error = trace
+            .close()
+            .expect_err("close waits for the worker and reports its failure");
+        assert_eq!(error.to_string(), "disk gone");
+        trace.close().expect("closing again is harmless");
     }
 }
