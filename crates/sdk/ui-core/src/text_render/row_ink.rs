@@ -171,6 +171,26 @@ impl TextRenderer {
         reach
     }
 
+    /// How far the ink of logical line `line`'s rows reaches past their
+    /// bands, worked out as [`Self::rich_ink_reach`] does; the most of any
+    /// line's for a line `layout` does not have.
+    pub fn rich_line_ink_reach(
+        &mut self,
+        layout: &crate::richtext::RichTextLayout,
+        line: usize,
+    ) -> crate::richtext::InkReach {
+        let all = self.rich_ink_reach(layout);
+        layout
+            .ink_reach
+            .lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(line)
+            .copied()
+            .flatten()
+            .unwrap_or(all)
+    }
+
     /// The bounds `face` declares for all its glyphs at `size`, y down
     /// ([`face_declared_ink`]).
     fn face_declared_ink(
