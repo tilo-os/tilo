@@ -38,6 +38,13 @@ impl ChatDrafts {
     }
 }
 
+/// The line a conversation's row carries for unsent words ("Draft: see you at
+/// 8"): the toolkit's, the same one Messages shows under a person, so a draft
+/// is found the same way in both apps.
+pub(crate) fn line(text: &str) -> Option<String> {
+    ui::widget::conversation::draft::line(text)
+}
+
 #[cfg(test)]
 mod tests {
     use ui::tilo_resource::{Invoke, Replica};

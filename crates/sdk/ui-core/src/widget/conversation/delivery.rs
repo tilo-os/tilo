@@ -135,14 +135,14 @@ impl DeliveryState {
     #[must_use]
     pub const fn rank(self) -> u8 {
         match self {
-            Self::Queued => 0,
+            // A failure or an unknown is not a step: it is an answer about
+            // the progression, so it stands at its start.
+            Self::Queued | Self::Failed | Self::Uncertain => 0,
             Self::Sending => 1,
             Self::Submitted => 2,
             Self::Sent => 3,
             Self::Delivered => 4,
             Self::Read => 5,
-            // Not part of the progression: these are answers about it.
-            Self::Failed | Self::Uncertain => 0,
         }
     }
 
