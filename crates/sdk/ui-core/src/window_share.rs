@@ -114,6 +114,11 @@ pub struct OpenWindow {
     pub record: String,
     /// The kind of the record's resource.
     pub kind: String,
+    /// What in the record the window shows (a note of the notebook), as
+    /// the app's `open` takes it: its bar's location anchor. `None`: the
+    /// record as a whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
 }
 
 impl OpenWindow {
@@ -125,7 +130,9 @@ impl OpenWindow {
             record: self.record.clone(),
             // The app's own record of the workspace has no id of its own;
             // its kind names the resource it is.
-            resource: if self.record.is_empty() {
+            resource: if let Some(item) = &self.item {
+                item.clone()
+            } else if self.record.is_empty() {
                 self.kind.clone()
             } else {
                 self.record.clone()
@@ -238,6 +245,7 @@ impl OpenWindow {
             title: bounded(&self.title),
             record: bounded(&self.record),
             kind: bounded(&self.kind),
+            item: self.item.as_deref().map(bounded),
         }
     }
 }
@@ -526,6 +534,7 @@ mod tests {
             title: "Plan".into(),
             record: "plan".into(),
             kind: "notes.workspace".into(),
+            item: None,
         };
         assert!(publish_windows(vec![notes.clone()]));
         assert!(!publish_windows(vec![notes.clone()]), "unchanged");

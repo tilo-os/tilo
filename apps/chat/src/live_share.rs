@@ -55,6 +55,8 @@ pub(crate) struct LiveShares {
     /// Whether each of this person's shares was last seen with its window
     /// open, by message: a change is written to the message.
     seen_open: HashMap<String, bool>,
+    /// What the shares grant, and what the room lets this person do.
+    pub(crate) grants: crate::share_grants::ShareGrants,
 }
 
 /// The "Share a window" panel: the window chosen and what the others may
@@ -248,6 +250,12 @@ impl ChatApp {
         } else if let Some(Err(why)) = self.resource_navigation.status(&m.id) {
             // Why pressing it opened nothing, where the access stood.
             (label.to_owned(), why.clone())
+        } else if share.access == ShareAccess::View
+            && !self.is_me(&m.author)
+            && self.can_already_edit(&m.id)
+        {
+            // The share limits no one: say what this reader may do.
+            (label.to_owned(), crate::i18n::t("chat-share-already-edit"))
         } else {
             (label.to_owned(), access_label(share.access))
         };
@@ -416,6 +424,7 @@ impl ChatApp {
             .and_then(|m| m.share.as_ref())
             .is_some_and(|share| !share.ended)
         {
+            self.live_shares.grants.ask_again(message);
             self.open_shared_resource(message);
         }
     }
@@ -449,11 +458,17 @@ impl ChatApp {
         if self.active_channel.is_empty() {
             return Err("Open a channel to share a window in".into());
         }
+        // A window on one item of its record (a note of the notebook)
+        // shares that item, under the item's own kind.
+        let item_kind = window
+            .item
+            .as_deref()
+            .and_then(ui::tilo_resource::items::item_kind);
         let reference = crate::record::SharedReference {
-            kind: if window.kind.is_empty() {
-                "tilo.window".into()
-            } else {
-                window.kind.clone()
+            kind: match item_kind {
+                Some(kind) => kind,
+                None if window.kind.is_empty() => "tilo.window".into(),
+                None => window.kind.clone(),
             },
             id: window.view().resource,
             label: window.title.clone(),
@@ -524,6 +539,7 @@ impl ChatApp {
     /// of Chat, which of the shared windows are still open, and which
     /// windows Chat shares, for the desktop to mark.
     pub(crate) fn follow_window_shares(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        self.follow_share_grants();
         while let Some(ask) = ui::window_share::take_ask() {
             match ask {
                 ui::window_share::Ask::Share(window) => self.open_share_panel(Some(window.tab)),
