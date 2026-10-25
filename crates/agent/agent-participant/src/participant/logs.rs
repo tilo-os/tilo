@@ -14,12 +14,13 @@ use crate::planner::{Obligations, Step};
 /// turn it is), and the steps or why there are none, so a task that ended
 /// early can be traced to its plan. With them, the obligations the plan
 /// declared (each step's in `steps_for`) and the checklist it was shown,
-/// each item open, done or set aside.
+/// each item open, done or set aside; and for a repair, which it is and the
+/// failure it answers.
 pub(super) fn record_plan(
     agent: &str,
     task: &str,
     text: &str,
-    (continues, turn): (bool, Option<FollowUp>),
+    (continues, turn, repair): (bool, Option<FollowUp>, Option<serde_json::Value>),
     by_model: bool,
     steps: &Result<Vec<Step>, String>,
     (declared, shown): (&Obligations, Option<serde_json::Value>),
@@ -46,17 +47,19 @@ pub(super) fn record_plan(
         "steps_for": serves,
         "set_aside": (!declared.set_aside.is_empty()).then_some(&declared.set_aside),
         "checklist": shown,
+        "repair": repair,
     });
     append_line(&path, &line, "a plan");
 }
 
 /// Appends to `TILO_AGENT_PLAN_LOG`, when set, the end of a task that kept
-/// a checklist: its outcome and each obligation as it ended.
+/// a checklist or had a failed step: its outcome, each obligation as it
+/// ended, how many repairs it took and why its last failure ended it.
 pub(super) fn record_ended(
     agent: &str,
     task: &str,
     outcome: &Result<String, String>,
-    checklist: &serde_json::Value,
+    (checklist, repairs): (&serde_json::Value, &serde_json::Value),
 ) {
     let Some(path) = std::env::var_os("TILO_AGENT_PLAN_LOG") else {
         return;
@@ -71,6 +74,7 @@ pub(super) fn record_ended(
         },
         "ok": outcome.is_ok(),
         "checklist": checklist,
+        "repairs": repairs,
     });
     append_line(&path, &line, "a task's end");
 }

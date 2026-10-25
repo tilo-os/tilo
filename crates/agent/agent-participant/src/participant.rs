@@ -50,6 +50,7 @@ mod obligations;
 mod parts;
 mod planning;
 mod records;
+mod repairs;
 mod room_content;
 mod running;
 pub(crate) mod unopened;
@@ -817,9 +818,9 @@ impl AgentParticipant {
     }
 
     /// Record how `step` of task `id` went (`edited` when it changed its
-    /// record) and carry on: a failed step is planned around once, else it
-    /// ends the task. Returns whether another step that plans nothing is
-    /// ready.
+    /// record) and carry on: a failed step is planned around while the
+    /// task's repairs last ([`repairs::Repairs`]), else it ends the task.
+    /// Returns whether another step that plans nothing is ready.
     fn conclude(
         &mut self,
         id: &str,
@@ -864,9 +865,7 @@ impl AgentParticipant {
                 if self.repair(step, &error) {
                     return false;
                 }
-                let failed = Err(error);
-                self.end_running(&failed);
-                self.finish_task(id.to_owned(), failed);
+                self.fail_running(id.to_owned(), error);
                 false
             }
         }
@@ -1140,7 +1139,7 @@ impl AgentParticipant {
                 } else {
                     None
                 };
-                let outcome = finished.ok_or(error);
+                let outcome = finished.ok_or_else(|| self.unfinished(&task, error));
                 if running_it {
                     self.end_running(&outcome);
                 }
@@ -1157,6 +1156,9 @@ impl AgentParticipant {
             .as_ref()
             .filter(|running| running.id == planned.task && planned.continues);
         let turn = continued.and_then(|running| running.follow_ups.turn);
+        let repair = continued
+            .filter(|_| turn == Some(FollowUp::Repairing))
+            .and_then(|running| running.repairs.logged_latest());
         let shown = continued
             .filter(|running| !running.checklist.is_empty())
             .map(|running| running.checklist.logged());
@@ -1164,7 +1166,7 @@ impl AgentParticipant {
             crate::control::agent_id(&self.identity.delegation),
             &planned.task,
             &planned.text,
-            (planned.continues, turn),
+            (planned.continues, turn, repair),
             planned.by_model,
             &planned.steps,
             (&planned.obligations, shown),
@@ -1172,8 +1174,9 @@ impl AgentParticipant {
     }
 
     /// Plan the rest of the running task again after `step` failed with
-    /// `error`, knowing what failed and why, beside the request and what ran
-    /// so far — once per task. Returns whether it will.
+    /// `error`, knowing what failed and why, beside the request, what ran
+    /// so far and the obligations still open, while its repairs last
+    /// ([`repairs::Repairs::admit`]). Returns whether it will.
     fn repair(&mut self, step: &Step, error: &str) -> bool {
         // An import the record refused (it holds content an import would
         // replace) wants a new document: the plans after it are offered one.
@@ -1183,18 +1186,21 @@ impl AgentParticipant {
         {
             running.new_documents.push(step.app.clone());
         }
-        // Steps written out run as written, and a step the person declined
-        // is not tried another way: only a model's slip is planned around.
-        let declined =
-            error.starts_with(tilo_actions::door::DoorError::ConfirmationRequired.code());
-        let Some(running) = self
-            .running
-            .as_mut()
-            .filter(|running| !running.repaired && running.by_model && !declined)
-        else {
+        // Steps written out run as written: only a model's slip is planned
+        // around.
+        let Some(running) = self.running.as_mut().filter(|running| running.by_model) else {
             return false;
         };
-        running.repaired = true;
+        let count = match running.repairs.admit(step, error) {
+            Ok(count) => count,
+            Err(reason) => {
+                tracing::info!(task = %running.id, ?reason, %error, "agent: a failed step ends its task");
+                return false;
+            }
+        };
+        tracing::debug!(task = %running.id, count, %error, "agent: a failed step is planned around");
+        // Its plan runs no operation again as it ran ([`Running::queue_rest`]).
+        running.follow_ups.take(FollowUp::Repairing);
         running.steps.clear();
         running.steps.push_back(Step {
             app: step.app.clone(),
@@ -1219,18 +1225,42 @@ impl AgentParticipant {
     }
 
     /// Drop the running task, which ended with `outcome`, logging its
-    /// checklist when it kept one.
+    /// checklist and repairs when it kept one or had any.
     fn end_running(&mut self, outcome: &Result<String, String>) {
         if let Some(running) = self.running.take()
-            && !running.checklist.is_empty()
+            && (!running.checklist.is_empty() || running.repairs.any())
         {
             record_ended(
                 crate::control::agent_id(&self.identity.delegation),
                 &running.id,
                 outcome,
-                &running.checklist.logged(),
+                (&running.checklist.logged(), &running.repairs.logged()),
             );
         }
+    }
+
+    /// `error`, which ends task `id`, with what the task's checklist still
+    /// held open and set aside, as a finished task's result names them.
+    fn unfinished(&self, id: &str, error: String) -> String {
+        let outcome = self
+            .running
+            .as_ref()
+            .filter(|running| running.id == id)
+            .map(|running| running.checklist.outcome())
+            .unwrap_or_default();
+        if outcome.is_empty() {
+            error
+        } else {
+            format!("{}.{outcome}", error.trim_end_matches('.'))
+        }
+    }
+
+    /// End the running task `id`, failed with `error` and what it left
+    /// undone.
+    fn fail_running(&mut self, id: String, error: String) {
+        let failed = Err(self.unfinished(&id, error));
+        self.end_running(&failed);
+        self.finish_task(id, failed);
     }
 
     /// End task `id` with `outcome` once the host has acknowledged the
