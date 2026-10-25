@@ -200,6 +200,63 @@ impl TextAlign {
     }
 }
 
+/// How far the ink of a layout's rows reaches past their own bands: above a
+/// row's top and below its bottom, in the layout's units. Zero where every
+/// glyph stays inside its row.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InkReach {
+    pub above: f32,
+    pub below: f32,
+}
+
+/// How far each logical line's rows' ink reaches past their bands, kept
+/// as it is worked out the first time it is asked for
+/// ([`crate::text_render::TextRenderer::rich_ink_reach`]), and the most of
+/// them. Each line's reach is measured from its own rows, so an edit
+/// forgets only the lines it replaced; a new width forgets them all.
+#[derive(Default)]
+pub(crate) struct InkReachCache {
+    /// Each logical line's reach, once worked out; shorter than the lines
+    /// where the ones past its end are not.
+    pub(crate) lines: std::sync::Mutex<Vec<Option<InkReach>>>,
+    /// The most any line's reaches, until a line changes.
+    pub(crate) all: std::sync::OnceLock<InkReach>,
+}
+
+impl InkReachCache {
+    /// Lines `first..=last` were replaced by `count` new ones.
+    pub(crate) fn lines_replaced(&mut self, first: usize, last: usize, count: usize) {
+        self.all = std::sync::OnceLock::new();
+        let lines = self
+            .lines
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last < lines.len() {
+            lines.splice(first..=last, std::iter::repeat_n(None, count));
+        } else {
+            lines.truncate(first);
+        }
+    }
+
+    /// Every line's rows changed.
+    pub(crate) fn forget(&mut self) {
+        *self = Self::default();
+    }
+
+    /// The same reaches, for a copy of the same rows.
+    pub(crate) fn duplicate(&self) -> Self {
+        Self {
+            lines: std::sync::Mutex::new(
+                self.lines
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+            ),
+            all: self.all.clone(),
+        }
+    }
+}
+
 /// A laid-out block of attributed text.
 pub struct RichTextLayout {
     /// One exact source snapshot, scoped to this layout owner. It avoids
@@ -241,6 +298,9 @@ pub struct RichTextLayout {
     /// where the monospace, serif and italic faces load on demand, reads
     /// these to fetch them.
     pub(crate) faces: Vec<crate::text_render::TextStyle>,
+    /// How far the rows' ink reaches past their bands
+    /// ([`crate::text_render::TextRenderer::rich_ink_reach`]).
+    pub(crate) ink_reach: InkReachCache,
 }
 
 /// Where each shaped logical line of a buffer starts, as its rows are laid
@@ -561,6 +621,7 @@ impl RichTextLayout {
             hanging_punctuation: style.hanging_punctuation,
             fragmentation: style.fragmentation,
             row_tops: std::cell::OnceCell::new(),
+            ink_reach: InkReachCache::default(),
         }
     }
 
@@ -846,6 +907,7 @@ impl RichTextLayout {
             hanging_punctuation: style.hanging_punctuation,
             fragmentation: style.fragmentation,
             row_tops: std::cell::OnceCell::new(),
+            ink_reach: InkReachCache::default(),
         }
     }
 
@@ -1572,18 +1634,40 @@ impl RichTextLayout {
         top: f32,
         bottom: f32,
     ) -> impl Iterator<Item = cosmic_text::LayoutRun<'_>> {
-        // The bisection reads rows from the top of an unscrolled buffer of
-        // unbounded height, as layouts here are shaped; any other walks.
-        let runs = if self.buffer.scroll() == cosmic_text::Scroll::default()
-            && self.buffer.size().1.is_none()
+        // No row of a line above the first can reach within three rows of
+        // `top`: each ends where the next line starts, at most the tallest
+        // row above `top - 3 × tallest`.
+        self.rows_from(top, 3.0)
+            .skip_while(move |run| run.line_top + run.line_height * 3.0 < top)
+            .take_while(move |run| run.line_top - run.line_height * 2.0 <= bottom)
+    }
+
+    /// The shaped rows whose band, widened by how far any row's ink reaches
+    /// past its own (`reach`), meets `top..bottom` (in the layout's
+    /// coordinates), and any between them: every row whose ink may show
+    /// there, for a caller that checks each row's own ink.
+    pub fn rows_reaching(
+        &self,
+        top: f32,
+        bottom: f32,
+        reach: InkReach,
+    ) -> impl Iterator<Item = cosmic_text::LayoutRun<'_>> {
+        // No row of a line above the first ends below `top - reach.below`.
+        self.rows_from(top - reach.below, 1.0)
+            .skip_while(move |run| run.line_top + run.line_height + reach.below <= top)
+            .take_while(move |run| run.line_top - reach.above < bottom)
+    }
+
+    /// The rows from the start of the line `rows` tallest rows above `y`.
+    /// The bisection reads rows from the top of an unscrolled buffer of
+    /// unbounded height, as layouts here are shaped; any other walks.
+    fn rows_from(&self, y: f32, rows: f32) -> Rows<'_> {
+        if self.buffer.scroll() == cosmic_text::Scroll::default() && self.buffer.size().1.is_none()
         {
             let tops = self.row_tops.get_or_init(|| RowTops::of(&self.buffer));
-            // No row of a line above `start` can reach within three rows of
-            // `top`: each ends where the next line starts, at most the
-            // tallest row above `top - 3 × tallest`.
             let start = tops
                 .starts
-                .partition_point(|line_top| *line_top <= top - 3.0 * tops.tallest)
+                .partition_point(|line_top| *line_top <= y - rows * tops.tallest)
                 .saturating_sub(1);
             Rows::From(RowsFrom {
                 lines: &self.buffer.lines,
@@ -1594,9 +1678,7 @@ impl RichTextLayout {
             })
         } else {
             Rows::Walk(cosmic_text::LayoutRunIter::new(&self.buffer))
-        };
-        runs.skip_while(move |run| run.line_top + run.line_height * 3.0 < top)
-            .take_while(move |run| run.line_top - run.line_height * 2.0 <= bottom)
+        }
     }
 
     fn cursor_at(&self, byte: usize) -> Cursor {

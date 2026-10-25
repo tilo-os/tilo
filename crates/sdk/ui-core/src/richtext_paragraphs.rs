@@ -327,6 +327,7 @@ impl RichTextLayout {
             hanging_punctuation: style.hanging_punctuation,
             fragmentation: style.fragmentation,
             row_tops: std::cell::OnceCell::new(),
+            ink_reach: crate::richtext::InkReachCache::default(),
         })
     }
 
@@ -376,6 +377,7 @@ impl RichTextLayout {
                     .lines(fs, region, edit.start)
             });
             spliced = first..first.saturating_add(lines.len());
+            self.ink_reach.lines_replaced(first, last, lines.len());
             self.buffer.lines.splice(first..=last, lines);
             self.offset_map.insertions = splice_insertions(
                 &edit,
@@ -399,6 +401,9 @@ impl RichTextLayout {
         // its shape; spliced lines are shaped and wrapped once.
         let wrap_width = layout_width(width, self.discretionary_hyphen_width, prepared.align);
         let rewrapped = self.buffer.size().0 != Some(wrap_width);
+        if rewrapped {
+            self.ink_reach.forget();
+        }
         self.buffer.set_size(Some(wrap_width), None);
         self.buffer.shape_until_scroll(fs, false);
         // Fresh lines are not invalidated ones: cosmic-text shapes them on
@@ -467,6 +472,7 @@ impl RichTextLayout {
             hanging_punctuation: self.hanging_punctuation,
             fragmentation: self.fragmentation,
             row_tops: std::cell::OnceCell::new(),
+            ink_reach: self.ink_reach.duplicate(),
         }
     }
 
