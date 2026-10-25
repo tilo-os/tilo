@@ -520,7 +520,8 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     }
     // Each repeatable flag, once per value.
     for (flag, values) in [
-        ("--chat-channel", &persistent.chat_channels),
+        ("--chat-channel", persistent.chat_channels.as_slice()),
+        ("--feedback-channel", persistent.feedback_channel.as_slice()),
         ("--strip", &persistent.strips),
         ("--owner", &persistent.owners),
         ("--moderator", &persistent.moderators),
@@ -2181,6 +2182,14 @@ mod tests {
     #[test]
     fn the_relay_opens_chat_with_the_channels_the_operator_names() {
         assert_eq!(relay_args("--chat-channel", &[]), ["general"]);
+        assert!(relay_args("--feedback-channel", &[]).is_empty());
+        assert_eq!(
+            relay_args(
+                "--feedback-channel",
+                &[("TILO_ROOMS_FEEDBACK_CHANNEL", "feedback")]
+            ),
+            ["feedback"]
+        );
         assert_eq!(
             relay_args(
                 "--chat-channel",

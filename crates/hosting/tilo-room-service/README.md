@@ -220,6 +220,7 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_NAME` | `<name>`, capitalized | the name people see for the room (1–80 characters) |
 | `TILO_ROOMS_DESCRIPTION` | unset: none | what the directory of public workspaces says the room is (at most 280 characters) |
 | `TILO_ROOMS_CHAT_CHANNELS` | unset: `general` | channels Chat starts with while it has none, comma-separated names of lowercase letters, digits and `-` |
+| `TILO_ROOMS_FEEDBACK_CHANNEL` | unset: none | the channel members report problems to, by name; kept in Chat on every start under the id `c_<name>` (`-` as `_`), which the web entry's `TILO_WEB_HOME_FEEDBACK` names |
 | `TILO_ROOMS_STRIPS` | unset: none | strips the shared desktop has, comma-separated names of up to 48 characters |
 | `TILO_ROOMS_RELAY_ORIGIN` | required | the relay's public origin, e.g. `https://rooms.example` |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the relay's plain listener the ingress forwards `/peer/` to |

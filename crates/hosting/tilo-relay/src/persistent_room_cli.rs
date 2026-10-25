@@ -72,6 +72,16 @@ pub struct PersistentArgs {
         value_parser = crate::room_chat::channel_name
     )]
     pub chat_channels: Vec<String>,
+    /// The channel, by name, the room's members report problems to: kept
+    /// in the room's Chat on every start, after its other channels, since
+    /// the site's pages send reports to it by its id (`c_<name>`).
+    #[arg(
+        long = "feedback-channel",
+        value_name = "NAME",
+        requires = "persistent",
+        value_parser = crate::room_chat::channel_name
+    )]
+    pub feedback_channel: Option<String>,
     /// A strip, by name, the room's shared desktop has in its first
     /// workspace; repeatable, in order. Added at start where missing; the
     /// strips people made are kept.
@@ -1074,6 +1084,7 @@ pub(crate) async fn settle_chat(
     cert: &DeviceCert,
     apps: &[String],
     channels: &[String],
+    feedback: Option<&str>,
     files: chat::record::RoomFiles,
 ) -> anyhow::Result<()> {
     if !apps.iter().any(|app| app == crate::room_chat::CHAT_APP) {
@@ -1090,6 +1101,9 @@ pub(crate) async fn settle_chat(
             &record,
             |doc| {
                 crate::room_chat::settle_chat(doc, channels)?;
+                if let Some(name) = feedback {
+                    crate::room_chat::settle_feedback_channel(doc, name)?;
+                }
                 crate::room_chat::settle_files(doc, files)
             },
         )
@@ -1338,6 +1352,7 @@ pub(crate) async fn run(
         &host_cert,
         &persistent.seed_apps,
         &persistent.chat_channels,
+        persistent.feedback_channel.as_deref(),
         room_files(&persistent),
     )
     .await?;
