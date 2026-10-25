@@ -190,6 +190,20 @@ or hide again (credentials stay hidden), a note per pick, an overall note and
 "This was slow". Nothing leaves before Send, which queues the reviewed
 submission in the same outbox as any other report.
 
+The model is the one the host lends the composer, and the review names it
+("Checked by rules and Anthropic claude-haiku-5-5, which found nothing
+more"); with none, it says the rules alone checked it. A native desktop asks
+the model its AI settings choose for `so.tilo.feedback-composer`, else the
+default model, through the model gateway, which lets the composer ask a
+completion without tools and nothing else. A page asks the model it was
+given, else the one the destination's owner lends: a room host with a model
+key (the moderation key) names its model in the feedback admission, and the
+page sends the review prompt in a `FeedbackRequest` over the connection that
+admits it. The owner asks its model only a prompt that is exactly the review
+contract (`tilo_feedback::model_review`), at a bounded rate per person, and
+answers only quotes from the texts it was asked about; the page never holds
+the key.
+
 In the browser the picture of each pick is copied from the frame presented
 right after the picker closes, its content areas painted over on the device
 (`ui::pick::sensitive_areas`; images are masked too), and the crops are stacked

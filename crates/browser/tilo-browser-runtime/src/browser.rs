@@ -1326,6 +1326,11 @@ fn desktop_inputs(
         author: config.author(),
         permissions,
         models: config.models()?,
+        model_name: config
+            .models
+            .as_ref()
+            .map(crate::host_services::ModelConfig::name)
+            .unwrap_or_default(),
         provider_admin: config.provider_admin()?,
         peer: config.peer,
     })
