@@ -177,9 +177,10 @@ fn is_supported_web_url(value: &str) -> bool {
 pub(super) fn row_destination(row: &omnibox::Row, engine: &str) -> String {
     match row.kind {
         omnibox::RowKind::Search | omnibox::RowKind::Suggestion => search_url(engine, &row.url),
-        omnibox::RowKind::Go | omnibox::RowKind::History | omnibox::RowKind::Extension => {
-            row.url.clone()
-        }
+        omnibox::RowKind::Go
+        | omnibox::RowKind::History
+        | omnibox::RowKind::Bookmark
+        | omnibox::RowKind::Extension => row.url.clone(),
     }
 }
 
@@ -296,26 +297,40 @@ fn local_output(message: impl Into<String>) -> ui::tilo_actions::ActionOutput {
 }
 
 fn download_status_text(entry: &crate::downloads::DownloadEntry) -> String {
+    use ui::i18n::ArgValue;
+    let catalog = &crate::resource::CATALOG;
+    let size = |bytes: u64| ArgValue::Text(ui::format::size(bytes));
     match entry.status {
-        DownloadStatus::AwaitingDestination => "Waiting for a save destination…".into(),
+        DownloadStatus::AwaitingDestination => catalog.t("browser-download-waiting-destination"),
         DownloadStatus::Downloading => match entry.total_bytes {
-            Some(total) => format!(
-                "{} of {}",
-                ui::format::size(entry.received_bytes),
-                ui::format::size(total)
+            Some(total) => catalog.t_args(
+                "browser-download-progress",
+                &[
+                    ("received", size(entry.received_bytes)),
+                    ("total", size(total)),
+                ],
             ),
-            None => format!("{} downloaded", ui::format::size(entry.received_bytes)),
+            None => catalog.t_args(
+                "browser-download-received",
+                &[("received", size(entry.received_bytes))],
+            ),
         },
         DownloadStatus::Completed => entry.destination.as_deref().map_or_else(
-            || "Download complete".into(),
-            |path| format!("Saved to {}", path.display()),
+            || catalog.t("browser-download-complete"),
+            |path| {
+                catalog.t_args(
+                    "browser-download-saved-to",
+                    &[("path", ArgValue::Text(path.display().to_string()))],
+                )
+            },
         ),
-        DownloadStatus::Failed => entry
-            .error
-            .as_deref()
-            .unwrap_or("The download failed")
-            .to_string(),
-        DownloadStatus::Cancelled => "Cancelled".into(),
+        // The engine's own words for what went wrong, when it said; the
+        // catalogue's when the download failed without a reason.
+        DownloadStatus::Failed => match entry.error.as_deref() {
+            Some(error) => error.to_owned(),
+            None => catalog.t("browser-download-failed"),
+        },
+        DownloadStatus::Cancelled => catalog.t("browser-download-cancelled"),
     }
 }
 
@@ -556,7 +571,10 @@ pub struct BrowserWidget {
     last_query: Option<String>,
     /// Visited pages prepared for per-keystroke matching.
     omni_index: omnibox::HistoryIndex,
-    /// The index must be rebuilt: the history changed since it was built.
+    /// Saved pages prepared for per-keystroke matching, beside the visits.
+    omni_bookmarks: omnibox::BookmarkIndex,
+    /// The indexes must be rebuilt: the history or the bookmarks changed
+    /// since they were built.
     omni_stale: bool,
     /// Quiet-period and supersede bookkeeping for the engine's suggestions.
     suggest_debounce: omnibox::Debounce,
@@ -1205,6 +1223,8 @@ impl BrowserWidget {
                 }
             }
             self.personal_open.set(opened);
+            // The address bar suggests the bookmarks this window shows.
+            self.omni_stale = true;
             self.structure_dirty = true;
         }
     }
@@ -1376,6 +1396,7 @@ impl BrowserWidget {
             structure_dirty: false,
             last_query: None,
             omni_index: omnibox::HistoryIndex::default(),
+            omni_bookmarks: omnibox::BookmarkIndex::default(),
             omni_stale: true,
             suggest_debounce: omnibox::Debounce::default(),
             suggest_fetcher: omnibox::SuggestFetcher::default(),
@@ -1454,6 +1475,8 @@ impl BrowserWidget {
         let bookmarks = Bookmarks::of(&state.bookmarks);
         if bookmarks != self.bookmarks {
             self.bookmarks = bookmarks;
+            // The address bar suggests what was saved too.
+            self.omni_stale = true;
             self.structure_dirty = true;
         }
         self.apply_preferences(state.preferences.clone());
@@ -1734,6 +1757,9 @@ impl BrowserWidget {
             | BrowserOperation::RemovePersonalImportedNode { .. }
             | BrowserOperation::ShowPersonalBookmarkFolder { .. }) => {
                 self.perform_personal_bookmark_operation(operation)?;
+            }
+            BrowserOperation::ForgetVisit { url } => {
+                self.forget_visit(&url)?;
             }
             BrowserOperation::ClearHistory => {
                 self.clear_history_durably()?;
@@ -5448,19 +5474,28 @@ impl BrowserWidget {
             } else {
                 entry.title.as_str()
             };
-            history.children.push(
-                Resource::new(
-                    history_resource_id(&entry.url),
-                    "browser.history-entry",
-                    title,
-                )
-                .with_action(
-                    E::Open {
+            let mut row = Resource::new(
+                history_resource_id(&entry.url),
+                "browser.history-entry",
+                title,
+            )
+            .with_action(
+                E::Open {
+                    url: entry.url.clone(),
+                }
+                .bound(),
+            );
+            // Forgetting a visit is the person's own record: only a window
+            // that keeps one offers the row its removal.
+            if self.person_history.is_some() {
+                row = row.with_action(
+                    E::ForgetVisit {
                         url: entry.url.clone(),
                     }
                     .bound(),
-                ),
-            );
+                );
+            }
+            history.children.push(row);
         }
 
         let mut bookmarks = Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
@@ -5910,6 +5945,9 @@ impl BrowserWidget {
                 matches!(&operation, BrowserOperation::ToggleHistoryPause);
             let is_zoom = matches!(&operation, BrowserOperation::Zoom { .. });
             let output = match &operation {
+                BrowserOperation::ForgetVisit { .. } => {
+                    local_output("Browsing history entry removed.")
+                }
                 BrowserOperation::ClearHistory => local_output("Browsing history cleared."),
                 BrowserOperation::BookmarkPersonalPage { .. }
                 | BrowserOperation::ImportPersonalBookmarks { .. }
@@ -7394,7 +7432,7 @@ mod tests {
     use ui::webview::PageKey;
 
     /// What the window does for the effect an encoded invocation names.
-    fn effect_operation(payload: &[u8]) -> BrowserOperation {
+    pub(super) fn effect_operation(payload: &[u8]) -> BrowserOperation {
         use ui::tilo_resource::Effect as _;
         crate::effects::BrowserEffect::from_payload(payload)
             .expect("a browser effect")
@@ -7403,7 +7441,7 @@ mod tests {
     use std::sync::Arc;
     use ui::webview::WebViewEngine;
 
-    fn synced(widget: &mut BrowserWidget) -> (AutoCommit, ObjId) {
+    pub(super) fn synced(widget: &mut BrowserWidget) -> (AutoCommit, ObjId) {
         let mut state = AutoCommit::new();
         let root = automerge::ROOT;
         widget.sync(&state, &root);
@@ -8362,7 +8400,7 @@ mod tests {
     /// The person's browsing history, as a capture's profile keeps it.
     /// A browser document bookmarking each `(url, title)`, as items
     /// `b0`, `b1`, ….
-    fn bookmarked(pages: &[(&str, &str)]) -> crate::resource::Browser {
+    pub(super) fn bookmarked(pages: &[(&str, &str)]) -> crate::resource::Browser {
         let mut browser = crate::resource::Browser::default();
         for (at, (url, title)) in pages.iter().enumerate() {
             browser.bookmarks.push(
@@ -8376,7 +8414,7 @@ mod tests {
         browser
     }
 
-    fn person_history() -> (
+    pub(super) fn person_history() -> (
         ui::framework::testing::TestApp<crate::BrowserShell>,
         ui::framework::PersonRecord<crate::history::BrowsingHistory>,
     ) {
@@ -10837,12 +10875,26 @@ impl ui::widget::search_field::Filterable for BrowserWidget {
     }
     fn search_scope(&self) -> Option<ui::search::ScopeDecl> {
         let (id, label) = match self.library_section {
-            LibrarySection::History => (crate::actions::HISTORY_SCOPE, "History"),
-            LibrarySection::Bookmarks => (crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
-            LibrarySection::Downloads => (crate::actions::DOWNLOADS_SCOPE, "Downloads"),
-            LibrarySection::Extensions => ("browser.extensions", "Extensions"),
+            LibrarySection::History => (
+                crate::actions::HISTORY_SCOPE,
+                "browser-library-section-history",
+            ),
+            LibrarySection::Bookmarks => (
+                crate::actions::BOOKMARKS_SCOPE,
+                "browser-library-section-bookmarks",
+            ),
+            LibrarySection::Downloads => (
+                crate::actions::DOWNLOADS_SCOPE,
+                "browser-library-section-downloads",
+            ),
+            LibrarySection::Extensions => {
+                ("browser.extensions", "browser-library-section-extensions")
+            }
         };
-        Some(ui::search::ScopeDecl::new(id, label))
+        Some(ui::search::ScopeDecl::new(
+            id,
+            crate::resource::CATALOG.t(label),
+        ))
     }
 }
 
