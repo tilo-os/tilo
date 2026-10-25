@@ -1853,6 +1853,10 @@ suite = "os/tests/projection-boot-check.sh"
 reason = "runs inside a booted guest; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
+suite = "os/tests/h264-boot-check.py"
+reason = "runs inside a booted guest: it decodes with the image's own GStreamer and reads the decoder the kernel and the pipeline actually chose (os/dev/test-installed-desktop.sh)"
+
+[[unrequired]]
 suite = "os/tests/prove_kernel_failure_cache.py"
 reason = "needs a live BuildKit daemon"
 
