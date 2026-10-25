@@ -103,6 +103,36 @@ pub struct RosterRow {
     pub own_device: bool,
 }
 
+impl RosterRow {
+    /// This person as their own row shows them (the pinned overlay's
+    /// first): by `id`, `label` and `color`, with what everyone here reads
+    /// of them, their own words or what is said of them automatically.
+    #[must_use]
+    pub fn own(id: String, label: String, color: Color, status: Option<RosterStatus>) -> Self {
+        Self {
+            id,
+            initial: label
+                .chars()
+                .next()
+                .map_or('\u{2022}', |c| c.to_uppercase().next().unwrap_or(c)),
+            label,
+            color,
+            is_agent: false,
+            is_bot: false,
+            role: None,
+            invited: false,
+            activity: None,
+            status: status.filter(|status| !status.text.trim().is_empty()),
+            recent: Vec::new(),
+            followable: false,
+            availability: ui::Availability::Available,
+            call: None,
+            join: None,
+            own_device: false,
+        }
+    }
+}
+
 /// One voice channel's call, by the app, record and channel that hold it:
 /// what joining it asks of the app that owns it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,6 +361,17 @@ fn doing_line(row: &RosterRow) -> Option<String> {
         ui::Availability::Away => Some(t("people-panel-away")),
         ui::Availability::Idle => Some(t("people-panel-idle")),
     }
+}
+
+/// Whether the line under someone's name is software's words about them
+/// (a model's, or the host's reading of what they did), not theirs: it
+/// carries the automatic mark.
+#[must_use]
+pub fn says_automatically(row: &RosterRow) -> bool {
+    row.call.is_none()
+        && row.status.as_ref().is_some_and(|status| {
+            status.source != LineSource::Written && !status.text.trim().is_empty()
+        })
 }
 
 /// The panel's header line: who is here besides this person, counted as
@@ -935,6 +976,11 @@ impl CollaboratorsOverlay {
             }
             if let Some(doing) = &lines.1 {
                 face = face.secondary(doing);
+            }
+            // Words software wrote about someone are marked as such: never
+            // shown as if they had said them.
+            if says_automatically(row) {
+                face = face.mark(ui::icons::Icon::Sparkles);
             }
             if row.is_agent {
                 face = face.tags(&tags);

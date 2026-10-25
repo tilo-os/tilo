@@ -373,7 +373,7 @@ impl ProfileCard {
         if model.offers_presence {
             body = self.presence_sections(body, model);
         } else if model.sharing.is_some() {
-            body = self.push_sharing(body.push(Box::new(Divider::horizontal())), model);
+            body = self.page_sharing(body, model);
         }
         for (group, heading) in [
             (ProfileGroup::Together, None),
@@ -426,6 +426,33 @@ impl ProfileCard {
             }
         }
         body
+    }
+
+    /// Where the host keeps only how what they do is shared (a page): what
+    /// they are doing in their own words, and how it is shared.
+    fn page_sharing(&self, body: Column, model: &ProfileModel) -> Column {
+        let body = body
+            .push(Box::new(Divider::horizontal()))
+            .push(Box::new(
+                Text::new(&t("profile-section-status"))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ))
+            .push(Box::new(self.status_field()));
+        self.push_sharing(body, model)
+    }
+
+    /// What they are doing in their own words: Enter says it, an empty
+    /// field clears it.
+    fn status_field(&self) -> TextInput {
+        let chosen = Rc::clone(&self.chosen);
+        TextInput::from_state(&self.status_draft)
+            .with_id("profile-status")
+            .with_placeholder(t("profile-status-placeholder"))
+            .with_accessible_name(t("profile-status"))
+            .on_submit(move |typed| {
+                *chosen.borrow_mut() = Some(ProfileChoice::Status(typed.trim().to_owned()));
+            })
     }
 
     /// Status, colour and what people see: how the person shows to others.
@@ -495,19 +522,11 @@ impl ProfileCard {
                 *chosen.borrow_mut() = Some(ProfileChoice::Availability(*preset));
             }
         });
-        let chosen = Rc::clone(&self.chosen);
-        let status = TextInput::from_state(&self.status_draft)
-            .with_id("profile-status")
-            .with_placeholder(t("profile-status-placeholder"))
-            .with_accessible_name(t("profile-status"))
-            .on_submit(move |typed| {
-                *chosen.borrow_mut() = Some(ProfileChoice::Status(typed.trim().to_owned()));
-            });
         body = body
             .push(Box::new(Divider::horizontal()))
             .push(heading("profile-section-status"))
             .push(Box::new(availability))
-            .push(Box::new(status));
+            .push(Box::new(self.status_field()));
         body = self.push_sharing(body, model);
 
         // Colour: the twelve people colours.
@@ -1208,6 +1227,33 @@ mod tests {
             "the frame lays the rebuilt card out again instead of keeping the old layout"
         );
         assert!(harness.inspection_json().unwrap().contains("ABCDEFGHJKLM"));
+    }
+
+    /// Where the host keeps only how what they do is shared (a page), the
+    /// card still has the field for what they are doing in their own
+    /// words, holding what they said; a spectator's has none.
+    #[test]
+    fn a_page_card_offers_what_they_are_doing_in_their_own_words() {
+        ui::i18n::I18nManager::init("en-US");
+        let open = |sharing| {
+            let mut card = ProfileCard::new();
+            card.toggle(
+                &ProfileModel {
+                    sharing,
+                    offers_presence: false,
+                    status: "Reviewing the launch plan".into(),
+                    ..model()
+                },
+                Rect::new(1200.0, 2.0, 1220.0, 22.0),
+                Rect::new(0.0, 0.0, 1280.0, 720.0),
+            );
+            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
+        };
+        let said = says(&mut open(Some(ui::StatusSharing::Automatic)));
+        assert!(said.contains("profile-status"), "{said}");
+        assert!(said.contains("Reviewing the launch plan"), "{said}");
+        let said = says(&mut open(None));
+        assert!(!said.contains("profile-status"), "{said}");
     }
 
     fn opened() -> ProfileCard {

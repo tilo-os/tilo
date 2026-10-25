@@ -136,6 +136,7 @@ impl ShellOverlayHost {
             .then(|| crate::shell::i18n::t("people-overlay-messages-unavailable"));
         let occupied = self.desk_glances();
         let host = self.people_overlay_area();
+        let own = self.own_people_row(theme);
         self.people_overlay.draw(
             scene,
             transform,
@@ -149,6 +150,7 @@ impl ShellOverlayHost {
                 messages: &messages,
                 followed_id: self.followed_peer.as_deref(),
                 messaging_unavailable: unavailable.as_deref(),
+                own: own.as_ref(),
             },
             &mut LivePictures,
         );
@@ -229,7 +231,38 @@ impl ShellOverlayHost {
                 }
             }
             PeopleHit::Send { to, text } => self.send_direct_message(&to, &text),
+            PeopleHit::SetStatus(words) => self.set_manual_status(Some(words)),
         }
+    }
+
+    /// This person as the people here read them, for their own row: their
+    /// name, colour, and the status they publish (their own words, or
+    /// one inferred for them, marked as such).
+    fn own_people_row(&self, theme: &Theme) -> Option<tilo_desktop::collaborators::RosterRow> {
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        let label = crate::shell::topbar_chrome::own_shown_name(&state);
+        let rgb = crate::shell::topbar_chrome::own_rgb(&state);
+        drop(state);
+        let status = self
+            .local_status
+            .clone()
+            .filter(|_| self.status_sharing != ui::StatusSharing::Off)
+            .map(|text| tilo_desktop::collaborators::RosterStatus {
+                text,
+                source: match self.local_status_origin {
+                    ui::StatusOrigin::Manual => tilo_desktop::collaborators::LineSource::Written,
+                    ui::StatusOrigin::Inferred { .. } => {
+                        tilo_desktop::collaborators::LineSource::Generated
+                    }
+                },
+            });
+        Some(tilo_desktop::collaborators::RosterRow::own(
+            ui::collaboration::local_user_id().0,
+            label,
+            theme.tokens.colors.presence.of_rgb(rgb),
+            status,
+        ))
     }
 
     /// Whether `id` is someone here this person may follow, as the live
