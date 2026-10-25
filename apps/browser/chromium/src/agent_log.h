@@ -70,7 +70,7 @@ class AgentLog final : public CefDevToolsMessageObserver {
     if(!active_) return;
     const std::string name=method.ToString();
     if(name!="Runtime.consoleAPICalled" && name!="Runtime.exceptionThrown" && name!="Log.entryAdded" &&
-       name.rfind("Network.",0)!=0) return;
+       name!="Page.frameNavigated" && name.rfind("Network.",0)!=0) return;
     auto parsed=CefParseJSON(std::string(static_cast<const char*>(params),size),JSON_PARSER_RFC);
     auto p=parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr;
     if(!p) return;
@@ -80,6 +80,7 @@ class AgentLog final : public CefDevToolsMessageObserver {
     else if(name=="Log.entryAdded") LogEntry(p);
     else Network(name,p);
   }
+  // The page's inspector went away: whatever is read next records afresh.
   void OnDevToolsAgentDetached(CefRefPtr<CefBrowser>) override { active_=false; }
 
  private:

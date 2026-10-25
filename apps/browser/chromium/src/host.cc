@@ -1392,6 +1392,8 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(d->HasKey("element") ? !type("element",VTYPE_STRING) || d->GetString("element").empty() || d->GetString("element").length()>64
                             : !elementless)return false;
     for(const char* flag:{"cross_origin","secret"})if(d->HasKey(flag) && !type(flag,VTYPE_BOOL))return false;
+    // A frame is named as the outline printed it, or not at all.
+    if(d->HasKey("frame") && (!type("frame",VTYPE_STRING) || d->GetString("frame").empty() || d->GetString("frame").length()>16))return false;
     if(action=="at" && (!number("x") || !number("y") || Number(d,"x")<0 || Number(d,"y")<0 || Number(d,"x")>100000 || Number(d,"y")>100000))return false;
     if(action=="settle" && (!type("quiet_ms",VTYPE_INT) || !type("timeout_ms",VTYPE_INT) || d->GetInt("quiet_ms")<50 ||
        d->GetInt("timeout_ms")<d->GetInt("quiet_ms") || d->GetInt("timeout_ms")>20000))return false;

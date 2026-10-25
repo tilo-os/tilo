@@ -7697,6 +7697,7 @@ mod tests {
             );
             let mut answers = Vec::new();
             for (id, args) in [
+                ("read-page", serde_json::json!({"frame": "1"})),
                 ("read-page-changes", serde_json::json!({})),
                 (
                     "read-page-element-at",
@@ -7718,7 +7719,6 @@ mod tests {
                     "submit-page",
                     serde_json::json!({"element": "d1e9", "cross_origin": true}),
                 ),
-                ("read-page", serde_json::json!({"frame": "1"})),
                 (
                     "fill-page",
                     serde_json::json!({"element": "d2e4", "text": "42 Linden Street",
@@ -7737,6 +7737,9 @@ mod tests {
             assert_eq!(
                 page_requests(&engine),
                 vec![
+                    PageRequest::Outline {
+                        frame: Some(FrameId::parse("1").unwrap()),
+                    },
                     PageRequest::Changes { frame: None },
                     PageRequest::At {
                         x: 12.5,
@@ -7771,9 +7774,6 @@ mod tests {
                         cross_origin: true,
                         frame: None,
                     },
-                    PageRequest::Outline {
-                        frame: Some(FrameId::parse("1").unwrap()),
-                    },
                     PageRequest::Fill {
                         element: "d2e4".into(),
                         text: "42 Linden Street".into(),
@@ -7783,8 +7783,8 @@ mod tests {
                 ],
                 "a form leaves for another site only when the caller says so"
             );
-            // A frame id the outline never printed is refused at the door
-            // rather than run against the main document.
+            // A frame id the outline could not have printed is refused by the
+            // action's own text, before it reaches the widget or the page.
             let refused = start(
                 &mut widget,
                 &mut doc,
@@ -7798,13 +7798,13 @@ mod tests {
                 assert_eq!(value["provenance"], "web-content", "{value}");
             }
             assert!(
-                answers[0]["outline"].is_string(),
+                answers[1]["outline"].is_string(),
                 "changes answer outline lines"
             );
-            assert_eq!(answers[1]["data"]["x"], 12.5);
-            assert_eq!(answers[2]["data"]["settled"], true);
-            assert_eq!(answers[4]["data"]["entries"], serde_json::json!([]));
-            assert_eq!(answers[5]["data"]["next"], 0);
+            assert_eq!(answers[2]["data"]["x"], 12.5);
+            assert_eq!(answers[3]["data"]["settled"], true);
+            assert_eq!(answers[5]["data"]["entries"], serde_json::json!([]));
+            assert_eq!(answers[6]["data"]["next"], 0);
         }
 
         // Phase `an_action_that_navigates_completes_on_the_page_it_opened`.

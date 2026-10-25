@@ -78,6 +78,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void OnDevToolsAgentDetached(CefRefPtr<CefBrowser>) override {
     world_=0;world_id_.clear();loader_.clear();text_owner_.reset();text_lease_.clear();
+    tree_=nullptr;++generation_;
     if(pending_ && call_) Fail("unavailable","The page's inspector connection closed");
   }
 
@@ -162,7 +163,61 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void Begin() {
     if(Action()=="press" && !pending_->command->HasKey("element")) { Act(nullptr);return; }
+    if(tree_ && tree_generation_==generation_) { AfterTree();return; }
     Call(Stage::FrameTree,"Page.getFrameTree",nullptr);
+  }
+  // Where the frame tree leads: the document this action runs in. The tree is
+  // read once per page generation, so repeated actions on one page do not each
+  // pay for it and none of them acts on a tree an older document described.
+  void AfterTree() {
+    auto frame=tree_?tree_->GetDictionary("frame"):nullptr;
+    if(!frame) { Fail("unavailable","The page has no document to read");return; }
+    if(PrivateText()) {
+      std::vector<TextFrame> frames;
+      if(!CollectTextFrames(tree_,frames)) { Fail("unavailable","The frame tree cannot be bounded and observed");return; }
+      if(Action()=="prepare_text_input") {
+        text_candidates_=std::move(frames);ProbeTextFrame();return;
+      }
+      const auto lease=pending_->command->GetString("lease").ToString();
+      if(!text_owner_ || lease!=text_lease_) { Fail("text_input_retired","The original frame lease is no longer active");return; }
+      const auto owner=*text_owner_;
+      const bool live=std::any_of(frames.begin(),frames.end(),[&](const TextFrame& candidate) {
+        return candidate.id==owner.id && candidate.loader==owner.loader;
+      });
+      if(!live) { text_owner_.reset();text_lease_.clear();Fail("text_input_retired","The original frame document was replaced");return; }
+      text_frame_=owner;Evaluate();return;
+    }
+    // The frame the caller named, or the main document. A frame id the
+    // page outline never printed is refused rather than read as the main
+    // document, so a caller never reads the wrong document believing it
+    // read the frame.
+    PageFrame target;
+    const auto named=pending_->command->GetType("frame")==VTYPE_STRING?pending_->command->GetString("frame").ToString():std::string();
+    if(named.empty()) {
+      target.id=frame->GetString("id").ToString();target.loader=frame->GetString("loaderId").ToString();
+      target.address=frame->GetType("url")==VTYPE_STRING?frame->GetString("url").ToString():std::string();
+    } else {
+      std::vector<int> path;
+      size_t start=0;
+      while(start<=named.size() && path.size()<=8) {
+        const auto dot=named.find('.',start);
+        const auto part=named.substr(start,dot==std::string::npos?std::string::npos:dot-start);
+        const int ordinal=FramePart(part);
+        if(ordinal<0) { path.clear();break; }
+        path.push_back(ordinal);
+        if(dot==std::string::npos) break;
+        start=dot+1;
+      }
+      if(path.empty() || path.size()>8) { Fail("no_frame","No frame of this page has that id; read the page again for the frames it lists");return; }
+      if(named.size()>16 || !ResolveFrame(tree_,path,0,target)) {
+        Fail("no_frame","No frame of this page has that id; read the page again for the frames it lists");return;
+      }
+    }
+    if(world_id_==target.id && world_ && target.loader==loader_) { Evaluate();return; }
+    loader_=target.loader;world_=0;world_frame_=target;
+    auto params=CefDictionaryValue::Create();
+    params->SetString("frameId",target.id);params->SetString("worldName","tilo-page-actions");
+    Call(Stage::World,"Page.createIsolatedWorld",params);
   }
   void Call(Stage stage,const char* method,CefRefPtr<CefDictionaryValue> params) {
     stage_=stage;call_=browser_->GetHost()->ExecuteDevToolsMethod(0,method,params);
@@ -198,53 +253,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         Fail("unavailable","The page has no document to read");return;
       }
       main_id_=frame->GetString("id").ToString();
-      if(PrivateText()) {
-        std::vector<TextFrame> frames;
-        if(!CollectTextFrames(tree,frames)) { Fail("unavailable","The frame tree cannot be bounded and observed");return; }
-        if(Action()=="prepare_text_input") {
-          text_candidates_=std::move(frames);ProbeTextFrame();return;
-        }
-        const auto lease=pending_->command->GetString("lease").ToString();
-        if(!text_owner_ || lease!=text_lease_) { Fail("text_input_retired","The original frame lease is no longer active");return; }
-        const auto owner=*text_owner_;
-        const bool live=std::any_of(frames.begin(),frames.end(),[&](const TextFrame& candidate) {
-          return candidate.id==owner.id && candidate.loader==owner.loader;
-        });
-        if(!live) { text_owner_.reset();text_lease_.clear();Fail("text_input_retired","The original frame document was replaced");return; }
-        text_frame_=owner;Evaluate();return;
-      }
-      // The frame the caller named, or the main document. A frame id the
-      // page outline never printed is refused rather than read as the main
-      // document, so a caller never reads the wrong document believing it
-      // read the frame.
-      PageFrame target;
-      const auto named=pending_->command->GetType("frame")==VTYPE_STRING?pending_->command->GetString("frame").ToString():std::string();
-      if(named.empty()) {
-        target.id=frame->GetString("id").ToString();target.loader=frame->GetString("loaderId").ToString();
-        target.address=frame->GetType("url")==VTYPE_STRING?frame->GetString("url").ToString():std::string();
-      } else {
-        std::vector<int> path;
-        size_t start=0;
-        while(start<=named.size() && path.size()<=8) {
-          const auto dot=named.find('.',start);
-          const auto part=named.substr(start,dot==std::string::npos?std::string::npos:dot-start);
-          const int ordinal=FramePart(part);
-          if(ordinal<0) { path.clear();break; }
-          path.push_back(ordinal);
-          if(dot==std::string::npos) break;
-          start=dot+1;
-        }
-        if(path.empty() || path.size()>8) { Fail("no_frame","No frame of this page has that id; read the page again for the frames it lists");return; }
-        if(named.size()>16 || !ResolveFrame(tree,path,0,target)) {
-          Fail("no_frame","No frame of this page has that id; read the page again for the frames it lists");return;
-        }
-      }
-      if(world_id_==target.id && world_ && target.loader==loader_) { Evaluate();return; }
-      loader_=target.loader;world_=0;world_frame_=target;
-      auto params=CefDictionaryValue::Create();
-      params->SetString("frameId",target.id);params->SetString("worldName","tilo-page-actions");
-      Call(Stage::World,"Page.createIsolatedWorld",params);
-    } else if(stage_==Stage::TextWorld) {
+      tree_=tree;tree_generation_=generation_;
+    } else if(stage_==Stage::TextWorld) {    } else if(stage_==Stage::TextWorld) {
       if(!success || !result || result->GetType("executionContextId")!=VTYPE_INT) { ProbeTextFrame();return; }
       text_frame_.world=result->GetInt("executionContextId");
       text_frame_.document=page_documents=page_documents%2147483647+1;
@@ -488,7 +498,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   std::optional<Pending> pending_;Stage stage_=Stage::FrameTree;int call_=0;
   std::vector<TextFrame> text_candidates_;TextFrame text_frame_;std::optional<TextFrame> text_owner_;std::string text_lease_;
   bool native_attempted_=false;std::string native_object_;
-  int world_=0,document_=0,main_world_=0;std::string main_id_;std::string loader_,world_id_;PageFrame world_frame_;Clicked clicked_;uint64_t token_=0,navigations_=0;
+  int world_=0,document_=0,main_world_=0;std::string main_id_;
+  CefRefPtr<CefDictionaryValue> tree_;uint64_t tree_generation_=~uint64_t{0};uint64_t generation_=0;
+  std::string loader_,world_id_;PageFrame world_frame_;Clicked clicked_;uint64_t token_=0,navigations_=0;
   IMPLEMENT_REFCOUNTING(PageAutomation);
 };
 }
