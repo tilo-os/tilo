@@ -62,6 +62,14 @@ pub(crate) enum Action {
     Delete(SnippetId),
     SetLanguage(SnippetId, Language),
     Rename(SnippetId, String),
+    /// File the snippet under `folder`; empty files it nowhere.
+    SetFolder(SnippetId, String),
+    /// What the snippet is for.
+    SetDescription(SnippetId, String),
+    /// Tag the snippet.
+    AddTag(SnippetId, String),
+    /// Take a tag off the snippet.
+    RemoveTag(SnippetId, String),
 }
 
 impl Action {
@@ -84,6 +92,10 @@ impl Action {
             Self::Delete(id) => format!("snippets.snippet:{id}.delete"),
             Self::SetLanguage(id, _) => format!("snippets.snippet:{id}.set-language"),
             Self::Rename(id, _) => format!("snippets.snippet:{id}.title"),
+            Self::SetFolder(id, _) => format!("snippets.snippet:{id}.folder"),
+            Self::SetDescription(id, _) => format!("snippets.snippet:{id}.description"),
+            Self::AddTag(id, _) => format!("snippets.snippet:{id}.add-tag"),
+            Self::RemoveTag(id, tag) => format!("snippets.snippet:{id}.tag:{tag}.remove"),
         }
     }
 }
@@ -114,6 +126,9 @@ pub(crate) struct Core {
     /// A short confirmation of the last action, for the shell to show
     /// next.
     notice: Option<String>,
+    /// A copy whose outcome the clipboard reports after it returned: one that
+    /// fails later is said, not confirmed.
+    copy: ui::CopyWatch,
     /// The resource's dispatcher, once the framework attaches the view.
     /// Each on-screen control submits a field edit or a verb through it.
     dispatch: Option<Dispatcher<Snippets>>,
@@ -144,6 +159,7 @@ impl Core {
             visible: Vec::new(),
             expand: None,
             notice: None,
+            copy: ui::CopyWatch::default(),
             dispatch: None,
             pointer: Point::ZERO,
             window: Rect::ZERO,
@@ -489,10 +505,42 @@ impl Core {
         // Copying is presentation; the use it records is a verb, so it
         // replicates and undoes like any change.
         if let Some(body) = self.library.get(id).map(|s| s.body.clone()) {
-            ui::clipboard_copy(&body);
-            self.record_use(id);
-            self.toast(&tr("snippets-copied"));
+            self.copy_text(body, id);
         }
+    }
+
+    /// Put a snippet's text on the clipboard, through the checked path — and
+    /// through the expiring one when the snippet carries a credential, so an
+    /// API key does not sit in the clipboard history for the rest of the day.
+    /// The copy's outcome is watched: a clipboard that refuses is said, not
+    /// confirmed.
+    fn copy_text(&mut self, text: String, id: &SnippetId) {
+        let secret = looks_like_a_credential(&text);
+        let copy = if secret {
+            ui::try_clipboard_copy_secret(&text, std::time::Duration::from_secs(45))
+        } else {
+            ui::try_clipboard_copy(&text)
+        };
+        let copied = self.copy.watch(copy);
+        // The use is the person taking the snippet, which happened whether
+        // the clipboard took it or not; the toast is what reports the
+        // clipboard.
+        self.record_use(id);
+        if copied {
+            self.toast(&tr(if secret {
+                "snippets-copied-clears"
+            } else {
+                "snippets-copied"
+            }));
+        } else {
+            self.toast(&tr("snippets-copy-failed"));
+        }
+    }
+
+    /// A copy whose outcome the clipboard reported late as failed: say so
+    /// once. `true` when it did.
+    fn report_copy_failure(&mut self) -> bool {
+        self.copy.failed()
     }
 
     /// Record one use of a snippet (drives "Most used").
@@ -550,6 +598,60 @@ impl Core {
         self.submit(Self::paths(id).title.set(title.to_owned()));
     }
 
+    /// File the snippet under `folder`. The name is what the sidebar lists,
+    /// so it is trimmed and a blank name means "no folder" — the same rule
+    /// the record refuses a padded name with.
+    fn set_folder(&self, id: &SnippetId, folder: &str) {
+        let folder = folder.trim();
+        if self.library.get(id).is_some_and(|s| s.folder.0 == folder) {
+            return;
+        }
+        self.submit(
+            Self::paths(id)
+                .folder
+                .set(ui::tilo_resource::Atom(folder.to_owned())),
+        );
+    }
+
+    /// What the snippet is for: the line the list shows under its name.
+    fn set_description(&self, id: &SnippetId, description: &str) {
+        if self
+            .library
+            .get(id)
+            .is_some_and(|s| s.description == description)
+        {
+            return;
+        }
+        self.submit(Self::paths(id).description.set(description.to_owned()));
+    }
+
+    /// Tag the snippet with `tag` (blank, padded and already-present tags
+    /// change nothing).
+    fn add_tag(&self, id: &SnippetId, tag: &str) {
+        let tag = tag.trim();
+        if tag.is_empty()
+            || self
+                .library
+                .get(id)
+                .is_some_and(|s| s.tags.contains(&tag.to_owned()))
+        {
+            return;
+        }
+        self.submit(Self::paths(id).tags.insert(&tag.to_owned()));
+    }
+
+    /// Take `tag` off the snippet; its other snippets keep it.
+    fn remove_tag(&self, id: &SnippetId, tag: &str) {
+        if !self
+            .library
+            .get(id)
+            .is_some_and(|s| s.tags.contains(&tag.to_owned()))
+        {
+            return;
+        }
+        self.submit(Self::paths(id).tags.remove(&tag.to_owned()));
+    }
+
     fn toast(&mut self, message: &str) {
         self.notice = Some(message.to_string());
     }
@@ -565,6 +667,12 @@ impl Core {
             Action::Delete(id) => self.delete(&id),
             Action::SetLanguage(id, lang) => self.set_language(&id, lang),
             Action::Rename(id, title) => self.rename(&id, &title),
+            Action::SetFolder(id, folder) => self.set_folder(&id, &folder),
+            Action::SetDescription(id, description) => {
+                self.set_description(&id, &description);
+            }
+            Action::AddTag(id, tag) => self.add_tag(&id, &tag),
+            Action::RemoveTag(id, tag) => self.remove_tag(&id, &tag),
         }
     }
 
@@ -582,9 +690,7 @@ impl Core {
             }
             ExpandOutcome::Cancel => {}
             ExpandOutcome::Copy(text, id) => {
-                ui::clipboard_copy(&text);
-                self.record_use(&id);
-                self.toast(&tr("snippets-copied"));
+                self.copy_text(text, &id);
             }
         }
     }
@@ -858,6 +964,18 @@ impl SnippetsApp {
         }
     }
 
+    /// Ask for `action` the way a control does: queued, applied by the root.
+    #[cfg(test)]
+    pub(crate) fn request_for_test(&self, action: Action) {
+        self.requests.borrow_mut().push(action);
+    }
+
+    /// The sidebar's sections as a test reads them.
+    #[cfg(test)]
+    pub(crate) fn nav_sections_for_test(&self) -> Vec<NavSection> {
+        self.core.borrow().nav_sections()
+    }
+
     #[cfg(test)]
     pub(crate) fn open_id_for_test(&self) -> Option<SnippetId> {
         self.core.borrow().open.clone()
@@ -953,6 +1071,10 @@ impl ui::widget::Decorator for SnippetsApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if self.core.borrow_mut().report_copy_failure() {
+            let message = tr("snippets-copy-failed");
+            self.core.borrow_mut().toast(&message);
+        }
         let (doc, _) = ui::doc::document_ref(state, path);
         self.core.borrow_mut().sync_body_editor(Some(doc));
         self.take_window_toolbar_events();
@@ -1287,4 +1409,32 @@ impl ui::widget::controls::ActionControls for SnippetsApp {
         self.search.is_pending()
             || ui::widget::controls::has_pending_control_invocation(&self.shell)
     }
+}
+
+/// Whether `text` looks like it carries a credential — an assignment to a
+/// key, token, secret or password, a bearer header, or a vendor key prefix.
+///
+/// This is a guess, and it is deliberately conservative: a snippet wrongly
+/// treated as a secret is cleared from the clipboard after a minute, which
+/// costs the person a second copy; a snippet wrongly treated as ordinary
+/// stays in the clipboard history. The checked, expiring path is the safe
+/// direction to be wrong in.
+fn looks_like_a_credential(text: &str) -> bool {
+    const MARKERS: [&str; 6] = [
+        "api_key",
+        "apikey",
+        "token",
+        "secret",
+        "password",
+        "authorization:",
+    ];
+    let lower = text.to_lowercase();
+    if lower.contains("bearer ") || lower.contains("-----begin ") {
+        return true;
+    }
+    MARKERS.iter().any(|marker| {
+        lower.contains(&format!("{marker}=")) || lower.contains(&format!("{marker}: "))
+    }) || ["sk-", "ghp_", "xoxb-", "akia"]
+        .iter()
+        .any(|prefix| lower.contains(prefix))
 }
