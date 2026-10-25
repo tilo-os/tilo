@@ -1,6 +1,10 @@
-//! Where each desk widget waits: its edge, its place in the stack of
-//! widgets sharing that edge, and around the system activities (a call, a
-//! navigation card) already floating there.
+//! Where each thing kept at the edges of the screen waits: its edge, its
+//! place in the stack of things sharing that edge, and around the system
+//! activities (a call, a navigation card) already floating there. The desk
+//! widgets and the pinned people overlay both stand here, in the native
+//! shell and the browser alike: dragged and let go, each snaps to the edge
+//! nearest the drop ([`nearest_edge`]) and keeps it in the person's
+//! settings (`settings_store::desk_widgets`).
 //!
 //! Widgets that share an edge stack along it, away from its corner or out
 //! from its middle. A system activity floating over an edge is an occupant
@@ -15,7 +19,7 @@
 
 use vello::kurbo::{Point, Rect, Size, Vec2};
 
-use super::{DockEdge, Slot, WidgetId};
+pub use settings_store::desk_widgets::DockEdge;
 
 /// Gap between a widget and the display edge, and between stacked widgets.
 pub const MARGIN: f64 = ui::tokens::Spacing::BASE.s3 as f64;
@@ -25,10 +29,57 @@ pub const MARGIN: f64 = ui::tokens::Spacing::BASE.s3 as f64;
 /// and an app control near the edge would bring it when aimed at.
 pub const REACH_PAD: f64 = ui::tokens::Spacing::BASE.s2 as f64;
 
-/// One widget to place.
+/// A press that moves this far becomes a drag to another edge.
+pub const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
+
+/// A press on something waiting at an edge, and the drag to another edge it
+/// may become. While dragged it is drawn shifted by the pointer's travel
+/// ([`Self::shift`]); let go, it snaps to the edge nearest the pointer.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Item {
-    pub id: WidgetId,
+pub struct EdgeDrag<I> {
+    pub id: I,
+    pub at: Point,
+    pub dragging: bool,
+}
+
+impl<I: Copy> EdgeDrag<I> {
+    #[must_use]
+    pub const fn new(id: I, at: Point) -> Self {
+        Self {
+            id,
+            at,
+            dragging: false,
+        }
+    }
+
+    /// The pointer moved to `p` while pressed. Returns whether the press is
+    /// a drag now.
+    pub fn moved(&mut self, p: Point) -> bool {
+        if !self.dragging && (p - self.at).hypot() > DRAG_SLOP {
+            self.dragging = true;
+        }
+        self.dragging
+    }
+
+    /// How far from its slot the dragged thing is drawn with the pointer at
+    /// `p`; `None` while the press is still a click.
+    #[must_use]
+    pub fn shift(&self, p: Point) -> Option<Vec2> {
+        self.dragging.then(|| p - self.at)
+    }
+
+    /// Let go at `p` in `area`: the edge it snaps to, or `None` for a press
+    /// that never became a drag (a click on whatever it is on).
+    #[must_use]
+    pub fn release(self, area: Rect, p: Point) -> Option<DockEdge> {
+        self.dragging.then(|| nearest_edge(area, p))
+    }
+}
+
+/// One thing to place, known by `I`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Item<I> {
+    pub id: I,
     pub edge: DockEdge,
     pub glance: Size,
     pub open: Size,
@@ -41,7 +92,12 @@ pub struct Item {
 /// card grows from its glance's corner over its neighbours instead of
 /// pushing them.
 #[must_use]
-pub fn place(area: Rect, items: &[Item], occupied: &[Rect], stack_open: bool) -> Vec<Slot> {
+pub fn place<I: Copy>(
+    area: Rect,
+    items: &[Item<I>],
+    occupied: &[Rect],
+    stack_open: bool,
+) -> Vec<Slot<I>> {
     let mut taken: Vec<Rect> = occupied.to_vec();
     let mut out = Vec::with_capacity(items.len());
     for edge in DockEdge::ALL {
@@ -72,7 +128,21 @@ pub fn place(area: Rect, items: &[Item], occupied: &[Rect], stack_open: bool) ->
     out
 }
 
-/// The edge nearest to `p`, for a widget dropped there.
+/// One thing as laid out this frame, in desktop coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slot<I> {
+    pub id: I,
+    pub glance: Rect,
+    /// Where its open card sits.
+    pub open: Rect,
+    /// Where a pointer reaching for it comes to rest: the glance form and
+    /// the strip of edge behind it.
+    pub reach: Rect,
+    /// Whether it has anything to show (a player, someone else here).
+    pub has_content: bool,
+}
+
+/// The edge nearest to `p`, for a thing dropped there.
 #[must_use]
 pub fn nearest_edge(area: Rect, p: Point) -> DockEdge {
     let third_w = area.width() / 3.0;
@@ -184,10 +254,11 @@ fn reach_zone(area: Rect, edge: DockEdge, glance: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use settings_store::desk_widgets::WidgetId;
 
     const AREA: Rect = Rect::new(0.0, 24.0, 1600.0, 900.0);
 
-    fn item(id: WidgetId, edge: DockEdge) -> Item {
+    fn item(id: WidgetId, edge: DockEdge) -> Item<WidgetId> {
         Item {
             id,
             edge,
@@ -268,5 +339,20 @@ mod tests {
             DockEdge::Right
         );
         assert_eq!(nearest_edge(AREA, Point::new(100.0, 60.0)), DockEdge::Left);
+    }
+
+    #[test]
+    fn a_press_drags_only_past_the_slop_and_a_click_moves_nothing() {
+        let start = Point::new(1500.0, 400.0);
+        let mut click = EdgeDrag::new(WidgetId::Team, start);
+        assert!(!click.moved(start + Vec2::new(DRAG_SLOP * 0.5, 0.0)));
+        assert_eq!(click.shift(start), None);
+        assert_eq!(click.release(AREA, start), None, "a click keeps its edge");
+
+        let mut drag = EdgeDrag::new(WidgetId::Team, start);
+        let drop = Point::new(60.0, 880.0);
+        assert!(drag.moved(drop));
+        assert_eq!(drag.shift(drop), Some(drop - start));
+        assert_eq!(drag.release(AREA, drop), Some(DockEdge::BottomLeft));
     }
 }

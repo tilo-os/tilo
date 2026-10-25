@@ -2597,11 +2597,11 @@ fn roster_follow_fixture() -> Harness {
 #[test]
 fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("painted Ada Follow");
     {
         let chrome = h.chrome.borrow_mut();
@@ -2631,7 +2631,7 @@ fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
 #[test]
 fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -2658,7 +2658,7 @@ fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
 #[test]
 fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -2684,7 +2684,7 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     assert!(
         h.host
             .collaborators_overlay
-            .accessibility_rect_for_path(&[2])
+            .accessibility_rect_for_path(&[3])
             .is_none()
     );
 
@@ -2695,11 +2695,11 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
         h.host.followed_peer.is_none(),
         "reopening must not resurrect old focus"
     );
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Bob Follow after reordering");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -2728,7 +2728,7 @@ fn people_completed_click_defers_follow_until_release() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("painted Ada Follow");
     let mods = Modifiers::default();
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
@@ -2749,7 +2749,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
         let target = h
             .host
             .collaborators_overlay
-            .accessibility_rect_for_path(&[2])
+            .accessibility_rect_for_path(&[3])
             .expect("painted Ada Follow");
         let mods = Modifiers::default();
         assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
@@ -2788,7 +2788,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
 #[test]
 fn people_completed_submit_repeat_cannot_resume_follow_after_local_handoff() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let mods = Modifiers::default();
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
@@ -2873,7 +2873,7 @@ fn people_completed_cancel_survives_dismissal_reopen_and_a_fresh_click() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -2896,7 +2896,7 @@ fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -2933,7 +2933,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -2942,7 +2942,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     let moved = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada after resize");
     assert_ne!(target, moved);
     assert!(pump(&mut h, &cursor_moved_at(moved.center()), mods));
