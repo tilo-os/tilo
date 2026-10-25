@@ -292,15 +292,6 @@ impl FanoutState {
             .is_some_and(|state| state.holds_route(route))
     }
 
-    /// Keep a tree record a peer wrote for a window of `app_id` in
-    /// `cluster_id` that is not open yet, so the window that opens later is
-    /// told it exists ([`CapnpBrokerState::remember_tree_record`]).
-    pub fn remember_tree_record(&self, app_id: &str, cluster_id: &str, record_id: &str) {
-        if let Some(state) = self.capnp_state() {
-            state.remember_tree_record(app_id, cluster_id, record_id);
-        }
-    }
-
     /// The records local app windows hold, by the window instance the shell
     /// launched each for; see [`CapnpBrokerState::window_records`].
     pub fn window_records(&self) -> Vec<(u64, CrdtRoute)> {

@@ -99,7 +99,7 @@ impl CrdtRoute {
     /// identity has not been minted yet). The nil case must be checked
     /// separately from empty — otherwise every workspace still carrying
     /// the sentinel would share one enormous room on every machine.
-    fn is_addressable(cluster_id: &str) -> bool {
+    pub(crate) fn is_addressable(cluster_id: &str) -> bool {
         !cluster_id.is_empty() && cluster_id != UNMINTED_CLUSTER_ID
     }
 
