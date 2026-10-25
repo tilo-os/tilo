@@ -207,7 +207,7 @@ impl PageRequest {
                         .chain(to_point)
                         .all(|point| point_is_viewport(*point))
                     && (1..=MAX_DRAG_STEPS).contains(&usize::from(*steps))
-            },
+            }
             Self::Path { element, points } => {
                 let relative = element.is_some();
                 (2..=MAX_PATH_POINTS).contains(&points.len())
@@ -218,7 +218,7 @@ impl PageRequest {
                             point_is_viewport(point)
                         }
                     })
-            },
+            }
             Self::Fill { text, .. } => text.len() <= MAX_FILL_BYTES,
             Self::Select { values, .. } => {
                 !values.is_empty()
@@ -439,7 +439,9 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
         PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
         PageRequest::Hover { element, point } => {
             // An unnamed element hovers a viewport point instead.
-            if element.is_none() && let Some((x, y)) = point {
+            if element.is_none()
+                && let Some((x, y)) = point
+            {
                 command["action"] = "at".into();
                 command["hover"] = true.into();
                 command["x"] = (*x).into();
@@ -778,7 +780,10 @@ mod tests {
             };
             assert!(path.valid());
             let wire = encode_request(24, &path);
-            assert_eq!(wire["points"], serde_json::json!([[1.0, 2.0], [3.5, 4.5], [60.0, 70.0]]));
+            assert_eq!(
+                wire["points"],
+                serde_json::json!([[1.0, 2.0], [3.5, 4.5], [60.0, 70.0]])
+            );
             assert_eq!(wire["element"], "d1e9");
             let free = PageRequest::Path {
                 element: None,

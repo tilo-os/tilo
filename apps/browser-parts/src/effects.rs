@@ -478,7 +478,10 @@ impl BrowserEffect {
                         element: None,
                         point: Some(point),
                     },
-                    (element, _) => PageRequest::Hover { element, point: None },
+                    (element, _) => PageRequest::Hover {
+                        element,
+                        point: None,
+                    },
                 })
             }
             Self::DragPage {
@@ -498,10 +501,7 @@ impl BrowserEffect {
             }),
             Self::PointerPath { element, points } => page(PageRequest::Path {
                 element: element.filter(|element| !element.is_empty()),
-                points: points
-                    .into_iter()
-                    .map(|[x, y]| (x, y))
-                    .collect(),
+                points: points.into_iter().map(|[x, y]| (x, y)).collect(),
             }),
             Self::FillPage { element, text } => page(PageRequest::Fill {
                 element,

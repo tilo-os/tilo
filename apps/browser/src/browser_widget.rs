@@ -5276,15 +5276,7 @@ impl BrowserWidget {
                     to_y: None,
                     steps: None,
                 },
-                &[
-                    "from",
-                    "from_x",
-                    "from_y",
-                    "to",
-                    "to_x",
-                    "to_y",
-                    "steps",
-                ][..],
+                &["from", "from_x", "from_y", "to", "to_x", "to_y", "steps"][..],
             ),
             (
                 E::PointerPath {
