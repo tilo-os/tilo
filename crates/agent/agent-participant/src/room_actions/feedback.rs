@@ -100,14 +100,15 @@ pub(super) fn answer(
             Box::new(signer),
         )
         .map_err(|error| unavailable(&error))?;
-        Some(
-            serde_json::to_value(
-                service
-                    .receipt(&submission, &enrollment)
-                    .map_err(|error| unavailable(&error))?,
-            )
-            .map_err(|error| unavailable(&error))?,
-        )
+        // `None` while the report or its picture is still on its way here
+        // (the host asks the room for the picture once the report lands):
+        // the reporter stays admitted and asks again.
+        service
+            .receipt_when_kept(&submission, &enrollment)
+            .map_err(|error| unavailable(&error))?
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| unavailable(&error))?
     } else {
         None
     };

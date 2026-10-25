@@ -630,7 +630,11 @@ async fn assert_signed_canonical(
     let mut absent = submission.clone();
     absent.id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into();
     assert!(
-        owner_feedback(browser, &absent, true).await.is_err(),
+        owner_feedback(browser, &absent, true)
+            .await
+            .expect("a report not here yet keeps the reporter admitted")
+            .receipt
+            .is_none(),
         "a locally approved but unretained report has no canonical acknowledgment"
     );
     let mut wrong_destination = submission.clone();
