@@ -712,4 +712,55 @@ mod keyring {
             &[2; 32]
         );
     }
+
+    /// Set in the child that leaves the handoff the way tilo-root-discover
+    /// does in the initrd: as a service with a session keyring of its own
+    /// (KeyringMode=private), which does not link the user keyring, so
+    /// nothing there is possessed.
+    const CHILD: &str = "TILO_AUTH_TEST_HANDOFF_CHILD";
+
+    #[test]
+    fn a_service_whose_session_keyring_lacks_the_user_keyring_leaves_the_handoff() {
+        if let Some(description) = std::env::var_os(CHILD) {
+            const KEYCTL_JOIN_SESSION_KEYRING: libc::c_long = 1;
+            // SAFETY: a null name joins a new anonymous session keyring.
+            let joined =
+                unsafe { libc::syscall(libc::SYS_keyctl, KEYCTL_JOIN_SESSION_KEYRING, 0_usize) };
+            assert!(joined >= 0, "{}", std::io::Error::last_os_error());
+            handoff::add(
+                &Handoff {
+                    uid: UID,
+                    key: UserKey::from_bytes([7; 32]),
+                },
+                description.to_str().unwrap(),
+            )
+            .unwrap();
+            return;
+        }
+        require_capability!(
+            KernelKeyring,
+            keyring_usable(),
+            "the kernel keyring refused add_key; {COVERED}"
+        );
+        let description = format!("tilo-signin-test-service-{}", std::process::id());
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "keyring::a_service_whose_session_keyring_lacks_the_user_keyring_leaves_the_handoff",
+                "--exact",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(CHILD, &description)
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "the service could not leave the handoff:\n{}{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        let taken = handoff::take(&description).unwrap().expect("the handoff");
+        assert_eq!(taken.uid, UID);
+        assert_eq!(taken.key.expose(), &[7; 32]);
+    }
 }
