@@ -30,8 +30,6 @@ use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
 use tilo_lock::MutexRecover as _;
 
 thread_local! {
-    static FEEDBACK_STARTUPS: RefCell<HashMap<u32, tilo_desktop::feedback::transport::Startup>> =
-        RefCell::new(HashMap::new());
     static LOOP: RefCell<Option<EventLoopProxy<u64>>> = const { RefCell::new(None) };
     static MOUNTS: RefCell<HashMap<u64, Mount>> = RefCell::new(HashMap::new());
     static SERVICING: RefCell<std::collections::HashSet<u64>> = RefCell::new(std::collections::HashSet::new());
@@ -244,6 +242,9 @@ struct Config {
     /// the web host's `entry.json`); one left empty is not offered.
     #[serde(default)]
     about: tilo_desktop::about::AboutLinks,
+    /// The build the page runs (the site's `version.json` revision).
+    #[serde(default)]
+    build: Option<String>,
 }
 
 impl Config {
@@ -1296,34 +1297,6 @@ enum Root {
     Desktop(Box<crate::shell::BrowserShell>),
 }
 
-/// Trusted Rust startup handoff, separate from deserialized mount configuration.
-/// The certified peer must already exist. This never creates a peer or joins.
-pub(crate) fn register_feedback_startup(
-    peer: u32,
-    startup: tilo_desktop::feedback::transport::Startup,
-) -> Result<(), String> {
-    let device = startup
-        .reporter()
-        .device_public_key()
-        .ok_or("feedback reporter has no certified device")?;
-    if crate::replication::device_of(peer).as_deref() != Some(hex::encode(device).as_str()) {
-        return Err("feedback reporter does not own this certified peer".into());
-    }
-    FEEDBACK_STARTUPS.with_borrow_mut(|startups| {
-        if startups.contains_key(&peer) {
-            return Err("feedback startup already registered".into());
-        }
-        startups.insert(peer, startup);
-        Ok(())
-    })
-}
-
-pub(crate) fn forget_feedback_startup(peer: u32) {
-    FEEDBACK_STARTUPS.with_borrow_mut(|startups| {
-        startups.remove(&peer);
-    });
-}
-
 /// What the page's desktop mounts with: its stores, identity and settings.
 fn desktop_inputs(
     config: &Config,
@@ -1335,9 +1308,7 @@ fn desktop_inputs(
             .map_err(error)?,
     );
     Ok(crate::desktop::Inputs {
-        feedback: config
-            .peer
-            .and_then(|peer| FEEDBACK_STARTUPS.with_borrow_mut(|startups| startups.remove(&peer))),
+        feedback: config.peer.and_then(crate::feedback_delivery::take_startup),
         owners: RecordOwners::with_store(Rc::clone(dyn_store)),
         views,
         device: config.device.clone(),
@@ -1408,6 +1379,7 @@ fn present_desktop(
             mac: config.mac,
             host: config.host.clone(),
             about: config.about.clone(),
+            build: config.build.clone(),
         },
         Rc::clone(&requests),
         crate::shell::ChromeSources {
@@ -2730,6 +2702,8 @@ impl Mount {
             &gpu.surface,
             &output.texture,
         );
+        let target = &gpu.surface.target_texture;
+        crate::feedback_crops::service(&handle.device, &handle.queue, target, viewport.dpr);
         // The first frame is out: the pipelines it did not need compile once
         // the page has stayed a while (`compile_deferred_pipelines_later`).
         drop(shared_guard);

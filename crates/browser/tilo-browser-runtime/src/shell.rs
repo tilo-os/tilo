@@ -83,6 +83,8 @@ pub(crate) enum HostRequest {
 /// The page's host action that lets the person choose their name; the
 /// People panel offers it on the own name when the page lists it.
 const RENAME_ACTION: &str = "set-name";
+/// The avatar menu's "Report a problem…", which the page answers itself.
+const REPORT_PROBLEM: &str = "report-problem";
 
 /// Workspace menu keys: a workspace of this page's desktop, by id, and one
 /// of the person's others the page opens, by its host action.
@@ -117,6 +119,8 @@ pub(crate) struct HostOffers {
     pub host: Option<String>,
     /// The deployment's links the About sheet offers.
     pub about: tilo_desktop::about::AboutLinks,
+    /// The build this page runs (its commit), which a report names.
+    pub build: Option<String>,
 }
 
 /// Who this desktop's person is when they make something in the room,
@@ -507,6 +511,8 @@ pub(crate) struct BrowserShell {
     /// revisions, whether the overview covered the desktop, and the content
     /// area.
     navigator_seen: Option<(u64, u64, bool, Rect)>,
+    /// Pointing at what is wrong, to report it.
+    picker: crate::feedback_pick::PagePicker,
 }
 
 /// What the top bar's chrome reads from the page besides the desktop tree.
@@ -592,6 +598,7 @@ impl BrowserShell {
             navigator: StripNavigator::default(),
             navigator_frame: StripFrame::empty(Rect::ZERO),
             navigator_seen: None,
+            picker: crate::feedback_pick::PagePicker::default(),
         }
     }
 
@@ -723,6 +730,94 @@ impl BrowserShell {
             }
             None => self.launch(tilo_desktop::feedback::PACKAGE),
         }
+    }
+
+    /// Point at what is wrong: the picker, where the page holds a
+    /// destination for reports.
+    fn report_problem(&mut self) {
+        if self.chrome.shared.feedback.borrow().is_some() {
+            self.profile.close();
+            self.picker.open();
+        }
+    }
+
+    /// The windows on screen, as a report names what is in them.
+    fn pick_windows(&self) -> Vec<crate::feedback_pick::PickWindow> {
+        let records = self.chrome.shared.bound_records();
+        let shown = self.handle.shown_tabs();
+        self.handle.read(|tree| {
+            shown
+                .into_iter()
+                .filter_map(|(tab, rect)| {
+                    let subject = tilo_desktop::feedback::tab_subject(tree, tab, |app| {
+                        crate::desktop::known_application(app).map(str::to_owned)
+                    })?;
+                    Some(crate::feedback_pick::PickWindow {
+                        rect,
+                        instance: tab,
+                        app: subject.app,
+                        name: subject.name,
+                        record: records
+                            .iter()
+                            .find(|(shown, _)| *shown == tab)
+                            .map(|(_, checkout)| checkout.id.as_str().to_owned()),
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// Hand what the person picked to the composer, and open it on it.
+    fn follow_picker(&mut self) -> bool {
+        let names = {
+            let tree = self.chrome.tree();
+            let mut names: Vec<String> = self
+                .chrome
+                .people(&tree)
+                .into_iter()
+                .map(|person| person.label)
+                .collect();
+            names.push(self.chrome.own_chip().name);
+            names
+        };
+        let cx = crate::feedback_pick::ReportContext {
+            windows: self.pick_windows(),
+            build: self.offers.build.clone(),
+            names,
+        };
+        if let Some((draft, crops)) = self.picker.take_report(&self.area, &cx) {
+            // The frame drawn next has no picker over it: the parts'
+            // pictures are copied from it, then the composer opens.
+            crate::feedback_crops::want(crate::feedback_crops::Wanted {
+                draft,
+                crops,
+                wake: Arc::clone(&self.chrome.wake),
+            });
+            return true;
+        }
+        let Some(report) = crate::feedback_crops::take_ready() else {
+            return false;
+        };
+        let started = self
+            .chrome
+            .shared
+            .feedback
+            .borrow()
+            .as_ref()
+            .map(|feedback| feedback.services().begin_report(report));
+        match started {
+            Some(Ok(())) => match self.handle.read(tilo_desktop::feedback::composer_tab) {
+                Some((.., tab)) => {
+                    self.handle.focus_tab(tab);
+                }
+                None => self.launch(tilo_desktop::feedback::PACKAGE),
+            },
+            Some(Err(error)) => {
+                web_sys::console::warn_1(&format!("feedback: {error}").into());
+            }
+            None => {}
+        }
+        true
     }
 
     fn activity(&self) {
@@ -985,7 +1080,17 @@ impl BrowserShell {
                     icon,
                 })
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // Reporting a problem, where the page holds a destination for it.
+        let mut actions = actions;
+        if self.chrome.shared.feedback.borrow().is_some() {
+            actions.push(ProfileAction {
+                id: REPORT_PROBLEM.into(),
+                title: tilo_desktop::i18n::t("feedback-report-problem"),
+                group: ProfileGroup::Together,
+                icon: ui::icons::Icon::Flag,
+            });
+        }
         let rgb = Some(self.chrome.own_chip().rgb);
         // The name in the field is the person's own, without the number
         // others are shown beside it.
@@ -1019,9 +1124,13 @@ impl BrowserShell {
         }
     }
 
-    fn apply_profile_choice(&self, choice: ProfileChoice) {
+    fn apply_profile_choice(&mut self, choice: ProfileChoice) {
         let request = match choice {
             ProfileChoice::Rename(name) => HostRequest::Named(name),
+            ProfileChoice::Action(id) if id == REPORT_PROBLEM => {
+                self.report_problem();
+                return;
+            }
             ProfileChoice::Action(id) => HostRequest::Action(id),
             ProfileChoice::Link(app) => return self.link_account(&app, true),
             ProfileChoice::Unlink(app) => return self.link_account(&app, false),
@@ -1484,6 +1593,7 @@ impl BrowserShell {
             ShortcutAction::MaximizeWindow => self.maximize_focused(Some(true)),
             ShortcutAction::RestoreWindow => self.maximize_focused(Some(false)),
             ShortcutAction::ToggleMaximize => self.maximize_focused(None),
+            ShortcutAction::ReportProblem => self.report_problem(),
             other => {
                 if let Some(index) = other.focus_strip_index() {
                     self.go_to_strip(|_| Some(index));
@@ -1602,6 +1712,12 @@ impl Widget for BrowserShell {
             self.open_feedback();
             changed = true;
         }
+        if self.chrome.shared.adopt_feedback() {
+            // The page holds a destination now: the Tilo menu offers it too.
+            self.tilo_menu.offer_feedback();
+            changed = true;
+        }
+        changed |= self.follow_picker();
         let menu_open = self.tilo_menu.is_menu_open();
         if self.menu_shown.replace(menu_open) != menu_open {
             self.bar.set_tilo_menu_open(menu_open);
@@ -1721,6 +1837,7 @@ impl Widget for BrowserShell {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let started = ui::time::now();
         self.drawn_minute.set(minute());
         self.backdrop.draw(scene, transform, text, theme, presence);
         ui::widget::draw_child(&mut self.area, scene, transform, text, theme, presence);
@@ -1740,6 +1857,11 @@ impl Widget for BrowserShell {
         } else {
             self.people.clear();
         }
+        // Over everything, while picking what to report.
+        self.picker.draw(scene, transform, text, theme, self.rect);
+        let built = ui::time::now().saturating_duration_since(started);
+        self.picker
+            .frame_built(u32::try_from(built.as_micros()).unwrap_or(u32::MAX));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -1754,6 +1876,16 @@ impl Widget for BrowserShell {
             ));
         } else if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.cursor = None;
+        }
+        // Picking what to report takes every event: nothing underneath
+        // reacts to a pick.
+        if self.picker.is_open() {
+            let windows = self.pick_windows();
+            let modifiers = ctx.modifiers.state();
+            *ctx.handled =
+                self.picker
+                    .handle_event(event, self.cursor, modifiers, &self.area, &windows);
+            return;
         }
         // The open popover takes the keyboard and the pointer over it; a
         // press elsewhere closes it, and the bar's avatars toggle it.
@@ -1900,6 +2032,7 @@ impl Widget for BrowserShell {
 
     fn needs_redraw(&self) -> bool {
         self.drawn_minute.get() != minute()
+            || self.picker.needs_animation_frame()
             || (self.people_open && self.people.needs_animation_frame())
             || self.navigator.needs_animation_frame(ui::time::now())
             || [

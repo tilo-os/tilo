@@ -19,6 +19,12 @@ use tilo_desktop::feedback::transport::{
 use tilo_user_identity::DeviceCert;
 
 thread_local! { static CONNECTIONS: RefCell<HashMap<u32, Rc<RefCell<Connection>>>> = RefCell::new(HashMap::new()); }
+thread_local! {
+    static STARTUPS: RefCell<HashMap<u32, Startup>> = RefCell::new(HashMap::new());
+    static WAKES: RefCell<HashMap<u32, std::sync::Arc<dyn Fn() + Send + Sync>>> =
+        RefCell::new(HashMap::new());
+}
+
 struct Connection {
     peer: PeerHandle,
     events: PeerEvents,
@@ -291,9 +297,7 @@ pub(crate) fn pump(id: u32) {
                                 Box::new(NoCapture),
                             )
                             .map_err(|error| error.to_string())
-                            .and_then(|startup| {
-                                crate::browser::register_feedback_startup(id, startup)
-                            });
+                            .and_then(|startup| register_feedback_startup(id, startup));
                             let mut state = connection.borrow_mut();
                             match setup {
                                 Ok(()) => state.installed = true,
@@ -370,4 +374,47 @@ impl Transport for Session {
         }
         Ok(None)
     }
+}
+
+/// Trusted Rust startup handoff, separate from deserialized mount configuration.
+/// The certified peer must already exist. This never creates a peer or joins.
+pub(crate) fn register_feedback_startup(peer: u32, startup: Startup) -> Result<(), String> {
+    let device = startup
+        .reporter()
+        .device_public_key()
+        .ok_or("feedback reporter has no certified device")?;
+    if crate::replication::device_of(peer).as_deref() != Some(hex::encode(device).as_str()) {
+        return Err("feedback reporter does not own this certified peer".into());
+    }
+    STARTUPS.with_borrow_mut(|startups| -> Result<(), String> {
+        if startups.contains_key(&peer) {
+            return Err("feedback startup already registered".into());
+        }
+        startups.insert(peer, startup);
+        Ok(())
+    })?;
+    // A desktop that mounted first takes it up on its next frame.
+    if let Some(wake) = WAKES.with_borrow_mut(|wakes| wakes.remove(&peer)) {
+        wake();
+    }
+    Ok(())
+}
+
+/// Call `wake` once a startup is registered for `peer`.
+pub(crate) fn wake_on_startup(peer: u32, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
+    WAKES.with_borrow_mut(|wakes| wakes.insert(peer, wake));
+}
+
+pub(crate) fn forget_feedback_startup(peer: u32) {
+    STARTUPS.with_borrow_mut(|startups| {
+        startups.remove(&peer);
+    });
+    WAKES.with_borrow_mut(|wakes| {
+        wakes.remove(&peer);
+    });
+}
+
+/// The startup registered for `peer`, for the desktop that mounts with it.
+pub(crate) fn take_startup(peer: u32) -> Option<Startup> {
+    STARTUPS.with_borrow_mut(|startups| startups.remove(&peer))
 }
