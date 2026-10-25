@@ -21,7 +21,7 @@ use ui::time::Instant;
 use ui::tokens::EffectiveMotion;
 use ui::widget::{ButtonFace, ButtonRole};
 
-use super::{FACE, PeekPictures, PeerScreen, PeerWindow, row_line};
+use super::{FACE, PeekPictures, PeerScreen, PeerWindow, Pictured, row_line};
 use crate::collaborators::RosterRow;
 use crate::desk_edges::DockEdge;
 use crate::i18n::{t, t_args};
@@ -414,6 +414,39 @@ fn paint_screen(
     );
 }
 
+/// Over a picture of how a window last looked here (off screen since,
+/// so it no longer follows the window): a veil and a clock in its corner,
+/// so nobody reads it as what is there now.
+fn paint_last_seen(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
+    let colors = &theme.tokens.colors;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.raised.multiply_alpha(0.45),
+        None,
+        &rect,
+    );
+    let size = (rect.height() * 0.3).clamp(8.0, 14.0);
+    if rect.width() < size * 2.0 || rect.height() < size * 2.0 {
+        return;
+    }
+    let pad = 3.0;
+    let badge = Rect::new(
+        rect.x1 - pad - size - 4.0,
+        rect.y0 + pad,
+        rect.x1 - pad,
+        rect.y0 + pad + size + 4.0,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.raised,
+        None,
+        &RoundedRect::from_rect(badge, badge.height() / 2.0),
+    );
+    Icon::Clock.draw_with_stroke(scene, transform, badge.inset(-2.0), colors.text_dim, 1.25);
+}
+
 /// One of their windows inside their screen `screen`: their copy of it
 /// when shared and pictured, else its app (and title, when shared).
 fn paint_window(
@@ -447,13 +480,16 @@ fn paint_window(
         colors.surfaces.raised
     };
     scene.fill(Fill::NonZero, transform, ground, None, &shape);
-    let live = window.picture.is_some_and(|window_id| {
+    let shown = window.picture.map_or(Pictured::No, |window_id| {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-        let painted = pictures.paint(window_id, scene, transform, rect);
+        let shown = pictures.paint(window_id, scene, transform, rect);
+        if shown == Pictured::AsLastSeen {
+            paint_last_seen(scene, transform, theme, rect);
+        }
         scene.pop_layer();
-        painted
+        shown
     });
-    if !live {
+    if shown == Pictured::No {
         let ink = colors.text_dim;
         let icon = (rect.height() * 0.32).clamp(10.0, 24.0);
         let label = window.title.as_deref().unwrap_or(&window.app_name);
