@@ -106,7 +106,7 @@ fields = [
 
 [[resources.verbs]]
 id = "remember"
-kind = "housekeeping"
+kind = "undoable"
 params = [
   { name = "command", required = true, schema = { type = "string" } },
   { name = "cwd", required = true, schema = { type = "string" } },
