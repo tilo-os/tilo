@@ -608,6 +608,10 @@ host-source-app-actions = App-Aktionen
 # App-Starts und Sitzungsaktionen
 host-app-did-not-open-title = Anwendung wurde nicht geöffnet
 host-app-did-not-open-body = Die App wurde gestartet, hat aber kein Fenster erstellt. Sieh im Sitzungsprotokoll nach und versuche es erneut.
+live-view-not-installed = Die App dazu ist nicht auf diesem Computer
+live-view-gone = Es ist nicht mehr da
+live-view-did-not-open = Es hat sich hier nicht geöffnet
+live-view-closed = Die App dazu wurde geschlossen
 host-session-action-failed = Sitzungsaktion fehlgeschlagen
 host-session-lock-failed = Die Sitzung konnte nicht gesperrt werden. Sieh im Sitzungsprotokoll nach und versuche es erneut.
 host-session-logout-failed = Abmelden fehlgeschlagen. Sieh im Sitzungsprotokoll nach und versuche es erneut.

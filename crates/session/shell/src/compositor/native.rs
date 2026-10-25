@@ -1885,6 +1885,9 @@ fn pump_floating_surface_service(
                 network_status_allowed,
             } => {
                 appearance.connected(connection, &app_id, network_status_allowed);
+                frame_builder
+                    .host_mut()
+                    .connect_window_share(connection, &app_id);
                 if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID
                     && let Some(writer) = service.reply_writer(connection)
                 {
@@ -2383,6 +2386,23 @@ fn pump_floating_surface_service(
                         .host_mut()
                         .receive_pick_answer(&app_id, request, answer);
                 }
+                message @ (ui::floating_surface::FloatingSurfaceClientMessage::WindowRecord {
+                    ..
+                }
+                | ui::floating_surface::FloatingSurfaceClientMessage::Embeds {
+                    ..
+                }
+                | ui::floating_surface::FloatingSurfaceClientMessage::SharedWindows {
+                    ..
+                }) => {
+                    // The app id is the launcher's: an app only names its
+                    // own window's record, and only the sharing app embeds
+                    // views or says what it shares.
+                    changed |= frame_builder
+                        .host_mut()
+                        .receive_window_share_message(connection, &app_id, &message)
+                        .unwrap_or(false);
+                }
                 message @ (ui::floating_surface::FloatingSurfaceClientMessage::Toolbar {
                     ..
                 }
@@ -2451,6 +2471,7 @@ fn pump_floating_surface_service(
                     .host_mut()
                     .forget_selection_capable(connection);
                 frame_builder.host_mut().forget_app_toolbars(connection);
+                frame_builder.host_mut().forget_window_share(connection);
                 frame_builder
                     .host_mut()
                     .forget_history_descriptions(connection);
@@ -2511,6 +2532,14 @@ fn pump_floating_surface_service(
             connection,
             &ui::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { event },
         );
+    }
+    // What the desktop says of windows shared live, to the apps it concerns.
+    for (connection, message) in frame_builder.host_mut().take_window_share_outbox() {
+        service.send(connection, &message);
+    }
+    // The windows of live views nothing embeds any more.
+    for surface in crate::shell::live_embeds::take_closing() {
+        state.close_surface_on_request(surface);
     }
     // What apps' changes did, for their History.
     for (connection, described) in frame_builder.host_mut().take_history_descriptions() {

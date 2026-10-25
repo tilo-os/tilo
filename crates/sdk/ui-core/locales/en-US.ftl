@@ -72,6 +72,9 @@ window-toolbar-show-sidebar = Show sidebar
 window-toolbar-hide-sidebar = Hide sidebar
 window-toolbar-show-inspector = Show inspector
 window-toolbar-hide-inspector = Hide inspector
+# A window shared live into a conversation, from its own menu.
+window-share-to-channel = Share to channel…
+window-stop-sharing-in = Stop sharing in { $place }
 history-genesis = Created
 history-edited-field = { $more ->
     [0] Edited { $path }
