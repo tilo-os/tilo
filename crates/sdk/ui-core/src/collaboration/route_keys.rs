@@ -238,6 +238,7 @@ impl RouteKeys {
             Wire::Waiting => self.keys = Keys::Pending(ChannelAccessState::WaitingForAccess),
             Wire::Removed => self.keys = Keys::Pending(ChannelAccessState::Removed),
             Wire::Unavailable => self.keys = Keys::Pending(ChannelAccessState::Unavailable),
+            Wire::NoSecretStore => self.keys = Keys::Pending(ChannelAccessState::NoSecretStore),
         }
     }
 

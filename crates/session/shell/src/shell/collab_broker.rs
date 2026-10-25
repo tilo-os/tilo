@@ -1072,28 +1072,41 @@ fn session_channel_keys(
 }
 
 /// The broker's session services: the durable history store and the
-/// channel encryption service, which is all a caller keeps. Tests run with
-/// neither, since each needs the session's state root and vault.
+/// channel encryption service, which is all a caller keeps.
 type SessionServices = Option<crate::shell::channel_encryption::ChannelKeyAccess>;
 
-#[cfg(test)]
-fn open_session_services(
-    _: Option<&crate::shell::state::WorkspaceTreeHandle>,
-    _: Option<&Arc<ShellNetwork>>,
-    _: &Arc<Mutex<BrokerChannels>>,
-    _: bool,
-) -> SessionServices {
-    None
-}
-
-#[cfg(not(test))]
+/// Open the session's services. The channel encryption service runs
+/// whenever this session reaches room hosts (`peer_sync`) or has a secret
+/// store, unless it is a configured peer broker (`own_channels`): keys of the rooms this device's
+/// own room host stewards come from that host and need nothing else. The
+/// secret store only adds this device's own channel state, which rooms
+/// hosted elsewhere need ([`session_channel_store`]).
 fn open_session_services(
     membership: Option<&crate::shell::state::WorkspaceTreeHandle>,
     peer_sync: Option<&Arc<ShellNetwork>>,
     channels: &Arc<Mutex<BrokerChannels>>,
-    open_vault: bool,
+    own_channels: bool,
 ) -> SessionServices {
-    let mut channel_encryption = None;
+    open_session_history(channels);
+    if !own_channels {
+        return None;
+    }
+    let workspaces = membership?.clone();
+    let store = session_channel_store();
+    // With neither a store nor a room host to ask, no channel has keys.
+    if store.is_none() && peer_sync.is_none() {
+        return None;
+    }
+    channel_key_access(store, workspaces, peer_sync.cloned(), Arc::clone(channels))
+}
+
+/// Keep the session's collaboration history durably. Tests keep it in
+/// memory, since the store lives in the session's state root.
+#[cfg(test)]
+fn open_session_history(_: &Arc<Mutex<BrokerChannels>>) {}
+
+#[cfg(not(test))]
+fn open_session_history(channels: &Arc<Mutex<BrokerChannels>>) {
     match crate::shell::collab_history::CollabHistoryStore::open_for_session() {
         Ok(history) => {
             if let Ok(mut state) = channels.lock() {
@@ -1104,62 +1117,47 @@ fn open_session_services(
             tracing::warn!(%error, "durable collaboration history unavailable; scrollback is limited to memory");
         }
     }
-    if !open_vault {
-        return channel_encryption;
-    }
-    match crate::shell::mls_vault::SecretServiceMlsVault::open_for_session() {
-        Ok(vault) => {
-            if let Some(workspaces) = membership.cloned() {
-                channel_encryption = open_channel_encryption(
-                    &vault,
-                    workspaces,
-                    peer_sync.cloned(),
-                    Arc::clone(channels),
-                );
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, "MLS collaboration unavailable: no system secret store answered");
-        }
-    }
-    channel_encryption
 }
 
-/// Start this device's channel encryption service over the session's
-/// secret-store vault and certified device key. Without either, channels
-/// stay closed to this device rather than falling back to plaintext.
+/// This device's own channel state: kept under the session's secret-store
+/// vault and signed with its certified device key. `None` without either;
+/// the channel service then serves only rooms this device's own host
+/// stewards, and never falls back to plaintext. Tests have no secret store.
+#[cfg(test)]
+fn session_channel_store() -> Option<crate::shell::channel_encryption::ChannelEncryptionConfig> {
+    None
+}
+
 #[cfg(not(test))]
-fn open_channel_encryption(
-    vault: &crate::shell::mls_vault::SecretServiceMlsVault,
-    workspaces: crate::shell::state::WorkspaceTreeHandle,
-    net: Option<Arc<ShellNetwork>>,
-    channels: Arc<Mutex<BrokerChannels>>,
-) -> Option<crate::shell::channel_encryption::ChannelKeyAccess> {
+fn session_channel_store() -> Option<crate::shell::channel_encryption::ChannelEncryptionConfig> {
+    let vault = match crate::shell::mls_vault::SecretServiceMlsVault::open_for_session() {
+        Ok(vault) => vault,
+        Err(error) => {
+            tracing::warn!(%error, "no system secret store answered: only rooms this device hosts have channel keys");
+            return None;
+        }
+    };
     let paths = crate::firstboot::collaboration_identity_paths();
     let device_key = match tilo_user_identity::persist::read_device_key(&paths.device_privkey) {
         Ok(key) => key,
         Err(error) => {
-            tracing::warn!(%error, "channel encryption unavailable: no certified device key");
+            tracing::warn!(%error, "no certified device key: only rooms this device hosts have channel keys");
             return None;
         }
     };
-    channel_key_access(
-        crate::shell::channel_encryption::ChannelEncryptionConfig {
-            root: vault.channel_state_root(),
-            vault: vault.channel_state_key(),
-            device_key,
-        },
-        workspaces,
-        net,
-        channels,
-    )
+    Some(crate::shell::channel_encryption::ChannelEncryptionConfig {
+        root: vault.channel_state_root(),
+        vault: vault.channel_state_key(),
+        device_key,
+    })
 }
 
-/// Open this device's channel encryption service under `config`: its
-/// directory follows `workspaces`, the devices `net` authenticates and each
-/// room's steward as this device's native owner holds the room.
+/// Open this device's channel encryption service, with its own channel
+/// state under `store` when a secret store keeps one: its directory follows
+/// `workspaces`, the devices `net` authenticates and each room's steward as
+/// this device's native owner holds the room.
 pub(crate) fn channel_key_access(
-    config: crate::shell::channel_encryption::ChannelEncryptionConfig,
+    store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
     workspaces: crate::shell::state::WorkspaceTreeHandle,
     net: Option<Arc<ShellNetwork>>,
     channels: Arc<Mutex<BrokerChannels>>,
@@ -1201,11 +1199,20 @@ pub(crate) fn channel_key_access(
         Some(hosted) => directory.with_hosted_channel_keys(hosted),
         None => directory,
     };
-    match crate::shell::channel_encryption::ChannelEncryption::open(
-        config,
-        Box::new(directory),
-        channels,
-    ) {
+    let opened = match store {
+        Some(store) => crate::shell::channel_encryption::ChannelEncryption::open(
+            store,
+            Box::new(directory),
+            channels,
+        ),
+        None => Ok(
+            crate::shell::channel_encryption::ChannelEncryption::without_store(
+                Box::new(directory),
+                channels,
+            ),
+        ),
+    };
+    match opened {
         Ok(service) => Some(match drain_wake {
             Some(wake) => crate::shell::channel_encryption::ChannelKeyAccess::with_wake(
                 service,

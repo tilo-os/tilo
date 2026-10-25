@@ -79,6 +79,11 @@ pub enum ChannelAccess {
     Removed,
     /// Nobody can admit this device: the room's governor is unknown here.
     Unavailable,
+    /// This device has no secret store open, so it keeps no channel state
+    /// of its own and cannot join a channel its own room host does not
+    /// steward. Asking again changes nothing while the session runs; the
+    /// route is told if the room comes to be hosted here.
+    NoSecretStore,
 }
 
 /// A channel governance message received from the room transport. Every
@@ -213,7 +218,9 @@ pub trait ChannelDirectory: Send {
     }
 }
 
-/// Durable location and keys of this device's channel state.
+/// Durable location and keys of this device's own channel state: what a
+/// steward or member of a channel needs, and only rooms that are not
+/// stewarded by this device's own room host need it.
 pub struct ChannelEncryptionConfig {
     /// Private directory holding sealed group and member state.
     pub root: PathBuf,
@@ -303,8 +310,15 @@ struct MemberEntry {
 }
 
 /// This device's side of every encrypted channel it takes part in.
+///
+/// Keys of a room this device's own room host stewards come from that host
+/// and need nothing else. Being a steward or a member of any other room's
+/// channel needs this device's own channel state, kept under a key from the
+/// platform secret store; a service opened without it
+/// ([`Self::without_store`]) answers those rooms [`ChannelAccess::NoSecretStore`].
 pub struct ChannelEncryption {
-    config: ChannelEncryptionConfig,
+    /// This device's own channel state; `None` when no secret store opened.
+    store: Option<ChannelEncryptionConfig>,
     directory: Box<dyn ChannelDirectory>,
     broker: Arc<Mutex<BrokerChannels>>,
     stewards: HashMap<ChannelId, StewardEntry>,
@@ -345,22 +359,9 @@ impl ChannelEncryption {
         broker: Arc<Mutex<BrokerChannels>>,
     ) -> std::io::Result<Self> {
         create_private_dir(&config.root)?;
-        let mut service = Self {
-            config,
-            directory,
-            broker,
-            stewards: HashMap::new(),
-            members: HashMap::new(),
-            reconcile: PolicySchedule::default(),
-            delivery: 0,
-            generation: 0,
-            changed: HashMap::new(),
-            changes: tokio::sync::watch::Sender::new(0),
-            queued: false,
-            unopened: HashMap::new(),
-            hosted: HashMap::new(),
-        };
-        for room_dir in std::fs::read_dir(&service.config.root)? {
+        let state_root = config.root.clone();
+        let mut service = Self::with_store(Some(config), directory, broker);
+        for room_dir in std::fs::read_dir(&state_root)? {
             let room_dir = room_dir?.path();
             let Some(room) = room_dir
                 .file_name()
@@ -383,9 +384,37 @@ impl ChannelEncryption {
         Ok(service)
     }
 
-    /// This device's key.
-    pub fn device(&self) -> Ed25519PublicKey {
-        Ed25519PublicKey::from_bytes(self.config.device_key.verifying_key().to_bytes())
+    /// The service of a device whose secret store did not open: it hands
+    /// out the keys of rooms its own room host stewards
+    /// ([`ChannelDirectory::hosted_channel_keys`]) and answers every other
+    /// room [`ChannelAccess::NoSecretStore`].
+    pub fn without_store(
+        directory: Box<dyn ChannelDirectory>,
+        broker: Arc<Mutex<BrokerChannels>>,
+    ) -> Self {
+        Self::with_store(None, directory, broker)
+    }
+
+    fn with_store(
+        store: Option<ChannelEncryptionConfig>,
+        directory: Box<dyn ChannelDirectory>,
+        broker: Arc<Mutex<BrokerChannels>>,
+    ) -> Self {
+        Self {
+            store,
+            directory,
+            broker,
+            stewards: HashMap::new(),
+            members: HashMap::new(),
+            reconcile: PolicySchedule::default(),
+            delivery: 0,
+            generation: 0,
+            changed: HashMap::new(),
+            changes: tokio::sync::watch::Sender::new(0),
+            queued: false,
+            unopened: HashMap::new(),
+            hosted: HashMap::new(),
+        }
     }
 
     /// Increases whenever any channel's keys or access change.
@@ -419,6 +448,11 @@ impl ChannelEncryption {
             .hosted_channel_keys(room, channel, route, true)
         {
             return self.hosted_access(room, channel, keys, now);
+        }
+        if self.store.is_none() {
+            // Told if the room comes to be hosted here (`wake_unopened`).
+            self.note_unopened(channel, Unopened { room, retry: None });
+            return ChannelAccess::NoSecretStore;
         }
         if self.directory.governs(room) {
             if !self.stewards.contains_key(&channel) {
@@ -504,7 +538,10 @@ impl ChannelEncryption {
         if !route.proves(&room.to_string(), channel) {
             return;
         }
-        let state_root = &self.config.root;
+        let Some(store) = &self.store else {
+            return;
+        };
+        let state_root = &store.root;
         if let Some(entry) = self.stewards.get_mut(&channel)
             && entry.room == room
             && entry.route.is_none()
@@ -547,13 +584,20 @@ impl ChannelEncryption {
     /// or is governed here; and those whose failed open is due again.
     fn wake_unopened(&mut self, now: Instant, recheck: bool) {
         let mut changed = Vec::new();
+        let stored = self.store.is_some();
         for (channel, entry) in &mut self.unopened {
             match &mut entry.retry {
                 None => {
-                    if recheck
-                        && (self.directory.governs(entry.room)
-                            || self.directory.steward_of(entry.room).is_some())
-                    {
+                    // Without a store only a room now hosted here opens.
+                    let opens = if stored {
+                        self.directory.governs(entry.room)
+                            || self.directory.steward_of(entry.room).is_some()
+                    } else {
+                        self.directory
+                            .hosted_channel_keys(entry.room, *channel, None, false)
+                            .is_some()
+                    };
+                    if recheck && opens {
                         changed.push((*channel, true));
                     }
                 }
@@ -770,13 +814,13 @@ impl ChannelEncryption {
             }
             return;
         }
-        let Some(entry) = self.members.get_mut(&channel) else {
+        let (Some(entry), Some(store)) = (self.members.get_mut(&channel), &self.store) else {
             return;
         };
         if entry.room != room {
             return;
         }
-        let events = match entry.member.receive(frame, &self.config.vault) {
+        let events = match entry.member.receive(frame, &store.vault) {
             Ok(events) => events,
             Err(error) => {
                 tracing::debug!(%error, %room, "channel frame refused");
@@ -816,7 +860,7 @@ impl ChannelEncryption {
         route: Option<&ChannelRoute>,
         wall: u64,
     ) {
-        if !self.directory.governs(room) || request.verify().is_err() {
+        if self.store.is_none() || !self.directory.governs(room) || request.verify().is_err() {
             return;
         }
         let channel = request.channel;
@@ -843,7 +887,7 @@ impl ChannelEncryption {
         if let Some(route) = route {
             self.learn_route(room, channel, route);
         }
-        let Some(entry) = self.stewards.get_mut(&channel) else {
+        let (Some(entry), Some(store)) = (self.stewards.get_mut(&channel), &self.store) else {
             return;
         };
         if entry.room != room {
@@ -856,7 +900,7 @@ impl ChannelEncryption {
         if newer {
             entry.requests.insert(request.device, request);
             entry.dirty = true;
-            let path = requests_path(&self.config.root, room, channel);
+            let path = requests_path(&store.root, room, channel);
             if let Err(error) = save_requests(&path, &entry.requests) {
                 tracing::warn!(%error, %room, "channel access requests could not be saved");
             }
@@ -891,17 +935,20 @@ impl ChannelEncryption {
         else {
             return;
         };
+        let Some(store) = &self.store else {
+            return;
+        };
         let mut allowed = self
             .directory
             .allowed_devices(room, channel, route.as_ref(), wall);
-        allowed.insert(self.device());
+        allowed.insert(device_of(store));
         let Some(entry) = self.stewards.get_mut(&channel) else {
             return;
         };
         entry.dirty = false;
         let outcome = match entry
             .steward
-            .reconcile(&allowed, &entry.requests, &self.config.vault)
+            .reconcile(&allowed, &entry.requests, &store.vault)
         {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -987,12 +1034,12 @@ impl ChannelEncryption {
         now: Instant,
         wall: u64,
     ) {
-        let Some(entry) = self.members.get_mut(&channel) else {
+        let (Some(entry), Some(store)) = (self.members.get_mut(&channel), &self.store) else {
             return;
         };
         if entry.ack_due {
             entry.ack_due = false;
-            match entry.member.acknowledgement(&self.config.device_key) {
+            match entry.member.acknowledgement(&store.device_key) {
                 Ok(Some(ack)) => {
                     self.delivery = self.delivery.wrapping_add(1);
                     let _ = transport.publish(NeighbourMsg::MlsGovernanceAck {
@@ -1016,7 +1063,7 @@ impl ChannelEncryption {
         if entry.request.is_none() {
             match entry
                 .member
-                .access_request(&self.config.device_key, wall, &self.config.vault)
+                .access_request(&store.device_key, wall, &store.vault)
             {
                 Ok(request) => {
                     entry.request = request;
@@ -1051,17 +1098,14 @@ impl ChannelEncryption {
     }
 
     fn open_steward(&mut self, room: RoomId, channel: ChannelId) -> channel_crypto::Result<()> {
-        let dir = self.config.root.join(room.to_string()).join("steward");
+        let store = self.store.as_ref().ok_or_else(no_store)?;
+        let dir = store.root.join(room.to_string()).join("steward");
         create_private_dir(&dir)?;
-        let steward = ChannelSteward::open_or_create(
-            &dir,
-            channel,
-            self.config.device_key.clone(),
-            &self.config.vault,
-        )?;
-        let requests = load_requests(&requests_path(&self.config.root, room, channel));
+        let steward =
+            ChannelSteward::open_or_create(&dir, channel, store.device_key.clone(), &store.vault)?;
+        let requests = load_requests(&requests_path(&store.root, room, channel));
         let route = load_route(
-            &route_path(&self.config.root, room, "steward", channel),
+            &route_path(&store.root, room, "steward", channel),
             room,
             channel,
         );
@@ -1094,12 +1138,12 @@ impl ChannelEncryption {
         let Some(steward) = self.directory.steward_of(room) else {
             return Ok(false);
         };
-        let dir = self.config.root.join(room.to_string()).join("member");
+        let store = self.store.as_ref().ok_or_else(no_store)?;
+        let dir = store.root.join(room.to_string()).join("member");
         create_private_dir(&dir)?;
-        let member =
-            ChannelMember::open(&dir, channel, self.device(), steward, &self.config.vault)?;
+        let member = ChannelMember::open(&dir, channel, device_of(store), steward, &store.vault)?;
         let route = load_route(
-            &route_path(&self.config.root, room, "member", channel),
+            &route_path(&store.root, room, "member", channel),
             room,
             channel,
         );
@@ -1167,6 +1211,17 @@ impl ChannelEncryption {
         self.changed.insert(channel, self.generation);
         self.changes.send_replace(self.generation);
     }
+}
+
+/// The device key a channel state under `store` is this device's with.
+fn device_of(store: &ChannelEncryptionConfig) -> Ed25519PublicKey {
+    Ed25519PublicKey::from_bytes(store.device_key.verifying_key().to_bytes())
+}
+
+/// Why a channel of this device's own could not be opened: no secret store
+/// keeps its state. Callers check for a store first.
+fn no_store() -> std::io::Error {
+    std::io::Error::other("no secret store keeps this device's channel state")
 }
 
 /// How long a pumping thread parks after a pass at `now`, given the
@@ -1499,6 +1554,7 @@ impl tilo_identity_host::broker::ChannelKeySource for ChannelKeyProvider {
             ChannelAccess::Waiting => Ok((Wire::Waiting, generation, Vec::new())),
             ChannelAccess::Removed => Ok((Wire::Removed, generation, Vec::new())),
             ChannelAccess::Unavailable => Ok((Wire::Unavailable, generation, Vec::new())),
+            ChannelAccess::NoSecretStore => Ok((Wire::NoSecretStore, generation, Vec::new())),
         })
     }
 }
@@ -3199,5 +3255,67 @@ mod tests {
             ChannelAccess::Waiting
         ));
         assert!(service.unopened.is_empty(), "an open that succeeds settles");
+    }
+
+    /// A device whose secret store did not open keeps no channel state of
+    /// its own. A room stewarded elsewhere is answered that it has no secret
+    /// store; asking again creates nothing, sends nothing and leaves its pump
+    /// nothing to do, so nobody asks on a timer.
+    #[test]
+    fn without_a_store_a_room_stewarded_elsewhere_says_so_and_nothing_is_due() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        // The directory announces policy changes, as a session's does.
+        let policy = Policy::default();
+        *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::new(
+            std::sync::atomic::AtomicU64::new(1),
+        )));
+        let broker = Arc::new(Mutex::new(BrokerChannels::default()));
+        let mut service = ChannelEncryption::without_store(
+            Box::new(Directory {
+                governs: false,
+                steward: public(1),
+                policy: policy.clone(),
+            }),
+            Arc::clone(&broker),
+        );
+        let endpoint = Endpoint::join(&room, room_id, 0);
+        let now = Instant::now();
+        assert!(matches!(
+            service.access(room_id, channel, now),
+            ChannelAccess::NoSecretStore
+        ));
+        let generation = service.generation();
+        for later in 1..=3 {
+            let now = now.checked_add(Duration::from_secs(later * 60)).unwrap();
+            service.pump(&endpoint, now, 1_000);
+            assert!(matches!(
+                service.access(room_id, channel, now),
+                ChannelAccess::NoSecretStore
+            ));
+            assert_eq!(service.next_pump_deadline(now), None, "nothing is due");
+        }
+        assert_eq!(service.generation(), generation, "nothing changed");
+        assert!(service.stewards.is_empty() && service.members.is_empty());
+        assert!(service.existing_keys(room_id, channel).is_none());
+        assert!(
+            room.queues.lock().unwrap().values().all(Vec::is_empty),
+            "no governance was sent"
+        );
+        // The room is a governed one too: still no state of its own.
+        let mut governed = ChannelEncryption::without_store(
+            Box::new(Directory {
+                governs: true,
+                steward: public(1),
+                policy,
+            }),
+            broker,
+        );
+        assert!(matches!(
+            governed.access(room_id, channel, now),
+            ChannelAccess::NoSecretStore
+        ));
+        assert!(governed.stewards.is_empty());
     }
 }
