@@ -261,6 +261,11 @@ pub enum LayerPolicy {
 /// does not leave the layers and come back.
 const PAN_LINGER_FRAMES: u32 = 4;
 
+/// How many drawn frame identities the desktop remembers, so a pointer action
+/// waiting for the next frame can still tell whether one landed. A press holds
+/// one frame, not a session.
+const DRAWN_REVISIONS_KEPT: usize = 16;
+
 /// What the presenter asks of strip pans.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct StripPanPresenter {
@@ -857,6 +862,12 @@ pub struct FrameBuilder {
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
     next_scene_revision: u64,
+    /// Revisions issued to frames the desktop has finished drawing, in order:
+    /// the last few of them. A press the control socket lands asks to be
+    /// answered at a revision later than the frame its target was read from,
+    /// so the one place that turns a decision into a pointer action is also
+    /// the one place that has to hold it until then.
+    drawn_revisions: Vec<u64>,
     /// Capacity of this builder's actual presenter; absent for dense captures.
     retained_layer_width: Option<u32>,
     /// Which frames that presenter gets as layers.
@@ -1218,6 +1229,7 @@ impl FrameBuilder {
             palette_focus_active: false,
             last_produced_sections: None,
             next_scene_revision: 1,
+            drawn_revisions: Vec::new(),
             retained_layer_width: None,
             layer_policy: LayerPolicy::default(),
             strip_motion: StripMotion::default(),
@@ -4763,6 +4775,14 @@ impl FrameBuilder {
         self.chrome.borrow().revision
     }
 
+    /// The identity of the last frame drawn, and which frames were drawn
+    /// before it, oldest first — what a pointer action asks to be answered at
+    /// a later one of.
+    #[must_use]
+    pub fn drawn_revisions(&self) -> &[u64] {
+        &self.drawn_revisions
+    }
+
     /// The shell was drawn, its motions read at `motions_at` or later: the
     /// motion clock may stop asking for a frame at rest it has now had, and
     /// the window groups' once-per-drawn-frame motion is told the frame
@@ -4770,6 +4790,17 @@ impl FrameBuilder {
     fn frame_drawn(&mut self, motions_at: Instant) {
         ui::motion::frame_drawn(motions_at);
         self.host.frame_presented();
+        // The scene this frame issued has just landed. The list is a window,
+        // not a ledger: a press waits for one frame, not for a session.
+        let issued = self.next_scene_revision.saturating_sub(1);
+        if self.drawn_revisions.last() != Some(&issued) {
+            self.drawn_revisions.push(issued);
+            let excess = self
+                .drawn_revisions
+                .len()
+                .saturating_sub(DRAWN_REVISIONS_KEPT);
+            self.drawn_revisions.drain(..excess);
+        }
     }
 
     pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
