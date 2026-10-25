@@ -374,8 +374,8 @@ impl GroupRow {
                 settle = change;
             }
         }
-        let now = crate::time::now();
-        let omega = self.move_omega;
+        let now = crate::motion::frame_now();
+        let timing = self.move_timing(crate::tokens::MotionSource::Pointer);
         let reduce_motion = self.reduce_motion;
         let pan = self.pan_of_lane_mut(drag.lane);
         pan.scroll_x = if commit {
@@ -391,7 +391,7 @@ impl GroupRow {
         if reduce_motion {
             pan.jump_to(rest);
         } else if (rest - pan.scroll_x).abs() > super::SNAP_SETTLED_PX {
-            pan.glide_to(rest, now, omega);
+            pan.glide_to(rest, now, timing);
         }
         self.scroll_dirty = true;
         self.hover_edge(self.last_cursor, false);

@@ -179,10 +179,11 @@ toolkit, the shell and the apps uses a named motion from `ui::motion` (HIG
 §9.7), which decides its spring, its duration, its reduced-motion variant and
 what a shortcut gets; a motion that is genuinely new goes into the library.
 Check: [`check_motion_library.py`](../tools/policy/check_motion_library.py)
-fails on easing math, ad-hoc springs, lerp-over-time and literal motion timings
-(a spring timed by the call site's own duration, a duration constant named for a
-fade or a slide, a literal duration handed to a motion helper) outside the
-library; content curves (video keyframes, paint physics) are its short exception
+fails on easing math, ad-hoc springs (a `SpringSpec` built by hand included),
+lerp-over-time (a span of time divided by a constant included) and literal
+motion timings (a spring timed by the call site's own duration, a duration
+constant named for a fade or a slide, a literal duration handed to a motion
+helper) outside the library; content curves (video keyframes, paint physics) are its short exception
 list.
 
 Check: `the_first_frame_after_a_chord_shows_the_final_layout` in
