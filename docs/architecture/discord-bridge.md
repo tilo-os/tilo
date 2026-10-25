@@ -183,10 +183,10 @@ mirroring). It asks for `Personas`
 appearance. Its derived grant comes to: Chat `post`, `edit-message`,
 `delete-message`, `create-category`, `create-channel`,
 `move-channel`, `delete-channel`, `remove-message`, `lock-channel` and
-`unlock-channel`; the field edit of a message's reactions and of no other
-field (`chat.messages/resource:*/item:*/field:reactions/action:field-edit`:
-the program spells out the edit's path, so the grant derived from it names
-the field); the connector's bot verbs; and Read on both records, on the
+`unlock-channel`; the field edit of Chat's messages
+(`chat.messages/resource:*/**/action:field-edit`), which reaches only their
+reactions: every other field of a message is read-only, so the record and
+the room take no other field edit of it; the connector's bot verbs; and Read on both records, on the
 connector's app node and on the room. The program's inputs bind `workspace` and `guild` at install.
 
 ### Tilo to Discord

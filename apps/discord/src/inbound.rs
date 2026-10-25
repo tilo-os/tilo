@@ -450,11 +450,23 @@ pub fn plan_reaction(
             .find(|(hash, _)| url.contains(hash.as_str()))
             .map(|(_, blob)| blob.clone())
     });
+    // Discord names who took a reaction off by id alone: they show under
+    // the name their reaction was given, else their id.
+    let name = if event.user_name.is_empty() {
+        let account = format!("discord/{}", event.user_id);
+        held.iter()
+            .find(|reaction| reaction.persona.as_deref() == Some(account.as_str()))
+            .and_then(|reaction| reaction.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| event.user_id.clone())
+    } else {
+        event.user_name.clone()
+    };
     let item = ReactItem {
         message: mapped.tilo.clone(),
         emoji: crate::emoji::to_tilo(&event.emoji, &held),
         appearance: Appearance {
-            name: event.user_name.clone(),
+            name,
             avatar,
             persona: persona(&event.user_id),
         },
