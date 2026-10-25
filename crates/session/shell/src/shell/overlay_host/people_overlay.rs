@@ -528,7 +528,7 @@ fn person_key(row: &tilo_desktop::collaborators::RosterRow) -> Option<String> {
 /// The last lines of the conversation with `key`, as this desktop already
 /// holds it: a passive read, which never opens one.
 fn last_lines(key: &str) -> Vec<MessageLine> {
-    let Ok(conversation) = ui::person_chat::read(key) else {
+    let Ok(conversation) = ui::person_chat::snapshot(key) else {
         return Vec::new();
     };
     let start = conversation.messages.len().saturating_sub(SHOWN_LINES);

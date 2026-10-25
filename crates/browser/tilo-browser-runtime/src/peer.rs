@@ -1770,6 +1770,11 @@ impl WasmPeer {
             let device = hex::encode(self.device_key);
             crate::replication::open(self.id, device, self.handle.clone(), events, room, store)
                 .map_err(js_error)?;
+            // The room the page replicates is the one its person talks in
+            // privately; a page that only watches has no conversations.
+            if !self.handle.watching() {
+                crate::person_chat::install(self.handle.clone(), room);
+            }
         }
         Ok(())
     }
@@ -2435,6 +2440,7 @@ impl WasmPeer {
         self.listeners.borrow_mut().clear();
         self.handle.close();
         crate::replication::close(self.id);
+        crate::person_chat::uninstall();
         ui::local_identity::install_source(None);
     }
 }

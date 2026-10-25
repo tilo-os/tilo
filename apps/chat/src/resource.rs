@@ -544,12 +544,32 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
                     self.adopt_private_draft(token, invocation)
                 });
             }
-            ChatEffect::OpenDirectConversation { .. }
-            | ChatEffect::SendDirectMessage { .. }
-            | ChatEffect::ReadDirectConversation { .. } => {
+            ChatEffect::OpenDirectConversation { .. } => {
                 return ui::person_chat::with_invocation(cx.invocation(), || {
                     self.answer_effect(effect)
                 });
+            }
+            // The room answers these: at once from the native host, later in
+            // a page. Either way the effect answers when it has.
+            ChatEffect::SendDirectMessage { public_key, text } => {
+                let reply = ui::person_chat::with_invocation(cx.invocation(), || {
+                    self.send_person_message(public_key, text)
+                })?;
+                let public_key = public_key.clone();
+                return Ok(cx.spawn(
+                    |_| reply,
+                    move |chat: &mut Self, answer, _| chat.sent_person_answer(&public_key, answer),
+                ));
+            }
+            ChatEffect::ReadDirectConversation { public_key } => {
+                let reply = ui::person_chat::with_invocation(cx.invocation(), || {
+                    self.read_person_conversation(public_key)
+                })?;
+                let public_key = public_key.clone();
+                return Ok(cx.spawn(
+                    |_| reply,
+                    move |chat: &mut Self, answer, _| chat.read_person_answer(&public_key, answer),
+                ));
             }
             _ => {}
         }

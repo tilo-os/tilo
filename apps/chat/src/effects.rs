@@ -97,11 +97,11 @@ pub enum ChatEffect {
     /// Expand an unsent private editor using its ephemeral native handoff token.
     #[effect(view, returns, audience = "agents")]
     AdoptPrivateDraft { token: String },
-    /// Send privately through the native person-only host door.
-    #[effect(returns, audience = "agents")]
+    /// Send privately through the person-only host door.
+    #[effect(job, returns, audience = "agents")]
     SendDirectMessage { public_key: String, text: String },
     /// Read a private conversation on this device.
-    #[effect(returns, audience = "agents")]
+    #[effect(job, returns, audience = "agents")]
     ReadDirectConversation { public_key: String },
     /// Read message
     ///
@@ -285,11 +285,8 @@ impl ChatApp {
             ChatEffect::AdoptPrivateDraft { .. } => {
                 return Err("private draft adoption requires its original effect context".into());
             }
-            ChatEffect::SendDirectMessage { public_key, text } => {
-                return self.send_person_message(&public_key, &text);
-            }
-            ChatEffect::ReadDirectConversation { public_key } => {
-                return self.read_person_conversation(&public_key);
+            ChatEffect::SendDirectMessage { .. } | ChatEffect::ReadDirectConversation { .. } => {
+                return Err("a private conversation answers in its original effect context".into());
             }
             ChatEffect::ReadMessage { message } => {
                 return self.read_message(&message).map(Effected::value);

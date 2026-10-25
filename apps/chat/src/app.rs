@@ -730,6 +730,12 @@ pub struct ChatApp {
     pub(crate) person_contacts: Vec<ui::person_chat::Contact>,
     pub(crate) person_messages: Vec<ui::person_chat::Message>,
     pub(crate) person_error: Option<String>,
+    /// The conversation being opened, until the room answers.
+    pub(crate) person_opening: Option<crate::person_conversation::Opening>,
+    /// Opens another one replaced: each lane they open is released.
+    pub(crate) person_abandoned: Vec<crate::person_conversation::Opening>,
+    /// The message the composer is sending, until the room accepts it.
+    pub(crate) person_sending: Option<crate::person_conversation::Sending>,
     pub(crate) person_body_views: HashMap<String, (String, crate::composer::MessageEditor)>,
     /// Retained direct conversations currently owned by the shared
     /// floating-surface host, keyed by their deterministic conversation id.
@@ -1104,6 +1110,9 @@ impl ChatApp {
             person_contacts: Vec::new(),
             person_messages: Vec::new(),
             person_error: None,
+            person_opening: None,
+            person_abandoned: Vec::new(),
+            person_sending: None,
             person_body_views: HashMap::new(),
             motion_reduced: false,
             agent_surfaces: HashMap::new(),
