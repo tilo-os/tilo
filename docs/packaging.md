@@ -154,6 +154,36 @@ When this repository publishes a newer `tilo-session`, the normal
 into the next deployment together with the host OS update. Users do not download
 or reinstall release RPMs by hand.
 
+### When the layering is refused
+
+An Atomic host owns most of `/usr`, so `rpm-ostree install` accepts the layer
+only if every file in it is either new or already Tilo's. Re-run the same
+command against a host that already layers an older release, or a host whose
+packages ship a file at one of Tilo's paths, and the transaction is rejected,
+but the reason appears as a file-exists error in the middle of a deployment
+log. Answer it before the next transaction, without staging anything:
+
+```bash
+rpm-ostree status                              # is the session already layered?
+sudo dist/rpm/ostree-package-conflicts.sh      # which path, and who owns it
+```
+
+`dist/rpm/ostree-package-conflicts.sh` lists each payload path whose current
+owner is not a Tilo package, prints the owner, and exits non-zero. It installs
+nothing and works before Tilo is present at all, reading an unpacked payload
+from `dist/rpm/build/RPMS` when this checkout has built one. It gives two
+answers:
+
+- **`tilo-session` is already layered.** Layering is not an upgrade path. The
+  next release arrives with `sudo rpm-ostree update`, which refreshes the
+  existing layering instead of adding a second one. Moving to a specific
+  release from an older layering is `sudo rpm-ostree uninstall tilo-session &&
+  sudo rpm-ostree install tilo-session`.
+- **Another package owns the path.** A host package that installs its own copy
+  of a Tilo file (`/usr/lib/systemd/user/tilo-graphical-session.target` is the
+  usual one) cannot coexist with the package. Remove that package, or use the
+  complete Tilo image, which owns the path itself.
+
 The version-locked `tilo-session-apps` companion carries the `app` command, the
 official Store registry owner pin under `/usr/share/tilo/trust`, and the signed
 runtime publisher policy. Opening Store or running `app repo list` repairs an
