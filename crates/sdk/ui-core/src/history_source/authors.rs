@@ -241,6 +241,7 @@ impl AuthorDirectory {
                 for_person: Some(&person),
                 for_reader: reader.as_deref() == Some(agent.person.as_str()),
                 is_reader: false,
+                task: None,
             })
         });
         author_coloured(name, short_id(actor_hex), agent.rgb)
@@ -343,13 +344,28 @@ impl AuthorDirectory {
             .as_deref()
             .map(|person| self.resolve(&hex::encode(person.as_bytes())).name);
         let for_reader = reader.is_some() && reader == invoker.on_behalf_of;
+        // The task the change was taken in names who did it: there are no
+        // separate agents, only tasks, so a person whose window ran a task
+        // reads as themselves through it, and an agent that ran one reads
+        // as its person through it.
+        let task = entry
+            .and_then(|entry| entry.group.as_ref())
+            .filter(|group| group.kind == crate::history_source::steps::TASK_RUN);
+        let task = task.map(|task| tilo_history::Task {
+            id: &task.id,
+            label: &task.label,
+        });
         let name = crate::history_source::sentence::with_reader(|words| {
             words.actor(&tilo_history::Who {
-                actor: &author.name,
+                actor: match &task {
+                    Some(_) => for_person.as_deref().unwrap_or(author.name.as_str()),
+                    None => author.name.as_str(),
+                },
                 kind: invoker.kind,
                 for_person: for_person.as_deref(),
                 for_reader,
                 is_reader: reads,
+                task: task.as_ref(),
             })
         });
         let attribution = invoker.kind.acts_for_someone().then(|| HistoryAttribution {

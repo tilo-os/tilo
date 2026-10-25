@@ -74,6 +74,7 @@ history-value-true = ein
 history-value-false = aus
 history-value-empty = nichts
 
+history-actor-via-task = { $person } über Aufgabe „{ $task }“
 history-actor-for = { $actor }, für { $for }
 history-actor-you = Du
 history-actor-you-for = Du, für { $for }
