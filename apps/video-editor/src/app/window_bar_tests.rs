@@ -10,7 +10,7 @@ use ui::widget::{SplitLayout, Widget};
 use ui::window_toolbar::{ToolbarEvent, WindowToolbar};
 use vello::kurbo::Rect;
 
-use super::{EXPORT, IMPORT, INSPECTOR, SPLIT};
+use super::{EXPORT, IMPORT, INSPECTOR, SIDE_BY_SIDE, SPLIT};
 use crate::actions::VideoEditorEffect;
 use crate::app::VideoEditorApp;
 use crate::model::{Project, TrackKind};
@@ -99,7 +99,7 @@ fn the_editor_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
             "{width}px: the bar names the project"
         );
         let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, [SPLIT, EXPORT, INSPECTOR, IMPORT]);
+        assert_eq!(ids, [SPLIT, SIDE_BY_SIDE, EXPORT, INSPECTOR, IMPORT]);
         assert!(bar_action(&toolbar, IMPORT).menu, "Import is in the menu");
 
         let mut drawn = Vec::new();
@@ -869,4 +869,85 @@ fn go_to_clip_takes_the_next_clip_then_the_previous() {
         .map(|clip| clip.start)
         .fold(f64::NEG_INFINITY, f64::max);
     assert_eq!(app.go_to_clip_target(), Some(last), "else the previous one");
+}
+
+/// Two angles of the same moment, the lower track's picture on the left:
+/// pressing the bar's side-by-side button makes the cut out of the track
+/// order alone, and one undo puts both pictures back.
+#[test]
+fn two_angles_share_one_frame_as_a_single_step() {
+    let mut app = TestApp::<crate::VideoEditor>::capture(None).expect("the sample comes up");
+    // t=1: the drone on V1 and the logo on V2 both cover it.
+    {
+        let editor = app.surface_mut::<VideoEditorApp>();
+        editor.playhead = 1.0;
+    }
+    app.harness().present_in_window_bar();
+    app.harness().relayout();
+    let toolbar = app.surface_mut::<VideoEditorApp>().window_toolbar();
+    assert!(
+        bar_action(&toolbar, SIDE_BY_SIDE).enabled,
+        "two pictures meet at the playhead, so the button offers the cut"
+    );
+
+    let sides = app
+        .state()
+        .cut_sides(1.0)
+        .expect("two video tracks cover t=1");
+    let (left, right) = (
+        sides.clip(crate::model::Side::Left).expect("a left angle"),
+        sides
+            .clip(crate::model::Side::Right)
+            .expect("a right angle"),
+    );
+    let before = app.state();
+    app.surface_mut::<VideoEditorApp>()
+        .run_window_bar_event(&ToolbarEvent::Action {
+            id: SIDE_BY_SIDE.to_owned(),
+        });
+    app.settle();
+    assert_eq!(
+        placed(&app, left),
+        crate::model::Side::Left.placement().expect("a left half"),
+        "the lower angle takes the left half"
+    );
+    assert_eq!(
+        placed(&app, right),
+        crate::model::Side::Right.placement().expect("a right half"),
+        "the next one takes the right"
+    );
+    assert_eq!(
+        app.state().clip(right).map(|c| c.in_point),
+        before.clip(right).map(|c| c.in_point),
+        "placing the angles moves no time"
+    );
+
+    // With both already beside each other there is nothing left to do, so
+    // the button stops offering it.
+    let toolbar = app.surface_mut::<VideoEditorApp>().window_toolbar();
+    assert!(
+        !bar_action(&toolbar, SIDE_BY_SIDE).enabled,
+        "the two already sit side by side"
+    );
+
+    assert!(app.undo(), "placing both angles is one step of undo");
+    app.settle();
+    assert_eq!(
+        placed(&app, left),
+        before.clip(left).expect("there").transform,
+        "undo gives the left angle its picture back"
+    );
+    assert_eq!(
+        placed(&app, right),
+        before.clip(right).expect("there").transform,
+        "and the right one its own"
+    );
+}
+
+/// A clip's transform, which placing the angles sets.
+fn placed(app: &TestApp<crate::VideoEditor>, id: crate::model::ClipId) -> crate::model::Transform {
+    app.state()
+        .clip(id)
+        .map(|c| c.transform)
+        .expect("the clip is still there")
 }
