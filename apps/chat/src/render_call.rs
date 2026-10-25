@@ -1577,9 +1577,13 @@ impl ChatApp {
         }
         let items = self.emoji_picker.items();
         for (index, item) in items.iter().enumerate() {
-            if let (Some(emoji), Some(cell)) = (item, self.emoji_picker.item_rect(index)) {
-                ChatApp::push_hit(hits, cell, Hit::EmojiChoice((*emoji).to_owned()));
-            }
+            let Some(cell) = self.emoji_picker.item_rect(index) else {
+                continue;
+            };
+            let hit = item.map_or(Hit::EmojiAddCustom, |emoji| {
+                Hit::EmojiChoice(emoji.to_owned())
+            });
+            ChatApp::push_hit(hits, cell, hit);
         }
     }
 

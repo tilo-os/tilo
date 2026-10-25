@@ -369,6 +369,8 @@ pub(crate) enum Hit {
     EmojiChoice(String),
     /// Show one Unicode emoji group (index into the catalogue) in the picker.
     EmojiGroup(usize),
+    /// The picker's "Add emoji" tile: choose a picture for the workspace.
+    EmojiAddCustom,
     /// Focus/place the caret in the emoji picker's search field.
     FocusEmojiSearch,
     FocusMain,
@@ -471,6 +473,7 @@ impl Hit {
             Self::AddReaction { msg, .. } => format!("chat.add-reaction:{msg}"),
             Self::EmojiChoice(emoji) => format!("chat.emoji-choice:{emoji}"),
             Self::EmojiGroup(group) => format!("chat.emoji-group:{group}"),
+            Self::EmojiAddCustom => "chat.emoji-add".into(),
             Self::FocusEmojiSearch => "chat.emoji-search".into(),
             Self::EditHistory { msg, .. } => format!("chat.edit-history:{msg}"),
             Self::EditSave => "chat.edit-save".into(),
@@ -3930,6 +3933,7 @@ impl ChatApp {
                         Role::Tab,
                         *group == self.emoji_picker.group(),
                     ),
+                    Hit::EmojiAddCustom => (crate::i18n::t("chat-emoji-add"), Role::Button, false),
                     Hit::FocusEmojiSearch => {
                         (crate::i18n::t("chat-emoji-search"), Role::TextInput, false)
                     }
