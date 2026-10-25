@@ -42,7 +42,7 @@ pub fn register_feedback_startup(
     peer: u32,
     startup: tilo_desktop::feedback::transport::Startup,
 ) -> Result<(), String> {
-    browser::register_feedback_startup(peer, startup)
+    feedback_delivery::register_feedback_startup(peer, startup)
 }
 /// Prepare the runtime before anything runs in it; the module's start
 /// function calls it first.
@@ -82,7 +82,11 @@ mod desktop;
 #[cfg(target_arch = "wasm32")]
 mod feedback_composer;
 #[cfg(target_arch = "wasm32")]
+mod feedback_crops;
+#[cfg(target_arch = "wasm32")]
 mod feedback_delivery;
+#[cfg(target_arch = "wasm32")]
+mod feedback_pick;
 #[cfg(all(target_arch = "wasm32", feature = "deferred-feedback-composer"))]
 pub use feedback_composer::install_feedback_composer;
 #[cfg(target_arch = "wasm32")]
