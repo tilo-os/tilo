@@ -204,8 +204,14 @@ impl Standing {
     }
 }
 
-/// What a desktop installs a feedback startup with.
+/// What a desktop in a room installs its feedback startup with.
 pub(crate) struct LateFeedback {
+    peer: u32,
+    /// Asks the mount for a frame, which takes a registered startup up.
+    wake: Arc<dyn Fn() + Send + Sync>,
+    /// Admissions asked for again after one went stale before it was
+    /// installed.
+    tries: u8,
     author: String,
     store: Rc<dyn DurableStore>,
     models: ui::models::Models,
@@ -238,22 +244,43 @@ impl Shared {
     /// Install the feedback startup the page registered after the desktop
     /// mounted; whether it did just now.
     pub(crate) fn adopt_feedback(&self) -> bool {
-        let Some(peer) = self.late_feedback.borrow().as_ref().map(|(peer, _)| *peer) else {
+        let Some(peer) = self.late_feedback.borrow().as_ref().map(|late| late.peer) else {
             return false;
         };
         let Some(startup) = crate::feedback_delivery::take_startup(peer) else {
             return false;
         };
-        let Some((_, late)) = self.late_feedback.borrow_mut().take() else {
+        let Some(late) = self.late_feedback.borrow_mut().take() else {
             return false;
         };
-        match late.install(self, startup) {
-            Ok(()) => true,
-            Err(error) => {
-                web_sys::console::warn_1(&format!("feedback: {error}").into());
-                false
-            }
+        self.settle_feedback(late, startup)
+    }
+
+    /// Take the page's feedback destination up once it is admitted.
+    fn await_feedback(&self, late: LateFeedback) {
+        crate::feedback_delivery::wake_on_startup(late.peer, Arc::clone(&late.wake));
+        *self.late_feedback.borrow_mut() = Some(late);
+    }
+
+    /// Install `startup`; whether it is installed. Installing checks the
+    /// owner's admission is fresh, and one that went stale while the page
+    /// was busy (a slow first frame) is asked for again rather than leaving
+    /// the desktop without reports.
+    fn settle_feedback(
+        &self,
+        mut late: LateFeedback,
+        startup: tilo_desktop::feedback::transport::Startup,
+    ) -> bool {
+        let Err(error) = late.install(self, startup) else {
+            return true;
+        };
+        if late.tries < 3 && crate::feedback_delivery::readmit(late.peer) {
+            late.tries = late.tries.saturating_add(1);
+            self.await_feedback(late);
+        } else {
+            web_sys::console::warn_1(&format!("feedback: {error}").into());
         }
+        false
     }
 }
 
@@ -264,7 +291,7 @@ pub(crate) struct Shared {
     pub feedback: Rc<RefCell<Option<tilo_desktop::feedback::PrivateFeedback>>>,
     /// What installs feedback once the page holds a destination, when the
     /// desktop mounted before it did ([`Shared::adopt_feedback`]).
-    late_feedback: Rc<RefCell<Option<(u32, LateFeedback)>>>,
+    late_feedback: Rc<RefCell<Option<LateFeedback>>>,
     /// Every package's record owner opened so far, flushed with the mount.
     pub stores: Rc<RefCell<Vec<RecordStore>>>,
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
@@ -1597,6 +1624,33 @@ fn stored_records(
 ///
 /// # Errors
 /// Refuses an application id the page does not register.
+/// Install the page's feedback startup in a room's desktop, or take it up
+/// once the page's destination is admitted: the desktop never waits for it.
+fn take_up_feedback(
+    shared: &Shared,
+    inputs: &mut Inputs,
+    store: &Rc<dyn DurableStore>,
+    notify: &Arc<dyn Fn() + Send + Sync>,
+) {
+    let Some(peer) = inputs.peer else {
+        return;
+    };
+    let late = LateFeedback {
+        peer,
+        wake: Arc::clone(notify),
+        tries: 0,
+        author: inputs.author.clone(),
+        store: Rc::clone(store),
+        models: inputs.models.clone(),
+    };
+    match inputs.feedback.take() {
+        Some(startup) => {
+            shared.settle_feedback(late, startup);
+        }
+        None => shared.await_feedback(late),
+    }
+}
+
 pub(crate) fn mount(
     mut inputs: Inputs,
     store: Rc<dyn DurableStore>,
@@ -1613,19 +1667,7 @@ pub(crate) fn mount(
         shared.standing = Standing::unknown();
     }
     shared.linked = linked_accounts(&shared, &notify);
-    let late = LateFeedback {
-        author: inputs.author.clone(),
-        store: Rc::clone(&store),
-        models: inputs.models.clone(),
-    };
-    if let Some(startup) = inputs.feedback.take() {
-        late.install(&shared, startup)?;
-    } else if let Some(peer) = inputs.peer {
-        // The page's destination is still being admitted: the desktop does
-        // not wait for it, and takes it up once it is here.
-        crate::feedback_delivery::wake_on_startup(peer, Arc::clone(&notify));
-        *shared.late_feedback.borrow_mut() = Some((peer, late));
-    }
+    take_up_feedback(&shared, &mut inputs, &store, &notify);
     let tree = if let Some(stored) = load_stored(store.as_ref(), &key) {
         let (bound, unbound) = stored_records(&stored);
         *shared.records.borrow_mut() = bound;
