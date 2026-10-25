@@ -28,7 +28,7 @@ use shell::collab::flatpak_share::{self, SharedFlatpakSession};
 use shell::config::{EncoderChoice, FlatpakShareConfig};
 use shell::diagnostics::PeerSurfaceMetrics;
 use shell::network::streaming::InputEvent;
-use shell::network::{Actor, NeighbourMsg, NetCmd, NetEvent};
+use shell::network::{Actor, NeighbourMsg, NetCmd, NetEvent, WorkspaceControlRoute};
 use shell::shell::peer_view::{PeerView, PushOutcome};
 use tokio::sync::mpsc;
 use ui::widget::Widget as _;
@@ -71,30 +71,15 @@ async fn spawn_device() -> (
     (cmd_tx, ev_rx, addr)
 }
 
-async fn wait_joined(events: &mut mpsc::Receiver<NetEvent>) {
-    tilo_test_env::within("devices met on the workspace topic", async {
-        while let Some(event) = events.recv().await {
-            if matches!(event, NetEvent::PeerJoined { .. }) {
-                return;
-            }
-        }
-        panic!("event channel closed before the other device joined");
+/// Admit `devices` to the workspace on the device `cmd` drives, as its
+/// governor's roster does: they alone send and receive its window streams.
+async fn admit(cmd: &mpsc::Sender<NetCmd>, devices: &[iroh::EndpointId]) {
+    cmd.send(NetCmd::SetRoomRoster {
+        ws: WS,
+        devices: devices.iter().map(|device| (*device, None)).collect(),
     })
-    .await;
-}
-
-/// Wait until this device has met `peer` itself: a device that meets
-/// another first would send `peer` a stream start before knowing it.
-async fn wait_joined_by(events: &mut mpsc::Receiver<NetEvent>, peer: iroh::EndpointId) {
-    tilo_test_env::within("the device met that peer on the workspace topic", async {
-        while let Some(event) = events.recv().await {
-            if matches!(event, NetEvent::PeerJoined { peer: joined, .. } if joined == peer) {
-                return;
-            }
-        }
-        panic!("event channel closed before that peer joined");
-    })
-    .await;
+    .await
+    .expect("admit the workspace's devices");
 }
 
 /// A text-editor-like picture with a caret bar that moves every frame, so
@@ -163,6 +148,7 @@ async fn stream_a_window(who: Viewer) {
     let (host_cmd, mut host_events, host_addr) = spawn_device().await;
     let (viewer_cmd, mut viewer_events, viewer_addr) = spawn_device().await;
     let (bystander_cmd, mut bystander_events, bystander_addr) = spawn_device().await;
+    let (host_id, viewer_id, bystander_id) = (host_addr.id, viewer_addr.id, bystander_addr.id);
     let host_peer = shell::network::behaviour::peer_liveness_handle(&host_addr.id);
     let viewer_peer = shell::network::behaviour::peer_liveness_handle(&viewer_addr.id);
     host_cmd
@@ -183,16 +169,13 @@ async fn stream_a_window(who: Viewer) {
         })
         .await
         .unwrap();
-    let viewer_id = viewer_addr.id;
     bystander_cmd
         .send(NetCmd::Connect { addr: host_addr })
         .await
         .unwrap();
-    // The host names the viewer in the stream start, so it must have met the
-    // viewer, not only the bystander that may join first.
-    wait_joined_by(&mut host_events, viewer_id).await;
-    wait_joined(&mut viewer_events).await;
-    wait_joined(&mut bystander_events).await;
+    admit(&host_cmd, &[viewer_id, bystander_id]).await;
+    admit(&viewer_cmd, &[host_id, bystander_id]).await;
+    admit(&bystander_cmd, &[host_id, viewer_id]).await;
 
     // The viewer decodes what this machine decodes; the session picks the
     // codec both ends handle best, hardware first.
@@ -438,13 +421,14 @@ async fn stream_a_window(who: Viewer) {
         .unwrap();
         let sent_at = Instant::now();
         viewer_cmd
-            .send(NetCmd::Publish {
+            .send(NetCmd::PublishWorkspaceControl {
                 ws: WS,
                 msg: NeighbourMsg::RemoteInput {
                     peer: viewer_peer,
                     surface: SURFACE,
                     event: event.clone(),
                 },
+                route: WorkspaceControlRoute::Direct { target: host_id },
             })
             .await
             .unwrap();
@@ -520,11 +504,13 @@ async fn stream_a_window(who: Viewer) {
     );
 
     // The bystander shares the workspace and the host's mesh, yet saw no
-    // part of the stream; the same frame sent to the whole workspace does
-    // reach it, so it was listening.
+    // part of the stream; a frame addressed to it does reach it, so it was
+    // listening.
+    let bystander_peer = shell::network::behaviour::peer_liveness_handle(&bystander_id);
     host_cmd
-        .send(NetCmd::Publish {
+        .send(NetCmd::PublishSurfaceTo {
             ws: WS,
+            viewers: vec![bystander_peer],
             msg: NeighbourMsg::SurfaceFrame {
                 surface: SURFACE + 1,
                 source_peer: host_peer,
@@ -535,7 +521,7 @@ async fn stream_a_window(who: Viewer) {
         })
         .await
         .unwrap();
-    tilo_test_env::within("a workspace-wide frame reached the bystander", async {
+    tilo_test_env::within("a frame addressed to the bystander reached it", async {
         while let Some(event) = bystander_events.recv().await {
             if let NetEvent::Msg { msg, .. } = event {
                 match msg {
@@ -653,10 +639,11 @@ fn a_board_viewer_receives_only_pictures_its_hardware_decoder_takes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
-    let (host_cmd, mut host_events, host_addr) = spawn_device().await;
+    let (host_cmd, _host_events, host_addr) = spawn_device().await;
     let (viewer_cmd, mut viewer_events, viewer_addr) = spawn_device().await;
     let host_peer = shell::network::behaviour::peer_liveness_handle(&host_addr.id);
     let viewer_peer = shell::network::behaviour::peer_liveness_handle(&viewer_addr.id);
+    let (host_id, viewer_id) = (host_addr.id, viewer_addr.id);
     host_cmd
         .send(NetCmd::Connect { addr: viewer_addr })
         .await
@@ -665,8 +652,8 @@ async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
         .send(NetCmd::Connect { addr: host_addr })
         .await
         .unwrap();
-    wait_joined(&mut host_events).await;
-    wait_joined(&mut viewer_events).await;
+    admit(&host_cmd, &[viewer_id]).await;
+    admit(&viewer_cmd, &[host_id]).await;
     let session = SharedFlatpakSession::start_with_metrics(
         host_peer,
         APP,

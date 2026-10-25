@@ -232,15 +232,19 @@ fn a_governance_change_asked_while_the_governor_is_away_is_made_when_it_is_back(
     // rename is made.
     first.come_back();
     second.reach(&first);
-    until(&[&first, &second], "the rename on both devices", || {
+    until(&[&first, &second], "the desktop to catch up", || {
+        (first.note(room).as_deref() == Some("written while the desktop was off")).then_some(())
+    });
+    until(&[&first, &second], "the rename on the desktop", || {
         assert!(
             !refused_on(&second),
             "a governor out of reach refused nothing"
         );
+        (name_on(&first).as_deref() == Some("Roadmap")).then_some(())
+    });
+    until(&[&first, &second], "the rename back on the laptop", || {
         (second.tree.read().room_outbox.is_empty()
-            && name_on(&first).as_deref() == Some("Roadmap")
-            && name_on(&second).as_deref() == Some("Roadmap")
-            && first.note(room).as_deref() == Some("written while the desktop was off"))
+            && name_on(&second).as_deref() == Some("Roadmap"))
         .then_some(())
     });
     drop((first, second, relay));
