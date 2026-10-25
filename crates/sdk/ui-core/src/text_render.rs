@@ -212,6 +212,23 @@ fn share_host_font_database(font_system: &FontSystem) {
 /// machine has them installed. Only when no catalog loads does it fall back
 /// to the system's fonts alone with the generic families pinned to the
 /// product names.
+/// Why a capture in this process would set text in the host's faces instead of
+/// the product's, when it would: no root holds this build's catalog. `None`
+/// when the catalog is there, when a host supplied its own database (the
+/// compositor's renderers), and under test. A capture that cannot set text in
+/// the product's faces must fail rather than produce frames that look almost
+/// right: every overflow, truncation and hinting judgement made from them is
+/// about a font the product does not ship.
+#[cfg(all(feature = "native", not(test)))]
+pub fn font_catalog_problem() -> Option<String> {
+    if HOST_FONT_DATABASE.read_recover().is_some() {
+        return None;
+    }
+    crate::font_catalog::catalog_root()
+        .is_none()
+        .then(crate::font_catalog::catalog_missing_message)
+}
+
 #[cfg(not(test))]
 pub fn configured_font_system() -> FontSystem {
     let host = HOST_FONT_DATABASE.read_recover().clone();

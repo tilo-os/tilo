@@ -20,6 +20,10 @@ mod capture_settings;
 #[cfg(feature = "native")]
 use app_log::init_app_log;
 pub use capture_settings::capture_appearance;
+#[cfg(feature = "native")]
+mod capture;
+#[cfg(feature = "native")]
+use capture::{capture_directory, capture_font_gate, first_frame};
 mod scenario;
 pub use scenario::HostSource;
 mod shot_frame;
@@ -420,6 +424,9 @@ pub enum LaunchError {
     HeadlessUnsupported,
     Scenario(String),
     Operation(String),
+    /// A capture would have set text in the host's faces instead of the
+    /// product's, because no root holds this build's font catalog.
+    SubstituteFont(String),
     /// The workspace the app was launched into has no identity selected, so
     /// it cannot join it. A live launch shows the window asking who is
     /// working there ([`crate::workspace_identity`]) instead of ending.
@@ -469,6 +476,7 @@ impl fmt::Display for LaunchError {
                 write!(f, "this application does not support --headless-drive")
             }
             Self::Scenario(message) | Self::Operation(message) => f.write_str(message),
+            Self::SubstituteFont(problem) => write!(f, "refusing to capture: {problem}"),
             Self::IdentityRequired => f.write_str("no identity selected for this workspace"),
         }
     }
@@ -524,6 +532,7 @@ impl fmt::Debug for LaunchError {
             }
             Self::BindingMismatch => f.write_str("BindingMismatch"),
             Self::IdentityRequired => f.write_str("IdentityRequired"),
+            Self::SubstituteFont(_) => f.write_str("SubstituteFont"),
         }
     }
 }
@@ -830,20 +839,17 @@ fn capture_every_scenario(
     Ok(())
 }
 
-/// Create the directory a capture mode (`option`) writes its PNGs into.
-#[cfg(feature = "native")]
-fn capture_directory(directory: &std::path::Path, option: &str) -> Result<(), LaunchError> {
-    std::fs::create_dir_all(directory).map_err(|error| {
-        LaunchError::Operation(format!(
-            "could not create the {option} directory {}: {error}",
-            directory.display()
-        ))
-    })
-}
-
 /// Whether these arguments run the app in a live native window, rather than
 /// headless, as captures or as an audit.
 #[cfg(feature = "native")]
+/// A capture that could not set text in the product's faces is refused; on a
+/// build with no capture path there is nothing to refuse.
+#[cfg(not(feature = "native"))]
+fn capture_font_gate(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let _ = args;
+    Ok(())
+}
+
 fn opens_native_window(args: &LaunchArgs) -> bool {
     args.headless.is_none()
         && args.shots.is_none()
@@ -900,6 +906,7 @@ fn run_parsed(
     } else {
         None
     };
+    capture_font_gate(&args)?;
     if args.first_frame {
         return first_frame(spec, &args);
     }
@@ -987,63 +994,6 @@ pub(crate) fn dispatch_window(
         DefinitionDispatch::Native(app) => Some(*app),
         _ => None,
     })
-}
-
-/// `--first-frame`: the app constructed as a live launch constructs it, then
-/// its first frame synced, composed, laid out and drawn as its window would
-/// draw it ([`App::surface_frame`]), with no window, GPU or runtime. Prints
-/// the process's startup line (with `TILO_STARTUP_METRICS_PATH` set) and one
-/// `FIRST-FRAME-SCOPE` line per named scope the construction and the frame
-/// ran, so a cold launch can be measured one process at a time.
-#[allow(
-    clippy::print_stdout,
-    reason = "the measurement is this mode's output, as --native-audit prints its audit"
-)]
-#[cfg(feature = "native")]
-fn first_frame(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
-    struct Offscreen((u32, u32));
-    impl crate::app::AppSurface for Offscreen {
-        fn scale_factor(&self) -> f64 {
-            1.0
-        }
-        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
-            winit::dpi::PhysicalSize::new(self.0.0, self.0.1)
-        }
-        fn request_redraw(&self) {}
-        fn set_cursor(&self, _: winit::window::CursorIcon) {}
-    }
-    let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(args));
-    let (constructed, construction) =
-        tilo_resource::profiling::observe(|| dispatch_definition(spec, args));
-    let DefinitionDispatch::Native(mut app) = constructed? else {
-        return Err(LaunchError::Operation(
-            "--first-frame constructs the live app".into(),
-        ));
-    };
-    tilo_startup_metrics::mark("first-frame-start");
-    let ((), frame) = tilo_resource::profiling::observe(|| {
-        let mut scene = vello::Scene::new();
-        app.surface_frame(&Offscreen(viewport), &mut scene);
-    });
-    tilo_startup_metrics::mark("first-frame-done");
-    if let Some(line) = tilo_startup_metrics::summary_line(spec.app_id) {
-        println!("{line}");
-    }
-    for (name, ns) in tilo_startup_metrics::events() {
-        println!("FIRST-FRAME-MARK name={name} us={}", ns / 1000);
-    }
-    for (stage, scopes) in [("construction", construction), ("frame", frame)] {
-        for scope in scopes {
-            println!(
-                "FIRST-FRAME-SCOPE stage={stage} phase={} us={} calls={}",
-                scope.phase,
-                scope.elapsed_ns / 1000,
-                scope.calls
-            );
-        }
-    }
-    app.close_components();
-    Ok(())
 }
 
 /// Start building the process's font database in the background
@@ -1850,6 +1800,26 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// A capture is what asks for frames or measurements; a viewport alone is
+    /// a size, and a live launch takes one too.
+    #[test]
+    fn a_capture_is_what_writes_frames() {
+        let is_capture = |argv: &[&str]| {
+            super::capture::captures_frames(&parse_args(&strings(argv), &[], &[]).unwrap())
+        };
+        assert!(is_capture(&["app", "--shots", "/tmp/a.png"]));
+        assert!(is_capture(&["app", "--shots-dir", "/tmp/dir"]));
+        assert!(is_capture(&["app", "--responsive-matrix", "/tmp/m"]));
+        assert!(is_capture(&["app", "--first-frame"]));
+        assert!(!is_capture(&["app"]));
+        // A size without a capture is not a capture, and the parser says so
+        // rather than quietly opening a window the size of a phone.
+        assert!(matches!(
+            parse_args(&strings(&["app", "--viewport=390x844"]), &[], &[]),
+            Err(LaunchError::ShotsOnly(_))
+        ));
     }
 
     /// `run_parsed` starts the renderer preparation thread (Windows and Linux)
