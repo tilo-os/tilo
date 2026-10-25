@@ -240,6 +240,9 @@ impl ContactsApp {
                     .as_ref()
                     .map(|form| form.draft.display_name())
                     .unwrap_or_default();
+                // Three answers, as every unsaved-changes question offers:
+                // keeping the edits open is a real choice, not the absence of
+                // one. Escape, the scrim and the close control all mean it.
                 Box::new(
                     dialog(
                         &format!("Save changes to {name}?"),
@@ -247,6 +250,10 @@ impl ContactsApp {
                         shared,
                         "Save",
                         "Don't save",
+                    )
+                    .tertiary_action(
+                        "Keep editing",
+                        queue(shared, Request::Dialog(DialogChoice::Dismiss)),
                     )
                     .with_test_id("contacts.unsaved-dialog"),
                 )

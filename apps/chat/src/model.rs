@@ -260,6 +260,15 @@ impl Attachment {
             | Attachment::File { name, .. } => name,
         }
     }
+
+    /// Its size in bytes, when the sender's import measured one: an image's
+    /// size is the store's, and an older one carries none rather than a guess.
+    pub fn size(&self) -> Option<u64> {
+        match self {
+            Attachment::Image { .. } => None,
+            Attachment::Video { size, .. } | Attachment::File { size, .. } => Some(*size),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
