@@ -543,6 +543,18 @@ def has_cpu(rows: list[dict]) -> bool:
     return any(isinstance(r.get("cpu_us"), int) for r in rows)
 
 
+def own_cpu_us(r: dict):
+    """The loop thread's CPU on tick `r` less what it spent answering this harness on
+    the test-control socket (`testctl_cpu_us`): a request lands in whichever tick runs
+    when it arrives, and a state dump is the harness's cost, not the session's. `None`
+    where the trace has no `cpu_us`."""
+    cpu = r.get("cpu_us")
+    if not isinstance(cpu, int):
+        return None
+    harness = r.get("testctl_cpu_us")
+    return max(0, cpu - harness) if isinstance(harness, int) else cpu
+
+
 def _tick_walls(rows: list[dict]):
     """(tick, wall time outside its park) for each tick with a successor: a row's
     `period_us` runs from the previous tick's start, so it holds the previous tick's
@@ -560,7 +572,7 @@ def frame_stats(rows: list[dict]) -> dict:
     descheduled or blocked."""
     painted = [r for r in rows if r.get("painted") == 1]
     work = [wall for r, wall in _tick_walls(rows) if r.get("painted") == 1]
-    cpu = [r["cpu_us"] for r in painted if isinstance(r.get("cpu_us"), int)]
+    cpu = [c for c in (own_cpu_us(r) for r in painted) if c is not None]
     periods = [r["period_us"] for r in painted if r["period_us"] > 0]
     latency = [r["input_latency_us"] for r in rows if isinstance(r.get("input_latency_us"), int)]
     blocked = [r for r in rows if r.get("backpressured") == 1]
@@ -601,9 +613,9 @@ def tick_phases(r):
     if r is None:
         return None
     phases = {k[:-3] + "_ms": _ms(r[k]) for k in ("input_us", "pump_us", "layout_us", "scene_us",
-                                                  "submit_us", "clients_us")
+                                                  "submit_us", "clients_us", "testctl_us")
               if isinstance(r.get(k), int)}
-    cpu = _ms(r["cpu_us"]) if isinstance(r.get("cpu_us"), int) else None
+    cpu = _ms(own_cpu_us(r))
     return {"seq": r.get("seq"), "cpu_ms": cpu, **phases, "input_step": r.get("input_step") or "",
             "paint_reasons": r.get("paint_reasons") or ""}
 
@@ -655,13 +667,13 @@ def transition_stats(rows: list[dict]) -> dict:
             if prev_submit is not None:
                 value = max(0, min(x["deadline_late_us"], submit - max(prev_submit, ready or 0)))
                 late.append(value)
-                if isinstance(x.get("cpu_us"), int):
-                    late_cpu.append(min(value, x["cpu_us"]))
+                if own_cpu_us(x) is not None:
+                    late_cpu.append(min(value, own_cpu_us(x)))
             prev_submit, ready = submit, None
         elif x.get("backpressured") == 1 and nxt is not None:
             ready = nxt["start_us"]
-    cpu = [r["cpu_us"] for r in rows if isinstance(r.get("cpu_us"), int)]
-    worst = max((r for r in rows if isinstance(r.get("cpu_us"), int)), key=lambda r: r["cpu_us"],
+    cpu = [c for c in (own_cpu_us(r) for r in rows) if c is not None]
+    worst = max((r for r in rows if own_cpu_us(r) is not None), key=own_cpu_us,
                 default=None)
     # The longest tick by wall time outside its park, and how much of that was CPU.
     longest = max(((wall, r) for r, wall in walls), key=lambda t: t[0], default=(None, {}))
@@ -696,7 +708,7 @@ def transition_stats(rows: list[dict]) -> dict:
         "cpu_ms_p95": _ms(percentile(cpu, 95)),
         "cpu_ms_max": _ms(max(cpu) if cpu else None),
         "longest_tick_ms": _ms(longest[0]),
-        "longest_tick_cpu_ms": _ms(longest[1].get("cpu_us") if isinstance(longest[1].get("cpu_us"), int) else None),
+        "longest_tick_cpu_ms": _ms(own_cpu_us(longest[1])),
         "input_to_first_frame_ms": input_ms,
         "input_to_first_frame_compositor_ms": input_compositor_ms,
         "present_interval_ms_p50": _ms(percentile(gaps, 50)),

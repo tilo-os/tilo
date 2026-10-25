@@ -210,6 +210,14 @@ class AnimationJudgeTest(unittest.TestCase):
         problems, _ = _judge_keyboard_flight("overview_key_close", stalled, W16_BUDGETS)
         self.assertIn("CPU stall in the compositor loop", problems[0])
 
+    def test_a_tick_spent_answering_the_harness_is_not_a_stall(self):
+        # 75 ms on the loop thread, 50 of it answering this harness's state request.
+        busy = run(8, "animation+transition", extra={3: {"cpu_us": 75_000, "testctl_cpu_us": 50_000}})
+        self.assertEqual(_judge_keyboard_flight("overview_key_close", busy, W16_BUDGETS), ([], []))
+        own = run(8, "animation+transition", extra={3: {"cpu_us": 75_000, "testctl_cpu_us": 1_000}})
+        problems, _ = _judge_keyboard_flight("overview_key_close", own, W16_BUDGETS)
+        self.assertIn("74.0 ms CPU stall", problems[0])
+
     def test_the_keyboard_toggle_is_judged_on_its_first_frame(self):
         slow = run(1, "revision", input_us=80_000)
         problems, _ = _judge_instant("overview_key_open", slow, W16_BUDGETS)
