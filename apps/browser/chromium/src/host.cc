@@ -286,6 +286,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void OnFrameCreated(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame) override { SendFilters(frame);SendScripts(frame); }
   void GetViewRect(CefRefPtr<CefBrowser>,CefRect& rect) override { rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height()); }
+  // The page began a drag. Offscreen there is no window to hand the operating
+  // system's drag loop, so the drag stays here: a page drag another page
+  // drives finishes through the target methods below, and a page drag nothing
+  // is driving ends at once, as a person releasing the button would.
+  bool StartDragging(CefRefPtr<CefBrowser>,CefRefPtr<CefDragData> drag_data,DragOperationsMask allowed_ops,int x,int y) override {
+    if(!page_automation_ || !drag_data) return false;
+    return page_automation_->BeginDrag(drag_data,allowed_ops,x,y);
+  }
   bool GetScreenInfo(CefRefPtr<CefBrowser>,CefScreenInfo& info) override {
     info.device_scale_factor=geometry_.scale();info.rect=info.available_rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height());return true;
   }
@@ -334,7 +342,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     })())JS");
     navigation_history_=new tilo::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
     page_automation_=new tilo::PageAutomation(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);},
-        [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);});
+        [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);},
+        [this](CefRefPtr<CefDictionaryValue> pointer){PagePointer(pointer);});
     page_automation_->Attach();
     agent_log_=new tilo::AgentLog(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     agent_log_->Attach();
@@ -804,6 +813,19 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     host->SendMouseMoveEvent(event,false);
     event.modifiers|=EVENTFLAG_LEFT_MOUSE_BUTTON;host->SendMouseClickEvent(event,MBT_LEFT,false,1);
     event.modifiers&=~EVENTFLAG_LEFT_MOUSE_BUTTON;host->SendMouseClickEvent(event,MBT_LEFT,true,1);
+  }
+  // A move, a press or a release at a page point, as the pointer of a person
+  // sitting at the screen delivers it. The button state is kept here because
+  // a drag holds the button across several moves.
+  void PagePointer(CefRefPtr<CefDictionaryValue> d) {
+    if(!browser_)return;auto host=browser_->GetHost();const double zoom=std::pow(1.2,host->GetZoomLevel());
+    CefMouseEvent event;
+    event.x=static_cast<int>(std::lround(Number(d,"x")*zoom));event.y=static_cast<int>(std::lround(Number(d,"y")*zoom));
+    const bool down=d->GetBool("down");
+    if(down) mouse_modifiers_|=EVENTFLAG_LEFT_MOUSE_BUTTON;else mouse_modifiers_&=~EVENTFLAG_LEFT_MOUSE_BUTTON;
+    event.modifiers=mouse_modifiers_|key_modifiers_;
+    if(d->GetString("type")=="move") { host->SendMouseMoveEvent(event,false);return; }
+    host->SendMouseClickEvent(event,MBT_LEFT,!down,1);
   }
   void PageKey(CefRefPtr<CefDictionaryValue> key) {
     if(!browser_)return;const int held=key_modifiers_;
@@ -1385,9 +1407,10 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
     const auto action=d->GetString("action").ToString();
     if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="press" && action!="submit" &&
-       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" && action!="reader")return false;
+       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" && action!="reader" &&
+       action!="hover" && action!="drag" && action!="path")return false;
     const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
-      action=="console" || action=="network" || action=="reader";
+      action=="console" || action=="network" || action=="reader" || action=="hover" || action=="drag" || action=="path";
     if((action=="reader")!=d->HasKey("enabled") || (d->HasKey("enabled") && !type("enabled",VTYPE_BOOL)))return false;
     if(d->HasKey("element") ? !type("element",VTYPE_STRING) || d->GetString("element").empty() || d->GetString("element").length()>64
                             : !elementless)return false;
@@ -1405,6 +1428,33 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(action=="press") {
       if(!type("key",VTYPE_STRING) || d->GetString("key").empty() || d->GetString("key").length()>16)return false;
       for(const char* flag:{"ctrl","shift","alt","meta"})if(!type(flag,VTYPE_BOOL))return false;
+    }
+    if(action=="hover" || action=="drag") {
+      // One end of a gesture either names an element or gives its point.
+      if(d->HasKey("x")!=d->HasKey("y") || d->HasKey("to_x")!=d->HasKey("to_y"))return false;
+      const auto point=[&](const char* x,const char* y) {
+        if(!d->HasKey(x))return true;
+        return number(x) && number(y) && Number(d,x)>=0 && Number(d,y)>=0 && Number(d,x)<=100000 && Number(d,y)<=100000;
+      };
+      if(!point("x","y") || !point("to_x","to_y"))return false;
+      if(action=="hover" && !d->HasKey("element") && !d->HasKey("x"))return false;
+      if(action=="drag" && (!d->HasKey("element") && !d->HasKey("x") || !d->HasKey("to") && !d->HasKey("to_x")))return false;
+      if(d->HasKey("element") && d->HasKey("x") || d->HasKey("to") && d->HasKey("to_x"))return false;
+      if(d->HasKey("to") && (!type("to",VTYPE_STRING) || d->GetString("to").empty() || d->GetString("to").length()>64))return false;
+    }
+    if(action=="drag" && (!type("steps",VTYPE_INT) || d->GetInt("steps")<1 || d->GetInt("steps")>64))return false;
+    if(action=="path") {
+      if(!type("points",VTYPE_LIST))return false;
+      auto points=d->GetList("points");
+      if(points->GetSize()<2 || points->GetSize()>1024)return false;
+      const bool relative=d->HasKey("element");
+      for(size_t i=0;i<points->GetSize();++i) {
+        auto pair=points->GetType(i)==VTYPE_LIST?points->GetList(i):nullptr;
+        if(!pair || pair->GetSize()!=2 || pair->GetType(0)!=VTYPE_DOUBLE || pair->GetType(1)!=VTYPE_DOUBLE)return false;
+        const double x=pair->GetDouble(0),y=pair->GetDouble(1);
+        if(!std::isfinite(x) || !std::isfinite(y))return false;
+        if(relative ? std::abs(x)>100000 || std::abs(y)>100000 : x<0 || y<0 || x>100000 || y>100000)return false;
+      }
     }
     return true;
   }

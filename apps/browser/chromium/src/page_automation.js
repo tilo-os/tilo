@@ -17,7 +17,8 @@ globalThis.__tiloPage ||= (() => {
     number: 'spinbutton', search: 'searchbox'};
   const INTERACTIVE = new Set(['link', 'button', 'checkbox', 'radio', 'switch', 'textbox',
     'searchbox', 'combobox', 'listbox', 'option', 'slider', 'spinbutton', 'tab', 'menuitem',
-    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable']);
+    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable', 'hint', 'draggable',
+    'canvas']);
   const CONTAINERS = new Set(['navigation', 'main', 'banner', 'contentinfo', 'complementary',
     'form', 'dialog', 'alertdialog', 'region', 'search', 'list', 'listitem', 'table', 'row',
     'cell', 'columnheader', 'rowheader', 'menu', 'menubar', 'tablist', 'tabpanel', 'tree',
@@ -28,7 +29,7 @@ globalThis.__tiloPage ||= (() => {
     'menuitemcheckbox', 'menuitemradio', 'treeitem', 'checkbox', 'radio', 'switch', 'cell',
     'columnheader', 'rowheader', 'clickable']);
   const SKIP = new Set(['script', 'style', 'noscript', 'template', 'head', 'meta', 'link',
-    'title', 'base', 'svg', 'canvas', 'object', 'embed']);
+    'title', 'base', 'svg', 'object', 'embed']);
   const NOT_TEXT = new Set(['button', 'submit', 'reset', 'image', 'file', 'checkbox', 'radio',
     'hidden']);
   const SET_VALUE = new Set(['date', 'time', 'datetime-local', 'month', 'week', 'color', 'range']);
@@ -38,6 +39,10 @@ globalThis.__tiloPage ||= (() => {
   // The outline this tab's agent last saw, for `changes`.
   let lastLines = null;
   const MAX_DIFF_CELLS = 4000000, MAX_SETTLE_POLL_MS = 50;
+  // Revealed lines one hover reports, and moves between a drag's two ends.
+  const MAX_REVEAL_LINES = 40, MAX_DRAG_STEPS = 64;
+  // The outline a gesture started from, so its answer says what it changed.
+  let gestureBefore = null;
 
   const clean = (text, limit) => {
     const value = String(text ?? '').replace(/\s+/g, ' ').trim();
@@ -100,6 +105,7 @@ globalThis.__tiloPage ||= (() => {
       case 'fieldset': return 'group';
       case 'iframe': case 'frame': return 'iframe';
       case 'option': return 'option';
+      case 'canvas': return 'canvas';
     }
     if (element.isContentEditable && !element.parentElement?.isContentEditable) return 'textbox';
     return '';
@@ -122,7 +128,7 @@ globalThis.__tiloPage ||= (() => {
     }
     return text;
   }
-  function name(element, kind) {
+  function name(element, kind, options) {
     let text = clean(labelledBy(element), MAX_NAME) || clean(element.getAttribute('aria-label'), MAX_NAME);
     if (text) return text;
     const tag = element.localName;
@@ -140,6 +146,9 @@ globalThis.__tiloPage ||= (() => {
       if (legend) return clean(legend.innerText, MAX_NAME);
     }
     if (tag === 'table' && element.caption) return clean(element.caption.innerText, MAX_NAME);
+    // An element named only to be found again by its own words.
+    if (options && options.naming) text = clean(element.innerText ?? element.textContent, MAX_NAME) || clean(element.title, MAX_NAME);
+    if (text) return text;
     if (NAMED_FROM_CONTENT.has(kind)) {
       text = clean(element.innerText, MAX_NAME) || clean([...element.querySelectorAll('img[alt],[aria-label],svg title')]
         .map(part => part.getAttribute('alt') || part.getAttribute('aria-label') || part.textContent).join(' '), MAX_NAME);
@@ -184,9 +193,51 @@ globalThis.__tiloPage ||= (() => {
     }
     return out;
   }
-  function summary(element) {
-    const kind = role(element) || element.localName, label = name(element, kind);
+  function summary(element, options) {
+    const kind = role(element) || element.localName, label = name(element, kind, options);
     return label ? `${kind} ${quote(label)}` : kind;
+  }
+
+  // Elements a `:hover` rule in the page's own sheets targets are the
+  // triggers of hover-only menus; the outline lists them with a ref so a
+  // hover can name what its author cannot see. Bounded against a hostile
+  // sheet, and rebuilt per outline so a changed page is read as it is.
+  const MAX_HOVER_RULES = 4000, MAX_HOVER_TARGETS = 2000;
+  let hoverTargets = null;
+  function markHoverTargets() {
+    hoverTargets = new Set();
+    let seen = 0;
+    for (const sheet of document.styleSheets) {
+      let rules = null;
+      try { rules = sheet.cssRules; } catch (error) { rules = null; }
+      if (!rules) continue;
+      for (const rule of rules) {
+        if (++seen > MAX_HOVER_RULES) return;
+        const selector = rule.selectorText;
+        if (!selector || !selector.includes(':hover')) continue;
+        let matched = [];
+        try { matched = document.querySelectorAll(selector.replace(/:hover(?![\w-])/g, '.__tilo-hover__')); }
+        catch (error) { matched = []; }
+        for (const element of matched) {
+          if (hoverTargets.size >= MAX_HOVER_TARGETS) return;
+          hoverTargets.add(element);
+        }
+      }
+    }
+  }
+  // The element on which a hover opens something: itself when a rule names
+  // it, else the parent whose rule opened a child that starts hidden.
+  function hoverReveals(element) {
+    if (!hoverTargets) markHoverTargets();
+    if (hoverTargets.has(element)) return true;
+    if (element.localName === 'canvas') return false;
+    for (const parent of [element, element.parentElement]) {
+      if (!parent) continue;
+      for (const child of parent.children) {
+        if (hoverTargets.has(child) && !child.checkVisibility?.()) return true;
+      }
+    }
+    return false;
   }
 
   function outline() {
@@ -221,17 +272,77 @@ globalThis.__tiloPage ||= (() => {
       outline: out.join('\n')};
   }
 
+  // What a click or a hover at viewport point (x, y) would act on: the
+  // element itself when it is one an agent can act on, else the nearest
+  // ancestor that is.
+  function targetAt(hit) {
+    for (let node = hit; node && node.nodeType === 1; node = node.parentNode || node.host) {
+      if (INTERACTIVE.has(role(node)) || node.hasAttribute('onclick') ||
+          node.localName === 'canvas' || node.getAttribute('draggable') === 'true' || hoverReveals(node))
+        return node;
+    }
+    return null;
+  }
+  // The disclosure state of an element, which a hover-only menu changes.
+  function expandedState(element) {
+    const aria = element.getAttribute('aria-expanded');
+    if (aria === 'true') return 'expanded';
+    if (aria === 'false') return 'collapsed';
+    for (const child of element.children) {
+      if (child.checkVisibility && child.checkVisibility() && getComputedStyle(child).visibility === 'visible')
+        return 'expanded';
+    }
+    return 'collapsed';
+  }
+  function revealState(element) {
+    const ref = refOf(element), state = expandedState(element), label = summary(element, {naming: true});
+    return {ref, state, line: `${label || element.localName} [ref=${ref}] ${state}`};
+  }
+
   // What a click at viewport point (x, y) would hit.
   function at(x, y) {
     const hit = topmost(x, y);
     if (!hit) return {ok: true, message: `Nothing at ${x}, ${y}`, data: {x, y, element: null}};
-    let target = null;
-    for (let node = hit; node && node.nodeType === 1; node = node.parentNode || node.host) {
-      if (INTERACTIVE.has(role(node)) || node.hasAttribute('onclick')) { target = node; break; }
-    }
+    const target = targetAt(hit);
     const data = {x, y, element: describe(hit), interactive: !!target};
     if (target) Object.assign(data, {ref: refOf(target), target: summary(target)});
     return {ok: true, message: target ? `${summary(target)} [ref=${data.ref}] is at ${x}, ${y}` : `${describe(hit)} is at ${x}, ${y}`, data};
+  }
+
+  // How much of what reveals something changed while the pointer moved: a
+  // menu the hover opened, and the lines it added.
+  function revealDelta(before) {
+    const lines = outlineLines().lines;
+    const kept = new Set(before.lines);
+    const added = lines.filter(line => !kept.has(line));
+    const gone = before.lines.filter(line => !lines.includes(line)).length;
+    const revealing = added.length !== 0 || gone !== 0;
+    const note = added.length ? `${added.length} lines added` : gone ? `${gone} lines removed` : 'nothing changed';
+    return {revealing, added: added.slice(0, MAX_REVEAL_LINES), note};
+  }
+
+  // Viewport CSS pixels for a named element's visible centre, or for an
+  // explicit point when no element is named.
+  function landing(ref, x, y, verb) {
+    if (!ref) return {x, y, element: null};
+    const element = resolve(ref);
+    enabled(element, ref);
+    const center = point(element);
+    if (!center) throw failure('not_visible', `${ref} has no visible area to ${verb}; scroll or open its container first`);
+    if (verb !== 'hover') {
+      const hit = topmost(center.x, center.y);
+      if (!within(hit, element))
+        throw failure('obscured', `${ref} is covered by ${describe(hit)}; close or scroll past it first`);
+    }
+    return {x: center.x, y: center.y, element};
+  }
+
+  // A contact path, and the same path for the synthetic fallback: `points`
+  // are viewport CSS pixels, `local` are relative to the drawing element.
+  function contactPath(ref, raw) {
+    const origin = ref ? resolve(ref).getBoundingClientRect() : {left: 0, top: 0};
+    const points = raw.map(([x, y]) => ({x: ref ? origin.left + x : x, y: ref ? origin.top + y : y}));
+    return {points, local: raw.map(([x, y]) => [x, y])};
   }
 
   // Resolves once the document stops changing for `quiet` ms after it has
@@ -325,20 +436,34 @@ globalThis.__tiloPage ||= (() => {
       if (!kind && visible && !context.inside && tag !== 'label' && tag !== 'body' && tag !== 'html' &&
           (element.hasAttribute('onclick') || (element.hasAttribute('tabindex') && element.tabIndex >= 0) ||
            (pointer && !context.pointer))) kind = 'clickable';
+      // A hover-only menu's trigger has no role of its own, no click and no
+      // pointer cursor; it is found only by the rule its hover applies to.
+      if (!kind && visible && !context.inside && tag !== 'body' && tag !== 'html' && hoverReveals(element))
+        kind = 'hint';
+      if (tag === 'canvas' && visible && !context.inside) kind = 'canvas';
+      if (!kind && visible && !context.inside && element.getAttribute('draggable') === 'true')
+        kind = 'draggable';
       // A bound label's words are its control's name; listing them again is noise.
       const inner = {inside: context.inside || (tag === 'label' && !!element.control), pointer, visible};
-      if (kind === 'img' || kind === 'iframe') {
+      if (kind === 'img' || kind === 'iframe' || kind === 'canvas') {
         flush();
-        const label = kind === 'img' ? name(element, kind) : clean(element.title || element.name || element.src, MAX_NAME);
-        emit(depth, label ? `${kind} ${quote(label)}` : kind);
+        // A drawing surface has a ref and a size; its pixels are not text.
+        const label = kind === 'img' ? name(element, kind)
+          : kind === 'iframe' ? clean(element.title || element.name || element.src, MAX_NAME)
+          : name(element, kind);
+        const size = kind === 'canvas' ? ` ${Math.round(element.width || element.clientWidth || 0)}x${Math.round(element.height || element.clientHeight || 0)} [ref=${refOf(element)}]` : '';
+        emit(depth, (label ? `${kind} ${quote(label)}` : kind) + size);
         return;
       }
       if (INTERACTIVE.has(kind) || kind === 'heading') {
         flush();
-        const label = name(element, kind), parts = [kind];
+        const label = name(element, kind, {naming: kind === 'hint'}), parts = [kind];
         if (label) parts.push(quote(label));
         if (INTERACTIVE.has(kind)) parts.push(`[ref=${refOf(element)}]`);
         parts.push(...details(element, kind));
+        // What each extra kind is for, so an agent knows which action uses it.
+        if (kind === 'hint') parts.push('(a hover opens more)');
+        if (kind === 'draggable') parts.push('(draggable)');
         if (!emit(depth, parts.join(' '))) return;
         if (tag === 'select') {
           const options = [...element.options];
@@ -933,11 +1058,90 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, message: 'Reader view', data: {reader: true, title, words}};
   }
 
+  // One pointer event at a viewport point, for a page that reads pointer
+  // events rather than trusted input alone.
+  function pointerEvent(element, kind, clientX, clientY, buttons) {
+    const box = element.getBoundingClientRect();
+    return element.dispatchEvent(new PointerEvent(kind, {bubbles: true, cancelable: true, composed: true,
+      pointerId: 1, pointerType: 'mouse', isPrimary: true, button: kind === 'pointermove' ? -1 : 0,
+      buttons: buttons === undefined ? (kind === 'pointerup' ? 0 : 1) : buttons,
+      clientX, clientY, offsetX: clientX - box.left, offsetY: clientY - box.top}));
+  }
+
+  // A drag the native path could not complete, replayed for pages that react
+  // to drag events only: the source's own `dragstart` handler, the drop
+  // target's `dragover`, then its `drop`. Elements move exactly as a
+  // person's drag makes them.  `end` is the source in viewport pixels.
+  function syntheticDrag(end, target) {
+    const transfer = new DataTransfer();
+    const source = end.element;
+    const fire = (node, kind, allowDrop = false) => {
+      const event = new DragEvent(kind, {bubbles: true, cancelable: true, composed: true,
+        clientX: end.x, clientY: end.y, dataTransfer: transfer});
+      if (allowDrop) event.preventDefault();
+      return node.dispatchEvent(event);
+    };
+    const started = source ? !fire(source, 'dragstart') : true;
+    if (source) fire(source, 'dragenter', true);
+    // A handler that calls preventDefault on dragover accepts the drop.
+    fire(target, 'dragenter', true);
+    const accepted = !fire(target, 'dragover', true);
+    const removed = started && transferred(source);
+    if (accepted) fire(target, 'drop', true);
+    if (source) fire(source, 'dragend');
+    return {accepted, started, removed, native: false};
+  }
+  // A source that left the document was moved by its page's own handler.
+  function transferred(source) { return !source.isConnected; }
+
+  // What a gesture changed, as lines added to and removed from the outline.
+  function gestureResult(before, message, data) {
+    const after = revealDelta(before);
+    const changed = after.revealing || (data && data.removed);
+    return {ok: true, message: changed ? `${message}; ${after.note}` : message,
+      outline: after.revealing ? after.added.join('\n') : undefined, data: {...data, changed: !!changed, added: after.added}};
+  }
+  // Answer a hover: what the pointer is over once it has rested there, and
+  // what the hover revealed.
+  function hovered(x, y, before) {
+    const hit = topmost(x, y);
+    if (!hit) return gestureResult(before, `Nothing at ${x}, ${y}`, {x, y, hover: null, changed: false});
+    const target = targetAt(hit);
+    const data = {x, y, hover: describe(hit), element: describe(hit)};
+    if (target) Object.assign(data, {ref: refOf(target), target: summary(target)});
+    const where = target ? `${summary(target)} [ref=${data.ref}]` : describe(hit);
+    return gestureResult(before, `Hovering ${where}`, data);
+  }
+  // The pointer reached the element it was sent to; the page's own hover
+  // styles and handlers do the rest.
+  function hoveredAt(element, x, y, before) {
+    const hit = topmost(x, y);
+    if (element && !within(hit, resolve(element)))
+      return gestureResult(before, `${element} is covered by ${describe(hit)}`, {x, y, hover: describe(hit), obscured: true});
+    return hovered(x, y, before);
+  }
+
+  // The source a drag starts from: the element's own viewport point and the
+  // element itself, or nothing when the drag names only two points.
+  function dragEnd(ref, x, y, verb) {
+    const end = landing(ref, x, y, verb);
+    return {x: end.x, y: end.y, element: end.element};
+  }
+
   return {
     nativeTextInputElement, configureNativeTextEditor,
     run(command) {
       try {
         if (!doc) doc = command.doc;
+        // A gesture that spans two engine steps: read what is about to
+        // change, let the pointer do its work, then answer with the change.
+        if (command.action === 'gesture_begin') gestureBefore = {lines: outlineLines().lines, reveals: new Map()};
+        if (command.action === 'gesture_end') {
+          const before = gestureBefore || {lines: [], reveals: new Map()};
+          gestureBefore = null;
+          if (command.kind === 'hover') return hoveredAt(command.element, command.x, command.y, before);
+          return gestureResult(before, command.message || (command.kind === 'path' ? 'Drew the pointer path' : 'Dragged'), {});
+        }
         switch (command.action) {
           case 'prepare_text_input': case 'start_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input': case 'undo_text_input': case 'redo_text_input':
             return guardedTextInput(command);
@@ -951,6 +1155,41 @@ globalThis.__tiloPage ||= (() => {
           case 'submit': return submit(command.element, command.cross_origin);
           case 'focus': return focus(command.element, command.key, command.cross_origin);
           case 'reader': return reader(command.enabled === true);
+          // The engine moves the pointer to a point computed here.
+          case 'hover': {
+            const end = landing(command.element, command.x, command.y, 'hover');
+            return {x: end.x, y: end.y};
+          }
+          // The engine presses at one end, moves and releases at the other.
+          case 'drag': {
+            const from = dragEnd(command.element, command.x, command.y, 'drag');
+            const to = dragEnd(command.to, command.to_x, command.to_y, 'drop on');
+            return {x: from.x, y: from.y, to_x: to.x, to_y: to.y};
+          }
+          // A drag the native path could not complete, replayed as drag
+          // events between the same two ends.
+          case 'drag_fallback': {
+            const from = dragEnd(command.element, command.x, command.y, 'drag');
+            const to = dragEnd(command.to, command.to_x, command.to_y, 'drop on');
+            const target = topmost(to.x, to.y) || document.body;
+            const report = syntheticDrag({x: to.x, y: to.y, element: from.element}, target);
+            const said = `Dragged ${from.element ? describe(from.element) : 'the pointer'} to ${describe(target)}`;
+            if (!report.accepted)
+              return gestureResult(gestureBefore, `Dropped on ${describe(target)}, which received no drop`, {...report});
+            return gestureResult(gestureBefore, said, {...report, from: describe(from.element), to: describe(target)});
+          }
+          // A contact path for the engine's pointer, in viewport pixels.
+          case 'path': {
+            const {points} = contactPath(command.element, command.points || []);
+            return {points, message: `Drawing ${points.length} points on ${command.element}`};
+          }
+          // A contact path the engine cannot send, replayed as pointer events.
+          case 'path_fallback': {
+            const element = resolve(command.element);
+            const box = element.getBoundingClientRect();
+            for (const [x, y] of command.points || []) pointerEvent(element, 'pointermove', box.left + x, box.top + y);
+            return {message: `Drew ${(command.points || []).length} points on ${command.element}`};
+          }
         }
         return failure('invalid_request', 'Unknown page action');
       } catch (error) {
