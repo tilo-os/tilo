@@ -2,11 +2,14 @@
 use std::collections::BTreeMap;
 use ui::icons::Icon;
 use ui::tokens::TextRole;
-use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
-use ui::widget::{Button, Column, Container, EmptyState, ListRow, Row, Text, Widget};
+use ui::webview::{JsDialogKind, SharedEngine, WebViewCommand, WebViewEvent};
+use ui::widget::{Button, Column, Container, EmptyState, ListRow, Row, Text, TextInput, Widget};
 
 pub struct Capabilities {
     permissions: BTreeMap<u32, (String, String)>,
+    /// The page's open JavaScript dialog, which the person answers in the
+    /// same place a site's permission question appears.
+    dialog: Option<PageDialog>,
     // Native events are drained on the UI thread. Tabs share this UI model;
     // background download workers communicate through the engine protocol.
     downloads: std::rc::Rc<std::cell::RefCell<DownloadStore>>,
@@ -17,11 +20,20 @@ impl Default for Capabilities {
     fn default() -> Self {
         Self {
             permissions: BTreeMap::new(),
+            dialog: None,
             downloads: std::rc::Rc::default(),
             observed_download_version: 0,
             notice: ui::LocalState::new(String::new()),
         }
     }
+}
+
+/// A page's open `alert`, `confirm`, `prompt` or before-unload question.
+struct PageDialog {
+    id: u32,
+    kind: JsDialogKind,
+    message: String,
+    answer: ui::LocalState<String>,
 }
 
 struct DownloadStore {
@@ -47,6 +59,57 @@ impl Default for DownloadStore {
             terminal_notice: String::new(),
             version: 0,
         }
+    }
+}
+
+impl PageDialog {
+    fn answer_accept(&self, engine: &SharedEngine, accept: bool) {
+        engine.send(WebViewCommand::JsDialogDecision {
+            id: self.id,
+            accept,
+            text: self.answer.get(),
+        });
+    }
+    /// The question the page asks, the field a prompt needs first, and the
+    /// two answers that fit that kind of dialog.
+    fn prompt(&self, engine: &SharedEngine) -> Box<dyn Widget> {
+        let title = format!("This page asks: {}", self.message);
+        let mut column = Column::new()
+            .with_intrinsic_height()
+            .push(Box::new(Text::new(&title).with_role(TextRole::Body)));
+        if self.kind == JsDialogKind::Prompt {
+            column = column.push(Box::new(
+                TextInput::from_state(&self.answer).with_id("browser.dialog.answer"),
+            ));
+        }
+        let (accept, decline) = match self.kind {
+            JsDialogKind::Alert => ("OK", "Close"),
+            JsDialogKind::BeforeUnload => ("Leave page", "Stay on page"),
+            JsDialogKind::Confirm | JsDialogKind::Prompt => ("OK", "Cancel"),
+        };
+        let mut row = Row::new();
+        for (label, allow) in [(accept, true), (decline, false)] {
+            let engine = engine.clone();
+            let answer = self.answer.clone();
+            let id = self.id;
+            row = row.push(Box::new(
+                Button::new(&format!("browser.dialog.{id}.{allow}"), label)
+                    .control_size(ui::widget::ControlSize::Regular)
+                    .on_effect(move || {
+                        engine.send(WebViewCommand::JsDialogDecision {
+                            id,
+                            accept: allow,
+                            text: answer.get(),
+                        });
+                    }),
+            ));
+        }
+        column = column.push(Box::new(row));
+        Box::new(
+            Container::new()
+                .with_background()
+                .with_child(Box::new(column)),
+        )
     }
 }
 
@@ -168,6 +231,26 @@ impl Capabilities {
             WebViewEvent::PermissionClosed { id } => {
                 self.permissions.remove(&id);
             }
+            WebViewEvent::JsDialog {
+                id,
+                kind,
+                message,
+                default_prompt,
+                ..
+            } => {
+                let answer = ui::LocalState::new(default_prompt);
+                self.dialog = Some(PageDialog {
+                    id,
+                    kind,
+                    message,
+                    answer,
+                });
+            }
+            WebViewEvent::JsDialogClosed { id } => {
+                if self.dialog.as_ref().is_some_and(|dialog| dialog.id == id) {
+                    self.dialog = None;
+                }
+            }
             WebViewEvent::NativeDownloadRequested { id, url, name } => {
                 self.request_download(id, url, name);
             }
@@ -279,6 +362,9 @@ impl Capabilities {
         }
     }
     pub fn prompt(&self, engine: &SharedEngine) -> Option<Box<dyn Widget>> {
+        if let Some(dialog) = &self.dialog {
+            return Some(dialog.prompt(engine));
+        }
         let downloads = self.downloads.borrow();
         let (id, title, permission) =
             if let Some((&id, (origin, rights))) = self.permissions.first_key_value() {
@@ -330,11 +416,17 @@ impl Capabilities {
     /// Whether the question on offer is a site's permission request, rather
     /// than a file the page offers.
     pub fn prompt_is_permission(&self) -> bool {
-        !self.permissions.is_empty()
+        self.dialog.is_none() && !self.permissions.is_empty()
+    }
+    /// Whether the page is waiting on one of its dialogs.
+    pub fn page_dialog_open(&self) -> bool {
+        self.dialog.is_some()
     }
     /// Answer the question on offer with no: the person dismissed it.
     pub fn decline_prompt(&self, engine: &SharedEngine) {
-        if let Some((&id, _)) = self.permissions.first_key_value() {
+        if let Some(dialog) = &self.dialog {
+            dialog.answer_accept(engine, false);
+        } else if let Some((&id, _)) = self.permissions.first_key_value() {
             engine.send(WebViewCommand::PermissionDecision { id, allow: false });
         } else if let Some((&id, _)) = self.downloads.borrow().prompts.first_key_value() {
             engine.send(WebViewCommand::DownloadDecision { id, allow: false });

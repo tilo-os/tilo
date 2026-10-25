@@ -207,17 +207,28 @@ impl PageKey {
                     type-page."
                 .to_string();
         }
-        let text = if chord.ends_with("++") {
+        let prompted = "press-page presses one key or chord, such as Enter, Tab, \
+                        Escape, ArrowDown or Control+a; type-page types text into the \
+                        page.";
+        // `Control++` names the plus key. Any other chord is its last part:
+        // `Control+ab` types `ab`.
+        let text = if trimmed.ends_with("++") && trimmed.chars().filter(|c| *c == '+').count() == 2
+        {
             "+"
         } else {
-            chord.rsplit('+').next().unwrap_or(chord)
+            trimmed.rsplit('+').next().unwrap_or(trimmed)
         };
         let letters = text.chars().count();
-        if letters > 1 && !NAMED_KEYS.contains(&text) && text != "Space" {
+        let known = NAMED_KEYS.contains(&text) || text == "Space";
+        if letters > 1 && !known {
+            let typed = if text == trimmed {
+                String::new()
+            } else {
+                format!("types `{text}`, and ")
+            };
             return format!(
-                "`{trimmed}` is {letters} characters, so it is text rather than a key. \
-                 press-page presses one key or chord, such as Enter, Tab, Escape, \
-                 ArrowDown or Control+a; type-page types text into the page."
+                "`{trimmed}` is not a key press: it {typed}is {letters} characters, so it \
+                 is text rather than a key. {prompted}"
             );
         }
         format!(
@@ -450,6 +461,27 @@ mod tests {
             for bad in ["", "Enterr", "Hyper+a", "Shift+Shift+a", "ab", "Control+"] {
                 assert!(PageKey::parse(bad).is_none(), "{bad}");
             }
+        }
+        // phase: a_refused_key_says_whether_it_is_text_or_no_key_at_all
+        {
+            assert!(PageKey::reject("").contains("No key was named"));
+            for (chord, said) in [
+                ("Grace", "is 5 characters"),
+                ("business plan", "is 13 characters"),
+                ("Control+ab", "types `ab`, and is 2 characters"),
+            ] {
+                let message = PageKey::reject(chord);
+                assert!(message.contains(said), "{chord}: {message}");
+                assert!(message.contains("type-page"), "{chord}: {message}");
+            }
+            for chord in ["Hyper+a", "Shift+Shift+a", "Control+"] {
+                let message = PageKey::reject(chord);
+                assert!(!message.contains("characters"), "{chord}: {message}");
+                assert!(message.contains("not a key press"), "{chord}: {message}");
+            }
+            // A named key and a chord never look like text.
+            assert!(PageKey::reject("Shift+Tab").contains("not a key press"));
+            assert!(PageKey::reject("Space").contains("not a key press"));
         }
         // phase: invalid_requests_are_refused_before_the_engine
         {

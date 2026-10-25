@@ -5,7 +5,7 @@
 [ceilings]
 "apps/agent/src/model.rs" = 3500
 "apps/agent/src/session/agent_loop.rs" = 6000
-"apps/browser/src/browser_widget.rs" = 11000
+"apps/browser/src/browser_widget.rs" = 10500
 "apps/calculator/src/app.rs" = 3500
 "apps/calendar/src/app.rs" = 5500
 "apps/calendar/src/app/tests.rs" = 4000

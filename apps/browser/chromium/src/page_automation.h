@@ -103,7 +103,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,std::string message,int request,uint64_t token) {
       if(!self->browser_ || !self->typing_ || self->token_!=token) return;
       self->typing_=false;
-      self->Reply(request,TypeFailure(message.empty()?"Typed in the page":message));
+      self->Reply(request,self->TypeFailure(message.empty()?"Typed in the page":message));
     },CefRefPtr<PageAutomation>(this),message,request,token_),kSettleMs);
   }
 
