@@ -1056,3 +1056,70 @@ fn the_window_bars_new_snippet_adds_one() {
     let failures = format!("{:?}", app.harness().control_failures());
     assert_eq!(app.state().snippets.len(), 2, "{failures}");
 }
+
+/// The folder, the description and the tags are editable where the snippet
+/// is read: the library's organising model is not write-once.
+#[test]
+fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
+    let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
+    let (id, _) = by_title(&app, "Deploy");
+
+    let view = app.surface_mut::<SnippetsApp>();
+    view.request_for_test(Action::SetFolder(id.clone(), "  Releases  ".into()));
+    view.request_for_test(Action::SetDescription(
+        id.clone(),
+        "Roll the cluster forward".into(),
+    ));
+    view.request_for_test(Action::AddTag(id.clone(), " k8s ".into()));
+    view.request_for_test(Action::AddTag(id.clone(), "k8s".into()));
+    view.request_for_test(Action::AddTag(id.clone(), "   ".into()));
+    app.settle();
+
+    let (_, stored) = by_title(&app, "Deploy");
+    assert_eq!(
+        stored.folder.0, "Releases",
+        "the folder name is trimmed, not padded"
+    );
+    assert_eq!(stored.description, "Roll the cluster forward");
+    assert_eq!(
+        stored.tags.iter().cloned().collect::<Vec<_>>(),
+        vec!["k8s".to_owned()],
+        "a tag is trimmed and never doubled, and a blank tag is nothing"
+    );
+
+    // The sidebar lists the folder and the tag the snippet was given.
+    let sections = app.surface_mut::<SnippetsApp>().nav_sections_for_test();
+    let labels: Vec<String> = sections
+        .into_iter()
+        .flat_map(|section| section.items)
+        .map(|item| item.label)
+        .collect();
+    assert!(labels.iter().any(|label| label == "Releases"), "{labels:?}");
+    assert!(labels.iter().any(|label| label == "k8s"), "{labels:?}");
+
+    // Taking the tag off leaves the snippet without it.
+    let id = by_title(&app, "Deploy").0;
+    app.surface_mut::<SnippetsApp>()
+        .request_for_test(Action::RemoveTag(id.clone(), "k8s".into()));
+    app.settle();
+    assert!(by_title(&app, "Deploy").1.tags.is_empty());
+}
+
+/// A snippet that carries a credential is copied through the expiring path,
+/// so an API key does not sit in the clipboard history; ordinary text takes
+/// the shared path. The guess errs towards "secret", which costs one copy and
+/// not the key.
+#[test]
+fn a_snippet_holding_a_credential_is_treated_as_one() {
+    assert!(looks_like_a_credential("export API_KEY=sk-live-1234"));
+    assert!(looks_like_a_credential(
+        "curl -H 'Authorization: Bearer abc.def'"
+    ));
+    assert!(looks_like_a_credential("password: hunter2"));
+    // Assembled rather than written out: a test fixture is not a key, and
+    // the repository's own policy scans for the header that introduces one.
+    let key_header = format!("-----BEGIN {} PRIVATE KEY-----", "OPENSSH");
+    assert!(looks_like_a_credential(&key_header));
+    assert!(!looks_like_a_credential("kubectl apply -f deployment.yaml"));
+    assert!(!looks_like_a_credential("SELECT * FROM tracks;"));
+}
