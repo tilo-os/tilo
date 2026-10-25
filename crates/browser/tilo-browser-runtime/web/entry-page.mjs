@@ -34,7 +34,7 @@ import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneRooms, HostAdmissionError,
   hostDeviceOf, hostToReconnect, isPublicHome, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, leaveOnWaitList, listedWorkspaces,
-  doorPresence, joinWhenSeated, membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
+  doorPresence, joinWhenSeated, membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
   settleFailedRoom, spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
@@ -717,6 +717,7 @@ export async function startEntryPage({mode}) {
       if (known?.name && !workspaceName) workspaceName = known.name;
     },
     mountDesktop,
+    ownDesktopOpen: home => ownDesktopOpen(home),
     enterViaHost: async ({workspace, room}) => {
       reportErrors(workspace.admission);
       workspaceName = workspace.name || workspaceName;
@@ -734,7 +735,11 @@ export async function startEntryPage({mode}) {
         // A page that came back here by itself because the host turned it
         // away (session-refusal.mjs) joins under the name it went by.
         displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? rejoinedName() ?? defaultDisplayName(identity?.userPublicKey ?? kept?.userPublicKey);
-        const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode});
+        const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode,
+          onProgress: event => {
+            if (event.phase === 'reconnecting') status.textContent = RECONNECTING;
+            else if (event.phase === 'admitted' && status.textContent === RECONNECTING) status.textContent = loading;
+          }});
         entered = 'joined';
         return peer;
       } catch (error) {
@@ -967,7 +972,8 @@ export async function startEntryPage({mode}) {
           const known = remembering(() => rememberedRoom(here));
           if (known) void settleRoom(known, runtime);
           if (embed) return;
-          const own = await card(refusalText(code, workspaceName), [['Open your own desktop', true]]);
+          const own = await card(refusalText(code, workspaceName),
+            await ownDesktopAllowed(page.entry?.home) ? [['Open your own desktop', true]] : []);
           if (!own) return;
           await closeRoom(page);
           loadPage(page.link.format({mode: 'desktop', target: {scope: {kind: 'own'}}}));
@@ -1051,12 +1057,14 @@ export async function startEntryPage({mode}) {
         status.textContent = `${known.name ?? 'This workspace'} did not let this browser in. You may have been removed from it, or it no longer exists.`;
       }
     }
-    if (!embed && mode === 'desktop' && admitting) {
+    // The door of a room taking people by invitation is a page of its own,
+    // with its own ways in: nothing else is offered over it.
+    if (!embed && mode === 'desktop' && admitting && error?.code !== 'invitation-only') {
       const refused = document.documentElement.dataset.entry === 'refused';
       void offerOtherWorkspaces({...admitting, runtime}).then(offered => {
         // Nothing to try again and nowhere else of theirs to go: the
-        // person's own desktop is always there.
-        if (!offered && refused) offerOwnDesktop({...admitting, runtime});
+        // person's own desktop, where they have one.
+        if (!offered && refused) void offerOwnDesktop({...admitting, runtime});
       });
     }
     // Turned away at the door of a room taking people by invitation: its
@@ -1175,6 +1183,14 @@ async function offerUpdate({page, status}) {
   location.reload();
 }
 
+/** Whether this page may offer the person's own desktop under `home`
+ * (`ownDesktopOpen`), asked once per page. */
+let ownDesktopGate = null;
+const ownDesktopAllowed = home => (ownDesktopGate ??= ownDesktopOpen(home).catch(() => false));
+
+/** Said while the page asks a host that refused it again, later each time. */
+const RECONNECTING = 'Reconnecting…';
+
 /** Set for the one reload after signing in at the door, to the person
  * signed in as: refused again, the door says that identity is not in yet. */
 const DOOR_SIGNED_IN = 'tilo-door-signed-in';
@@ -1187,8 +1203,10 @@ const DOOR_SIGNED_IN = 'tilo-door-signed-in';
  * `named` and asks for the invite link someone sends. Under either: signing
  * in with an identity the person already has (a passkey, then the page
  * loads again and joins as them, and a member gets in), and the field to
- * paste an invite link into, opened in this tab. Their own desktop waits at
- * the foot of the page (`offerOwnDesktop`).
+ * paste an invite link into, opened in this tab. Where the person has a
+ * desktop of their own without an invitation (`ownDesktopAllowed`), it waits
+ * at the foot of the page (`offerOwnDesktop`); while the home takes people
+ * by invitation only, nothing does.
  */
 function offerDoor({messages, named, error, workspace}) {
   const door = document.getElementById('arrival-door');
@@ -1204,8 +1222,11 @@ function offerDoor({messages, named, error, workspace}) {
   document.getElementById('arrival-door-body').textContent = copy.body;
   const own = document.getElementById('arrival-own');
   if (own) {
-    own.textContent = say('arrival-door-own', 'Or try Tilo on your own');
-    door.querySelector('.door-foot')?.append(own);
+    void ownDesktopAllowed(workspace).then(open => {
+      if (!open) return;
+      own.textContent = say('arrival-door-own', 'Or try Tilo on your own');
+      door.querySelector('.door-foot')?.append(own);
+    });
   }
   if (waitList) offerWaitList({workspace, contact: error.door.contact, messages});
   offerSignIn({workspace, named, messages});
@@ -1348,10 +1369,11 @@ function offerSignIn({workspace, named, messages}) {
 }
 
 /** The page's own-desktop button (index.html), shown on a refusal: it opens
- * the person's own desktop under this entry. */
-function offerOwnDesktop({entry, runtime}) {
+ * the person's own desktop under this entry, where the person has one
+ * (`ownDesktopAllowed`). */
+async function offerOwnDesktop({entry, runtime}) {
   const button = document.getElementById('arrival-own');
-  if (!button) return;
+  if (!button || !await ownDesktopAllowed(entry?.home)) return;
   let url;
   try {
     url = grammar(runtime, entry).format({mode: 'desktop', target: {scope: {kind: 'own'}}});

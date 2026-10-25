@@ -240,6 +240,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   deps.onScope?.({scope: route.target.scope, entry});
   const {peer} = await admit({
     scope: route.target.scope, secrets, tickets: entry.tickets,
+    home: entry.home ? workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home : null,
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
     onProgress: event => {
       onStep('join');

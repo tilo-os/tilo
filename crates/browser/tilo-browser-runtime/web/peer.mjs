@@ -121,6 +121,24 @@ function keepProfileDevice(profile, slot, device, namespaces) {
   all[forSlot(profile, slot)] = device;
   namespaces?.setItem(PROFILE_DEVICES, JSON.stringify(all));
 }
+/**
+ * Replace the device key `custody` holds for `profile` with a new one, in a
+ * namespace of its own: a new device of the same person. For a key a host
+ * knows under a certificate this browser no longer holds, which that host
+ * never admits again under another. What was kept for the old key stays in
+ * its namespace, never opened for the new one. Resolves to the new custody.
+ */
+export async function renewDevice(custody, profile, {
+  open = name => openDeviceCustody({profile: name, storage: idbStorage()}), namespaces = globalThis.localStorage,
+  random = bytes => crypto.getRandomValues(bytes),
+} = {}) {
+  await custody.destroy();
+  const renewed = await open(profile);
+  // Another tab may have taken the freed slot meanwhile: a key that is not
+  // new keeps the namespace it has.
+  if (renewed.created) keepProfileDevice(profile, renewed.slot ?? 0, forSlot(`${PROFILE_DEVICE}:${hexKey(random(new Uint8Array(16)))}`, renewed.slot ?? 0), namespaces);
+  return renewed;
+}
 /** The namespace a profile's slot keeps a host's state in once that host
  * replaced the one it kept state for: named after the host's device key, so
  * it never shares a record with another host's. */

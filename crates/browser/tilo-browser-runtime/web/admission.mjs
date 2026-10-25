@@ -1,7 +1,8 @@
 /**
  * Getting into the room a link names, before anything about its target is
  * read. In order:
- * 1. the person's own room (`/me`) is this browser's own profile: no peer;
+ * 1. the person's own room (`/me`) is this browser's own profile: no peer,
+ *    once the home's door would let this browser in (`ownDesktop`);
  * 2. an invitation is inspected (what the host verified: workspace, role,
  *    inviter), confirmed by the person, then redeemed; a pre-admission
  *    `token` admits at once, otherwise the owner admits while the page waits;
@@ -59,11 +60,24 @@ async function viaHost({workspace, room, deps, onProgress}) {
   return ready(peer);
 }
 
-export async function admit({scope, secrets = {}, tickets, deps, onProgress = () => {}}) {
+/** The person's own desktop: no peer. Where the entry's `home` lets only
+ * some in (`deps.ownDesktopOpen`), a browser no host let in is sent to the
+ * home's door instead, which says how to get in; one the door lets in has
+ * a desktop of its own from then on. Watching the home for want of a seat
+ * lets nobody in. */
+async function ownDesktop({home, deps, onProgress}) {
+  if (!home?.admission || !deps.ownDesktopOpen || await deps.ownDesktopOpen(home)) return {peer: null};
+  const {peer} = await viaHost({workspace: home, deps, onProgress});
+  await peer?.dispose?.();
+  if (!await deps.ownDesktopOpen(home)) throw new AdmissionError('no-access', NO_ACCESS);
+  return {peer: null};
+}
+
+export async function admit({scope, secrets = {}, tickets, home = null, deps, onProgress = () => {}}) {
   if (secrets.malformed) {
     throw new AdmissionError('malformed', 'This link’s invitation is damaged, so Tilo did not use it');
   }
-  if (scope.kind === 'own') return {peer: null};
+  if (scope.kind === 'own') return ownDesktop({home, deps, onProgress});
   const {host: origin, room} = scope;
   const listed = deps.workspaceAt?.(origin) ?? null;
   if (!room) {
