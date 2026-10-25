@@ -241,9 +241,24 @@ fn manager_id() -> Option<u64> {
     MANAGER.with(|manager| manager.borrow().as_ref().map(|manager| manager.id))
 }
 
+/// The markers a pseudo-localised string is wrapped in. They are what makes
+/// the copy findable in a frame at a glance, so exactly one pair may surround
+/// any string.
+const PSEUDO_OPEN: char = '⟦';
+const PSEUDO_CLOSE: char = '⟧';
+
 fn pseudo_expand(value: &str) -> String {
+    // Copy reaches the screen localised more than once in places: a section
+    // header composed from two already-localised fragments, a title set from a
+    // string that was translated on its way in. Expanding that again renders
+    // `⟦⟦Wíí-Fíí⟧⟧`, and the review then counts a doubling that is an artefact
+    // of the transform rather than a string that is too long. Expansion is
+    // therefore idempotent: one pair of markers, wherever the copy came from.
+    if value.starts_with(PSEUDO_OPEN) && value.ends_with(PSEUDO_CLOSE) && value.len() > 2 {
+        return value.to_owned();
+    }
     let mut expanded = String::with_capacity(value.len().saturating_mul(2).saturating_add(4));
-    expanded.push('⟦');
+    expanded.push(PSEUDO_OPEN);
     for ch in value.chars() {
         let replacement = match ch {
             'a' => "áa",
@@ -265,7 +280,7 @@ fn pseudo_expand(value: &str) -> String {
         };
         expanded.push_str(replacement);
     }
-    expanded.push('⟧');
+    expanded.push(PSEUDO_CLOSE);
     expanded
 }
 
@@ -1582,6 +1597,20 @@ mod tests {
         assert_eq!(items(), "21 item");
         I18nManager::set_locale("xx-ZZ");
         assert_eq!(items(), "21 items");
+    }
+
+    #[test]
+    fn pseudo_locale_expansion_is_idempotent() {
+        // Copy that is localised twice must still carry one pair of markers:
+        // the doubling a reviewer sees is the string, not the transform
+        // (`T3` in the UX audit).
+        let once = pseudo_expand("Wi-Fi");
+        assert_eq!(pseudo_expand(&once), once);
+        assert_eq!(once.matches(PSEUDO_OPEN).count(), 1);
+        assert_eq!(once.matches(PSEUDO_CLOSE).count(), 1);
+        // A string that merely starts and ends with the markers is left alone
+        // rather than wrapped a second time.
+        assert_eq!(pseudo_expand("⟦⟧"), "⟦⟧");
     }
 
     #[test]
