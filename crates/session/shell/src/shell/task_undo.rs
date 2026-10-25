@@ -33,18 +33,23 @@ const RUN: &str = "run";
 /// Undo task `task`'s run in each document `steps` names (app and record),
 /// through `host` as `caller`.
 ///
+/// Answers one [`DocumentUndo`] per document the run changed, in the order
+/// `steps` names them, so the task's view can say which records came back
+/// and which did not — a record nobody reverted is reported, never dropped.
+///
 /// # Errors
 /// Nothing was undone: no document the run changed is open, or each refused
 /// (it had nothing of the run left in effect, or the person may not change
 /// it). A run undone in some documents but not others is reported as done
-/// with what failed logged; its record stays, so it can be asked again.
+/// with the ones that were not; their records stay, so they can be asked
+/// again.
 pub(crate) fn undo_task_run(
     host: &(dyn ActionHost + Send + Sync),
     caller: &Caller,
     task: &str,
     steps: &[(String, String)],
     timeout: Duration,
-) -> Result<usize, String> {
+) -> Result<Vec<DocumentUndo>, String> {
     let now = Instant::now();
     let deadline = now.checked_add(timeout).unwrap_or(now);
     let providers = ask(
@@ -64,14 +69,21 @@ pub(crate) fn undo_task_run(
     }
     let mut undone: usize = 0;
     let mut refused = Vec::new();
-    for provider in targets {
-        let Some(address) = undo_address(host, caller, &provider.provider, deadline) else {
-            refused.push(format!("{} has no history to undo", provider.app_id));
+    for target in &targets {
+        let Some(address) = undo_address(host, caller, &target.provider.provider, deadline) else {
+            refused.push(format!("{} has no history to undo", target.provider.app_id));
             continue;
         };
-        match invoke(host, caller, &provider.provider, address, task, deadline) {
+        match invoke(
+            host,
+            caller,
+            &target.provider.provider,
+            address,
+            task,
+            deadline,
+        ) {
             Ok(()) => undone = undone.saturating_add(1),
-            Err(error) => refused.push(format!("{}: {error}", provider.app_id)),
+            Err(error) => refused.push(format!("{}: {error}", target.provider.app_id)),
         }
     }
     if undone == 0 {
@@ -80,8 +92,18 @@ pub(crate) fn undo_task_run(
     if !refused.is_empty() {
         tracing::warn!(task, refused = %refused.join("; "), "a task's run was undone only in part");
     }
-    Ok(undone)
+    Ok(targets.into_iter().map(|target| target.outcome).collect())
 }
+
+/// One document the task's run changed, and the publisher that served it.
+struct UndoTarget {
+    provider: CatalogueProvider,
+    /// The step as the run recorded it, which the outcome is reported under.
+    outcome: DocumentUndo,
+}
+
+/// What undoing a task did to one of the records it changed.
+pub(crate) type DocumentUndo = tilo_desktop::activity::TaskRunDocument;
 
 /// The live publishers of the documents `steps` names in `room`: a step's
 /// record where its app publishes it, else every open document of that app
@@ -90,11 +112,11 @@ fn undo_targets(
     providers: &[CatalogueProvider],
     room: &str,
     steps: &[(String, String)],
-) -> Vec<CatalogueProvider> {
+) -> Vec<UndoTarget> {
     let live = |provider: &&CatalogueProvider| {
         provider.room == room && provider.provider.parse::<u64>().is_ok()
     };
-    let mut targets: Vec<CatalogueProvider> = Vec::new();
+    let mut targets: Vec<UndoTarget> = Vec::new();
     for (app, record) in steps {
         let of_app: Vec<&CatalogueProvider> = providers
             .iter()
@@ -107,12 +129,19 @@ fn undo_targets(
             .filter(|provider| !record.is_empty() && &provider.record_id == record)
             .collect();
         for provider in if exact.is_empty() { of_app } else { exact } {
-            if !targets
+            if targets
                 .iter()
-                .any(|known| known.provider == provider.provider)
+                .any(|known| known.provider.provider == provider.provider)
             {
-                targets.push(provider.clone());
+                continue;
             }
+            targets.push(UndoTarget {
+                provider: provider.clone(),
+                outcome: DocumentUndo {
+                    app: app.clone(),
+                    record: record.clone(),
+                },
+            });
         }
     }
     targets
@@ -216,12 +245,12 @@ pub(crate) struct TaskUndos {
 }
 
 /// Each undo by its request: `None` while it runs, then how it ended.
-type Outcomes = std::collections::BTreeMap<uuid::Uuid, Option<Result<(), String>>>;
+type Outcomes = std::collections::BTreeMap<uuid::Uuid, Option<Result<Vec<DocumentUndo>, String>>>;
 
 /// Where one undo is.
 pub(crate) enum UndoState {
     Running,
-    Ended(Result<(), String>),
+    Ended(Result<Vec<DocumentUndo>, String>),
 }
 
 /// How many undo outcomes are kept for the pane to poll.
@@ -272,7 +301,8 @@ impl TaskUndos {
                     undo_task_run(host.as_ref(), &caller, &task, &steps, UNDO_TIMEOUT)
                 })
                 .map(|undone| {
-                    tracing::info!(task, undone, "undid a task's run");
+                    tracing::info!(task, documents = undone.len(), "undid a task's run");
+                    undone
                 });
                 if let Ok(mut results) = results.lock() {
                     results.insert(invocation, Some(outcome));

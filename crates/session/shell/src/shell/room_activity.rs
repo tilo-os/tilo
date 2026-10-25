@@ -1016,7 +1016,10 @@ impl ActivityHost for NativeActivityHost {
         self.undos
             .start(broker, undo.room, undo.invocation, undo.task_id, undo.steps)
     }
-    fn poll_task_run_undo(&self, invocation: uuid::Uuid) -> Option<Result<(), String>> {
+    fn poll_task_run_undo(
+        &self,
+        invocation: uuid::Uuid,
+    ) -> Option<Result<Vec<tilo_desktop::activity::TaskRunDocument>, String>> {
         match self.undos.poll(invocation)? {
             super::task_undo::UndoState::Running => None,
             super::task_undo::UndoState::Ended(outcome) => Some(outcome),
