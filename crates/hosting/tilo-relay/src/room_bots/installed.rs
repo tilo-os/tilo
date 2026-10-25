@@ -886,6 +886,12 @@ const ROOM_APP: &str = "so.tilo.desktop";
 /// `entry` is a program file on this host, or a directory entry fetched
 /// and verified from the first enabled registry at the `version` input.
 ///
+/// A kept installation from a program file runs the file as it is now: the
+/// host's image ships the program, and a fix to it (a grant the bot was
+/// missing) reaches a room installed by an older image. The installation,
+/// its name, its inputs and when it was installed stay; [`super::membership::keep_member`]
+/// then updates the room's row to the new program and its grants.
+///
 /// # Errors
 /// The program cannot be read, fetched, verified or parsed, or the
 /// installation cannot be kept.
@@ -895,22 +901,27 @@ pub async fn install(
     mut inputs: Map<String, Value>,
 ) -> Result<InstalledBot, String> {
     let kept = dir.join("bot.json");
+    let file = Path::new(entry).is_file().then(|| program_file(entry));
     if let Ok(bytes) = std::fs::read(&kept) {
-        let bot: InstalledBot = serde_json::from_slice(&bytes)
+        let mut bot: InstalledBot = serde_json::from_slice(&bytes)
             .map_err(|error| format!("{}: {error}", kept.display()))?;
         if bot.entry == entry {
+            let Some(file) = file else {
+                return Ok(bot);
+            };
+            // The name stays: the bot's device certificate carries it, and
+            // a renewal keeps the same certificate.
+            let (_, program) = file?;
+            if bot.program != program {
+                bot.program = program;
+                keep_installed(dir, &kept, &bot)?;
+            }
             return Ok(bot);
         }
     }
     let version = inputs.remove("version");
-    let (name, program) = if Path::new(entry).is_file() {
-        let bytes = std::fs::read(entry).map_err(|error| format!("{entry}: {error}"))?;
-        let shortcut = tilo_automation::program::parse_program(&bytes)
-            .map_err(|error| format!("{entry}: {error}"))?;
-        let canonical = tilo_automation::program::canonical_bytes(&shortcut)
-            .map_err(|error| error.to_string())?;
-        let text = String::from_utf8(canonical).map_err(|error| error.to_string())?;
-        (shortcut.name, text)
+    let (name, program) = if let Some(file) = file {
+        file?
     } else {
         let version = version
             .as_ref()
@@ -944,10 +955,25 @@ pub async fn install(
         inputs,
         installed_at_ms: tilo_clock::unix_now_ms_i64(),
     };
-    std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-    let bytes = serde_json::to_vec_pretty(&bot).map_err(|error| error.to_string())?;
-    tilo_files::native::atomic::write(&kept, &bytes).map_err(|error| error.to_string())?;
+    keep_installed(dir, &kept, &bot)?;
     Ok(bot)
+}
+
+/// The name and canonical program text of the program file `entry`.
+fn program_file(entry: &str) -> Result<(String, String), String> {
+    let bytes = std::fs::read(entry).map_err(|error| format!("{entry}: {error}"))?;
+    let shortcut = tilo_automation::program::parse_program(&bytes)
+        .map_err(|error| format!("{entry}: {error}"))?;
+    let canonical =
+        tilo_automation::program::canonical_bytes(&shortcut).map_err(|error| error.to_string())?;
+    let text = String::from_utf8(canonical).map_err(|error| error.to_string())?;
+    Ok((shortcut.name, text))
+}
+
+fn keep_installed(dir: &Path, kept: &Path, bot: &InstalledBot) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    let bytes = serde_json::to_vec_pretty(bot).map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write(kept, &bytes).map_err(|error| error.to_string())
 }
 
 /// The worker binary of connector `app_id`: the one the operator named,
