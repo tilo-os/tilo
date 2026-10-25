@@ -211,12 +211,16 @@ this tree with throwaway keys into an OCI layout, without credentials.
 
 ## Dev VM disks
 
-`publish-os-dev-<arch>` publishes main's dev image and its disk for one architecture every
-night (and when dispatched: `t dispatch publish-os-dev-<arch> --ref main`) once
-`os-acceptance-<arch>` passed on them: the dev image
+`publish-os-dev-<arch>` publishes main's dev image and its disk for one architecture, the dev
+channel, on main's newest head whenever t has room (and when dispatched: `t dispatch
+publish-os-dev-<arch> --ref main`) once `os-dev-gate-<arch>` passed on them: the dev image
 (os/Containerfile.dev) on the OS image of the same commit, installed onto a 64 GiB
 sparse disk with `os/dev/build-image.sh`, never booted itself (the gates boot overlays
-of it). The OS image goes to `registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>`, a
+of it). The gate is what a dev device needs: the image boots to a greeter that takes input with
+`boot-complete.target` reached, and takes the next update live. A device falls back by itself
+from an image that does not boot, so the heavier `os-acceptance-<arch>` (devices, the desktop's
+journeys, the splash) gates stable releases and runs on main when t has room, without holding
+back the dev channel. The OS image goes to `registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>`, a
 development-only repository that production policy (`os/etc/containers/policy.json`)
 rejects, which `tools/policy/check_dev_image_contract.py` keeps so. Dev images are never
 signed with the OS release authority.

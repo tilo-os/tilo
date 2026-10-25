@@ -209,7 +209,7 @@ and need no login (`tilo-vm guide troubleshooting`).
 
 - `t dispatch publish-os-dev-x86_64 --ref main` (`publish-os-dev-aarch64`
   for an ARM host), or ask someone who may dispatch t: it builds main's dev
-  image, gates it in `os-acceptance-<arch>` and publishes its disk, each
+  image, gates it in `os-dev-gate-<arch>` and publishes its disk, each
   architecture on its own. Its tag ends in `-ci`: it is built on the
   unsigned `tilo-ci` image;
 - or ask a human for a shared VM and use it: `tilo-vm vm use <name>`;
