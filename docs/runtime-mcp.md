@@ -270,7 +270,10 @@ every process and account on the machine can reach a loopback port. Requests
 without the token cannot create, use or delete a session, drive `/watch`, or
 manage viewer invitations. Local assistants can use the owner-only Unix socket
 with `--connect` instead; inside a Tilo login that still selects the desktop's
-agent door, never an accidental standalone daemon:
+agent door, never an accidental standalone daemon. Only the runtime reads
+the token file: no startup line, failure message or diagnostic repeats its
+contents, and the configuration prints the credential as `[redacted]`, so
+a session or tool log gathered while an endpoint runs never names it:
 
 ```sh
 TILO_RUNTIME_MCP_HTTP=0.0.0.0:7391 \
