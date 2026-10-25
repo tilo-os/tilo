@@ -45,6 +45,7 @@ mod idle_host;
 mod invite_join;
 mod live_frames;
 mod member_controls;
+mod no_secret_store;
 mod old_rooms;
 mod own_devices;
 mod sealed_records;
@@ -183,6 +184,9 @@ pub(crate) struct Device {
     /// This device's channel encryption service, and the thread that pumps
     /// its governance, as the session broker's drain does; while online.
     channels: Option<(ChannelKeyAccess, Drain)>,
+    /// Whether a secret store keeps this device's own channel state, as on
+    /// a machine whose session found one.
+    secret_store: bool,
     /// The note's document in each room as the notes app here holds it:
     /// what it wrote and every sealed write it opened.
     notes: Mutex<HashMap<RoomId, automerge::AutoCommit>>,
@@ -301,6 +305,7 @@ impl Device {
             enrollments: Mutex::default(),
             joins: Mutex::default(),
             channels: None,
+            secret_store: true,
             notes: Mutex::default(),
             note_writes: Mutex::default(),
         };
@@ -417,17 +422,36 @@ impl Device {
         self.channels = Some((channels, drain));
     }
 
+    /// Run this device's session with no secret store, as on a machine
+    /// that has none: its channel service keeps no channel state of its own.
+    pub(crate) fn lose_secret_store(&mut self) {
+        drop(self.channels.take().expect("the device is online"));
+        self.secret_store = false;
+        let net = Arc::clone(self.net());
+        let channels = self.open_channels(&net);
+        let drain = Drain::start(&net, channels.clone(), &self.wakes);
+        self.channels = Some((channels, drain));
+    }
+
+    /// Whether this device's channel service has anything for its pump to
+    /// do, now or later.
+    pub(crate) fn channels_live(&self) -> bool {
+        self.channels
+            .as_ref()
+            .is_some_and(|(channels, _)| channels.has_live_channels())
+    }
+
     /// This device's channel state, opened from its directory, as its
-    /// session opens it.
+    /// session opens it: under its secret store's key while it has one.
     fn open_channels(&self, net: &Arc<ShellNetwork>) -> ChannelKeyAccess {
         let mut vault = [0x5A; 32];
         vault[..2].copy_from_slice(&self.salt.to_le_bytes());
         crate::shell::collab_broker::channel_key_access(
-            ChannelEncryptionConfig {
+            self.secret_store.then(|| ChannelEncryptionConfig {
                 root: self.dir.join("channels"),
                 vault: channel_crypto::VaultKey::new(vault),
                 device_key: self.key(),
-            },
+            }),
             self.tree.clone(),
             Some(Arc::clone(net)),
             Arc::new(Mutex::new(BrokerChannels::default())),

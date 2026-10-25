@@ -656,9 +656,12 @@ pub enum ChannelAccessState {
     WaitingForAccess,
     /// This device was removed from the channel.
     Removed,
-    /// This device cannot join the channel right now (no secret store, or
-    /// the room's governor is unknown). Edits wait on the device.
+    /// This device cannot join the channel right now: the room's governor
+    /// is unknown here. Edits wait on the device.
     Unavailable,
+    /// This device has no secret store open, so it cannot hold keys of a
+    /// room hosted elsewhere. Edits wait on the device.
+    NoSecretStore,
 }
 
 impl ChannelAccessState {
