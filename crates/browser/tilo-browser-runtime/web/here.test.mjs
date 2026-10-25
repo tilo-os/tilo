@@ -208,3 +208,22 @@ test('a post that failed is tried again on the next tick, not at the next refres
   assert.equal(h.posts.length, 2);
   assert.equal(h.calls.filter(([kind]) => kind === 'here').length, 1);
 });
+
+test('their own words go on their presence once, and again only when they change', async () => {
+  const h = harness();
+  const said = [];
+  h.peer.setStatus = text => said.push(text);
+  h.state.status = 'Reviewing the plan';
+  const here = createHere({runtime: h.runtime, mountId: () => 7, active: () => true, layer: () => fakeLayer(), peer: h.peer,
+    fetch: h.fetch, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer, visible: () => true});
+  await settle();
+  assert.deepEqual(said, ['Reviewing the plan']);
+  h.advance(TICK_MS);
+  await h.runTimer();
+  assert.deepEqual(said, ['Reviewing the plan'], 'unchanged words are not said again');
+  h.state.status = null;
+  h.advance(TICK_MS);
+  await h.runTimer();
+  assert.deepEqual(said, ['Reviewing the plan', null], 'cleared, they are taken off');
+  here.stop();
+});

@@ -3447,9 +3447,9 @@ pub fn desktop_set_watching(id: u64, watching: u32) -> Result<(), JsValue> {
 
 /// What this page's person is doing, for the page to post to `/here`:
 /// `{window: hex | null, share, actions: [{id, action, resource, app,
-/// at_ms}]}`. `window` is the focused window's tab id; `actions` are their own steps in the active workspace's records since
-/// `since_ms` (titles only), and empty unless they share an automatic
-/// status (`share`).
+/// at_ms}], status}`: the focused window's tab id, their own steps in the active workspace since
+/// `since_ms` (titles only; none unless they share an automatic status) and their own words for
+/// their live presence (`null` while they said nothing or share nothing).
 ///
 /// # Errors
 ///
@@ -3493,6 +3493,7 @@ pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
             "window": window,
             "share": share,
             "actions": actions,
+            "status": desktop.here.borrow().shared_words(),
         }))
         .map_err(error)
     })

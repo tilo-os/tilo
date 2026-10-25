@@ -70,6 +70,16 @@ struct Frame<'a> {
 }
 
 fn draw(overlay: &mut PeopleOverlay, frame: &Frame<'_>, pictures: &mut dyn PeekPictures) {
+    draw_own(overlay, frame, None, pictures);
+}
+
+/// [`draw`], with this person's own row leading the list.
+fn draw_own(
+    overlay: &mut PeopleOverlay,
+    frame: &Frame<'_>,
+    own: Option<&RosterRow>,
+    pictures: &mut dyn PeekPictures,
+) {
     overlay.draw(
         &mut Scene::new(),
         Affine::IDENTITY,
@@ -83,6 +93,7 @@ fn draw(overlay: &mut PeopleOverlay, frame: &Frame<'_>, pictures: &mut dyn PeekP
             messages: frame.messages,
             followed_id: frame.followed,
             messaging_unavailable: frame.unavailable,
+            own,
         },
         pictures,
     );
@@ -136,6 +147,118 @@ fn their_own_words_come_first_and_a_models_are_marked() {
         doing(&ada),
         Some(("Fixing the onboarding copy".into(), LineSource::Written))
     );
+}
+
+/// A row says what someone is doing with where they are under it: their
+/// own words plainly, an automatic description (a model's, or the host's
+/// reading of what they did) marked; without either, only where they are.
+#[test]
+fn a_row_says_what_they_do_then_where_and_marks_what_software_wrote() {
+    let mut ada = row("ada", "Ada");
+    let line = |doing: &str, place: Option<&str>, automatic| {
+        Some(RowLine {
+            doing: doing.into(),
+            place: place.map(Into::into),
+            automatic,
+        })
+    };
+    assert_eq!(row_line(&ada), line("In Ada's notes", None, false));
+    for (source, automatic) in [
+        (LineSource::Observed, true),
+        (LineSource::Generated, true),
+        (LineSource::Written, false),
+    ] {
+        ada.status = Some(RosterStatus {
+            text: "Working in Chat".into(),
+            source,
+        });
+        assert_eq!(
+            row_line(&ada),
+            line("Working in Chat", Some("In Ada's notes"), automatic),
+            "{source:?}"
+        );
+        assert_eq!(
+            crate::collaborators::says_automatically(&ada),
+            automatic,
+            "the dropdown marks it alike"
+        );
+    }
+    ada.activity = None;
+    assert_eq!(row_line(&ada), line("Working in Chat", None, false));
+}
+
+/// This person's own row leads the list: a field with what they said,
+/// which takes the keyboard only once pressed. Enter says the words,
+/// Escape puts back what was there, and the clear button takes them away.
+#[test]
+fn their_own_row_edits_what_they_are_doing_in_place() {
+    use winit::keyboard::{ModifiersState, NamedKey, SmolStr};
+    let rows = vec![row("ada", "Ada")];
+    let frame = Frame {
+        rows: &rows,
+        screens: &[],
+        messages: &[],
+        followed: None,
+        unavailable: None,
+    };
+    let mut me = row("me", "Kim");
+    me.followable = false;
+    me.activity = None;
+    let mut overlay = shown_overlay();
+    let _guard = ui::motion::testing::settled();
+    draw_own(&mut overlay, &frame, Some(&me), &mut NoPictures);
+    assert!(overlay.own_row.area() > 0.0);
+    assert!(
+        overlay.rows[0].rect.y0 >= overlay.own_row.y1 - 0.5,
+        "their own row comes first"
+    );
+    let typed = Key::Character(SmolStr::new("h"));
+    assert_eq!(
+        overlay.key(&typed, ModifiersState::empty()),
+        None,
+        "untouched, the field leaves the keyboard alone"
+    );
+    let field = overlay.own_status.field.center();
+    let mut handled = false;
+    let press = |overlay: &mut PeopleOverlay, at: Point, handled: &mut bool| {
+        overlay.handle_event(&moved(at), 1.0, handled);
+        overlay.handle_event(&button(ElementState::Pressed), 1.0, handled);
+        overlay.handle_event(&button(ElementState::Released), 1.0, handled)
+    };
+    assert_eq!(press(&mut overlay, field, &mut handled), None);
+    assert!(handled, "the press is the overlay's");
+    assert!(overlay.composing(), "the field holds the keyboard");
+    assert!(overlay.commit_text("Reviewing the launch plan"));
+    assert_eq!(
+        overlay.key(&Key::Named(NamedKey::Enter), ModifiersState::empty()),
+        Some(Some(PeopleHit::SetStatus(
+            "Reviewing the launch plan".into()
+        )))
+    );
+    assert!(!overlay.composing(), "said, the field lets go");
+    // The host says them back: their row shows their words.
+    me.status = Some(RosterStatus {
+        text: "Reviewing the launch plan".into(),
+        source: LineSource::Written,
+    });
+    draw_own(&mut overlay, &frame, Some(&me), &mut NoPictures);
+    press(&mut overlay, field, &mut handled);
+    assert!(overlay.commit_text(" and the deck"));
+    assert_eq!(
+        overlay.key(&Key::Named(NamedKey::Escape), ModifiersState::empty()),
+        Some(None)
+    );
+    assert!(!overlay.composing());
+    draw_own(&mut overlay, &frame, Some(&me), &mut NoPictures);
+    let clear = overlay
+        .own_status
+        .clear_rect()
+        .expect("their words can be cleared");
+    assert_eq!(
+        press(&mut overlay, clear.center(), &mut handled),
+        Some(PeopleHit::SetStatus(String::new()))
+    );
+    assert!(!overlay.composing(), "clearing takes no keyboard");
 }
 
 /// Agents are listed after the people, under their own heading; invited
@@ -425,6 +548,7 @@ fn the_panel_steps_past_what_already_waits_at_its_edge() {
                 messages: &[],
                 followed_id: None,
                 messaging_unavailable: None,
+                own: None,
             },
             &mut NoPictures,
         );
