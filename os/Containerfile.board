@@ -64,13 +64,18 @@ ARG TILO_TARGET_IMGREF
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
 # tilo-rpm-snapshot-package[aarch64]: qcom-firmware
+# A Snapdragon X profile's image installs it: the package's Adreno firmware is
+# what the GPU in those boards loads, and the profile says it is one
+# (`qcom_snapdragon`, os/dev/hardware_profile.py) rather than the recipe naming
+# an id.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=board-inputs,source=/tilo,target=/run/tilo-board \
     case "${TILO_HARDWARE_PROFILE:-}" in ''|generic) echo 'a board profile is required' >&2; exit 1 ;; esac \
     && set -- /usr/lib/modules/*/ \
     && { [ "$#" = 1 ] || { echo "expected one kernel in the dev image, found $#" >&2; exit 1; }; } \
     && kver="$(basename "$1")" \
-    && { [ "$TILO_HARDWARE_PROFILE" != lenovo-83ed ] || dnf install -y --setopt=reposdir=/repo qcom-firmware; } \
+    && { ! grep -q '"qcom_snapdragon": true' "/run/tilo-board/os/hardware/profiles/$TILO_HARDWARE_PROFILE.json" \
+         || dnf install -y --setopt=reposdir=/repo qcom-firmware; } \
     && python3 -B /run/tilo-board/os/dev/prepare-hardware-profile.py \
         --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
         --profiles-dir /run/tilo-board/os/hardware/profiles \

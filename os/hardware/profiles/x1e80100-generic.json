@@ -1,0 +1,50 @@
+{
+  "schema_version": 2,
+  "id": "x1e80100-generic",
+  "architecture": "aarch64",
+  "qcom_snapdragon": true,
+  "devicetree": null,
+  "kernel_args": [
+    "systemd.tpm2_wait=0",
+    "systemd.watchdog_sec=30",
+    "sbsa_gwdt.action=1",
+    "softlockup_panic=1",
+    "nmi_watchdog=panic"
+  ],
+  "system_firmware": [
+    "qcom/a740_sqe.fw",
+    "qcom/gen70500_sqe.fw",
+    "qcom/gen70500_gmu.bin"
+  ],
+  "firmware_exclude": [
+    "nvidia-gpu-firmware",
+    "amd-gpu-firmware",
+    "intel-gpu-firmware",
+    "intel-audio-firmware",
+    "intel-npu-firmware",
+    "amd-ucode-firmware",
+    "mt7xxx-firmware",
+    "brcmfmac-firmware",
+    "nxpwireless-firmware",
+    "tiwilink-firmware"
+  ],
+  "boot_modules": [
+    "cfg80211",
+    "mac80211",
+    "mhi",
+    "qrtr",
+    "qrtr-mhi",
+    "qmi_helpers",
+    "ath12k",
+    "ath12k_wifi7",
+    "pwrseq-qcom-wcn",
+    "pci-pwrctrl-pwrseq",
+    "phy-qcom-qmp-pcie"
+  ],
+  "firmware": {},
+  "crash_record": {
+    "storage": "efi-variable",
+    "watchdog": "hardware",
+    "lockup": "buddy"
+  }
+}

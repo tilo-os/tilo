@@ -2,6 +2,7 @@
   "schema_version": 2,
   "id": "lenovo-83ed",
   "architecture": "aarch64",
+  "qcom_snapdragon": true,
   "devicetree": "qcom/x1e80100-lenovo-yoga-slim7x.dtb",
   "kernel_args": [
     "systemd.tpm2_wait=0",

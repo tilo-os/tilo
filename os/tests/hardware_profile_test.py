@@ -781,7 +781,7 @@ class FirmwareTrimContractTest(unittest.TestCase):
         self.assertIn("firmware_exclude", layer)
         self.assertLess(layer.index("firmware_exclude"), layer.index("always_on=$"))
         self.assertIn("system_firmware", layer)
-        # The qcom-firmware the Lenovo board needs is installed, never excluded.
+        # The qcom-firmware a Snapdragon X board needs is installed, never excluded.
         containerfile = (self.ROOT / "Containerfile.board").read_text(encoding="utf-8")
         self.assertIn("qcom-firmware", containerfile)
 
@@ -842,6 +842,91 @@ class LenovoInternalKeyboardTest(unittest.TestCase):
         fragment = (self.KERNEL / "config-fragments/aarch64.config").read_text(encoding="utf-8")
         for name, symbol in verify.I2C_INPUT_BUILTIN.items():
             self.assertIn(f"\n{symbol}=y\n", fragment, name)
+
+
+class SnapdragonXLaptopProfileTest(unittest.TestCase):
+    """A Snapdragon X laptop whose firmware is already published boots from
+    the firmware's own device tree, so it needs a profile that names no DTB and
+    no board-local firmware. What it does need is the Adreno firmware Fedora's
+    qcom-firmware RPM installs, the drivers udev would otherwise find only after
+    switch-root, and the kernel arguments that record a hang."""
+
+    PROFILE = "x1e80100-generic"
+    ROOT = SCRIPT.parents[1]
+
+    def definition(self):
+        return json.loads((self.ROOT / f"hardware/profiles/{self.PROFILE}.json").read_text(encoding="utf-8"))
+
+    def test_it_boots_the_firmware_description_and_needs_no_local_input(self):
+        data = hardware_profile.validate_definition(self.definition())
+        self.assertIsNone(data["devicetree"])
+        self.assertEqual(data["firmware"], {})
+        self.assertTrue(data["qcom_snapdragon"])
+        # A profile with no board-local firmware needs no manifest and no
+        # firmware directory, which is what an image built from published
+        # firmware alone has.
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(prepare.platform, "machine", return_value="aarch64"), \
+                patch.object(prepare.os, "geteuid", return_value=0), \
+                patch.object(prepare.os, "chown"):
+            root = Path(temp) / "root"
+            kernel = root / "usr/lib/modules/6.17.1-tilo.aarch64"
+            kernel.mkdir(parents=True)
+            (kernel / "config").write_text("CONFIG_ARM64=y\n", encoding="utf-8")
+            for name in data["boot_modules"]:
+                (kernel / "kernel").mkdir(exist_ok=True)
+                (kernel / "kernel" / f"{name}.ko.zst").write_bytes(b"module")
+            for name in data["system_firmware"]:
+                path = root / "usr/lib/firmware" / f"{name}.xz"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(f"distro firmware fixture: {name}".encode())
+            prepare.prepare_profile(self.PROFILE, root, "6.17.1-tilo.aarch64",
+                                    Path(temp) / "firmware", self.ROOT / "hardware/profiles",
+                                    target_update_ref=TARGET_REF)
+            profile = json.loads((root / "usr/lib/tilo/hardware-profile.json").read_text(encoding="utf-8"))
+            self.assertIsNone(profile["devicetree"])
+            self.assertIsNone(profile["devicetree_sha256"])
+            dracut = (root / "etc/dracut.conf.d/41-tilo-hardware.conf").read_text(encoding="utf-8")
+            # Nothing is installed from a board's Windows drivers: this profile
+            # has no board-local firmware, so the initramfs carries only what
+            # the distro packages already install.
+            self.assertTrue(dracut.splitlines()[1].startswith("install_items+="))
+            for name in data["system_firmware"]:
+                self.assertIn(f"/usr/lib/firmware/{name}", dracut)
+            kargs = (root / "usr/lib/bootc/kargs.d/10-hardware-profile.toml").read_text(encoding="utf-8")
+            self.assertIn("systemd.watchdog_sec=30", kargs)
+
+    def test_the_display_firmware_the_gpu_asks_for_is_in_the_initramfs(self):
+        data = hardware_profile.validate_definition(self.definition())
+        # The kernel requests one generation of these by name; both are shipped
+        # because only the booted board can say which its GPU is.
+        self.assertIn("qcom/gen70500_sqe.fw", data["system_firmware"])
+        self.assertIn("qcom/gen70500_gmu.bin", data["system_firmware"])
+        self.assertIn("qcom/a740_sqe.fw", data["system_firmware"])
+
+    def test_the_declaration_decides_which_images_install_qcom_firmware(self):
+        profiles = self.ROOT / "hardware/profiles"
+        declared = {path.stem for path in profiles.glob("*.json")
+                    if json.loads(path.read_text(encoding="utf-8")).get("qcom_snapdragon")}
+        self.assertEqual(declared, {"lenovo-83ed", self.PROFILE})
+        for recipe in ("Containerfile", "Containerfile.board"):
+            text = (self.ROOT / recipe).read_text(encoding="utf-8")
+            with self.subTest(recipe=recipe):
+                self.assertIn("qcom_snapdragon", text)
+                self.assertNotIn('TILO_HARDWARE_PROFILE" != lenovo-83ed', text)
+                self.assertNotIn('TILO_HARDWARE_PROFILE" = lenovo-83ed', text)
+
+    def test_the_field_is_a_bound_declaration(self):
+        # Absent is the ordinary board: only a declaration turns the profile's
+        # image into one that installs the Snapdragon firmware package.
+        self.assertFalse(hardware_profile.validate_definition(
+            {k: v for k, v in self.definition().items() if k != "qcom_snapdragon"}).get("qcom_snapdragon"))
+        for bad in ("yes", 1, None):
+            with self.subTest(qcom_snapdragon=bad), self.assertRaisesRegex(ValueError, "qcom_snapdragon"):
+                hardware_profile.validate_definition(self.definition() | {"qcom_snapdragon": bad})
+        x86 = self.definition() | {"architecture": "x86_64"}
+        with self.assertRaisesRegex(ValueError, "aarch64 board is a Snapdragon X laptop"):
+            hardware_profile.validate_definition(x86)
 
 
 class OrangePiWifiFirmwareTest(unittest.TestCase):

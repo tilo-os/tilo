@@ -53,6 +53,15 @@ identity, `{"sys_vendor": ..., "product_name": ...}`, as `/sys/class/dmi/id`
 reports it. It is only for a board with `"devicetree": null` and is refused
 beside a device tree, which already names the model; see the handheld
 section.
+The optional `qcom_snapdragon` (version 2, default `false`) marks a
+Snapdragon X laptop, which is the only kind of board whose image installs
+Fedora's `qcom-firmware` RPM: that package's Adreno firmware is what those
+boards' GPU loads, and a generic image cannot carry it because the same
+package also holds firmware for Snapdragon boards Tilo has not looked at.
+Both image recipes read the declaration instead of naming profile ids. A
+board that sets it must be `aarch64`; see the Snapdragon X Elite section,
+where `lenovo-83ed` is the board-model profile and `x1e80100-generic` is the
+one for every laptop already described by its own published firmware.
 
 The reviewed definition is copied into the immutable rootfs beside the
 generated profile. The UKI builder checks both files' ownership and permissions,
@@ -185,6 +194,62 @@ target kernel on the device, and build and sign the image in CI. A profile
 that omits CDSP firmware would need a separately reviewed device tree and
 physical test of the resulting feature loss; this profile still requires all
 six files.
+
+## Snapdragon X Elite and X Plus laptops
+
+A Snapdragon X laptop whose vendor firmware already carries a device tree
+needs none of the above. Its firmware boots Linux through its own description
+of the board, so the kernel reaches it through `efi` (ACPI plus that device
+tree) with no DTB for Tilo to embed, and every firmware the SoC asks for
+(`qcom/x1e80100/*.mbn`, the ADSP and CDSP blobs under
+`qcom/x1e80100/<VENDOR>/<MODEL>/`, the WCN7850's `ath12k` files,
+`qcom/gen70500_sqe.fw` and `qcom/gen70500_gmu.bin`) comes from Fedora's
+`qcom-firmware`, `atheros-firmware` and `linux-firmware` packages. That is the
+shape of the Yoga Slim 7x, the ThinkPad T14s Gen 6, the Surface Laptop 7 and
+Pro 11, the Dell XPS 13 9345 and Latitude 7455, the HP OmniBook X 14 and
+EliteBook Ultra G1q, the ASUS Vivobook S 15 and Zenbook A14, the Samsung
+Galaxy Book4 Edge and the Acer Swift 14 AI.
+
+`x1e80100-generic` is that profile: `qcom_snapdragon` set, `devicetree`
+`null`, no board-local firmware, so it needs no OCI firmware artifact and no
+extracted Windows drivers. It carries what a board-specific profile does
+otherwise:
+
+- the Adreno display firmware both generation names in `system_firmware`, so
+the GPU has it before an encrypted root is open;
+- the Wi-Fi drivers and firmware the radio needs before switch-root, for
+sibling unlock;
+- the Lenovo 83ED's crash arguments: the SBSA watchdog fed by systemd, a
+panic on the first watchdog stage and on a stuck CPU, and
+`systemd.tpm2_wait=0` for Pluton-backed boards.
+
+Its `crash_record` is `efi-variable`: without a device tree of its own the
+board reserves no ramoops region, so the kernel's record of a panic goes to
+firmware variables, which wear. A machine installed with this profile moves
+to its own board profile as soon as it has been inspected on hardware; until
+then, a reset on it leaves less behind than on the 83ED.
+
+The battery, the audio DSP topology and the internal keyboard are the halves
+this profile cannot supply: the DSP firmware the kernel is told to load,
+the `alsa-ucm-conf` machine block that gives the sound card a sink, and
+libinput's internal-keyboard quirk all come from a per-model profile
+(`internal_keyboards`, see the Lenovo section) once that laptop has been
+booted and its firmware names read. A board-model profile is a copy of this
+one with those facts filled in, so adding laptops is not a code change.
+
+Neither recipe branches on a profile's id for this: `os/Containerfile` and
+`os/Containerfile.board` install `qcom-firmware` when the selected profile
+declares `qcom_snapdragon`.
+
+```sh
+TILO_HARDWARE_PROFILE=x1e80100-generic TILO_TARGET_IMGREF=<immutable ref> ./os/build.sh
+```
+
+What this profile proves is that the image carries the firmware and drivers
+those boards are documented to ask for. It does not prove that any one of
+them boots: a device tree the firmware supplies, a board-specific audio
+topology and a keyboard quirk are physical-device facts, and the board
+sections above describe how each is confirmed.
 
 ## Image build integration
 

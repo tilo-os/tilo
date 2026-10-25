@@ -14,8 +14,8 @@ DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
-OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards", "firmware_exclude", "crash_record",
-               "dmi"}
+OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards", "firmware_exclude",
+               "crash_record", "dmi", "qcom_snapdragon"}
 # A board whose firmware describes its devices (ACPI, as every x86-64 handheld
 # does) has no device tree for a model-bound quirk to match on. `dmi` names the
 # DMI system identity instead, so such a quirk stays confined to that model.
@@ -349,6 +349,13 @@ def validate_definition(data):
         seen_modules.add(name)
     if type(data.get("always_on", False)) is not bool:
         raise ValueError("hardware definition always_on must be a boolean")
+    # A Snapdragon X laptop is the only board whose image installs Fedora's
+    # qcom-firmware RPM, so the profile says that it is one instead of the image
+    # recipe keeping a list of the ids that are.
+    if type(data.get("qcom_snapdragon", False)) is not bool:
+        raise ValueError("hardware definition qcom_snapdragon must be a boolean")
+    if data.get("qcom_snapdragon") and data["architecture"] != "aarch64":
+        raise ValueError("only an aarch64 board is a Snapdragon X laptop")
     if "wifi_wake_on_wlan" in data:
         # This is a reviewed hardware safety policy, not a generic wake editor.
         if (type(data["wifi_wake_on_wlan"]) is not int or data["wifi_wake_on_wlan"] != 0

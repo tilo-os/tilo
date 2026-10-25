@@ -1871,13 +1871,17 @@ ARG TILO_HARDWARE_PROFILE=generic
 # before this ARG stay cached. The shell below reads it, so the layer reruns
 # when the kernel image identity changes.
 ARG KERNEL_RPMS_REF
-# The Lenovo profile needs the Adreno SQE firmware from Fedora's qcom-firmware
-# RPM. Keep it in the frozen ARM package set, but install it only in that image.
+# Every Snapdragon X profile needs the Adreno SQE firmware from Fedora's
+# qcom-firmware RPM, which a generic image cannot install: the package also
+# carries firmware for the Snapdragon boards Tilo has not looked at. Keep it in
+# the frozen ARM package set, and install it in an image built for one of those
+# laptops.
 # tilo-rpm-snapshot-package[aarch64]: qcom-firmware
 # Hash only this profile's firmware. Later board imports must not rebuild the
 # generic kernel/initramfs when the runner seed publishes the same rootfs.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
+    --mount=type=bind,source=os/hardware/profiles,target=/run/tilo-hardware-profiles,ro \
     set -eux; \
     test -n "$KERNEL_RPMS_REF"; \
     mkdir -p /etc/tilo-swap.d; \
@@ -1885,7 +1889,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
         > /etc/tilo-swap.d/frozen.repo; \
     printf '[tilo-kernel]\nname=tilo-kernel\nbaseurl=file:///qkernel-repo\ngpgcheck=0\nenabled=1\n' \
         > /etc/tilo-swap.d/tilo-kernel.repo; \
-    if [ "$TILO_HARDWARE_PROFILE" = lenovo-83ed ]; then \
+    # Whether this profile is a Snapdragon X laptop is its own declaration
+    # (`qcom_snapdragon`, os/dev/hardware_profile.py), not a list of ids kept
+    # here.
+    if grep -q '"qcom_snapdragon": true' "/run/tilo-hardware-profiles/$TILO_HARDWARE_PROFILE.json"; then \
         dnf install -y --setopt=reposdir=/etc/tilo-swap.d qcom-firmware; \
     fi; \
     # --allowerasing lets the swap drop the base's `kernel` meta-package
