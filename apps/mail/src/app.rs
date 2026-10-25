@@ -60,6 +60,9 @@ use crate::account::AccountStore;
 use crate::actions::{DraftData, Outgoing, ServerUpdate};
 #[path = "contact_recipients.rs"]
 mod contact_recipients;
+#[path = "peer_copies.rs"]
+mod peer_copies;
+use peer_copies::kept_baseline;
 
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
@@ -453,6 +456,9 @@ pub struct MailApp {
     kept_registered: bool,
     /// The accounts whose kept mail is in the mailbox.
     kept_loaded: std::collections::HashSet<String>,
+    /// The mail the person's devices hold for one another, where they have
+    /// a room of their own ([`crate::copies`]).
+    copies: Option<crate::copies::Copies>,
     /// The messages whose notification the person clicked, from whatever
     /// thread the host reported it on; opened on the next settle.
     activations: Arc<std::sync::Mutex<Vec<String>>>,
@@ -748,6 +754,7 @@ impl MailApp {
             has_older: HashMap::new(),
             older_pending: HashMap::new(),
             kept_registered: true,
+            copies: None,
             kept_loaded: std::collections::HashSet::new(),
             activations: Arc::default(),
             notifier: None,
@@ -2275,8 +2282,17 @@ impl MailApp {
         synced: crate::sync::Synced,
     ) {
         let (gone, reflagged) = server_changes(&st.mailbox, account_id, folder, &synced);
-        for id in gone {
-            st.mailbox.purge(id);
+        for id in &gone {
+            st.mailbox.purge(*id);
+        }
+        if let Some(copies) = &self.copies {
+            // A folder that started over drops what is not in its newest
+            // page from this device only; what its server reported removed
+            // is gone for every device.
+            if !synced.reset {
+                copies.forget(&gone);
+            }
+            copies.keep(account_id, &synced.messages, &synced.originals);
         }
         if account_id == st.accounts.active_config().email {
             st.first_fetch = None;
@@ -2374,17 +2390,7 @@ impl MailApp {
             .mailbox
             .messages
             .values()
-            .filter(|message| !message.account.is_empty())
-            .map(|message| {
-                let mut baseline =
-                    crate::actions::IngestBaseline::fetched(message, &message.account);
-                if mail.knows(&message.id.to_string()) {
-                    baseline.read = None;
-                    baseline.starred = None;
-                    baseline.folder = None;
-                }
-                baseline
-            })
+            .filter_map(|message| kept_baseline(&mail, message))
             .collect();
         if !baselines.is_empty() {
             self.shared.borrow().ingest_baselines(doc, baselines);
@@ -3802,6 +3808,7 @@ impl Widget for MailApp {
         self.register_kept_mail(state);
         self.open_activated();
         self.drain_engine(state);
+        self.take_peer_copies(state);
         self.reveal_requested(state);
         self.deliver_effect_replies();
         self.take_back_sends(state);
