@@ -33,6 +33,10 @@ pub struct WebBuildRequest {
     /// Optimized (`--release`): the workspace's `wasm-release` profile and
     /// `wasm-opt`, the module a page should stream.
     pub release: bool,
+    /// With `release`: keep `debug_assertions` and overflow checks (the
+    /// workspace's `wasm-assert` profile), so a measured or qualified bundle
+    /// is never faster for having stopped checking.
+    pub assertions: bool,
 }
 
 /// A finished web build: the bundle directory and its one module.
@@ -80,7 +84,8 @@ pub fn build_web(start: &Path, request: &WebBuildRequest) -> Result<WebBuild> {
         );
     }
     let started = Instant::now();
-    let outcome = crate::targets::build(&app_dir, &app_bundle(request.release))?;
+    let outcome =
+        crate::targets::build(&app_dir, &app_bundle(request.release, request.assertions))?;
     let output = match &request.output {
         Some(path) => {
             let output = crate::absolute_from(&app_dir, path);
@@ -104,10 +109,11 @@ pub fn build_web(start: &Path, request: &WebBuildRequest) -> Result<WebBuild> {
     })
 }
 
-fn app_bundle(release: bool) -> TargetRequest {
+fn app_bundle(release: bool, assertions: bool) -> TargetRequest {
     let mut request = TargetRequest::new(Target::Web);
     request.bundle = WebBundle::App;
     request.release = release;
+    request.assertions = assertions;
     request
 }
 
@@ -176,7 +182,7 @@ fn serve_web(start: &Path, options: &WebDevOptions, watch: bool, debounce: Durat
         .with_context(|| format!("--bind {} is not an address and port", options.bind))?;
     crate::targets::run(
         start,
-        &app_bundle(false),
+        &app_bundle(false, false),
         &[],
         &ServeOptions {
             address,
@@ -194,10 +200,14 @@ mod tests {
 
     #[test]
     fn the_web_build_is_the_app_bundle() {
-        let request = app_bundle(true);
+        let request = app_bundle(true, false);
         assert_eq!(request.target, Target::Web);
         assert_eq!(request.bundle, WebBundle::App);
         assert!(request.release);
+        assert!(!request.assertions);
+        // A qualification build asks for the asserting release profile; the
+        // request carries it rather than the bundle deciding for itself.
+        assert!(app_bundle(true, true).assertions);
     }
 
     #[test]

@@ -57,10 +57,11 @@ pub(super) fn build(project: &Project, request: &TargetRequest) -> Result<BuildO
         WebBundle::App | WebBundle::Auto => app_crate(project)?,
     };
     let split = (web_crate.package == "tilo-web-desktop").then(|| project.sdk_root.join(SPLIT));
-    let profile = match web_profile(project, request.release)? {
-        // The splitter reads the symbol table `wasm-release` strips.
-        profile if split.is_some() && profile == "wasm-release" => "wasm-split".to_owned(),
-        profile => profile,
+    let profile = web_profile(project, request)?;
+    let profile = match split {
+        // The splitter reads the symbol table the plain profiles strip.
+        Some(_) => split_profile(&profile),
+        None => profile,
     };
     let wasm = cargo_build_wasm(project, &web_crate, &profile, request)?;
     let bundle = project.output_dir(Target::Web).join("bundle");
@@ -68,8 +69,7 @@ pub(super) fn build(project: &Project, request: &TargetRequest) -> Result<BuildO
         .with_context(|| format!("creating {}", bundle.display()))?;
     let optimizer = Optimizer::discover(request.release);
     bundle_runtime(
-        &wasm,
-        request.release,
+        &Linked::new(&wasm, &profile, request.release),
         &bindgen,
         &bundle,
         optimizer.as_ref(),
@@ -168,20 +168,51 @@ impl Optimizer {
     }
 }
 
-/// `split` is the splitter script when the module is split
-/// (`tools/web/wasm-split/split.sh`).
-fn bundle_runtime(
-    wasm: &Path,
+/// One linked build of the runtime or desktop module: the module, the profile
+/// it was linked with, and whether that profile is an optimized one. The
+/// profile is part of the `pkg/` stamp, so a `pkg/` bundled from one profile
+/// is never kept for another (a qualification bundle and the shipping one
+/// differ only in the profile).
+struct Linked<'a> {
+    wasm: &'a Path,
+    /// The Cargo profile name, as `build.json` records it.
+    profile: &'a str,
+    /// An optimized profile: wasm-opt applies, and the compute module is held
+    /// to its release byte budget.
     release: bool,
+}
+
+impl<'a> Linked<'a> {
+    fn new(wasm: &'a Path, profile: &'a str, release: bool) -> Self {
+        Self {
+            wasm,
+            profile,
+            release,
+        }
+    }
+}
+
+/// `output` holds the destination `pkg/` and carries the stamp that says which
+/// module and profile it was bundled from. `split` is the splitter script when
+/// the module is split (`tools/web/wasm-split/split.sh`).
+fn bundle_runtime(
+    linked: &Linked<'_>,
     bindgen: &Path,
-    bundle: &Path,
+    output: &Path,
     optimizer: Option<&Optimizer>,
     split: Option<&Path>,
 ) -> Result<()> {
+    let Linked {
+        wasm,
+        profile,
+        release,
+    } = *linked;
+    let bundle = output;
     // Cargo leaves an up-to-date module untouched; so does this step.
     let stamp = bundle.join(".wasm-input");
     let input = serde_json::to_string(&serde_json::json!({
         "wasm":wasm_stamp(wasm, release)?,
+        "profile":profile,
         "optimizer":optimizer.map(Optimizer::input),
         "split":split,
     }))?;
@@ -390,7 +421,7 @@ fn build_compute(
 ) -> Result<serde_json::Value> {
     let mut sdk = project.clone();
     sdk.workspace_root.clone_from(&project.sdk_root);
-    let profile = web_profile(&sdk, request.release)?;
+    let profile = web_profile(&sdk, request)?;
     let wasm = cargo_build_wasm(&sdk, &compute_crate(&project.sdk_root), &profile, request)?;
     let modules: serde_json::Map<String, serde_json::Value> = COMPUTE_ASSETS[..3]
         .iter()
@@ -874,18 +905,49 @@ fn wasm_c_compiler(sdk_root: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
     Ok(Some((cc, scripts.join("wasm-ar.sh"))))
 }
 
+/// The Cargo profile a release build uses, by whether it keeps assertions.
+///
+/// `wasm-assert` is `wasm-release` with `debug_assertions` and overflow
+/// checks: the only way to measure release-speed code and still have the
+/// qualification surface and its checks compiled in.
+fn assert_profile() -> &'static str {
+    "wasm-assert"
+}
+
+/// The profile a split build needs for the same settings: the splitter reads
+/// function names and relocations from the linked module, which the shipped
+/// profiles strip.
+fn split_profile(profile: &str) -> String {
+    match profile {
+        "wasm-release" => "wasm-split".to_owned(),
+        "wasm-assert" => "wasm-assert-split".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
 /// `wasm-release` when the workspace defines it (small, for shipping),
-/// otherwise `release`; `dev` for iteration.
-fn web_profile(project: &Project, release: bool) -> Result<String> {
-    if !release {
+/// `wasm-assert` for a bundle that keeps assertions, otherwise `release`;
+/// `dev` for iteration.
+fn web_profile(project: &Project, request: &TargetRequest) -> Result<String> {
+    if !request.release {
         return Ok("dev".into());
     }
     let root = read_toml(&project.workspace_root.join("Cargo.toml"))?;
-    let has_wasm_release = root
-        .get("profile")
-        .and_then(|profiles| profiles.get("wasm-release"))
-        .is_some();
-    Ok(if has_wasm_release {
+    let defined = |name: &str| {
+        root.get("profile")
+            .and_then(|profiles| profiles.get(name))
+            .is_some()
+    };
+    if request.assertions {
+        if !defined(assert_profile()) {
+            bail!(
+                "this workspace defines no `{}` profile\n  help: --assertions needs a workspace whose Cargo.toml defines it, as Tilo's does",
+                assert_profile()
+            );
+        }
+        return Ok(assert_profile().into());
+    }
+    Ok(if defined("wasm-release") {
         "wasm-release"
     } else {
         "release"
@@ -1687,10 +1749,19 @@ mod tests {
             compute.target_dir.is_none(),
             "canonical SDK default target and locked build"
         );
-        assert_eq!(web_profile(&project, true).unwrap(), "release");
+        assert_eq!(
+            web_profile(&project, &release_request(false)).unwrap(),
+            "release"
+        );
         project.workspace_root.clone_from(&project.sdk_root);
-        assert_eq!(web_profile(&project, true).unwrap(), "wasm-release");
-        assert_eq!(web_profile(&project, false).unwrap(), "dev");
+        assert_eq!(
+            web_profile(&project, &release_request(false)).unwrap(),
+            "wasm-release"
+        );
+        assert_eq!(
+            web_profile(&project, &TargetRequest::new(Target::Web)).unwrap(),
+            "dev"
+        );
         // A large custom section followed by valid memory: dev has no release byte gate.
         let mut dev = valid_header().to_vec();
         dev.extend([0, 0x80, 0x80, 0x40]);
@@ -1799,28 +1870,27 @@ printf 'optimized %s\n' "$*" >> "$output"
 printf 'optimizer\n' >> "$(dirname "$output")/../calls"
 "#;
         let calls = bundle.join("calls");
+        // Every call below bundles the same module at the shipping profile.
+        let shipping = Linked::new(&wasm, "wasm-release", true);
         let output = bundle.join("pkg/tilo_browser_runtime_bg.wasm");
         let stamp = bundle.join(".wasm-input");
         // A release built before the optimizer is installed must be revisited.
         assert!(Optimizer::probe(program.clone(), true).is_none());
-        bundle_runtime(&wasm, true, &bindgen, &bundle, None, None).unwrap();
+        bundle_runtime(&shipping, &bindgen, &bundle, None, None).unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"unoptimized");
         executable(&program, script);
         let mut optimizer = Optimizer::probe(program.clone(), true).unwrap();
         assert!(Optimizer::probe(program.clone(), false).is_none());
-        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer), None).unwrap();
+        bundle_runtime(&shipping, &bindgen, &bundle, Some(&optimizer), None).unwrap();
         assert_eq!(
             std::fs::read_to_string(&calls).unwrap(),
             "bindgen\nbindgen\noptimizer\n"
         );
-        assert!(
-            std::fs::read_to_string(&output)
-                .unwrap()
-                .starts_with("unoptimizedoptimized -Oz")
-        );
+        let optimized_bytes = std::fs::read_to_string(&output).unwrap();
+        assert!(optimized_bytes.starts_with("unoptimizedoptimized -Oz"));
         let unchanged_stamp = std::fs::metadata(&stamp).unwrap().modified().unwrap();
         let unchanged_output = std::fs::metadata(&output).unwrap().modified().unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer), None).unwrap();
+        bundle_runtime(&shipping, &bindgen, &bundle, Some(&optimizer), None).unwrap();
         assert_eq!(
             std::fs::read_to_string(&calls).unwrap(),
             "bindgen\nbindgen\noptimizer\n"
@@ -1833,35 +1903,31 @@ printf 'optimizer\n' >> "$(dirname "$output")/../calls"
             std::fs::metadata(&output).unwrap().modified().unwrap(),
             unchanged_output
         );
-
         std::fs::write(&version, "optimizer 2").unwrap();
         optimizer = Optimizer::probe(program.clone(), true).unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer), None).unwrap();
+        bundle_runtime(&shipping, &bindgen, &bundle, Some(&optimizer), None).unwrap();
         let other_program = root.join("other-optimizer");
         executable(&other_program, script);
         optimizer = Optimizer::probe(other_program, true).unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer), None).unwrap();
+        bundle_runtime(&shipping, &bindgen, &bundle, Some(&optimizer), None).unwrap();
         optimizer.flags = &["-O2"];
-        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer), None).unwrap();
-        assert!(
-            std::fs::read_to_string(&output)
-                .unwrap()
-                .contains("optimized -O2")
-        );
+        bundle_runtime(&shipping, &bindgen, &bundle, Some(&optimizer), None).unwrap();
+        let twice = std::fs::read_to_string(&output).unwrap();
+        assert!(twice.contains("optimized -O2"));
         assert_eq!(
             std::fs::read_to_string(&calls).unwrap(),
             "bindgen\nbindgen\noptimizer\nbindgen\noptimizer\nbindgen\noptimizer\nbindgen\noptimizer\n"
         );
         // Removing the optimizer restores bindgen output, not stale optimized bytes.
         std::fs::remove_file(program).unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, None, None).unwrap();
+        bundle_runtime(&shipping, &bindgen, &bundle, None, None).unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"unoptimized");
         let absent_calls = std::fs::read(&calls).unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, None, None).unwrap();
+        bundle_runtime(&shipping, &bindgen, &bundle, None, None).unwrap();
         assert_eq!(std::fs::read(&calls).unwrap(), absent_calls);
         // A missing output must rebuild even with a matching input stamp.
         std::fs::remove_file(&output).unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, None, None).unwrap();
+        bundle_runtime(&shipping, &bindgen, &bundle, None, None).unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"unoptimized");
         assert_ne!(std::fs::read(&calls).unwrap(), absent_calls);
     }
@@ -1929,6 +1995,99 @@ printf 'optimizer\n' >> "$(dirname "$output")/../calls"
             target_dir: root.join("target"),
             sdk_root: root.into(),
         }
+    }
+
+    /// A workspace whose `Cargo.toml` declares the given profiles.
+    fn profiled_project(root: &Path, profiles: &[&str]) -> Project {
+        let mut manifest = String::from("[workspace]\nmembers = []\n");
+        for profile in profiles {
+            let _ = writeln!(manifest, "[profile.{profile}]\nopt-level = 3");
+        }
+        std::fs::write(root.join("Cargo.toml"), manifest).unwrap();
+        packaging_project(root)
+    }
+
+    fn release_request(assertions: bool) -> TargetRequest {
+        let mut request = TargetRequest::new(Target::Web);
+        request.release = true;
+        request.assertions = assertions;
+        request
+    }
+
+    #[test]
+    fn assertions_select_the_asserting_release_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = profiled_project(dir.path(), &["wasm-release", "wasm-assert"]);
+        // A plain release keeps the shipping profile, with or without the
+        // workspace defining the asserting one.
+        assert_eq!(
+            web_profile(&project, &release_request(false)).unwrap(),
+            "wasm-release"
+        );
+        assert_eq!(
+            web_profile(&project, &TargetRequest::new(Target::Web)).unwrap(),
+            "dev"
+        );
+        // `--assertions` is the only route to a release-speed bundle that
+        // still has the qualification surface compiled in.
+        assert_eq!(
+            web_profile(&project, &release_request(true)).unwrap(),
+            assert_profile()
+        );
+        assert_ne!(assert_profile(), "wasm-release");
+        // The split variant keeps the symbol table the splitter reads, and
+        // each shipped profile maps to its own.
+        assert_eq!(split_profile(assert_profile()), "wasm-assert-split");
+        assert_eq!(split_profile("wasm-release"), "wasm-split");
+        assert_eq!(split_profile("dev"), "dev");
+    }
+
+    #[test]
+    fn assertions_need_a_workspace_that_defines_the_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = profiled_project(dir.path(), &["release"]);
+        // A workspace without it cannot silently fall back to a plain release:
+        // that would be the bundle the assertions are there to forbid.
+        let error = web_profile(&project, &release_request(true)).unwrap_err();
+        assert!(error.to_string().contains("wasm-assert"), "{error}");
+        assert_eq!(
+            web_profile(&project, &release_request(false)).unwrap(),
+            "release"
+        );
+    }
+
+    #[test]
+    fn a_pkg_bundled_from_another_profile_is_not_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let wasm = root.join("input.wasm");
+        std::fs::write(&wasm, b"module").unwrap();
+        let bundle = root.join("bundle");
+        std::fs::create_dir_all(bundle.join("pkg")).unwrap();
+        let bindgen = root.join("bindgen");
+        executable(
+            &bindgen,
+            r#"#!/bin/sh
+set -eu
+input=$1
+for output; do :; done
+cp "$input" "$output/tilo_browser_runtime_bg.wasm"
+printf 'bindgen\n' >> "$output/../calls"
+"#,
+        );
+        let calls = bundle.join("calls");
+        let shipping = Linked::new(&wasm, "wasm-release", true);
+        bundle_runtime(&shipping, &bindgen, &bundle, None, None).unwrap();
+        bundle_runtime(&shipping, &bindgen, &bundle, None, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "bindgen\n");
+        // The same module, the same optimizer, a different profile: the kept
+        // pkg/ was bundled from another profile and must be made again.
+        let asserting = Linked::new(&wasm, assert_profile(), true);
+        bundle_runtime(&asserting, &bindgen, &bundle, None, None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&calls).unwrap(),
+            "bindgen\nbindgen\n"
+        );
     }
 
     #[test]
