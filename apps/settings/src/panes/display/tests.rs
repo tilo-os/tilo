@@ -1756,15 +1756,25 @@ fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
     let diagnostic = "Rejected unsupported display plan: UnsupportedMode(\"DP-1\")";
     let mut transaction =
         DisplayTransaction::prepare_request(pane.display_set(), DisplayConfig::default()).unwrap();
-    for (state, said) in [
+    // How often the page says each outcome: a refusal is said by its own
+    // card, so it has no notice, and the page says it no more often than it
+    // says one notice.
+    let mut times_said = Vec::new();
+    for (state, said, notice) in [
+        (
+            DisplayTransactionState::Confirmed,
+            "display-changes-kept",
+            true,
+        ),
         (
             DisplayTransactionState::Rejected,
             "display-rejected-caption",
+            false,
         ),
-        (DisplayTransactionState::Confirmed, "display-changes-kept"),
         (
             DisplayTransactionState::Reverted,
             "display-changes-reverted",
+            true,
         ),
     ] {
         transaction.id += 1;
@@ -1778,14 +1788,20 @@ fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
         )
         .unwrap();
         assert!(pane.poll(), "the page follows the document");
-        assert_eq!(pane.notice, Some(t(said)), "{state:?}");
+        assert_eq!(pane.notice, notice.then(|| t(said)), "{state:?}");
         let mut words = Vec::new();
         page_words(pane.compose().as_ref(), &mut words);
         assert!(
             words.iter().all(|word| !word.contains(diagnostic)),
             "{state:?}: the page repeats the compositor's diagnostic: {words:?}"
         );
+        times_said.push(words.iter().filter(|word| **word == t(said)).count());
     }
+    assert!(times_said[0] > 0, "the page says the change was kept");
+    assert_eq!(
+        times_said[1], times_said[0],
+        "the page says a refusal once, as it says a kept change"
+    );
     assert_eq!(
         pane.inspection()["transaction"]["message"],
         diagnostic,
