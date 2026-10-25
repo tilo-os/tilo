@@ -730,6 +730,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/json-text.test.mjs",
   "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/profile-photos.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-status.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs",
