@@ -94,6 +94,9 @@ impl Schedule {
 pub enum SnapType {
     Auto,
     Manual,
+    /// The repository did not record who started this snapshot. Unknown is
+    /// a fact about the record, not a guess at "Manual".
+    Unknown,
 }
 
 impl SnapType {
@@ -101,6 +104,7 @@ impl SnapType {
         match self {
             SnapType::Auto => "Automatic",
             SnapType::Manual => "Manual",
+            SnapType::Unknown => "Not recorded",
         }
     }
 }
@@ -115,6 +119,8 @@ pub enum Retention {
     Weekly,
     Monthly,
     Keep,
+    /// The repository did not record the class this snapshot is held under.
+    Unknown,
 }
 
 impl Retention {
@@ -126,6 +132,7 @@ impl Retention {
             Retention::Weekly => "Weekly",
             Retention::Monthly => "Monthly",
             Retention::Keep => "Until removed",
+            Retention::Unknown => "Not recorded",
         }
     }
 }
@@ -171,6 +178,8 @@ impl DestKind {
 pub enum Health {
     Ok,
     Warning,
+    /// No run has been measured against this source or destination yet.
+    Unknown,
 }
 
 #[derive(Clone, Debug)]
@@ -257,6 +266,8 @@ pub struct Snapshot {
     pub delta_bytes: u64,
     pub files_changed: u32,
     pub status: SnapStatus,
+    /// Why a failed run failed, when the engine recorded a reason.
+    pub failure: Option<String>,
     /// The snapshot's indexed contents, shown in the restore preview. Empty
     /// until the repository manifest is read. The local engine records every
     /// entry while copying, so its snapshots populate this list.
@@ -294,6 +305,7 @@ impl SampleSnapshot<'_> {
             delta_bytes: self.delta_bytes,
             files_changed: self.files_changed,
             status: self.status,
+            failure: None,
             files: sample_files(self.source_id),
         }
     }
@@ -471,12 +483,16 @@ impl Catalog {
                 dest_id: "local-destination".into(),
                 taken: local_time(manifest.created_unix_seconds).unwrap_or(now),
                 label: None,
-                kind: SnapType::Manual,
-                retention: Retention::Daily,
+                // The manifest records the snapshot, not who started it or
+                // which retention class holds it: those stay unknown rather
+                // than being invented as Manual/Daily.
+                kind: SnapType::Unknown,
+                retention: Retention::Unknown,
                 size_bytes: manifest.bytes,
                 delta_bytes: manifest.bytes,
                 files_changed: manifest.files.min(u64::from(u32::MAX)) as u32,
                 status: SnapStatus::Complete,
+                failure: None,
                 files: manifest
                     .entries
                     .iter()
@@ -501,9 +517,11 @@ impl Catalog {
                 name: source_name,
                 path: source_label,
                 kind: SourceKind::Custom,
+                // No scheduler runs in this build; the honest schedule is
+                // the one the person starts by hand.
                 schedule: Schedule::OnDemand,
                 enabled: true,
-                health: Health::Ok,
+                health: Health::Unknown,
             }],
             snapshots,
             destinations: vec![Destination {
@@ -514,7 +532,7 @@ impl Catalog {
                 // A local folder reports no capacity of its own.
                 total_bytes: None,
                 encrypted: false,
-                health: Health::Ok,
+                health: Health::Unknown,
             }],
         }
     }

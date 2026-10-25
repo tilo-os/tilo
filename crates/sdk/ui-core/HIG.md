@@ -1711,6 +1711,65 @@ Not automated yet; grep a diff for these:
 `ui` primitive, link the primitive from the relevant section so the rule and its
 enforcement stay together.*
 
+## 10. Truth: every value carries its measure and its as-of
+
+A number on screen is a claim. `ui::fact::Fact` keeps the claim and its
+provenance together so a view cannot draw the number without answering
+"measured how?", "from where?" and "when?".
+
+- **Measure first.** A `Fact` has a `Measure` naming what the number counts
+  (`Memory in use`, `Memory (RSS)`, `Packets dropped`) and its unit when it has
+  one. Two values called "Memory" are two different claims; name them
+  differently on screen as well as in the model.
+- **Provenance is the caption line under the value, always.** Use
+  `Fact::value_or_dash()` in the value position and `Fact::caption(now)` under
+  it. The caption carries the source and the age ("measured 2 s ago · this
+  device"). It is never beside the value and never omitted.
+- **Age makes the claim honest.** `Fact::is_stale(now)` is true when the
+  reading is older than the interval it was measured for. Dim the caption, not
+  the value: dimming a good number teaches people to distrust good data.
+- **Unknown is a designed state.** `Fact::unknown(measure, reason)` renders an
+  em dash (`—`) plus why, and the app offers the action that would resolve it.
+  Zero is a measurement, not a stand-in for "we did not measure". Do not show
+  a healthy state, a count or a rate you did not read.
+- **A sparkline states its period and its scale.** A shape with no time span
+  and no axis is not a reading. Put "last 2 min" and the top of the scale in
+  the caption (or in the chart's axis labels) so the person can answer "when
+  did that spike happen" and "how large is it".
+
+## 11. Capability: privilege is granted, never inferred
+
+A privileged verb declares the capability it needs. Before a view draws a
+control for it, it asks `ui::capability_door` for the resolution and draws one
+of exactly three faces:
+
+| Resolution | The surface draws |
+|---|---|
+| `Granted` | the real control, doing the real thing |
+| `Grantable` | the control plus an explicit grant step, in the person's words ("Tilo needs your permission to change firewall rules") |
+| `Unavailable` | no control at all: one sentence of why, and what would make it available ("the firewall service isn't running — start it") |
+
+- **No inert control may exist.** A switch, Apply button or menu item for a
+  privileged act is drawn only in the granted face. If it would not do the
+  thing, it is not drawn. An unavailable surface has no disabled switches
+  standing in for the truth.
+- **Ask for the grant once, in words.** `Door::grantable` carries the words the
+  grant step says. The grant is object-scoped ("change firewall rules", not
+  "manage the system"), so revoking one privileged act does not silently take
+  away another.
+- **Discovery is not resolution.** `which()`, `$PATH` and environment variables
+  are test seams (`#[cfg(test)]`, `testing`), never how a product decides what
+  it can do. An app may ask the platform or the person; it may not infer
+  privilege from its environment.
+- **A preview is a person's choice, not a hidden mode.** If a flow offers a
+  preview, it is an apply/discard diff the person selected. It is never a mode
+  in which "Apply" silently does nothing.
+- **Draw through `Door::face`.** `Door::control()` is the shorthand for the
+  granted face only; the grantable and unavailable faces need their own grant
+  step or sentence.
+
+---
+
 ## Form composition
 
 For content-first account/settings forms, use `FormPage`, `Form`, `FormSection` and `Field`; see [automatic and guided forms](FORM_COMPOSITION.md) for the API, independent override/reset rules and runnable primitive comparison. Manual composition remains supported with the same standard controls.
