@@ -73,13 +73,13 @@ fn a_click_picks_the_deepest_part_under_the_pointer_and_ends() {
 fn the_wheel_widens_to_the_part_around_and_narrows_back() {
     let (mut picker, now) = opened();
     picker.hover(Point::new(320.0, 60.0), &Screen, now);
-    picker.widen(true, now);
-    picker.widen(true, now);
-    picker.widen(true, now);
+    picker.widen(true, ui::tokens::MotionSource::Pointer, now);
+    picker.widen(true, ui::tokens::MotionSource::Pointer, now);
+    picker.widen(true, ui::tokens::MotionSource::Pointer, now);
     // Moving within the same part keeps the widened level.
     picker.hover(Point::new(310.0, 61.0), &Screen, now);
     assert_eq!(picker.session.as_ref().unwrap().lit().unwrap().key, "list");
-    picker.widen(false, now);
+    picker.widen(false, ui::tokens::MotionSource::Pointer, now);
     assert_eq!(picker.session.as_ref().unwrap().lit().unwrap().key, "row1");
     picker.button(Point::new(310.0, 61.0), true, false, &Screen);
     picker.button(Point::new(310.0, 61.0), false, false, &Screen);
@@ -137,19 +137,51 @@ fn escape_leaves_without_a_pick_and_nothing_picked_is_a_cancel() {
 }
 
 #[test]
-fn the_highlight_glides_to_the_next_part() {
+fn the_pointer_glides_the_highlight_and_then_asks_for_no_frames() {
     let (mut picker, now) = opened();
     picker.hover(Point::new(10.0, 10.0), &Screen, now);
+    assert!(
+        !picker.needs_animation_frame(now),
+        "the first part lit lands"
+    );
     picker.hover(Point::new(10.0, 90.0), &Screen, now);
     let glide = picker.session.as_ref().unwrap().glide.unwrap();
-    assert_eq!(glide.at(now), row(0), "it starts where it was");
+    assert_eq!(glide.get(now), row(0), "it starts where it was");
     let later = now + ui::time::Duration::from_millis(60);
-    let between = glide.at(later);
+    let between = glide.get(later);
     assert!(between.y0 > 0.0 && between.y0 < 80.0, "{between:?}");
     assert!(picker.needs_animation_frame(later));
-    let settled = now + ui::time::Duration::from_secs(1);
-    assert!((glide.at(settled).y0 - 80.0).abs() < 0.5);
+    let settled = glide.settles_at().expect("it is moving");
+    assert_eq!(glide.get(settled), row(2));
     assert!(!picker.needs_animation_frame(settled));
+}
+
+#[test]
+fn a_key_lands_the_highlight_with_no_frames_asked() {
+    let (mut picker, now) = opened();
+    picker.hover(Point::new(350.0, 10.0), &Screen, now);
+    let button = Rect::new(300.0, 5.0, 390.0, 35.0);
+    assert_eq!(
+        picker.session.as_ref().unwrap().glide.unwrap().get(now),
+        button
+    );
+    picker.key(&Key::Named(NamedKey::ArrowUp), now);
+    let glide = picker.session.as_ref().unwrap().glide.unwrap();
+    assert_eq!(
+        glide.get(now),
+        row(0),
+        "it is on the row the key widened to"
+    );
+    assert!(!glide.is_moving(now));
+    assert!(!picker.needs_animation_frame(now));
+}
+
+#[test]
+fn the_wheel_glides_the_highlight() {
+    let (mut picker, now) = opened();
+    picker.hover(Point::new(350.0, 10.0), &Screen, now);
+    picker.widen(true, ui::tokens::MotionSource::Pointer, now);
+    assert!(picker.needs_animation_frame(now));
 }
 
 #[test]
