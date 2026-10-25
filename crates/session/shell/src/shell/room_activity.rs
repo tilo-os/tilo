@@ -1784,6 +1784,7 @@ mod tests {
                 report: tilo_automation::RunReport {
                     run,
                     shortcut: "publish".into(),
+                    version: None,
                     trigger: "manual".into(),
                     mode: tilo_automation::RunMode::Unattended,
                     steps: Vec::new(),
@@ -1986,6 +1987,7 @@ mod tests {
             report: tilo_automation::RunReport {
                 run,
                 shortcut: "publish".into(),
+                version: None,
                 trigger: "manual".into(),
                 mode: tilo_automation::RunMode::Unattended,
                 steps: vec![tilo_automation::StepRecord {
