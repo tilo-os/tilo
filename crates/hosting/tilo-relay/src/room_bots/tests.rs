@@ -1441,3 +1441,82 @@ async fn a_bot_installed_from_a_program_file_is_named_for_itself_not_its_path() 
         .unwrap();
     assert_eq!(kept, installed);
 }
+
+/// A room installed from an older image keeps its bot when the host starts
+/// on a newer one, and the bot runs the program the newer image ships: a
+/// grant the older program lacked (reaching outside when the bridge settles
+/// an outbox entry) reaches the room's row, so the room stops refusing the
+/// bot's settles.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its room stay live for the whole test"
+)]
+async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
+    use membership::{HostRootCertifier, Kept, keep_member};
+    let shipped = include_str!("../../../../../apps/discord/bridge/program.json");
+    let settle = "resource:*/**/item:*/**/action:field-edit";
+    // The bridge as an older image shipped it: settling read and undoable only.
+    let mut older: serde_json::Value = serde_json::from_str(shipped).unwrap();
+    let grant = older["grant"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|grant| grant["node"].as_str().unwrap().ends_with(settle))
+        .expect("the bridge grants settling its outbox entries");
+    grant["kinds"] = serde_json::json!(["read", "undoable"]);
+
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let (room, _) = chat_room(&rooms, &cert).await;
+    let file = scratch.path().join("discord-bridge.json");
+    let entry = file.to_str().unwrap();
+    let dir = scratch.path().join("bot");
+    let certifier = HostRootCertifier::new(owner_root());
+
+    std::fs::write(&file, serde_json::to_vec(&older).unwrap()).unwrap();
+    let before = installed::install(&dir, entry, serde_json::Map::new())
+        .await
+        .unwrap();
+    let (kept, _) = keep_member(&rooms, &room, &cert, &certifier, &before)
+        .await
+        .unwrap();
+    assert_eq!(kept, Kept::Installed);
+
+    // The newer image ships the bridge as it is now.
+    std::fs::write(&file, shipped).unwrap();
+    let after = installed::install(&dir, entry, serde_json::Map::new())
+        .await
+        .unwrap();
+    assert_eq!(after.installation, before.installation, "the same bot");
+    assert_eq!(after.installed_at_ms, before.installed_at_ms);
+    assert_ne!(after.program, before.program, "it runs the shipped program");
+    let grants = &after.shortcut().unwrap().grant;
+    assert!(
+        grants
+            .iter()
+            .any(|rule| rule.node.to_string().ends_with(settle)
+                && rule.kinds.contains(tilo_action_policy::ActionKind::Outside)),
+        "the shipped bridge may reach outside as it settles: {grants:?}"
+    );
+    let (kept, _) = keep_member(&rooms, &room, &cert, &certifier, &after)
+        .await
+        .unwrap();
+    assert_eq!(kept, Kept::Updated, "the room's row follows the program");
+    let row = rooms
+        .installed_bot(&room, &after.installation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.installation.program,
+        tilo_automation::program::program_hash(after.program.as_bytes())
+    );
+    // Read back on the next start: nothing changes when the file did not.
+    let again = installed::install(&dir, entry, serde_json::Map::new())
+        .await
+        .unwrap();
+    assert_eq!(again, after);
+}
