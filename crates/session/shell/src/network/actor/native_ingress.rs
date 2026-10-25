@@ -397,6 +397,13 @@ impl ActorState {
         if self.host_sessions.keys().any(|(topic, _)| *topic == ws) {
             return;
         }
+        // A room this device's own host serves is joined again in process,
+        // now: no heartbeat runs for it, and until it is, nothing the host
+        // commits reaches this device's view of the room.
+        if self.native_routes.is_local(ws) {
+            self.retry_native_routes();
+            return;
+        }
         let after = (!scope.reaches_governor()).then(|| scope.host().clone());
         self.fail_over(ws, after.as_ref());
     }
