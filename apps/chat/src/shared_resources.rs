@@ -133,7 +133,6 @@ impl Navigation {
     }
 
     /// What the last link request on `message` came to.
-    #[cfg(test)]
     pub(crate) fn status(&self, message: &str) -> Option<&Result<(), String>> {
         self.status
             .as_ref()

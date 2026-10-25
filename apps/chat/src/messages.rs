@@ -25,7 +25,8 @@ use crate::model::ChannelKind;
 use crate::parts::{self, ChatPart};
 use crate::record::{
     AttachmentUpdate, Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting,
-    ProviderStream, Revision, SharedReference, Step, Transition, Work, WorkUpdate, reply_id,
+    ProviderStream, Revision, ShareAccess, SharedReference, Step, Transition, WindowShare, Work,
+    WorkUpdate, reply_id,
 };
 
 fn author(cx: &ActionCx) -> Result<String, Refusal> {
@@ -132,6 +133,7 @@ impl ChatPart {
                 source_provider: posting.source_provider.map(Atom),
                 attachment: posting.attachment,
                 appearance: posting.appearance.map(Into::into),
+                share: posting.share,
                 ..Message::default()
             },
         );
@@ -312,6 +314,104 @@ impl ChatPart {
             },
         )
         .map(drop)
+    }
+
+    /// Share a window live.
+    ///
+    /// Post a window's resource so everyone in the channel sees it as it is
+    /// now, drawn by its own app from their own copy of its record, and opens
+    /// it with `access`: `view` (the default) or `edit`. Its sharer stops
+    /// sharing it with `stop-sharing`.
+    #[action(incoming_message)]
+    pub fn share_window(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The channel")] channel: Id,
+        #[param("The window's resource: its kind, id and label")] reference: SharedReference,
+        #[param("The record it lives in", example = "record:so.tilo.notes:plan")]
+        source_provider: String,
+        #[param("What the people who open it may do: view or edit")] access: Option<ShareAccess>,
+        #[param("Words accompanying it")] text: Option<String>,
+        #[param("Filled in where it is posted; leave it out")] mentions: Option<
+            Vec<crate::mention::Mention>,
+        >,
+    ) -> Result<(), Refusal> {
+        let reference = reference.resolved();
+        if !crate::record::valid_reference(&reference) || reference.span.is_some() {
+            return Err(Refusal::new(
+                "a window is shared as a whole Tilo resource address",
+            ));
+        }
+        if !crate::record::valid_source_provider(&source_provider) {
+            return Err(Refusal::new("an existing record provider is required"));
+        }
+        let id = cx.id();
+        let by = author(cx)?;
+        let ts = seconds(cx);
+        self.append(
+            id,
+            &channel,
+            by,
+            ts,
+            Posting {
+                text: text.unwrap_or_default().trim().to_owned(),
+                reference: Some(reference),
+                source_provider: Some(source_provider),
+                share: Some(WindowShare {
+                    access: access.unwrap_or_default(),
+                    open: true,
+                    ended: false,
+                }),
+                mentions: mentions.unwrap_or_default(),
+                ..Posting::default()
+            },
+        )
+        .map(drop)
+    }
+
+    /// Stop sharing.
+    ///
+    /// End a window you shared: the message keeps saying what was shared,
+    /// and no one sees or opens it from there any more.
+    #[action(item = messages)]
+    pub fn stop_sharing(&mut self, cx: &mut ActionCx, message: &Id) -> Result<(), Refusal> {
+        let row = self
+            .messages
+            .get_mut(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        own(cx, row)?;
+        let share = row
+            .share
+            .as_mut()
+            .ok_or_else(|| Refusal::new("the message shares no window"))?;
+        share.ended = true;
+        share.open = false;
+        Ok(())
+    }
+
+    /// Say whether a shared window is open.
+    ///
+    /// Its sharer's Chat says so when they close the window or open it
+    /// again, so the embed shows whether it is live.
+    #[action(item = messages, audience = "agents")]
+    pub fn share_open(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        open: bool,
+    ) -> Result<(), Refusal> {
+        let row = self
+            .messages
+            .get_mut(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        own(cx, row)?;
+        let share = row
+            .share
+            .as_mut()
+            .ok_or_else(|| Refusal::new("the message shares no window"))?;
+        // An ended share stays ended: reopening the window shares nothing.
+        share.open = open && !share.ended;
+        Ok(())
     }
 
     /// Deliver message.
@@ -670,7 +770,8 @@ impl Chained for ChatPart {
             ChatPartAction::Post(_)
             | ChatPartAction::DeliverMessage(_)
             | ChatPartAction::PostFile(_)
-            | ChatPartAction::ShareResource(_) => new(),
+            | ChatPartAction::ShareResource(_)
+            | ChatPartAction::ShareWindow(_) => new(),
             // A reply being streamed stays where it started.
             ChatPartAction::StreamOutput(StreamOutput { reply, .. }) => {
                 holding(&Id::from_raw(reply.clone())).or_else(|_| new())
@@ -707,6 +808,11 @@ impl Chained for ChatPart {
                     .unwrap_or_else(|| share.reference.label.clone());
                 share.mentions = Some(chat.mentions(&text, &[]));
             }
+            ChatPartAction::ShareWindow(share) => {
+                takes_posts(chat, &share.channel)?;
+                share.mentions =
+                    Some(chat.mentions(share.text.as_deref().unwrap_or_default(), &[]));
+            }
             ChatPartAction::EditMessage(edit) => {
                 let body = edit.body.clone().unwrap_or_default();
                 edit.mentions = Some(chat.mentions(&edit.text, &body));
@@ -725,7 +831,11 @@ impl ChatPart {
         match action {
             ChatPartAction::DeleteMessage(chat_part::DeleteMessage { message })
             | ChatPartAction::RemoveMessage(chat_part::RemoveMessage { message })
-            | ChatPartAction::Pin(chat_part::Pin { message, .. }) => Some(message.clone()),
+            | ChatPartAction::Pin(chat_part::Pin { message, .. })
+            | ChatPartAction::StopSharing(chat_part::StopSharing { message })
+            | ChatPartAction::ShareOpen(chat_part::ShareOpen { message, .. }) => {
+                Some(message.clone())
+            }
             // A field edit of one message (a reaction) names it in its path.
             ChatPartAction::FieldEdit(edit) => match edit.path() {
                 [Segment::Field(field), Segment::Item(message), ..] if field == "messages" => {

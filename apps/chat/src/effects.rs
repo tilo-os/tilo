@@ -712,6 +712,7 @@ impl ChatApp {
             "work": message.work,
             "reference": message.reference,
             "sourceProvider": message.source_provider,
+            "share": message.share,
         }))
     }
 }

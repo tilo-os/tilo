@@ -527,6 +527,7 @@ impl ChatApp {
             && !self.emoji_open
             && self.history_open.is_none()
             && !self.attach_open
+            && self.live_shares.panel.is_none()
             && (!matches!(logical_key, Key::Named(NamedKey::Escape))
                 || self.focused_composer().mention_picker_open());
         if composer_owns {
@@ -555,6 +556,7 @@ impl ChatApp {
             && !self.emoji_open
             && self.history_open.is_none()
             && !self.attach_open
+            && self.live_shares.panel.is_none()
         {
             self.route_composer_key(event, scale, modifiers, doc);
             true
@@ -681,7 +683,11 @@ impl ChatApp {
                 let mine = self.message(&msg).is_some_and(|m| self.is_me(&m.author));
                 let author = self.message(&msg).map(|m| m.author.clone());
                 let items = if mine {
-                    MenuAction::for_message().to_vec()
+                    let mut items = MenuAction::for_message().to_vec();
+                    if self.message(&msg).is_some_and(|m| self.is_my_live_share(m)) {
+                        items.insert(0, MenuAction::StopSharing);
+                    }
+                    items
                 } else {
                     let mut items = MenuAction::for_others_message().to_vec();
                     if !self.perms.can_moderate() {
@@ -812,6 +818,12 @@ impl ChatApp {
             }
             Hit::CopyResourceLink(message) => self.begin_resource_navigation(&message),
             Hit::OpenResource(message) => self.open_shared_resource(&message),
+            Hit::OpenShare(message) => self.open_share(&message),
+            Hit::StopShare(message) => self.stop_share(doc, &message),
+            Hit::ShareWindowPanel if self.can_participate() => self.open_share_panel(None),
+            Hit::ShareAccess(access) => self.choose_share_access(access),
+            Hit::SharePick(tab) => self.choose_share_window(tab),
+            Hit::ShareChosen => self.share_chosen(doc),
             Hit::CloseThread => {
                 self.close_thread();
             }
@@ -1160,6 +1172,8 @@ impl ChatApp {
     fn on_hit_dismiss(&mut self) {
         if self.attach_open {
             self.attach_open = false;
+        } else if self.live_shares.panel.is_some() {
+            self.live_shares.panel = None;
         } else if self.menu.is_some() {
             self.menu = None;
         } else if self.emoji_open {
@@ -1239,6 +1253,7 @@ impl ChatApp {
                     );
                 }
                 MenuAction::BanAuthor => self.ban_author(&id),
+                MenuAction::StopSharing => self.stop_share(doc, &id),
                 MenuAction::DeleteMessage => {
                     let mine = self.message(&id).is_some_and(|m| self.is_me(&m.author));
                     if mine {
@@ -1427,6 +1442,8 @@ impl ChatApp {
         if matches!(key, Key::Named(NamedKey::Escape)) {
             if self.attach_open {
                 self.attach_open = false;
+            } else if self.live_shares.panel.is_some() {
+                self.live_shares.panel = None;
             } else if self.menu.is_some() {
                 self.menu = None;
             } else if self.emoji_open {
@@ -1746,10 +1763,18 @@ impl ChatApp {
         self.emoji_open = false;
         self.emoji_target = None;
         self.history_open = None;
+        self.live_shares.panel = None;
         // Without a workspace on this device (a browser page) the files to
-        // share are the person's own: the platform's chooser opens at once.
+        // share are the person's own: the platform's chooser opens at once,
+        // unless there is a window to share too, which the menu offers.
         if !self.external_services {
-            self.choose_device_files();
+            if ui::window_share::windows().is_empty() {
+                self.choose_device_files();
+            } else {
+                self.attachment_status = None;
+                self.attach_entries.clear();
+                self.attach_open = true;
+            }
             return;
         }
         // A dismissed picker may still have one bounded enumeration worker.

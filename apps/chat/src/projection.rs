@@ -221,6 +221,7 @@ pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
         pinned: message.pinned,
         work: message.work.as_ref().and_then(work_row),
         appearance: message.appearance.clone().map(Into::into),
+        share: message.share.clone(),
     }
 }
 
