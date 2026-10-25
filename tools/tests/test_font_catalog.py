@@ -93,7 +93,7 @@ class CatalogBuildTest(unittest.TestCase):
         cls.directory.cleanup()
 
     def test_missing_python_identifies_the_interpreter_and_preparation_tool(self):
-        environment = dict(os.environ, PATH=self.directory.name)
+        environment = dict(os.environ, PATH=self.directory.name, OUT_DIR=self.directory.name)
         environment.pop("PYTHON", None)
         default_python = "python" if os.name == "nt" else "python3"
         for executable in [default_python, str(Path(self.directory.name) / "missing-python")]:
