@@ -6,8 +6,9 @@
 //! configuration lives in a field-addressable shared Automerge document (see
 //! [`resource`]), so two instances pointed at one collab socket edit independent
 //! rules and services without clobbering each other. The live app reads/applies via
-//! `firewall-cmd` (gated, see [`backend`]); `--shots` bundles a realistic
-//! sample ruleset so the headless screenshot is fully populated offline.
+//! `firewall-cmd` under the `network.firewall` capability (see [`backend`]);
+//! `--shots` bundles a realistic sample ruleset so the headless screenshot is
+//! fully populated offline.
 //!
 //! Each device running the app applies the stored configuration to its own
 //! firewalld after every change (see [`resource`]); a screenshot shows a
@@ -22,6 +23,7 @@
 )]
 pub mod app;
 pub mod backend;
+pub mod blocked;
 pub mod locales;
 pub mod model;
 pub mod resource;

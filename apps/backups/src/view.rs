@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use ui::LocalState;
+use ui::fact::{Fact, Measure};
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::TextRole;
@@ -293,13 +294,14 @@ fn kind_title(snapshot: &Snapshot) -> &'static str {
         (SnapType::Auto, Retention::Weekly) => "Weekly snapshot",
         (SnapType::Auto, Retention::Monthly) => "Monthly snapshot",
         (SnapType::Auto, Retention::Keep) => "Kept snapshot",
+        (SnapType::Unknown, _) | (_, Retention::Unknown) => "Snapshot",
     }
 }
 
 /// The dot a place shows when it needs the person; a healthy one shows none.
 fn health_status(health: Health) -> Option<ui::widget::RowStatus<'static>> {
     match health {
-        Health::Ok => None,
+        Health::Ok | Health::Unknown => None,
         Health::Warning => Some(ui::widget::RowStatus::Warning),
     }
 }
@@ -518,30 +520,102 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
     };
     let (value, unit) = split_unit(&size(protected));
     let count = catalog.timeline(filter).len();
+    let at = ui::time::wall();
+    let tile = |label: &str, fact: Fact, unit: Option<String>, tone: Option<Tone>| {
+        let mut tile = StatTile::new(label, fact.value_or_dash().to_owned());
+        if let Some(unit) = unit {
+            tile = tile.unit(unit);
+        }
+        if let Some(tone) = tone {
+            tile = tile.tone(tone);
+        }
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(tile))
+                .push(Box::new(
+                    Text::new(&fact.caption(at))
+                        .with_role(TextRole::Caption)
+                        .dimmed(),
+                )),
+        ) as Element
+    };
+    let protected_fact = Fact::measured(
+        Measure::new("Protected size").unit(unit.clone()),
+        value,
+        "repository manifest",
+        at,
+        None,
+    );
     let mut tiles: Vec<Element> = vec![
-        Box::new(StatTile::new("Protected", value).unit(unit)),
-        Box::new(StatTile::new("Snapshots", i18n::group_digits(count as u64))),
+        tile("Protected", protected_fact, Some(unit), None),
+        tile(
+            "Snapshots",
+            Fact::measured(
+                Measure::new("Snapshots"),
+                i18n::group_digits(count as u64),
+                "repository manifest",
+                at,
+                None,
+            ),
+            None,
+            None,
+        ),
     ];
-    tiles.push(Box::new(match catalog.last_backup(filter) {
+    tiles.push(match catalog.last_backup(filter) {
         Some(last) => {
             let (value, unit) = ago(last.taken, now);
-            let tile = StatTile::new("Last backup", value).unit(unit);
-            // Two days without a good backup is the tile's news.
-            if now - last.taken > chrono::Duration::days(2) {
-                tile.tone(Tone::Warning)
-            } else {
-                tile
-            }
+            let tone = (now - last.taken > chrono::Duration::days(2)).then_some(Tone::Warning);
+            tile(
+                "Last backup",
+                Fact::measured(
+                    Measure::new("Time since last backup").unit(unit.clone()),
+                    value,
+                    "repository manifest",
+                    at,
+                    None,
+                ),
+                Some(unit),
+                tone,
+            )
         }
-        None => StatTile::new("Last backup", "None yet").tone(Tone::Warning),
-    }));
-    tiles.push(Box::new(match catalog.next_run(filter, now) {
+        None => tile(
+            "Last backup",
+            Fact::unknown(
+                Measure::new("Time since last backup"),
+                "no completed snapshot",
+            ),
+            None,
+            Some(Tone::Warning),
+        ),
+    });
+    tiles.push(match catalog.next_run(filter, now) {
         Some(next) => {
             let (value, unit) = ahead(next, now);
-            StatTile::new("Next run", value).unit(unit)
+            tile(
+                "Next run",
+                Fact::measured(
+                    Measure::new("Time to next run").unit(unit.clone()),
+                    value,
+                    "schedule",
+                    at,
+                    None,
+                ),
+                Some(unit),
+                None,
+            )
         }
-        None => StatTile::new("Next run", "On demand"),
-    }));
+        None => tile(
+            "Next run",
+            Fact::unknown(
+                Measure::new("Time to next run"),
+                "no scheduler runs on this device; back up when you choose",
+            ),
+            None,
+            None,
+        ),
+    });
     StatGroup::new(tiles)
 }
 
@@ -583,8 +657,10 @@ fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime
     if let Some(last) = catalog.last_backup(Filter::Destination(&dest.id)) {
         facts.push(Property::new("Last backup", when(last.taken, now)));
     }
-    if dest.health != Health::Ok {
-        facts.push(Property::new("Status", "Last run failed"));
+    match dest.health {
+        Health::Warning => facts.push(Property::new("Status", "Last run failed")),
+        Health::Unknown => facts.push(Property::new("Status", "Not checked yet")),
+        Health::Ok => {}
     }
     let facts = PropertyList::new(facts);
     let Some(frac) = dest.used_fraction() else {
@@ -671,7 +747,10 @@ fn snapshot_row(
     let secondary = match snapshot.status {
         SnapStatus::Complete => changed(snapshot),
         SnapStatus::Verifying => format!("Verifying on {dest}"),
-        SnapStatus::Failed => format!("Couldn’t copy to {dest}"),
+        SnapStatus::Failed => match &snapshot.failure {
+            Some(reason) => format!("Couldn’t copy to {dest}: {reason}"),
+            None => format!("Couldn’t copy to {dest} (no reason was recorded)"),
+        },
     };
     let id = snapshot.id.clone();
     let intents = intents.clone();
@@ -686,6 +765,9 @@ fn snapshot_row(
     let mut tags: Vec<(&str, ChipStyle)> = Vec::new();
     if snapshot.kind == SnapType::Manual {
         tags.push(("Manual", ChipStyle::Neutral));
+    }
+    if snapshot.kind == SnapType::Unknown {
+        tags.push(("Type not recorded", ChipStyle::Neutral));
     }
     if snapshot.retention == Retention::Keep {
         tags.push(("Kept", ChipStyle::Neutral));
@@ -752,6 +834,9 @@ pub fn snapshot_details(
         Property::new("Size", size(snapshot.size_bytes)).with_kind(TextKind::Numeric),
         Property::new("Changed", changed_size(snapshot)).with_kind(TextKind::Numeric),
     ];
+    if let Some(reason) = &snapshot.failure {
+        facts.push(Property::new("Failure", reason.clone()));
+    }
     if let Some(source) = source {
         facts.push(Property::new("Source", source.name.clone()));
         facts.push(Property::new("Folder", source.path.clone()).with_kind(TextKind::Identifier));

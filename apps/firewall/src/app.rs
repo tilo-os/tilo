@@ -25,6 +25,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::LocalState;
 use ui::a11y::{AccessNode, Politeness, Role};
+use ui::capability_door::{Capability, Door};
 use ui::theme::Theme;
 use ui::widget::data_table::TableSort;
 use ui::widget::toast::ToastKind;
@@ -33,13 +34,16 @@ use ui::window_toolbar::{ToolbarEvent, ToolbarLocation};
 
 use ui::framework::{Dispatcher, Setting};
 
+use crate::blocked::BlockedReport;
 use crate::model::{
     Action, FirewallConfig, Matcher, Proto, Rule, RuleId, Zone, ZoneKind, validate_port,
     validate_source,
 };
 use crate::model::{StoredRule, StoredZonePaths};
 use crate::resource::{AppliedConfig, ApplyOutcome, Firewall, FirewallEffect};
-use crate::view::{self, Draft, Intent, Intents, PageModel, SwitchKey, Switches, Tab};
+use crate::view::{
+    self, Draft, Intent, Intents, PageModel, PendingSwitch, SwitchKey, Switches, Tab,
+};
 use ui::framework::Submit;
 
 /// The job that applies the stored configuration to this device.
@@ -90,7 +94,13 @@ struct ViewKey {
     port_error: Option<String>,
     source_error: Option<String>,
     pending_delete: Option<RuleId>,
+    pending_switch: Option<PendingSwitch>,
     adding: bool,
+    applying: bool,
+    grantable: bool,
+    blocked_rev: u64,
+    blocked_loading: bool,
+    blocked_error: Option<String>,
     unavailable_detail: Option<String>,
 }
 
@@ -126,10 +136,23 @@ pub struct FirewallApp {
     /// could read firewalld into the record yet, and we show an honest
     /// unavailable state instead of any fabricated ruleset.
     available: bool,
+    /// Whether this window may write to the host's firewalld. False for a
+    /// capture, which stages a sample and must never touch the machine.
+    host_writes: bool,
     /// The rule the person asked to delete; the dialog confirms it.
     pending_delete: Option<RuleId>,
-    /// The add-rule dialog is open.
+    /// The add-rule dialog is open (adding or editing).
     adding: bool,
+    /// A global switch asked to change to a state that can cut this session;
+    /// the dialog confirms it first.
+    pending_switch: Option<PendingSwitch>,
+    /// What this app can do on this device, resolved rather than inferred.
+    capability: Door,
+    /// The last read of dropped traffic, or why it could not be read.
+    blocked: Option<BlockedReport>,
+    blocked_error: Option<String>,
+    blocked_loading: bool,
+    blocked_rev: u64,
 
     /// Where every on-screen affordance submits its field edit or verb: one
     /// undo step each, replayed byte-identically on peers — the same door
@@ -187,6 +210,7 @@ impl FirewallApp {
         let intents = Intents::default();
         let enabled_switch = LocalState::new(config.enabled);
         let panic_switch = LocalState::new(config.panic_mode);
+        let capability = capability_for(config.zones.is_empty());
         Self {
             shell: shell(),
             title: String::new(),
@@ -205,7 +229,14 @@ impl FirewallApp {
             wide: true,
             wide_from: 0.0,
             available,
+            host_writes: false,
             pending_delete: None,
+            pending_switch: None,
+            capability,
+            blocked: None,
+            blocked_error: None,
+            blocked_loading: false,
+            blocked_rev: 0,
             adding: false,
             dispatcher: None,
             applied: None,
@@ -252,6 +283,13 @@ impl FirewallApp {
                 self.shell.dismiss_toast();
             }
             "services" => self.tab = Tab::Services,
+            "blocked" => {
+                self.tab = Tab::Blocked;
+                self.blocked = Some(crate::blocked::sample());
+                self.blocked_rev += 1;
+            }
+            "switch-confirmation" => self.pending_switch = Some(PendingSwitch::PanicOn),
+            "stop-confirmation" => self.pending_switch = Some(PendingSwitch::Stop),
             "selected" => {
                 self.selected_rule = self
                     .selected_zone_ref()
@@ -334,6 +372,7 @@ impl FirewallApp {
     pub(crate) fn show_config(&mut self, state: &FirewallConfig) {
         if state.zones.is_empty() {
             self.set_config(state.clone());
+            self.capability = capability_for(false);
             if self.available {
                 self.available = false;
                 self.changed = true;
@@ -348,6 +387,7 @@ impl FirewallApp {
             return;
         }
         self.set_config(state.clone());
+        self.capability = capability_for(true);
         if !self.available {
             self.available = true;
             self.changed = true;
@@ -381,6 +421,15 @@ impl FirewallApp {
         self.jobs = Some(jobs);
     }
 
+    /// A live window may change this device; a capture may not.
+    pub(crate) fn set_host_writes(&mut self, allowed: bool) {
+        self.host_writes = allowed;
+    }
+
+    pub(crate) fn host_writes(&self) -> bool {
+        self.host_writes
+    }
+
     /// Apply `config` to this device's firewalld unless it holds it already
     /// or is being given it: a job of the window, the latest configuration
     /// replacing one still being applied. A failure is reported and tried
@@ -389,19 +438,24 @@ impl FirewallApp {
         let (Some(jobs), Some(applied)) = (&self.jobs, &self.applied) else {
             return;
         };
+        if !self.capability.is_granted() {
+            return;
+        }
         let Some((canonical, config)) =
             crate::resource::pending_apply(config, &applied.get()).pop()
         else {
             return;
         };
+        let door = self.capability.clone();
         if self.applying.as_deref() == Some(canonical.as_str()) && jobs.is_running(APPLY_JOB) {
             return;
         }
         self.applying = Some(canonical);
+        let app_writes = self.host_writes;
         jobs.start::<Self>(APPLY_JOB, move |cx| {
             Ok(cx.thread(
                 move |_| {
-                    let result = crate::resource::apply_on_device(&config);
+                    let result = crate::resource::apply_on_device(&config, &door, app_writes);
                     (config, result)
                 },
                 |app: &mut Self,
@@ -429,6 +483,34 @@ impl FirewallApp {
         self.available
     }
 
+    /// The capability this window's privileged verbs run under.
+    pub(crate) fn capability(&self) -> &Door {
+        &self.capability
+    }
+
+    pub(crate) fn mark_blocked_loading(&mut self) {
+        self.blocked_loading = true;
+        self.blocked_error = None;
+        self.changed = true;
+    }
+
+    pub(crate) fn finish_blocked(&mut self, read: Result<BlockedReport, String>) {
+        self.blocked_loading = false;
+        match read {
+            Ok(report) => {
+                self.blocked = Some(report);
+                self.blocked_error = None;
+                self.blocked_rev += 1;
+            }
+            Err(error) => {
+                self.blocked = None;
+                self.blocked_error = Some(error);
+                self.blocked_rev += 1;
+            }
+        }
+        self.changed = true;
+    }
+
     fn view_key(&self) -> ViewKey {
         ViewKey {
             rev: self.rev,
@@ -443,7 +525,13 @@ impl FirewallApp {
             port_error: self.draft.port_error.clone(),
             source_error: self.draft.source_error.clone(),
             pending_delete: self.pending_delete,
+            pending_switch: self.pending_switch,
             adding: self.adding,
+            applying: self.applying.is_some(),
+            grantable: self.capability.is_grantable(),
+            blocked_rev: self.blocked_rev,
+            blocked_loading: self.blocked_loading,
+            blocked_error: self.blocked_error.clone(),
             unavailable_detail: self.unavailable_detail().map(str::to_owned),
         }
     }
@@ -498,8 +586,13 @@ impl FirewallApp {
             selected_rule: self.selected_rule,
             rule_sort: &self.rule_sort,
             pending_delete,
+            pending_switch: self.pending_switch,
             draft: &self.draft,
             adding: self.adding,
+            applying: self.applying.is_some(),
+            blocked: self.blocked.as_ref(),
+            blocked_error: self.blocked_error.as_deref(),
+            blocked_loading: self.blocked_loading,
             wide: self.wide,
         };
         let page = view::zone_page(&model, &self.intents, &self.switches, &self.scroll);
@@ -526,24 +619,7 @@ impl FirewallApp {
         // A header switch the person turned asks for the edit once; the
         // switch follows the stored configuration again when it is
         // presented back, so a refused edit is not asked for every frame.
-        if self.available {
-            let enabled = self.enabled_switch.with(|on| *on);
-            if enabled != self.config.enabled {
-                self.dispatch(if enabled {
-                    Firewall::START.invoke()
-                } else {
-                    Firewall::STOP.invoke()
-                });
-            }
-            let panic = self.panic_switch.with(|on| *on);
-            if panic != self.config.panic_mode {
-                self.dispatch(if panic {
-                    Firewall::ENTER_PANIC_MODE.invoke()
-                } else {
-                    Firewall::EXIT_PANIC_MODE.invoke()
-                });
-            }
-        }
+        // The two that can cut this session ask before they act.
         self.sync_switches();
     }
 
@@ -551,7 +627,10 @@ impl FirewallApp {
         match *intent {
             Intent::SelectZone(zone) => self.select_zone(zone),
             Intent::SelectRule(id) => self.selected_rule = Some(id),
-            Intent::SetTab(tab) => self.tab = tab,
+            Intent::SetTab(tab) => {
+                self.tab = tab;
+                self.open_blocked_if_needed();
+            }
             Intent::SetMatchService(service) => {
                 self.draft.service = service;
                 self.draft.port_error = None;
@@ -560,11 +639,21 @@ impl FirewallApp {
             Intent::SetAction(action) => self.draft.action = action,
             Intent::OpenAddRule => {
                 self.adding = true;
+                self.draft.editing = None;
                 self.draft.port_error = None;
                 self.draft.source_error = None;
+                self.draft.port.set(String::new());
+                self.draft.source.set(String::new());
             }
+            Intent::EditRule(id) => self.open_edit_rule(id),
             Intent::CancelAddRule => self.adding = false,
-            Intent::AddRule => self.add_rule_from_draft(),
+            Intent::AddRule => self.save_rule_from_draft(),
+            Intent::ConfirmSwitch => self.confirm_switch(),
+            Intent::CancelSwitch => {
+                self.pending_switch = None;
+                self.sync_switches();
+            }
+            Intent::RefreshBlocked => self.read_blocked(),
             Intent::AskDelete(id) => self.pending_delete = Some(id),
             Intent::ConfirmDelete => {
                 if let Some(id) = self.pending_delete {
@@ -638,31 +727,97 @@ impl FirewallApp {
         Some(Rule::new(matcher, draft.action, source))
     }
 
-    fn add_rule_from_draft(&mut self) {
+    /// Open the add-rule dialog on an existing rule. Editing keeps the rule's
+    /// identity, so its position and enabled state survive a typo fix.
+    fn open_edit_rule(&mut self, id: RuleId) {
+        let Some(rule) = self
+            .selected_zone_ref()
+            .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
+            .cloned()
+        else {
+            return;
+        };
+        self.draft.editing = Some(id);
+        self.draft.service = matches!(rule.matcher, Matcher::Service(_));
+        match rule.matcher {
+            Matcher::Service(service) => self.draft.service_id.set(service),
+            Matcher::Port { port, proto } => {
+                self.draft.port.set(port);
+                self.draft.proto = proto;
+            }
+        }
+        self.draft.action = rule.action;
+        self.draft.source.set(rule.source);
+        self.draft.port_error = None;
+        self.draft.source_error = None;
+        self.adding = true;
+    }
+
+    fn save_rule_from_draft(&mut self) {
         if self.config.zone(self.selected_zone).is_none() {
             return;
         }
         let Some(rule) = self.validated_draft() else {
             return;
         };
-        let id = rule.id;
-        let title = rule.matcher.title();
-        self.dispatch(self.zone_paths().rules.insert_as(
-            &Firewall::rule(id),
-            usize::MAX,
-            &StoredRule {
-                matcher: rule.matcher,
-                action: rule.action,
-                source: rule.source,
-                enabled: rule.enabled,
-            },
-        ));
-        self.selected_rule = Some(id);
+        if let Some(id) = self.draft.editing {
+            let title = rule.matcher.title();
+            let paths = self.zone_paths().rules.item(&Firewall::rule(id));
+            self.dispatch(paths.matcher.set(rule.matcher));
+            self.dispatch(paths.action.set(rule.action));
+            self.dispatch(paths.source.set(rule.source));
+            self.selected_rule = Some(id);
+            self.report(format!("Updated the rule for {title}"), Tone::Success);
+        } else {
+            let id = rule.id;
+            let title = rule.matcher.title();
+            self.dispatch(self.zone_paths().rules.insert_as(
+                &Firewall::rule(id),
+                usize::MAX,
+                &StoredRule {
+                    matcher: rule.matcher,
+                    action: rule.action,
+                    source: rule.source,
+                    enabled: rule.enabled,
+                },
+            ));
+            self.selected_rule = Some(id);
+            self.report(format!("Added a rule for {title}"), Tone::Success);
+        }
         self.tab = Tab::Rules;
         self.adding = false;
+        self.draft.editing = None;
         self.draft.port.set(String::new());
         self.draft.source.set(String::new());
-        self.report(format!("Added a rule for {title}"), Tone::Success);
+    }
+
+    fn confirm_switch(&mut self) {
+        let Some(which) = self.pending_switch.take() else {
+            return;
+        };
+        match which {
+            PendingSwitch::Stop => self.dispatch(Firewall::STOP.invoke()),
+            PendingSwitch::PanicOn => self.dispatch(Firewall::ENTER_PANIC_MODE.invoke()),
+        }
+        self.changed = true;
+    }
+
+    /// Read dropped traffic for the open window. A failure is shown as the
+    /// reason it happened, never as a quiet firewall.
+    fn read_blocked(&mut self) {
+        if self.blocked_loading {
+            return;
+        }
+        self.blocked_loading = true;
+        self.blocked_error = None;
+        self.changed = true;
+        self.invoke(&FirewallEffect::ReadBlocked);
+    }
+
+    fn open_blocked_if_needed(&mut self) {
+        if self.tab == Tab::Blocked && self.blocked.is_none() && self.blocked_error.is_none() {
+            self.read_blocked();
+        }
     }
 
     fn delete_rule(&mut self, id: RuleId) {
@@ -735,8 +890,24 @@ impl FirewallApp {
                 continue;
             };
             match id.as_str() {
-                view::FIREWALL_ON => self.enabled_switch.update(|on| *on = !*on),
-                view::PANIC_MODE => self.panic_switch.update(|on| *on = !*on),
+                view::FIREWALL_ON => {
+                    if self.capability.is_granted() {
+                        self.dispatch(if self.config.enabled {
+                            Firewall::STOP.invoke()
+                        } else {
+                            Firewall::START.invoke()
+                        });
+                    }
+                }
+                view::PANIC_MODE => {
+                    if self.capability.is_granted() {
+                        self.dispatch(if self.config.panic_mode {
+                            Firewall::EXIT_PANIC_MODE.invoke()
+                        } else {
+                            Firewall::ENTER_PANIC_MODE.invoke()
+                        });
+                    }
+                }
                 view::APPLY => self.intents.push(Intent::Apply),
                 view::ADD_RULE => self.intents.push(Intent::OpenAddRule),
                 id => {
@@ -761,11 +932,15 @@ impl FirewallApp {
         if self.available {
             let enabled = self.enabled_switch.with(|on| *on);
             let panic = self.panic_switch.with(|on| *on);
-            NavShell::push_window_actions(
-                &mut toolbar,
-                view::window_actions(enabled, panic, self.tab),
-            );
-            toolbar.views = Some(view::window_views(self.tab));
+            // Every privileged control comes through the door: an
+            // unavailable capability draws no switch, Apply or panic item.
+            if let Some(actions) = self
+                .capability
+                .control(|| view::window_actions(enabled, panic, self.tab, self.applying.is_some()))
+            {
+                NavShell::push_window_actions(&mut toolbar, actions);
+                toolbar.views = Some(view::window_views(self.tab));
+            }
         }
         ui::window_toolbar::declare(Some(toolbar));
     }
@@ -778,6 +953,24 @@ impl FirewallApp {
         if let Some(notice) = failure {
             self.report(notice.text, notice.tone);
         }
+    }
+}
+
+/// What this app may do on this device. The packaged app is granted the
+/// firewall capability; a device with no readable firewalld gets the
+/// unavailable face, with the sentence that says what would change it. The
+/// backend never infers this from `$PATH` or an environment variable.
+fn capability_for(readable: bool) -> Door {
+    if readable {
+        Door::granted(Capability::FIREWALL)
+    } else {
+        Door::new(
+            Capability::FIREWALL,
+            ui::capability_door::Resolution::unavailable(
+                "The firewall service isn\u{2019}t running, so no rule can be applied.",
+            )
+            .with_remedy("Start firewalld, then try again."),
+        )
     }
 }
 
