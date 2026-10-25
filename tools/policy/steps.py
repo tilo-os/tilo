@@ -18,7 +18,7 @@ MANIFEST = "tools/policy/steps.toml"
 GIT_INDEX = "tools/ci/t-git-index.sh"
 FINDINGS = "tools/policy/findings.py"
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-FIELDS = {"name", "label", "run", "inputs", "git", "tests", "covered_by", "pre_push"}
+FIELDS = {"name", "label", "run", "inputs", "git", "tests", "history", "covered_by", "pre_push"}
 # What a step a push runs may not be: it lists the tree through Git (t indexes all of it first),
 # reads the whole tree, or builds. Those wait for main, which runs every default check.
 WHOLE_TREE = frozenset({"**"})
@@ -41,6 +41,7 @@ class Step:
     tests: bool
     covered_by: str | None
     pre_push: bool = False
+    history: bool = False
 
     @property
     def check(self) -> str:
@@ -71,7 +72,9 @@ def load(root: Path = ROOT) -> list[Step]:
             raise ValueError(f"{MANIFEST}: a step's name is lowercase words joined by '-', not {name!r}")
         step = Step(name, entry["label"], " ".join(entry["run"].replace("\\\n", " ").split()),
                     tuple(entry.get("inputs", ())), bool(entry.get("git")), bool(entry.get("tests")),
-                    entry.get("covered_by"), bool(entry.get("pre_push")))
+                    entry.get("covered_by"), bool(entry.get("pre_push")), bool(entry.get("history")))
+        if step.history and not step.tests:
+            raise ValueError(f"{MANIFEST}: step {name} says history = true, which only the suite's tests may")
         if (step.tests, name) in seen:
             raise ValueError(f"{MANIFEST}: two steps are called {name}")
         if step.covered_by is None and not step.inputs:

@@ -16,6 +16,8 @@
 #            .git, it runs under tools/ci/t-git-index.sh, which indexes the files present
 #   tests    a test of the suite's own tools, run after the checks of the tree: its fixtures
 #            write beside the sources, so under t it gets a private copy of them
+#   history  a test that reads the commit's Git history: under t it gets t's .git, which keys
+#            its result per commit, so it reruns on every commit of main
 #
 # Workspace membership, the repository layout and the code map are t.toml's `workspace-layout`
 # and `codemap` checks, and the SDK's portability, capabilities and browser desktop registry its
@@ -431,6 +433,7 @@ run = "python3 tools/policy/run_unit_tests.py tools/tests"
 tests = true
 # Some 240 test files of tools across the tree, which read what those tools read.
 inputs = ["**"]
+history = true
 pre_push = true
 
 [[step]]
@@ -463,7 +466,14 @@ label = "Builder candidate workflow tests"
 run = "python3 os/tests/test_builder_candidate_workflow.py"
 tests = true
 inputs = ["t.toml", ".forgejo/workflows/**", "os/dev/**", "os/Containerfile.builder", "tools/ci/**",
-          "dist/ci/install-build-deps.sh", "crates/agent/agent-participant/tests/host_agents.rs"]
+          "dist/ci/install-build-deps.sh", "crates/agent/agent-participant/tests/host_agents.rs",
+          "crates/browser/tilo-browser-peer/tests/end_to_end.rs",
+          "crates/browser/tilo-browser-peer/tests/passkey_root.rs",
+          "crates/browser/tilo-browser-peer/tests/node_workspace.rs",
+          "crates/browser/tilo-browser-peer/tests/voice_browsers.rs",
+          "scripts/legacy-app-subjects.sh",
+          # t.toml's checks as t expands them: the app matrix lists apps/*/tilo-app.toml.
+          "apps/*/tilo-app.toml"]
 pre_push = true
 
 
