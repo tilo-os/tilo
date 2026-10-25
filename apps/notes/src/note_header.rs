@@ -12,10 +12,10 @@ use std::rc::Rc;
 
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{Chip, Column, Row, Text, Widget};
+use ui::widget::{Chip, Column, ReactionStripWidget, Row, Text, Widget};
 
 use crate::effect::NotesEffect;
-use crate::main_panel::{BacklinkChip, TagChip};
+use crate::main_panel::{BacklinkChip, NoteReactions, TagChip};
 use crate::notebook::Notebook;
 
 /// What an incoming-link button says: the source note, and how many times it
@@ -32,6 +32,8 @@ fn backlink_label(backlink: &BacklinkChip) -> String {
 #[derive(Default)]
 pub struct NoteHeader {
     tags: Vec<TagChip>,
+    /// The reactions to the note, under its tags.
+    reactions: Option<NoteReactions>,
     backlinks: Vec<BacklinkChip>,
     captions: Vec<String>,
     /// What the built caption lines read when they sync: a line's words can
@@ -42,12 +44,21 @@ pub struct NoteHeader {
     stale: bool,
     /// What the chips invoke, once the notebook's window is attached.
     actions: Option<ui::framework::Actions<Notebook>>,
+    /// Where a reaction goes, once the notebook's window is attached.
+    notebook: Option<ui::framework::Dispatcher<Notebook>>,
 }
 
 impl NoteHeader {
     /// Bind the chips to the notebook window's effects from now on.
     pub fn attach(&mut self, actions: ui::framework::Actions<Notebook>) {
         self.actions = Some(actions);
+        self.stale = true;
+    }
+
+    /// Send the reactions' edits to the notebook window's dispatcher from
+    /// now on.
+    pub fn set_notebook(&mut self, notebook: ui::framework::Dispatcher<Notebook>) {
+        self.notebook = Some(notebook);
         self.stale = true;
     }
 
@@ -68,6 +79,22 @@ impl NoteHeader {
             self.stale = true;
         }
         changed
+    }
+
+    /// Show these reactions (`None`: none). Returns whether the header
+    /// changed.
+    pub fn set_reactions(&mut self, reactions: Option<NoteReactions>) -> bool {
+        let changed = self.reactions != reactions;
+        if changed {
+            self.reactions = reactions;
+            self.stale = true;
+        }
+        changed
+    }
+
+    /// The reactions shown, if any.
+    pub fn reactions(&self) -> Option<&NoteReactions> {
+        self.reactions.as_ref()
     }
 
     /// Show these incoming links. Returns whether the header changed.
@@ -117,9 +144,13 @@ impl NoteHeader {
         }
     }
 
-    /// Whether there is nothing to show: no tags, no captions, no links.
+    /// Whether there is nothing to show: no tags, no reactions, no
+    /// captions, no links.
     pub fn is_empty(&self) -> bool {
-        self.tags.is_empty() && self.backlinks.is_empty() && self.captions.is_empty()
+        self.tags.is_empty()
+            && self.reactions.is_none()
+            && self.backlinks.is_empty()
+            && self.captions.is_empty()
     }
 
     /// The widgets, rebuilt first when the content changed since the last
@@ -145,6 +176,28 @@ impl NoteHeader {
     /// The built widgets, mutably, as of the last layout pass.
     pub fn built_mut(&mut self) -> Option<&mut Column> {
         self.column.as_mut()
+    }
+
+    /// The note's reactions as the shared strip: a pill toggles the
+    /// person's reaction with its emoji, the add button opens the shared
+    /// picker, and either is the notebook's field edit, as the person.
+    fn reaction_strip(&self, reactions: &NoteReactions) -> ReactionStripWidget {
+        let mut strip = ReactionStripWidget::new(reactions.groups.clone(), reactions.me.clone())
+            .with_id("notes.reactions")
+            .can_react(reactions.can_react && self.notebook.is_some())
+            .with_names(|reactor| reactor.name.clone().unwrap_or_else(|| reactor.by.clone()));
+        if let Some(notebook) = self.notebook.clone() {
+            let page = crate::notebook::page_id(reactions.page);
+            strip = strip.on_toggle(move |toggle| {
+                let field = Notebook::paths().pages.item(&page).reactions;
+                notebook.submit(if toggle.react {
+                    field.react(toggle.emoji)
+                } else {
+                    field.unreact(toggle.emoji)
+                });
+            });
+        }
+        strip
     }
 
     fn build(&self, theme: &Theme) -> Column {
@@ -176,6 +229,9 @@ impl NoteHeader {
                 row = row.push(Box::new(chip));
             }
             top = top.push(Box::new(row));
+        }
+        if let Some(reactions) = &self.reactions {
+            top = top.push(Box::new(self.reaction_strip(reactions)));
         }
         self.shown_captions.replace(self.captions.clone());
         for index in 0..self.captions.len() {
