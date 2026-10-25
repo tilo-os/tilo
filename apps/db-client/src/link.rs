@@ -72,6 +72,8 @@ pub struct ViewModel {
     pub pending_sql: String,
     /// Name of the active connection, for the window header.
     pub active_name: String,
+    /// The result row the person chose, as an index into the result's rows.
+    pub selected_row: Option<usize>,
 }
 
 impl Default for ViewModel {
@@ -96,6 +98,7 @@ impl Default for ViewModel {
             dialog: None,
             pending_sql: String::new(),
             active_name: String::new(),
+            selected_row: None,
         }
     }
 }
@@ -124,6 +127,14 @@ pub enum Intent {
     LoadSnippet(usize),
     /// Clear the error the last action ended with.
     DismissStatus,
+    /// Stop the query in flight.
+    Cancel,
+    /// Copy the row selected in the result table.
+    CopyRow,
+    /// Copy the whole result.
+    CopyResult,
+    /// Choose a row of the result table.
+    SelectRow(Option<usize>),
     /// Show the previous or next page of the open table's rows.
     PreviousPage,
     NextPage,
