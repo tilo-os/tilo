@@ -33,6 +33,21 @@ enum Asked {
 use ui_core::widget::Edits;
 use ui_core::widget::controls::{AttributedControlInvocation, Origin};
 
+/// What reacting needs: an undoable change below the reactions field,
+/// wherever it is.
+fn reaction_need() -> ActionNeed {
+    ActionNeed::reactions()
+}
+
+/// Whether the field edit in `arguments` reacts or takes a reaction back.
+fn reacts(arguments: &serde_json::Map<String, serde_json::Value>) -> bool {
+    arguments
+        .get(tilo_resource::EDIT_PARAM)
+        .and_then(|edit| edit.get("op"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|op| op == "react" || op == "unreact")
+}
+
 /// A queued invocation and who asked for it.
 type Queued = (AttributedControlInvocation, Origin);
 
@@ -540,6 +555,40 @@ impl DispatchCore {
         })
     }
 
+    /// Whether the participant may react here: never in a past version,
+    /// else as the room grants reactions, which the Commenter role does as
+    /// it grants comments.
+    pub(crate) fn may_react(&self) -> bool {
+        !self.past && self.may(&reaction_need())
+    }
+
+    /// React (or take a reaction back) at `path`, a [`Reactions`](tilo_resource::Reactions)
+    /// field of the resource, as the person this window is for: the field
+    /// edit `op` through the door, as [`Dispatcher::submit`] submits one,
+    /// for code that does not know the resource's type (the window's bar).
+    pub(crate) fn submit_reaction(
+        &self,
+        path: Vec<tilo_resource::Segment>,
+        op: tilo_resource::EditOp,
+    ) {
+        let id = tilo_resource::FIELD_EDIT;
+        if self.refusal(id, false) {
+            return;
+        }
+        if !self.may_react() {
+            self.refuse(id, self.not_allowed(&reaction_need()));
+            return;
+        }
+        let edit = Edit::<()>::new(path, op);
+        match tilo_resource::__private::json_via_bytes(&edit) {
+            Ok(edit) => self.queue_invocation(
+                ActionAddress::new(self.resource_id.as_ref(), id),
+                serde_json::Map::from_iter([(tilo_resource::EDIT_PARAM.to_owned(), edit)]),
+            ),
+            Err(error) => self.refuse(id, error.to_string()),
+        }
+    }
+
     fn may_govern(&self) -> bool {
         self.may_scope(&PermissionScope::governance(
             policy::roles::governance::SETTINGS,
@@ -590,6 +639,9 @@ impl DispatchCore {
         match (&need.field, need.kind) {
             (Some(field), _) if field == policy::roles::COMMENTS_FIELD => {
                 format!("you may not comment on this {}", self.label.to_lowercase())
+            }
+            (Some(field), _) if field == policy::roles::REACTIONS_FIELD => {
+                format!("you may not react to this {}", self.label.to_lowercase())
             }
             (None, ActionKind::Undoable) => self.view_only(),
             _ => format!("you may not do this to this {}", self.label.to_lowercase()),
@@ -762,6 +814,11 @@ impl DispatchCore {
     /// Who edits through this dispatcher; `None` in a view of a past version.
     pub(crate) fn me(&self) -> Option<&str> {
         self.me.as_deref()
+    }
+
+    /// Whether it is a view of a past version.
+    pub(crate) fn is_past(&self) -> bool {
+        self.past
     }
 
     pub(crate) fn note_landed(&self, action: &str, output: &tilo_actions::ActionOutput) {
@@ -1141,6 +1198,12 @@ impl<R: Resource> Dispatcher<R> {
     /// that only feeds a write (an index it would keep with a row), so a
     /// participant who may not make the write is not sent it.
     pub fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
+        // A reaction is decided where the room places it, below the
+        // reactions field, as the door decides it: someone who may only
+        // comment may react too.
+        if invoke.id == tilo_resource::FIELD_EDIT && reacts(&invoke.arguments) {
+            return self.core.may_react();
+        }
         if invoke.id == tilo_resource::APPLY || invoke.id == tilo_resource::FIELD_EDIT {
             return match invoke.build(0) {
                 Ok(action) => self.may_apply(&action),

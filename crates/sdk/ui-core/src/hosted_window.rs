@@ -47,6 +47,10 @@ struct State {
     notice: Option<crate::window_toolbar::ToolbarNotice>,
     /// The notices' buttons pressed, not yet taken by their posters.
     notice_presses: Vec<String>,
+    /// The reactions shown ([`crate::window_toolbar::show_reactions`]).
+    reactions: Option<crate::window_toolbar::ToolbarReactions>,
+    /// The emoji pressed among them, not yet taken by their shower.
+    reaction_presses: Vec<String>,
     /// Bumped by every declaration that changed the slots.
     revision: u64,
     events: VecDeque<ToolbarEvent>,
@@ -153,6 +157,34 @@ impl HostedWindow {
         self.state().notice.clone()
     }
 
+    /// Show `reactions` at the bar's end (`None`: none), bounded as
+    /// [`crate::window_toolbar::show_reactions`] bounds them. Cheap when
+    /// nothing changed.
+    pub fn show_reactions(&self, reactions: Option<crate::window_toolbar::ToolbarReactions>) {
+        let wake = {
+            let mut state = self.state();
+            if state.reactions == reactions {
+                return;
+            }
+            state.reactions = reactions;
+            state.revision = state.revision.wrapping_add(1);
+            state.wake.clone()
+        };
+        Self::wake(wake);
+    }
+
+    /// The reactions shown.
+    #[must_use]
+    pub fn reactions(&self) -> Option<crate::window_toolbar::ToolbarReactions> {
+        self.state().reactions.clone()
+    }
+
+    /// The emoji pressed among the reactions since the last call.
+    #[must_use]
+    pub fn take_reaction_presses(&self) -> Vec<String> {
+        std::mem::take(&mut self.state().reaction_presses)
+    }
+
     /// What the person did with the slots since the last call, oldest
     /// first.
     #[must_use]
@@ -253,7 +285,11 @@ impl HostedWindow {
         (seen != Some(state.revision)).then(|| {
             (
                 state.revision,
-                crate::window_toolbar::with_notice(state.toolbar.clone(), state.notice.clone()),
+                crate::window_toolbar::with_window_owned(
+                    state.toolbar.clone(),
+                    state.notice.clone(),
+                    state.reactions.clone(),
+                ),
             )
         })
     }
@@ -264,6 +300,15 @@ impl HostedWindow {
         if let Some(id) = crate::window_toolbar::notice_press(state.notice.as_ref(), &event) {
             if state.notice_presses.len() < MAX_PENDING {
                 state.notice_presses.push(id);
+            }
+            return;
+        }
+        if let Some(press) = crate::window_toolbar::reaction_press(state.reactions.as_ref(), &event)
+        {
+            if let crate::window_toolbar::ReactionPress::Emoji(emoji) = press
+                && state.reaction_presses.len() < MAX_PENDING
+            {
+                state.reaction_presses.push(emoji);
             }
             return;
         }

@@ -239,6 +239,8 @@ pub struct Vocabulary {
     pub action_type: &'static str,
     /// [`Resource::EDITS`].
     pub edits: bool,
+    /// [`Resource::RECORD_TABLE`].
+    pub(crate) record_table: Option<&'static crate::table::ModelTable>,
     pub(crate) type_id: fn() -> TypeId,
     pub(crate) shape: fn() -> Option<Shape>,
     pub(crate) op_schemas: fn() -> Vec<(String, serde_json::Value)>,
@@ -321,6 +323,7 @@ impl<R: Resource> VocabularyOf<R> {
         label: R::LABEL,
         action_type: R::ACTION_TYPE,
         edits: R::EDITS,
+        record_table: R::RECORD_TABLE,
         type_id: TypeId::of::<R>,
         shape: R::shape,
         op_schemas: R::op_schemas,

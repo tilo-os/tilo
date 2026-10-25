@@ -1965,6 +1965,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         impl #krate::Resource for #self_ty {
             const KIND: &'static str = #kind;
             const LABEL: &'static str = #label;
+            const RECORD_TABLE: ::core::option::Option<&'static #krate::table::ModelTable> =
+                ::core::option::Option::Some(<Self as #krate::Model>::TABLE);
             type State = #self_ty;
             type Action = #krate::Stamped<#action_enum>;
 
