@@ -160,6 +160,12 @@ pub struct WorkspaceRuntime {
     /// they were their chain's head. Live changes to an on-demand record
     /// reach only these ([`crate::store::record_sync`]).
     held_records: HashMap<[u8; 32], HashSet<[u8; 32]>>,
+    /// The connections of each device whose subscription was admitted and
+    /// has not registered yet, oldest first. A device that reconnects (its
+    /// network dropped, its shell re-dialled) subscribes again while the
+    /// host still holds its stale connection; the order here says which of
+    /// the two the device opened last, so the newer one takes the slot.
+    subscribing: HashMap<[u8; 32], Vec<mpsc::WeakSender<Envelope>>>,
     /// The presence mailbox of each subscriber whose connection takes its
     /// presence coalesced and batched ([`crate::presence_mailbox`]). Set
     /// right after the subscription it belongs to and dropped with it; a
@@ -408,6 +414,7 @@ impl WorkspaceRuntime {
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
             held_records: HashMap::new(),
+            subscribing: HashMap::new(),
             presence_mailboxes: HashMap::new(),
             recent_deltas: HashMap::new(),
             governor_tap: None,
@@ -627,6 +634,42 @@ impl WorkspaceRuntime {
             self.store.chain_heads().into_iter().collect(),
         );
         self.subscribers.insert(sub.device_public_key, sub);
+    }
+
+    /// The connection `tx` of `device` was let subscribe here: answer the
+    /// device's earlier connections whose subscriptions are still under
+    /// way. This one is newer than each of them, so it replaces whichever
+    /// of them registers first.
+    pub(crate) fn subscription_admitted(
+        &mut self,
+        device: [u8; 32],
+        tx: &mpsc::Sender<Envelope>,
+    ) -> Vec<mpsc::WeakSender<Envelope>> {
+        let pending = self.subscribing.entry(device).or_default();
+        // A connection that ended is nobody's predecessor.
+        pending.retain(|earlier| {
+            earlier
+                .upgrade()
+                .is_some_and(|earlier| !earlier.is_closed() && !earlier.same_channel(tx))
+        });
+        let earlier = pending.clone();
+        pending.push(tx.downgrade());
+        earlier
+    }
+
+    /// The subscription of `device`'s connection `tx` completed, registered
+    /// or not: it is no longer under way.
+    pub(crate) fn subscription_completed(
+        &mut self,
+        device: &[u8; 32],
+        tx: &mpsc::Sender<Envelope>,
+    ) {
+        if let Some(pending) = self.subscribing.get_mut(device) {
+            pending.retain(|other| other.upgrade().is_some_and(|other| !other.same_channel(tx)));
+            if pending.is_empty() {
+                self.subscribing.remove(device);
+            }
+        }
     }
 
     /// Whether subscriber `device` holds the on-demand record on `channel`.

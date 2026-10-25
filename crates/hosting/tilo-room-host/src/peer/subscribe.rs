@@ -98,6 +98,9 @@ struct AdmittedSubscription {
     /// The subscriber channel the room held for this device when it admitted
     /// the subscription; the replay completion checks it is still the same.
     expected: Option<mpsc::Sender<Envelope>>,
+    /// The device's earlier connections still subscribing when this one was
+    /// let in: whichever of them registers first, this one replaces.
+    earlier: Vec<mpsc::WeakSender<Envelope>>,
     store: crate::store::WorkspaceStore,
 }
 
@@ -126,6 +129,7 @@ pub(super) async fn handle_subscribe(
     let AdmittedSubscription {
         workspace: ws,
         expected,
+        earlier,
         store,
     } = {
         let admission = admit_subscription(peer, session, subscribed, workspace_id).await?;
@@ -134,6 +138,7 @@ pub(super) async fn handle_subscribe(
             SubscribeAdmission::Refused(refusal) => return Ok(Some(refusal)),
         }
     };
+    super::test_hooks::test_point!(signal(store.root(), "subscribe-admitted"));
     let work = store.root().join(crate::store::replay::WORK_DIR);
     let skip = open_resume(session, peer, workspace_id, store, resume).await?;
     let owner = crate::persistence::handle(&ws).await;
@@ -159,6 +164,7 @@ pub(super) async fn handle_subscribe(
         workspace: completion_workspace,
         source,
         expected,
+        earlier,
         bind,
         presence: session.presence.cloned(),
         state_tx,
@@ -275,11 +281,13 @@ async fn admit_subscription(
         .subscribers
         .get(&peer.device_public_key)
         .map(|sub| sub.tx.clone());
+    let earlier = wr.subscription_admitted(peer.device_public_key, session.outbound);
     let store = wr.store.clone();
     drop(wr);
     Ok(SubscribeAdmission::Admitted(AdmittedSubscription {
         workspace: ws,
         expected,
+        earlier,
         store,
     }))
 }
@@ -291,6 +299,8 @@ struct SubscriberRegistration {
     source: StateSource,
     /// The subscriber channel the room held at admission.
     expected: Option<mpsc::Sender<Envelope>>,
+    /// The device's connections that were still subscribing at admission.
+    earlier: Vec<mpsc::WeakSender<Envelope>>,
     /// The replay ticket's authority, bound to the session's liveness.
     bind: Arc<crate::persistence::ReplayAuthority>,
     presence: Option<Arc<crate::presence_mailbox::PresenceMailbox>>,
@@ -311,6 +321,7 @@ async fn register_subscriber(
         workspace: completion_workspace,
         source,
         expected,
+        earlier,
         bind,
         presence,
         state_tx,
@@ -318,18 +329,30 @@ async fn register_subscriber(
         lag: session_lag,
     } = registration;
     let mut wr = crate::workspace_io::fresh_membership(&completion_workspace).await?;
+    wr.subscription_completed(&source.peer.device_public_key, &source.tx);
     let current = wr.subscribers.get(&source.peer.device_public_key);
-    let unchanged = match (expected.as_ref(), current) {
-        (Some(expected), Some(current)) => expected.same_channel(&current.tx),
-        (None, None) => true,
-        // The device's earlier connection held the slot when this
-        // one subscribed, and its teardown has since released it.
-        // This subscription would have displaced it anyway, so it
-        // takes the slot. Only this connection's own slot
-        // vanishing is a loss of authorization.
-        (Some(expected), None) => !expected.same_channel(&source.tx),
-        (None, Some(_)) => false,
-    };
+    // An earlier connection of the device, still subscribing when this one
+    // was let in, registered first: the stale session of a device that
+    // reconnected. This newer one replaces it.
+    let replaces_earlier = current.is_some_and(|current| {
+        earlier.iter().any(|earlier| {
+            earlier
+                .upgrade()
+                .is_some_and(|earlier| earlier.same_channel(&current.tx))
+        })
+    });
+    let unchanged = replaces_earlier
+        || match (expected.as_ref(), current) {
+            (Some(expected), Some(current)) => expected.same_channel(&current.tx),
+            (None, None) => true,
+            // The device's earlier connection held the slot when this
+            // one subscribed, and its teardown has since released it.
+            // This subscription would have displaced it anyway, so it
+            // takes the slot. Only this connection's own slot
+            // vanishing is a loss of authorization.
+            (Some(expected), None) => !expected.same_channel(&source.tx),
+            (None, Some(_)) => false,
+        };
     // The spectator seat is taken here, under the room's lock:
     // of two spectators let in for the last seat, one ends here.
     if !source.alive()
