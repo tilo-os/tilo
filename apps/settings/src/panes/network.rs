@@ -3685,6 +3685,11 @@ impl PaneModel for NetworkModel {
             .then(|| self.scanned_at?.checked_add(SCAN_EVERY))
             .flatten()
     }
+
+    // The scan's networks replace "Scanning…" when it lands.
+    fn pending_visual_work(&self) -> bool {
+        self.scan_in_flight
+    }
 }
 
 impl NetworkModel {
