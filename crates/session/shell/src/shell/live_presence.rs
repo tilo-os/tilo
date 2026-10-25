@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(inbound.app_id, "so.tilo.desktop");
         assert!(
             outbound
-                .lay_out(1, desktop.clone(), who(), layout.clone(), now)
+                .lay_out(1, desktop.clone(), who(), layout, now)
                 .is_empty(),
             "an unchanged layout sends nothing"
         );

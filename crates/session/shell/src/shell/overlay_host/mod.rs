@@ -248,6 +248,7 @@ mod paint_top;
 mod palette_routing;
 mod palette_run;
 mod palette_search;
+mod people_overlay;
 use palette_search::LaunchpadMark;
 mod nested_shortcuts;
 mod peer_sync;
@@ -315,6 +316,7 @@ type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<Strin
 /// relationship. Kept separate from [`FollowBridge`]: the latter is private
 /// local app control, while this one only paints a room-scoped cue remotely.
 type FollowPresenceBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
+pub use people_overlay::LiveLayoutBridge;
 type StatusPresenceBridge =
     std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<ui::LiveStatus>)>;
 type ActiveTabPresenceBridge =
@@ -977,6 +979,17 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// The roster pinned out of the dropdown, floating over the windows at
+    /// an edge as a desk widget does.
+    people_overlay: tilo_desktop::people_overlay::PeopleOverlay,
+    /// Where each person's windows are, as the room's live presence says,
+    /// and where this person's are (`ShellNetwork`'s layouts).
+    live_layout_bridge: Option<LiveLayoutBridge>,
+    /// The layout last said, per room, so it goes out only on a change.
+    published_layout: Option<(
+        crate::shell::state::RoomId,
+        Option<tilo_relay_protocol::live::LiveLayout>,
+    )>,
     /// Who is here arriving from the bar and leaving (`motion::Appear`).
     collaborators_appearing: ui::motion::Appearing,
     /// The roster as it was last painted at rest, and its panel: what is
@@ -1792,6 +1805,13 @@ mod capture_tool_tests;
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod people_motion_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+mod people_overlay_tests;
 
 #[cfg(test)]
 #[allow(

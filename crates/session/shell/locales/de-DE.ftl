@@ -3380,3 +3380,7 @@ search-action-app-remove-from-apps = Eine App aus deinen Apps entfernen…
 search-action-app-remove-from-apps-subtitle = Sie bleibt auf diesem Computer
 search-apps-uninstall = Deinstallieren
 search-apps-remove-from-apps = Aus Apps entfernen
+
+# The pinned people overlay's message box
+people-overlay-messages-unavailable = Direktnachrichten sind gerade nicht verfügbar
+people-overlay-message-failed = Die Nachricht an { $name } ging nicht raus

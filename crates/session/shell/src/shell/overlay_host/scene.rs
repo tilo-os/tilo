@@ -58,8 +58,9 @@ impl ShellOverlayHost {
                 }),
                 desk: self.desk_animating(now),
                 cursor_chat: self.cursor_chat_animating(now),
-                collaborators: self.overlay_flags().collaborators
-                    && self.collaborators_overlay.needs_animation_frame(),
+                collaborators: (self.overlay_flags().collaborators
+                    && self.collaborators_overlay.needs_animation_frame())
+                    || self.people_overlay.needs_animation_frame(),
                 osd: self
                     .chrome
                     .as_ref()
@@ -158,6 +159,7 @@ impl ShellOverlayHost {
         // geometry is resolved below; otherwise a first frame at large type
         // has a default-height card and clips its two-line controls.
         self.refresh_active_tab_presence();
+        self.refresh_live_layout();
         self.hand_flying_windows_to_the_overview(ui::time::now());
         self.qs_root.set_layout_text_scale(theme.text_scale);
         self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
@@ -357,6 +359,15 @@ impl ShellOverlayHost {
                     presence,
                     flags,
                 );
+                None
+            },
+        );
+        overlay_part(
+            above_quick_settings,
+            "shell.people-overlay",
+            desktop,
+            |scene| {
+                self.draw_people_overlay(scene, transform, text_renderer, theme, presence);
                 None
             },
         );
@@ -680,6 +691,22 @@ impl ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
+    /// When who is here next needs a frame: the open roster, and the
+    /// pinned overlay's peek opening or closing.
+    fn people_wake_deadline(&self) -> Option<Instant> {
+        let roster = self.chrome.as_ref().and_then(|chrome| {
+            if chrome.borrow().overlays.collaborators {
+                self.collaborators_overlay.next_wake_deadline()
+            } else {
+                None
+            }
+        });
+        roster
+            .into_iter()
+            .chain(self.people_overlay.next_wake_deadline())
+            .min()
+    }
+
     pub(super) fn wake_deadline_sources(
         &self,
         now: Instant,
@@ -704,16 +731,7 @@ impl ShellOverlayHost {
                     .as_ref()
                     .and_then(Widget::next_wake_deadline),
             ),
-            (
-                "people",
-                self.chrome.as_ref().and_then(|chrome| {
-                    if chrome.borrow().overlays.collaborators {
-                        self.collaborators_overlay.next_wake_deadline()
-                    } else {
-                        None
-                    }
-                }),
-            ),
+            ("people", self.people_wake_deadline()),
             ("content", self.content.next_wake_deadline()),
             ("strip-switcher", self.strip_switcher_wake_deadline(now)),
             (

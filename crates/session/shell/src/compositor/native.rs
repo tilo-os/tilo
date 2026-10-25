@@ -8399,6 +8399,16 @@ fn attach_peer_presence(
         .set_presence_visibility_bridge(std::rc::Rc::new(move |room, visibility| {
             visibility_network.set_presence_visibility(&room.to_string(), visibility);
         }));
+    let heard_network = Arc::clone(net);
+    let publish_network = Arc::clone(net);
+    frame_builder
+        .host_mut()
+        .set_live_layout_bridge(crate::shell::overlay_host::LiveLayoutBridge {
+            heard: std::rc::Rc::new(move |room| heard_network.live_layouts_of(&room.to_string())),
+            publish: std::rc::Rc::new(move |room, layout| {
+                publish_network.publish_layout(&room.to_string(), layout);
+            }),
+        });
     let status_network = Arc::clone(net);
     frame_builder
         .host_mut()

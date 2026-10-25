@@ -375,10 +375,6 @@ impl ShellOverlayHost {
 
     /// Paint the roster at rest, in the host's coordinates, and lay out its
     /// targets.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the single paint pass keeps roster decoration, action geometry, and overlay rendering synchronized"
-    )]
     fn paint_collaborators_roster(
         &mut self,
         scene: &mut Scene,
@@ -387,6 +383,47 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) {
         let transform = Affine::IDENTITY;
+        let RosterFrame {
+            rows,
+            workspace,
+            unavailable,
+            exposure,
+        } = self.roster_frame(presence);
+        let may_invite = self.may_invite_here();
+        let following_pairs = self.roster_following_pairs(presence, &rows);
+        self.collaborators_overlay.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &CollaboratorsModel {
+                host: self.overlay_area(),
+                workspace: &workspace,
+                rows: &rows,
+                unavailable: unavailable.as_deref(),
+                exposure: exposure.as_deref(),
+                may_invite,
+                may_pin: !self.people_overlay.is_visible(),
+                followed_id: self.followed_peer.as_deref(),
+                following_pairs: &following_pairs,
+                expanded_id: self.expanded_collaborator.as_deref(),
+                // Native presence has no spectator role yet.
+                watching: 0,
+                waved: &self.self_presence.waved_recently(std::time::Instant::now()),
+                spectating: false,
+            },
+            self.last_cursor,
+        );
+    }
+
+    /// Who is here as the roster shows them: each row decorated with their
+    /// status, availability, call, place and recent changes. The dropdown
+    /// and the pinned people overlay both list these.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass keeps each row's status, availability, call, place and changes from the same reading"
+    )]
+    pub(super) fn roster_frame(&self, presence: &PresenceCtx) -> RosterFrame {
         // The name this person goes by, numbered like anyone else's when
         // someone here shares it; never "You", never their key.
         let own_name = ui::local_identity::load()
@@ -454,31 +491,21 @@ impl ShellOverlayHost {
         // Who is in which voice channel, as the room's calls say, and the
         // Join each row offers.
         self.decorate_calls(&mut rows, presence);
-        let may_invite = self.may_invite_here();
-        let following_pairs = self.roster_following_pairs(presence, &rows);
-        self.collaborators_overlay.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &CollaboratorsModel {
-                host: self.overlay_area(),
-                workspace: &workspace,
-                rows: &rows,
-                unavailable: unavailable.as_deref(),
-                exposure: exposure.as_deref(),
-                may_invite,
-                followed_id: self.followed_peer.as_deref(),
-                following_pairs: &following_pairs,
-                expanded_id: self.expanded_collaborator.as_deref(),
-                // Native presence has no spectator role yet.
-                watching: 0,
-                waved: &self.self_presence.waved_recently(std::time::Instant::now()),
-                spectating: false,
-            },
-            self.last_cursor,
-        );
+        RosterFrame {
+            rows,
+            workspace,
+            unavailable,
+            exposure,
+        }
     }
+}
+
+/// Who is here, and what the roster says around them.
+pub(super) struct RosterFrame {
+    pub(super) rows: Vec<tilo_desktop::collaborators::RosterRow>,
+    pub(super) workspace: String,
+    pub(super) unavailable: Option<String>,
+    pub(super) exposure: Option<String>,
 }
 
 /// Where each of `rows` is when no window here shows it, as in a room

@@ -694,6 +694,12 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Where each desk widget waits in its quiet form: what else at the
+    /// edges (the pinned people overlay) steps past.
+    pub(super) fn desk_glances(&self) -> Vec<Rect> {
+        self.desk.slots.iter().map(|slot| slot.glance).collect()
+    }
+
     pub(crate) fn desk_pointer_left(&mut self, now: Instant) {
         self.desk.board.pointer_left(now);
     }

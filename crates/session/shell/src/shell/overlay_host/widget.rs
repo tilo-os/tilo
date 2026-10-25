@@ -1640,6 +1640,11 @@ impl ShellOverlayHost {
             return;
         }
         if (Self::is_pointer_event(event) || matches!(event, WindowEvent::Focused(false)))
+            && self.route_people_overlay_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
+            return;
+        }
+        if (Self::is_pointer_event(event) || matches!(event, WindowEvent::Focused(false)))
             && self.route_collaborators_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
@@ -1707,6 +1712,12 @@ impl ShellOverlayHost {
         if !Self::is_pointer_event(event)
             && !self.keyboard_held_ahead_of_wifi_password()
             && self.route_wifi_password_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
+            return;
+        }
+        if !Self::is_pointer_event(event)
+            && !matches!(event, WindowEvent::Focused(false))
+            && self.route_people_overlay_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
         }
