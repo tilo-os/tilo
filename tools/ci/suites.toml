@@ -576,6 +576,9 @@ inputs = [
   "crates/session/shell/examples/redraw_bench.rs",
   # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
   "tools/web/chrome.mjs",
+  # ... and the native stream qualification's Safari run drives Safari through
+  # tools/web/webdriver.mjs.
+  "tools/web/webdriver.mjs",
   # scripts/perf/native_stream_qualification.mjs reads the frame numbers its
   # session example draws.
   "crates/hosting/tilo-relay/examples/legacy_stream_source.rs",
@@ -586,6 +589,7 @@ inputs = [
 suites = [
   "scripts/perf/browser_qualification.test.mjs",
   "scripts/perf/native_stream_qualification.test.mjs",
+  "tools/web/webdriver.test.mjs",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/desktop_chrome_bench_test.py",
   "scripts/perf/device_latency_bench_test.py",

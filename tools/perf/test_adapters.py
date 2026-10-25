@@ -813,6 +813,16 @@ class NativeStream(unittest.TestCase):
         self.assertEqual((latency.unit, latency.n, latency.p50, latency.meta["codec"]), ("ms", 3, 35.0, "vp9"))
         self.assertEqual(records["stream.vp9.frame.missed"].max, 0.67)
 
+    def test_a_safari_run_is_refused_without_the_https_stream_it_takes(self):
+        """Safari has no WebTransport: a record naming it must be the HTTPS stream's."""
+        report = stream_report(workload={**stream_report()["workload"], "carrier": "https", "platform": "safari"},
+                              browser={**stream_report()["browser"], "driver": "webdriver"})
+        records = {item.kpi: item for item in adapters.native_stream(report, BROWSER_ENV)}
+        self.assertEqual(records["stream.frame.latency"].meta["carrier"], "https")
+        for carrier, reason in (("webtransport", "not the HTTPS stream Safari takes"),):
+            with self.subTest(carrier=carrier), self.assertRaisesRegex(ValueError, reason):
+                adapters.native_stream({**report, "workload": {**report["workload"], "carrier": carrier}}, BROWSER_ENV)
+
     def test_a_session_that_streamed_another_codec_is_refused(self):
         """A session that fell back to H.264 must not fill VP9's series, nor the reverse."""
         fell_back, upgraded, garbled = codec_report("vp9"), stream_report(), codec_report("VP9.x")
