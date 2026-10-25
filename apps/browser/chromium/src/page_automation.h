@@ -100,19 +100,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // One child frame of the document being read, in the order the page shows
   // it. Its own isolated world is created separately, so a frame of another
   // site is read exactly as a frame of this one is: nothing is shared with the
-  // page, and nothing the page may do is loosened for the frame.
-  struct Frame {
-    std::string id,key,url,title,outline;int world=0;
-    double top=0,left=0;bool shown=false,read=false,refused=false;
-  };
-  // One child frame of the document being read, in the order the page shows
-  // it. Its own isolated world is created separately, so a frame of another
-  // site is read exactly as a frame of this one is: nothing is shared with the
   // page and nothing of the page is loosened for the frame.
   struct Frame {
     std::string id,loader,url,title,key;size_t position=0;
     bool cross=false,read=false,refused=false;int world=0;
     std::string outline,message;
+    // The frame's own view origin, so a point inside it can be placed on the
+    // page by the document that shows it.
+    double top=0,left=0;
     struct Edges { std::string top,left;bool hidden=false;bool readable=true; };
   };
   struct Pending {
@@ -403,7 +398,6 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(!value || value->GetType("ok")!=VTYPE_BOOL || !value->GetBool("ok")) { FrameSkipped(false);return; }
     frame.title=Text(value,"title");frame.url=Text(value,"url");frame.outline=Text(value,"outline");
     frame.top=Number(value,"top");frame.left=Number(value,"left");
-    frame.shown=value->GetType("shown")==VTYPE_BOOL && value->GetBool("shown");
     frame.read=true;++frames_at_;FrameNext();
   }
   // `outline` and `changes` as the caller sees them: the page's own lines, and
