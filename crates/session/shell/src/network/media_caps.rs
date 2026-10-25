@@ -9,7 +9,6 @@
 //! build that predates the advert can decode.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use media::realtime::CodecCapabilities;
@@ -31,7 +30,16 @@ fn registry() -> &'static Mutex<Registry> {
 }
 
 /// Open sessions whose frames end up in a decoder that takes H.264 only.
-static H264_ONLY_VIEWERS: AtomicUsize = AtomicUsize::new(0);
+/// Network actors watch it to announce the change ([`changes`]).
+fn h264_only_viewers() -> &'static tokio::sync::watch::Sender<usize> {
+    static VIEWERS: OnceLock<tokio::sync::watch::Sender<usize>> = OnceLock::new();
+    VIEWERS.get_or_init(|| tokio::sync::watch::Sender::new(0))
+}
+
+/// Woken whenever what [`local_advert`] says may have changed.
+pub fn changes() -> tokio::sync::watch::Receiver<usize> {
+    h264_only_viewers().subscribe()
+}
 
 /// Held while frames this peer receives are relayed to an H.264-only
 /// decoder (workspace control's Remote app). While any exists, this peer
@@ -41,7 +49,7 @@ pub struct H264OnlyViewer(());
 
 impl H264OnlyViewer {
     pub fn new() -> Self {
-        H264_ONLY_VIEWERS.fetch_add(1, Ordering::AcqRel);
+        h264_only_viewers().send_modify(|viewers| *viewers = viewers.saturating_add(1));
         Self(())
     }
 }
@@ -54,14 +62,14 @@ impl Default for H264OnlyViewer {
 
 impl Drop for H264OnlyViewer {
     fn drop(&mut self) {
-        H264_ONLY_VIEWERS.fetch_sub(1, Ordering::AcqRel);
+        h264_only_viewers().send_modify(|viewers| *viewers = viewers.saturating_sub(1));
     }
 }
 
 /// This machine's capabilities as a wire advert from `peer`.
 pub fn local_advert(peer: PeerId) -> NeighbourMsg {
     let mut caps = media::realtime::local_capabilities();
-    if H264_ONLY_VIEWERS.load(Ordering::Acquire) > 0 {
+    if *h264_only_viewers().borrow() > 0 {
         let legacy = CodecCapabilities::legacy_peer();
         caps.hardware_decode = legacy.hardware_decode;
         caps.software_decode = legacy.software_decode;
