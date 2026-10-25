@@ -2627,25 +2627,23 @@ default = false
 
 [[check]]
 name = "nightly-workspace-test"
+requires = ["arch=x86_64", "disk-100g"]
+# Every package but those a test family runs with nested sandboxes, as uid 0 as the `test`
+# families run them; the others are nightly-workspace-test-sandboxed (tools/ci/nightly-workspace-test.sh).
+run = "bash tools/ci/nightly-workspace-test.sh host"
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_GPU = "1", TILO_REQUIRE_AUDIO = "1" }
+writable_sources = true
+on = ["stable", "dispatch"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "nightly-workspace-test-sandboxed"
 nested_sandboxes = true
 requires = ["arch=x86_64", "disk-100g"]
-run = """
-export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
-export TILO_IMAGER_TEST_CACHE_ROOT=$CARGO_TARGET_DIR/ci/imager-test-fs
-mkdir -p "$TILO_IMAGER_TEST_CACHE_ROOT" && chmod 700 "$TILO_IMAGER_TEST_CACHE_ROOT"
-cargo build --locked -p install --bin tilo-install
-# The browser peer's suites drive Chrome and the MoQ library the browser runtime builds.
-bash tools/ci/ensure-browser-dependencies.sh
-npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
-export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
-npm ci --prefix scripts/moq-browser --no-audit --no-fund
-node scripts/moq-browser/build.mjs
-# Where the kernel can enforce Landlock, the PDF tests require the helper's sandbox.
-pdf_sandbox=$(bash tools/ci/require-pdf-sandbox.sh)
-export TILO_REQUIRE_PDF_SANDBOX=$pdf_sandbox
-filter=$(python3 tools/ci/nextest_filters.py | sed -n 's/^GOLDEN_FILTER=//p')
-bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "not ($filter)"
-"""
+# The packages a test family runs with nested sandboxes (tools/ci/sandboxed_test_packages.py),
+# in that sandbox: their tests start namespaces of their own, as uid 1000.
+run = "bash tools/ci/nightly-workspace-test.sh sandboxed"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_GPU = "1", TILO_REQUIRE_AUDIO = "1" }
 writable_sources = true
 on = ["stable", "dispatch"]
@@ -2736,24 +2734,23 @@ default = false
 # supports and the visual goldens, in the same builder image.
 [[check]]
 name = "nightly-arm64-workspace-test"
+requires = ["arch=arm64", "disk-100g"]
+# Every package but those a test family runs with nested sandboxes, as uid 0 as the `test`
+# families run them; the others are nightly-arm64-workspace-test-sandboxed (tools/ci/nightly-workspace-test.sh).
+run = "bash tools/ci/nightly-workspace-test.sh host"
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_GPU = "1", TILO_REQUIRE_AUDIO = "1" }
+writable_sources = true
+on = ["stable", "dispatch"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "nightly-arm64-workspace-test-sandboxed"
 nested_sandboxes = true
 requires = ["arch=arm64", "disk-100g"]
-run = """
-export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
-export TILO_IMAGER_TEST_CACHE_ROOT=$CARGO_TARGET_DIR/ci/imager-test-fs
-mkdir -p "$TILO_IMAGER_TEST_CACHE_ROOT" && chmod 700 "$TILO_IMAGER_TEST_CACHE_ROOT"
-cargo build --locked -p install --bin tilo-install
-# The browser peer's suites drive Chromium and the MoQ library the browser runtime builds.
-# Chrome for Testing has no Linux arm64 build (its installer hands an arm64 host the x86_64
-# one), so they drive the builder image's Chromium, which `CHROME` already names.
-npm ci --prefix scripts/moq-browser --no-audit --no-fund
-node scripts/moq-browser/build.mjs
-# Where the kernel can enforce Landlock, the PDF tests require the helper's sandbox.
-pdf_sandbox=$(bash tools/ci/require-pdf-sandbox.sh)
-export TILO_REQUIRE_PDF_SANDBOX=$pdf_sandbox
-filter=$(python3 tools/ci/nextest_filters.py | sed -n 's/^GOLDEN_FILTER=//p')
-bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "not ($filter)"
-"""
+# The packages a test family runs with nested sandboxes (tools/ci/sandboxed_test_packages.py),
+# in that sandbox: their tests start namespaces of their own, as uid 1000.
+run = "bash tools/ci/nightly-workspace-test.sh sandboxed"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_GPU = "1", TILO_REQUIRE_AUDIO = "1" }
 writable_sources = true
 on = ["stable", "dispatch"]

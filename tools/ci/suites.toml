@@ -1950,6 +1950,10 @@ suite = "tools/ci/test-vendored-crates.sh"
 reason = "compiles each patched vendored crate's own tests; the vendored check in t.toml runs it"
 
 [[unrequired]]
+suite = "tools/ci/nightly-workspace-test.sh"
+reason = "the nightly workspace-test checks' runner (t.toml); it runs the workspace's tests, it is not a suite of its own"
+
+[[unrequired]]
 suite = "tools/test-env.sh"
 reason = "the test environment tools/ci/t-nextest.sh sources, not a suite of its own"
 
