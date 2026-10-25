@@ -8,6 +8,7 @@ use automerge::AutoCommit;
 
 use super::tests::{PagedList, ProbeRow, lay_out};
 use super::*;
+use crate::widget::SkeletonShape;
 
 /// A list model whose rows come from another device: row 0 is on its
 /// way, row 1 failed and can be asked for again.

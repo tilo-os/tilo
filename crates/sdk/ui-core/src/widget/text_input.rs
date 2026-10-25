@@ -2684,54 +2684,6 @@ impl TextInput {
         gutter
     }
 
-    fn draw_gutter_line_numbers(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        style: &TextStyle,
-        caret_byte: usize,
-        (gutter_width, visible): (f64, Rect),
-    ) {
-        if gutter_width <= 0.0 {
-            return;
-        }
-        let Some(layout) = &self.single_layout else {
-            return;
-        };
-        let current_line = layout.logical_line_index(caret_byte);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "on-screen offsets in logical pixels are far inside f32"
-        )]
-        let (top, bottom) = (
-            (visible.y0 - self.single_origin.y) as f32,
-            (visible.y1 - self.single_origin.y) as f32,
-        );
-        for (line, top, _height) in layout.logical_line_origins_within(top, bottom) {
-            let number = line.saturating_add(1).to_string();
-            let (width, _) = tr.measure_style(&number, None, style);
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine transform composition over f64 screen coordinates"
-            )]
-            let origin = transform
-                * Affine::translate((
-                    self.rect.x0 + gutter_width
-                        - GUTTER_PAD_R * self.gutter_text_scale
-                        - f64::from(width),
-                    self.single_origin.y + f64::from(top),
-                ));
-            let color = if line == current_line {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            };
-            tr.draw_style(scene, &number, color, origin, None, style);
-        }
-    }
-
     pub(crate) fn suppress_caret_paint(&mut self, suppressed: bool) {
         self.caret_paint_suppressed = suppressed;
     }
@@ -2901,12 +2853,15 @@ impl TextInput {
         self.draw_code_gutter_background(scene, transform, theme, gutter_width);
         self.draw_current_line_band(scene, transform, theme, caret_byte, gutter_width);
 
-        if let Some((start, end)) = self.selection_range() {
-            let color = theme.tokens.colors.intent.selection_tint;
-            for rect in self.selection_rects(theme, start, end) {
-                scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
-            }
-        }
+        // What a copy keeps on screen is not encoded again (`draw_cull`).
+        let _kept = crate::draw_cull::keep_scope(scene, self.field_keep(transform, theme));
+        let leave_out = self.paint_selection_keeping_lines(
+            (scene, transform),
+            tr,
+            theme,
+            &style,
+            (visible, gutter_width, caret_byte),
+        );
 
         // `Affine * Affine` composes two geometric transforms over f64
         // coordinates; it has no integer overflow/wrap semantics.
@@ -2938,12 +2893,12 @@ impl TextInput {
             let paint = |byte: usize| self.highlight_color_at(byte, syntax);
             #[cfg(test)]
             let _probe = crate::profiling::frame_probe::span("text.rows");
-            tr.draw_rich_in_clip_painted(
+            tr.draw_rich_in_clip_painted_leaving_out(
                 scene,
                 layout,
                 text_transform,
                 color,
-                transform.transform_rect_bbox(visible),
+                (transform.transform_rect_bbox(visible), &leave_out),
                 self.paints_highlight()
                     .then_some(&paint as &dyn Fn(usize) -> Option<vello::peniko::Color>),
             );
@@ -2959,7 +2914,7 @@ impl TextInput {
             theme,
             &style,
             caret_byte,
-            (gutter_width, visible),
+            (gutter_width, visible, &leave_out),
         );
         #[cfg(test)]
         drop(probe);

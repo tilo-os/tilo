@@ -13,6 +13,9 @@ pub(crate) struct CpuCanvas {
     /// What the last frame changed and [`Self::upload`] sends: what it
     /// rasterized, and where its scroll copies landed.
     uploads: Vec<Region>,
+    /// The frames' scenes hold only what their damage needs: one that must
+    /// be rasterized whole is refused.
+    damage_only: bool,
 }
 
 /// A canvas to rasterize frames into when they are rasterized on the CPU
@@ -33,7 +36,14 @@ impl CpuCanvas {
             valid: false,
             regions: Vec::new(),
             uploads: Vec::new(),
+            damage_only: false,
         }
+    }
+
+    /// Whether the frames' scenes hold only what their damage needs
+    /// (`RetainedRaster::rasterize_damage_only`).
+    pub(crate) fn draw_damage_only(&mut self, damage_only: bool) {
+        self.damage_only = damage_only;
     }
 
     pub(crate) fn invalidate(&mut self) {
@@ -72,10 +82,17 @@ impl CpuCanvas {
             );
         let whole =
             frame.full_redraw || !self.valid || (!copied && !frame.scroll_copies.is_empty());
+        let bounded = bounded_present_damage(frame.width, frame.height, frame.damage_regions);
+        if self.damage_only && (whole || bounded.is_none()) {
+            // The copies may have moved the pixels: what is retained is no
+            // longer the last frame.
+            self.valid = false;
+            return Err(crate::retained_raster::DAMAGE_ONLY_REFUSED.to_owned());
+        }
         self.regions = if whole {
             vec![Region::new(0, 0, frame.width, frame.height)]
         } else {
-            bounded_present_damage(frame.width, frame.height, frame.damage_regions)
+            bounded
                 .map(|regions| {
                     regions
                         .into_iter()

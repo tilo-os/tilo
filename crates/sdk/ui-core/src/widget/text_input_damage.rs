@@ -50,20 +50,10 @@ impl TextInput {
     /// ([`TextRenderer::rich_line_ink_reach`]), for every line whose ink
     /// may show in the field, as its draw takes them.
     pub(super) fn note_shown(&self, transform: Affine, theme: &Theme, renderer: &mut TextRenderer) {
-        // What this model does not follow (a placeholder, a composition,
-        // spelling, an autocorrection, styled spans, an accessory) leaves
-        // the frame unnoted: the field repaints whole.
-        let untracked = self.shows_placeholder()
-            || self.core.has_preedit()
-            || self.rich_spans.is_some()
-            || self.accessory.is_some()
-            || !self.spell_spans.is_empty()
-            || self.last_autocorrection.is_some()
-            || self.autocorrection_preview.is_some();
         let Some(layout) = self
             .single_layout
             .as_ref()
-            .filter(|_| self.multiline_shaped && !untracked)
+            .filter(|_| self.multiline_shaped && !self.untracked())
         else {
             return;
         };
@@ -150,49 +140,271 @@ impl TextInput {
                 .enumerate()
                 .map(|(index, rect)| mark(index, rect)),
         );
-        let colors = &theme.tokens.colors;
-        let bordered = !self.plain;
-        let reach = f64::from(theme.tokens.radii.control).max(2.0) + 1.0;
-        let rect = self.rect;
         self.shown.note(Showing {
             scroll: Vec2::new(0.0, self.shown_scroll_y()),
-            clip: rect,
+            clip: self.rect,
             transform: crate::scroll_copy::on_screen(transform),
-            look: FieldLook {
-                states: [
-                    bordered,
-                    self.is_focused,
-                    self.is_hovered,
-                    self.invalid,
-                    self.effectively_disabled(),
-                    self.caret_paint_suppressed,
-                ],
-                left: (self.single_origin.x - self.rect.x0).to_bits(),
-                radius: f64::from(theme.tokens.radii.control).to_bits(),
-                colors: [
-                    theme.text_primary,
-                    theme.text_dim,
-                    colors.surfaces.raised,
-                    colors.intent.selection_tint,
-                    colors.intent.accent_ink,
-                    colors.surfaces.content,
-                ],
-            },
-            // A field with chrome paints its border and rounded corners over
-            // the rows.
-            overlays: if bordered {
-                vec![
-                    Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + reach),
-                    Rect::new(rect.x0, rect.y1 - reach, rect.x1, rect.y1),
-                    Rect::new(rect.x0, rect.y0, rect.x0 + reach, rect.y1),
-                    Rect::new(rect.x1 - reach, rect.y0, rect.x1, rect.y1),
-                ]
-            } else {
-                Vec::new()
-            },
+            look: self.field_look(theme),
+            overlays: self.field_overlays(theme),
             pieces,
             fixed: Vec::new(),
         });
+    }
+
+    /// What this model does not follow (a placeholder, a composition,
+    /// spelling, an autocorrection, styled spans, an accessory): the frame
+    /// is left unnoted, and the field repaints whole.
+    fn untracked(&self) -> bool {
+        self.shows_placeholder()
+            || self.core.has_preedit()
+            || self.rich_spans.is_some()
+            || self.accessory.is_some()
+            || !self.spell_spans.is_empty()
+            || self.last_autocorrection.is_some()
+            || self.autocorrection_preview.is_some()
+    }
+
+    fn field_look(&self, theme: &Theme) -> FieldLook {
+        let colors = &theme.tokens.colors;
+        FieldLook {
+            states: [
+                !self.plain,
+                self.is_focused,
+                self.is_hovered,
+                self.invalid,
+                self.effectively_disabled(),
+                self.caret_paint_suppressed,
+            ],
+            left: (self.single_origin.x - self.rect.x0).to_bits(),
+            radius: f64::from(theme.tokens.radii.control).to_bits(),
+            colors: [
+                theme.text_primary,
+                theme.text_dim,
+                colors.surfaces.raised,
+                colors.intent.selection_tint,
+                colors.intent.accent_ink,
+                colors.surfaces.content,
+            ],
+        }
+    }
+
+    /// A field with chrome paints its border and rounded corners over the
+    /// rows.
+    fn field_overlays(&self, theme: &Theme) -> Vec<Rect> {
+        if self.plain {
+            return Vec::new();
+        }
+        let reach = f64::from(theme.tokens.radii.control).max(2.0) + 1.0;
+        let rect = self.rect;
+        vec![
+            Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + reach),
+            Rect::new(rect.x0, rect.y1 - reach, rect.x1, rect.y1),
+            Rect::new(rect.x0, rect.y0, rect.x0 + reach, rect.y1),
+            Rect::new(rect.x1 - reach, rect.y0, rect.x1, rect.y1),
+        ]
+    }
+
+    /// From the shaped draw, once the field is scrolled and placed for
+    /// this frame: where the frame keeps the pixels of its rows, as
+    /// [`Self::collect_damage_for`] will find it ([`crate::draw_cull`]).
+    pub(super) fn field_keep(
+        &self,
+        transform: Affine,
+        theme: &Theme,
+    ) -> Option<crate::draw_cull::Keep> {
+        if self.untracked() {
+            return None;
+        }
+        let presented = self.shown.presented()?;
+        if presented.clip != self.rect
+            || presented.transform != crate::scroll_copy::on_screen(transform)
+            || presented.look != self.field_look(theme)
+        {
+            return None;
+        }
+        let delta = presented.scroll - Vec2::new(0.0, self.shown_scroll_y());
+        let mut overlays = self.field_overlays(theme);
+        overlays.extend_from_slice(&presented.overlays);
+        crate::draw_cull::Keep::scrolled(transform, self.rect, delta, &overlays)
+    }
+
+    /// The line numbers in the gutter beside the rows `visible` shows, but
+    /// for the lines `leave_out` (ascending) whose numbers the frame keeps.
+    pub(super) fn draw_gutter_line_numbers(
+        &self,
+        scene: &mut vello::Scene,
+        transform: Affine,
+        tr: &mut crate::text_render::TextRenderer,
+        theme: &Theme,
+        style: &crate::text_render::TextStyle,
+        caret_byte: usize,
+        (gutter_width, visible, leave_out): (f64, Rect, &[usize]),
+    ) {
+        if gutter_width <= 0.0 {
+            return;
+        }
+        let Some(layout) = &self.single_layout else {
+            return;
+        };
+        let current_line = layout.logical_line_index(caret_byte);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "on-screen offsets in logical pixels are far inside f32"
+        )]
+        let (top, bottom) = (
+            (visible.y0 - self.single_origin.y) as f32,
+            (visible.y1 - self.single_origin.y) as f32,
+        );
+        for (line, top, _height) in layout.logical_line_origins_within(top, bottom) {
+            if leave_out.binary_search(&line).is_ok() {
+                continue;
+            }
+            let number = line.saturating_add(1).to_string();
+            let (width, _) = tr.measure_style(&number, None, style);
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine transform composition over f64 screen coordinates"
+            )]
+            let origin = transform
+                * Affine::translate((
+                    self.rect.x0 + gutter_width
+                        - super::GUTTER_PAD_R * self.gutter_text_scale
+                        - f64::from(width),
+                    self.single_origin.y + f64::from(top),
+                ));
+            let color = if line == current_line {
+                theme.text_primary
+            } else {
+                theme.text_dim
+            };
+            tr.draw_style(scene, &number, color, origin, None, style);
+        }
+    }
+
+    /// Paint the selection over the code's rows, and say which logical
+    /// lines the frame need not paint ([`Self::kept_lines`]): the selection
+    /// and the current line's band are marks over the rows.
+    pub(super) fn paint_selection_keeping_lines(
+        &self,
+        (scene, transform): (&mut vello::Scene, Affine),
+        tr: &mut crate::text_render::TextRenderer,
+        theme: &Theme,
+        style: &crate::text_render::TextStyle,
+        (visible, gutter_width, caret_byte): (Rect, f64, usize),
+    ) -> Vec<usize> {
+        let mut marks = self
+            .selection_range()
+            .map(|(start, end)| self.selection_rects(theme, start, end))
+            .unwrap_or_default();
+        let color = theme.tokens.colors.intent.selection_tint;
+        for rect in &marks {
+            scene.fill(vello::peniko::Fill::NonZero, transform, color, None, rect);
+        }
+        if let Some(layout) = &self.single_layout {
+            marks.extend(
+                layout
+                    .logical_line_bands(caret_byte)
+                    .into_iter()
+                    .map(|(top, height)| {
+                        let top = self.single_origin.y + f64::from(top);
+                        Rect::new(self.rect.x0, top, self.rect.x1, top + f64::from(height))
+                    }),
+            );
+        }
+        self.kept_lines(scene, transform, tr, style, (visible, gutter_width), &marks)
+    }
+
+    /// The logical lines of the shaped layout this frame need not paint,
+    /// ascending: those whose rows and line number the frame keeps on
+    /// screen as they were ([`crate::draw_cull::kept_band`]), clear of
+    /// every mark painted over the rows now (`marks`, on screen) or on the
+    /// frame on screen (a caret, a current line, a selection).
+    pub(super) fn kept_lines(
+        &self,
+        scene: &vello::Scene,
+        transform: Affine,
+        tr: &mut crate::text_render::TextRenderer,
+        style: &crate::text_render::TextStyle,
+        (visible, gutter_width): (Rect, f64),
+        marks: &[Rect],
+    ) -> Vec<usize> {
+        let Some(band) = crate::draw_cull::kept_band(scene, transform, visible) else {
+            return Vec::new();
+        };
+        let Some(layout) = self.single_layout.as_ref() else {
+            return Vec::new();
+        };
+        let scroll = Vec2::new(0.0, self.shown_scroll_y());
+        let mut marks = marks.to_vec();
+        if let Some(presented) = self.shown.presented() {
+            marks.extend(
+                presented
+                    .pieces
+                    .iter()
+                    .filter(|piece| piece.key & MARK != 0)
+                    .map(|piece| piece.rect - scroll),
+            );
+        }
+        let origin = self.single_origin;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "on-screen offsets in logical pixels are far inside f32"
+        )]
+        let (top, bottom) = ((band.y0 - origin.y) as f32, (band.y1 - origin.y) as f32);
+        let number_right =
+            self.rect.x0 + gutter_width - super::GUTTER_PAD_R * self.gutter_text_scale;
+        let meets = |rect: Rect| {
+            marks.iter().any(|mark| {
+                let common = mark.intersect(rect);
+                common.width() > 0.0 && common.height() > 0.0
+            })
+        };
+        // Each line's rows, as one ink box: from its number (if the gutter
+        // shows one) to the end of its longest row, half a row of overhang
+        // around them, and above and below at least as far as its ink
+        // reaches past its bands.
+        let mut lines: Vec<(usize, Rect, f64)> = Vec::new();
+        for run in layout.rows_within(top, bottom) {
+            let height = f64::from(run.line_height);
+            let row = Rect::new(
+                origin.x,
+                origin.y + f64::from(run.line_top),
+                origin.x + f64::from(run.line_w),
+                origin.y + f64::from(run.line_top) + height,
+            );
+            match lines.last_mut() {
+                Some((line, bands, overhang)) if *line == run.line_i => {
+                    *bands = bands.union(row);
+                    *overhang = overhang.max(height / 2.0);
+                }
+                _ => lines.push((run.line_i, row, height / 2.0)),
+            }
+        }
+        let mut kept = Vec::new();
+        for (line, bands, overhang) in lines {
+            let reach = tr.rich_line_ink_reach(layout, line);
+            let ink = Rect::new(
+                bands.x0 - overhang,
+                bands.y0 - overhang.max(f64::from(reach.above)),
+                bands.x1 + overhang,
+                bands.y1 + overhang.max(f64::from(reach.below)),
+            );
+            if ink.y0 < band.y0 || ink.y1 > band.y1 || meets(ink) {
+                continue;
+            }
+            let ink = if gutter_width > 0.0 {
+                let number = line.saturating_add(1).to_string();
+                let (width, _) = tr.measure_style(&number, None, style);
+                let left = number_right - f64::from(width) - ink.height() / 2.0;
+                ink.union(Rect::new(left, ink.y0, number_right + 1.0, ink.y1))
+            } else {
+                ink
+            };
+            if crate::draw_cull::kept(scene, transform, ink) {
+                kept.push(line);
+            }
+        }
+        kept
     }
 
     /// Add `marks` (on screen) to what this frame shows painted over the

@@ -398,6 +398,17 @@ pub fn nest_scene(child: &Scene) {
     });
 }
 
+/// Forget the floating surfaces drawn into `child` since [`nest_scene`]:
+/// it is about to be drawn again. A no-op outside a recording.
+pub fn forget_nested(child: &Scene) {
+    let address = std::ptr::from_ref(child) as usize;
+    RECORDING.with(|slot| {
+        if let Some(recording) = slot.borrow_mut().as_mut() {
+            recording.pending.retain(|(known, _)| *known != address);
+        }
+    });
+}
+
 /// `scene.append(child, Some(transform))`, carrying the floating surfaces
 /// drawn into `child` since [`nest_scene`] onto `scene`: what `scene` holds
 /// so far lies below them. Returns how many surfaces `child` carried. A

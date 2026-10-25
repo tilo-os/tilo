@@ -104,12 +104,16 @@ impl PointerReplay {
     }
 }
 
-/// Every widget's layout box in tree order. Two snapshots of one unchanged
-/// tree are equal exactly when no widget moved or resized.
+/// Every widget's layout box in tree order that a pointer can reach: in a
+/// long scrolled collection only the children near its view
+/// ([`crate::widget::Widget::for_each_child_in_clip`]), so the snapshot
+/// costs what is shown, not what is held. Two snapshots of one unchanged
+/// tree are equal exactly when no widget the pointer can reach moved or
+/// resized.
 pub(crate) fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<Rect> {
     fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<Rect>) {
         out.push(widget.get_rect());
-        widget.for_each_child(&mut |child| walk(child, out));
+        widget.for_each_child_in_clip(&mut |child| walk(child, out));
     }
     let mut out = Vec::new();
     walk(root, &mut out);
