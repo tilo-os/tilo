@@ -301,6 +301,10 @@ pub(crate) struct Shared {
     pub image_owners: crate::page_content::ImageOwners,
     /// Set by any tab component's wake; the host relayouts before drawing.
     pub woken: Arc<AtomicBool>,
+    /// The page has put a frame on screen while it was visible: the person
+    /// can see the desktop. What waits for them to have seen it a while
+    /// (the first control hint) counts from here, not from the mount.
+    pub presented: Rc<Cell<bool>>,
     pub owner_wakes: ui::owner_wake::OwnerWakeQueue,
     /// The applications whose components woke the mount since it last
     /// looked, for the frame metrics.
