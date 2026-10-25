@@ -222,3 +222,67 @@ fn an_apps_size_shows_only_where_it_is_known() {
     assert_eq!(size_of("Krita"), crate::i18n::format_bytes(312_000_000));
     assert_eq!(size_of("Text Editor"), "");
 }
+
+/// The Applications place as it stands after the frame loop has taken the
+/// shell's answer in: shown, and no read under way.
+fn settled(lister: AppLister) -> FileExplorerWidget {
+    let mut files = FileExplorerWidget::new();
+    files.debug_show_applications(sample_apps());
+    files.navigate(crate::applications::location());
+    files.set_app_request(record);
+    files.set_app_lister(lister);
+    assert!(
+        files.applications.wanted,
+        "the place is where the window shows"
+    );
+    files.applications.next_poll = None;
+    files.applications.stale = false;
+    files
+}
+
+#[test]
+fn a_settled_app_list_asks_nothing_on_a_timer() {
+    let files = settled(one_app);
+
+    assert_eq!(
+        files.applications.next_wake(),
+        None,
+        "nothing is due while the list is current"
+    );
+    assert_eq!(
+        files.applications.next_poll, None,
+        "the place schedules no read of its own"
+    );
+}
+
+#[test]
+fn the_shells_word_makes_the_place_ask_again() {
+    let mut files = settled(one_app);
+    files.take_apps_event(&ui::collaboration::CollabEvent::ApplicationsChanged);
+
+    assert!(
+        files.applications.next_wake().is_some(),
+        "a change the shell reported is asked about at once"
+    );
+    assert_eq!(files.applications.next_poll, None, "on no clock of its own");
+}
+
+#[test]
+fn only_the_app_lists_own_word_wakes_the_place() {
+    let mut files = settled(one_app);
+    files.take_apps_event(&ui::collaboration::CollabEvent::DrivesChanged);
+
+    assert_eq!(
+        files.applications.next_wake(),
+        None,
+        "the place is kept current by the app list's word alone"
+    );
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it stands in for the shell's tool service, which can refuse"
+)]
+fn one_app() -> Result<Vec<AppEntry>, String> {
+    Ok(sample_apps().into_iter().take(1).collect())
+}
