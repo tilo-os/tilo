@@ -121,22 +121,12 @@ class NextestPolicyTests(unittest.TestCase):
     def test_checks_read_filters_from_the_tested_tree(self) -> None:
         # A filterset copied into t.toml would name packages a later tree may
         # have renamed, and nextest rejects a package() that matches nothing.
-        self.assertNotRegex(T_TOML.read_text(encoding="utf-8"), r"(?m)^\s*(GOLDEN|PUSH_ONLY|QUARANTINE)_FILTER\s*=")
+        self.assertNotRegex(T_TOML.read_text(encoding="utf-8"), r"(?m)^\s*(GOLDEN|PUSH_ONLY)_FILTER\s*=")
         self.assertIn("import nextest_filters", T_NEXTEST.read_text(encoding="utf-8"))
         output = subprocess.run([sys.executable, str(REPO / "tools/ci/nextest_filters.py")],
                                 check=True, capture_output=True, text=True).stdout
         names = [line.split("=", 1)[0] for line in output.splitlines()]
-        self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER", "QUARANTINE_FILTER"])
+        self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER"])
 
 if __name__ == "__main__":
     unittest.main()
-
-    def test_required_shards_skip_quarantined_tests_on_every_event(self) -> None:
-        # A quarantine names its tracking issue and is skipped on pull
-        # requests and on pushes to main alike, never only on one of them.
-        source = FILTERS.read_text(encoding="utf-8")
-        quarantine = tomllib.loads(source)["quarantine"]
-        self.assertTrue(quarantine.strip())
-        comment = source.split("quarantine =", 1)[0].rsplit("\n\n", 1)[-1]
-        self.assertRegex(comment, r"#\d+", "a quarantine names its tracking issue")
-        self.assertIn('-E "not ($GOLDEN_FILTER) and not ($QUARANTINE_FILTER)', T_NEXTEST.read_text(encoding="utf-8"))

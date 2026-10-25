@@ -40,9 +40,11 @@ const IDLE: Duration = Duration::from_secs(60);
 /// Measured blocking on CI (focused, #4138): main `f744af88ad` 6.12 to
 /// 6.98/s (runs 92709-92713); with the upkeep tick and the gossip sweep
 /// armed only while there are peers, which this pair has, 5.84 to 7.17/s
-/// (runs 92724, 92787-92796). What remains is the two network runtimes'
-/// workers over both desktops: the transport's 5 s keep-alives, the 5 s
-/// upkeep tick and the 10 s sweep both desktops keep while linked.
+/// (runs 92724, 92787-92796). With the fabric on the gossip connection,
+/// the upkeep tick armed only while a retry waits and the home-peer files
+/// watched instead of read every 2 s, 4.77/s (t run r124f044c42): the two
+/// network runtimes' workers over both desktops, for the gossip link's 5 s
+/// keep-alives and the 10 s sweep both desktops keep while linked.
 ///
 /// Where the gate runs, loaded, its threads block more than when focused:
 /// nightly's 12.05/s against about 10/s focused on the same code before
