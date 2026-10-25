@@ -114,9 +114,56 @@ impl PrivateProtocol {
         if self.authenticate(cert, device).is_err() {
             return PrivateReply::Refused;
         }
-        self.execute(cert, device, room, operation, until)
+        self.watched(cert, device, room, operation, until)
             .await
             .unwrap_or(PrivateReply::Refused)
+    }
+
+    /// [`Self::execute`] for people only. The room's spectator person, the
+    /// one every page that only watches is certified as, is a member of
+    /// the room but nobody to talk with: it holds no conversations and is
+    /// nobody's contact.
+    async fn watched(
+        &self,
+        cert: &DeviceCert,
+        device: &[u8; 32],
+        room: &str,
+        operation: PrivateOperation,
+        until: impl Future<Output = Result<(), String>>,
+    ) -> Result<PrivateReply, String> {
+        let workspace_id = self
+            .rooms
+            .room(room)
+            .await
+            .map_err(|_| "private room unavailable")?
+            .lock()
+            .await
+            .workspace_id();
+        let Some(spectator) = self.rooms.spectator_person(workspace_id).await else {
+            return self.execute(cert, device, room, operation, until).await;
+        };
+        let spectator_key = hex::encode(spectator);
+        let peer = match &operation {
+            PrivateOperation::Contacts => None,
+            PrivateOperation::Open { peer }
+            | PrivateOperation::Read { peer, .. }
+            | PrivateOperation::Send { peer, .. }
+            | PrivateOperation::Watch { peer, .. } => Some(peer),
+        };
+        if cert.user_public_key == spectator || peer == Some(&spectator_key) {
+            return Err("the room's spectator holds no private conversations".into());
+        }
+        Ok(
+            match self.execute(cert, device, room, operation, until).await? {
+                PrivateReply::Contacts(contacts) => PrivateReply::Contacts(
+                    contacts
+                        .into_iter()
+                        .filter(|contact| contact.public_key != spectator_key)
+                        .collect(),
+                ),
+                reply => reply,
+            },
+        )
     }
 
     async fn execute(

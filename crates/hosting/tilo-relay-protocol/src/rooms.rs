@@ -436,6 +436,15 @@ pub enum RoomsRequest {
         room: String,
         share: String,
     },
+    /// How the calling device's person names themself in `room` from now
+    /// on, a display name ([`tilo_user_identity::display_name`]): the name
+    /// the room's member list and every person list show for them.
+    /// Answered with [`RoomsReply::Named`]. A page sends it as it joins and
+    /// whenever its person renames themself.
+    Name {
+        room: String,
+        name: String,
+    },
 }
 
 /// The answer to a [`RoomsRequest`].
@@ -466,6 +475,8 @@ pub enum RoomsReply {
     /// How many grants a [`RoomsRequest::Share`] holds, or a
     /// [`RoomsRequest::Unshare`] revoked.
     Shared(u32),
+    /// The room names the caller as asked, for [`RoomsRequest::Name`].
+    Named,
 }
 
 /// One `/join` step.

@@ -289,6 +289,7 @@ fn complete(
         request_id,
         proof_digest,
         redemption: &redemption,
+        name: None,
     }];
     admit(room, &joins, key, now)?
         .pop()
