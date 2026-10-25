@@ -482,11 +482,11 @@ CARGO_CHECKS: dict[str, dict] = {
         "packages": lambda packages, root: {"tilo-relay"},
         "inputs": [],
     },
-    # The imager's library tests, built for the micro-VM check that runs its internal-cache
-    # tests on an ext4 of its own (imager-cache). Built beside workspace-unify, as the test
-    # family builds them, which decides only the features they are built with: its manifest
-    # counts, not the sources of every crate it names.
-    "imager-cache-build": {
+    # The imager's tests, archived for the micro-VM check that runs them on an ext4 of its own
+    # (imager-tests). Built beside workspace-unify, as the test family builds them, which
+    # decides only the features they are built with: its manifest counts, not the sources of
+    # every crate it names.
+    "imager-tests-build": {
         "packages": lambda packages, root: {"imager"},
         "inputs": ["crates/dev/workspace-unify/Cargo.toml"],
     },
@@ -837,8 +837,17 @@ def untested(packages: dict[str, dict]) -> list[str]:
                   if not any(target.get("test") for target in package["targets"]))
 
 
+def micro_vm_tested() -> list[str]:
+    """The packages .config/nextest-filters.toml's `micro_vm` filter names: their tests run in a
+    micro-VM check of their own (imager-tests), not in the test family."""
+    import tomllib
+    filters = tomllib.loads((ROOT / ".config" / "nextest-filters.toml").read_text(encoding="utf-8"))
+    return re.findall(r"package\(([\w-]+)\)", filters["micro_vm"])
+
+
 def test_families(packages: dict[str, dict]) -> dict[str, str]:
-    return {"test-exclude": f"exclude = {array(sorted({*X86_64_ONLY_TESTS, *untested(packages)}))}\n",
+    excluded = {*X86_64_ONLY_TESTS, *untested(packages), *micro_vm_tested()}
+    return {"test-exclude": f"exclude = {array(sorted(excluded))}\n",
             "test-x86_64-packages": f"packages = {array(X86_64_ONLY_TESTS)}\n"}
 
 
