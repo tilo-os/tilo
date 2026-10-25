@@ -34,7 +34,8 @@ case ${1:-} in
     for file in dist/ci/install-build-deps.sh os/external-assets/github-assets.tsv \
       tools/ci/check-build-env.sh tools/ci/install-android-ndk.sh tools/ci/install-pdfium.sh \
       tools/ci/native-mold-linker.sh tools/ci/verify-native-mold.sh tools/ci/windows/wine-prefix.sh \
-      tools/ci/install-xwayland-satellite.sh os/external-assets/xwayland-satellite/*.patch; do
+      tools/ci/install-xwayland-satellite.sh os/external-assets/xwayland-satellite/*.patch \
+      tools/ci/shstk-mark.py os/scripts/verify-elf-hardening.sh; do
       install -D -m 0644 "$file" "$context/$file"
     done
     bash tools/ci/publish/oci-build.sh "$context" os/Containerfile.builder "$out" \

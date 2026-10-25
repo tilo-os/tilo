@@ -224,7 +224,7 @@ publish = { inputs = ["rust-toolchain.toml"], requirement = { cores = 2, memory 
 [product.build]
 run = "bash tools/ci/publish/ci-builder.sh build {arch} {out}"
 needs = ["os-assets"]
-inputs = ["os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/install-xwayland-satellite.sh", "os/external-assets/xwayland-satellite/**", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh"]
+inputs = ["os/Containerfile.builder", "tools/ci/shstk-mark.py", "os/scripts/verify-elf-hardening.sh", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/install-xwayland-satellite.sh", "os/external-assets/xwayland-satellite/**", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh"]
 cost = "heavy"
 timeout_secs = 14400
 # Measured: 30 GiB peak on x86_64, at the edge of 32 GiB.

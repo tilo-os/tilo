@@ -33,6 +33,25 @@ RUN --mount=type=bind,source=dist/ci/install-build-deps.sh,target=/tmp/install-b
        bash /tmp/install-build-deps.sh fedora test \
     && rustc --version && rust-analyzer --version && cargo nextest --version
 
+# The toolchain's libstd-<hash>.so, which thin apps load and which the app runtime and
+# the OS image ship, marked shadow-stack compatible on x86_64 (tools/ci/shstk-mark.py):
+# upstream builds it without the note distributions add, and glibc turns shadow stacks
+# off for a whole process when one library it loads lacks it. Its code, dynamic
+# symbols and .rustc metadata stay the toolchain's; a program linked against it here
+# must still build, unwind and run.
+RUN --mount=type=bind,source=tools/ci/shstk-mark.py,target=/tmp/shstk-mark.py,ro \
+    --mount=type=bind,source=os/scripts/verify-elf-hardening.sh,target=/tmp/verify-elf-hardening.sh,ro \
+    if [ "$(uname -m)" = x86_64 ]; then \
+      libstd="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
+      && [ -n "$libstd" ] \
+      && python3 -I /tmp/shstk-mark.py "$libstd" \
+      && bash /tmp/verify-elf-hardening.sh "$libstd" \
+      && printf '%s\n' 'fn main() { assert!(std::panic::catch_unwind(|| panic!("unwinds")).is_err()); assert_eq!(std::thread::spawn(|| 42).join().unwrap(), 42); }' > /tmp/probe.rs \
+      && rustc -C prefer-dynamic -C link-arg=-Wl,-z,shstk -o /tmp/probe /tmp/probe.rs \
+      && LD_LIBRARY_PATH="$(dirname "$libstd")" /tmp/probe 2>/dev/null \
+      && rm -f /tmp/probe /tmp/probe.rs; \
+    fi
+
 # The X11 bridge the shell's X11 clipboard tests drive: xwayland-satellite
 # built from pinned source with Tilo's patch
 # (os/external-assets/xwayland-satellite/README.md).
