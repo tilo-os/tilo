@@ -192,6 +192,9 @@ struct Web {
     features: u64,
     /// The rooms this relay governs, for `/rooms` and `/join`.
     rooms: Option<crate::rooms::Rooms>,
+    /// Their governor's private door, for `/private`: the one a native
+    /// device reaches over iroh.
+    private: Option<crate::rooms::PrivateProtocol>,
     /// Members' root envelopes, for `/envelope`.
     envelopes: envelopes::Envelopes,
     /// Members' profiles, for `/profile`.
@@ -371,6 +374,10 @@ impl Relay {
             allowed_origins: config.allowed_origins,
             features: self.web_features() | fetch.features(),
             rooms: self.rooms().cloned(),
+            private: self
+                .rooms()
+                .cloned()
+                .map(crate::rooms::PrivateProtocol::new),
             envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
             profiles: envelopes::Envelopes::of(
                 envelopes::Kind::Profile,
@@ -1462,6 +1469,37 @@ async fn route(
             Ok(encoded(&protocol::ChannelKeys {
                 keys: keys.to_vec(),
             }))
+        }
+        tilo_relay_protocol::rooms::private::PRIVATE_PATH => {
+            use tilo_relay_protocol::rooms::private::{MAX_REQUEST_BYTES, PrivateCall};
+            let session = authed()?;
+            let door = web
+                .private
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+            if bytes.len() > MAX_REQUEST_BYTES {
+                return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "body too large"));
+            }
+            let call: PrivateCall = decode(&bytes)?;
+            let device = session.peer.device_public_key;
+            let _admitted = door
+                .admit(device)
+                .ok_or_else(|| status(StatusCode::SERVICE_UNAVAILABLE, "busy"))?;
+            // A watch is a long-poll, held as long as `/events` holds one.
+            let poll = async {
+                tokio::time::sleep(wait(MAX_POLL_MS)).await;
+                Ok(())
+            };
+            let reply = door
+                .serve(
+                    &session.peer.cert,
+                    &device,
+                    &call.room,
+                    call.operation,
+                    poll,
+                )
+                .await;
+            Ok(encoded(&reply))
         }
         "/rooms" => {
             let session = authed()?;
