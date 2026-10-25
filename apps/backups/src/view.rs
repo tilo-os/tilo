@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use ui::LocalState;
-use ui::fact::{Fact, Measure};
+use ui::fact::{Measure, Measured};
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::TextRole;
@@ -521,7 +521,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
     let (value, unit) = split_unit(&size(protected));
     let count = catalog.timeline(filter).len();
     let at = ui::time::wall();
-    let tile = |label: &str, fact: Fact, unit: Option<String>, tone: Option<Tone>| {
+    let tile = |label: &str, fact: Measured, unit: Option<String>, tone: Option<Tone>| {
         let mut tile = StatTile::new(label, fact.value_or_dash().to_owned());
         if let Some(unit) = unit {
             tile = tile.unit(unit);
@@ -541,7 +541,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
                 )),
         ) as Element
     };
-    let protected_fact = Fact::measured(
+    let protected_fact = Measured::measured(
         Measure::new("Protected size").unit(unit.clone()),
         value,
         "repository manifest",
@@ -552,7 +552,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
         tile("Protected", protected_fact, Some(unit), None),
         tile(
             "Snapshots",
-            Fact::measured(
+            Measured::measured(
                 Measure::new("Snapshots"),
                 i18n::group_digits(count as u64),
                 "repository manifest",
@@ -569,7 +569,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
             let tone = (now - last.taken > chrono::Duration::days(2)).then_some(Tone::Warning);
             tile(
                 "Last backup",
-                Fact::measured(
+                Measured::measured(
                     Measure::new("Time since last backup").unit(unit.clone()),
                     value,
                     "repository manifest",
@@ -582,7 +582,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
         }
         None => tile(
             "Last backup",
-            Fact::unknown(
+            Measured::unknown(
                 Measure::new("Time since last backup"),
                 "no completed snapshot",
             ),
@@ -595,7 +595,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
             let (value, unit) = ahead(next, now);
             tile(
                 "Next run",
-                Fact::measured(
+                Measured::measured(
                     Measure::new("Time to next run").unit(unit.clone()),
                     value,
                     "schedule",
@@ -608,7 +608,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
         }
         None => tile(
             "Next run",
-            Fact::unknown(
+            Measured::unknown(
                 Measure::new("Time to next run"),
                 "no scheduler runs on this device; back up when you choose",
             ),
