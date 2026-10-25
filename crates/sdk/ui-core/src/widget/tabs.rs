@@ -4336,6 +4336,10 @@ impl Widget for TabBar {
             for (i, rect) in slots.views.iter().enumerate() {
                 out.push((format!("window_view:{i}"), *rect));
             }
+            for (i, rect) in slots.reactions.iter().enumerate() {
+                out.push((format!("window_reaction:{i}"), *rect));
+            }
+            out.push(("window_reaction_add".to_string(), slots.reaction_add));
         }
         // The window's own controls, by what they do.
         out.extend([
