@@ -26,9 +26,9 @@ pub struct HostIdentity {
     pub workspace_device_certs: HashMap<WorkspaceId, DeviceCert>,
     /// Root-signed revocations advertised beside each workspace certificate.
     pub workspace_revocations: HashMap<WorkspaceId, Vec<tilo_user_identity::RevocationEntry>>,
-    /// System device-key/certificate paths. Production actors use these to
-    /// refresh workspace identity material on every heartbeat; tests may use
-    /// the in-memory maps alone.
+    /// System device-key/certificate paths. Production actors read
+    /// workspace identity material from these and announce it again when
+    /// they change; tests may use the in-memory maps alone.
     pub identity_paths: Option<tilo_user_identity::IdentityPaths>,
 }
 
@@ -130,6 +130,35 @@ impl HostIdentity {
             cert,
             fleet.map_or(fallback_revocations, |fleet| fleet.revocations),
         )
+    }
+
+    /// The directories [`Self::material_for`] and [`Self::successions_for`]
+    /// read: what this device announces changes only with them. None for an
+    /// identity kept in memory.
+    #[must_use]
+    pub fn material_directories(&self) -> Vec<std::path::PathBuf> {
+        let Some(paths) = &self.identity_paths else {
+            return Vec::new();
+        };
+        let mut directories: Vec<_> = paths
+            .device_cert
+            .parent()
+            .map(|device| device.join("certs"))
+            .into_iter()
+            .chain(
+                paths
+                    .user_pubkey
+                    .parent()
+                    .and_then(std::path::Path::parent)
+                    .map(tilo_relay_protocol::home_peer_registry_path)
+                    .and_then(|registry| registry.parent().map(std::path::Path::to_path_buf)),
+            )
+            .collect();
+        if let Ok(store) = crate::registry::IdentityRegistryStore::from_env() {
+            directories.push(store.identity_dir().join("fleets"));
+            directories.push(store.identity_dir().to_path_buf());
+        }
+        directories
     }
 
     /// The root's governor successions of the identity selected for `ws`,

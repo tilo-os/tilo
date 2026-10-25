@@ -49,11 +49,10 @@ static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 /// How often the actor retries what is missing (a topic subscription, a
-/// direct peer, a workspace host) and re-reads this device's identity
-/// material and codecs, to announce a change the tick it lands. Local work: a
-/// converged, idle desktop sends nothing on it. Armed only while there is something to retry
-/// or someone to tell ([`ActorState::needs_upkeep`]): a desktop alone with
-/// its rooms never wakes for it.
+/// direct peer, a workspace host). Armed only while something is
+/// ([`ActorState::needs_upkeep`]): a converged desktop never wakes for it.
+/// A change of this device's identity material or codecs is announced when
+/// it happens, not found by a tick.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// Peer liveness, kept by the transport rather than by messages. A gossip
 /// neighbour is a member while its link is up: iroh sends a QUIC keep-alive
@@ -686,6 +685,8 @@ enum InternalEvent {
         peer: EndpointId,
         connection_incarnation: u64,
     },
+    /// A file this device's identity material is read from changed.
+    IdentityMaterialChanged,
     PersonalTransferProgress {
         target: EndpointId,
         transfer_id: [u8; 16],
@@ -2777,6 +2778,9 @@ impl ActorState {
                 )
                 .await;
             }
+            Some(InternalEvent::IdentityMaterialChanged) => {
+                self.identity_material_changed().await;
+            }
             Some(InternalEvent::PersonalFabricClosed {
                 peer,
                 connection_incarnation,
@@ -3528,15 +3532,21 @@ impl ActorState {
         }
     }
 
-    /// Whether [`Self::run_heartbeat_tick`] has anything to do: a peer to
-    /// keep, retry or tell about a change, a workspace host or a governed
-    /// room's relay to keep connected, a remote action held for a peer, or a
-    /// topic whose subscription failed. A desktop alone with its rooms has
-    /// none of these, so its runtime sleeps until one appears ([`run`]).
+    /// Whether [`Self::run_heartbeat_tick`] has anything to do: a direct
+    /// peer not yet seen on one of the topics, a workspace host or a
+    /// governed room's relay to keep connected, a remote action held for a
+    /// peer, or a topic whose subscription failed. A converged pair of
+    /// desktops has none of these, so its runtime sleeps until one appears
+    /// ([`run`]).
     fn needs_upkeep(&self) -> bool {
-        !self.peers.is_empty()
-            || !self.peers_seen.is_empty()
-            || !self.hosts.is_empty()
+        let local = self.endpoint.id();
+        self.peers.keys().any(|peer| {
+            *peer != local
+                && self
+                    .topics
+                    .keys()
+                    .any(|ws| !self.peers_seen.contains_key(&(*ws, *peer)))
+        }) || !self.hosts.is_empty()
             || !self.host_sessions.is_empty()
             || !self.native_routes.is_empty()
             || !self.pending_remote_actions.is_empty()
@@ -3581,9 +3591,8 @@ impl ActorState {
     }
 
     /// Retry any topic subscription, direct peer or workspace host not yet
-    /// connected, and announce this device's identity and codecs where they
-    /// changed.
-    /// Runs every [`HEARTBEAT_INTERVAL`] while [`Self::needs_upkeep`].
+    /// connected. Runs every [`HEARTBEAT_INTERVAL`] while
+    /// [`Self::needs_upkeep`].
     async fn run_heartbeat_tick(&mut self) {
         for (ws, peer) in self.pending_remote_actions.targets() {
             if self.peers_seen.contains_key(&(ws, peer)) {
@@ -3623,15 +3632,16 @@ impl ActorState {
                 }
             }
         }
-        // Neighbours heard this device's identity and codecs when their link
-        // came up; from here on they hear them again only when they change
-        // (a renewed certificate, a new revocation, an H.264-only viewer
-        // opening). A converged, idle desktop says nothing.
+    }
+
+    /// Neighbours heard this device's identity when their link came up; from
+    /// here on they hear it again only when it changes (a renewed
+    /// certificate, a new revocation), which the files it is read from say.
+    async fn identity_material_changed(&mut self) {
         let workspaces: Vec<_> = self.topics.keys().copied().collect();
         for ws in workspaces {
             self.announce_identity_if_changed(ws).await;
         }
-        self.announce_media_caps_if_changed().await;
     }
 
     /// The identity announcement this device makes on `ws`: its certificate
@@ -3675,8 +3685,7 @@ impl ActorState {
 
     /// Announce this device's identity on `ws` again, to its neighbours and
     /// its workspace hosts, when it changed since it was last announced
-    /// there: a new revocation reaches the room the tick it is read from
-    /// disk, as when every tick announced it.
+    /// there: a new revocation reaches the room as soon as it is on disk.
     async fn announce_identity_if_changed(&mut self, ws: WorkspaceId) {
         let Some(hello) = self.identity_hello(ws) else {
             return;
@@ -4167,6 +4176,11 @@ async fn run(
         pending_remote_actions: PendingRemoteActions::default(),
         gossip_pointers: PointerPacer::default(),
     };
+    let _identity_watch = state
+        .host_identity
+        .as_ref()
+        .and_then(|identity| watch_identity_material(identity, state.internal_tx.clone()));
+    let mut media_caps = crate::network::media_caps::changes();
     let mut upkeep = None;
     let mut host_checkpoint = None;
     let mut reported_party = None;
@@ -4182,8 +4196,8 @@ async fn run(
         // Evict when the soonest membership lapses, not on a polling tick:
         // linked peers have no deadline at all.
         let eviction = state.next_eviction();
-        // Upkeep every `heartbeat_interval` while there is someone to keep
-        // up with; a desktop alone with its rooms never wakes for it.
+        // Upkeep every `heartbeat_interval` while something waits for a
+        // retry; a converged desktop never wakes for it.
         upkeep = next_upkeep(upkeep, state.needs_upkeep(), heartbeat_interval);
         host_checkpoint = next_upkeep(
             host_checkpoint,
@@ -4213,6 +4227,7 @@ async fn run(
             }
             () = sleep_until_due(pointer_due) => state.broadcast_due_pointers().await,
             () = sleep_until_lapse(eviction) => state.run_eviction_tick().await,
+            Ok(()) = media_caps.changed() => state.announce_media_caps_if_changed().await,
             () = sleep_until_lapse(upkeep) => {
                 upkeep = None;
                 state.run_heartbeat_tick().await;
@@ -4235,6 +4250,26 @@ async fn run(
     }
     reporting_addrs.abort();
     let _ = router.shutdown().await;
+}
+
+/// Tell the actor whenever a file `identity`'s material is read from
+/// changes. `None` for an identity kept in memory, or one that cannot be
+/// watched: it is then announced as it was when each link came up.
+fn watch_identity_material(
+    identity: &HostIdentity,
+    internal_tx: mpsc::Sender<InternalEvent>,
+) -> Option<tilo_files::native::Watched<()>> {
+    let directories = identity.material_directories();
+    if directories.is_empty() {
+        return None;
+    }
+    let watched = tilo_files::native::Watched::start("identity-material", directories, || ())
+        .inspect_err(|error| tracing::warn!(%error, "cannot watch this device's identity"))
+        .ok()?;
+    watched.on_change(move || {
+        let _ = internal_tx.blocking_send(InternalEvent::IdentityMaterialChanged);
+    });
+    Some(watched)
 }
 
 /// Sleep until `at` on the runtime's clock, or forever when nothing is due.
