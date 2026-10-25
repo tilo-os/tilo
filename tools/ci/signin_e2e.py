@@ -455,36 +455,66 @@ class Run:
             sh.close()
 
     def read_recovery_key(self, sh: Shell) -> str | None:
-        """The key the installer just copied to its clipboard, read back through wl-paste as the
-        installer's user. Kept in memory only and redacted from everything this run writes."""
+        """The key the installer copied to its clipboard, read back through wl-paste as the
+        installer's user, else read off the screen. Kept in memory only and redacted from
+        everything this run writes; what the attempts saw is logged without it."""
         script = r"""
+err=$(mktemp)
 for dir in /run/user/*; do
   for sock in "$dir"/wayland-[0-9]*; do
     case "$sock" in *.lock) continue ;; esac
     [ -S "$sock" ] || continue
     owner=$(stat -c %U "$dir")
+    printf 'E2E-SOCKET %s %s\n' "$sock" "$owner"
+    printf 'E2E-TYPES '
     runuser -u "$owner" -- env XDG_RUNTIME_DIR="$dir" WAYLAND_DISPLAY="${sock##*/}" \
-      timeout 10 wl-paste -n 2>/dev/null && exit 0
+      timeout -k 2 10 wl-paste --list-types 2>>"$err" | tr '\n' ' '
+    printf '\nE2E-PASTE-BEGIN\n'
+    runuser -u "$owner" -- env XDG_RUNTIME_DIR="$dir" WAYLAND_DISPLAY="${sock##*/}" \
+      timeout -k 2 10 wl-paste -n 2>>"$err"
+    printf '\nE2E-PASTE-END %d\n' "$?"
   done
 done
-exit 1
+printf 'E2E-STDERR\n'; cat "$err"; rm -f "$err"
 """
-        code, text = sh.run(script, quiet=True)
-        found = RECOVERY_SHAPE.search(text)
-        if code == 0 and found:
-            say("read the recovery key from the installer's clipboard")
-            return SECRETS.add(found.group(0))
-        say("the installer's clipboard held no recovery key; reading it from the screen")
-        path, text = self.cycle.screen("private-recovery")
-        if path:
-            ocr = subprocess.run(["tesseract", str(path), "stdout", "-c",
-                                  "tessedit_char_whitelist=cbdefghijklnrtuv-"],
-                                 capture_output=True, text=True)
-            path.unlink(missing_ok=True)
-            found = RECOVERY_SHAPE.search(ocr.stdout.replace(" ", ""))
+        for attempt in range(3):
+            _, text = sh.run(script, 90, quiet=True)
+            found = RECOVERY_SHAPE.search(text)
             if found:
+                say("read the recovery key from the installer's clipboard")
                 return SECRETS.add(found.group(0))
-        return None
+            pasted = re.findall(r"E2E-PASTE-BEGIN\n(.*?)\nE2E-PASTE-END (\d+)", text, re.S)
+            seen = [line for line in text.splitlines()
+                    if line.startswith(("E2E-SOCKET", "E2E-TYPES"))]
+            stderr = text.split("E2E-STDERR", 1)[-1].strip()[-600:]
+            say(f"clipboard attempt {attempt + 1}: {seen or 'no wayland socket'}; pasted "
+                f"{[(len(body), int(code)) for body, code in pasted]} bytes/exit; wl-paste said: "
+                f"{SECRETS.redact(stderr) or 'nothing'}")
+            time.sleep(3)
+        say("the installer's clipboard held no recovery key; reading it from the screen")
+        return self.read_recovery_key_from_screen()
+
+    def read_recovery_key_from_screen(self) -> str | None:
+        path, _ = self.cycle.screen("private-recovery")
+        if not path:
+            return None
+        big = path.with_name("private-recovery-big.png")
+        try:
+            subprocess.run(["magick", str(path), "-colorspace", "Gray", "-resize", "300%",
+                            "-sharpen", "0x1", str(big)], check=True, capture_output=True)
+            for source in (big, path):
+                for extra in (["-c", "tessedit_char_whitelist=cbdefghijklnrtuv-"], []):
+                    ocr = subprocess.run(["tesseract", str(source), "stdout", "--psm", "11", *extra],
+                                         capture_output=True, text=True)
+                    found = RECOVERY_SHAPE.search(ocr.stdout.replace(" ", ""))
+                    if found:
+                        say("read the recovery key from the screen")
+                        return SECRETS.add(found.group(0))
+            say("no recovery key could be read from the screen")
+            return None
+        finally:
+            path.unlink(missing_ok=True)
+            big.unlink(missing_ok=True)
 
     def keyslot_view(self, sh: Shell, dev: str) -> dict:
         """The LUKS2 header's keyslots and tokens, and a hash of each keyslot's key material."""
