@@ -677,6 +677,9 @@ cryptsetup close e2e-target
         "failed": "systemctl --failed --no-pager --plain --no-legend; "
                   "systemctl status --no-pager tilo-authd.socket tilo-authd.service greetd | tail -n 60",
         "sessions": "loginctl list-sessions --no-pager",
+        "initrd": "journalctl -b --no-pager -o short-monotonic | grep -E "
+                  "'tilo-root-discover|tilo-boot-signin|tilo-auth|systemd-cryptsetup|plymouth' "
+                  "| head -n 300",
     }
 
     def collect_signin_state(self, label: str) -> None:
@@ -735,10 +738,11 @@ cryptsetup close e2e-target
         return int(text.strip())
 
     def user_session(self) -> dict | None:
-        _, text = self.guest("loginctl list-sessions -o json --no-pager", quiet=True)
+        _, text = self.guest("loginctl list-sessions --json=short --no-pager", quiet=True)
         try:
             sessions = json.loads(text[text.index("["):])
         except ValueError:
+            self.save("loginctl-unparsed.txt", text)
             return None
         for session in sessions:
             if session.get("user") == self.user and session.get("class", "user") == "user":
@@ -1211,7 +1215,16 @@ cryptsetup close e2e-target
             self.cycle.keep_screen("recovery-no-prompt", path, text)
             self.item("6", "failed", f"no prompt for the recovery key after \"Can't sign in\" ({kind})",
                       **evidence)
-            self.cycle.stop()
+            # Sign in as usual so the boot completes and its initrd journal says what the empty
+            # answer did.
+            self.cycle.type(self.account)
+            self.cycle.keys("ret")
+            try:
+                self.connect(300)
+                self.power_off(label)
+            except Failed as error:
+                say(f"the recovery boot did not come up after signing in: {error}")
+                self.cycle.stop()
             return
         self.cycle.keep_screen("recovery-prompt", path, text)
         self.cycle.type(self.recovery)
