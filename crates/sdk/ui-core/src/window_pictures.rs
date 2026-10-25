@@ -42,6 +42,10 @@ struct Pictures {
     /// Window group ids whose drawings are kept.
     wanted: Vec<u64>,
     held: Vec<(u64, WindowPicture)>,
+    /// Newly wanted groups with no picture yet: the strip draws them on
+    /// its next frame even when nothing in them changed, since a strip at
+    /// rest is not drawn again and would never make one.
+    owed: Vec<u64>,
 }
 
 thread_local! {
@@ -54,10 +58,42 @@ thread_local! {
 pub fn want(groups: &[u64]) {
     PICTURES.with(|pictures| {
         let mut pictures = pictures.borrow_mut();
-        pictures.wanted.clear();
-        pictures.wanted.extend_from_slice(groups);
-        let Pictures { wanted, held } = &mut *pictures;
+        let Pictures { wanted, held, owed } = &mut *pictures;
+        owed.retain(|group| groups.contains(group));
+        owed.extend(groups.iter().filter(|group| {
+            !wanted.contains(group) && !held.iter().any(|(held, _)| held == *group)
+        }));
+        wanted.clear();
+        wanted.extend_from_slice(groups);
         held.retain(|(group, _)| wanted.contains(group));
+    });
+}
+
+/// Whether window group `group` was just wanted and has no picture yet:
+/// its strip draws again for one.
+pub(crate) fn owed(group: u64) -> bool {
+    PICTURES.with(|pictures| pictures.borrow().owed.contains(&group))
+}
+
+/// Whether any newly wanted window still waits for its first picture: a
+/// host showing pictures asks for one more frame while it does.
+#[must_use]
+pub fn owes_any() -> bool {
+    PICTURES.with(|pictures| !pictures.borrow().owed.is_empty())
+}
+
+/// A strip drew, or left off screen, window groups `groups`: none of them
+/// is owed a draw any more, pictured or not (one off screen, or showing a
+/// secret, gets none, and asking again would draw it every frame).
+pub(crate) fn settled<'a>(groups: impl IntoIterator<Item = &'a u64>) {
+    PICTURES.with(|pictures| {
+        let mut pictures = pictures.borrow_mut();
+        if pictures.owed.is_empty() {
+            return;
+        }
+        for group in groups {
+            pictures.owed.retain(|owed| owed != group);
+        }
     });
 }
 
@@ -222,7 +258,12 @@ mod tests {
     #[test]
     fn a_window_off_screen_is_pictured_as_it_last_looked() {
         want(&[4]);
+        assert!(owed(4) && owes_any(), "a new want is owed a draw");
         keep(4, &drawn(), Rect::new(0.0, 0.0, 200.0, 100.0));
+        settled(&[4]);
+        assert!(!owes_any(), "drawn, it owes nothing");
+        want(&[4]);
+        assert!(!owed(4), "still wanted and pictured: nothing owed");
         assert_eq!(with_picture(4, |picture| picture.current), Some(true));
         unseen(&[4, 5]);
         assert_eq!(with_picture(4, |picture| picture.current), Some(false));

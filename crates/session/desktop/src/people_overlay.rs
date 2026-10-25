@@ -415,7 +415,11 @@ impl PeopleOverlay {
     #[must_use]
     pub fn needs_animation_frame(&self) -> bool {
         let now = ui::motion::frame_now();
-        self.shown.is_moving(now) || self.dock.is_moving(now) || self.peek.is_moving(now)
+        self.shown.is_moving(now)
+            || self.dock.is_moving(now)
+            || self.peek.is_moving(now)
+            // A peek's windows wait for their first live pictures.
+            || (self.peek.person().is_some() && ui::window_pictures::owes_any())
     }
 
     /// When the overlay next needs drawing without input: a pointer at
