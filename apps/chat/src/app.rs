@@ -340,9 +340,11 @@ pub(crate) enum Hit {
         msg: Id,
         emoji: String,
     },
+    /// The add button under a message; `anchor` is the button, which the
+    /// picker opens beside.
     AddReaction {
         msg: Id,
-        anchor: Point,
+        anchor: Rect,
     },
     OpenThread(Id),
     EditHistory {
@@ -375,7 +377,7 @@ pub(crate) enum Hit {
     JumpToLatest,
     ThreadScroll(bool),
     AgentReasoning(String),
-    ComposerEmoji(Point),
+    ComposerEmoji(Rect),
     /// Open the workspace file picker to share an attachment.
     Attach,
     /// Pick a specific file (by path) from the open attachment picker.
@@ -585,7 +587,7 @@ pub struct ChatApp {
     pub(crate) revealed_person: Option<Id>,
     pub(crate) emoji_open: bool,
     pub(crate) emoji_target: Option<Id>,
-    pub(crate) emoji_anchor: Point,
+    pub(crate) emoji_anchor: Rect,
     /// The toolkit's shared picker, placed at `emoji_anchor` while
     /// `emoji_open`.
     pub(crate) emoji_picker: ui::widget::EmojiPicker,
@@ -1017,7 +1019,7 @@ impl ChatApp {
             revealed_person: None,
             emoji_open: false,
             emoji_target: None,
-            emoji_anchor: Point::ZERO,
+            emoji_anchor: Rect::ZERO,
             emoji_picker: ui::widget::EmojiPicker::framed(),
             reaction_strips: std::cell::RefCell::default(),
             history_open: None,
@@ -1943,7 +1945,7 @@ impl ChatApp {
                 self.call = CallState::default();
                 self.emoji_open = true;
                 self.emoji_target = Some("m_me2".into());
-                self.emoji_anchor = Point::new(560.0, 300.0);
+                self.emoji_anchor = Rect::new(560.0, 300.0, 590.0, 330.0);
             }
             "edit-history" => {
                 // Every version of an edited message.
