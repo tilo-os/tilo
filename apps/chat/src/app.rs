@@ -378,6 +378,14 @@ pub(crate) enum Hit {
     ComposerEmoji(Point),
     /// Open the workspace file picker to share an attachment.
     Attach,
+    /// One rung of an attachment's ladder: open it at full size, save a copy,
+    /// or show the copy the person saved.
+    Attachment {
+        msg: Id,
+        action: ui::widget::conversation::AttachmentAction,
+    },
+    /// Close the open attachment.
+    CloseAttachment,
     /// Pick a specific file (by path) from the open attachment picker.
     AttachPick(String),
     /// Choose files on this device with the platform's file chooser.
@@ -434,6 +442,10 @@ impl Hit {
             Self::AgentReasoning(id) => format!("chat.reasoning.{id}"),
             Self::ComposerEmoji(_) => "chat.composer-emoji".into(),
             Self::Attach => "chat.attach".into(),
+            Self::Attachment { msg, action } => {
+                format!("chat.attachment:{msg}:{}", action.key())
+            }
+            Self::CloseAttachment => "chat.close-attachment".into(),
             Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
             Self::AttachDevice => "chat.attach-device".into(),
             Self::StartCall => "chat.start-call".into(),
@@ -620,6 +632,10 @@ pub struct ChatApp {
     pub(crate) attachment_result_rx: Receiver<AttachmentImportResult>,
     /// A settled import outcome for the picker/status UI and accessibility.
     pub(crate) attachment_status: Option<String>,
+    /// The attachment the person opened over the conversation, and the copy
+    /// they asked to save.
+    pub(crate) attachment_view: Option<crate::attachment_view::AttachmentView>,
+    pub(crate) attachment_save: Option<crate::attachment_view::AttachmentSave>,
     pub(crate) attachment_picker_pending: Option<u64>,
     pub(crate) attachment_picker_generation: u64,
     pub(crate) attachment_picker_result_tx: SyncSender<AttachmentPickerResult>,
@@ -852,6 +868,9 @@ pub struct ChatApp {
     /// A live window tells its person about mentions of them that arrive
     /// while they look elsewhere.
     mention_alerts: Option<crate::mention_alerts::MentionAlerts>,
+    /// The person's own drafts record, so the sidebar can say where the
+    /// unsent words are.
+    pub(crate) drafts_record: Option<ui::framework::PersonRecord<crate::drafts::ChatDrafts>>,
 
     /// Latest decoded camera picture per person, shown in their call tile
     /// (this person's own among them, in the host tile). Only ever holds a
@@ -1035,6 +1054,8 @@ impl ChatApp {
             attachment_result_tx,
             attachment_result_rx,
             attachment_status: None,
+            attachment_view: None,
+            attachment_save: None,
             attachment_picker_pending: None,
             attachment_picker_generation: 0,
             attachment_picker_result_tx,
@@ -1133,6 +1154,7 @@ impl ChatApp {
             flap_animating: false,
             announce: None,
             mention_alerts: None,
+            drafts_record: None,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
             call_pictures: ui::call_pictures::CallPictures::new(),
@@ -1485,7 +1507,10 @@ impl ChatApp {
     ) -> Self {
         if let Some(record) = record {
             self.composer_main.attach_drafts(record.clone());
-            self.composer_thread.attach_drafts(record);
+            self.composer_thread.attach_drafts(record.clone());
+            // The sidebar shows where the unsent words are, so it holds the
+            // record too.
+            self.drafts_record = Some(record);
         }
         self
     }
@@ -2916,6 +2941,29 @@ impl ChatApp {
         }
     }
 
+    /// Open the message a mention notification was about: the channel it was
+    /// said in, and the message itself where it is loaded. A message no longer
+    /// in view cannot be revealed, so the channel opens at its newest edge and
+    /// the reason is the only thing missing.
+    fn open_mention(&mut self, channel: &str, message: &str) -> bool {
+        if self.reveal_message(message).is_ok() {
+            return true;
+        }
+        if !self
+            .channels
+            .iter()
+            .any(|candidate| candidate.id == channel)
+        {
+            return false;
+        }
+        channel.clone_into(&mut self.active_channel);
+        self.thread_open = None;
+        self.revealed_message = None;
+        self.reset_timeline_to_latest();
+        self.reselect();
+        true
+    }
+
     pub(crate) fn reload(&mut self, doc: &AutoCommit) {
         self.read_kept_messages(doc);
         let chat = crate::projection::read(doc);
@@ -3715,6 +3763,10 @@ impl ChatApp {
                         (crate::i18n::t("chat-emoji-insert"), Role::Button, false)
                     }
                     Hit::Attach => ("Share a file".into(), Role::Button, false),
+                    Hit::Attachment { action, .. } => (action.label(), Role::Button, false),
+                    Hit::CloseAttachment => {
+                        (crate::i18n::t("chat-attachment-close"), Role::Button, false)
+                    }
                     Hit::AttachDevice => ("Upload from this device".into(), Role::Button, false),
                     Hit::AttachPick(path) => (
                         format!(
@@ -4875,9 +4927,17 @@ impl Widget for ChatApp {
     fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
         let model_changed = self.pump_model();
         let room_changed = self.take_room();
+        // A mention chosen from the host's notifications opens its own
+        // message, in the channel it was said in.
+        self.settle_attachment_save();
+        let opened = self
+            .mention_alerts
+            .as_ref()
+            .and_then(crate::mention_alerts::MentionAlerts::take_open)
+            .is_some_and(|(channel, message)| self.open_mention(&channel, &message));
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
-        std::mem::take(&mut self.read_on_present) || model_changed || room_changed
+        std::mem::take(&mut self.read_on_present) || model_changed || room_changed || opened
     }
 
     fn needs_animation_frame(&self) -> bool {

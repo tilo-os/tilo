@@ -310,8 +310,15 @@ impl<'a> ListFace<'a> {
 
     /// Paint the list from `rect`'s top left, `rect`'s width wide.
     pub fn paint(&self, paint: &mut PaintCtx<'_>, rect: Rect) {
+        let layout = self.layout(paint.text, paint.theme, rect.width(), rect.y0);
+        self.paint_layout(paint, rect, &layout);
+    }
+
+    /// Paint rows already measured by [`Self::layout`], so a caller that needs
+    /// the geometry (a list storing its rows for its accessible nodes) lays
+    /// out once.
+    fn paint_layout(&self, paint: &mut PaintCtx<'_>, rect: Rect, layout: &Layout) {
         let theme = paint.theme;
-        let layout = self.layout(paint.text, theme, rect.width(), rect.y0);
         let radius = f64::from(theme.tokens.radii.control);
         let spacing = &theme.tokens.spacing;
         for row in &layout.rows {
@@ -413,7 +420,9 @@ pub struct ConversationList {
     rect: Rect,
     name: String,
     theme: Option<Theme>,
-    measured: Option<(u64, f64)>,
+    /// The rows the last paint laid out, so an assistive-technology node
+    /// carries the bounds of the row it names rather than the list's.
+    rows: Vec<Row>,
 }
 
 impl ConversationList {
@@ -425,7 +434,7 @@ impl ConversationList {
             rect: Rect::ZERO,
             name: String::new(),
             theme: None,
-            measured: None,
+            rows: Vec::new(),
         }
     }
 
@@ -500,7 +509,6 @@ impl Widget for ConversationList {
         });
         let face = ListFace::new(&self.lines, ConversationClock::local());
         let height = face.height(text_renderer, theme, f64::from(width));
-        self.measured = Some((f64::from(width).to_bits(), height));
         taffy::Size {
             width,
             height: crate::num::f32_of_f64(height),
@@ -521,10 +529,10 @@ impl Widget for ConversationList {
             return;
         }
         let face = ListFace::new(&self.lines, ConversationClock::local());
-        face.paint(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            self.rect,
-        );
+        let mut paint = PaintCtx::new(scene, transform, text_renderer, theme);
+        let layout = face.layout(paint.text, theme, self.rect.width(), self.rect.y0);
+        face.paint_layout(&mut paint, self.rect, &layout);
+        self.rows = layout.rows;
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -544,18 +552,18 @@ impl Widget for ConversationList {
             .iter()
             .enumerate()
             .map(|(index, line)| {
-                let row = match &self.measured {
-                    Some((width, height)) => {
-                        let width = f64::from_bits(*width);
-                        Rect::new(
-                            self.rect.x0,
-                            self.rect.y0,
-                            self.rect.x0 + width,
-                            self.rect.y1.max(*height),
-                        )
-                    }
-                    None => self.rect,
-                };
+                // The row's own band, from the last paint: a list item that
+                // names a line must point at where that line is.
+                let row = self
+                    .rows
+                    .iter()
+                    .find_map(|row| match row {
+                        Row::Line {
+                            index: at, y0, y1, ..
+                        } if *at == index => Some(Rect::new(self.rect.x0, *y0, self.rect.x1, *y1)),
+                        _ => None,
+                    })
+                    .unwrap_or(self.rect);
                 AccessNode::new(Role::ListItem)
                     .with_action_target(format!("conversation-line:{}", line.id))
                     .with_name(face.spoken(line))

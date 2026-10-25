@@ -399,7 +399,7 @@ impl<'a> AttachmentFace<'a> {
         // The badge is its word while the pointer is on the picture, and its
         // glyph alone otherwise, so it never covers more of the picture than it
         // has to.
-        let label = hovered.then_some(word.as_str()).unwrap_or_default();
+        let label = if hovered { word.as_str() } else { "" };
         let chip = chip_rect(text, theme, label, preview, inset);
         ChipFace::new(chip, label)
             .lead(ChipLead::Glyph(Icon::Maximize))

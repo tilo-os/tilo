@@ -4,6 +4,7 @@
 
 conversation-delivery-queued = Queued
 conversation-delivery-sending = Sending
+conversation-delivery-submitted = Submitted
 conversation-delivery-sent = Sent
 conversation-delivery-delivered = Delivered
 conversation-delivery-read = Read

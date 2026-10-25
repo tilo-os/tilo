@@ -812,6 +812,21 @@ impl ChatApp {
                 self.attach_file(doc, std::path::Path::new(&path));
             }
             Hit::AttachDevice => self.choose_device_files(),
+            Hit::Attachment { msg, action } => match action {
+                ui::widget::conversation::AttachmentAction::OpenFullSize => {
+                    self.attachment_view = Some(crate::attachment_view::AttachmentView::new(msg));
+                }
+                ui::widget::conversation::AttachmentAction::Save => {
+                    self.begin_attachment_save(&msg);
+                }
+                ui::widget::conversation::AttachmentAction::OpenSaved => {
+                    self.reveal_saved_copy();
+                }
+                // Chat uploads an attachment in one step: nothing is in flight
+                // long enough to cancel here.
+                ui::widget::conversation::AttachmentAction::CancelUpload => {}
+            },
+            Hit::CloseAttachment => self.attachment_view = None,
             Hit::StartCall if self.call_allows(crate::call::CallAction::Join) => {
                 self.on_hit_start_call(doc);
             }
@@ -1172,7 +1187,10 @@ impl ChatApp {
     }
 
     fn on_hit_dismiss(&mut self) {
-        if self.attach_open {
+        if self.attachment_view.take().is_some() {
+            // The open attachment is the top-most layer: one click outside
+            // the picture closes it, as Escape does.
+        } else if self.attach_open {
             self.attach_open = false;
         } else if self.menu.is_some() {
             self.menu = None;
@@ -1439,7 +1457,9 @@ impl ChatApp {
     fn on_key(&mut self, key: &Key, modifiers: Modifiers, doc: &mut ui::widget::Edits<'_>) -> bool {
         // Escape unwinds the top-most layer.
         if matches!(key, Key::Named(NamedKey::Escape)) {
-            if self.attach_open {
+            if self.attachment_view.is_some() {
+                self.attachment_view = None;
+            } else if self.attach_open {
                 self.attach_open = false;
             } else if self.menu.is_some() {
                 self.menu = None;
