@@ -54,7 +54,12 @@ impl Source<'_> {
     fn target(&self, target: ui::pick::PickTarget) -> PickTarget {
         let app = window_of(self.windows, target.rect).map_or("Tilo", |w| w.name.as_str());
         PickTarget {
-            caption: PickTarget::caption(app, &target.role_name()),
+            caption: PickTarget::caption(
+                app,
+                &target.role_name(),
+                target.kind.as_deref(),
+                target.name.as_deref().filter(|_| target.interface),
+            ),
             key: target.path,
             rect: target.rect,
         }
@@ -162,6 +167,7 @@ impl PagePicker {
                     app: window.app.clone(),
                     action: invocation.action,
                     resource: invocation.resource,
+                    label: invocation.label,
                     outcome: if invocation.done {
                         Outcome::Done
                     } else {
@@ -197,14 +203,23 @@ fn pick(root: &dyn Widget, target: &PickTarget, cx: &ReportContext) -> Option<Pi
         text: text.text,
         area: text.rect.map(area),
     };
+    let app_name = window.map_or_else(|| "Tilo".into(), |w| w.name.clone());
+    let role = captured
+        .role
+        .map_or_else(|| "Group".into(), ui::pick::role_name);
+    let copy = captured
+        .label
+        .as_ref()
+        .filter(|label| label.interface)
+        .map(|label| label.text.clone());
     let mut pick = Pick {
         app: window.map_or_else(|| tilo_desktop::feedback::PACKAGE.into(), |w| w.app.clone()),
-        app_name: window.map_or_else(|| "Tilo".into(), |w| w.name.clone()),
+        caption: PickTarget::caption(&app_name, &role, captured.kind.as_deref(), copy.as_deref()),
+        app_name,
         build: cx.build.clone(),
         path: target.key.clone(),
-        role: captured
-            .role
-            .map_or_else(|| "Group".into(), ui::pick::role_name),
+        role,
+        kind: captured.kind.clone(),
         label: captured.label.map(text),
         record: window.and_then(|w| w.record.clone()),
         area: area(target.rect),

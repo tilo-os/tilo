@@ -17,6 +17,8 @@ fn message_pick() -> Pick {
         build: Some("54f21f7ad9".into()),
         path: "BrowserShell/DesktopSurface/Chat/MessageRow[3]".into(),
         role: "ListItem".into(),
+        kind: None,
+        caption: String::new(),
         label: None,
         record: Some("chat.workspace".into()),
         area: Area {
@@ -212,6 +214,7 @@ fn the_submission_carries_structure_and_the_slow_trace_only_when_asked() {
         app: "so.tilo.chat".into(),
         action: "post".into(),
         resource: "chat.workspace".into(),
+        label: Some("Post a message".into()),
         outcome: Outcome::Done,
     }];
     draft.timings = Some(FrameTimings {

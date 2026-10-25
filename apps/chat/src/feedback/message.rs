@@ -5,7 +5,9 @@
 //! reviewed submission, and this is how it reads.
 
 use tilo_document::ClipBlock;
-use ui::feedback::{FrameTimings, Hidden, Interaction, Outcome, ReviewedSelection, ReviewedText};
+use ui::feedback::{
+    FrameTimings, Hidden, Interaction, Outcome, ReviewedSelection, ReviewedText, TextKind,
+};
 use ui::tilo_resource::Id;
 
 use crate::record::FeedbackReport;
@@ -96,29 +98,43 @@ fn lines(
     lines
 }
 
-/// One pick: which app's part of what role, the reporter's note on it,
-/// and the texts it showed.
+/// One pick: what it was in which app ("A message in Chat", "The “Send
+/// message” button in Chat"), the reporter's note on it, and the texts it
+/// showed. Only the app's own words name a part; a name that is content is
+/// one of its texts.
 fn pick(index: usize, selection: &ReviewedSelection) -> Vec<String> {
     let app = if selection.app_name.trim().is_empty() {
         selection.app.clone()
     } else {
         selection.app_name.clone()
     };
-    let what = selection
+    let label = selection
         .label
         .as_ref()
-        .map(read)
-        .filter(|label| !label.trim().is_empty())
-        .unwrap_or_else(|| selection.role.clone());
+        .map(|label| (label.kind, read(label)))
+        .filter(|(_, label)| !label.trim().is_empty());
+    let role = selection.role.clone();
+    let what = match (&selection.kind, &label) {
+        (Some(kind), _) => {
+            crate::i18n::t_args("chat-feedback-part-kind", &[("kind", kind.clone().into())])
+        }
+        (None, Some((TextKind::Interface, name))) => crate::i18n::t_args(
+            "chat-feedback-part-named",
+            &[("name", name.clone().into()), ("role", role.into())],
+        ),
+        (None, _) => crate::i18n::t_args("chat-feedback-part-role", &[("role", role.into())]),
+    };
     let mut lines = vec![crate::i18n::t_args(
         "chat-feedback-pick",
         &[
             ("index", index.saturating_add(1).into()),
-            ("app", app.into()),
             ("what", what.into()),
-            ("role", selection.role.clone().into()),
+            ("app", app.into()),
         ],
     )];
+    let named_by_content = label
+        .filter(|(kind, _)| *kind != TextKind::Interface || selection.kind.is_some())
+        .map(|(_, label)| label);
     if let Some(note) = selection
         .note
         .as_ref()
@@ -133,10 +149,9 @@ fn pick(index: usize, selection: &ReviewedSelection) -> Vec<String> {
     // One line per text: a text may hold any punctuation, so no separator
     // between them can be told apart from the text itself.
     lines.extend(
-        selection
-            .texts
-            .iter()
-            .map(read)
+        named_by_content
+            .into_iter()
+            .chain(selection.texts.iter().map(read))
             .filter(|text| !text.trim().is_empty())
             .take(SHOWN_TEXTS)
             .map(|text| crate::i18n::t_args("chat-feedback-text", &[("text", text.into())])),
@@ -156,13 +171,22 @@ fn recent(interactions: &[Interaction]) -> Option<String> {
                 Outcome::Refused => "refused",
                 Outcome::Failed => "failed",
             };
+            let label = interaction
+                .label
+                .clone()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| {
+                    crate::i18n::t_args(
+                        "chat-feedback-action-unnamed",
+                        &[
+                            ("action", interaction.action.clone().into()),
+                            ("resource", interaction.resource.clone().into()),
+                        ],
+                    )
+                });
             crate::i18n::t_args(
                 "chat-feedback-action",
-                &[
-                    ("action", interaction.action.clone().into()),
-                    ("resource", interaction.resource.clone().into()),
-                    ("outcome", outcome.into()),
-                ],
+                &[("label", label.into()), ("outcome", outcome.into())],
             )
         })
         .collect();

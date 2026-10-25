@@ -146,7 +146,12 @@ struct Source<'a> {
 
 fn local_target(target: ui::pick::PickTarget) -> PickTarget {
     PickTarget {
-        caption: PickTarget::caption(SHELL_NAME, &target.role_name()),
+        caption: PickTarget::caption(
+            SHELL_NAME,
+            &target.role_name(),
+            target.kind.as_deref(),
+            target.name.as_deref().filter(|_| target.interface),
+        ),
         key: target.path,
         rect: target.rect,
     }
@@ -543,7 +548,12 @@ impl NativePicker {
             let key = on.key(&part.path);
             self.roles.insert(key.clone(), part.role.clone());
             targets.push(PickTarget {
-                caption: PickTarget::caption(&on.name, &part.role),
+                caption: PickTarget::caption(
+                    &on.name,
+                    &part.role,
+                    part.kind.as_deref(),
+                    part.copy.as_deref(),
+                ),
                 key,
                 rect,
             });
@@ -628,6 +638,7 @@ impl NativePicker {
                     app: self.windows.get(window)?.app.clone(),
                     action: action.action,
                     resource: action.resource,
+                    label: action.label,
                     outcome: if action.done {
                         Outcome::Done
                     } else {
@@ -673,15 +684,23 @@ impl NativePicker {
             .and_then(|part| part.role.clone())
             .or_else(|| self.roles.get(&target.key).cloned())
             .unwrap_or_else(|| "Group".into());
+        let app_name = on.map_or_else(|| SHELL_NAME.into(), |window| window.name.clone());
+        let kind = captured.and_then(|part| part.kind.clone());
+        let copy = captured
+            .and_then(|part| part.label.as_ref())
+            .filter(|label| label.interface)
+            .map(|label| label.text.clone());
         let mut pick = Pick {
             app: on.map_or_else(
                 || tilo_desktop::feedback::PACKAGE.into(),
                 |window| window.app.clone(),
             ),
-            app_name: on.map_or_else(|| SHELL_NAME.into(), |window| window.name.clone()),
+            caption: PickTarget::caption(&app_name, &role, kind.as_deref(), copy.as_deref()),
+            app_name,
             build: None,
             path,
             role,
+            kind,
             label: captured
                 .and_then(|part| part.label.clone())
                 .map(picked_text),

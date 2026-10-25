@@ -42,38 +42,17 @@ impl ReviewShown {
     }
 }
 
-/// What the sheet calls each picked part: its app and what kind of part
-/// it is ("Chat · List item").
+/// What the sheet calls each picked part: what the person saw it called
+/// while picking it ("Message in Chat").
 pub(super) fn titles(composer: &Composer) -> Option<Vec<String>> {
     let draft = composer.picked()?;
     Some(
         draft
             .picks
             .iter()
-            .map(|pick| {
-                let app = if pick.app_name.trim().is_empty() {
-                    pick.app.as_str()
-                } else {
-                    pick.app_name.as_str()
-                };
-                format!("{app} \u{b7} {}", spaced(&pick.role))
-            })
+            .map(|pick| pick.caption.clone())
             .collect(),
     )
-}
-
-/// `ListItem` as "List item".
-fn spaced(role: &str) -> String {
-    let mut out = String::new();
-    for (index, c) in role.chars().enumerate() {
-        if c.is_uppercase() && index > 0 {
-            out.push(' ');
-            out.extend(c.to_lowercase());
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// The words the person wrote, as the effects read them.

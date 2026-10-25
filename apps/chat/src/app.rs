@@ -2136,6 +2136,7 @@ impl ChatApp {
                     };
                     AccessNode::new(Role::ListItem)
                         .with_name(format!("{author}: {}", message.text))
+                        .with_role_description(crate::i18n::t("chat-message-kind"))
                         .with_hashed_key((&self.active_channel, &message.id, "private-message"))
                 })
                 .collect();
@@ -2158,6 +2159,7 @@ impl ChatApp {
             .map(|message| {
                 let mut node = AccessNode::new(Role::ListItem)
                     .with_name(self.model_message_label(message))
+                    .with_role_description(crate::i18n::t("chat-message-kind"))
                     .with_hashed_key((&message.id, "message"));
                 // A painted message is read and picked where it is drawn,
                 // not over the whole conversation.
