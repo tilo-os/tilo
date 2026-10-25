@@ -10,14 +10,22 @@
 mod capture;
 mod composer;
 mod outbox;
+pub mod report;
 mod review;
 #[cfg(test)]
 mod test_store;
 
 pub use capture::{CapturePermit, MaskedScreenshot, PixelRect, SurfaceCapture};
-pub use composer::{Composer, Consent, Control, FeedbackHost, Subject};
+pub use composer::{
+    Composer, Consent, Control, FeedbackHost, ModelCheck, PickedReport, ReportWords, Subject,
+};
 pub use durable_store::{DurableStore, MemoryStore, StorageKey};
 pub use outbox::{DeliveryState, Outbox};
+pub use report::{
+    Area, CropCapture, CropRef, FrameTimings, Hidden, Interaction, ModelPass, Outcome, Part, Pick,
+    PickedText, Redaction, ReportDraft, ReportReview, Reveal, ReviewedSelection, ReviewedText,
+    TextKind,
+};
 pub use review::{Draft, Preview};
 pub use tilo_feedback_review::{DeclaredSensitivity, RedactionCategory, ReviewText, TextOrigin};
 
@@ -78,15 +86,27 @@ impl Destination {
     }
 }
 
-/// Exactly the text shown in the approved preview. No original trace or
-/// account credential is a field of the submission protocol.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
+/// Exactly what the approved preview showed. No original trace or account
+/// credential is a field of the submission protocol: picked parts of the
+/// screen arrive as reviewed, structured selections whose hidden spans say
+/// only what kind of thing they hid.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewedFeedback {
     pub text: String,
     pub context: Vec<ContextField>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<ScreenshotRef>,
+    /// The parts of the screen the report is about.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selections: Vec<ReviewedSelection>,
+    /// The last things the person did in the picked apps, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interactions: Vec<Interaction>,
+    /// How long recent frames took, attached when the reporter said it was
+    /// slow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timings: Option<FrameTimings>,
 }
 
 /// Content-addressed masked PNG; raw surface bytes never enter the outbox.
@@ -129,12 +149,13 @@ impl Submission {
             return Err(Error::Invalid("submission id"));
         }
         self.destination.validate()?;
-        if self.feedback.text.trim().is_empty()
+        if (self.feedback.text.trim().is_empty() && self.feedback.selections.is_empty())
             || self.feedback.text.len() > 8_000
             || self.feedback.context.len() > 48
         {
             return Err(Error::Invalid("feedback"));
         }
+        self.feedback.validate_report()?;
         let mut size = 0_usize;
         let mut keys = std::collections::BTreeSet::new();
         for field in &self.feedback.context {
@@ -245,6 +266,7 @@ mod submission_tests {
                 text: "A useful report".into(),
                 context: Vec::new(),
                 screenshot: None,
+                ..Default::default()
             },
         }
     }

@@ -263,6 +263,7 @@ mod tests {
                     text: "The reader loses my position".into(),
                     context: Vec::new(),
                     screenshot: None,
+                    ..Default::default()
                 },
             },
         )
