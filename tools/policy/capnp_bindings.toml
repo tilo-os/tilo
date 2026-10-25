@@ -25,7 +25,7 @@ schema_sha256 = "93c107290e93432866f225b049a94da8da90c412d84364064500fa1478b26a4
 bindings_sha256 = "222186e18b5cee505971bfc80c008a8dbe0c0a694859edc7b0a1e4dfb7f17806"
 
 [[crate]]
-path = "crates/runtime/runtime-fs"
+path = "crates/runtime/tilo-fs-client"
 src_prefix = "schema"
 schemas = ["schema/fs.capnp", "schema/blobs.capnp"]
 schema_sha256 = "45a31c841644d8f000720bcb06471c0adb1b611b26e5794a5e916620cd3d0256"
