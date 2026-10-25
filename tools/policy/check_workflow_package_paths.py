@@ -26,6 +26,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
 import t_matrix  # noqa: E402
 
+# The platforms a build is resolved for: both Linux architectures, so the graph doesn't depend on
+# the machine resolving it, or macOS for a t check that runs on t's Mac (`os=macos`).
+LINUX_TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
+MACOS_TARGETS = ("aarch64-apple-darwin",)
 PATHS_KEY = re.compile(r"^(?P<indent>\s*)paths:\s*(?:#.*)?$")
 LIST_ITEM = re.compile(r"^\s*-\s*(?P<value>.+?)\s*$")
 
@@ -107,7 +111,8 @@ def _resolve_graph_directories(
 
 
 def _cargo_tree_directories(
-    metadata: dict[str, Any], root: Path, package: str, cargo_args: Sequence[str] = ()
+    metadata: dict[str, Any], root: Path, package: str, cargo_args: Sequence[str] = (),
+    targets: Sequence[str] = LINUX_TARGETS,
 ) -> set[str]:
     """Directories linked by a normal build of ``package`` (no dev/build edges).
 
@@ -115,8 +120,8 @@ def _cargo_tree_directories(
     optional and test-only crates into packages that a release binary does not
     link. ``cargo tree --edges normal`` matches ``cargo build -p`` / image
     Containerfiles, so path filters rebuild when the image's inputs change and
-    stay quiet for pure test-harness edges. Both Linux architectures are
-    named, so the graph doesn't depend on the machine resolving it.
+    stay quiet for pure test-harness edges. ``targets`` are the platforms
+    it builds for (LINUX_TARGETS, or MACOS_TARGETS for a check on t's Mac).
     ``cargo_args`` select the features the image builds with, such as
     ``--no-default-features``.
     """
@@ -131,10 +136,7 @@ def _cargo_tree_directories(
             "--prefix",
             "none",
             "--locked",
-            "--target",
-            "x86_64-unknown-linux-gnu",
-            "--target",
-            "aarch64-unknown-linux-gnu",
+            *(arg for target in targets for arg in ("--target", target)),
             *cargo_args,
         ],
         cwd=root,
@@ -151,7 +153,8 @@ def _cargo_tree_directories(
 
 
 def dependency_directories(
-    metadata: dict[str, Any], root: Path, package: str, cargo_args: Sequence[str] = ()
+    metadata: dict[str, Any], root: Path, package: str, cargo_args: Sequence[str] = (),
+    targets: Sequence[str] = LINUX_TARGETS,
 ) -> set[str]:
     roots = [item["id"] for item in metadata["packages"] if item["name"] == package]
     if len(roots) != 1:
@@ -162,7 +165,7 @@ def dependency_directories(
     # keep the resolve-graph walk so unit tests do not need a Cargo tree.
     if not str(roots[0]).startswith("path+file://"):
         return _resolve_graph_directories(metadata, root, package)
-    return _cargo_tree_directories(metadata, root, package, cargo_args)
+    return _cargo_tree_directories(metadata, root, package, cargo_args, targets)
 
 
 def pattern_covers(directory: str, pattern: str) -> bool:
@@ -183,19 +186,30 @@ def unmatched_patterns(workflow_text: str, files: list[str]) -> list[str]:
     )
 
 
-def t_check_blocks(text: str, name: str, package: str) -> list[set[str]]:
-    """A t check's `inputs` as one paths block; none to audit when its `cargo_packages`
-    names `package`, whose dependency closure t then derives itself. Matrices are expanded
-    first, so `name` is one combination (`build-x86_64`), as t names it."""
+def t_check(text: str, name: str) -> dict[str, Any]:
+    """A t check as t reads it: matrices are expanded first, so `name` is one combination
+    (`build-x86_64`), as t names it."""
     config = t_matrix.expand(tomllib.loads(text), t_matrix.tree_paths(ROOT))
     for check in config.get("check", []):
         if check.get("name") == name:
-            packages = check.get("cargo_packages", [])
-            if any(fnmatchcase(package, pattern) for pattern in packages):
-                return []
-            # As t reads it: without `inputs`, everything, unless it names packages instead.
-            return [set(check.get("inputs", [] if packages else ["**"]))]
+            return check
     raise ValueError(f"t.toml declares no check {name}")
+
+
+def t_check_targets(text: str, name: str) -> Sequence[str]:
+    """The platforms a t check builds for: macOS where it runs on t's Mac, else Linux."""
+    return MACOS_TARGETS if "os=macos" in t_check(text, name).get("requires", []) else LINUX_TARGETS
+
+
+def t_check_blocks(text: str, name: str, package: str) -> list[set[str]]:
+    """A t check's `inputs` as one paths block; none to audit when its `cargo_packages`
+    names `package`, whose dependency closure t then derives itself."""
+    check = t_check(text, name)
+    packages = check.get("cargo_packages", [])
+    if any(fnmatchcase(package, pattern) for pattern in packages):
+        return []
+    # As t reads it: without `inputs`, everything, unless it names packages instead.
+    return [set(check.get("inputs", [] if packages else ["**"]))]
 
 
 def audit(
@@ -205,8 +219,9 @@ def audit(
     workflow_text: str,
     blocks: list[set[str]] | None = None,
     cargo_args: Sequence[str] = (),
+    targets: Sequence[str] = LINUX_TARGETS,
 ) -> list[Violation]:
-    directories = dependency_directories(metadata, root, package, cargo_args)
+    directories = dependency_directories(metadata, root, package, cargo_args, targets)
     if blocks is None:
         blocks = workflow_path_blocks(workflow_text)
     if not blocks:
@@ -256,7 +271,8 @@ def main() -> int:
             path, _, check = str(workflow).partition("#")
             text = (ROOT / path).read_text(encoding="utf-8")
             blocks = t_check_blocks(text, check, package) if check else None
-            results.append((package, workflow, audit(metadata, ROOT, package, text, blocks)))
+            targets = t_check_targets(text, check) if check else LINUX_TARGETS
+            results.append((package, workflow, audit(metadata, ROOT, package, text, blocks, targets=targets)))
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
         print(error, file=sys.stderr)
         return 2
