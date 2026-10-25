@@ -26,9 +26,10 @@ fn plan() -> ResourceView {
 
 /// A test app: the conversation embeds the plan's view in the middle of its
 /// window; the editor declares a bar, so its menu can hold the desktop's
-/// items.
+/// items, unless it is `bare` (a sketch pad that declares none).
 struct Window {
     embeds: bool,
+    bare: bool,
     rect: Rect,
     states: Rc<RefCell<Vec<Option<EmbedState>>>>,
 }
@@ -44,7 +45,7 @@ impl Widget for Window {
                 clip: self.rect,
             }]);
             self.states.borrow_mut().push(ui::window_share::state("m1"));
-        } else {
+        } else if !self.bare {
             ui::window_toolbar::declare(Some(WindowToolbar {
                 actions: vec![ToolbarAction::new("bold", "bold", "Bold")],
                 ..WindowToolbar::default()
@@ -177,6 +178,7 @@ impl TileSource for ShareTiles {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
         TileHost::new(TileContent::App(Box::new(Window {
             embeds: tab.title == "Chat",
+            bare: tab.title == "Sketch",
             rect: Rect::ZERO,
             states: Rc::clone(&self.0.states),
         })))
@@ -202,10 +204,19 @@ impl TileSource for ShareTiles {
 }
 
 fn desk(seen: &Seen) -> (ui::headless::FrameHarness, u64) {
+    desk_with(seen, "Plan")
+}
+
+/// The conversation and a notes window titled `notes`, and the notes
+/// window's tab.
+fn desk_with(seen: &Seen, notes_title: &str) -> (ui::headless::FrameHarness, u64) {
     let mut minter = IdMinter::new(8);
     let mut tabs = Vec::new();
     let mut notes = 0;
-    for (title, app) in [("Chat", ui::window_share::SHARING_APP), ("Plan", NOTES)] {
+    for (title, app) in [
+        ("Chat", ui::window_share::SHARING_APP),
+        (notes_title, NOTES),
+    ] {
         // The notes window shows a record (an even id here).
         let mut id = minter.mint();
         while id.is_multiple_of(2) != (app == NOTES) {
@@ -329,5 +340,43 @@ fn a_window_on_a_record_is_offered_for_sharing_from_its_menu() {
         })
     );
     ui::window_share::publish_shared(Vec::new());
+    ui::window_share::set_drawn(false);
+}
+
+/// A window on a record whose app declared no bar is offered for sharing
+/// too: its only slots are the desktop's menu, a button at the end of its
+/// title row, and choosing the item asks the sharing app as from a bar.
+#[test]
+fn a_window_without_a_bar_is_offered_for_sharing_from_its_title_row() {
+    let seen = Seen::default();
+    let (mut frame, sketch) = desk_with(&seen, "Sketch");
+    let windows = ui::window_share::windows();
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0].tab, sketch);
+    let shown = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .and_then(|row| {
+            row.groups
+                .iter()
+                .find(|group| group.active_tab_id() == sketch)
+                .and_then(|group| group.tab_toolbar(sketch).cloned())
+        })
+        .expect("the desktop's menu");
+    assert!(shown.menu_only(), "no bar of the app's: {shown:?}");
+    assert_eq!(shown.actions.len(), 1);
+    assert_eq!(shown.actions[0].name, "Share to channel…");
+
+    frame.root_mut::<DesktopSurface>().window_slots.route(
+        sketch,
+        ToolbarEvent::Action {
+            id: shown.actions[0].id.clone(),
+        },
+    );
+    frame.relayout();
+    assert_eq!(
+        ui::window_share::take_ask(),
+        Some(Ask::Share(windows[0].clone()))
+    );
     ui::window_share::set_drawn(false);
 }

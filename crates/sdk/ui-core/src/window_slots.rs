@@ -18,8 +18,10 @@
 //!
 //! The desktop adds items of its own to a window's overflow menu ("Share to
 //! channel…", [`WindowSlots::set_host_items`]): they join the slots its app
-//! declared, and what the person chose of them comes back to the desktop
-//! ([`WindowSlots::take_host_actions`]), never to the app.
+//! declared, or stand alone in a menu button at the end of the title row of
+//! a window whose app declared none, and what the person chose of them comes
+//! back to the desktop ([`WindowSlots::take_host_actions`]), never to the
+//! app.
 
 use std::collections::HashMap;
 
@@ -152,9 +154,10 @@ impl WindowSlots {
     }
 
     /// Put `items`, the desktop's own, in `tab`'s overflow menu, after its
-    /// app's. They show only in a window whose app declared slots: a bar
-    /// that had none keeps its title alone. Each id starts with
-    /// [`HOST_ACTION_PREFIX`].
+    /// app's. A window whose app declared no slots shows them alone, in the
+    /// menu of a button at the end of its title row
+    /// ([`WindowToolbar::menu_only`]): its title stays where it is. Each id
+    /// starts with [`HOST_ACTION_PREFIX`].
     pub fn set_host_items(&mut self, tab: TabId, items: Vec<ToolbarAction>) {
         let items: Vec<ToolbarAction> = items
             .into_iter()
@@ -162,7 +165,10 @@ impl WindowSlots {
             .map(|item| ToolbarAction { menu: true, ..item })
             .collect();
         if items.is_empty() {
-            self.host_items.remove(&tab);
+            // A window whose only slots they were shows none again.
+            if self.host_items.remove(&tab).is_some() && !self.by_tab.contains_key(&tab) {
+                self.cleared.push(tab);
+            }
         } else {
             self.host_items.insert(tab, items);
         }
@@ -175,10 +181,17 @@ impl WindowSlots {
     }
 
     /// `tab`'s bar as it shows: its app's slots, its menu ending in the
-    /// desktop's items.
+    /// desktop's items; the desktop's items alone where its app declared
+    /// none.
     fn shown_toolbar(&self, tab: TabId) -> Option<WindowToolbar> {
-        let toolbar = self.toolbar(tab)?;
-        let Some(items) = self.host_items.get(&tab) else {
+        let items = self.host_items.get(&tab);
+        let Some(toolbar) = self.toolbar(tab) else {
+            return items.map(|items| WindowToolbar {
+                actions: items.clone(),
+                ..WindowToolbar::default()
+            });
+        };
+        let Some(items) = items else {
             return Some(toolbar.clone());
         };
         let mut shown = toolbar.clone();
