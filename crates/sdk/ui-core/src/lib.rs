@@ -247,6 +247,12 @@ pub mod storage;
 pub mod shortcut_table {
     pub use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 }
+/// The desk widgets and the screen edges things kept at the screen's edges
+/// wait at, as the settings document keeps them: what every desktop host
+/// places them by, the native shell and a browser page alike.
+pub mod desk_widgets {
+    pub use settings_store::desk_widgets::{DockEdge, WidgetId};
+}
 #[cfg(any(test, feature = "ux-bench"))]
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};

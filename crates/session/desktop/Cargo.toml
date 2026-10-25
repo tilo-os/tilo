@@ -29,8 +29,6 @@ desktop-policy = { path = "../../system/desktop-policy", default-features = fals
 tilo-clock = { path = "../../platform/tilo-clock" }
 ed25519-dalek.workspace = true
 durable-store = { path = "../../system/durable-store" }
-# Where things kept at the screen's edges wait, as the person chose.
-settings-store = { path = "../../system/settings-store" }
 # The emoji picker's catalogue, search, skin tones and recents.
 emoji = { path = "../../text/emoji" }
 
