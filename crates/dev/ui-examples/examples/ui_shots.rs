@@ -20,6 +20,7 @@ registry::scenario_modules! {
     gallery_harness, "gallery_harness_shots.rs", "gallery in a FrameHarness, dark and light, PNG + inspection";
     gallery_shots, "gallery_shots.rs", "dark and light component gallery";
     history_cases, "history_cases.rs", "history and collaboration cases";
+    inline_emoji_shots, "inline_emoji_shots.rs", "workspace emoji drawn inside text, dark and light, 1x and 2x";
     nav_shell_shots, "nav_shell_shots.rs", "navigation shell states";
     perf_hud_shot, "perf_hud_shot.rs", "frame profiler HUD";
     scrollbar_shots, "scrollbar_shots.rs", "scrollbar states";

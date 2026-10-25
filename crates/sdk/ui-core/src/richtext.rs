@@ -13,6 +13,7 @@ use tilo_sort::CompactSort as _;
 use crate::text_break::OffsetMap;
 use crate::text_selection::{TextAffinity, TextPosition};
 
+pub mod inline_emoji;
 #[path = "richtext_paragraphs.rs"]
 mod paragraphs;
 #[cfg(test)]
@@ -110,6 +111,10 @@ pub struct RichSpan {
     /// style's kind, with the identifiers found in prose set apart
     /// ([`crate::text_detect`]).
     pub kind: Option<crate::text_render::TextKind>,
+    /// The run is the `:name:` of an emoji of the window's workspace, drawn
+    /// as its picture in a square of its own ([`inline_emoji`]); its bytes
+    /// stay the text's.
+    pub workspace_emoji: bool,
 }
 
 impl RichSpan {
@@ -124,6 +129,7 @@ impl RichSpan {
             background: None,
             baseline: BaselineShift::None,
             kind: None,
+            workspace_emoji: false,
         }
     }
     #[must_use]
@@ -169,6 +175,7 @@ impl RichSpan {
             && self.background.is_none()
             && self.baseline == BaselineShift::None
             && self.kind.is_none()
+            && !self.workspace_emoji
     }
 }
 
@@ -215,6 +222,8 @@ pub struct RichTextLayout {
     /// ranges are already shaped at the reduced size; the draw path applies the
     /// vertical offset.
     pub(crate) baselines: Vec<(usize, usize, BaselineShift)>,
+    /// The runs drawn as a workspace emoji's picture, in text order.
+    pub(crate) inline_emoji: Vec<inline_emoji::InlineEmoji>,
     discretionary_hyphen_width: f32,
     line_height: f32,
     /// Block-level paint axes. The renderer replaces `wght` with each batch's
@@ -410,6 +419,7 @@ type RichRuns<'a, 's> = (
     )>,
     Vec<(usize, usize, [u8; 3])>,
     Vec<(usize, usize, BaselineShift)>,
+    Vec<inline_emoji::InlineEmoji>,
 );
 
 impl RichTextLayout {
@@ -544,6 +554,7 @@ impl RichTextLayout {
             strikes: Vec::new(),
             backgrounds: Vec::new(),
             baselines: Vec::new(),
+            inline_emoji: Vec::new(),
             discretionary_hyphen_width,
             line_height,
             font_variations: style.resolved_variations(),
@@ -746,7 +757,7 @@ impl RichTextLayout {
         let fam = style.family.to_cosmic();
         let base = style.cosmic_attrs().family(fam);
 
-        let (built, backgrounds, baselines) =
+        let (built, backgrounds, baselines, inline_emoji) =
             Self::build_rich_runs(spans, style, &offset_map, &base, size, line_height_mult);
 
         let planned = crate::font_catalog::matched::plan_runs(
@@ -828,6 +839,7 @@ impl RichTextLayout {
             strikes: Vec::new(),
             backgrounds,
             baselines,
+            inline_emoji,
             discretionary_hyphen_width,
             line_height,
             font_variations: style.resolved_variations(),
@@ -949,6 +961,7 @@ impl RichTextLayout {
     ) -> RichRuns<'a, 's> {
         let mut backgrounds: Vec<(usize, usize, [u8; 3])> = Vec::new();
         let mut baselines: Vec<(usize, usize, BaselineShift)> = Vec::new();
+        let mut pictures: Vec<inline_emoji::InlineEmoji> = Vec::new();
         let mut cursor: usize = 0;
 
         let built = if spans.iter().all(|r| r.text.is_empty()) {
@@ -967,12 +980,26 @@ impl RichTextLayout {
                     if r.baseline.is_shifted() {
                         baselines.push((start, end, r.baseline));
                     }
-                    let a = Self::run_attrs(r, style, size, line_height_mult);
-                    (offset_map.shape_fragment(&r.text, start), a, r.kind)
+                    let mut a = Self::run_attrs(r, style, size, line_height_mult);
+                    let fragment = offset_map.shape_fragment(&r.text, start);
+                    if r.workspace_emoji
+                        && let Some(name) = tilo_resource::custom_emoji_name(&r.text)
+                    {
+                        let run_size = r.size.unwrap_or(size);
+                        let glyphs = fragment.chars().count();
+                        let line_height = run_size * line_height_mult;
+                        a = inline_emoji::shaped_attrs(a, run_size, line_height, glyphs);
+                        pictures.push(inline_emoji::InlineEmoji {
+                            range: start..end,
+                            name: name.to_owned(),
+                            side: run_size * inline_emoji::SIDE_EM,
+                        });
+                    }
+                    (fragment, a, r.kind)
                 })
                 .collect()
         };
-        (built, backgrounds, baselines)
+        (built, backgrounds, baselines, pictures)
     }
 
     /// The cosmic-text attributes of one span's run in `style`.
