@@ -44,7 +44,7 @@ use crate::model::key;
 use crate::export::{Container, ExportSettings, ExportStatus, FrameRate, Resolution};
 use crate::model::{
     Clip, ClipId, EffectKind, Filters, MAX_GAIN_DB, MAX_SPEED, MIN_GAIN_DB, MIN_SPEED, MediaId,
-    MediaItem, MediaKind, Project, TextAlign, TextSource, TrackId, TrackKind, Transition,
+    MediaItem, MediaKind, Project, Side, TextAlign, TextSource, TrackId, TrackKind, Transition,
 };
 use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
@@ -3032,6 +3032,21 @@ impl VideoEditorApp {
         if !right_halves.is_empty() {
             self.selection.set(right_halves);
         }
+    }
+
+    /// Put the two pictures that meet at the playhead beside each other, as
+    /// the editor's own gesture: the project's `place-two-angles` verb
+    /// submitted through the same dispatcher a palette press or an agent
+    /// goes through, so all three make one edit and one undo step. Offered
+    /// only where two pictures meet on tracks that may be edited.
+    fn place_side_by_side(&self) {
+        if !self.project.side_by_side_available(self.playhead) {
+            return;
+        }
+        let Some(dispatcher) = self.actions.as_ref() else {
+            return;
+        };
+        dispatcher.submit(Project::PLACE_SIDE_BY_SIDE.with(self.playhead));
     }
 
     /// Lift every editable selected clip, leaving the gaps where they were:
@@ -7132,6 +7147,7 @@ impl Widget for VideoEditorApp {
                     || l.transitions.iter().any(|(_, rc)| rc.contains(point))
                     || l.colors.iter().any(|(_, rc)| rc.contains(point))
                     || l.pip.iter().any(|(_, _, rc)| rc.contains(point))
+                    || l.sides.iter().any(|(_, _, rc)| rc.contains(point))
                     || l.speed_presets.iter().any(|(_, rc)| rc.contains(point))
                     || l.title_align.iter().any(|(_, rc)| rc.contains(point))
                     || l.title_colors.iter().any(|(_, rc)| rc.contains(point))
