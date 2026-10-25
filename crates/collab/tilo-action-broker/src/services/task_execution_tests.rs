@@ -613,3 +613,34 @@ fn a_run_never_exceeds_a_starter_who_may_not_change_the_note() {
         .unwrap_err();
     assert!(refused.contains("starter"), "{refused}");
 }
+
+/// A grant letting the issue govern the room never lets a run govern it: the
+/// run holds the issue's delegation, which is the person who started it, and a
+/// task never governs. Even approved, the run is refused.
+#[test]
+fn a_grant_letting_the_issue_govern_the_room_still_asks_its_starter() {
+    let room = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    let (mut peer, starter, key, now) = admitted_fixture(
+        room,
+        collab_types::Role::Editor,
+        Some(AgentPreset::Operator),
+    );
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "issue-invites",
+                Subject::task(ISSUE),
+                tilo_action_policy::roles::governance_action(room, "invite"),
+                KindSet::of(tilo_action_policy::roles::GOVERNANCE_KIND),
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    let mut invite = approve_task(&starter);
+    invite.need.kind = tilo_action_policy::roles::GOVERNANCE_KIND;
+    let refused = invite.check_run(&peer, room, now).unwrap_err();
+    assert!(!refused.is_empty(), "{refused}");
+}

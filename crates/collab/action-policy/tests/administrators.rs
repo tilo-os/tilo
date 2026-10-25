@@ -224,3 +224,69 @@ fn an_administrator_grant_on_the_rooms_resource_is_outranked_by_the_editor_rule(
         Err(Refusal::NotPermitted(_))
     ));
 }
+
+/// A task's delegation never governs the room it runs in. The room may hold a
+/// grant for the task by name — an owner may even allow it a governance verb —
+/// and a run of it reads that grant, but whoever runs the task also holds the
+/// task's delegation, which is the person who started it. A person the room's
+/// governance does not admit therefore leaves the task unable to govern,
+/// whoever granted the task what.
+#[test]
+fn a_task_with_a_governance_grant_still_asks_its_person_before_governing() {
+    // The owner is the room's only administrator: an Editor may not govern.
+    let mut room = room(&[(BOB, Role::Editor)], OWNER);
+    let task = "tasks.tracker/issues/7";
+    for (id, action) in [
+        ("issue-governs", governance::INVITE),
+        ("issue-removes", governance::REMOVE_MEMBER),
+    ] {
+        room.grants.push(Grant::new(
+            id,
+            Subject::Task(task.to_owned()),
+            roles::governance_action("r", action),
+            KindSet::of(roles::GOVERNANCE_KIND),
+            Answer::Allow,
+            Subject::person(OWNER),
+        ));
+    }
+    let task_bound = roles::agent_policy::launch_bound("r", Subject::Task(task.to_owned()), BOB);
+    let starter = Authority::person(room.party(BOB)).bounded_by(task_bound.party(&room.grants));
+
+    for action in governance::ALL {
+        for approved in [false, true] {
+            assert!(
+                matches!(
+                    room.check_action(&starter, action, &cx(), approved),
+                    Err(Refusal::NotPermitted(_))
+                ),
+                "a task whatever the room granted it never governs through {action}"
+            );
+        }
+    }
+    for held in ["issue-governs", "issue-removes"] {
+        let grant = room
+            .grants
+            .iter()
+            .find(|grant| grant.id.as_str() == held)
+            .expect("the grant is in the room");
+        assert!(
+            RoomPolicy::check_within(&starter, grant, &cx()).is_err(),
+            "{held} reaches past the person who started the task"
+        );
+    }
+
+    // A person the room's governance does admit hands their task that reach.
+    let owner = Authority::person(room.party(OWNER));
+    for held in ["issue-governs", "issue-removes"] {
+        let grant = room
+            .grants
+            .iter()
+            .find(|grant| grant.id.as_str() == held)
+            .expect("the grant is in the room");
+        assert_eq!(
+            RoomPolicy::check_within(&owner, grant, &cx()),
+            Ok(()),
+            "the owner grants {held} without asking anyone"
+        );
+    }
+}

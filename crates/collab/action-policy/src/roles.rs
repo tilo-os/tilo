@@ -563,7 +563,7 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 ///    expiry only. Enforcing it at members needs the app on every op, which
 ///    the room's ops do not carry.
 pub mod agent_policy {
-    use crate::Role;
+    use crate::{Answer, KindSet, Role, Rule, Subject};
 
     /// The most an agent ever acts as, whoever it acts for. An agent never
     /// governs a room.
@@ -584,6 +584,31 @@ pub mod agent_policy {
     pub fn role(person: Role, granted: Role) -> Role {
         person.min(granted).min(ROLE_CAP)
     }
+
+    /// The grants a person can hand to a task they start: a delegation never
+    /// reaches further than the person launching it, and governance is the
+    /// one thing it never carries at all. A task acts as the person who
+    /// started it through this bound, so a grant the room holds for the task
+    /// itself — or for the agent running it — decides for the task only as
+    /// far as that person's own power does. However the room's governance
+    /// verbs are granted, a task never governs its room.
+    #[must_use]
+    pub fn launch_bound(room: &str, delegation: Subject, person: &str) -> crate::Bound {
+        let mut preset = crate::roles::role_preset(Role::Editor, room);
+        // Every governance verb, named one by one: a grant naming the same
+        // action for the task itself is no more specific than this Deny, and
+        // a Deny wins at the same node, so the task never governs.
+        preset
+            .rules
+            .extend(crate::roles::governance::ALL.into_iter().map(|action| {
+                Rule::new(
+                    crate::roles::governance_action(room, action),
+                    KindSet::ALL,
+                    Answer::Deny,
+                )
+            }));
+        crate::Bound::delegation(delegation, &preset, person)
+    }
 }
 
 /// The delegation a delegated agent `agent` of `person` carries in `room`:
@@ -592,11 +617,7 @@ pub mod agent_policy {
 /// than the cap allows, and never the room's governance.
 #[must_use]
 pub fn agent_delegation(room: &str, agent: &str, person: &str) -> crate::Bound {
-    crate::Bound::delegation(
-        Subject::Agent(agent.to_owned()),
-        &role_preset(agent_policy::ROLE_CAP, room),
-        person,
-    )
+    agent_policy::launch_bound(room, Subject::Agent(agent.to_owned()), person)
 }
 
 /// What an agent admitted to a room may do there on its own: the room-level

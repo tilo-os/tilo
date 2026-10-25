@@ -98,11 +98,18 @@ impl NativeTaskActionRequirement {
         if !run.active || binding.epoch != run.epoch {
             return Err("this run has ended or was replaced".into());
         }
-        let delegation = roles::agent_delegation(room, &run.agent, &run.starter);
+        // The run is the issue the person started, held to them: its own
+        // grants bound it, and a grant the room holds for the issue answers
+        // through that bound, so a run never governs where its starter cannot.
+        let delegation = roles::agent_policy::launch_bound(
+            room,
+            tilo_action_policy::Subject::task(&run.issue),
+            &run.starter,
+        );
         let verdict = Authority::person(
             delegation
                 .party(&policy.grants)
-                .also_as(tilo_action_policy::Subject::Task(run.issue.clone())),
+                .also_as(tilo_action_policy::Subject::agent(&run.agent)),
         )
         .decide(&node, self.need.kind, &cx);
         let foreign = roles::foreign_device_bound();

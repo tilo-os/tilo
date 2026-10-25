@@ -860,7 +860,13 @@ impl BrokerActor {
                         .bounded_by(self.party(&workspace.policy.grants, delegate, &carried)),
                 )
             }
-            (Some(delegate), None) => decide(&workspace.subject_authority(delegate)),
+            // A delegation that names no person still never governs the room.
+            (Some(delegate), None) => {
+                let room = workspace.room().to_string();
+                let launch = roles::agent_policy::launch_bound(&room, delegate.clone(), "");
+                let bound = launch.party(&workspace.policy.grants);
+                decide(&workspace.subject_authority(delegate).bounded_by(bound))
+            }
         }
     }
 
