@@ -1475,7 +1475,7 @@ impl ChatApp {
                 },
                 StripHit::Add { anchor } => Hit::AddReaction {
                     msg: m.id.clone(),
-                    anchor: Point::new(anchor.x0, anchor.y1),
+                    anchor,
                 },
             };
             ChatApp::push_hit(hits, rect, hit);
@@ -1927,7 +1927,6 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let sp = &theme.tokens.spacing;
         let btn = ButtonFace::height(ControlSize::Regular, theme);
         paint_field(scene, tf, theme, rect);
         if interactive {
@@ -1987,12 +1986,7 @@ impl ChatApp {
             theme,
             &ButtonFace::icon_only(emoji, Icon::Smile, "Emoji").hovered(self.hovered(emoji)),
         );
-        let picker_w = f64::from(theme.tokens.metrics.panel_width_utility);
-        ChatApp::push_hit(
-            hits,
-            emoji,
-            Hit::ComposerEmoji(Point::new(emoji.x1 - picker_w, rect.y0 - f64::from(sp.s2))),
-        );
+        ChatApp::push_hit(hits, emoji, Hit::ComposerEmoji(emoji));
 
         let _ = draft;
         frame.editor
