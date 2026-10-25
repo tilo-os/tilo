@@ -845,7 +845,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void AnswerFileChooser(CefRefPtr<CefDictionaryValue> d) {
     const int id=d->GetInt("id");
     if(!file_chooser_.callback || file_chooser_.id!=id) {
-      auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("ok",false);
+      auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("ok",false);fields->SetInt("count",0);
       fields->SetString("message","That file chooser is no longer open");Event("file_chooser_result",fields);return;
     }
     std::vector<std::string> paths;
@@ -853,7 +853,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       auto list=d->GetList("paths");
       const std::string error=list ? ValidateChooserPaths(*list,file_chooser_.folder,file_chooser_.extensions,file_chooser_.multiple,paths) : "No files were given";
       if(!error.empty()) {
-        auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("ok",false);fields->SetString("message",error);Event("file_chooser_result",fields);return;
+        auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("ok",false);fields->SetInt("count",0);
+        fields->SetString("message",error);Event("file_chooser_result",fields);return;
       }
     }
     auto callback=file_chooser_.callback;file_chooser_.callback=nullptr;file_chooser_.extensions.clear();

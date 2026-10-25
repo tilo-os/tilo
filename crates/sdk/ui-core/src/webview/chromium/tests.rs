@@ -1534,6 +1534,22 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
             validate_event(&json!({"event":"file_chooser_result","id":4,"ok":true})).is_err(),
             "an answer says how many files it took"
         );
+        // A refusal says how many files it took too, which is none.
+        assert!(
+            validate_event(
+                &json!({"event":"file_chooser_result","tab":2,"id":4,"ok":false,
+                "message":"No files were given"})
+            )
+            .is_err(),
+            "a refusal says how many files it took"
+        );
+        assert!(
+            validate_event(
+                &json!({"event":"file_chooser_result","tab":2,"id":4,"ok":false,
+                "count":0,"message":"No files were given"})
+            )
+            .is_ok()
+        );
         let seventeen: Vec<String> = (0..17).map(|n| format!("/tmp/{n}.pdf")).collect();
         assert!(
             encode_command(WebViewCommand::FileChooserAnswer {
