@@ -1361,11 +1361,23 @@ mod tests {
         (tids, releases, workers)
     }
 
+    /// Every answer is kept while another thread's answer is still being
+    /// written: one thread stops mid-write, the others answer only once it
+    /// has, and it goes on after they have had time to.
     #[test]
-    fn every_thread_answering_at_once_is_captured() {
+    fn answers_arriving_while_another_is_being_written_are_all_kept() {
         install_capture_handler();
-        let (tids, releases, workers) = parked_threads("liveness-many", 48, || {});
+        let (tids, releases, workers) = parked_threads("liveness-many", 16, || {});
+        let held = capture::HeldWriter::hold(*tids.first().expect("parked threads"));
+        let release_later = std::thread::spawn(move || {
+            held.wait_until_writing();
+            // The window the other answers arrive in; what is kept does not
+            // depend on its length.
+            std::thread::sleep(Duration::from_millis(300));
+            held.release();
+        });
         let threads = dump_threads();
+        release_later.join().unwrap();
         drop(releases);
         for worker in workers {
             worker.join().unwrap();
