@@ -282,19 +282,6 @@ pub(crate) fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message>
                 continue;
             }
             let parent = text("parent");
-            let mut reactions = ui::tilo_resource::Set::new();
-            if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&row, "reactions") {
-                for index in 0..doc.length(&list) {
-                    if let Ok(Some((Value::Object(ObjType::Map), reaction))) = doc.get(&list, index)
-                    {
-                        let emoji = read_key::<String>(doc, &reaction, "emoji").unwrap_or_default();
-                        let user = read_key::<String>(doc, &reaction, "user").unwrap_or_default();
-                        if !emoji.is_empty() && !user.is_empty() {
-                            reactions.insert(Reacted { emoji, user });
-                        }
-                    }
-                }
-            }
             listed.push((
                 Id::from_raw(id),
                 Message {
@@ -305,7 +292,6 @@ pub(crate) fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message>
                     edited: flag("edited"),
                     parent: (!parent.is_empty()).then(|| Id::from_raw(parent)),
                     pinned: flag("pinned"),
-                    reactions,
                     ..Message::default()
                 },
             ));
@@ -495,10 +481,10 @@ pub struct Message {
     /// The message it answers in a thread.
     #[model(readonly)]
     pub parent: Option<Id>,
-    /// Who reacted with which emoji: one element per person and emoji, so
-    /// two people's first reactions with one emoji both count.
+    /// Who reacted with which emoji: the framework's reactions, each the
+    /// invoker's own, so this read-only message still takes them.
     #[model(readonly)]
-    pub reactions: ui::tilo_resource::Set<Reacted>,
+    pub reactions: ui::tilo_resource::Reactions,
     /// Who the text refers to, resolved when it was written.
     #[model(readonly)]
     pub mentions: Vec<crate::mention::Mention>,
@@ -590,7 +576,7 @@ impl Default for Message {
             edited: false,
             history: Vec::new(),
             parent: None,
-            reactions: ui::tilo_resource::Set::new(),
+            reactions: ui::tilo_resource::Reactions::new(),
             mentions: Vec::new(),
             reference: None,
             source_provider: None,
@@ -601,15 +587,6 @@ impl Default for Message {
         }
     }
 }
-
-/// One person's reaction to a message with one emoji.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Reacted {
-    pub emoji: String,
-    pub user: String,
-}
-
-ui::tilo_resource::json_model!(Reacted);
 
 /// An earlier text of a message.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
