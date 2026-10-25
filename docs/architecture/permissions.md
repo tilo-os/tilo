@@ -75,7 +75,7 @@ Roles are presets of grants on a room, kept as named grant sets:
 | Role | Grants on the room |
 |---|---|
 | Viewer | Read: Allow |
-| Commenter | Read: Allow; comment units and actions: Allow (Undoable) |
+| Commenter | Read: Allow; comment units and actions, reactions: Allow (Undoable) |
 | Editor | Read, Undoable: Allow; Outside: Ask; moderation: Deny |
 | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`: Allow on members below Moderator |
 | Owner | everything: Allow, and governance |

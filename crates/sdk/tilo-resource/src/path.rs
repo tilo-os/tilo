@@ -731,6 +731,25 @@ impl<R, T: Model, O: Serialize + serde::de::DeserializeOwned + Default + 'static
     }
 }
 
+impl<R> Path<R, crate::Reactions> {
+    /// React with `emoji` (a Unicode emoji, or a workspace emoji as
+    /// `:name:`), as whoever invokes the edit.
+    #[must_use]
+    pub fn react(&self, emoji: impl Into<String>) -> Edit<R> {
+        self.edit(EditOp::React {
+            emoji: emoji.into(),
+        })
+    }
+
+    /// Take back the invoker's reaction with `emoji`.
+    #[must_use]
+    pub fn unreact(&self, emoji: impl Into<String>) -> Edit<R> {
+        self.edit(EditOp::Unreact {
+            emoji: emoji.into(),
+        })
+    }
+}
+
 /// What an [`Edit`] does at its path. Text positions count characters.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
@@ -825,6 +844,15 @@ pub enum EditOp {
     /// Forget a settled outbox entry.
     Forget {
         id: Id,
+    },
+    /// React with `emoji` to what holds a [`Reactions`](crate::Reactions)
+    /// field, as whoever invokes the edit.
+    React {
+        emoji: String,
+    },
+    /// Take back the invoker's reaction with `emoji`.
+    Unreact {
+        emoji: String,
     },
     /// An edit of a type with its own vocabulary ([`Operations`]: rich text
     /// marks and blocks), in that type's JSON form.
@@ -924,6 +952,12 @@ enum EditOpWire {
     Forget {
         id: Id,
     },
+    React {
+        emoji: String,
+    },
+    Unreact {
+        emoji: String,
+    },
     Rich {
         rich: serde_json::Value,
     },
@@ -958,6 +992,8 @@ impl From<EditOpWire> for EditOp {
             EditOpWire::RemoveColumn { id } => Self::RemoveColumn { id },
             EditOpWire::Settle { id, outcome } => Self::Settle { id, outcome },
             EditOpWire::Forget { id } => Self::Forget { id },
+            EditOpWire::React { emoji } => Self::React { emoji },
+            EditOpWire::Unreact { emoji } => Self::Unreact { emoji },
             EditOpWire::Rich { rich } => Self::Rich { rich },
         }
     }
@@ -1003,6 +1039,8 @@ impl EditOp {
             Self::RemoveColumn { .. } => "remove-column",
             Self::Settle { .. } => "settle",
             Self::Forget { .. } => "forget",
+            Self::React { .. } => "react",
+            Self::Unreact { .. } => "unreact",
             Self::Rich { .. } => "rich",
         }
     }
@@ -1303,7 +1341,8 @@ fn edit_schema() -> serde_json::Value {
             "op": {"type": "string", "enum": [
                 "set", "splice", "replace", "add", "insert", "remove", "insert-item",
                 "upsert-item", "remove-item", "move-to", "remove-key", "set-cell", "insert-row",
-                "insert-column", "remove-row", "remove-column", "settle", "rich",
+                "insert-column", "remove-row", "remove-column", "settle", "react", "unreact",
+                "rich",
             ]},
         },
         "required": ["path", "op"],

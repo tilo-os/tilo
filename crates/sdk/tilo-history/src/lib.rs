@@ -409,6 +409,8 @@ impl<'a> Reader<'a> {
                 }
             }
             EditOp::Forget => "history-edit-forget",
+            EditOp::React => "history-edit-react",
+            EditOp::Unreact => "history-edit-unreact",
         };
         self.named_or_not(key, scope, &args)
     }

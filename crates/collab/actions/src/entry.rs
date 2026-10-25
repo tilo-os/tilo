@@ -198,6 +198,10 @@ pub enum EditOp {
     Settle,
     /// A settled outbox entry was forgotten.
     Forget,
+    /// The actor reacted with an emoji (`new`).
+    React,
+    /// The actor took back their reaction with an emoji (`new`).
+    Unreact,
 }
 
 impl EditOp {
@@ -219,6 +223,8 @@ impl EditOp {
             Self::RemoveColumn => "remove-column",
             Self::Settle => "settle",
             Self::Forget => "forget",
+            Self::React => "react",
+            Self::Unreact => "unreact",
         }
     }
 }

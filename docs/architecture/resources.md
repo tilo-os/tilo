@@ -56,6 +56,7 @@ want, not only for the value you hold.
 | `Collection<T>` | items with stable `Id`s and order keys | per item; moves keep identity; one id made on two replicas reads as one item, field by field |
 | `Grid<T>` | rows and columns with stable ids, sparse cells | per cell; inserting a row keeps every cell's identity; saving and comparing a copy visit only the rows of cells changes copied |
 | `Bytes` | content-addressed blob reference; small values inline | last writer wins |
+| `Reactions` | map of each reaction, keyed by emoji and who reacted | per person and emoji; changed only by `react`/`unreact`, which record whoever invokes them |
 | `Outbox<T>` | queue of entries settled by the owning device | see §2.4 |
 | `Option<T>`, `Box<T>`, nested `Model` structs | as the inner type | as the inner type |
 | enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, its fields beside it | per field of one variant; a change of variant is last writer wins |
@@ -141,6 +142,7 @@ supports:
 | `String`, `RichText` | `splice`, `replace`; `RichText` also marks and blocks |
 | `Counter` | `add` |
 | `Set<T>` | `insert`, `remove` |
+| `Reactions` | `react`, `unreact`: the invoker's own, so a `readonly` field or collection takes them too; the Commenter role may make them |
 | `Collection<T>` | `insert`, `remove`, `move_to` |
 | `Grid<T>` | `set_cell`, `insert_row`, `insert_column`, `remove_row`, `remove_column` |
 | `Option<T>` | `set(None)`, and the inner type's edits when present |

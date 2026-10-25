@@ -14,6 +14,11 @@ pub const ROOM_KIND: &str = "tilo.room";
 /// what a commenter may do.
 pub const COMMENTS_FIELD: &str = "comments";
 
+/// The field holding reactions, wherever a model keeps them
+/// (`tilo_resource::Reactions`). Reacting is commenting's smallest form, so
+/// the Commenter preset covers it at any depth too.
+pub const REACTIONS_FIELD: &str = "reactions";
+
 /// The field node every app's moderation actions sit under (acting on other
 /// people's content: removing their message, locking a channel). One rule on
 /// it covers every app's moderation, so presets need no list of verbs.
@@ -210,6 +215,14 @@ pub fn comments(room: &str) -> TreePath {
     TreePath::room(room)
         .rest()
         .push(Level::Field, COMMENTS_FIELD)
+}
+
+/// Where reactions live in a room, at any depth.
+#[must_use]
+pub fn reactions(room: &str) -> TreePath {
+    TreePath::room(room)
+        .rest()
+        .push(Level::Field, REACTIONS_FIELD)
 }
 
 /// Where moderation lives in a room, at any depth.
@@ -423,7 +436,7 @@ impl Preset {
 /// | Role | Grants on the room |
 /// |---|---|
 /// | Viewer | Read: Allow |
-/// | Commenter | Read: Allow; comments: Allow (Undoable) |
+/// | Commenter | Read: Allow; comments, reactions: Allow (Undoable) |
 /// | Editor | Read, Undoable: Allow; Outside: Ask; governance, moderation: Deny |
 /// | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`, `pause-bot`, `resume-bot`: Allow |
 /// | Owner | everything: Allow |
@@ -439,6 +452,7 @@ pub fn role_rules(role: Role, room: &str) -> Vec<Rule> {
         Role::Commenter => vec![
             Rule::new(room_node, KindSet::READ, Answer::Allow),
             Rule::new(comments(room), KindSet::UNDOABLE, Answer::Allow),
+            Rule::new(reactions(room), KindSet::UNDOABLE, Answer::Allow),
         ],
         Role::Editor => editor_rules(room, Answer::Deny),
         Role::Moderator => {
@@ -651,6 +665,12 @@ impl AgentPreset {
                 grant(
                     ":comments",
                     comments(room),
+                    KindSet::UNDOABLE,
+                    Answer::Allow,
+                ),
+                grant(
+                    ":reactions",
+                    reactions(room),
                     KindSet::UNDOABLE,
                     Answer::Allow,
                 ),
