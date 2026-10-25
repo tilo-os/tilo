@@ -53,14 +53,11 @@ use crate::theme::Theme;
 use crate::webview::{KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::control_size::ControlSize;
 
 /// Pixels scrolled per mouse-wheel line tick, in logical units (scaled
 /// by the display factor before being sent to the engine).
 const WHEEL_LINE_PX: f64 = 40.0;
-/// How much of a focused field's top the input method is told the caret
-/// takes, in logical pixels, when the engine knows the field but not its
-/// caret: a line of text with room around it.
-const FIELD_LINE_HEIGHT: f64 = 40.0;
 
 /// Rounds a physical pixel extent to `u32`, clamping to `[0, u32::MAX]`
 /// first so a negative or absurdly large rect (a transient layout glitch)
@@ -123,6 +120,11 @@ pub struct WebView {
     /// or makes way for its commit is known only from what follows in the
     /// same batch of events ([`Self::settle_composition`]).
     composition_emptied: bool,
+    /// How much of a focused field's top the input method is told the caret
+    /// takes, in logical pixels, when the engine knows the field but not its
+    /// caret: a line of text with room around it, the theme's regular control
+    /// height as of the last layout. Before any layout it is the whole field.
+    field_line_height: Option<f64>,
     last_mouse: Point,
     /// The buttons pressed on the page and not yet released: the page keeps
     /// the pointer until they are, wherever it goes, as a drag does.
@@ -237,6 +239,7 @@ impl WebView {
             focused: false,
             composing: false,
             composition_emptied: false,
+            field_line_height: None,
             last_mouse: Point::ZERO,
             held: Vec::new(),
             pointer_inside: false,
@@ -906,7 +909,8 @@ impl Widget for WebView {
                 placed.x0,
                 placed.y0,
                 placed.x1,
-                placed.y1.min(placed.y0 + FIELD_LINE_HEIGHT),
+                self.field_line_height
+                    .map_or(placed.y1, |line| placed.y1.min(placed.y0 + line)),
             ))
         });
         Some(composition.or(line).unwrap_or(Rect::new(
@@ -966,9 +970,10 @@ impl Widget for WebView {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.field_line_height = Some(ControlSize::Regular.height(theme));
         let style = Style {
             size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
