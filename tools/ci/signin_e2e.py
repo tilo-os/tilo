@@ -619,6 +619,36 @@ cryptsetup close e2e-target
             self.save(f"journal-{label}.txt", text)
         except Failed as error:
             say(f"could not collect the journal of {label}: {error}")
+        self.collect_signin_state(label)
+
+    SIGNIN_STATE = {
+        "units": "journalctl -b --no-pager -o short-monotonic -u greetd -u tilo-authd "
+                 "-u tilo-authd.socket -u 'tilo-firstboot*' | tail -n 300",
+        "avc": "ausearch -m avc,user_avc -ts boot 2>/dev/null || journalctl -b --no-pager -o cat "
+               "| grep -E 'avc: +denied' | tail -n 100",
+        "pam": "for f in greetd system-auth password-auth; do echo \"== /etc/pam.d/$f\"; "
+               "cat /etc/pam.d/$f; done; echo '== pam_tilo'; ls -lZ /usr/lib64/security/pam_tilo.so",
+        "authselect": "authselect current",
+        "failed": "systemctl --failed --no-pager --plain --no-legend; "
+                  "systemctl status --no-pager tilo-authd.socket tilo-authd.service greetd | tail -n 60",
+        "sessions": "loginctl list-sessions --no-pager",
+    }
+
+    def collect_signin_state(self, label: str) -> None:
+        """The sign-in stack as the guest sees it, saved on every boot: its units' journal, AVC
+        denials, the PAM files, the authselect profile, failed units and sessions, and the
+        greeter's console state."""
+        for name, command in self.SIGNIN_STATE.items():
+            try:
+                _, text = self.guest(command, 60, True)
+            except Failed as error:
+                text = f"not collected: {error}"
+            self.save(f"signin-{label}-{name}.txt", text)
+        try:
+            state = console.state(self.cycle.console, 10)
+        except Exception as reason:  # no greeter or installer answers once a session runs
+            state = {"unreachable": str(reason)}
+        self.save(f"signin-{label}-console.json", state)
 
     def uid(self) -> int:
         code, text = self.guest(f"id -u {self.user}")
