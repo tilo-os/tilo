@@ -813,6 +813,43 @@ how many are left (§9.13).
 
 ---
 
+## 8a. Conversations: one substrate, two apps
+
+Chat and Messages both talk to people and they stay two apps, because their
+primary object differs: Chat's is a **channel** — a room with a history, a
+membership and a mood, many-to-many and public-ish — and Messages' is a
+**person** — a private thread that may arrive by SMS, Signal or WhatsApp.
+Neither is a subset of the other. Merging them by surface similarity (both have
+a composer, both have a timeline) would produce one app that does neither job.
+
+What they do not differ in is the *mechanics*: when a day starts, what time a
+line was said, whether it arrived, what happens to a draft, which key sends, and
+what an attachment does when you touch it. Those live once, in
+[`widget::conversation`](src/widget/conversation/mod.rs), and an app that invents
+its own is a defect of the same class as a hand-rolled text field (§8).
+
+| Piece | The rule |
+|---|---|
+| `ConversationClock`, `DayBreaks`, `DayDividerFace` | A divider appears before the first line of each local day and never otherwise, labelled "Today", "Yesterday", the weekday inside the week, then the date. Every line can name its own time. No conversation may show a clock with no day anywhere near it. |
+| `DeliveryState` / `DeliveryFace` | One vocabulary — Queued, Sending, Submitted, Sent, Delivered, Read, Failed, Uncertain — from one table of steps, with one glyph and one tone each. A transport renames its states into `DeliveryStep`; it never invents a word of its own, and "unknown" is a state rather than a silence. |
+| `AttachmentSummary`, `AttachmentAction` | The ladder: the inline preview, the picture at full size, a copy saved where the person says, and the saved copy shown in the file manager. Rungs that cannot be offered are absent, with the reason where they would have been. |
+| `DraftBook`, `draft::line` | A draft is per conversation, blank is not a draft, sending clears it only while it is still what was sent, and the words are shown wherever the conversation is listed ("Draft: …"). A draft you cannot find is a draft you have lost. |
+| `ComposerRule` | Enter sends, Shift+Enter breaks the line, Escape lets the draft go. One rule, both apps; a comment field inside a document is the one other rule (`ModEnter`). |
+| `ConversationList` | The message list for a widget-tree app: the same day breaks, the same clock, the same delivery line, measured by the same code as the pieces above. A painting app composes its own rows from the same pieces. |
+
+Consequences a person feels: a screenshot in Chat opens full size, a message in
+Messages has a time, a draft in either app is visible in the list, and Enter
+sends in both. What each app keeps is its own: a channel still shows authors,
+avatars, threads and presence; a private thread still shows one person, their
+transport and their account.
+
+The module's labels (the delivery words, the attachment ladder's names) ship in
+its own catalogue beside it (`src/widget/conversation/locales/en-US.ftl`,
+namespaced `conversation-*`), so an app can override any of them without a
+toolkit change.
+
+---
+
 ## 9. The shell chrome design language
 
 Sections 1–8 govern **apps**. This section governs the **shell** — the surfaces

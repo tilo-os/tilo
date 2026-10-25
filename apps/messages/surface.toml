@@ -253,3 +253,27 @@ params = [
   { name = "account", required = true, schema = { type = "string" } },
 ]
 
+[[resources]]
+kind = "messages.drafts"
+label = "Message drafts"
+version = 1
+person = true
+fields = [
+  { path = "drafts", type = "BTreeMap<String, String>" },
+]
+
+[[resources.verbs]]
+id = "keep-draft"
+kind = "undoable"
+params = [
+  { name = "conversation", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "drop-draft"
+kind = "undoable"
+params = [
+  { name = "conversation", required = true, schema = { type = "string" } },
+]
+

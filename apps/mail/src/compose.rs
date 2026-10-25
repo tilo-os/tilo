@@ -298,8 +298,6 @@ struct ComposeMetrics {
     pad: f64,
     /// Gap between related rows and controls.
     gap: f64,
-    /// The title bar.
-    title_h: f64,
     /// The column the field labels stand in.
     label_w: f64,
     /// A field, the toolbar row and a footer button.
@@ -347,12 +345,10 @@ impl ComposeMetrics {
         };
         let control_h = ControlSize::Regular.height(theme);
         let pad = f64::from(spacing.s4);
-        let title_h = f64::from(metrics.bar_height).max(control_h + 2.0 * f64::from(spacing.s1));
         let default_w = f64::from(metrics.panel_width_sheet) * f64::from(theme.text_growth());
         Self {
             pad,
             gap: f64::from(spacing.s2),
-            title_h,
             label_w,
             control_h,
             icon_button: f64::from(metrics.min_pointer_target),
@@ -365,7 +361,7 @@ impl ComposeMetrics {
             // The narrowest window that still holds the footer's buttons
             // and a few lines of body.
             min_w: f64::from(metrics.panel_width_utility),
-            min_h: title_h + 6.0 * control_h + 2.0 * pad,
+            min_h: 6.0 * control_h + 3.0 * pad,
             default_w,
             default_h: default_w,
         }
@@ -433,7 +429,6 @@ enum Field {
 /// An interactive region inside the window, resolved during layout.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ComposeHit {
-    TitleBar,
     Send,
     Discard,
     SaveDraft,
@@ -482,12 +477,15 @@ pub enum ComposeAction {
     Discard,
 }
 
-/// A drag in progress on the window itself (move or resize).
+/// A drag in progress on the window's edge.
+///
+/// A floating composer is not moved: it is placed by the layout and clamped
+/// into the window, and it sits over a scrim, so there is nothing to look at
+/// behind it. Its band is the formatting toolbar, and its name, Discard draft
+/// and Close are the window bar's — the composer draws no title bar of its
+/// own in any presentation.
 #[derive(Clone, Copy)]
 enum Drag {
-    Move {
-        grab: Point,
-    },
     Resize {
         edge: Edge,
         start: Rect,
@@ -1674,33 +1672,19 @@ impl ComposeWindow {
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
     }
 
-    /// Whether the composer draws a title bar of its own: only as a panel
-    /// over the app, where the bar is its drag handle. In the message
-    /// column or filling the window, the window bar names the message and
-    /// closes it.
-    fn shows_title_bar(&self) -> bool {
-        !self.in_pane() && !self.is_full_window_page()
-    }
-
-    /// Lay out and register the title bar (drag handle and window
-    /// buttons) where it shows, the To/Cc/Bcc/Subject fields and the Attach
-    /// button. Returns the y past the header, where the toolbar starts.
-    /// Part of [`Self::relayout_regions`].
+    /// Lay out and register the To/Cc/Bcc/Subject fields and the Attach
+    /// button. Returns the y past the header, where the formatting toolbar
+    /// band starts. Part of [`Self::relayout_regions`].
+    ///
+    /// There is no title bar of the composer's own in any presentation: the
+    /// window bar names the message and holds Discard draft and Close, as it
+    /// does for every other surface ([`crate::window_bar`]).
     fn layout_header_hits(&mut self, r: Rect, lx: f64, rx: f64) -> f64 {
         let m = self.metrics;
         let field_x = lx + m.label_w;
         let side = m.icon_button;
 
         let mut y = r.y0 + m.pad;
-        if self.shows_title_bar() {
-            // Title bar (drag handle) and its icon buttons, centred on it.
-            let title = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.title_h);
-            self.hits.push((title, ComposeHit::TitleBar));
-            let btn_y = title.center().y - side / 2.0;
-            let close = Rect::new(rx - side, btn_y, rx, btn_y + side);
-            self.hits.push((close, ComposeHit::Close));
-            y = title.y1 + m.pad;
-        }
 
         // To row, with the Cc/Bcc button at its end.
         let to_rect = Rect::new(field_x, y, rx - m.cc_bcc_w - m.gap, y + m.control_h);
@@ -2105,13 +2089,6 @@ impl ComposeWindow {
         ctx: &mut ComposeEventContext<'_>,
     ) -> ComposeAction {
         match hit {
-            ComposeHit::TitleBar => {
-                if !self.is_full_window_page() && !self.in_pane() {
-                    self.drag = Some(Drag::Move {
-                        grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
-                    });
-                }
-            }
             ComposeHit::Close => {
                 self.close();
                 return ComposeAction::Close;
@@ -2314,7 +2291,7 @@ impl ComposeWindow {
             (_, true, true) => Some(Edge::BottomRight),
             (true, _, true) => Some(Edge::BottomLeft),
             (_, true, _) => Some(Edge::Right),
-            (true, _, _) if pt.y > r.y0 + self.metrics.title_h => Some(Edge::Left),
+            (true, _, _) => Some(Edge::Left),
             (_, _, true) => Some(Edge::Bottom),
             _ => None,
         }
@@ -2340,14 +2317,6 @@ impl ComposeWindow {
 
     fn apply_drag(&mut self, drag: Drag, pt: Point) {
         match drag {
-            Drag::Move { grab } => {
-                let w = self.rect.width();
-                let h = self.rect.height();
-                let x0 = pt.x - grab.x;
-                let y0 = pt.y - grab.y;
-                self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
-                self.clamp_into_bounds();
-            }
             Drag::Resize { edge, start, from } => {
                 let (min_w, min_h) = (self.metrics.min_w, self.metrics.min_h);
                 let dx = pt.x - from.x;
@@ -2421,9 +2390,6 @@ impl ComposeWindow {
         }
         // What is drawn on the panel reads against the panel's ground.
         let panel = theme.on_ground(self.ground(theme));
-        if self.shows_title_bar() {
-            self.draw_title_bar(scene, t, tr, &panel);
-        }
         self.draw_header_fields(scene, t, tr, &panel);
         self.draw_body(scene, t, tr, &panel, presence);
         self.draw_staged_attachment_chips(scene, t, tr, &panel);
@@ -2454,48 +2420,6 @@ impl ComposeWindow {
 
     fn hit_rect(&self, hit: ComposeHit) -> Option<Rect> {
         self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r)
-    }
-
-    /// The title, the pop-out and close buttons, and the rule under them.
-    fn draw_title_bar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let m = self.metrics;
-        let r = self.rect;
-        let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.title_h);
-        let heading = self.heading;
-        let close = self.hit_rect(ComposeHit::Close).unwrap_or(Rect::ZERO);
-        let style = theme.text(TextRole::Subheading);
-        let width = (close.x0 - m.gap - (r.x0 + m.pad)).max(0.0);
-        let heading = tr.elide_to_width_style(heading, ui::num::f32_of_f64(width), &style);
-        let (_, h) = tr.measure_style(&heading, None, &style);
-        tr.draw_style(
-            scene,
-            &heading,
-            theme.text_primary,
-            t * Affine::translate((r.x0 + m.pad, bar.center().y - f64::from(h) / 2.0)),
-            None,
-            &style,
-        );
-        for (hit, icon, name) in [(ComposeHit::Close, Icon::X, "Close")] {
-            let Some(rect) = self.hit_rect(hit) else {
-                continue;
-            };
-            Button::paint(
-                scene,
-                t,
-                tr,
-                theme,
-                &ButtonFace::icon_only(rect, icon, name).hovered(rect.contains(self.last_mouse)),
-            );
-        }
-        ui::surface::separator(
-            scene,
-            t,
-            r.x0,
-            r.x1,
-            bar.y1,
-            0.0,
-            theme.tokens.colors.surfaces.content,
-        );
     }
 
     /// The field labels, the Cc/Bcc and Attach buttons, the formatting
@@ -3051,15 +2975,18 @@ mod tests {
         {
             let mut w = win();
             let before = w.window_rect();
-            // Drag the title far past the right edge; clamp must keep it reachable.
-            w.drag = Some(Drag::Move {
-                grab: Point::new(10.0, 10.0),
-            });
-            w.apply_drag(w.drag.unwrap(), Point::new(5000.0, 5000.0));
+            // A panel placed past the window's edge is clamped back into it.
+            w.rect = Rect::new(
+                5000.0,
+                5000.0,
+                5000.0 + before.width(),
+                5000.0 + before.height(),
+            );
+            w.clamp_into_bounds();
             let r = w.window_rect();
             assert!(r.x0 < 1280.0, "window stayed reachable horizontally");
             assert!(r.y0 < 800.0, "window stayed reachable vertically");
-            assert_eq!(r.width(), before.width(), "move does not resize");
+            assert_eq!(r.width(), before.width(), "clamping does not resize");
         }
 
         {
@@ -3150,12 +3077,13 @@ mod tests {
                         "{target:?} remains reachable"
                     );
                 }
-                for own in [ComposeHit::TitleBar, ComposeHit::Close] {
-                    assert!(
-                        window.hit_rect(own).is_none(),
-                        "the page draws no {own:?}: the window bar names and closes it"
-                    );
-                }
+                // A page fills the window, so the window bar names and
+                // closes it: the composer draws no bar of its own, on any
+                // presentation.
+                assert!(
+                    window.hit_rect(ComposeHit::Close).is_none(),
+                    "the page draws no title bar: the window bar closes it"
+                );
                 assert!(window.resize_edge_at(bounds.center()).is_none());
                 assert!(
                     window
@@ -3175,7 +3103,7 @@ mod tests {
         w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
         assert!(w.in_pane());
         assert!(
-            w.hit_rect(ComposeHit::TitleBar).is_none() && w.hit_rect(ComposeHit::Close).is_none(),
+            w.hit_rect(ComposeHit::Close).is_none(),
             "in the column the window bar names and closes the message"
         );
         assert!(!w.is_modal(), "the list beside it stays usable");
