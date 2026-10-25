@@ -132,7 +132,7 @@ impl Work {
 fn tries_reply(refusal: Refusal, tries: Option<Tries>) -> Reply {
     Reply {
         tries_left: tries.map(|t| t.left),
-        retry_in_s: tries.map(|t| t.retry_in_s),
+        retry_in_s: tries.and_then(|t| t.retry_in_s),
         ..Reply::refused(refusal)
     }
 }
