@@ -184,6 +184,82 @@ async fn replay_completion_takes_a_slot_its_earlier_connection_released() {
     );
 }
 
+/// A device whose network dropped dials again while the host still holds
+/// its stale connection, mid-replay: the stale one registers first, then
+/// the device's new connection, with the same certificate, completes. The
+/// new one replaces the stale one; it is not refused as superseded by it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reconnected_device_replaces_its_stale_session_that_registered_first() {
+    let fixture = Arc::new(Fixture::new());
+    let device = fixture.recipient.device_public_key;
+    let root = fixture.store.root().to_path_buf();
+
+    // The stale connection subscribes; its replay is held.
+    let (stale_tx, _stale_rx) = mpsc::channel(32);
+    let (release_stale, stale_replaying) =
+        crate::store::test_barrier::install(&root, "replay-prepare");
+    let stale = {
+        let fixture = fixture.clone();
+        let stale_tx = stale_tx.clone();
+        tokio::spawn(async move {
+            let (state_tx, _state_rx) = mpsc::channel(32);
+            let mut session = fixture.recipient_session(&state_tx);
+            session.outbound = &stale_tx;
+            let mut replay = None;
+            handle_subscribe(
+                &fixture.recipient,
+                &session,
+                &mut Vec::new(),
+                &mut replay,
+                fixture.store.workspace_id(),
+                Subscription::Whole,
+            )
+            .await
+            .map(|_| replay)
+        })
+    };
+    stale_replaying.await.unwrap();
+
+    // The device's new connection is let in while the stale one replays.
+    let (admitted, new_admitted) = crate::store::test_barrier::install(&root, "subscribe-admitted");
+    let reconnected = {
+        let fixture = fixture.clone();
+        tokio::spawn(async move { fixture.subscribe_result().await })
+    };
+    new_admitted.await.unwrap();
+    drop(admitted);
+
+    // The stale connection's replay completes and registers first.
+    drop(release_stale);
+    let stale = tilo_test_env::within("stale subscription", stale)
+        .await
+        .unwrap();
+    assert!(
+        matches!(stale, Ok(_) | Err(PeerError::Superseded)),
+        "the stale connection ended as something other than a handover: {:?}",
+        stale.err()
+    );
+
+    let reconnected = tilo_test_env::within("reconnected subscription", reconnected)
+        .await
+        .unwrap();
+    assert!(
+        reconnected.is_ok(),
+        "the reconnected device was refused in favour of its stale session: {:?}",
+        reconnected.err()
+    );
+    assert!(
+        fixture
+            .workspace
+            .lock()
+            .await
+            .subscribers
+            .get(&device)
+            .is_some_and(|current| current.tx.same_channel(&fixture.recipient_tx)),
+        "the reconnected connection holds the device's slot"
+    );
+}
+
 #[test]
 fn superseded_peer_outcome_is_quiet_but_protocol_failure_is_counted() {
     let metrics = crate::metrics::Metrics::default();
