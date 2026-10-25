@@ -14,7 +14,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo::rerun-if-env-changed=TILO_FONT_ASSET_CACHE");
         println!("cargo::rerun-if-env-changed=TILO_FONT_CATALOG_ROOT");
         println!("cargo::rerun-if-env-changed=TILO_FONT_ASSETS_OFFLINE");
-        println!("cargo::rerun-if-env-changed=CARGO_NET_OFFLINE");
         println!("cargo::rerun-if-env-changed=PYTHON");
         let python = std::env::var_os("PYTHON").unwrap_or_else(|| python_with_tomllib().into());
         let mut command = Command::new(&python);
@@ -23,9 +22,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .arg("root")
             .arg(&source)
             .args(["--scope", "fixtures"]);
-        if std::env::var("CARGO_NET_OFFLINE").is_ok_and(|value| value == "true") {
-            command.arg("--offline");
-        }
+        // Offline only when asked by TILO_FONT_ASSETS_OFFLINE, which the tool reads itself.
+        // CARGO_NET_OFFLINE says cargo has its crates already; it says nothing about whether
+        // the pinned fonts are in the cache, and a build with network access fetches them.
         let output = command.output().map_err(|error| {
             format!(
                 "could not launch `{}` to prepare fonts with {}: {error}; \
