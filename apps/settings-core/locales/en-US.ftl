@@ -255,6 +255,7 @@ shortcut-name-power-menu = Power menu
 shortcut-name-next-input-source = Next keyboard layout
 shortcut-name-emoji-picker = Emoji
 shortcut-name-say-something = Say something here
+shortcut-name-report-problem = Report a problem
 shortcut-name-ask-agent = Ask agent about selection
 shortcut-category-system = System
 shortcut-category-navigation = Navigation
