@@ -1,5 +1,4 @@
 #pragma once
-#include "include/cef_values.h"
 #include <algorithm>
 #include <cctype>
 #include <string>
@@ -29,10 +28,9 @@ inline std::string ChooserLower(std::string value) {
 
 // One `accept` entry of a chooser: `.pdf`, `image/*`, `text/plain`, or a
 // platform description such as `*.pdf`. Empty means every file is offered.
-inline std::vector<std::string> ChooserTokens(const std::vector<CefString>& extensions) {
+inline std::vector<std::string> ChooserTokens(const std::vector<std::string>& extensions) {
   std::vector<std::string> tokens;
-  for (const auto& extension : extensions) {
-    const std::string group = extension.ToString();
+  for (const auto& group : extensions) {
     size_t start = 0;
     while (start <= group.size()) {
       const auto end = group.find(';', start);
@@ -50,7 +48,7 @@ inline std::vector<std::string> ChooserTokens(const std::vector<CefString>& exte
 }
 
 // The chooser's accepted types as the outline shows them.
-inline std::string ChooserAccept(const std::vector<CefString>& extensions) {
+inline std::string ChooserAccept(const std::vector<std::string>& extensions) {
   std::string accept;
   for (const auto& token : ChooserTokens(extensions)) {
     if (!accept.empty()) accept += ",";
@@ -83,7 +81,7 @@ inline bool ChooserAccepts(const std::vector<std::string>& tokens, const std::st
 inline constexpr size_t kMaxChooserPaths = 16;
 
 // Why the page would refuse this file, or empty when it accepts it.
-inline std::string ChooserFileRefusal(const std::string& path, const std::vector<CefString>& extensions) {
+inline std::string ChooserFileRefusal(const std::string& path, const std::vector<std::string>& extensions) {
   if (ChooserDir(path)) return "That is a folder, not a file";
   if (!ChooserFile(path)) return "No file at that path";
   const auto tokens = ChooserTokens(extensions);
@@ -100,7 +98,7 @@ inline std::string ChooserFileRefusal(const std::string& path, const std::vector
 
 // Why the chooser refuses these paths, or empty with `out` holding them all.
 inline std::string ChooserRefusal(const std::vector<std::string>& paths, bool folder,
-                                  const std::vector<CefString>& extensions, bool multiple,
+                                  const std::vector<std::string>& extensions, bool multiple,
                                   std::vector<std::string>& out) {
   if (paths.empty()) return "No files were given";
   if (paths.size() > kMaxChooserPaths) return "Too many files for one chooser";

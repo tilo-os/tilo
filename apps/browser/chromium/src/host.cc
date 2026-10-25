@@ -821,21 +821,24 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   struct AgentFileChooser {
     int id=0;
     bool folder=false,multiple=false;
-    std::vector<CefString> extensions;
+    // The page's own accept filters, already decoded to plain strings.
+    std::vector<std::string> extensions;
     CefRefPtr<CefFileDialogCallback> callback;
   };
   bool OpenAgentFileChooser(FileDialogMode mode,const CefString& title,const std::vector<CefString>& extensions,CefRefPtr<CefFileDialogCallback> callback) {
     if(mode==FILE_DIALOG_SAVE || !callback) return false;
+    std::vector<std::string> filters;filters.reserve(extensions.size());
+    for(const auto& extension:extensions) filters.push_back(extension.ToString());
     if(file_chooser_.callback) { file_chooser_.callback->Cancel();answered_choosers_.insert(file_chooser_.id); }
     file_chooser_.id=next_file_chooser_=next_file_chooser_%2147483647+1;
     file_chooser_.folder=mode==FILE_DIALOG_OPEN_FOLDER;
     file_chooser_.multiple=mode==FILE_DIALOG_OPEN_MULTIPLE;
-    file_chooser_.extensions=extensions;
+    file_chooser_.extensions.assign(filters.begin(),filters.end());
     file_chooser_.callback=callback;
     auto fields=CefDictionaryValue::Create();fields->SetInt("id",file_chooser_.id);
     fields->SetBool("folder",file_chooser_.folder);fields->SetBool("multiple",file_chooser_.multiple);
     fields->SetString("title",title);
-    fields->SetString("accept",tilo::ChooserAccept(extensions));
+    fields->SetString("accept",tilo::ChooserAccept(file_chooser_.extensions));
     Event("file_chooser",fields);
     return true;
   }
@@ -861,7 +864,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     fields->SetInt("count",static_cast<int>(chosen.size()));Event("file_chooser_result",fields);
   }
   // Every refusal here keeps the chooser open, so the agent can answer it again.
-  static std::string ValidateChooserPaths(CefListValue& list,bool folder,const std::vector<CefString>& extensions,bool multiple,std::vector<std::string>& out) {
+  static std::string ValidateChooserPaths(CefListValue& list,bool folder,const std::vector<std::string>& extensions,bool multiple,std::vector<std::string>& out) {
     std::vector<std::string> paths;
     for(size_t i=0;i<list.GetSize();++i) paths.push_back(list.GetString(i).ToString());
     return tilo::ChooserRefusal(paths,folder,extensions,multiple,out);
