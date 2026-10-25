@@ -184,6 +184,15 @@ impl RoomPolicy {
         }
     }
 
+    /// Whether anyone besides `person` belongs to the room, its owner or a
+    /// member: what the room holds is shared with them whether or not they
+    /// are here right now.
+    #[must_use]
+    pub fn has_others(&self, person: &str) -> bool {
+        self.owner.as_deref().is_some_and(|owner| owner != person)
+            || self.members.keys().any(|member| member != person)
+    }
+
     /// A room with no owner yet and the role presets in place.
     #[must_use]
     pub fn unowned(room: impl Into<String>, presets_by: &Subject) -> Self {
