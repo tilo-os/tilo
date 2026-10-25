@@ -1,15 +1,9 @@
-use std::collections::HashMap;
-
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
-
-use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
-    Button, ButtonRole, Column, Container, ControlSize, Divider, Element, Embedded, FieldFace,
-    ListRow, Row, Section, StatGroup, StatTile, Text, Widget,
+    Button, ButtonRole, Column, Container, Divider, Element, ListRow, Row, Section, StatGroup,
+    StatTile, Text,
 };
 
 /// The controls of the General tab the lens reports hits for, by the id
@@ -91,19 +85,10 @@ pub(super) struct GeneralContent {
 /// The General tab's body: groups of rows on the sheet's ground, laid out
 /// by the toolkit so every description wraps and every row of buttons
 /// wraps before it overlaps.
-#[derive(Default)]
-pub(super) struct GeneralPage {
-    page: Option<(GeneralContent, f64, Embedded<Column>)>,
-    /// Each control's rect in the page's own space, from its last layout.
-    rects: HashMap<String, Rect>,
-    height: f64,
-    /// Where the page's own space starts in the lens's.
-    offset: Vec2,
-}
+pub(super) type GeneralPage = super::page::Page<GeneralContent>;
 
 impl GeneralPage {
-    /// Lay the page out `width` wide for `content`, rebuilding it when the
-    /// content or the field's height changed. Returns the page's height.
+    /// Lay the page out `width` wide for `content`. Returns its height.
     pub(super) fn lay_out(
         &mut self,
         content: &GeneralContent,
@@ -111,19 +96,7 @@ impl GeneralPage {
         theme: &Theme,
         text: &mut TextRenderer,
     ) -> f64 {
-        let field = FieldFace::height(ControlSize::Regular, theme);
-        let stale = self.page.as_ref().is_none_or(|(built, built_field, _)| {
-            built != content || built_field.to_bits() != field.to_bits()
-        });
-        if stale {
-            self.page = Some((content.clone(), field, Embedded::new(build(content, field))));
-        }
-        let Some((_, _, page)) = self.page.as_mut() else {
-            return 0.0;
-        };
-        self.height = page.layout(Rect::new(0.0, 0.0, width, 0.0), theme, text);
-        self.rects.clear();
-        collect_rects(page.widget(), &mut self.rects);
+        let height = self.lay_out_with(content, width, theme, text, build);
         // A control that takes no input answers no press either.
         for (id, enabled) in [
             (MOVE_UP, content.move_enabled[0]),
@@ -131,58 +104,10 @@ impl GeneralPage {
             (DELETE, content.deletable),
         ] {
             if !enabled {
-                self.rects.remove(id);
+                self.forget(id);
             }
         }
-        self.height
-    }
-
-    /// Where the page's top-left corner stands in the lens.
-    pub(super) fn place(&mut self, origin: Point) {
-        self.offset = origin.to_vec2();
-        if let Some((_, _, page)) = self.page.as_mut() {
-            page.set_transform(Affine::translate(self.offset));
-        }
-    }
-
-    pub(super) fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if let Some((_, _, page)) = self.page.as_mut() {
-            page.draw(scene, transform, text, theme, &PresenceCtx::default());
-        }
-    }
-
-    pub(super) fn height(&self) -> f64 {
-        self.height
-    }
-
-    /// The laid-out page, for tests that read what it shows.
-    #[cfg(test)]
-    pub(super) fn widget(&self) -> Option<&dyn Widget> {
-        self.page
-            .as_ref()
-            .map(|(_, _, page)| page.widget() as &dyn Widget)
-    }
-
-    /// The control `id`'s rect in the lens, or zero where the page has none.
-    pub(super) fn rect(&self, id: &str) -> Rect {
-        self.rects.get(id).map_or(Rect::ZERO, |rect| {
-            Affine::translate(self.offset).transform_rect_bbox(*rect)
-        })
-    }
-}
-
-fn collect_rects(widget: &dyn Widget, out: &mut HashMap<String, Rect>) {
-    if let Some(id) = widget.test_id() {
-        out.insert(id.to_owned(), widget.get_rect());
-    }
-    for child in widget.children() {
-        collect_rects(child, out);
+        height
     }
 }
 
