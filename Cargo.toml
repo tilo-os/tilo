@@ -472,6 +472,7 @@ members = [
 
     # Text
     "crates/text/emoji",
+    "crates/text/emoji-catalogue",
     "crates/text/highlight",
     "crates/text/highlight-grammars",
     "crates/text/pim-lines",

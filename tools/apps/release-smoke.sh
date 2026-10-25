@@ -226,7 +226,8 @@ engines() (
                "browser libtilo_accounts_engine.so" \
                "store libtilo_app_host_engine.so" \
                "chat libtilo_emoji_engine.so" \
-               "osk libtilo_emoji_engine.so"; do
+               "osk libtilo_emoji_engine.so" \
+               "notes libtilo_emoji_engine.so"; do
     read -r app library option <<<"$probe"
     if [[ ! -x $target/thin-app/$app ]]; then
       echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"
