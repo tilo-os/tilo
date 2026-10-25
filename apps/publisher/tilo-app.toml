@@ -16,7 +16,7 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 [capabilities]
-optional = ["clipboard", "secrets", "threads"]
+optional = ["files.save", "clipboard", "secrets", "threads"]
 
 [resources]
 kinds = ["publisher.profile"]

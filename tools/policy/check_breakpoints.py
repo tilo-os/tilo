@@ -28,7 +28,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source import line_number  # noqa: E402
+import rust_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = ROOT / "tools/policy/breakpoint_baseline.txt"
@@ -81,13 +81,25 @@ def audit(root: Path = ROOT) -> tuple[Counter[str], int]:
                 continue
             scanned += 1
             text = source.read_text(encoding="utf-8")
+            # Only code decides a layout: a comparison inside a string literal is
+            # data being passed somewhere else (`yt-dlp`'s `[height<=720]` format
+            # selector), and a commented-out one is not code at all.
+            code, literals = rust_source.lex(text)
+            masked = list(code)
+            for literal in literals:
+                for index in range(literal.start, literal.end):
+                    if masked[index] != "\n":
+                        masked[index] = " "
+            scanned_text = "".join(masked)
             patterns = list(PATTERNS.values())
             if tree == "apps":
                 patterns.append(APP_BREAKPOINT_CONSTANT)
             for pattern in patterns:
-                for match in pattern.finditer(text):
-                    start = text.rfind("\n", 0, match.start()) + 1
-                    end = text.find("\n", match.end())
+                for match in pattern.finditer(scanned_text):
+                    start = scanned_text.rfind("\n", 0, match.start()) + 1
+                    end = scanned_text.find("\n", match.end())
+                    # The marker lives in a comment, which the lexer blanks, so
+                    # the same span is read from the original text.
                     line = text[start : end if end != -1 else len(text)]
                     if ALLOW.search(line):
                         continue
