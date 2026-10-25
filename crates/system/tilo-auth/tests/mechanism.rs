@@ -332,7 +332,7 @@ fn a_wrong_secret_costs_one_try_and_the_lockout_refuses_even_the_right_one() {
     {
         Some(Outcome::Wrong(Some(tries))) => {
             assert_eq!(tries.left, 4);
-            assert_eq!(tries.retry_in_s, 600);
+            assert_eq!(tries.retry_in_s, None, "with tries left there is no wait");
         }
         _ => panic!("a wrong secret should be reported with the tries left"),
     }
@@ -352,7 +352,10 @@ fn a_wrong_secret_costs_one_try_and_the_lockout_refuses_even_the_right_one() {
         .open_with_secret(Some(f.tpm()), UID, &Secret::new("123456"))
         .unwrap()
     {
-        Some(Outcome::LockedOut(Some(tries))) => assert_eq!(tries.left, 0),
+        Some(Outcome::LockedOut(Some(tries))) => {
+            assert_eq!(tries.left, 0);
+            assert_eq!(tries.retry_in_s, Some(600));
+        }
         _ => panic!("five wrong secrets should lock the TPM out"),
     }
 
@@ -364,6 +367,55 @@ fn a_wrong_secret_costs_one_try_and_the_lockout_refuses_even_the_right_one() {
             .unwrap(),
         Some(Outcome::LockedOut(_))
     ));
+}
+
+/// A TPM as it ships, before tilo-rollback-harden tightens it: three tries,
+/// 1000 seconds to recover one. The first wrong secret leaves two.
+#[test]
+fn a_first_wrong_secret_on_a_three_try_tpm_is_wrong_not_a_lockout() {
+    let f = fixture!();
+    lockout::tighten(
+        &f.runner,
+        lockout::Target {
+            max_tries: 3,
+            recovery_time: 1000,
+            lockout_recovery: 1000,
+        },
+        None,
+        f.scratch.path(),
+    )
+    .unwrap();
+    let key = UserKey::generate().unwrap();
+    let wrapper = Wrapper::tpm(f.tpm(), &key, &Secret::new("123456")).unwrap();
+    for left in [2, 1] {
+        match wrapper
+            .open_with_secret(Some(f.tpm()), UID, &Secret::new("000000"))
+            .unwrap()
+        {
+            Some(Outcome::Wrong(Some(tries))) => {
+                assert_eq!(tries.left, left);
+                assert_eq!(tries.retry_in_s, None);
+            }
+            _ => panic!("a wrong secret with {left} tries left should be reported as wrong"),
+        }
+    }
+    match wrapper
+        .open_with_secret(Some(f.tpm()), UID, &Secret::new("000000"))
+        .unwrap()
+    {
+        Some(Outcome::Wrong(Some(tries))) => {
+            assert_eq!(tries.left, 0);
+            assert_eq!(tries.retry_in_s, Some(1000), "the last try starts the wait");
+        }
+        _ => panic!("the third wrong secret is still wrong, and uses the last try"),
+    }
+    match wrapper
+        .open_with_secret(Some(f.tpm()), UID, &Secret::new("123456"))
+        .unwrap()
+    {
+        Some(Outcome::LockedOut(Some(tries))) => assert_eq!(tries.retry_in_s, Some(1000)),
+        _ => panic!("then the TPM refuses even the right secret"),
+    }
 }
 
 #[test]
@@ -624,6 +676,10 @@ fn the_boot_unlock_command_speaks_the_contracts_exit_codes() {
     let report: serde_json::Value = serde_json::from_slice(&wrong.stderr).unwrap();
     assert_eq!(report["error"], "wrong");
     assert_eq!(report["tries_left"], 4);
+    assert!(
+        report["retry_in_s"].is_null(),
+        "a wrong entry is not a wait"
+    );
 
     let right = run(&device, b"123456\n");
     assert_eq!(
