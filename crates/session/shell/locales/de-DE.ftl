@@ -197,6 +197,7 @@ shortcut-name-power-menu = Ein/Aus-Menü
 shortcut-name-next-input-source = Nächstes Tastaturlayout
 shortcut-name-emoji-picker = Emoji
 shortcut-name-say-something = Hier etwas sagen
+shortcut-name-report-problem = Problem melden
 shortcut-name-ask-agent = Agent zur Auswahl fragen
 
 # Die Gruppen, in denen Tastenkürzel aufgeführt werden
