@@ -47,7 +47,7 @@ function harness({person = identity(0x22), membership = null, joinReply = {statu
         await custody.destroy();
         return renewed;
       },
-      wait: async ms => { calls.waited.push(ms); },
+      wait: async next => { calls.waited.push(next); },
       onProgress: event => calls.progress.push(event.phase),
     },
     store,
@@ -95,7 +95,6 @@ test('a device the host knows under a certificate this browser lost joins as a n
   assert.equal(calls.renewed[0].profile, `tilo-identity:${'11'.repeat(32)}@rooms.example`);
   assert.equal(calls.joined[1].custody, calls.renewed[0].renewed, 'then as a new device');
   assert.deepEqual(calls.waited, [], 'at once');
-  assert.ok(!calls.progress.includes('reconnecting'));
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
   await peer.dispose();
   assert.ok(calls.renewed[0].renewed.closed, 'the new key is let go with its peer');
@@ -148,8 +147,10 @@ test('a refusal a new device does not end says it is reconnecting and asks again
     'join was not answered', 'join was not answered', 'join was not answered']);
   assert.equal((await joinViaHost(options)).room, 'ROOM');
   assert.equal(calls.posted.length, 7);
-  assert.deepEqual(calls.waited, [2000, 5000, 10_000, 30_000, 30_000]);
-  assert.equal(calls.progress.filter(phase => phase === 'reconnecting').length, 5);
+  assert.deepEqual(calls.waited.map(next => next.attempt), [0, 1, 2, 3, 4], 'the reconnect screen\'s backoff, try by try');
+  assert.deepEqual(calls.waited.map(next => next.error.reason), ['the room stopped admitting', 'join was not answered',
+    'join was not answered', 'join was not answered', 'join was not answered'], 'each with the refusal it follows');
+  assert.ok(calls.waited.every(next => next.since === calls.waited[0].since && Number.isFinite(next.since)));
   assert.equal(calls.progress.at(-1), 'admitted');
   assert.equal(calls.renewed.length, 6, 'each try after the first as a new device');
   assert.equal(calls.renewed[1].custody.profile, `tilo-identity:${'22'.repeat(32)}@rooms.example`,

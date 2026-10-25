@@ -17,7 +17,7 @@
  */
 import {AdmissionError} from './admission.mjs';
 import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside, visitLine, waitListFailure} from './arrival.mjs';
-import {watchForUpdate} from './bundle-update.mjs';
+import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, profileDevice, withCustody} from './peer.mjs';
@@ -28,7 +28,8 @@ import {countryName, deviceLabel, pairingFailure, pairSecret, whenRequested} fro
 import {qrSvg} from './qr.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';
-import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryRejoin, retryUnreachable} from './session-refusal.mjs';
+import {createReconnect, domReconnectView} from './reconnect.mjs';
+import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
 import {
@@ -618,6 +619,10 @@ export async function startEntryPage({mode}) {
   // language once its locale file is in.
   let messages = new Map();
   void localeMessages().then(loaded => { messages = loaded; });
+  /** The reconnect screen (`reconnect.mjs`), while the host does not let
+   * the page in yet: one for every reason the page waits. */
+  const reconnect = createReconnect({view: domReconnectView({messages: () => messages, workspace: () => workspaceName,
+    onTryNow: () => reconnect.tryNow()})});
   /** Where an embed's state goes: the site the web host names as its embedder, once the entry is read. */
   let embedder = null;
   const tell = state => { if (embed && embedder && parent !== window) parent.postMessage({type: 'tilo-embed', state}, embedder); };
@@ -736,10 +741,8 @@ export async function startEntryPage({mode}) {
         // away (session-refusal.mjs) joins under the name it went by.
         displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? rejoinedName() ?? defaultDisplayName(identity?.userPublicKey ?? kept?.userPublicKey);
         const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode,
-          onProgress: event => {
-            if (event.phase === 'reconnecting') status.textContent = RECONNECTING;
-            else if (event.phase === 'admitted' && status.textContent === RECONNECTING) status.textContent = loading;
-          }});
+          wait: next => reconnect.wait({...next, reason: 'refused', origin: workspace.host.origin, build: PAGE_BUILD})});
+        reconnect.done();
         entered = 'joined';
         return peer;
       } catch (error) {
@@ -984,6 +987,7 @@ export async function startEntryPage({mode}) {
     // The outcome, for tests and tools driving the page: open, refused or failed.
     document.documentElement.dataset.entry = 'open';
     reachedHost();
+    reconnect.done();
     globalThis.tiloMount = page.mount;
     globalThis.tiloRouter = page.router;
     // The page's channel state as text (whom each room follows, what waits
@@ -1017,13 +1021,15 @@ export async function startEntryPage({mode}) {
     }
   } catch (error) {
     // A host that did not answer before the page got in (it is starting,
-    // or restarting) is asked again, later each time, while the page says
-    // it is reconnecting: nothing the host refused, nothing to do.
-    const again = !admitted && hostUnreachable(error) ? retryRejoin() ?? retryUnreachable() : null;
-    if (again !== null) {
+    // or restarting) is asked again on the reconnect screen, with backoff,
+    // the tries counted across the reloads: nothing the host refused.
+    if (!admitted && hostUnreachable(error)) {
       console.warn('admission: the host did not answer yet, trying again', error?.message);
-      status.textContent = RECONNECTING;
-      setTimeout(() => location.reload(), again);
+      const {attempt, since} = retryUnreachable();
+      const origin = visitedAt?.host?.origin ?? admitting?.entry?.home?.host?.origin ?? admitting?.scope?.host ?? location.origin;
+      await reconnect.wait({error, attempt, since, origin, build: PAGE_BUILD,
+        retryAfterMs: Number.isFinite(error?.retryAfter) ? error.retryAfter * 1000 : 0});
+      location.reload();
       return;
     }
     if (entered || embed) tell(error instanceof HostAdmissionError && error.code === 'full' ? 'full' : 'unavailable');
@@ -1191,8 +1197,8 @@ async function offerUpdate({page, status}) {
 let ownDesktopGate = null;
 const ownDesktopAllowed = home => (ownDesktopGate ??= ownDesktopOpen(home).catch(() => false));
 
-/** Said while the page asks a host that refused it again, later each time. */
-const RECONNECTING = 'Reconnecting…';
+/** The bundle version this page runs, for the reconnect screen's details. */
+const PAGE_BUILD = servedVersion(import.meta.url)?.version ?? 'development';
 
 /** Set for the one reload after signing in at the door, to the person
  * signed in as: refused again, the door says that identity is not in yet. */
