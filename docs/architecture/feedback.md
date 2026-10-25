@@ -144,8 +144,53 @@ signed acknowledgment binds the owner, reporter, destination, submission
 identity and approved digest. Screenshot receipts remain refused
 until an actual owner content store supplies a durable content witness.
 
+### Report a problem: picking parts of the screen
+
+"Report a problem…" (the avatar menu, and the Report problem shortcut,
+Super+R; Alt+Shift+R in a browser) dims the screen and lets the person point
+at what is wrong. `tilo_desktop::feedback_picker::FeedbackPicker` is the one
+overlay for native and browser hosts: the part under the pointer is outlined
+with a spring-animated highlight, a click picks it, Shift-click or a dragged
+rectangle picks several (up to `report::MAX_PICKS`), the wheel widens to the
+enclosing part, Enter or Continue finishes and Escape leaves. Picks come from
+the retained widget tree, never from pixels: `ui::pick` walks the same
+accessibility nodes the screen reader uses and resolves each to its widget
+path (`Name[i]/Child[j]`), role, label, app and, where the window has one, its
+record.
+
+`ui::pick::capture` collects each pick's texts and classifies them. A text a
+widget took from the app's localization (`AccessNode::interface_name`) is
+interface copy and travels as it is; every other text is content, and content
+is Personal: the review hides it whole until the person reveals a span. The
+report also carries the last 20 actions the person invoked
+(`ui::pick::recent_invocations`, structured addresses and outcomes, not
+sentences) and, when they tick "This was slow", recent frame timings.
+
+`tilo_feedback::report::ReportDraft::review` runs the deterministic floor
+first (credentials, addresses, numbers and the names of the people present
+become typed placeholders such as `‹name›`), then, where the page has a model,
+one pass through `model_view` that may only propose more spans to hide;
+Personal values never reach a model that is not local. The composer shows the
+exact outgoing report, each hidden span as a placeholder the person can show
+or hide again (credentials stay hidden), a note per pick, an overall note and
+"This was slow". Nothing leaves before Send, which queues the reviewed
+submission in the same outbox as any other report.
+
+In the browser the picture of each pick is copied from the frame presented
+right after the picker closes, its content areas painted over on the device
+(`ui::pick::sensitive_areas`; images are masked too), and the crops are stacked
+into the one masked screenshot the report carries.
+
+A persistent room keeps the channel reports go to with the room service's
+`TILO_ROOMS_FEEDBACK_CHANNEL` (the relay's `--feedback-channel`): the relay
+adds it after the room's channels on every start. The web entry names it for
+its home workspace with `TILO_WEB_HOME_FEEDBACK` (the channel id, `c_<name>`),
+and the page configures that destination after admission without holding up
+the desktop; a desktop that mounted first takes the startup up on its next
+frame.
+
 The browser's existing `CertifiedPeer.configureFeedback({room, provider, channel})`
-selects a destination before desktop mounting. `WasmPeer` requests admission from
+selects a destination, before or after the desktop mounts. `WasmPeer` requests admission from
 its connected host, matches both roots/devices against retained certificates,
 requires the reporter's actual current standing and the room's sandbox, and installs the trusted Rust startup
 custody. The helper waits for this acknowledgment and never joins another room.
