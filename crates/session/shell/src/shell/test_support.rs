@@ -322,6 +322,10 @@ pub struct OwnHostedRoom {
 /// The room cannot be placed: a fixture that does not hold.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use]
+#[allow(
+    clippy::expect_used,
+    reason = "a fixture whose room cannot be placed has nothing true to test"
+)]
 pub fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnHostedRoom {
     let directory = tempfile::tempdir().expect("a directory for the state file");
     let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).expect("room");

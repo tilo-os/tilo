@@ -995,6 +995,10 @@ fn clipboard_bridge_same_process_connection_cannot_spend_another_routes_ticket()
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the fixture's room host serves the connection the runtime below makes"
+)]
 fn clipboard_bridge_local_home_consent_refuses_foreign_person_without_blocking_shared_grants() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let system = home.config().join("test-system");
