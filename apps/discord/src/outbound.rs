@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, JsonSchema};
 
 use crate::record::{Guild, MAX_CONTENT_CHARS, MAX_UPLOAD_BYTES, MappedKind, Origin};
-use crate::slug;
 use crate::tilo::{self, Message};
+use crate::{emoji, slug};
 
 /// A send, and the thread root the posted message maps under.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -300,10 +300,12 @@ pub fn plan_delete(guild: &Guild, channel: &str, message: &str) -> Vec<DeleteIte
     }]
 }
 
-/// The bot's reaction plan after a Tilo `react` or `unreact`: the bot
-/// reacts once while any Tilo person has the emoji, and takes it back with
-/// the last one. Reactions the bridge made for Discord users do not count;
-/// Discord shows those itself.
+/// The bot's reaction plan after a Tilo reaction with `emoji` was added
+/// (`added`) or taken back: the bot reacts once while any Tilo person has
+/// the emoji, and takes it back with the last one. Reactions the bridge
+/// made for Discord users do not count (Discord shows those itself), so
+/// nothing mirrored in comes back out. A workspace emoji goes across only
+/// as the server's emoji of its name ([`emoji::to_discord`]).
 #[must_use]
 pub fn plan_reaction(
     guild: &Guild,
@@ -313,9 +315,9 @@ pub fn plan_reaction(
     added: bool,
 ) -> (Vec<ReactOp>, Vec<ReactOp>) {
     let none = (Vec::new(), Vec::new());
-    if emoji.starts_with(':') {
+    let Some(discord_emoji) = emoji::to_discord(guild, emoji) else {
         return none;
-    }
+    };
     let Some(mapped) = guild.mapping(MappedKind::Message, message) else {
         return none;
     };
@@ -333,15 +335,17 @@ pub fn plan_reaction(
             None => return none,
         },
     };
+    let wanted = emoji::key(&discord_emoji);
     let tilo_people = row
         .reactions
         .iter()
-        .filter(|r| r.emoji == emoji && r.persona.is_none())
+        .filter(|r| r.persona.is_none())
+        .filter(|r| emoji::to_discord(guild, &r.emoji).is_some_and(|e| emoji::key(&e) == wanted))
         .count();
     let op = ReactOp {
         channel: channel_id,
         message: mapped.discord.clone(),
-        emoji: emoji.to_owned(),
+        emoji: discord_emoji,
     };
     match (added, tilo_people) {
         (true, 1) => (vec![op], Vec::new()),
