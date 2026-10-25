@@ -76,7 +76,7 @@ impl CapnpBrokerState {
                     automation::DoorHooks::new(
                         request.confirmation.clone(),
                         runtime,
-                        self.shortcut_runs.clone(),
+                        self.shortcut_runs.running.clone(),
                         run,
                     )
                 },
@@ -107,9 +107,9 @@ impl CapnpBrokerState {
         let shortcut = self
             .saved_shortcut(caller, room, shortcut_id)
             .ok_or(ActionHostError::UnknownAction)?;
-        let prompts = self.step_prompts.clone();
+        let prompts = self.shortcut_runs.prompts.clone();
         let name = shortcut.name.clone();
-        let runs = self.shortcut_runs.clone();
+        let runs = self.shortcut_runs.running.clone();
         let hooks =
             move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
         self.start_shortcut_run(
@@ -129,7 +129,7 @@ impl CapnpBrokerState {
 
     /// The oldest step of an interactive run waiting for its person.
     pub(crate) fn take_step_prompt(&self) -> Option<automation::PromptedStep> {
-        self.step_prompts.take_next()
+        self.shortcut_runs.prompts.take_next()
     }
 
     /// Start one of saved shortcut `shortcut_id`'s triggers, `trigger`, in
@@ -184,9 +184,9 @@ impl CapnpBrokerState {
             }
         })?;
         if matches!(trigger, tilo_automation::TriggerSpec::Keyboard { .. }) {
-            let prompts = self.step_prompts.clone();
+            let prompts = self.shortcut_runs.prompts.clone();
             let name = shortcut.name.clone();
-            let runs = self.shortcut_runs.clone();
+            let runs = self.shortcut_runs.running.clone();
             let hooks =
                 move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
             return self.start_shortcut_run(
@@ -214,7 +214,7 @@ impl CapnpBrokerState {
                 inputs,
             },
             |runtime, run| {
-                automation::DoorHooks::new(None, runtime, self.shortcut_runs.clone(), run)
+                automation::DoorHooks::new(None, runtime, self.shortcut_runs.running.clone(), run)
             },
             None,
         )
@@ -286,8 +286,8 @@ impl CapnpBrokerState {
             at: None,
             stopped: None,
         };
-        self.shortcut_runs.register(running);
-        let registered = self.shortcut_runs.clone();
+        self.shortcut_runs.running.register(running);
+        let registered = self.shortcut_runs.running.clone();
         runtime.spawn(async move {
             let report = tilo_automation::run(
                 &host,
@@ -419,7 +419,7 @@ impl CapnpBrokerState {
     /// The shortcut runs going in `room`, so the workspace can say what is
     /// running and offer to stop it.
     pub fn running_shortcut_runs(&self, room: &str) -> Vec<automation::RunningRun> {
-        self.shortcut_runs.going(room)
+        self.shortcut_runs.running.going(room)
     }
 
     /// Stop the shortcut runs `request` names in `room`, before their next
@@ -430,6 +430,6 @@ impl CapnpBrokerState {
         request: &automation::StopRequest,
         reason: &str,
     ) -> Vec<automation::RunningRun> {
-        self.shortcut_runs.stop(room, request, reason)
+        self.shortcut_runs.running.stop(room, request, reason)
     }
 }

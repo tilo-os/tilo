@@ -366,7 +366,7 @@ impl CapnpBrokerState {
         let result = match plan {
             crate::automation::LibraryPlan::Answer(output) => Ok(output),
             crate::automation::LibraryPlan::Stop(stop) => {
-                let stopped = self.shortcut_runs.stop(
+                let stopped = self.shortcut_runs.running.stop(
                     &room,
                     &stop,
                     "stop asked for from the shortcuts library",

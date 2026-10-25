@@ -599,6 +599,14 @@ pub fn library_context(descriptor: &ActionDescriptor) -> ActionContext {
         )))
 }
 
+/// A broker's shortcut runs that are not over: the steps waiting on their
+/// person, and the runs going so one can be stopped between two steps.
+#[derive(Clone, Default)]
+pub struct RunLedger {
+    pub prompts: StepPrompts,
+    pub running: RunningRuns,
+}
+
 /// The runs this broker has going, by the room and the shortcut each runs.
 ///
 /// A run registers itself before its first step and leaves when it ends;
