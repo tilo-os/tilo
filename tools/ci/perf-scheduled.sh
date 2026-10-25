@@ -139,15 +139,19 @@ case $group in
     env_json release lavapipe kvm > "$out/env.json"
     python3 scripts/perf/render_bench.py timing "$examples/ui-perf" "$examples/redraw_bench" \
       --env-json "$out/env.json" --out "$out" --strip-pan-bench "$examples/strip_pan_bench" \
-      --records "$out/render.jsonl"
+      --records "$out/render.jsonl" || status=$?
     for plan in "5000,50000 open framework-open" "5000 scroll framework-scroll" "500,1000,2500 focus framework-focus"; do
       read -r sizes action adapter <<< "$plan"
-      "$examples/framework-scaling" "$sizes" "$action" | tee "$out/$adapter.log"
-      python3 tools/perf/adapters.py "$adapter" --env-json "$out/env.json" "$out/$adapter.log" >> "$out/render.jsonl"
+      "$examples/framework-scaling" "$sizes" "$action" | tee "$out/$adapter.log" || status=$?
+      python3 tools/perf/adapters.py "$adapter" --env-json "$out/env.json" "$out/$adapter.log" >> "$out/render.jsonl" || status=$?
     done
-    "$examples/notes-latency" | tee "$out/notes-latency.log"
-    python3 tools/perf/adapters.py notes-latency --env-json "$out/env.json" "$out/notes-latency.log" >> "$out/render.jsonl"
-    python3 scripts/perf/render_bench.py counters "$examples/ui-perf" --out "$out/counters"
+    "$examples/notes-latency" | tee "$out/notes-latency.log" || status=$?
+    python3 tools/perf/adapters.py notes-latency --env-json "$out/env.json" "$out/notes-latency.log" >> "$out/render.jsonl" || status=$?
+    python3 scripts/perf/render_bench.py counters "$examples/ui-perf" --out "$out/counters" || status=$?
+    # A benchmark that fails is reported by its own exit status, and its group
+    # still compares the records the others left: a pipeline's last command is
+    # what a shell reports, so each step keeps its own.
+    exit "$status"
     ;;
   wakeups)
     cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark
