@@ -157,7 +157,7 @@ ENGINES = {
     "settings-rare": "the Settings panes people rarely open, which Settings loads from "
                      "libtilo_settings_engine.so",
     "tilo-emoji-engine": "the emoji catalogue's engine library (libtilo_emoji_engine.so)",
-    "emoji": "the emoji catalogue, which Chat and the on-screen keyboard load from "
+    "emoji": "the emoji catalogue, which Chat, Notes and the on-screen keyboard load from "
              "libtilo_emoji_engine.so",
     "browser-parts": "the parts of Browser people rarely use, which Browser loads from "
                      "libtilo_browser_import_engine.so",
