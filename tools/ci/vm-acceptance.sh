@@ -149,7 +149,9 @@ id "$run_user" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$run_
 uid=$(id -u "$run_user")
 install -d -m 0700 -o "$run_user" -g "$run_user" "/run/user/$uid"
 chmod 0666 /dev/kvm
-install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config/libvirt"
+# install -d gives -o only to the directories it names, so .config is named too: a
+# root-owned .config would leave the user unable to make tilo-vm's config and keys there.
+install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config" "/home/$run_user/.config/libvirt"
 echo 'max_core = 0' | install -m 0644 -o "$run_user" -g "$run_user" /dev/stdin "/home/$run_user/.config/libvirt/qemu.conf"
 mkdir -p "$src/target/dev-runs"
 chown -R "$run_user:" "$work" "$report"
