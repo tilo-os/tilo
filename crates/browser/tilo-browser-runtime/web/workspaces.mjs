@@ -412,38 +412,164 @@ async function ask({workspace, path, body, fetch}) {
   // A room taking people by invitation may keep a wait list, and name where
   // to ask to be taken off it.
   const door = code === 'invitation-only' && reply.waitList === true
-    ? {waitList: true, contact: typeof reply.contact === 'string' && reply.contact ? reply.contact : null} : null;
+    ? {waitList: true, contact: typeof reply.contact === 'string' && reply.contact ? reply.contact : null, mail: reply.mail === true} : null;
   throw new HostAdmissionError(code, reply.error ?? `${path}: HTTP ${response.status}`, hasRetry && retry > 0 ? retry : null, door);
 }
 
 /** Why the door kept no address, by its `code`: the cases a door page says. */
-const WAIT_CODES = new Set(['invalid-email', 'too-many', 'wait-list-full', 'no-wait-list']);
+const WAIT_CODES = new Set(['invalid-email', 'invalid-secret', 'too-many', 'wait-list-full', 'no-wait-list']);
+
+/** Where this browser keeps what it left on hosts' wait lists: per door
+ * origin, the address and the secret that takes it off again. */
+const WAIT_LISTINGS = 'tilo-wait-listings';
+
+const readListings = store => {
+  try { return JSON.parse(store?.getItem(WAIT_LISTINGS) ?? '{}') ?? {}; } catch { return {}; }
+};
+
+const writeListings = (store, listings) => {
+  try {
+    if (Object.keys(listings).length) store?.setItem(WAIT_LISTINGS, JSON.stringify(listings));
+    else store?.removeItem(WAIT_LISTINGS);
+  } catch {
+    // Storage refused (private mode, full): the address stays listed, and
+    // the contact the door names still takes it off.
+  }
+};
+
+/** The door `POST`ed to, as JSON, without credentials; `HostAdmissionError`
+ * `unavailable` when it cannot be reached. */
+async function postToDoor(fetch, url, body, what) {
+  try {
+    return await fetch(url, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body), credentials: 'omit'});
+  } catch (error) {
+    throw new HostAdmissionError('unavailable', `${what}: ${error?.message ?? error}`);
+  }
+}
+
+async function doorRefusal(response, what) {
+  const reply = await response.json().catch(() => ({}));
+  const retry = Number(response.headers.get('retry-after'));
+  const code = WAIT_CODES.has(reply.code) ? reply.code : 'unavailable';
+  return new HostAdmissionError(code, reply.error ?? `${what}: HTTP ${response.status}`,
+    Number.isFinite(retry) && retry > 0 ? retry : null);
+}
 
 /**
  * Leave `email` at `workspace`'s door, to be invited at (`POST
- * <admission>wait-list`): a room taking people by invitation keeps it with
- * its join requests for whoever may invite. Resolves to the address as the
- * door keeps it (trimmed, lowercased); rejects with `HostAdmissionError`
- * code `invalid-email`, `too-many` (with `retryAfter`), `wait-list-full`,
- * `no-wait-list` or `unavailable`.
+ * <admission>wait-list`), in the reader's `language`: a room taking people
+ * by invitation keeps it for whoever may invite. A door that mails sends a
+ * link that confirms it, and lists it only then. The secret the door hands
+ * back, which takes the address off again (`leaveWaitList`), is kept in
+ * `storage` for that door. Resolves to `{email, mail}`: the address as the
+ * door keeps it (as typed, trimmed), and whether it mailed a link to
+ * confirm; rejects with `HostAdmissionError` code `invalid-email`,
+ * `too-many` (with `retryAfter`), `wait-list-full`, `no-wait-list` or
+ * `unavailable`.
  */
-export async function leaveOnWaitList({workspace, email, fetch = globalThis.fetch}) {
+export async function leaveOnWaitList({workspace, email, language = globalThis.navigator?.language ?? '',
+  fetch = globalThis.fetch, storage = globalThis.localStorage}) {
   const door = new URL('wait-list', admissionDoor(workspace));
-  let response;
-  try {
-    response = await fetch(door, {
-      method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({email: String(email ?? '')}),
-      credentials: 'omit',
-    });
-  } catch (error) {
-    throw new HostAdmissionError('unavailable', `wait list: ${error?.message ?? error}`);
+  const response = await postToDoor(fetch, door, {email: String(email ?? ''), language: String(language)}, 'wait list');
+  if (!response.ok) throw await doorRefusal(response, 'wait list');
+  const reply = await response.json().catch(() => ({}));
+  if (typeof reply.email !== 'string') throw new HostAdmissionError('unavailable', 'wait list: the door named no address');
+  const mail = reply.mail === true;
+  if (typeof reply.removal === 'string' && SECRET.test(reply.removal)) {
+    writeListings(storage, {...readListings(storage), [door.origin]: {email: reply.email, secret: reply.removal, mail}});
+  }
+  return {email: reply.email, mail};
+}
+
+/** A wait-list secret, as the door hands it out and its links carry it. */
+const SECRET = /^[0-9a-f]{64}$/;
+
+/** What this browser left on `workspace`'s wait list and can take off
+ * again: `{email, pending}` (`pending`: the door mailed a link to confirm
+ * it, not known to be opened yet), or `null`. */
+export function waitListing(workspace, storage = globalThis.localStorage) {
+  if (!workspace?.admission) return null;
+  const kept = readListings(storage)[new URL(workspace.admission).origin];
+  return typeof kept?.email === 'string' && typeof kept?.secret === 'string' ? {email: kept.email, pending: kept.mail === true && kept.confirmed !== true} : null;
+}
+
+const forgetListing = (storage, origin) => {
+  const now = readListings(storage);
+  delete now[origin];
+  writeListings(storage, now);
+};
+
+/**
+ * Take an address off `workspace`'s wait list (`POST
+ * <admission>wait-list/remove`): the one this browser left, or the one
+ * whose removal link carried `secret`; this browser's listing is forgotten
+ * either way. The door answers alike whether or not it still listed the
+ * address, so this resolves either way; it rejects with
+ * `HostAdmissionError` code `too-many` (with `retryAfter`) or
+ * `unavailable`, and keeps the secret to try again. A secret the door
+ * calls none is forgotten.
+ */
+export async function leaveWaitList({workspace, secret = null, fetch = globalThis.fetch, storage = globalThis.localStorage}) {
+  const door = new URL('wait-list/remove', admissionDoor(workspace));
+  const sent = secret ?? readListings(storage)[door.origin]?.secret;
+  if (typeof sent !== 'string' || !SECRET.test(sent)) {
+    if (secret === null) return;
+    throw new HostAdmissionError('invalid-secret', 'leaving the wait list: the link carries no secret');
+  }
+  const response = await postToDoor(fetch, door, {secret: sent}, 'leaving the wait list');
+  const refusal = response.ok ? null : await doorRefusal(response, 'leaving the wait list');
+  if (!refusal || refusal.code === 'invalid-secret' || refusal.code === 'no-wait-list') {
+    forgetListing(storage, door.origin);
+    return;
+  }
+  throw refusal;
+}
+
+/**
+ * Confirm the address whose confirmation link carried `token` (`POST
+ * <admission>wait-list/confirm`): whether the door still had it waiting
+ * (`false`: it was taken off, or not confirmed within two days). Rejects
+ * with `HostAdmissionError` as `leaveWaitList` does.
+ */
+export async function confirmWaitList({workspace, token, fetch = globalThis.fetch, storage = globalThis.localStorage}) {
+  const door = new URL('wait-list/confirm', admissionDoor(workspace));
+  if (typeof token !== 'string' || !SECRET.test(token)) return false;
+  const response = await postToDoor(fetch, door, {token}, 'confirming the wait list');
+  if (!response.ok) {
+    const refusal = await doorRefusal(response, 'confirming the wait list');
+    if (refusal.code === 'invalid-secret') return false;
+    throw refusal;
   }
   const reply = await response.json().catch(() => ({}));
-  if (response.ok && typeof reply.email === 'string') return reply.email;
-  const retry = Number(response.headers.get('retry-after'));
-  const code = WAIT_CODES.has(reply.code) ? reply.code : 'unavailable';
-  throw new HostAdmissionError(code, reply.error ?? `wait list: HTTP ${response.status}`,
-    Number.isFinite(retry) && retry > 0 ? retry : null);
+  const listings = readListings(storage);
+  if (reply.confirmed === true && listings[door.origin]) {
+    // This browser left it: it no longer waits to be confirmed.
+    writeListings(storage, {...listings, [door.origin]: {...listings[door.origin], confirmed: true}});
+  }
+  return reply.confirmed === true;
+}
+
+/**
+ * Where what this browser left on `workspace`'s wait list stands (`POST
+ * <admission>wait-list/standing`): `pending` (to be confirmed), `listed`,
+ * `invited` or `gone` (then forgotten here); `null` when nothing is kept
+ * here or the door cannot say now.
+ */
+export async function waitListStanding({workspace, fetch = globalThis.fetch, storage = globalThis.localStorage}) {
+  const door = new URL('wait-list/standing', admissionDoor(workspace));
+  const kept = readListings(storage)[door.origin];
+  if (typeof kept?.secret !== 'string') return null;
+  let response;
+  try {
+    response = await postToDoor(fetch, door, {secret: kept.secret}, 'the wait list');
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  const {standing} = await response.json().catch(() => ({}));
+  if (!['pending', 'listed', 'invited', 'gone'].includes(standing)) return null;
+  if (standing === 'gone') forgetListing(storage, door.origin);
+  return standing;
 }
 
 const readMemberships = store => {

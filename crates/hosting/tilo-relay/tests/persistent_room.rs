@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
-use tilo_relay_protocol::room_operator::{OperatorCommand, RoomEvent};
+use tilo_relay_protocol::room_operator::{OperatorCommand, RoomEvent, VERSION};
 use tilo_relay_protocol::rooms::RoomRole;
 
 struct Room {
@@ -120,7 +120,7 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
     else {
         panic!("no governed room announced")
     };
-    assert_eq!(version, 2);
+    assert_eq!(version, VERSION);
     room.tell(&OperatorCommand::PreAdmit {
         user_public_key: "22".repeat(32),
         token_sha256: "33".repeat(32),

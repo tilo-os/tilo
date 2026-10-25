@@ -1090,6 +1090,9 @@ impl Rooms {
         let admitted = tilo_governor::admit(&mut held, joins, key, now);
         if held.committed {
             self.settle(room).await?;
+            // Someone invited from the wait list is in now: their entry
+            // leaves it.
+            room.forget_joined_wait_list();
         }
         admitted
     }
