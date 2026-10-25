@@ -2097,6 +2097,14 @@ impl ChatApp {
             .pin_handoff_for_visual_review(handoff_phase);
     }
 
+    /// Where a message's header and body were last painted, if they were.
+    fn message_rect(&self, id: &str) -> Option<Rect> {
+        self.hits.iter().find_map(|(rect, hit)| match hit {
+            Hit::MessageMenu { msg } if msg.as_str() == id => Some(*rect),
+            _ => None,
+        })
+    }
+
     fn conversation_accessibility(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, Role};
 
@@ -2132,9 +2140,14 @@ impl ChatApp {
                 }
             })
             .map(|message| {
-                let node = AccessNode::new(Role::ListItem)
+                let mut node = AccessNode::new(Role::ListItem)
                     .with_name(self.model_message_label(message))
                     .with_hashed_key((&message.id, "message"));
+                // A painted message is read and picked where it is drawn,
+                // not over the whole conversation.
+                if let Some(rect) = self.message_rect(&message.id) {
+                    node = node.with_bounds(rect);
+                }
                 if let Some(work) = &message.work {
                     node.with_description(crate::render_chat::agent_work_accessible_description(
                         work,
