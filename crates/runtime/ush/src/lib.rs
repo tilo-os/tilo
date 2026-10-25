@@ -120,6 +120,11 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "rmdir",
     "ln",
     "truncate",
+    // Changing a text file's contents is what a note, a list or a paragraph
+    // is for, and with only `truncate` and `cp` the only way was to rewrite
+    // the whole file; `touch` creates without truncating, `append` adds.
+    "touch",
+    "append",
     "history",
     "undo",
 ];
