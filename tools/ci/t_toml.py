@@ -281,7 +281,10 @@ def goldens(image: str) -> str:
         'tool = "nextest"',
         f"image = {json.dumps(image)}",
         'requires = ["arch=x86_64"]',
-        'wrapper = ["bash", "tools/test-env.sh"]',
+        # The pinned fonts tilo-font-catalog's build script prepares, cached in the build
+        # directory, which t keeps across a build lineage (family env is taken literally).
+        'wrapper = ["bash", "-c", "export TILO_FONT_ASSET_CACHE=\\"$CARGO_TARGET_DIR/font-artifacts\\"; '
+        'exec bash tools/test-env.sh \\"$@\\"", "goldens"]',
         f"packages = {array(packages)}",
         f"args = {array(['--locked', '--profile', 'ci', '--tests', '--no-tests=pass', '-E', golden])}",
         'inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", '
