@@ -178,6 +178,10 @@ pub struct Redeeming<'a> {
     pub request_id: [u8; 32],
     pub proof_digest: [u8; 32],
     pub redemption: &'a VerifiedRedemption,
+    /// How the person names themself as they join: the name the room
+    /// shows for them ([`crate::PeerGovernanceMut::name_person`]).
+    /// `None` keeps the name their invitation and certificate give.
+    pub name: Option<&'a str>,
 }
 
 /// What a room's governor keeps between the steps of its joins. Its bytes
@@ -778,6 +782,14 @@ impl JoinLedger {
                             key,
                             system_time(now),
                         )?;
+                        if let Some(name) = join.name {
+                            next.governance_mut().name_person(
+                                redemption.certificate().user_public_key,
+                                name,
+                                key,
+                                system_time(now),
+                            )?;
+                        }
                         *candidate = next;
                         Ok(())
                     })
