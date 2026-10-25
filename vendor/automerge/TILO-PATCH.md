@@ -303,3 +303,21 @@ restores upstream's `automerge-test` dev-dependency, which crates.io
 publication drops and `tests/test.rs` needs, from `vendor/automerge-test`
 (see its `PROVENANCE.md`). The test run starts from a copy of the workspace
 lock, so the fork is tested at the dependency versions Tilo ships.
+
+# Tilo patch: tell which history a waiting change belongs to
+
+A room governor starts a room's document over from a base and writes the new
+history under its own actor again, so a change of the history the base
+replaced can hold an actor's sequence number that the new history uses too.
+Waiting in the queue for what it builds on, such a change made the fork
+refuse the new history's change at that number as a duplicate. Only one
+change can hold an actor's sequence number in a history, so the receiver
+(`tilo-peer-state`'s `room::base::lineage`) drops the waiting one once a
+change built on the base it holds claims that number. For that it reads
+`Automerge::applied_seq` and `Automerge::queued_changes`, and drops with
+`Automerge::discard_queued` / `AutoCommit::discard_queued`, which remove the
+named queued changes and those queued on them (`ChangeQueue::
+remove_with_dependents`, which `remove_actor_branch_from` now uses too).
+Applied changes are never touched. The marked spots are
+`TILO(history-of-a-change)` in `automerge.rs`, `autocommit.rs` and
+`change_queue.rs`. Pinned by `tilo-peer-state`'s `room::base` tests.

@@ -1262,6 +1262,23 @@ impl Automerge {
         Ok(())
     }
 
+    /// TILO(history-of-a-change): the highest sequence number of `actor`'s
+    /// applied changes, `0` for an actor with none (vendor/automerge/TILO-PATCH.md).
+    pub fn applied_seq(&self, actor: &ActorId) -> u64 {
+        self.seq_for_actor(actor)
+    }
+
+    /// TILO(history-of-a-change): the changes waiting for what they build on.
+    pub fn queued_changes(&self) -> impl Iterator<Item = &Change> {
+        self.queue.iter()
+    }
+
+    /// TILO(history-of-a-change): drop the queued changes `hashes` names and
+    /// the queued changes that build on them. Applied changes are untouched.
+    pub fn discard_queued(&mut self, hashes: impl IntoIterator<Item = ChangeHash>) {
+        self.queue.remove_with_dependents(hashes);
+    }
+
     /// Get the last change this actor made to the document.
     pub fn get_last_local_change(&self) -> Option<Change> {
         let actor = self.get_actor_index()?;

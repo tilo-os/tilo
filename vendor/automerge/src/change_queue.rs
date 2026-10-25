@@ -70,11 +70,22 @@ impl ChangeQueue {
     /// Remove queued changes at or after an incompatible actor sequence,
     /// together with changes which transitively depend on that branch.
     pub(crate) fn remove_actor_branch_from(&mut self, actor: &ActorId, seq: u64) {
-        let mut removed = self
+        let removed = self
             .changes
             .iter()
             .filter(|change| change.actor_id() == actor && change.seq() >= seq)
             .map(Change::hash)
+            .collect::<Vec<_>>();
+        self.remove_with_dependents(removed);
+    }
+
+    /// TILO(history-of-a-change): remove the queued changes `hashes` names,
+    /// together with the queued changes which transitively depend on them
+    /// (vendor/automerge/TILO-PATCH.md).
+    pub(crate) fn remove_with_dependents(&mut self, hashes: impl IntoIterator<Item = ChangeHash>) {
+        let mut removed = hashes
+            .into_iter()
+            .filter(|hash| self.hashes.contains(hash))
             .collect::<HashSet<_>>();
 
         let mut dependents: HashMap<ChangeHash, Vec<ChangeHash>> = HashMap::new();
