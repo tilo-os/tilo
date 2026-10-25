@@ -61,20 +61,47 @@ enum Control {
     },
 }
 
-/// The time the actor's windows are measured in: the monotonic clock, which
-/// unit tests can move forward ([`Control::FixtureAdvance`]).
-#[derive(Default)]
+/// The time the actor's work is paced by: the monotonic clock, which unit
+/// tests can move forward ([`Control::FixtureAdvance`]).
+///
+/// Its start, record and finish windows are measured on [`Self::window_now`].
+/// In a unit test that clock moves only when the test moves it: the windows
+/// are crossed on purpose, never by a loaded runner taking seconds to start
+/// the fixture worker's interpreter. Everything else, such as how often the
+/// vocabulary is checked, keeps the running clock there too.
 struct ActorClock {
     /// How far tests moved it; zero otherwise.
     skew: Duration,
+    /// Where a unit test's window clock stands before it is moved.
+    #[cfg(test)]
+    windows_from: Instant,
 }
 impl ActorClock {
+    fn new() -> Self {
+        Self {
+            skew: Duration::ZERO,
+            #[cfg(test)]
+            windows_from: Instant::now(),
+        }
+    }
     fn now(&self) -> Instant {
         let now = Instant::now();
         now.checked_add(self.skew).unwrap_or(now)
     }
     fn later(&self, duration: Duration) -> Instant {
         let now = self.now();
+        now.checked_add(duration).unwrap_or(now)
+    }
+    /// The instant the actor's windows are measured at.
+    fn window_now(&self) -> Instant {
+        #[cfg(test)]
+        let now = self.windows_from;
+        #[cfg(not(test))]
+        let now = Instant::now();
+        now.checked_add(self.skew).unwrap_or(now)
+    }
+    fn window_later(&self, duration: Duration) -> Instant {
+        let now = self.window_now();
         now.checked_add(duration).unwrap_or(now)
     }
 }
@@ -591,14 +618,14 @@ fn finish_capture(
 )]
 fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError> {
     #[cfg_attr(not(test), allow(unused_mut, reason = "only tests move the clock"))]
-    let mut clock = ActorClock::default();
+    let mut clock = ActorClock::new();
     #[cfg(test)]
     let mut advanced: Option<SyncSender<()>> = None;
     let mut microphone: Option<AudioCapture> = None;
     let mut ready = false;
     let mut finishing = false;
-    let mut deadline = clock.later(START_WINDOW);
-    let session_end = clock.later(
+    let mut deadline = clock.window_later(START_WINDOW);
+    let session_end = clock.window_later(
         START_WINDOW
             .saturating_add(RECORD_WINDOW)
             .saturating_add(FINISH_WINDOW),
@@ -615,12 +642,12 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
             check_vocabulary(io)?;
             next_vocabulary_check = clock.later(Duration::from_millis(250));
         }
-        if clock.now() >= deadline && microphone.is_some() && !finishing {
+        if clock.window_now() >= deadline && microphone.is_some() && !finishing {
             finish_capture(pipe, &mut microphone, io, finish_interrupts_draft)?;
             finishing = true;
             deadline = session_end;
         }
-        if clock.now() >= deadline {
+        if clock.window_now() >= deadline {
             return Err(RuntimeError::TimedOut);
         }
         #[cfg(test)]
@@ -637,7 +664,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                 if io.cancel.load(Ordering::Acquire) {
                     return Err(RuntimeError::Canceled);
                 }
-                deadline = clock.later(RECORD_WINDOW).min(
+                deadline = clock.window_later(RECORD_WINDOW).min(
                     session_end
                         .checked_sub(FINISH_WINDOW)
                         .unwrap_or_else(Instant::now),
@@ -665,7 +692,7 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                 // Drain the complete final chunk before stopping capture.
                 finish_capture(pipe, &mut microphone, io, finish_interrupts_draft)?;
                 finishing = true;
-                deadline = clock.later(FINISH_WINDOW).min(session_end);
+                deadline = clock.window_later(FINISH_WINDOW).min(session_end);
             }
             Ok(_) => return Err(RuntimeError::Protocol),
             Err(TryRecvError::Disconnected) => return Err(RuntimeError::Canceled),
@@ -733,14 +760,14 @@ pub(super) fn dictionary_test_peer(
     };
     let peer =
         Runtime::spawn_with_vocabulary(tests::peer_command(mode, pid), "en", Some(reader)).unwrap();
-    assert!(matches!(tests::next(&peer), RuntimeEvent::Ready));
+    tests::ready(&tests::next(&peer));
     peer
 }
 
 #[cfg(test)]
 pub(super) fn finishing_test_peer(pid: &std::path::Path) -> Runtime {
     let peer = tests::peer("repeated", pid);
-    assert!(matches!(tests::next(&peer), RuntimeEvent::Ready));
+    tests::ready(&tests::next(&peer));
     peer
 }
 
@@ -753,7 +780,7 @@ pub(super) fn repair_test_peer(pid: &std::path::Path, language: &str) -> Runtime
         _ => "repair",
     };
     let peer = Runtime::spawn(tests::peer_command(mode, pid), language).unwrap();
-    assert!(matches!(tests::next(&peer), RuntimeEvent::Ready));
+    tests::ready(&tests::next(&peer));
     peer
 }
 
@@ -766,7 +793,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let pid = directory.path().join("interrupt");
         let mut runtime = peer("interrupt", &pid);
-        assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+        ready(&next(&runtime));
         assert!(
             runtime
                 .commands
@@ -955,6 +982,18 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
     pub(super) fn next(runtime: &Runtime) -> RuntimeEvent {
         tilo_test_env::wait_for("the dictation actor to report a result", || runtime.poll())
     }
+    /// Fail unless `event` is the worker's Ready, naming what came instead.
+    pub(super) fn ready(event: &RuntimeEvent) {
+        let instead = match event {
+            RuntimeEvent::Ready => return,
+            RuntimeEvent::Listening => "Listening".to_owned(),
+            RuntimeEvent::Finishing => "Finishing".to_owned(),
+            RuntimeEvent::Draft(_) => "a draft".to_owned(),
+            RuntimeEvent::Done(_) => "a final".to_owned(),
+            RuntimeEvent::Stopped(error) => format!("Stopped({error:?})"),
+        };
+        panic!("the dictation actor reported {instead} instead of Ready");
+    }
 
     #[test]
     fn stalled_compositor_keeps_latest_preview_and_terminal_result() {
@@ -1018,7 +1057,7 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
                 Some(Arc::new(reader.clone())),
             )
             .unwrap();
-            assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+            ready(&next(&runtime));
             runtime.finish().unwrap();
             assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
             match mode {
@@ -1052,7 +1091,7 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
         let directory = tempfile::tempdir().unwrap();
         let pid = directory.path().join("delayed");
         let mut runtime = peer("delayed", &pid);
-        assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+        ready(&next(&runtime));
         runtime.finish().unwrap();
         assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
         // The final arrives well past the start window, but inside the
@@ -1132,7 +1171,7 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
         for (index, mode) in ["normal", "slow", "normal"].iter().enumerate() {
             let pid = directory.path().join(index.to_string());
             let mut runtime = peer(mode, &pid);
-            assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+            ready(&next(&runtime));
             runtime.finish().unwrap();
             assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
             if *mode == "slow" {
@@ -1157,7 +1196,7 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
             let pid = directory.path().join(mode);
             let mut runtime = peer(mode, &pid);
             if mode == "control" {
-                assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+                ready(&next(&runtime));
                 runtime.finish().unwrap();
                 assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
             }
@@ -1185,7 +1224,7 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
             let pid = directory.path().join(index.to_string());
             let mut runtime =
                 Runtime::spawn_for_field(peer_command(mode, &pid), "en", None, multiline).unwrap();
-            assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+            ready(&next(&runtime));
             runtime.finish().unwrap();
             assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
             if accepted {
