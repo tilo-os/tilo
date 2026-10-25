@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {FETCH_PROXY_PATH, PEER_LOCAL, PEER_PARAM, fetchProxyFor, peerGet, proxiedGet, wireFetchProxy} from './fetch-proxy.mjs';
+import {FETCH_PROXY_PATH, fetchProxyFor, proxiedGet, wireFetchProxy} from './fetch-proxy.mjs';
 
 const PAGE = 'https://tilo.example/';
 const SITE = new URL('https://feeds.example/rss?x=1');
@@ -51,15 +51,4 @@ test('a proxied image request carries the marker and the session, never the page
   assert.equal(init.credentials, 'same-origin');
   // A host on the page's origin takes no session header.
   assert.deepEqual(proxiedGet(SITE, {endpoint: 'https://tilo.example/_tilo/net/fetch'})[1].headers, {'x-tilo-proxy': '1'});
-});
-
-test('a peer request names a path on the host’s machine, not a site', () => {
-  const [url, init] = peerGet('/home/ada/Notes.md', {endpoint: 'https://eu1.tilo.example/peer/v1/fetch', session: 'cc33'});
-  const sent = new URL(url);
-  assert.equal(sent.origin + sent.pathname, 'https://eu1.tilo.example/peer/v1/fetch');
-  assert.equal(sent.searchParams.get('url'), 'file:///home/ada/Notes.md');
-  assert.equal(sent.searchParams.get(PEER_PARAM), PEER_LOCAL);
-  assert.deepEqual(init.headers, {'x-tilo-proxy': '1', 'x-tilo-session': 'cc33'});
-  // A host on the page's own origin needs no session, as for a site.
-  assert.deepEqual(peerGet('/etc/hostname', {endpoint: 'https://tilo.example/_tilo/net/fetch'})[1].headers, {'x-tilo-proxy': '1'});
 });

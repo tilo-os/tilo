@@ -76,36 +76,6 @@ pub const VERSION: &str = "1";
 pub const MARKER_PARAM: &str = "tilo-proxy";
 /// [`SESSION_HEADER`] as a query parameter, beside [`MARKER_PARAM`].
 pub const SESSION_PARAM: &str = "tilo-session";
-/// What [`PEER_PARAM`] says: the target URL is not a site on the web but a
-/// path on the machine that admitted the page's person, which its own `fs`
-/// answered when it was still the page (`docs/architecture/network.md`).
-pub const PEER_LOCAL: &str = "local";
-/// Asks the host to reach the target as the local path it is on its own
-/// machine (`{"path": "/home/ada/Notes"}`) rather than as a URL.
-pub const PEER_PARAM: &str = "tilo-peer";
-
-/// The proxy URL and headers for a request to `path` on the machine that
-/// admitted the page's person, through `proxy`, whose host answers it as
-/// the path it is on its own disk.
-///
-/// The target is written as the host reads it, `file://` and all, so a
-/// host validates one URL either way; [`PEER_PARAM`] says it is this
-/// machine's own path and not a site.
-///
-/// # Errors
-///
-/// See [`route`].
-pub fn peer_route(
-    proxy: &Proxy,
-    path: &str,
-    headers: &HeaderMap,
-) -> Result<(Url, HeaderMap), NetError> {
-    let mut url = proxy.endpoint.clone();
-    url.query_pairs_mut()
-        .append_pair("url", &format!("file://{path}"))
-        .append_pair(PEER_PARAM, PEER_LOCAL);
-    Ok((url, proxied_headers(proxy, headers)?))
-}
 
 /// Whether a request may go through the host's fetch proxy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -342,13 +312,6 @@ pub fn route(
 ) -> Result<(Url, HeaderMap), NetError> {
     let mut url = proxy.endpoint.clone();
     url.query_pairs_mut().append_pair("url", target.as_str());
-    Ok((url, proxied_headers(proxy, headers)?))
-}
-
-/// The headers of a request the host's proxy relays: the marker, the
-/// page's session, and the request's own — the ones a browser will not let
-/// a page set renamed under [`FORWARD_PREFIX`].
-fn proxied_headers(proxy: &Proxy, headers: &HeaderMap) -> Result<HeaderMap, NetError> {
     let mut routed = HeaderMap::with_capacity(headers.len().saturating_add(2));
     routed.insert(
         HeaderName::from_static(MARKER_HEADER),
@@ -370,7 +333,7 @@ fn proxied_headers(proxy: &Proxy, headers: &HeaderMap) -> Result<HeaderMap, NetE
         };
         routed.append(name, value.clone());
     }
-    Ok(routed)
+    Ok((url, routed))
 }
 
 /// The URL a page element that cannot send headers (a media element) loads
