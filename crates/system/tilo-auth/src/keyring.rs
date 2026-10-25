@@ -5,9 +5,11 @@ use std::ffi::{CStr, c_long};
 use std::io;
 use zeroize::Zeroizing;
 
+pub(crate) const KEY_SPEC_PROCESS_KEYRING: i32 = -2;
 pub(crate) const KEY_SPEC_USER_KEYRING: i32 = -4;
 pub(crate) const KEYCTL_SETPERM: c_long = 5;
 pub(crate) const KEYCTL_DESCRIBE: c_long = 6;
+pub(crate) const KEYCTL_LINK: c_long = 8;
 pub(crate) const KEYCTL_UNLINK: c_long = 9;
 pub(crate) const KEYCTL_READ: c_long = 11;
 pub(crate) const KEYCTL_SET_TIMEOUT: c_long = 15;
@@ -89,10 +91,14 @@ pub(crate) fn read_payload(serial: i32, max: usize) -> io::Result<Zeroizing<Vec<
 }
 
 pub(crate) fn unlink(serial: i32) {
+    unlink_from(serial, KEY_SPEC_USER_KEYRING);
+}
+
+pub(crate) fn unlink_from(serial: i32, keyring: i32) {
     let _ = keyctl(
         KEYCTL_UNLINK,
         c_long::from(serial),
-        c_long::from(KEY_SPEC_USER_KEYRING),
+        c_long::from(keyring),
         0,
     );
 }
