@@ -282,6 +282,84 @@ fn a_discord_reaction_is_the_members_own_reaction_on_the_mapped_message() {
     assert_eq!(planned_in(&g, &Value::Null, &echo), BridgePlan::default());
 }
 
+/// The chat as `read-room` answers it with a filed report's message: its
+/// text read out of the report, its picture as an image, a reaction on it.
+fn with_report() -> Value {
+    json!({
+        "messages": [{"id": "m_feedback_r1", "value": {
+            "channel": "c1", "author": "u_ada",
+            "text": "Saving does nothing\n1. Files: Save (button)",
+            "attachment": {"$variant": "image", "name": "report.png", "blob": "ab", "w": 320, "h": 200},
+            "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1}]
+        }}],
+        "people": [{"id": "u_ada", "name": "Ada", "agent": false}]
+    })
+}
+
+fn read_with_report(guild: &Guild, event: &Value) -> BridgePlan {
+    plan(
+        Reading {
+            guild,
+            chat: &with_report(),
+            context: &Context::default(),
+            room: &Value::Null,
+        },
+        event,
+    )
+}
+
+#[test]
+fn a_filed_report_goes_across_as_its_message_with_its_picture() {
+    // Chat records filing on the channel, with the submission it filed.
+    let event = json!({
+        "kind": CHAT_KIND,
+        "did": verb(SUBMIT_FEEDBACK),
+        "item": {"kind": "channels", "id": "c1"},
+        "actor": {"id": "u_ada"},
+        "arguments": {"channel": "c1", "submission": {"id": "r1"}},
+    });
+    assert_eq!(route(&guild(), &event), "m_feedback_r1");
+    let planned = read_with_report(&guild(), &event);
+    assert_eq!(planned.sends.len(), 1, "{planned:?}");
+    let op = &planned.sends[0]["op"];
+    assert_eq!(op["tilo"], "m_feedback_r1");
+    assert_eq!(op["username"], "Ada");
+    assert_eq!(
+        op["content"],
+        "Saving does nothing\n1. Files: Save (button)"
+    );
+    assert_eq!(
+        op["attachments"],
+        json!([{"blob": "ab", "name": "report.png", "size": 0}])
+    );
+    assert!(
+        planned.apply_channels.is_empty(),
+        "filing changes no layout"
+    );
+    let mut sent = guild();
+    sent.map
+        .push(mapping(MappedKind::Message, "m_feedback_r1", "dm9"));
+    assert!(
+        read_with_report(&sent, &event).sends.is_empty(),
+        "a report already in Discord is not sent again"
+    );
+}
+
+#[test]
+fn a_reaction_to_a_filed_report_goes_across_on_its_message() {
+    let mut g = guild();
+    g.map
+        .push(mapping(MappedKind::Message, "m_feedback_r1", "dm9"));
+    let edit = json!({"did": "edit", "op": "react", "new": "👍",
+        "path": [{"field": "feedback"}, {"item": "r1"}, {"field": "reactions"}]});
+    let event = json!({"kind": CHAT_KIND, "did": edit});
+    assert_eq!(route(&g, &event), "m_feedback_r1");
+    assert_eq!(
+        read_with_report(&g, &event).reacts,
+        [json!({"channel": "d1", "message": "dm9", "emoji": "👍"})]
+    );
+}
+
 #[test]
 fn the_servers_custom_emoji_are_recorded_with_its_layout() {
     let payload = json!({"guild_id": "1", "bot_user": "9", "channels": [], "roles": [],

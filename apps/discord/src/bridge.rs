@@ -31,6 +31,25 @@ pub const CHAT_KIND: &str = "chat.workspace";
 pub const MESSAGES_KIND: &str = "chat.messages";
 /// The room record kind whose role changes the bridge mirrors.
 pub const ROOM_KIND: &str = "tilo.room";
+/// Chat's verb filing a feedback report in a channel.
+pub const SUBMIT_FEEDBACK: &str = "submit-feedback";
+
+/// The message a filed feedback report shows as in its channel: Chat reads
+/// report `report` out as the message `m_feedback_<report>`, under the
+/// person who filed it, with its masked picture as the image.
+#[must_use]
+pub fn report_message(report: &str) -> String {
+    format!("m_feedback_{report}")
+}
+
+/// The report a `submit-feedback` change filed, as its message.
+fn filed_report(event: &Value) -> Option<String> {
+    event
+        .pointer("/arguments/submission/id")
+        .and_then(Value::as_str)
+        .filter(|report| !report.is_empty())
+        .map(report_message)
+}
 
 /// Every list the program loops over, by the verb each runs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -202,11 +221,17 @@ fn reacted(edit: &Value) -> Option<Reacted> {
     };
     let path = edit.get("path")?.as_array()?;
     let step = |at: usize, kind: &str| path.get(at)?.get(kind)?.as_str();
-    if path.len() != 3 || step(0, "field")? != "messages" || step(2, "field")? != "reactions" {
+    if path.len() != 3 || step(2, "field")? != "reactions" {
         return None;
     }
+    // A filed report takes reactions in the chat record, on its message.
+    let message = match step(0, "field")? {
+        "messages" => step(1, "item")?.to_owned(),
+        "feedback" => report_message(step(1, "item")?),
+        _ => return None,
+    };
     Some(Reacted {
-        message: step(1, "item")?.to_owned(),
+        message,
         emoji: edit.get("new")?.as_str()?.to_owned(),
         added,
     })
@@ -283,12 +308,19 @@ fn payload<T: serde::de::DeserializeOwned>(payload: &Value) -> Option<T> {
 pub fn route(guild: &Guild, event: &Value) -> String {
     match fired(event) {
         Fired::Chat {
+            verbs,
             reactions,
             item,
             event,
-            ..
         } => reactions.first().map_or_else(
-            || about(item, event).to_owned(),
+            || {
+                verbs
+                    .iter()
+                    .any(|verb| verb == SUBMIT_FEEDBACK)
+                    .then(|| filed_report(event))
+                    .flatten()
+                    .unwrap_or_else(|| about(item, event).to_owned())
+            },
             |reacted| reacted.message.clone(),
         ),
         // A reaction is read with the message it is on, for the spelling
@@ -352,6 +384,8 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
             for verb in &verbs {
                 let message = if verb == "post" {
                     posted(read.guild, read.chat, item, event).unwrap_or_default()
+                } else if verb == SUBMIT_FEEDBACK {
+                    filed_report(event).unwrap_or_default()
                 } else {
                     about(item, event).to_owned()
                 };
@@ -403,7 +437,8 @@ fn tilo_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, message: &s
         ..
     } = read;
     match verb {
-        "post" => post(plan, guild, chat, message, context),
+        // A filed report goes across as the message Chat reads it out as.
+        "post" | SUBMIT_FEEDBACK => post(plan, guild, chat, message, context),
         "edit-message" => {
             plan.edits
                 .extend(values(outbound::plan_edit(guild, chat, message, context)));

@@ -44,12 +44,11 @@ impl Chat {
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
         });
+        // A report is found by what its message says: the summary, and the
+        // picks of one filed without words.
         let feedback = self.feedback.iter().filter_map(|(id, report)| {
-            let submission = report.submission.as_ref()?;
-            Some(
-                SearchEntry::new(&submission.feedback.text, "Feedback")
-                    .anchored(anchor("feedback", id)),
-            )
+            let message = crate::feedback::message::message(report)?;
+            Some(SearchEntry::new(&message.text, "Feedback").anchored(anchor("feedback", id)))
         });
         let people = self.people.iter().map(|person| {
             SearchEntry::new(&person.name, "Person")
