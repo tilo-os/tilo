@@ -157,6 +157,7 @@ pub fn record_run_steps(
         match &finished.report.outcome {
             RunOutcome::Completed => "completed".to_string(),
             RunOutcome::Failed { path, failure } => format!("stopped at {path}: {failure}"),
+            RunOutcome::Cancelled { at } => format!("stopped at {at}"),
         }
     );
     ui::record_run_with_details(
