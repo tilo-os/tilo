@@ -7801,3 +7801,18 @@ requirement = { cores = 8, memory = "8GiB" }
 run = "cp -a /src /tmp/tree && cd /tmp/tree && python3 tools/ci/member_units.py"
 inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml", "tools/ci/member_units.py", "tools/ci/workspace_unify.py", "tools/ci/package_features.py"]
 on = ["main"]
+
+[[check]]
+name = "lounge-invite-local"
+run = "bash tools/test-env.sh python3 -I dist/dev/lounge-invite-local.py t2024"
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets" }
+needs = ["nested-session", "test-assets"]
+inputs = ["dist/dev/lounge-invite-local.py", "dist/dev/site-door-acceptance.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "crates/hosting/tilo-room-service/dev/run.py", "tools/test-env.sh", "tools/with-test-environment.sh"]
+outputs = ["/target/lounge-invite-local/**"]
+requires = ["arch=x86_64"]
+requirement = { cores = 8, memory = "16GiB" }
+git = true
+isolation = "vm"
+timeout_secs = 5400
+default = false
+cache = false
