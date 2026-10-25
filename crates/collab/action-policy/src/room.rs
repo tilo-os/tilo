@@ -366,7 +366,20 @@ impl RoomPolicy {
 
     #[must_use]
     pub fn party(&self, person: &str) -> Party<'_> {
-        let party = Party::new(self.subjects_of(person), &self.grants);
+        // The room's ban or restriction of the person is a decision about
+        // them: no grant to their role lifts it, however specific (an item
+        // shared with the room to edit included), as nobody but whoever may
+        // govern `unban` or `unrestrict` may.
+        let moderation = [
+            roles::block_grant_id(person),
+            roles::restriction_grant_id(person),
+        ];
+        let subject = Subject::Person(person.to_owned());
+        let held_off = self
+            .grants
+            .iter()
+            .filter(|grant| grant.subject == subject && moderation.contains(&grant.id));
+        let party = Party::new(self.subjects_of(person), &self.grants).held_off_by(held_off);
         if self.is_owner(person) {
             party.owning(self.node())
         } else {
