@@ -75,6 +75,29 @@ ARTICLE = f'''<!doctype html><title>The long read</title>
 
 LATER = b'''<!doctype html><title>Later</title>
 <button onclick="setTimeout(() => location.href = '/next', 1000)">Go later</button>'''
+GESTURE = b'''<!doctype html><title>Gestures</title>
+<style>
+#menu{display:none} #hover:hover #menu{display:block}
+li{padding:8px;margin:4px;border:1px solid #000;list-style:none}
+</style>
+<div id="hover"><span id="label">Licences</span><ul id="menu"><li><a href="/fishing" id="fishing">Fishing licence</a></li></ul></div>
+<ol id="rank"><li draggable="true" id="a">Riverton office</li><li draggable="true" id="b">Porthaven office</li><li draggable="true" id="c">Central office</li></ol>
+<canvas id="pad" width="300" height="120" aria-label="Signature pad" style="border:1px solid #000"></canvas>
+<p id="status"></p>
+<script>
+const rank = document.getElementById('rank');
+let dragged;
+rank.querySelectorAll('li').forEach(li => {
+  li.ondragstart = () => dragged = li;
+  li.ondragover = e => e.preventDefault();
+  li.ondrop = e => { e.preventDefault(); if (dragged !== li) rank.insertBefore(dragged, li); };
+});
+const pad = document.getElementById('pad'), ctx = pad.getContext('2d');
+let drawing = false, strokes = 0;
+pad.onpointerdown = e => { drawing = true; strokes++; ctx.beginPath(); ctx.moveTo(e.offsetX, e.offsetY); };
+pad.onpointermove = e => { if (drawing) ctx.lineTo(e.offsetX, e.offsetY); ctx.stroke(); };
+pad.onpointerup = () => { drawing = false; document.getElementById('status').textContent = 'strokes ' + strokes; };
+</script>'''
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -82,6 +105,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
             else LATER if path == '/later' \
+            else GESTURE if path == '/gesture' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -370,6 +394,46 @@ class PageActions(unittest.TestCase):
             self.assertIn('elsewhere.test', refused['message'])
         entered = self.page('press', element=query, key='Enter', ctrl=False, shift=False, alt=False, meta=False)
         self.assertEqual(entered['code'], 'cross_origin_submit', entered)
+
+    def pointer(self, steps, button='left'):
+        return self.ok('pointer', steps=steps, button=button)
+
+    def test_pointer_hover_reveals_a_menu_and_the_click_opens_it(self):
+        self.h.navigate(self.url + '/gesture')
+        outline = self.outline()
+        self.assertNotIn('Fishing licence', outline, 'the menu is closed until a hand rests on it')
+        # The page keeps the menu shut until the pointer rests on its owner,
+        # so the outline names that owner and a gesture reaches it by ref.
+        resting = self.ref(outline, 'hoverable "Licences"')
+        self.pointer([dict(kind='move', element=resting, x=5, y=5)])
+        revealed = self.outline()
+        fishing = self.ref(revealed, 'link "Fishing licence"')
+        self.pointer([dict(kind='move', element=fishing, x=5, y=5),
+                      dict(kind='down', element=fishing, x=5, y=5),
+                      dict(kind='up', element=fishing, x=5, y=5)])
+        self.assertEqual(self.main_world('location.pathname'), '/fishing', 'the click followed the link')
+
+    def test_pointer_drags_a_page_element_onto_another(self):
+        self.h.navigate(self.url + '/gesture')
+        outline = self.outline()
+        central = self.ref(outline, 'draggable "Central office"')
+        riverton = self.ref(outline, 'draggable "Riverton office"')
+        self.pointer([dict(kind='down', element=central, x=5, y=5),
+                      dict(kind='move', element=riverton, x=5, y=5),
+                      dict(kind='up', element=riverton, x=5, y=5)])
+        order = self.main_world("[...document.querySelectorAll('#rank li')].map(li => li.textContent).join(' > ')")
+        self.assertEqual(order, 'Central office > Riverton office > Porthaven office', order)
+
+    def test_pointer_draws_on_a_canvas(self):
+        self.h.navigate(self.url + '/gesture')
+        pad = self.ref(self.outline(), 'canvas "Signature pad"')
+        steps = []
+        for line in range(3):
+            steps.append(dict(kind='down', element=pad, x=20, y=20 + line * 20))
+            steps.append(dict(kind='move', element=pad, x=120, y=20 + line * 20))
+            steps.append(dict(kind='up', element=pad, x=120, y=20 + line * 20))
+        self.pointer(steps)
+        self.assertIn('text "strokes 3"', self.outline(), 'each press and release is one stroke')
 
 
 if __name__ == '__main__':
