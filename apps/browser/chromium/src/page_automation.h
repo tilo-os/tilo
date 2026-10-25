@@ -6,6 +6,7 @@
 #include "include/cef_parser.h"
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
+#include <map>
 #include <functional>
 #include <chrono>
 #include <optional>
@@ -88,7 +89,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     },self,id,success,std::move(copy)));
   }
   void OnDevToolsAgentDetached(CefRefPtr<CefBrowser>) override {
-    world_=0;loader_.clear();text_owner_.reset();text_lease_.clear();
+    world_=0;contexts_.clear();loader_.clear();text_owner_.reset();text_lease_.clear();
     if(pending_ && call_) Fail("unavailable","The page's inspector connection closed");
   }
 
@@ -100,18 +101,29 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // shortly after the frame that carried it.
   static constexpr int64_t kHoverFrameMs=80;
   static constexpr int64_t kReleaseFrameMs=80;
+  // A drawing path's points are one per frame: pointer moves sent within a
+  // single frame are coalesced, and the page would see only the last.
+  static constexpr int64_t kPathPointMs=16;
   // A started navigation is awaited this long; a slower one is reported as
   // still loading and the caller waits for it.
   static constexpr int64_t kLoadWaitMs=10000;
-  enum class Stage { FrameTree, World, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, Evaluate, GestureBegin, Path, Hover, GestureEnd };
+  enum class Stage { FrameTree, World, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, Evaluate, GestureBegin, Path, Hover, Pointer, GestureEnd };
   struct TextFrame { std::string id,loader;int world=0,document=0;bool same_origin=true; };
   struct Pending {
     int request;uint64_t token;uint64_t navigations;bool retried;
     CefRefPtr<CefDictionaryValue> command;std::string message;bool awaiting_load=false;
     // Where a gesture's two ends are, in the view's space, once it began.
     int from_x=0,from_y=0,to_x=0,to_y=0;int steps=0,step=0;
+    // What the page resolved when a drag began, so a drop nothing took can be
+    // replayed through the page's own drag and drop handlers.
+    CefRefPtr<CefDictionaryValue> drag_fallback;
+    // Whether the page's own CSS reveals something on hover, so the hover is
+    // mirrored where the pointer rests.
+    bool hover_styles=false;
     // A drawing path's points in the view's space, and the one being sent.
     std::vector<std::pair<double,double>> points;size_t point_index=0;bool drawing=false;
+    // Whether a native drag started, and whether the page's source moved.
+    bool dragged=false;
   };
   // Gestures an agent asks for, which start from the page's own layout.
   bool Dragging() const {
@@ -154,7 +166,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // what the pointer changed.
   void BeginGesture() {
     pending_->steps=std::max(1,drag_steps());
-    GesturePage(Stage::GestureBegin,Gesture::Begin);
+    // The page's own CSS decides whether a hover has to be mirrored: a page
+    // whose hover reveals nothing is driven by the browser's pointer alone.
+    auto params=CefDictionaryValue::Create();
+    params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run({action:'need_styles'})");
+    params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("userGesture",false);params->SetBool("silent",true);
+    Call(Stage::Hover,"Runtime.evaluate",params);
   }
   int drag_steps() const {
     return pending_ && pending_->command->HasKey("steps")?static_cast<int>(pending_->command->GetInt("steps")):1;
@@ -164,16 +181,23 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     const double zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());
     return CefPoint(static_cast<int>(std::lround(x*zoom)),static_cast<int>(std::lround(y*zoom)));
   }
+  bool gesture_page(CefRefPtr<CefDictionaryValue> value) const {
+    return value && value->GetType("gesture_page")==VTYPE_BOOL && value->GetBool("gesture_page");
+  }
   void GesturePage(Stage stage,Gesture kind) {
     auto command=CefDictionaryValue::Create();
     const auto& source=pending_->command;
     command->SetInt("doc",document_);
+    command->SetBool("gesture_page",true);
+    // The page mirrors a hover through its own CSS only when that CSS opens
+    // something, which it said before the gesture began.
+    command->SetBool("mirror",pending_->hover_styles);
     const std::string action=kind==Gesture::Begin?"gesture_begin":kind==Gesture::End?"gesture_end"
       :kind==Gesture::Path?"path":Action();
     command->SetString("action",action);
-    if(kind==Gesture::End) command->SetString("kind",Action());
-    for(const char* key:{"element","to"}) if(kind!=Gesture::Begin && source->HasKey(key)) command->SetString(key,source->GetString(key));
-    for(const char* key:{"x","y","to_x","to_y"}) if(kind!=Gesture::Begin && source->HasKey(key)) command->SetDouble(key,Number(source,key));
+    command->SetString("kind",Action());
+    for(const char* key:{"element","to"}) if(source->HasKey(key)) command->SetString(key,source->GetString(key));
+    for(const char* key:{"x","y","to_x","to_y"}) if(source->HasKey(key)) command->SetDouble(key,Number(source,key));
     // A hover's answer is read where the pointer was rested, which the page
     // only learns once its element has a centre.
     if(kind==Gesture::End && Action()=="hover") {
@@ -187,6 +211,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     auto params=CefDictionaryValue::Create();
     params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
     params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("userGesture",false);params->SetBool("silent",true);
+    params->SetBool("awaitPromise",true);
     Call(stage,"Runtime.evaluate",params);
   }
   void Call(Stage stage,const char* method,CefRefPtr<CefDictionaryValue> params) {
@@ -198,6 +223,17 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     call_=0;
     auto parsed=CefParseJSON(json,JSON_PARSER_RFC);
     auto result=parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr;
+    // A script context that answers with neither a result nor an exception has
+    // gone with its document, which happens when a document is replaced while
+    // it is being read. The request is read again in a fresh context, once per
+    // request; a page that moved on still fails as changed.
+    const bool scripted=stage_==Stage::Evaluate || stage_==Stage::GestureBegin || stage_==Stage::Path ||
+      stage_==Stage::Hover || stage_==Stage::Pointer || stage_==Stage::GestureEnd;
+    if(scripted && world_ && (!success || !result || (result->GetType("result")!=VTYPE_DICTIONARY && result->GetType("exceptionDetails")!=VTYPE_DICTIONARY))) {
+      const auto document=contexts_.count(world_)?contexts_[world_]:0;
+      contexts_.erase(world_);world_=0;
+      if(document!=document_ && !pending_->retried) { pending_->retried=true;Begin();return; }
+    }
     // Never execute a nested DevTools method in its result callback; this
     // already runs on a later UI turn.
     if(stage_==Stage::NativeElement || stage_==Stage::NativeDOM || stage_==Stage::NativeDocument ||
@@ -238,7 +274,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         text_frame_=owner;Evaluate();return;
       }
       const auto loader=frame->GetString("loaderId").ToString();
-      if(world_ && loader==loader_) { Evaluate();return; }
+      // A gesture starts from what the page shows now, through the context it
+      // already has; every other request is read through that same context.
+      if(world_ && loader==loader_) { if(Dragging()) { BeginGesture();return; } Evaluate();return; }
       loader_=loader;world_=0;
       auto params=CefDictionaryValue::Create();
       params->SetString("frameId",frame->GetString("id"));params->SetString("worldName","tilo-page-actions");
@@ -261,16 +299,26 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         Fail("unavailable","The page refused a script context");return;
       }
       world_=result->GetInt("executionContextId");
+      // A context belongs to the document it was made in; remember which, so a
+      // request read through a context whose document has gone can be read
+      // again in a fresh one.
       document_=page_documents=page_documents%2147483647+1;
+      contexts_[world_]=document_;
       if(Dragging()) { BeginGesture();return; }
       Evaluate();
-    } else if(stage_==Stage::GestureBegin || stage_==Stage::Hover || stage_==Stage::GestureEnd || stage_==Stage::Path) {
+    } else if(stage_==Stage::Hover || stage_==Stage::Path || stage_==Stage::GestureBegin || stage_==Stage::GestureEnd) {
       auto remote=success && result?result->GetDictionary("result"):nullptr;
       auto value=remote?remote->GetDictionary("value"):nullptr;
       if(!value || value->GetType("ok")!=VTYPE_BOOL) { Fail("script","The page did not return a result");return; }
       if(!value->GetBool("ok")) {
         const auto code=value->GetType("code")==VTYPE_STRING?value->GetString("code").ToString():"script";
         Fail(code.size()<=64?code:std::string("script"),Text(value,"message"));return;
+      }
+      if(stage_==Stage::Hover) {
+        // The stylesheet answer decides whether this page's hover has to be
+        // mirrored, and the gesture resolves its ends next.
+        pending_->hover_styles=value->GetType("need_styles")==VTYPE_BOOL && value->GetBool("need_styles");
+        GesturePage(Stage::GestureBegin,Gesture::Begin);return;
       }
       if(stage_==Stage::GestureBegin) { GestureLanded(value);return; }
       if(stage_==Stage::Path) { StartPath(value);return; }
@@ -355,18 +403,22 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   // Both ends of the gesture, in the view's own space, as the page resolved
   // them: the element's visible centre, or the point the caller gave.
-  static bool GesturePoints(CefRefPtr<CefDictionaryValue> value,CefPoint& from,CefPoint& to) {
+  bool GesturePoints(CefRefPtr<CefDictionaryValue> value,CefPoint& from,CefPoint& to) const {
     const auto read=[&](const char* x,const char* y,CefPoint& point) {
       if(value->GetType(x)!=VTYPE_DOUBLE && value->GetType(x)!=VTYPE_INT) return false;
       point=CefPoint(static_cast<int>(std::lround(Number(value,x))),static_cast<int>(std::lround(Number(value,y))));
       return true;
     };
-    return read("x","y",from) && (!value->HasKey("to_x") || read("to_x","to_y",to));
+    return read("x","y",from) && (Action()!="drag" || read("to_x","to_y",to));
   }
   void GestureLanded(CefRefPtr<CefDictionaryValue> value) {
     // A drawing path resolves its points against the element's box before the
     // pointer moves at all, so it answers with the path and not two ends.
-    if(Action()=="path") { GesturePage(Stage::Path,Gesture::Path);return; }
+    if(Action()=="path") {
+      // A contact path names an element and points, never two ends.
+      if(!gesture_page(value)) {Fail("script","The page did not say where the gesture goes");return; }
+      GesturePage(Stage::Path,Gesture::Path);return;
+    }
     CefPoint from(0,0),to(0,0);
     if(!GesturePoints(value,from,to)) { Fail("script","The page did not say where the gesture goes");return; }
     pending_->from_x=from.x;pending_->from_y=from.y;pending_->to_x=to.x;pending_->to_y=to.y;
@@ -375,11 +427,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       // hover styles and handlers have run before the page is read again.
       MovePointer(from,false);
       CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
-        if(self->pending_ && self->pending_->token==token) self->GesturePage(Stage::Hover,Gesture::End);
+        if(self->pending_ && self->pending_->token==token) self->GesturePage(Stage::GestureEnd,Gesture::End);
       },CefRefPtr<PageAutomation>(this),pending_->token),kHoverFrameMs);
       return;
     }
     PressPointer(from,true);
+    // The page's own two ends for a drag it replays itself, and the element
+    // it left, so that replay starts from the element the agent named.
+    pending_->drag_fallback=value->Copy(true);
     pending_->step=0;
     CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->DragStep(); },CefRefPtr<PageAutomation>(this)));
   }
@@ -402,23 +457,39 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     MovePointer(end,true);
     const bool native=drag_data_!=nullptr;
     if(native) DropDrag(end);
+    pending_->dragged=native;
     // The person's button comes up where the drop happened, so the page sees
     // the release it would see from a hand.
     PressPointer(end,false);
-    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token,bool native) {
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
       if(!self->pending_ || self->pending_->token!=token) return;
-      // A page whose drag source never asked for a native drag is replayed
-      // through its own drag and drop events, at the same two points.
-      if(native) self->GesturePage(Stage::GestureEnd,Gesture::End);
-      else self->DragFallback();
-    },CefRefPtr<PageAutomation>(this),pending_->token,native),kReleaseFrameMs);
+      // Where the source is still in place nothing took the drop, so the page's
+      // own drag and drop handlers are replayed at the same two points.
+      self->DragFallback();
+    },CefRefPtr<PageAutomation>(this),pending_->token),kReleaseFrameMs);
   }
+  // The drop the page replayed itself, over the same two ends, so its own
+  // dragstart, dragover and drop handlers move what a person's drag would.
   void DragFallback() {
     auto command=CefDictionaryValue::Create();
-    const auto& source=pending_->command;
     command->SetInt("doc",document_);command->SetString("action","drag_fallback");
-    for(const char* key:{"element","to"}) if(source->HasKey(key)) command->SetString(key,source->GetString(key));
-    for(const char* key:{"x","y","to_x","to_y"}) if(source->HasKey(key)) command->SetDouble(key,Number(source,key));
+    // The native drop may already have moved the source; the page is told so it
+    // does not move it a second time.
+    command->SetBool("native",pending_->dragged);
+    // The element the drag left, and the one it was dropped on, resolved by the
+    // page itself when the gesture began.
+    const auto& begin=pending_->drag_fallback;
+    const auto ref=[&](const char* key,const char* fallback) {
+      if(begin->GetType(key)==VTYPE_STRING) return begin->GetString(key).ToString();
+      return begin->GetType(fallback)==VTYPE_STRING?begin->GetString(fallback).ToString():std::string();
+    };
+    const auto source=ref("from","element"),target=ref("to","to_target");
+    if(!source.empty()) command->SetString("element",source);
+    if(!target.empty()) command->SetString("to",target);
+    // The ends the engine's pointer actually used, in the view's space.
+    const double zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());
+    command->SetDouble("x",pending_->from_x/zoom);command->SetDouble("y",pending_->from_y/zoom);
+    command->SetDouble("to_x",pending_->to_x/zoom);command->SetDouble("to_y",pending_->to_y/zoom);
     auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
     auto params=CefDictionaryValue::Create();
     params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
@@ -448,14 +519,18 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     pending_->points=std::move(path);pending_->point_index=0;pending_->drawing=true;
     const auto& first=pending_->points.front();
     PressPointer(CefPoint(static_cast<int>(std::lround(first.first)),static_cast<int>(std::lround(first.second))),true);
-    CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->PathStep(); },CefRefPtr<PageAutomation>(this)));
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->PathStep(); },CefRefPtr<PageAutomation>(this)),kPathPointMs);
   }
   static bool ReadPoints(CefRefPtr<CefListValue> points,std::vector<std::pair<double,double>>& out) {
     if(!points || points->GetSize()<2 || points->GetSize()>1024) return false;
     for(size_t i=0;i<points->GetSize();++i) {
       auto pair=points->GetType(i)==VTYPE_LIST?points->GetList(i):nullptr;
       if(!pair || pair->GetSize()!=2) return false;
-      const double x=pair->GetDouble(0),y=pair->GetDouble(1);
+      // A whole number arrives as an int; a fractional one as a double.
+      const auto coordinate=[&](size_t i) { return pair->GetType(i)==VTYPE_DOUBLE?pair->GetDouble(i):static_cast<double>(pair->GetInt(i)); };
+      if((pair->GetType(0)!=VTYPE_DOUBLE && pair->GetType(0)!=VTYPE_INT) ||
+         (pair->GetType(1)!=VTYPE_DOUBLE && pair->GetType(1)!=VTYPE_INT)) return false;
+      const double x=coordinate(0),y=coordinate(1);
       if(!std::isfinite(x) || !std::isfinite(y)) return false;
       out.emplace_back(x,y);
     }
@@ -467,7 +542,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(++pending_->point_index<pending_->points.size()) {
       const auto& point=pending_->points[pending_->point_index];
       MovePointer(CefPoint(static_cast<int>(std::lround(point.first)),static_cast<int>(std::lround(point.second))),true);
-      CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->PathStep(); },CefRefPtr<PageAutomation>(this)));
+      CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->PathStep(); },CefRefPtr<PageAutomation>(this)),kPathPointMs);
       return;
     }
     const auto& last=pending_->points.back();
@@ -486,6 +561,28 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     d->SetString("type",type);d->SetBool("down",down);
     d->SetDouble("x",point.x);d->SetDouble("y",point.y);
     pointer_(d);
+    // The page's `:hover` styles follow the browser's own pointer, which an
+    // isolated world cannot move, so the page is told where it came to rest:
+    // over the element the button is held on, or nowhere once it came up.
+    RestPointer(down ? point : CefPoint(-1,-1));
+  }
+  // Tell the page where the pointer rests. Only a hover or a drag rests it:
+  // every other action leaves the page as it was.
+  void RestPointer(CefPoint point) {
+    auto command=CefDictionaryValue::Create();
+    command->SetString("action","pointer_rest");
+    // Only a hover or a drag rests the page's pointer; a path draws with the
+    // engine's own contact, and no other action moves the page at all.
+    if(Action()!="hover" && Action()!="drag") return;
+    const double zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());
+    if(point.x>=0 && point.y>=0) { command->SetDouble("x",point.x/zoom);command->SetDouble("y",point.y/zoom); }
+    else command->SetBool("nowhere",true);
+    auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
+    auto params=CefDictionaryValue::Create();
+    params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
+    params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("userGesture",false);params->SetBool("silent",true);
+    params->SetBool("awaitPromise",true);
+    Call(Stage::Pointer,"Runtime.evaluate",params);
   }
   void GestureFinished(CefRefPtr<CefDictionaryValue> value) {
     const auto action=Action();
@@ -504,6 +601,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     for(const char* key:{"quiet_ms","timeout_ms"}) if(pending_->command->HasKey(key)) command->SetInt(key,pending_->command->GetInt(key));
     if(pending_->command->HasKey("expires_ms")) command->SetDouble("expires_ms",Number(pending_->command,"expires_ms"));
     if(pending_->command->HasKey("values")) command->SetList("values",pending_->command->GetList("values")->Copy());
+    // A gesture names its far end and a path its points; the page resolves both.
+    if(pending_->command->HasKey("to")) command->SetString("to",pending_->command->GetString("to"));
+    if(pending_->command->HasKey("to_x") && pending_->command->HasKey("to_y")) {
+      command->SetDouble("to_x",Number(pending_->command,"to_x"));command->SetDouble("to_y",Number(pending_->command,"to_y"));
+    }
+    if(pending_->command->HasKey("points")) command->SetList("points",pending_->command->GetList("points")->Copy());
     auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
     auto params=CefDictionaryValue::Create();
     params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
@@ -600,7 +703,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   std::optional<Pending> pending_;Stage stage_=Stage::FrameTree;int call_=0;
   std::vector<TextFrame> text_candidates_;TextFrame text_frame_;std::optional<TextFrame> text_owner_;std::string text_lease_;
   bool native_attempted_=false;std::string native_object_;
-  int world_=0,document_=0;std::string loader_;uint64_t token_=0,navigations_=0;
+  int world_=0,document_=0;std::map<int,int> contexts_;std::string loader_;uint64_t token_=0,navigations_=0;
   IMPLEMENT_REFCOUNTING(PageAutomation);
 };
 }

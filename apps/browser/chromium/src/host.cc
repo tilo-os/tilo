@@ -1420,9 +1420,10 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     const auto action=d->GetString("action").ToString();
     if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="press" && action!="submit" &&
        action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" && action!="reader" &&
-       action!="hover" && action!="drag" && action!="path")return false;
+       action!="hover" && action!="drag" && action!="path" && action!="pointer_rest")return false;
     const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
-      action=="console" || action=="network" || action=="reader" || action=="hover" || action=="drag" || action=="path";
+      action=="console" || action=="network" || action=="reader" || action=="hover" || action=="drag" || action=="path" ||
+      action=="pointer_rest";
     if((action=="reader")!=d->HasKey("enabled") || (d->HasKey("enabled") && !type("enabled",VTYPE_BOOL)))return false;
     if(d->HasKey("element") ? !type("element",VTYPE_STRING) || d->GetString("element").empty() || d->GetString("element").length()>64
                             : !elementless)return false;
@@ -1441,6 +1442,9 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
       if(!type("key",VTYPE_STRING) || d->GetString("key").empty() || d->GetString("key").length()>16)return false;
       for(const char* flag:{"ctrl","shift","alt","meta"})if(!type(flag,VTYPE_BOOL))return false;
     }
+    // Where the engine's own pointer came to rest, so the page's hover
+    // styles follow it; the engine sends it, the action door never does.
+    if(action=="pointer_rest") return (d->HasKey("x") && d->HasKey("y"));
     if(action=="hover" || action=="drag") {
       // One end of a gesture either names an element or gives its point.
       if(d->HasKey("x")!=d->HasKey("y") || d->HasKey("to_x")!=d->HasKey("to_y"))return false;
@@ -1462,7 +1466,8 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
       const bool relative=d->HasKey("element");
       for(size_t i=0;i<points->GetSize();++i) {
         auto pair=points->GetType(i)==VTYPE_LIST?points->GetList(i):nullptr;
-        if(!pair || pair->GetSize()!=2 || pair->GetType(0)!=VTYPE_DOUBLE || pair->GetType(1)!=VTYPE_DOUBLE)return false;
+        auto scalar=[](CefRefPtr<CefValue> v){return v->GetType()==VTYPE_DOUBLE || v->GetType()==VTYPE_INT;};
+        if(!pair || pair->GetSize()!=2 || !scalar(pair->GetValue(0)) || !scalar(pair->GetValue(1)))return false;
         const double x=pair->GetDouble(0),y=pair->GetDouble(1);
         if(!std::isfinite(x) || !std::isfinite(y))return false;
         if(relative ? std::abs(x)>100000 || std::abs(y)>100000 : x<0 || y<0 || x>100000 || y>100000)return false;

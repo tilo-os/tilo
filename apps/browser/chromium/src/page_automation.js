@@ -43,6 +43,103 @@ globalThis.__tiloPage ||= (() => {
   const MAX_REVEAL_LINES = 40, MAX_DRAG_STEPS = 64;
   // The outline a gesture started from, so its answer says what it changed.
   let gestureBefore = null;
+  // Where the engine's pointer came to rest, so styles that depend on a
+  // real hover (not just a class) are applied where it now is.
+  let pointerAt = null;
+  // The markers applied for the last rest, so the page's own class names are
+  // put back exactly as they were once the pointer leaves them.
+  let marked = [];
+  // Whether the current gesture's page opens something on `:hover`, so the
+  // pointer's rest has to be mirrored through the page's own style sheets.
+  let gestureMirror = false;
+  // Whether the page's own drag and drop handlers took a drop while the
+  // engine's pointer was dragging, which is what moves the source natively.
+  let nativeDrop = false;
+  let dropWatch = null;
+  const MAX_POINTER_STYLES = 4000;
+  // The class the page's own sheets never use: a resting pointer puts it on
+  // the elements it is over, and a hover-only rule reads `:hover` as it.
+  const MARKER = '__tilo-hover__';
+  const COMPOUND = new RegExp('[\\s>+~]');
+
+  // `:hover` depends on the browser's own pointer position, which the
+  // isolated world cannot move. While a gesture rests or drags the pointer,
+  // each rule that applies only on hover is applied at the element the
+  // pointer is over and along its ancestors, and removed again once the
+  // pointer moves elsewhere, so a menu opens and closes as it would for a
+  // person. Nothing is applied for a page without hover rules or for a
+  // pointer that is not resting anywhere. The marker class the outline looks
+  // for follows the same chain.
+  function restPointer(x, y, tour) {
+    if (x === null) { hoverStyles([]); mark(null); pointerAt = null; return null; }
+    let hit = topmost(x, y);
+    const chain = [];
+    for (; hit && chain.length < 10000; hit = hit.parentElement || hit.getRootNode()?.host) chain.push(hit);
+    pointerAt = {x, y, chain};
+    if (tour) hoverStyles(chain);
+    mark(chain);
+    return pointerAt;
+  }
+  // The marker class the <style> sheets already contain, on the elements the
+  // pointer now rests over: a hover-only rule lists it as its trigger.
+  function mark(chain) {
+    for (const [element, added] of marked)
+      if (added) element.classList.remove(MARKER);
+      else element.classList.add(MARKER);
+    marked = [];
+    for (const element of chain || []) {
+      if (!element.classList) continue;
+      // A page that already uses the marker keeps its own class.
+      marked.push([element, !element.classList.contains(MARKER)]);
+      element.classList.add(MARKER);
+    }
+  }
+  function hoverStyles(chain) {
+    const wanted = new Set(chain);
+    let seen = 0;
+    for (const sheet of document.styleSheets) {
+      let rules = null;
+      try { rules = sheet.cssRules; } catch (error) { rules = null; }
+      if (!rules) continue;
+      for (const rule of rules) {
+        if (++seen > MAX_POINTER_STYLES) return;
+        const selector = rule.selectorText;
+        if (!selector || !selector.includes(':hover')) continue;
+        const trigger = hoverTrigger(selector);
+        if (!trigger) continue;
+        const plain = selector.replace(/:hover(?![\w-])/g, '');
+        for (const element of wanted) {
+          let matched = false;
+          try { matched = element.matches(trigger); } catch (error) { matched = false; }
+          if (!matched) continue;
+          try { applyHoverRule(element, plain); } catch (error) { /* a hostile sheet */ }
+        }
+      }
+    }
+  }
+  // The rule's declarations, taken from a rule the sheet already parsed for
+  // the element without its `:hover`, inlined into a per-element <style>.
+  function applyHoverRule(element, plain) {
+    let style = element.__tiloHoverStyle;
+    if (!style || !style.isConnected) {
+      style = document.createElement('style');
+      style.setAttribute('data-tilo-pointer', '');
+      element.__tiloHoverStyle = style;
+      element.parentNode?.insertBefore(style, element);
+    }
+    const declarations = [];
+    for (const sheet of document.styleSheets) {
+      let rules = null;
+      try { rules = sheet.cssRules; } catch (error) { rules = null; }
+      if (!rules) continue;
+      for (const rule of rules) {
+        if (rule.selectorText && rule.selectorText.includes(':hover') &&
+            rule.selectorText.replace(/:hover(?![\w-])/g, '') === plain)
+          declarations.push(`${plain}{${rule.style.cssText}}`);
+      }
+    }
+    style.textContent = declarations.join('');
+  }
 
   const clean = (text, limit) => {
     const value = String(text ?? '').replace(/\s+/g, ' ').trim();
@@ -149,7 +246,9 @@ globalThis.__tiloPage ||= (() => {
     // An element named only to be found again by its own words.
     if (options && options.naming) text = clean(element.innerText ?? element.textContent, MAX_NAME) || clean(element.title, MAX_NAME);
     if (text) return text;
-    if (NAMED_FROM_CONTENT.has(kind)) {
+    // An element with no name of its own takes the words it shows: the
+    // trigger a hover opens a menu with, a draggable row, a drawing surface.
+    if (NAMED_FROM_CONTENT.has(kind) || kind === 'hint' || kind === 'draggable' || kind === 'canvas') {
       text = clean(element.innerText, MAX_NAME) || clean([...element.querySelectorAll('img[alt],[aria-label],svg title')]
         .map(part => part.getAttribute('alt') || part.getAttribute('aria-label') || part.textContent).join(' '), MAX_NAME);
       if (text) return text;
@@ -194,7 +293,12 @@ globalThis.__tiloPage ||= (() => {
     return out;
   }
   function summary(element, options) {
-    const kind = role(element) || element.localName, label = name(element, kind, options);
+    // An element's own role names it; a bare element is named by what it
+    // does with the words inside it, which is all an agent needs to act.
+    const own = role(element);
+    const kind = own || (element.getAttribute('draggable') === 'true' ? 'draggable'
+      : element.localName === 'canvas' ? 'canvas' : element.localName);
+    const label = name(element, kind, options);
     return label ? `${kind} ${quote(label)}` : kind;
   }
 
@@ -204,6 +308,16 @@ globalThis.__tiloPage ||= (() => {
   // sheet, and rebuilt per outline so a changed page is read as it is.
   const MAX_HOVER_RULES = 4000, MAX_HOVER_TARGETS = 2000;
   let hoverTargets = null;
+  // The compound a person hovers to open what a rule reveals: the part of the
+  // selector that carries `:hover`, with it read as the marker class the
+  // pointer adds. A rule names what it opens after that compound
+  // (`.menu:hover ul`), so the trigger is not the rule's last compound.
+  function hoverTrigger(selector) {
+    if (typeof selector !== 'string') return '';
+    for (const part of selector.replace(/:hover(?![\w-])/g, '.' + MARKER).split(COMPOUND))
+      if (part.includes(MARKER)) return part;
+    return '';
+  }
   function markHoverTargets() {
     hoverTargets = new Set();
     let seen = 0;
@@ -212,28 +326,40 @@ globalThis.__tiloPage ||= (() => {
       try { rules = sheet.cssRules; } catch (error) { rules = null; }
       if (!rules) continue;
       for (const rule of rules) {
-        if (++seen > MAX_HOVER_RULES) return;
-        const selector = rule.selectorText;
-        if (!selector || !selector.includes(':hover')) continue;
-        let matched = [];
-        try { matched = document.querySelectorAll(selector.replace(/:hover(?![\w-])/g, '.__tilo-hover__')); }
-        catch (error) { matched = []; }
-        for (const element of matched) {
-          if (hoverTargets.size >= MAX_HOVER_TARGETS) return;
+        if (seen++ > MAX_HOVER_RULES) return hoverTargets.size;
+        const trigger = hoverTrigger(rule.selectorText);
+        if (!trigger) continue;
+        // The marker is what a resting pointer puts on the element; it is
+        // borrowed here to read which elements a hover would land on.
+        const bare = trigger.split('.' + MARKER).join('');
+        if (!bare) continue;
+        for (const element of document.querySelectorAll('*')) {
+          let beside = false;
+          try { beside = element.matches(bare); } catch (error) { beside = false; }
+          if (!beside) continue;
+          const had = element.classList.contains(MARKER);
+          if (!had) element.classList.add(MARKER);
+          let wanted = false;
+          try { wanted = element.matches(trigger); } catch (error) { wanted = false; }
+          if (!had) element.classList.remove(MARKER);
+          if (!wanted) continue;
+          if (hoverTargets.size >= MAX_HOVER_TARGETS) return hoverTargets.size;
           hoverTargets.add(element);
         }
       }
     }
+    return hoverTargets.size;
   }
   // The element on which a hover opens something: itself when a rule names
-  // it, else the parent whose rule opened a child that starts hidden.
+  // it, an ancestor when the rule hovers one, else the parent whose hovered
+  // trigger opened a child that starts hidden. Words inside a trigger are the
+  // trigger's own, so a hover over them opens what the trigger opens.
   function hoverReveals(element) {
     if (!hoverTargets) markHoverTargets();
-    if (hoverTargets.has(element)) return true;
-    if (element.localName === 'canvas') return false;
-    for (const parent of [element, element.parentElement]) {
-      if (!parent) continue;
-      for (const child of parent.children) {
+    let depth = 0;
+    for (let node = element; node && depth++ < 16; node = node.parentElement) {
+      if (hoverTargets.has(node)) return true;
+      for (const child of node.children) {
         if (hoverTargets.has(child) && !child.checkVisibility?.()) return true;
       }
     }
@@ -434,16 +560,17 @@ globalThis.__tiloPage ||= (() => {
       if (block) flush();
       const pointer = style.cursor === 'pointer';
       let kind = visible ? role(element) : '';
-      if (!kind && visible && !context.inside && tag !== 'label' && tag !== 'body' && tag !== 'html' &&
-          (element.hasAttribute('onclick') || (element.hasAttribute('tabindex') && element.tabIndex >= 0) ||
-           (pointer && !context.pointer))) kind = 'clickable';
       // A hover-only menu's trigger has no role of its own, no click and no
       // pointer cursor; it is found only by the rule its hover applies to.
       if (!kind && visible && !context.inside && tag !== 'body' && tag !== 'html' && hoverReveals(element))
         kind = 'hint';
+      if (!kind && visible && !context.inside && tag !== 'label' && tag !== 'body' && tag !== 'html' &&
+          (element.hasAttribute('onclick') || (element.hasAttribute('tabindex') && element.tabIndex >= 0) ||
+           (pointer && !context.pointer))) kind = 'clickable';
+      // A thing a gesture acts on is named for that gesture before the role
+      // its element carries, so a list row that is dragged is not just a row.
       if (tag === 'canvas' && visible && !context.inside) kind = 'canvas';
-      if (!kind && visible && !context.inside && element.getAttribute('draggable') === 'true')
-        kind = 'draggable';
+      else if (visible && !context.inside && element.getAttribute('draggable') === 'true') kind = 'draggable';
       // A bound label's words are its control's name; listing them again is noise.
       const inner = {inside: context.inside || (tag === 'label' && !!element.control), pointer, visible};
       if (kind === 'img' || kind === 'iframe' || kind === 'canvas') {
@@ -1093,14 +1220,15 @@ globalThis.__tiloPage ||= (() => {
     return {accepted, started, removed, native: false};
   }
   // A source that left the document was moved by its page's own handler.
-  function transferred(source) { return !source.isConnected; }
+  function transferred(source) { return !source || !source.isConnected; }
 
   // What a gesture changed, as lines added to and removed from the outline.
   function gestureResult(before, message, data) {
     const after = revealDelta(before);
     const changed = after.revealing || (data && data.removed);
     return {ok: true, message: changed ? `${message}; ${after.note}` : message,
-      outline: after.revealing ? after.added.join('\n') : undefined, data: {...data, changed: !!changed, added: after.added}};
+      outline: after.revealing ? after.added.map(line => '+ ' + line.trimStart()).join('\n') : undefined,
+      data: {...data, changed: !!changed, added: after.added}};
   }
   // Answer a hover: what the pointer is over once it has rested there, and
   // what the hover revealed.
@@ -1116,10 +1244,13 @@ globalThis.__tiloPage ||= (() => {
   // The pointer reached the element it was sent to; the page's own hover
   // styles and handlers do the rest.
   function hoveredAt(element, x, y, before) {
-    const hit = topmost(x, y);
+    // The answer is read where the pointer was rested; the engine's own last
+    // point is the truth when it moved the pointer before asking.
+    const at = pointerAt || {x, y};
+    const hit = topmost(at.x, at.y);
     if (element && !within(hit, resolve(element)))
-      return gestureResult(before, `${element} is covered by ${describe(hit)}`, {x, y, hover: describe(hit), obscured: true});
-    return hovered(x, y, before);
+      return gestureResult(before, `${element} is covered by ${describe(hit)}`, {x: at.x, y: at.y, hover: describe(hit), obscured: true});
+    return hovered(at.x, at.y, before);
   }
 
   // The source a drag starts from: the element's own viewport point and the
@@ -1136,17 +1267,60 @@ globalThis.__tiloPage ||= (() => {
         if (!doc) doc = command.doc;
         // A gesture that spans two engine steps: read what is about to
         // change, let the pointer do its work, then answer with the change.
-        if (command.action === 'gesture_begin') gestureBefore = {lines: outlineLines().lines, reveals: new Map()};
+        if (command.action === 'gesture_begin') {
+          gestureBefore = {lines: outlineLines().lines, reveals: new Map()};
+          gestureMirror = command.mirror === true;
+          if (command.kind === 'drag') {
+            nativeDrop = false;
+            dropWatch = () => { nativeDrop = true; };
+            document.addEventListener('drop', dropWatch, true);
+          }
+          // The ends the engine's pointer will travel between, resolved before
+          // it moves: an element's own point, or the points the caller gave.
+          const end = (ref, x, y, verb) => {
+            const at = landing(ref, x, y, verb);
+            return {x: at.x, y: at.y, element: at.element};
+          };
+          if (command.kind === 'hover' || command.kind === 'drag' || command.kind === 'path') {
+            // A path names one element and draws in its own box, so only a
+            // hover or a drag has two ends to resolve here.
+            const from = command.kind === 'path'
+              ? {x: 0, y: 0, element: resolve(command.element)}
+              : end(command.element, command.x, command.y, command.kind === 'hover' ? 'hover' : command.kind);
+            const answer = {ok: true, gesture_page: true, x: from.x, y: from.y,
+              from: from.element ? refOf(from.element) : undefined};
+            if (command.kind === 'drag') {
+              const to = end(command.to, command.to_x, command.to_y, 'drop on');
+              answer.to_x = to.x; answer.to_y = to.y;
+              answer.to_target = to.element ? refOf(to.element) : undefined;
+            }
+            return answer;
+          }
+        }
+        // The engine rests its pointer, presses it or lets it go: the page's
+        // hover styles follow where it is, as they would for a person's.
+        if (command.action === 'pointer_rest')
+          return {ok: true, rested: !!restPointer(command.nowhere ? null : command.x, command.y, gestureMirror)};
         if (command.action === 'gesture_end') {
           const before = gestureBefore || {lines: [], reveals: new Map()};
           gestureBefore = null;
+          // The button came up; nothing reveals more, so nothing stays applied.
+          restPointer(null);
+          pointerAt = null;
           if (command.kind === 'hover') return hoveredAt(command.element, command.x, command.y, before);
-          return gestureResult(before, command.message || (command.kind === 'path' ? 'Drew the pointer path' : 'Dragged'), {});
+          // A drag answers through its replay; only a hover or a path comes back
+          // here, with the one end the pointer rested at.
+          if (command.kind === 'path') return gestureResult(before, command.message || 'Drew the pointer path', {});
+          return gestureResult(before, command.message || 'Dragged', {});
         }
         switch (command.action) {
           case 'prepare_text_input': case 'start_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input': case 'undo_text_input': case 'redo_text_input':
             return guardedTextInput(command);
           case 'outline': return outline();
+          // The engine mirrors a hover through the page's CSS only when that
+          // CSS opens something on hover; otherwise the browser's own pointer
+          // is enough and nothing is applied.
+          case 'need_styles': { const n = markHoverTargets(); return {ok: true, need_styles: n > 0, doc: typeof doc === 'number' ? doc : command.doc}; }
           case 'changes': return changes();
           case 'at': return at(command.x, command.y);
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
@@ -1159,32 +1333,45 @@ globalThis.__tiloPage ||= (() => {
           // The engine moves the pointer to a point computed here.
           case 'hover': {
             const end = landing(command.element, command.x, command.y, 'hover');
-            return {x: end.x, y: end.y};
+            return {ok: true, x: end.x, y: end.y};
           }
           // The engine presses at one end, moves and releases at the other.
           case 'drag': {
             const from = dragEnd(command.element, command.x, command.y, 'drag');
             const to = dragEnd(command.to, command.to_x, command.to_y, 'drop on');
-            return {x: from.x, y: from.y, to_x: to.x, to_y: to.y};
+            return {ok: true, x: from.x, y: from.y, to_x: to.x, to_y: to.y,
+              from: from.element ? refOf(from.element) : undefined, to_target: to.element ? refOf(to.element) : undefined};
           }
-          // A drag the native path could not complete, replayed as drag
-          // events between the same two ends.
+          // A drag the engine's pointer could not complete natively, replayed
+          // as the page's own drag and drop events between the same two ends.
           case 'drag_fallback': {
             const from = dragEnd(command.element, command.x, command.y, 'drag');
             const to = dragEnd(command.to, command.to_x, command.to_y, 'drop on');
             const target = topmost(to.x, to.y) || document.body;
-            const report = syntheticDrag({x: to.x, y: to.y, element: from.element}, target);
+            // A native drop that already moved the source did the page's own
+            // work; replaying its events would move it twice.
+            const moved = command.native === true && nativeDrop;
+            if (dropWatch) { document.removeEventListener('drop', dropWatch, true); dropWatch = null; }
+            nativeDrop = false;
+            const report = moved ? {accepted: true, started: true, removed: true, replayed: false}
+              : syntheticDrag({x: to.x, y: to.y, element: from.element}, target);
+
             const before = gestureBefore || {lines: [], reveals: new Map()};
             gestureBefore = null;
             const said = `Dragged ${from.element ? describe(from.element) : 'the pointer'} to ${describe(target)}`;
+            const data = {...report, from: describe(from.element), to: describe(target), native: false};
+            // A page that received no drop did not reorder; say so instead of
+            // reporting a drag it never took.
             if (!report.accepted)
-              return gestureResult(before, `Dropped on ${describe(target)}, which received no drop`, {...report});
-            return gestureResult(before, said, {...report, from: describe(from.element), to: describe(target)});
+              return failure('no_drop', `${said}, which received no drop; the page takes drags only from its own drag events`);
+            return gestureResult(before, said, data);
           }
+          // Where the engine's pointer is; the page's hover styles follow it.
+          case 'pointer_rest': return {ok: true, rested: false};
           // A contact path for the engine's pointer, in viewport pixels.
           case 'path': {
             const {points} = contactPath(command.element, command.points || []);
-            return {points, message: `Drawing ${points.length} points on ${command.element}`};
+            return {ok: true, points, message: `Drawing ${points.length} points on ${command.element}`};
           }
           // A contact path the engine cannot send, replayed as pointer events.
           case 'path_fallback': {
