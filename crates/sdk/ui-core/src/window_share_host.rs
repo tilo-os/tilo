@@ -327,6 +327,7 @@ mod tests {
             title: "Plan".into(),
             record: record.into(),
             kind: "notes.workspace".into(),
+            item: None,
         }
     }
 

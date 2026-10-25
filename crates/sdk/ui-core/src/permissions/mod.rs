@@ -365,6 +365,21 @@ impl PermissionContext {
         Self::member(LOCAL_USER, Role::Owner).acting_as(subject, grants)
     }
 
+    /// This person, as their room told them it permits `kinds` at
+    /// `relative` (a path below the room): what a share of one item gave
+    /// them, mirrored so their window lets them do what the room keeps.
+    /// The room still decides every change.
+    #[must_use]
+    pub fn permitted_at(self, relative: &TreePath, kinds: policy::KindSet) -> Self {
+        let grant = local_grant(
+            policy::Subject::Person(self.user.0.clone()),
+            relative,
+            kinds,
+            None,
+        );
+        self.with_grant(grant)
+    }
+
     #[must_use]
     pub fn with_grant(mut self, grant: policy::Grant) -> Self {
         Arc::make_mut(&mut self.standing).policy.grants.push(grant);
