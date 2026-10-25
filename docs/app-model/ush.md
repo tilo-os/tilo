@@ -414,6 +414,38 @@ Tilo ships no signature database, and this runtime does not provide one.
   `/var/lib/ush/quarantine` with its executable bits cleared, so the original
   path stops resolving. No file is moved there automatically.
 
+## `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`, `truncate` — actions, not syscalls
+
+These are the guest's own verbs, under the names the person already types.
+Each invocation is parsed into one typed action, planned against the tree as
+it is, checked against the environment's grants **as a whole** — so a command
+with forty operands is allowed or refused in one piece, never half done — and
+then carried out by the supervisor, which is the only side that can read the
+record. It is recorded in the audit log and in the environment's recoverable
+history, and `undo file-action ID` takes it back:
+
+```
+$ rm ~/src/notes.md
+done (1 operation); `undo file-action 1793051200-000` puts it back
+$ undo file-action 1793051200-000
+undid 1793051200-000 (1 operation)
+```
+
+Nothing is unlinked. `rm` renames the path into `/var/lib/tilo-recoverable`
+under the environment's own `/var`, an overwrite moves the previous contents
+aside the same way, and `rmdir` only ever removes an empty directory, so undo
+recreates it. `rm -f` is the one action that really removes — callers name it
+to the person before it runs, and undoing it has nothing to put back.
+
+`ush history` lists what was removed or replaced, newest first. A flag this
+runtime does not implement (`-i`, `-a`, `-L`, `--preserve`) is refused by name
+rather than quietly ignored, so a script that relied on it fails loudly
+instead of losing data quietly.
+
+Outside a guest the same verbs run in the host's own shell, where there is no
+environment record to check: the person's permissions are the only bound, and
+the history lives in `~/.local/share/ush/recoverable`.
+
 ## Commands
 
 ```
@@ -426,6 +458,8 @@ perm list            perm revoke ID
 scan PATH            guard status
 quarantine list | add PATH | restore PATH
 restart
+cp …  mv …  rm …  mkdir …  rmdir …  ln …  truncate …   one action each
+history [--json]     undo file-action ID
 tilo …  app …  store …  system …      brokered to the host session
 ```
 

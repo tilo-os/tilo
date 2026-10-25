@@ -105,6 +105,16 @@ pub enum Request {
         args: Vec<String>,
         cwd: PathBuf,
     },
+    /// One file action (`cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`,
+    /// `truncate`) checked against the environment's grants and carried out
+    /// on the host's filesystem, which is what the guest's grants bind.
+    FileAction {
+        action: crate::file_actions::FileAction,
+    },
+    /// Undo one invocation by the id the answer to it carried.
+    UndoFileAction {
+        id: String,
+    },
 }
 
 /// What the broker answers.
@@ -130,6 +140,17 @@ pub enum Response {
     },
     Perms {
         entries: Vec<PermEntry>,
+    },
+    /// The file action ran; `id` names its entry in the recoverable history,
+    /// which `undo file-action ID` takes.
+    FileAction {
+        id: String,
+        operations: usize,
+    },
+    /// Undo put the tree back.
+    Undone {
+        id: String,
+        operations: usize,
     },
     Check {
         allowed: bool,
@@ -371,6 +392,9 @@ impl NetworkStatus {
 /// The environment a session was built from, and the way back to its record.
 #[derive(Debug, Clone)]
 pub struct EnvironmentHandle {
+    /// The environment's own `/var` state, as the guest sees it bound at
+    /// `/var/lib` and `/var/cache` — where its recoverable history lives.
+    pub var_dir: PathBuf,
     pub records: Records,
     pub key: String,
     /// The record as the session was built from it.
@@ -392,7 +416,7 @@ impl EnvironmentHandle {
         }
     }
 
-    fn policy(&self) -> Policy {
+    pub fn policy(&self) -> Policy {
         Policy::new(self.current().grants)
     }
 }
@@ -493,6 +517,8 @@ impl BrokerState {
                 Response::Ok
             }
             Request::LegacyLaunch { app, args, cwd } => self.legacy_launch(&app, args, &cwd),
+            Request::FileAction { action } => crate::file_actions::brokered(self, &action),
+            Request::UndoFileAction { id } => crate::file_actions::brokered_undo(self, &id),
         }
     }
 
@@ -1851,7 +1877,7 @@ pub fn ask_streaming_with_progress(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Ask the broker for its status from another thread: the answer comes
@@ -1870,11 +1896,11 @@ mod tests {
 
     use tilo_environment::DEFAULT_RECORD;
 
-    fn state(dir: &Path) -> BrokerState {
+    pub(crate) fn state(dir: &Path) -> BrokerState {
         state_with(dir, Arc::new(tilo_environment::NoToolBuilder))
     }
 
-    fn state_with(dir: &Path, builder: Arc<dyn ToolBuilder>) -> BrokerState {
+    pub(crate) fn state_with(dir: &Path, builder: Arc<dyn ToolBuilder>) -> BrokerState {
         let records = Records::at(dir.join("records"));
         let built_from = records
             .create(
@@ -1885,6 +1911,7 @@ mod tests {
         BrokerState {
             session_id: "s1".into(),
             environment: EnvironmentHandle {
+                var_dir: dir.join("var"),
                 records,
                 key: DEFAULT_RECORD.into(),
                 built_from,
