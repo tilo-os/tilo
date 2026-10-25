@@ -126,4 +126,4 @@ messages-deliver-message = Delivered a message from { $from }
 messages-send-message = Queued a message to { $to }
 messages-reply = Queued a reply
 
-messages-conversation-with = Conversation with {$person}
+messages-conversation-with = Conversation with { $person }
