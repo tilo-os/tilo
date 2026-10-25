@@ -2797,3 +2797,39 @@ fn the_places_reach_the_sidebar_without_a_paint() {
         "the Timeline is a row"
     );
 }
+
+/// A photo that fails to open offers another by name, and on a phone-wide
+/// window the bar keeps the way back to the library.
+#[test]
+fn a_failed_photo_offers_another_and_the_way_back_to_the_library() {
+    fn names(node: &ui::a11y::AccessNode) -> Vec<String> {
+        node.name
+            .iter()
+            .cloned()
+            .chain(node.children.iter().flat_map(names))
+            .collect()
+    }
+    let mut app = test_app();
+    let mut doc = crate::test_doc::new_doc();
+    stage(&mut app, &mut doc, "error");
+    sync(&mut app, &mut doc);
+    settle(&mut app, &mut doc);
+    sync(&mut app, &mut doc);
+    let empty = app.empty_state.as_ref().expect("the failure is shown");
+    let node = Widget::accessibility(empty).expect("the failure is described");
+    assert!(
+        names(&node).iter().any(|name| name == "Open another photo"),
+        "{:?}",
+        names(&node)
+    );
+    let (_shell, link) = laid_out_shell(420.0);
+    app.chrome.bar = Some(link);
+    lay_out_header(&mut app, 420.0);
+    assert!(
+        app.window_bar()
+            .leading
+            .iter()
+            .any(|action| action.id == format!("{:?}", Hit::Library)),
+        "the bar leads back to the library"
+    );
+}

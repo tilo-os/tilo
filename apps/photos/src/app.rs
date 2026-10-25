@@ -1832,8 +1832,14 @@ impl PhotosApp {
                 // door, as the header's Open does.
                 let (label, id, effect) = match shown.action {
                     None => return empty,
+                    // After a failure, Open says it is for another photo:
+                    // the one that failed stays failed.
                     Some(EmptyAction::Open) => (
-                        tr("photos-open"),
+                        tr(if shown.error {
+                            "photos-open-another"
+                        } else {
+                            "photos-open"
+                        }),
                         "photos-empty-open",
                         PhotosEffect::Import { path: None },
                     ),
