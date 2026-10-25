@@ -1100,6 +1100,56 @@ fn an_empty_channel_invites_the_first_message() {
     assert_eq!(app.empty_channel_message(), None, "no invitation to write");
 }
 
+/// A workspace whose emoji someone may manage, counting the times the
+/// picker's "Add emoji" asked to choose a picture.
+struct ManagedEmoji(std::rc::Rc<std::cell::Cell<usize>>);
+
+impl ui::workspace_emoji::EmojiSource for ManagedEmoji {
+    fn emoji(&self) -> std::rc::Rc<ui::workspace_emoji::WorkspaceEmoji> {
+        std::rc::Rc::default()
+    }
+    fn revision(&self) -> u64 {
+        1
+    }
+    fn can_manage(&self) -> bool {
+        true
+    }
+    fn add(&self, _: &str, _: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+    fn remove(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn choose_and_add(&self) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+#[test]
+fn the_pickers_add_emoji_tile_is_a_named_action() {
+    let scope = ui::WakeScope::new();
+    let chosen = std::rc::Rc::new(std::cell::Cell::new(0));
+    ui::workspace_emoji::register(
+        &scope.handle(),
+        std::rc::Rc::new(ManagedEmoji(std::rc::Rc::clone(&chosen))),
+    );
+    let _in = scope.enter();
+    let (mut app, mut doc) = app_with_doc();
+    app.on_hit(
+        Hit::ComposerEmoji(vello::kurbo::Rect::new(400.0, 600.0, 430.0, 630.0)),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    render_frame(&mut app, 1280.0, 720.0);
+    assert!(
+        app.hits
+            .iter()
+            .any(|(_, hit)| matches!(hit, Hit::EmojiAddCustom)),
+        "the Workspace section's + tile is a hit target, so it is named and reachable"
+    );
+    app.on_hit(Hit::EmojiAddCustom, &mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(chosen.get(), 1, "it asks for a picture to add");
+}
+
 #[test]
 fn the_message_menu_adds_a_first_reaction_and_starts_a_thread() {
     // The reaction row's "+" and the thread bar exist only once a
