@@ -236,10 +236,17 @@ fn walk(root: &Path) -> Result<(BTreeMap<String, u64>, bool), String> {
     Ok((files, truncated))
 }
 
+/// One file's bytes, read through the file API the rest of the app uses, so
+/// this works wherever the app does.
+fn read(path: &Path) -> Option<Vec<u8>> {
+    let (directory, name) = tilo_files::file_at(path).ok()?;
+    tilo_files::blocking::read(&directory, &name).ok()
+}
+
 /// Whether two files on disk hold the same bytes.
 fn files_equal(left: &Path, right: &Path) -> bool {
-    match (std::fs::read(left), std::fs::read(right)) {
-        (Ok(left), Ok(right)) => left == right,
+    match (read(left), read(right)) {
+        (Some(left), Some(right)) => left == right,
         _ => false,
     }
 }
