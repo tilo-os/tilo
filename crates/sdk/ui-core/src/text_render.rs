@@ -2355,6 +2355,9 @@ impl TextRenderer {
     ) -> (f32, f32) {
         let scaled_style = self.scaled_style(input.style);
         let style = &scaled_style;
+        if let Some(label) = self.emoji_label(input.text, max_width, style) {
+            return (label.width(), label.height());
+        }
         let max_width = self.collapse_unused_max_width(input, max_width, style, warm_shape);
         self.measure_style_cached(input, max_width, style, warm_shape)
     }
@@ -2851,6 +2854,10 @@ impl TextRenderer {
     ) {
         let scaled_style = self.scaled_style(input.style);
         let style = &scaled_style;
+        if let Some(label) = self.emoji_label(input.text, max_width, style) {
+            self.draw_rich(scene, &label, transform, color);
+            return;
+        }
         let max_width = self.collapse_unused_max_width(input, max_width, style, true);
         let runs = self.shaped_query(input, max_width, style);
         self.paint_runs(scene, &runs, color, transform);
@@ -3348,6 +3355,7 @@ impl TextRenderer {
             let paint = RunPaint { color, paint: None };
             self.draw_rich_run(scene, &run, layout, transform, paint, None);
         }
+        layout.paint_inline_emoji(scene, transform);
 
         draw_rich_underlines(scene, layout, transform, color);
         draw_rich_strikes(scene, layout, transform, color);
@@ -3399,6 +3407,7 @@ impl TextRenderer {
             let paint_run = RunPaint { color, paint };
             self.draw_rich_run(scene, &run, layout, transform, paint_run, Some(clip));
         }
+        layout.paint_inline_emoji(scene, transform);
         draw_rich_underlines(scene, layout, transform, color);
         draw_rich_strikes(scene, layout, transform, color);
     }
@@ -3429,7 +3438,11 @@ impl TextRenderer {
         paint: RunPaint<'_>,
         clip: Option<Rect>,
     ) -> bool {
-        if layout.hanging_punctuation.first || layout.hanging_punctuation.last {
+        // An inline emoji's glyphs are left out for its picture.
+        if layout.hanging_punctuation.first
+            || layout.hanging_punctuation.last
+            || !layout.inline_emoji.is_empty()
+        {
             return false;
         }
         let Some(first) = run.glyphs.first() else {
@@ -3502,6 +3515,9 @@ impl TextRenderer {
                 continue;
             }
             let global_byte = layout.glyph_global_byte(run.line_i, g.start);
+            if layout.in_inline_emoji(global_byte) {
+                continue;
+            }
             let g_shift = layout.baseline_at(global_byte);
             let g_color = paint.at(global_byte, g);
             // Glyphs batch by face, shaped weight, color, size and baseline shift.
