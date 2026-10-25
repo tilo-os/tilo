@@ -1269,6 +1269,12 @@ impl ShellOverlayHost {
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
+        // Picking what to report takes every event: nothing underneath
+        // reacts to a pick, and Escape leaves.
+        if self.route_feedback_picker_event(event, ctx.modifiers.state()) {
+            *ctx.handled = true;
+            return;
+        }
         let people_open = self.overlay_flags().collaborators;
         if self
             .collaborators_overlay

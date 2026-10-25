@@ -19,6 +19,7 @@ mod ask_agent;
 mod axis_navigation;
 mod bar_popovers;
 mod cursor_chat;
+mod feedback_pick;
 mod feedback_point;
 pub(crate) use cursor_chat::ChatOut;
 mod arrival;
@@ -1058,6 +1059,8 @@ pub struct ShellOverlayHost {
     /// A click that picked what a feedback report is about, waiting for the
     /// app under it to name the control there.
     feedback_point: crate::shell::feedback_entry::FeedbackPoint,
+    /// Pointing at what is wrong, to report it ("Report a problem…").
+    feedback_picker: crate::shell::feedback_pick::NativePicker,
     /// The slots Tilo apps declared for their windows' bars.
     window_toolbars: window_toolbars::WindowToolbars,
     /// The tree revision the windows lent to apps the shell mounts were

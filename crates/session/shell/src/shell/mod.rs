@@ -86,6 +86,7 @@ pub mod durable_writer;
 pub mod emoji_recents;
 pub mod fabric_clock;
 pub(crate) mod feedback_entry;
+pub(crate) mod feedback_pick;
 mod file_picker_overlay;
 pub mod fixed_chords;
 pub mod fixture_inputs;

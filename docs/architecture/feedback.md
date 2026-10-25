@@ -200,6 +200,21 @@ message attachments, asks the room for the ones it lacks (the reporter's page
 answers) and keeps them in its blob store, within its attachment quotas; the
 report's receipt waits until it does.
 
+On the native desktop the shell walks its own tree for its own parts (the
+bar, its menus, the windows it draws itself) and asks each window another
+process draws over that app's shell-ui connection: `Pick` carries a
+`ui::pick_wire::PickQuery` (the parts at a point, the parts inside a dragged
+rectangle, or the picks to read again), and the app answers `PickAnswered`
+from its own tree with `ui::pick_wire::answer`, the same `ui::pick` calls the
+browser makes, plus its recent invocations. Only an app that announced
+`SelectionCapable` is asked, and an answer counts only for the launcher's app
+id and the request it was asked. The picker shows a window's last answer
+while the next one is out, holds a dragged rectangle's release until the
+windows under it answered, and builds the report once every picked window
+read its picks again or had `ANSWER_WAIT`; a pick of a window that did not
+answer keeps its role and place without texts. Native reports carry no
+picture yet.
+
 A persistent room keeps the channel reports go to with the room service's
 `TILO_ROOMS_FEEDBACK_CHANNEL` (the relay's `--feedback-channel`): the relay
 adds it after the room's channels on every start. The web entry names it for
