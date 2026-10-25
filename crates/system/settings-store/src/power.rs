@@ -26,6 +26,21 @@ pub const DEFAULT_LOCK_MINUTES: u32 = 5;
 /// critically low battery still suspend; idle-suspend is an opt-in.
 pub const DEFAULT_AUTO_SUSPEND: bool = false;
 
+/// Whether the session asks for the person's password when it wakes from
+/// sleep.
+///
+/// On: sleep leaves the session locked, and waking shows the lock screen.
+/// Off: a machine that went to sleep unlocked comes back to the work its
+/// owner left on screen. An idle, explicit or in-flight lock is kept either
+/// way — only the lock this device adds on the way into sleep follows it.
+pub const LOCK_ON_SLEEP: Key<bool> = Key::new(SECTION, "lock_on_sleep", || DEFAULT_LOCK_ON_SLEEP);
+
+/// Whether a fresh machine asks for the password after sleep.
+///
+/// On. A closed lid is the most common way a machine leaves its owner's
+/// hands, and waking it should not be the one path back in.
+pub const DEFAULT_LOCK_ON_SLEEP: bool = true;
+
 /// Master switch for idle-suspend; off disables it whatever the timeouts say.
 pub const AUTO_SUSPEND: Key<bool> = Key::new(SECTION, "auto_suspend", || DEFAULT_AUTO_SUSPEND);
 /// Idle minutes before the screen blanks; `0` never.

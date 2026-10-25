@@ -67,6 +67,14 @@ pub struct PowerPolicy {
     /// idle-suspend (the display can still blank/lock — that is the idle
     /// state machine's separate concern).
     pub idle_suspend: Option<Duration>,
+    /// Whether entering sleep locks the session.
+    ///
+    /// `true` (the default) makes every suspend leave the session locked, so
+    /// waking asks for the password. `false` lets a machine that was unlocked
+    /// when it went to sleep wake to the work its owner left on screen; a
+    /// lock that was already there — from the idle timer, the lock command or
+    /// a suspend already in flight — is kept either way.
+    pub lock_on_sleep: bool,
     pub lid_close_action: PowerAction,
     /// What to do when the power key is pressed.
     pub power_key_action: PowerAction,
@@ -93,6 +101,7 @@ impl Default for PowerPolicy {
             // (see `config`), this bare default is the "no config at all"
             // floor.
             idle_suspend: None,
+            lock_on_sleep: true,
             lid_close_action: PowerAction::Suspend,
             power_key_action: PowerAction::Suspend,
             low_battery_percent: 15,
