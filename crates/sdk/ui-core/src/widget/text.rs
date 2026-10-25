@@ -189,6 +189,9 @@ pub struct Text {
     /// per-frame translate so the cache follows its widget without
     /// re-encoding.
     cache_rect: vello::kurbo::Rect,
+    /// Whether the label is a message of the app's catalogue, as of the
+    /// catalogue revision it was looked up at.
+    interface: std::cell::Cell<Option<(u64, bool)>>,
 }
 
 /// How assistive technology meets a [`Text`].
@@ -241,7 +244,26 @@ impl Text {
             dirty: true,
             layout_dirty: false,
             cache_rect: vello::kurbo::Rect::ZERO,
+            interface: std::cell::Cell::new(None),
         }
+    }
+
+    /// Whether this text is the app's own copy: a message of its catalogue
+    /// with nothing of the moment in it. A bound value, an argument or a
+    /// literal string is content.
+    fn interface_copy(&self) -> bool {
+        if self.spoken.is_some() || self.source.is_some() || !self.args.is_empty() {
+            return false;
+        }
+        let revision = crate::i18n::I18nManager::revision();
+        if let Some((seen, interface)) = self.interface.get()
+            && seen == revision
+        {
+            return interface;
+        }
+        let interface = crate::i18n::I18nManager::has_message(&self.label);
+        self.interface.set(Some((revision, interface)));
+        interface
     }
 
     /// Give this retained text node a stable address for inspection and
@@ -1152,7 +1174,9 @@ impl Widget for Text {
             self.accessible_heading_level()
                 .map_or(Role::StaticText, |level| Role::Heading { level })
         };
-        let mut node = AccessNode::new(role).with_name(label);
+        let mut node = AccessNode::new(role)
+            .with_name(label)
+            .with_interface_name(self.interface_copy());
         if let Some(politeness) = self.live {
             node = node.with_live(politeness);
         }
