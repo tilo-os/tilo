@@ -2206,21 +2206,23 @@ impl WorkspaceTree {
             return false;
         }
         let joining = !self.desktop.workspaces.iter().any(|w| w.room() == room);
-        let Some(index) = self.desktop.workspaces.iter().position(|w| w.id == id) else {
+        let Some(current) = self.desktop.workspaces.iter_mut().find(|w| w.id == id) else {
             return false;
         };
-        if self.desktop.workspaces[index].room() == room {
+        if current.room() == room {
             return false;
         }
-        let mut stored =
-            serde_json::to_value(&self.desktop.workspaces[index]).expect("a workspace serializes");
+        let Ok(mut stored) = serde_json::to_value(&*current) else {
+            return false;
+        };
         stored["room"] = serde_json::Value::String(room.to_string());
-        let mut workspace: Workspace =
-            serde_json::from_value(stored).expect("the stored form reads back");
-        workspace.collaborators = self.desktop.workspaces[index].collaborators.clone();
-        workspace.bots = self.desktop.workspaces[index].bots.clone();
+        let Ok(mut workspace) = serde_json::from_value::<Workspace>(stored) else {
+            return false;
+        };
+        workspace.collaborators.clone_from(&current.collaborators);
+        workspace.bots.clone_from(&current.bots);
         let surrendered = joining && workspace.surrender_governance();
-        self.desktop.workspaces[index] = workspace;
+        *current = workspace;
         let _ = surrendered;
         self.seed_doc_from_cache();
         self.queue_save();

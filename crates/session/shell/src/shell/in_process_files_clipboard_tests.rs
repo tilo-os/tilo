@@ -1606,6 +1606,10 @@ mod files_clipboard_tests {
     /// the person opening it in Files does: a session grant to Files that
     /// this device remembers as the person's own consent, so the room's
     /// next projection keeps it.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the grant and the consent that keeps it are one write of the tree"
+    )]
     fn grant_files_folder(
         tree: &crate::shell::state::WorkspaceTreeHandle,
         folder: &Path,
