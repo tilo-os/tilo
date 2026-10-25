@@ -25,8 +25,7 @@ use tilo_desktop::desk_edges::DockEdge;
 use tilo_desktop::follow_banner::{BannerFrame, FollowBanner};
 use tilo_desktop::here::Person;
 use tilo_desktop::people_overlay::{
-    LivePictures, MessageLine, PeerMessages, PeerScreen, PeerWindow, PeopleHit,
-    PeopleOverlayModel,
+    LivePictures, MessageLine, PeerMessages, PeerScreen, PeerWindow, PeopleHit, PeopleOverlayModel,
 };
 use tilo_desktop_model::{DesktopTree, TabId};
 use tilo_desktop_surface::DesktopHandle;
@@ -47,6 +46,9 @@ pub(super) struct Frame<'a> {
     pub rows: &'a [RosterRow],
     /// This page's person, whose own row leads the list.
     pub own: Option<&'a RosterRow>,
+    /// Each row's person, `(device, user root)`, both hex, where the host
+    /// said whose device it is.
+    pub persons: &'a [(String, String)],
     pub people: &'a [Person],
     pub tree: &'a DesktopTree,
     /// The records this page shows, by the window showing each, as the
@@ -140,7 +142,7 @@ impl PagePeople {
 
     /// Hold the conversation with `peeked` open, by roster id (none when
     /// no peek is open), releasing the one before.
-    fn follow_lane(&mut self, peeked: Option<&RosterRow>) {
+    fn follow_lane(&mut self, peeked: Option<&RosterRow>, persons: &[(String, String)]) {
         self.abandoned
             .retain(|(key, opening)| match opening.take() {
                 Some(Ok(_)) => {
@@ -150,7 +152,7 @@ impl PagePeople {
                 Some(Err(_)) => false,
                 None => true,
             });
-        let wanted = peeked.and_then(|row| Some((row, person_key(row)?)));
+        let wanted = peeked.and_then(|row| Some((row, person_key(row, persons)?)));
         if self
             .lane
             .as_ref()
@@ -214,8 +216,10 @@ impl PagePeople {
         let lines = ui::person_chat::snapshot(&lane.key)
             .map(|conversation| {
                 let start = conversation.messages.len().saturating_sub(SHOWN_LINES);
-                conversation.messages[start..]
+                conversation
+                    .messages
                     .iter()
+                    .skip(start)
                     .map(|message| MessageLine {
                         mine: message.author != lane.key,
                         text: message.text.clone(),
@@ -431,7 +435,8 @@ impl PagePeople {
             .filter(|overlay| overlay.is_visible())
             .and_then(PinnedRoster::peeked)
             .and_then(|id| frame.rows.iter().find(|row| row.id == id));
-        self.follow_lane(peeked);
+        self.follow_lane(peeked, frame.persons);
+        refresh_contacts(frame.persons);
         let (messages, unavailable) = self.lane_messages();
         let sent = match self
             .sending
@@ -562,9 +567,28 @@ impl PagePeople {
 
 /// The public key of the person on `row`: their roster id when it is one,
 /// else the room contact of that name.
-fn person_key(row: &RosterRow) -> Option<String> {
-    if row.id.len() == 64 && row.id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Some(row.id.to_ascii_lowercase());
+/// Someone is here whom the room's last list of people did not have: ask
+/// for it again, so Chat's direct conversations list them too. The native
+/// host hears of new members from the room itself; a page sees them here.
+fn refresh_contacts(persons: &[(String, String)]) {
+    let contacts = ui::person_chat::contacts_snapshot();
+    let own = ui::local_identity::load().map(|own| hex::encode(own.group_public_key));
+    let unknown = persons.iter().any(|(_, user)| {
+        own.as_deref() != Some(user.as_str())
+            && !contacts
+                .iter()
+                .any(|contact| contact.public_key.eq_ignore_ascii_case(user))
+    });
+    if unknown {
+        ui::person_chat::refresh_contacts();
+    }
+}
+
+/// The person `row` is a device of: as the host said, else the contact
+/// who goes by its name.
+fn person_key(row: &RosterRow, persons: &[(String, String)]) -> Option<String> {
+    if let Some((_, user)) = persons.iter().find(|(device, _)| *device == row.id) {
+        return Some(user.to_ascii_lowercase());
     }
     ui::person_chat::contacts()
         .into_iter()

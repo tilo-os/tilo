@@ -926,6 +926,10 @@ async fn people_name_themselves_and_the_spectator_is_nobody() {
 /// A page's session proves one device: a certificate the session did not
 /// prove is refused at the door like a stranger's.
 #[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay serves the whole exchange and is shut down at its end"
+)]
 async fn a_page_is_only_the_device_its_session_proved() {
     let directory = tempfile::tempdir().unwrap();
     let (governor_key, governor_cert) = tests::governor();

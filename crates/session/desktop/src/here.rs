@@ -404,7 +404,7 @@ impl HereState {
 
     /// The person the device `publisher` is a device of, as the host's lines
     /// say; `None` before its page posted to the host.
-    fn user_of(&self, publisher: &str) -> Option<&str> {
+    pub fn user_of(&self, publisher: &str) -> Option<&str> {
         if Some(publisher) == self.own_id()
             && let Some(own) = self.own_user()
         {

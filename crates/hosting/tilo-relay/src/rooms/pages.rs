@@ -270,10 +270,7 @@ impl Rooms {
             request @ (RoomsRequest::Share { .. } | RoomsRequest::Unshare { .. }) => {
                 self.page_share(device, request).await?
             }
-            RoomsRequest::Name { room, name } => {
-                self.name_self(&room, device, &name, now).await?;
-                RoomsReply::Named
-            }
+            RoomsRequest::Name { room, name } => self.name_self(&room, device, &name, now).await?,
         })
     }
 
@@ -320,7 +317,7 @@ impl Rooms {
         device: &DeviceCert,
         name: &str,
         now: u64,
-    ) -> Result<(), CollaborationError> {
+    ) -> Result<RoomsReply, CollaborationError> {
         let name = valid_name(name)?;
         let state = self.room(room).await?;
         let mut room = state.lock().await;
@@ -347,13 +344,13 @@ impl Rooms {
             .name_person(device.user_public_key, &name, &key, at)
             .map_err(CollaborationError::new)?
         {
-            return Ok(());
+            return Ok(RoomsReply::Named);
         }
         let ledger = room.collaboration().clone();
         room.commit(candidate, &key, at, |_, _| Ok(ledger))
             .map_err(CollaborationError::new)?;
         self.settle(&mut room).await?;
-        Ok(())
+        Ok(RoomsReply::Named)
     }
 
     /// Whether `device`'s person may make an undoable change at `node` of
