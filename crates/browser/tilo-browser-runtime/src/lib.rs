@@ -122,6 +122,8 @@ mod page_authors;
 #[cfg(target_arch = "wasm32")]
 mod peer;
 #[cfg(target_arch = "wasm32")]
+mod person_chat;
+#[cfg(target_arch = "wasm32")]
 mod replication;
 #[cfg(target_arch = "wasm32")]
 mod scratch;

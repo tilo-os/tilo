@@ -9,6 +9,12 @@
 //! they are in each time it changes, under the same banner the native
 //! shell shows; the person's own input takes their view back.
 //!
+//! The peek's message box talks to the person privately, as Chat does:
+//! the conversation with them is open while their peek is (`ui::person_chat`,
+//! the room governor's private door), its last lines show above the box,
+//! and a message goes to the room the same way Chat's own
+//! `send-direct-message` sends one.
+//!
 //! The overlay's code may come in its own module the first time the roster
 //! is pinned ([`crate::pinned_roster`]); following and the banner are here
 //! from the start.
@@ -19,7 +25,8 @@ use tilo_desktop::desk_edges::DockEdge;
 use tilo_desktop::follow_banner::{BannerFrame, FollowBanner};
 use tilo_desktop::here::Person;
 use tilo_desktop::people_overlay::{
-    LivePictures, PeerScreen, PeerWindow, PeopleHit, PeopleOverlayModel,
+    LivePictures, MessageLine, PeerMessages, PeerScreen, PeerWindow, PeopleHit,
+    PeopleOverlayModel,
 };
 use tilo_desktop_model::{DesktopTree, TabId};
 use tilo_desktop_surface::DesktopHandle;
@@ -52,6 +59,33 @@ pub(super) struct Frame<'a> {
     pub content_top: f64,
 }
 
+/// How many of the last lines of a conversation the message box shows.
+const SHOWN_LINES: usize = 3;
+
+/// The private conversation with the person whose peek is open, held open
+/// while it is.
+struct Lane {
+    /// The person's roster id.
+    id: String,
+    /// Their name, to say so if a message to them did not go.
+    name: String,
+    /// Their public key, which names the conversation.
+    key: String,
+    /// The open, until the room answers it.
+    opening: Option<ui::person_chat::Pending<ui::person_chat::Conversation>>,
+    /// The open lane, once the room answered.
+    token: Option<uuid::Uuid>,
+    /// The room would not open it.
+    failed: bool,
+}
+
+/// A message on its way, until the room accepts or refuses it.
+struct Sending {
+    /// To whom, by name, to say so if it did not go.
+    name: String,
+    reply: ui::person_chat::Pending<ui::person_chat::Conversation>,
+}
+
 /// What following last brought forward.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Tracked {
@@ -73,6 +107,16 @@ pub(super) struct PagePeople {
     /// their app where no window here shows their record.
     tracked: Option<Tracked>,
     motion: EffectiveMotion,
+    /// The conversation with whom the peek shows.
+    lane: Option<Lane>,
+    /// Opens a later peek replaced, each released once it answers.
+    abandoned: Vec<(
+        String,
+        ui::person_chat::Pending<ui::person_chat::Conversation>,
+    )>,
+    sending: Option<Sending>,
+    /// A message that did not go: to whom, and why.
+    failed_send: Option<(String, String)>,
 }
 
 impl PagePeople {
@@ -87,7 +131,128 @@ impl PagePeople {
             followed: None,
             tracked: None,
             motion: EffectiveMotion::default(),
+            lane: None,
+            abandoned: Vec::new(),
+            sending: None,
+            failed_send: None,
         }
+    }
+
+    /// Hold the conversation with `peeked` open, by roster id (none when
+    /// no peek is open), releasing the one before.
+    fn follow_lane(&mut self, peeked: Option<&RosterRow>) {
+        self.abandoned
+            .retain(|(key, opening)| match opening.take() {
+                Some(Ok(_)) => {
+                    ui::person_chat::close(key);
+                    false
+                }
+                Some(Err(_)) => false,
+                None => true,
+            });
+        let wanted = peeked.and_then(|row| Some((row, person_key(row)?)));
+        if self
+            .lane
+            .as_ref()
+            .map(|lane| (lane.id.as_str(), lane.key.as_str()))
+            != wanted
+                .as_ref()
+                .map(|(row, key)| (row.id.as_str(), key.as_str()))
+        {
+            if let Some(lane) = self.lane.take() {
+                if let Some(token) = lane.token {
+                    ui::person_chat::close_current(&lane.key, token);
+                }
+                if let Some(opening) = lane.opening {
+                    self.abandoned.push((lane.key, opening));
+                }
+            }
+            self.lane = wanted.map(|(row, key)| Lane {
+                opening: Some(ui::person_chat::open(&key)),
+                id: row.id.clone(),
+                name: row.label.clone(),
+                key,
+                token: None,
+                failed: false,
+            });
+        }
+        if let Some(lane) = self.lane.as_mut()
+            && let Some(answer) = lane
+                .opening
+                .as_ref()
+                .and_then(ui::person_chat::Pending::take)
+        {
+            lane.opening = None;
+            match answer {
+                Ok(_) => lane.token = ui::person_chat::subscription_token(&lane.key),
+                Err(error) => {
+                    web_sys::console::warn_1(
+                        &format!("opening a private conversation: {error}").into(),
+                    );
+                    lane.failed = true;
+                }
+            }
+        }
+        // The room ended the lane (a member left, a certificate lapsed).
+        if let Some(lane) = self.lane.as_mut()
+            && let Some(token) = lane.token
+            && ui::person_chat::subscription_token(&lane.key) != Some(token)
+        {
+            lane.token = None;
+            lane.failed = true;
+        }
+    }
+
+    /// The last lines of the open conversation, and why the box cannot
+    /// send instead of offering to, if it cannot.
+    fn lane_messages(&self) -> (Vec<PeerMessages>, Option<String>) {
+        let Some(lane) = &self.lane else {
+            return (Vec::new(), None);
+        };
+        let unavailable = (lane.failed || lane.opening.is_none() && lane.token.is_none())
+            .then(|| tilo_desktop::i18n::t("people-overlay-messages-unavailable"));
+        let lines = ui::person_chat::snapshot(&lane.key)
+            .map(|conversation| {
+                let start = conversation.messages.len().saturating_sub(SHOWN_LINES);
+                conversation.messages[start..]
+                    .iter()
+                    .map(|message| MessageLine {
+                        mine: message.author != lane.key,
+                        text: message.text.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (
+            vec![PeerMessages {
+                id: lane.id.clone(),
+                lines,
+            }],
+            unavailable,
+        )
+    }
+
+    /// Send `text` to the person with roster id `to`, whose peek is open.
+    pub(super) fn send(&mut self, to: &str, text: &str) {
+        let Some(lane) = self.lane.as_ref().filter(|lane| lane.id == to) else {
+            self.failed_send = Some((
+                to.to_owned(),
+                tilo_desktop::i18n::t("people-overlay-messages-unavailable"),
+            ));
+            return;
+        };
+        if self.sending.is_some() {
+            return;
+        }
+        self.sending = Some(Sending {
+            name: lane.name.clone(),
+            reply: ui::person_chat::send(&lane.key, text),
+        });
+    }
+
+    /// A message that did not go since the last ask: to whom, and why.
+    pub(super) fn take_failed_send(&mut self) -> Option<(String, String)> {
+        self.failed_send.take()
     }
 
     pub(super) fn is_pinned(&self) -> bool {
@@ -261,10 +426,37 @@ impl PagePeople {
             self.stop_following(false);
         }
         let followed = self.followed.clone();
+        let peeked = self
+            .made()
+            .filter(|overlay| overlay.is_visible())
+            .and_then(PinnedRoster::peeked)
+            .and_then(|id| frame.rows.iter().find(|row| row.id == id));
+        self.follow_lane(peeked);
+        let (messages, unavailable) = self.lane_messages();
+        let sent = match self
+            .sending
+            .as_ref()
+            .and_then(|sending| sending.reply.take())
+        {
+            Some(answer) => {
+                let sending = self.sending.take();
+                match answer {
+                    Ok(_) => true,
+                    Err(reason) => {
+                        self.failed_send = sending.map(|sending| (sending.name, reason));
+                        false
+                    }
+                }
+            }
+            None => false,
+        };
         let Some(overlay) = self.roster().filter(|overlay| overlay.is_visible()) else {
             ui::window_pictures::want(&[]);
             return;
         };
+        if sent {
+            overlay.sent();
+        }
         let screens = screens(frame);
         // Live pictures only of the windows the open peek shows.
         let wanted: Vec<u64> = overlay
@@ -275,7 +467,6 @@ impl PagePeople {
             .filter_map(|window| window.picture)
             .collect();
         ui::window_pictures::want(&wanted);
-        let unavailable = tilo_desktop::i18n::t("people-overlay-messages-unavailable");
         overlay.draw(
             scene,
             transform,
@@ -286,9 +477,9 @@ impl PagePeople {
                 occupied: &[],
                 rows: frame.rows,
                 screens: &screens,
-                messages: &[],
+                messages: &messages,
                 followed_id: followed.as_deref(),
-                messaging_unavailable: Some(&unavailable),
+                messaging_unavailable: unavailable.as_deref(),
                 own: frame.own,
             },
             &mut LivePictures,
@@ -367,6 +558,18 @@ impl PagePeople {
     pub(super) fn pressed_elsewhere(&mut self) {
         self.stop_following(true);
     }
+}
+
+/// The public key of the person on `row`: their roster id when it is one,
+/// else the room contact of that name.
+fn person_key(row: &RosterRow) -> Option<String> {
+    if row.id.len() == 64 && row.id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Some(row.id.to_ascii_lowercase());
+    }
+    ui::person_chat::contacts()
+        .into_iter()
+        .find(|contact| contact.display_name.eq_ignore_ascii_case(&row.label))
+        .map(|contact| contact.public_key)
 }
 
 /// Each person's screen as their live layout gives it, each window matched
