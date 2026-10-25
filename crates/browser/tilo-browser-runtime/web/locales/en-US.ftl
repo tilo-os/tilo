@@ -116,3 +116,25 @@ arrival-failed-cooling-down = { $workspace } is not letting anyone in from your 
 arrival-failed-cooling-down-unnamed = This workspace is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.
 arrival-failed-custody-busy = Every device this browser keeps for { $workspace } is open in another tab. Close one of those tabs, then try again.
 arrival-failed-custody-busy-unnamed = Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.
+
+## The reconnect screen: the page was not let in yet and tries again
+# { $time } is how long until the next try, such as "40 s" or "2 min 05 s".
+arrival-reconnect-unreachable = Can’t reach { $workspace }
+arrival-reconnect-unreachable-unnamed = Can’t reach the workspace
+arrival-reconnect-unreachable-body = It may be restarting. It opens here as soon as it’s back.
+arrival-reconnect-refused = Not in { $workspace } yet
+arrival-reconnect-refused-unnamed = Not in the workspace yet
+arrival-reconnect-refused-body = It turned this browser away for now. The next try asks as a new device of yours.
+arrival-reconnect-offline = You’re offline
+arrival-reconnect-offline-body = The workspace opens as soon as you’re back online.
+arrival-reconnect-busy = { $workspace } is busy
+arrival-reconnect-busy-unnamed = The workspace is busy
+arrival-reconnect-busy-body = A lot of people are getting in right now. It opens here once there’s room.
+arrival-reconnect-next = Trying again in { $time }
+arrival-reconnect-trying = Trying now…
+arrival-reconnect-waiting-online = Waiting for the network…
+arrival-reconnect-try-now = Try now
+arrival-reconnect-details = Technical details
+arrival-reconnect-copy = Copy details
+arrival-reconnect-copied = Copied
+arrival-reconnect-copy-failed = Couldn’t copy. Select the text instead.
