@@ -83,6 +83,12 @@ impl Presses {
     pub fn take(&self) -> Vec<Press> {
         std::mem::take(&mut *self.pressed.borrow_mut())
     }
+
+    /// Record `press` as the person's: what a row's control does, and what a
+    /// host that stands for the row (a chord, a test) does.
+    pub fn pressed(&self, press: Press) {
+        self.pressed.borrow_mut().push(press);
+    }
 }
 
 /// A row per job that runs, and per job that ended and has not been read.
@@ -324,8 +330,23 @@ impl Band {
         Self::of(Shape::Page)
     }
 
+    /// A band sharing `presses` with the app that reads them.
+    #[must_use]
+    pub fn with_presses(presses: Presses) -> Self {
+        Self::of_with(Shape::Band, presses)
+    }
+
+    /// The Jobs page sharing `presses` with the app that reads them.
+    #[must_use]
+    pub fn page_with(presses: Presses) -> Self {
+        Self::of_with(Shape::Page, presses)
+    }
+
     fn of(shape: Shape) -> Self {
-        let presses = Presses::new();
+        Self::of_with(shape, Presses::new())
+    }
+
+    fn of_with(shape: Shape, presses: Presses) -> Self {
         let inner = bare(presses.clone(), shape);
         Self {
             inner,

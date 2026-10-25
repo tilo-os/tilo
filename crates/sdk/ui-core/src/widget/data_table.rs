@@ -2211,6 +2211,28 @@ impl DataTableCore {
         })
     }
 
+    /// Lay `key` out at `px`, as a drag of its edge would: a host that
+    /// remembers the widths a person set puts them back this way.
+    pub fn set_column_width(&mut self, key: &str, px: f32) {
+        let px = px.max(Self::MIN_COL_WIDTH);
+        self.col_widths_px.insert(key.to_string(), px);
+        self.structure_dirty = true;
+        self.layout_dirty = true;
+    }
+
+    /// The widths a person set by dragging a column's edge, by key. A
+    /// column never resized is not here: its width belongs to the layout.
+    #[must_use]
+    pub fn resized_widths(&self) -> Vec<(String, f32)> {
+        let mut widths: Vec<(String, f32)> = self
+            .col_widths_px
+            .iter()
+            .map(|(key, px)| (key.clone(), *px))
+            .collect();
+        widths.sort_by(|a, b| a.0.cmp(&b.0));
+        widths
+    }
+
     /// Subsequent `drag_resize` calls compute the new width as
     /// `origin_w + (pointer_x - origin_x)`.
     pub fn begin_resize(&mut self, key: &str, pointer_x: f32) {

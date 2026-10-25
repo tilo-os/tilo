@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Why a folder could not be listed, as the error view says it.
@@ -108,7 +108,42 @@ impl Linked {
     }
 }
 
-fn measure(path: &Path, linked: &Linked, cancellation: &ScanCancellation) -> (u64, u64, u64) {
+/// What a scan has measured so far, as the job that shows it reads it:
+/// bytes and files. Called from the scanning threads.
+pub type Report<'a> = &'a (dyn Fn(u64, u64) + Sync);
+
+/// How many files are measured between two reports: often enough that the
+/// count moves, rarely enough that locking the job costs nothing.
+const REPORT_EVERY: u64 = 256;
+
+/// What a scan has seen, shared by its threads.
+#[derive(Default)]
+struct Seen {
+    bytes: AtomicU64,
+    files: AtomicU64,
+}
+
+impl Seen {
+    /// Count one file's bytes, reporting through `report` every so often.
+    fn add_file(&self, bytes: u64, report: Report<'_>) {
+        let bytes_so_far = self
+            .bytes
+            .fetch_add(bytes, Ordering::Relaxed)
+            .saturating_add(bytes);
+        let files = self.files.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        if files % REPORT_EVERY == 0 {
+            report(bytes_so_far, files);
+        }
+    }
+}
+
+fn measure(
+    path: &Path,
+    linked: &Linked,
+    cancellation: &ScanCancellation,
+    seen: &Seen,
+    report: Report<'_>,
+) -> (u64, u64, u64) {
     if cancellation.is_cancelled() {
         return (0, 0, 0);
     }
@@ -122,7 +157,9 @@ fn measure(path: &Path, linked: &Linked, cancellation: &ScanCancellation) -> (u6
         if linked.seen_before(&meta) {
             return (0, 0, 0);
         }
-        return (ui::files::native::on_disk(&meta), 1, 0);
+        let bytes = ui::files::native::on_disk(&meta);
+        seen.add_file(bytes, report);
+        return (bytes, 1, 0);
     }
     if !meta.is_dir() {
         return (ui::files::native::on_disk(&meta), 0, 0);
@@ -133,7 +170,7 @@ fn measure(path: &Path, linked: &Linked, cancellation: &ScanCancellation) -> (u6
     read.take_while(|_| !cancellation.is_cancelled())
         .filter_map(Result::ok)
         .fold((0_u64, 0_u64, 0_u64), |acc, child| {
-            let measured = measure(&child.path(), linked, cancellation);
+            let measured = measure(&child.path(), linked, cancellation, seen, report);
             (
                 acc.0.saturating_add(measured.0),
                 acc.1.saturating_add(measured.1),
@@ -142,7 +179,8 @@ fn measure(path: &Path, linked: &Linked, cancellation: &ScanCancellation) -> (u6
         })
 }
 
-pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) -> ScanResult {
+/// Scan `path`, reporting what has been seen as it goes.
+pub fn scan(path: PathBuf, cancellation: &ScanCancellation, report: Report<'_>) -> ScanResult {
     let mut unreadable = 0_u64;
     let mut error = None;
     let mut candidates = Vec::new();
@@ -169,6 +207,7 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
 
     let next = AtomicUsize::new(0);
     let linked = Linked::default();
+    let seen = Seen::default();
     let measured = Mutex::new((Vec::new(), 0_u64, 0_u64, unreadable));
     let available = std::thread::available_parallelism().map_or(1, usize::from);
     let worker_count = available.clamp(1, 8).min(candidates.len().max(1));
@@ -183,7 +222,8 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
                     let Some((child_path, name, is_dir)) = candidates.get(index) else {
                         break;
                     };
-                    let (bytes, files, denied) = measure(child_path, &linked, cancellation);
+                    let (bytes, files, denied) =
+                        measure(child_path, &linked, cancellation, &seen, report);
                     let Ok(mut result) = measured.lock() else {
                         break;
                     };
@@ -214,6 +254,10 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
             files: own_files,
         });
     }
+    report(
+        seen.bytes.load(Ordering::Relaxed),
+        seen.files.load(Ordering::Relaxed),
+    );
     entries.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.name.cmp(&b.name)));
     let total = entries
         .iter()
@@ -253,7 +297,7 @@ mod tests {
     }
 
     fn scan(path: &Path) -> ScanResult {
-        scan_with_cancellation(path.to_owned(), &ScanCancellation::default())
+        super::scan(path.to_owned(), &ScanCancellation::default(), &|_, _| {})
     }
 
     /// A sparse disk image reads as the blocks it holds, not the length it

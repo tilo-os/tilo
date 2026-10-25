@@ -133,6 +133,8 @@ impl ResourceApp for DiskUsageShell {
             "analysis-hover-narrow",
             "home",
             "home-narrow",
+            "scanning",
+            "scanning-narrow",
         ]
     }
 
@@ -184,6 +186,9 @@ impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
         self.refresh_home();
         if let Some(scan) = cx.fixture::<ScanResult>() {
             self.set_result((*scan).clone());
+            if self.immediate {
+                self.sample_job("Home");
+            }
         }
     }
 
