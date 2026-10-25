@@ -1436,7 +1436,14 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let capacity = os_actions::disk_capacity(profile.path()).unwrap();
+        // The capacity the scan read from the profile's disk. Read again
+        // here, a pooled filesystem (ZFS, a shared overlay) can already
+        // report another total: its size moves as other writers use the pool.
+        let capacity = pane
+            .scan
+            .as_ref()
+            .and_then(|scan| scan.capacity)
+            .expect("the scan read the disk's capacity");
         let text = crate::widgets::announced_text(pane.compose().as_ref());
         let total = ui::format::size(capacity.total_bytes);
         assert!(
