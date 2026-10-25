@@ -237,6 +237,7 @@ fn endpoint(records: RecordStore) -> CanonicalDestination {
             records,
             record: RecordId::package_primary(),
             project: chat::feedback::canonical_feedback_projection,
+            content: None,
         },
         Box::new(FixtureSigner {
             owner: enrollment().owner,
@@ -467,6 +468,7 @@ fn signing_callback_cannot_acknowledge_after_policy_clock_becomes_unavailable() 
             records,
             record: RecordId::package_primary(),
             project: chat::feedback::canonical_feedback_projection,
+            content: None,
         },
         Box::new(RetiringClockSigner {
             signer: FixtureSigner {
@@ -485,22 +487,55 @@ fn signing_callback_cannot_acknowledge_after_policy_clock_becomes_unavailable() 
 }
 
 #[test]
-fn canonical_owner_refuses_attachment_without_durable_content_witness() {
+fn canonical_owner_acknowledges_a_screenshot_only_once_it_keeps_the_bytes() {
     let root = tempfile::tempdir().unwrap();
     let (records, mut frame) = canonical(root.path());
+    let picture = b"masked report picture".to_vec();
     let mut report = submission();
     report.feedback.screenshot = Some(tilo_app::feedback::ScreenshotRef {
-        hash: "a".repeat(64),
+        hash: blake3::hash(&picture).to_hex().to_string(),
         width: 1,
         height: 1,
     });
     submit(&mut frame, &report);
     records.try_flush().unwrap();
-    let mut service = endpoint(records);
+    // No content store: the report's metadata alone proves nothing.
     assert!(matches!(
-        service.receipt(&report, &enrollment()),
+        endpoint(records.clone()).receipt(&report, &enrollment()),
         Err(Error::NotDurable)
     ));
+    let content = ui::content::ContentStore::memory();
+    let with_content = |content: &ui::content::ContentStore| {
+        CanonicalDestination::new(
+            enrollment().owner,
+            enrollment().destination,
+            CanonicalRecord {
+                records: records.clone(),
+                record: RecordId::package_primary(),
+                project: chat::feedback::canonical_feedback_projection,
+                content: Some(content.clone()),
+            },
+            Box::new(FixtureSigner {
+                owner: enrollment().owner,
+                key: SigningKey::from_bytes(&[41; 32]),
+            }),
+        )
+        .unwrap()
+    };
+    // Other bytes kept are not this picture.
+    content.put(b"some other picture").unwrap();
+    assert!(matches!(
+        with_content(&content).receipt(&report, &enrollment()),
+        Err(Error::NotDurable)
+    ));
+    content.put(&picture).unwrap();
+    let signed = with_content(&content)
+        .receipt(&report, &enrollment())
+        .unwrap();
+    assert_eq!(
+        signed.verify(&report, &enrollment()).unwrap().digest,
+        report.digest().unwrap()
+    );
 }
 
 #[test]
@@ -730,6 +765,7 @@ fn retained_receipt_source_cannot_substitute_report_identity_or_destination() {
                 records: records.clone(),
                 record: RecordId::package_primary(),
                 project: chat::feedback::canonical_feedback_projection,
+                content: None,
             },
             change_destination,
         };
