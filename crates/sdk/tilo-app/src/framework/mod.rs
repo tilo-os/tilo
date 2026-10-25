@@ -355,6 +355,8 @@ pub mod testing;
 mod text;
 mod view;
 pub mod views;
+mod workspace;
+mod workspace_emoji;
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::definition_launch_spec;
@@ -396,6 +398,7 @@ pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use ui_core::record::{chain_of_resource_id, chain_resource_id};
 pub use view::{Bindable, EffectsHandle, ViewCx};
+pub use workspace::WorkspaceRecord;
 
 /// Record content, canonical hashing and picture headers. Use the store
 /// borrowed through `SurfaceCx::content` or `LaunchInput::content` so the host
