@@ -78,19 +78,25 @@ pub(crate) fn known_applications() -> Vec<(&'static str, &'static str)> {
 /// The title of an application the page can open by id, loaded or not.
 /// Whether `permissions` let this person open `app` here, as the workspace
 /// broker decides it on a native desktop: an installed app, and leave to
-/// change the app's part of the workspace.
+/// change the app's part of the workspace, or, to show something that
+/// exists (`existing`: a record, an item of one, such as a window shared
+/// with them), leave to read it. The window it opens is read-only to a
+/// person who may only read: the room keeps none of their changes.
 ///
 /// # Errors
 /// An app this desktop doesn't have, or one this person may not open.
 pub(crate) fn may_open(
     permissions: &ui::permissions::PermissionContext,
     app: &str,
+    existing: bool,
 ) -> Result<(), tilo_actions::remote::ActionHostError> {
     known_application(app).ok_or(tilo_actions::remote::ActionHostError::UnknownAction)?;
-    if !permissions.check(&ui::permissions::PermissionScope::app(
-        app,
-        ui::permissions::ActionKind::Undoable,
-    )) {
+    let kind = if existing {
+        ui::permissions::ActionKind::Read
+    } else {
+        ui::permissions::ActionKind::Undoable
+    };
+    if !permissions.check(&ui::permissions::PermissionScope::app(app, kind)) {
         return Err(tilo_actions::remote::ActionHostError::NotPermitted);
     }
     Ok(())
@@ -1114,7 +1120,7 @@ impl Tiles {
     fn embedded(&mut self, view: &ResourceView) -> Result<TileHost, String> {
         const NO_APP: &str = "Its app doesn't run in the browser";
         let title = known_application(&view.app).ok_or(NO_APP)?;
-        may_open(&self.inputs.permissions.borrow(), &view.app)
+        may_open(&self.inputs.permissions.borrow(), &view.app, true)
             .map_err(|_| format!("You can't open {title} here"))?;
         // An app whose code the page has not fetched yet is not among the
         // loaded ones: fetch it, and the view is tried again once it is in.
