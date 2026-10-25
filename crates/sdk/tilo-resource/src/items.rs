@@ -84,6 +84,18 @@
 //! }
 //! # fn main() {}
 //! ```
+//!
+//! A label joined from several fields names each of them once: naming one
+//! twice would label an item by a field that is not there.
+//!
+//! ```compile_fail
+//! use tilo_resource::Model;
+//!
+//! #[derive(Model, Default)]
+//! #[model(label = "first first")]
+//! pub struct Person { pub first: String, pub last: String }
+//! # fn main() {}
+//! ```
 
 use std::any::TypeId;
 use std::cell::RefCell;
