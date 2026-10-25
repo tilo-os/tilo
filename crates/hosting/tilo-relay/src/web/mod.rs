@@ -1173,26 +1173,7 @@ async fn body(
 /// Whether `user` is admitted to any workspace this relay serves: whose
 /// envelope it keeps.
 async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
-    let workspaces: Vec<_> = web
-        .sessions
-        .context()
-        .relay
-        .workspaces
-        .lock()
-        .await
-        .values()
-        .cloned()
-        .collect();
-    for workspace in workspaces {
-        let workspace = workspace.lock().await;
-        // A governed room names its members' roots apart from
-        // the roots its signed authority admitted.
-        if workspace.admitted_users.contains(&user) || workspace.governed_user_roots.contains(&user)
-        {
-            return true;
-        }
-    }
-    false
+    web.sessions.context().relay.admitted_anywhere(user).await
 }
 
 fn wait(ms: u32) -> Duration {
@@ -1275,9 +1256,17 @@ async fn route(
                     "only a member approves devices here",
                 ));
             }
-            Ok(encoded(
-                &certification.member_approve(approval, tilo_clock::unix_now_ns()),
-            ))
+            // A pending request is certified only while the person it names
+            // is still a member here: their admission is asked again now,
+            // because an approval may arrive after the membership ended.
+            let admitted = admitted_anywhere(web, approval.user_public_key).await;
+            Ok(encoded(&certification.member_approve(
+                approval,
+                tilo_clock::unix_now_ns(),
+                crate::certification::Admission::Member {
+                    admitted: &admitted,
+                },
+            )))
         }
         "/certify/wait" => {
             let digest: [u8; 32] = decode(&bytes)?;

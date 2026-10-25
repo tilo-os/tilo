@@ -2261,6 +2261,14 @@ pub(crate) struct RelayProtocol {
 }
 
 impl RelayProtocol {
+    /// Whether `user` is admitted to any workspace this relay serves: whose
+    /// envelope it keeps. A governed room names its members' roots apart
+    /// from the roots its signed authority admitted.
+    #[cfg(feature = "web")]
+    pub(crate) async fn admitted_anywhere(&self, user: [u8; 32]) -> bool {
+        RelayProtocol::user_is_admitted_anywhere(&self.workspaces, user).await
+    }
+
     /// This relay's certificate and agent trust.
     #[cfg(feature = "web")]
     pub(crate) fn trust(&self) -> crate::room_access::RelayTrust<'_> {
@@ -2270,6 +2278,26 @@ impl RelayProtocol {
             own_user: &self.identity.user_public_key,
             agents: &self.agents,
         }
+    }
+
+    /// Whether `user` is admitted to any workspace in `workspaces`: whose
+    /// envelope the relay keeps. A governed room names its members' roots
+    /// apart from the roots its signed authority admitted.
+    #[cfg(any(feature = "web", test))]
+    pub(crate) async fn user_is_admitted_anywhere(
+        workspaces: &WorkspaceRegistry,
+        user: [u8; 32],
+    ) -> bool {
+        let bound: Vec<SharedWorkspace> = workspaces.lock().await.values().cloned().collect();
+        for workspace in bound {
+            let workspace = workspace.lock().await;
+            if workspace.admitted_users.contains(&user)
+                || workspace.governed_user_roots.contains(&user)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// The peer context a session of this relay runs with.
