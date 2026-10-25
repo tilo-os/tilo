@@ -358,6 +358,11 @@ impl GroupRow {
         let Some(drag) = self.edge_drag.take() else {
             return;
         };
+        if commit {
+            crate::control_hints::performed::note(
+                crate::control_hints::performed::Performed::ResizedWindow,
+            );
+        }
         let mut settle = 0.0;
         for id in std::iter::once(drag.grabbed_id).chain(drag.other_id) {
             let Some(group) = self.groups.iter_mut().find(|g| g.id == id) else {

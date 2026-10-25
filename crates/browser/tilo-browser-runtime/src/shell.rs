@@ -24,6 +24,7 @@
 //! the windows as the people overlay, and following someone tracks their
 //! view ([`people`]).
 
+mod control_hints;
 mod people;
 
 use std::cell::{Cell, RefCell};
@@ -554,6 +555,10 @@ pub(crate) struct BrowserShell {
     navigator_seen: Option<(u64, u64, bool, Rect)>,
     /// Pointing at what is wrong, to report it.
     picker: crate::feedback_pick::PagePicker,
+    /// The desktop's control hints, and what the page's frame last showed
+    /// them.
+    hints: tilo_desktop::control_hints::ControlHints,
+    hints_frame: tilo_desktop::control_hints::HintFrame,
 }
 
 /// What the top bar's chrome reads from the page besides the desktop tree.
@@ -605,7 +610,10 @@ impl BrowserShell {
         }
         let empty = Rc::new(Cell::new(desk_is_empty(&tree)));
         let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy(offers.mac));
+        let hints = control_hints::load();
+        // Beneath the rest, so the surface stays the area's top layer.
         let area = Stack::new()
+            .push(Box::new(hints.announcer()))
             .push(Box::new(EmptyWorkspace {
                 launchpad,
                 shown: Rc::clone(&empty),
@@ -641,6 +649,8 @@ impl BrowserShell {
             navigator_frame: StripFrame::empty(Rect::ZERO),
             navigator_seen: None,
             picker: crate::feedback_pick::PagePicker::default(),
+            hints,
+            hints_frame: tilo_desktop::control_hints::HintFrame::default(),
         }
     }
 
@@ -868,6 +878,9 @@ impl BrowserShell {
 
     fn launch(&self, app: &str) {
         if crate::desktop::known_application(app).is_some() {
+            ui::control_hints::performed::note(
+                ui::control_hints::performed::Performed::OpenedWindow,
+            );
             self.dispatch(&Command::Launch {
                 generation: self.generation.clone(),
                 app: app.into(),
@@ -1299,6 +1312,7 @@ impl BrowserShell {
             } else {
                 tilo_desktop::profile_card::Seen::Here
             },
+            control_hints: Some(self.hints.enabled()),
             // Status, colour and what people see are the desktop's to keep;
             // a page shows the person as their host names them.
             ..ProfileModel::default()
@@ -1307,6 +1321,7 @@ impl BrowserShell {
 
     fn apply_profile_choice(&mut self, choice: ProfileChoice) {
         let request = match choice {
+            ProfileChoice::ControlHints(on) => return self.set_hints_enabled(on),
             ProfileChoice::Rename(name) => HostRequest::Named(name),
             ProfileChoice::Action(id) if id == REPORT_PROBLEM => {
                 self.report_problem();
@@ -1910,6 +1925,7 @@ impl Widget for BrowserShell {
         changed |= self.bar.update(state, path);
         changed |= self.area.update(state, path);
         self.observe_navigation();
+        self.update_hints();
         // Chosen while the surface updated (search, a banner): the page
         // performs them when it reads this frame's status.
         let choices = self.handle.take_host_choices();
@@ -2037,6 +2053,8 @@ impl Widget for BrowserShell {
         // Last, so what the bar opens below its band stays above windows.
         self.bar.draw(scene, transform, text, theme, presence);
         self.draw_pinned_people(scene, transform, text, theme);
+        // Above the bar: a learned hint's dot settles into the avatar.
+        self.draw_hints(scene, transform, text, theme);
         if self.people_open {
             self.draw_people(scene, transform, text, theme);
         } else {
@@ -2072,6 +2090,7 @@ impl Widget for BrowserShell {
                     .handle_event(event, self.cursor, modifiers, &self.area, &windows);
             return;
         }
+        self.hints.heard(event, ui::time::now());
         // The open popover takes the keyboard and the pointer over it; a
         // press elsewhere closes it, and the bar's avatars toggle it.
         if self.people_open || self.people.wants_pointer_capture() {
@@ -2226,6 +2245,7 @@ impl Widget for BrowserShell {
             || (self.people_open && self.people.needs_animation_frame())
             || self.pinned.needs_animation_frame()
             || self.navigator.needs_animation_frame(ui::time::now())
+            || self.hints.needs_animation_frame(ui::time::now())
             || [
                 &self.backdrop as &dyn Widget,
                 &self.bar,
@@ -2237,6 +2257,24 @@ impl Widget for BrowserShell {
             ]
             .iter()
             .any(|child| child.needs_redraw())
+    }
+
+    /// The page asks for animation frames by this, not by
+    /// [`Self::needs_redraw`]: a hint drawn by the shell itself, not by a
+    /// child, says here that it moves.
+    fn needs_animation_frame(&self) -> bool {
+        self.hints.needs_animation_frame(ui::time::now())
+            || [
+                &self.backdrop as &dyn Widget,
+                &self.bar,
+                &self.area,
+                &self.overview,
+                &self.tilo_menu,
+                &self.workspace_menu,
+                &self.profile,
+            ]
+            .iter()
+            .any(|child| child.needs_animation_frame())
     }
 
     /// The earliest wake any part of the page asked for. The bar's own
@@ -2264,6 +2302,7 @@ impl Widget for BrowserShell {
                 .next_wake_deadline(&self.navigator_frame, ui::time::now()),
         )
         .chain(self.linking.due())
+        .chain(self.hints.next_wake_deadline(ui::time::now()))
         .min()
     }
 

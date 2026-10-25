@@ -96,6 +96,9 @@ policies! {
         "tilo.appearance.language",
         "tilo.appearance.studio",
         "tilo.identity.colour",
+        // What the person has learned of the desktop's controls: a hint
+        // taught on one device is not taught again on the next.
+        "tilo.control_hints.learned",
         "tilo.locale.currency",
         "tilo.locale.date_format",
         "tilo.locale.time_format",

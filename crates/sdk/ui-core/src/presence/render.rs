@@ -1064,7 +1064,7 @@ fn faded(
 
 /// The outline of a person's pointer: an arrow with its tip at the origin,
 /// the shape everyone reads as "someone is pointing here".
-fn arrow_path() -> vello::kurbo::BezPath {
+pub(crate) fn arrow_path() -> vello::kurbo::BezPath {
     let mut path = vello::kurbo::BezPath::new();
     path.move_to((0.0, 0.0));
     path.line_to((0.0, 16.0));
