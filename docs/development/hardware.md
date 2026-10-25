@@ -71,8 +71,9 @@ signed release images. Never flash a generic VM disk onto a board merely because
 its architecture matches.
 
 `os-board-<board>` builds a board image from your working tree without
-publishing it. `publish-os-board-<board>` publishes main after the board-image,
-size and OS acceptance checks pass. Use the matching board image, not a generic
+publishing it. `publish-os-board-<board>` publishes main's newest head when t
+has room, after the board-image, size and dev-image gate (`os-dev-gate-aarch64`)
+checks pass. Use the matching board image, not a generic
 VM disk. These development images are separate from signed releases.
 
 On an existing dev target, `tilo-vm guide images` and `guide devices` describe

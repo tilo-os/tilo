@@ -34,8 +34,8 @@ bootc switch "$image" || fail "bootc did not stage $image"
 bootc status --format json | grep -q '"staged": *{' || fail 'bootc reports no staged deployment'
 
 rc=0
-tilo-extension live:system || rc=$?
-state=$(tilo-extension live:status)
+/usr/libexec/tilo-extension live:system || rc=$?
+state=$(/usr/libexec/tilo-extension live:status)
 printf 'live:system exited %s; state: %s\n' "$rc" "$state"
 flag() { grep -Eq "\"$1\": *$2" <<< "$state"; }
 if ((rc == 0)) && flag applied '"system"' && flag failed false; then
