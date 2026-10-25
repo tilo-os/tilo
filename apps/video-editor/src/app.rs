@@ -8638,10 +8638,11 @@ impl VideoEditorApp {
                 }
             }
             ExportStatus::Idle => {
-                // One source of truth for the availability copy — the export
-                // module knows what it can actually do, this dialog does not.
-                if let Some(reason) = crate::export::unavailable_reason() {
-                    let reason = elide_at(reason, width, &ty.xs, tr);
+                // One source of truth for what stands in the way — the export
+                // module knows what it can actually do and which footage it has
+                // not read, this dialog does not.
+                if let Some(reason) = self.export_blocker() {
+                    let reason = elide_at(&reason, width, &ty.xs, tr);
                     text(scene, tr, tf, &reason, &ty.xs, dim, x0, status.y0);
                 }
             }
