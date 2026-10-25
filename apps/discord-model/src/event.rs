@@ -172,6 +172,12 @@ pub struct ReactionChanged {
     pub user_avatar_url: Option<String>,
     /// A unicode emoji, or a custom emoji's name as `:name:`.
     pub emoji: String,
+    /// A custom emoji's id; none for a unicode one.
+    #[serde(default)]
+    pub emoji_id: Option<String>,
+    /// Whether the custom emoji is animated.
+    #[serde(default)]
+    pub animated: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +228,21 @@ pub struct LayoutChanged {
     pub bot_user: String,
     pub channels: Vec<ChannelInfo>,
     pub roles: Vec<RoleInfo>,
+    /// The guild's custom emoji, which a Tilo reaction of the same `:name:`
+    /// is mirrored as.
+    #[serde(default)]
+    pub emojis: Vec<EmojiInfo>,
+}
+
+/// One of a guild's custom emoji.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct EmojiInfo {
+    pub id: String,
+    /// 2 to 32 letters, digits and underscores.
+    pub name: String,
+    #[serde(default)]
+    pub animated: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

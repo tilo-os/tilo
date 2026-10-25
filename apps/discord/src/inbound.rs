@@ -82,7 +82,9 @@ pub struct RemoveItem {
     pub reason: String,
 }
 
-/// A Chat `react` or `unreact` with an appearance.
+/// A reaction the bot adds or takes back on a Chat message for a Discord
+/// member: the `react` or `unreact` field edit of the message's reactions,
+/// with the member's appearance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReactItem {
     pub message: String,
@@ -416,9 +418,16 @@ pub fn plan_deleted(
     plan
 }
 
-/// `reaction-added` (`added`) and `reaction-removed`.
+/// `reaction-added` (`added`) and `reaction-removed`: the Discord member's
+/// own reaction in Tilo, under their name, with the emoji as Tilo writes it
+/// ([`crate::emoji::to_tilo`]; `chat` is the read of the reacted message).
 #[must_use]
-pub fn plan_reaction(guild: &Guild, event: &ReactionChanged, added: bool) -> InboundPlan {
+pub fn plan_reaction(
+    guild: &Guild,
+    event: &ReactionChanged,
+    chat: &serde_json::Value,
+    added: bool,
+) -> InboundPlan {
     let mut plan = InboundPlan::default();
     if ignored(guild, &event.user_id, None) {
         return plan;
@@ -426,6 +435,14 @@ pub fn plan_reaction(guild: &Guild, event: &ReactionChanged, added: bool) -> Inb
     let Some(mapped) = guild.by_discord(MappedKind::Message, &event.message_id) else {
         return plan;
     };
+    // A custom emoji whose name Tilo cannot write (Discord's own rule is
+    // the same, so only a malformed event) is no reaction Tilo can show.
+    if event.emoji_id.is_some() && tilo_resource::custom_emoji_name(&event.emoji).is_none() {
+        return plan;
+    }
+    let held = tilo::message(chat, &mapped.tilo)
+        .map(|message| message.reactions)
+        .unwrap_or_default();
     let avatar = event.user_avatar_url.as_ref().and_then(|url| {
         guild
             .avatars
@@ -435,7 +452,7 @@ pub fn plan_reaction(guild: &Guild, event: &ReactionChanged, added: bool) -> Inb
     });
     let item = ReactItem {
         message: mapped.tilo.clone(),
-        emoji: event.emoji.clone(),
+        emoji: crate::emoji::to_tilo(&event.emoji, &held),
         appearance: Appearance {
             name: event.user_name.clone(),
             avatar,

@@ -23,6 +23,7 @@ use chat::resource::ChatShell;
 use discord::resource::Discord;
 use discord::{APP_ID, Guild, KIND};
 use serde_json::{Value, json};
+use tilo_automation::grant::{EDIT_PARAM, FIELD_EDIT};
 use tilo_automation::{
     ActorFilter, Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec,
 };
@@ -108,6 +109,30 @@ fn message(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Ste
         args,
         shown.then(|| item("appearance")),
     )
+}
+
+/// The framework's `op` field edit (`react` or `unreact`) of the reactions
+/// of the loop item's message, with its emoji, as the Discord member it
+/// shows. The path is spelled out so the grant reaches that field and no
+/// other: the bridge reacts for Discord people, and edits nothing else of
+/// anyone's message.
+fn reaction(id: &str, op: &str) -> Step {
+    let step = |kind: &str, binding: Binding| {
+        Binding::Object(BTreeMap::from([(kind.to_owned(), binding)]))
+    };
+    let edit = Binding::Object(BTreeMap::from([
+        (
+            "path".to_owned(),
+            Binding::List(vec![
+                step("field", text("messages")),
+                step("item", item("message")),
+                step("field", text("reactions")),
+            ]),
+        ),
+        ("op".to_owned(), text(op)),
+        ("emoji".to_owned(), item("emoji")),
+    ]));
+    message(id, FIELD_EDIT, &[(EDIT_PARAM, edit)], true)
 }
 
 /// The id of the item step `step` created, as text.
@@ -201,6 +226,7 @@ fn pass() -> Vec<Step> {
                     ("bot_user", item("bot_user")),
                     ("channels", item("channels")),
                     ("roles", item("roles")),
+                    ("emojis", item("emojis")),
                 ],
             )],
         ),
@@ -388,24 +414,8 @@ fn pass() -> Vec<Step> {
                 ),
             ],
         ),
-        each(
-            "chat_reacts",
-            vec![message(
-                "chat-react",
-                "react",
-                &[("message", item("message")), ("emoji", item("emoji"))],
-                true,
-            )],
-        ),
-        each(
-            "chat_unreacts",
-            vec![message(
-                "chat-unreact",
-                "unreact",
-                &[("message", item("message")), ("emoji", item("emoji"))],
-                true,
-            )],
-        ),
+        each("chat_reacts", vec![reaction("chat-react", "react")]),
+        each("chat_unreacts", vec![reaction("chat-unreact", "unreact")]),
         each(
             "blocks",
             vec![guild(
@@ -709,6 +719,40 @@ fn the_bridge_program_checks_against_chat_and_discord_and_is_current() {
         "bridge/program.json is stale; run this test with BLESS=1, or write the line\nPROGRAM {}",
         String::from_utf8_lossy(&bytes)
     );
+}
+
+/// The bridge reacts for Discord people through the field edit of a
+/// message's reactions, and its grant reaches that field of a message and
+/// no other field of Chat's.
+#[test]
+fn the_bridge_may_edit_a_messages_reactions_and_nothing_else_of_it() {
+    let shortcut = program();
+    let grant = tilo_automation::grant::derived_rules(&shortcut, &catalog());
+    let field_edits: Vec<String> = grant
+        .iter()
+        .map(|rule| rule.node.to_string())
+        .filter(|node| node.contains("app:so.tilo.chat") && node.ends_with(FIELD_EDIT))
+        .collect();
+    assert_eq!(
+        field_edits,
+        [
+            "room:*/app:so.tilo.chat/kind:chat.messages/resource:*/item:*/field:reactions/action:field-edit"
+        ]
+    );
+    // What the room decides a reaction at, and what it decides another
+    // edit of the same message at.
+    let decided = |field: &str| {
+        let node = ui::permissions::TreePath::room("room")
+            .app(CHAT_APP)
+            .kind(MESSAGES_KIND)
+            .resource("part-0")
+            .item("m1")
+            .field(field)
+            .action(FIELD_EDIT);
+        tilo_automation::grant_answer(&grant, &node, ui::permissions::ActionKind::Undoable).answer
+    };
+    assert_eq!(decided("reactions"), ui::permissions::Answer::Allow);
+    assert_eq!(decided("text"), ui::permissions::Answer::Deny);
 }
 
 #[test]

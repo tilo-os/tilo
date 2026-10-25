@@ -260,25 +260,73 @@ fn the_bot_reacts_once_per_emoji_while_tilo_people_have_it() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
     let reacted = |rs: Value| chat(&[msg("m1", "u_ada", "x", &json!({"reactions": rs}))]);
-    let one = reacted(json!([{"emoji": "👍", "user": "u_ada"}]));
-    assert_eq!(plan_reaction(&g, &one, "m1", "👍", true).0.len(), 1);
-    let two = reacted(json!([{"emoji": "👍", "user": "u_ada"}, {"emoji": "👍", "user": "u_bo"}]));
+    let one = reacted(json!([{"emoji": "👍", "by": "u_ada", "at": 1}]));
+    let (reacts, unreacts) = plan_reaction(&g, &one, "m1", "👍", true);
+    assert_eq!(
+        reacts,
+        [ReactOp {
+            channel: "d1".into(),
+            message: "d_m1".into(),
+            emoji: "👍".into(),
+        }]
+    );
+    assert!(unreacts.is_empty());
+    let two = reacted(json!([
+        {"emoji": "👍", "by": "u_ada", "at": 1},
+        {"emoji": "👍", "by": "u_bo", "at": 2}
+    ]));
     assert!(
         plan_reaction(&g, &two, "m1", "👍", true).0.is_empty(),
         "already there"
     );
-    let persona_only = reacted(
-        json!([{"emoji": "👍", "user": "bot:i", "persona": {"service": "discord", "account": "d7"}}]),
+    assert!(
+        plan_reaction(&g, &one, "m1", "👍", false).1.is_empty(),
+        "Ada still has it"
     );
+    // What the bridge reacted for Discord people never goes back out.
+    let persona_only = reacted(json!([
+        {"emoji": "👍", "by": "bot:i", "persona": "discord/d7", "name": "Dee", "at": 1}
+    ]));
     assert_eq!(
         plan_reaction(&g, &persona_only, "m1", "👍", false).1.len(),
         1,
         "the last Tilo person took it back"
     );
+    // One emoji spelled with or without its variation selector is one.
+    let hearts = reacted(json!([
+        {"emoji": "❤", "by": "u_bo", "at": 1},
+        {"emoji": "❤️", "by": "u_ada", "at": 2}
+    ]));
     assert!(
-        plan_reaction(&g, &one, "m1", ":tilo_hello:", true)
-            .0
-            .is_empty(),
-        "custom emoji cannot go across"
+        plan_reaction(&g, &hearts, "m1", "❤️", true).0.is_empty(),
+        "Bo's heart is already the bot's"
+    );
+}
+
+#[test]
+fn a_workspace_emoji_crosses_as_the_servers_emoji_of_its_name_only() {
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
+    g.observe_emojis(vec![discord_wire::event::EmojiInfo {
+        id: "55".into(),
+        name: "tilo_hello".into(),
+        animated: false,
+    }]);
+    let reacted = |rs: Value| chat(&[msg("m1", "u_ada", "x", &json!({"reactions": rs}))]);
+    let hello = reacted(json!([{"emoji": ":tilo_hello:", "by": "u_ada", "at": 1}]));
+    assert_eq!(
+        plan_reaction(&g, &hello, "m1", ":tilo_hello:", true).0[0].emoji,
+        "tilo_hello:55",
+        "Discord's reaction routes name a custom emoji `name:id`"
+    );
+    assert_eq!(
+        plan_reaction(&g, &reacted(json!([])), "m1", ":tilo_hello:", false).1[0].emoji,
+        "tilo_hello:55"
+    );
+    let pizza = reacted(json!([{"emoji": ":pizza:", "by": "u_ada", "at": 1}]));
+    assert_eq!(
+        plan_reaction(&g, &pizza, "m1", ":pizza:", true),
+        (Vec::new(), Vec::new()),
+        "a workspace emoji the server has no emoji of stays in Tilo"
     );
 }
