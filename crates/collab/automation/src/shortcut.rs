@@ -165,6 +165,13 @@ pub enum Binding {
     /// `{{step.ID/json/pointer}}` placeholders. Strings are inserted as they
     /// are; other values as compact JSON.
     Template(String),
+    /// A JSON object of bound values, a member left out when its binding
+    /// has no value. A value built of parts shows its shape to whoever reads
+    /// the program: a field edit's path names the field it changes, so its
+    /// grant reaches that field only ([`crate::grant::edit_reach`]).
+    Object(BTreeMap<String, Binding>),
+    /// A JSON array of bound values, `null` where a binding has no value.
+    List(Vec<Binding>),
 }
 
 impl Binding {
