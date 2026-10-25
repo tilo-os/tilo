@@ -2736,7 +2736,7 @@ impl WindowGroup {
                 self.note_maximized_press(self.last_cursor);
                 false
             }
-            WindowEvent::CursorLeft { .. } => self.top_edge.on_leave(crate::time::now()),
+            WindowEvent::CursorLeft { .. } => self.top_edge.on_leave(),
             WindowEvent::Touch(touch) => {
                 let p = Point::new(touch.location.x / scale, touch.location.y / scale);
                 match touch.phase {
@@ -2750,9 +2750,7 @@ impl WindowGroup {
                         self.top_edge.on_touch_start(p, &geo);
                         false
                     }
-                    winit::event::TouchPhase::Moved => {
-                        self.top_edge.on_touch_move(p, crate::time::now())
-                    }
+                    winit::event::TouchPhase::Moved => self.top_edge.on_touch_move(p),
                     winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
                         self.top_edge.on_touch_end();
                         false
@@ -2793,7 +2791,7 @@ impl WindowGroup {
         }
         for action in self.maximized_controls.take_activated() {
             // A used control is done with the bar.
-            if self.top_edge.hide(crate::time::now()) {
+            if self.top_edge.hide() {
                 self.top_edge_changed();
             }
             if action == CLOSE_TARGET && self.bar.is_held(self.bar.active_id()) {
@@ -4185,8 +4183,6 @@ impl Widget for WindowGroup {
             .is_some_and(|(_, h)| h.needs_animation_frame());
         let rect_in_flight =
             (!self.reduce_motion && self.rect_spring.is_some()) || self.rest_layout_owed;
-        let chrome_fade = self.maximized_chrome_live()
-            && self.top_edge.fading(crate::time::now(), self.chrome_motion);
         let top_slide = self.top_slide_in_flight();
         let tab_fade = self
             .tab_fade
@@ -4203,7 +4199,6 @@ impl Widget for WindowGroup {
             || size_label_fading
             || self.fullscreen_bar_fading()
             || top_slide
-            || chrome_fade
             || close_in_flight
             || group_close_in_flight
             || rect_in_flight

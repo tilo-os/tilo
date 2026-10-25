@@ -119,6 +119,13 @@ impl DesktopSurface {
         self.push_motion_source(source);
     }
 
+    /// What started the change being laid out ([`Self::begin_transition`]),
+    /// until the layout that shows it has run.
+    #[must_use]
+    pub fn transition_source(&self) -> Option<MotionSource> {
+        self.navigation.transition
+    }
+
     fn push_motion_source(&mut self, source: MotionSource) {
         for strip in self.strip_ids() {
             if let Some(row) = self.row_mut(strip) {
