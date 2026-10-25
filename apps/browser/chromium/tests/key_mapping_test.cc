@@ -36,4 +36,9 @@ int main() {
   assert(tilo::ShortcutLetter("\xd1\x81", "KeyC") == 'c');
   assert(tilo::ShortcutLetter("a", "KeyQ") == 'a');
   assert(tilo::ShortcutLetter("&", "Digit1") == 0);
+  // Dvorak types ; on the US Z key and ' on the US Q key: a key whose text a
+  // US layout has names itself, so Command+; is no Undo.
+  assert(tilo::ShortcutLetter(";", "KeyZ") == 0);
+  assert(tilo::ShortcutLetter(":", "KeyZ") == 0);
+  assert(tilo::ShortcutLetter("'", "KeyQ") == 0);
 }
