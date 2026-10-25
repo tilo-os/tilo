@@ -1385,7 +1385,18 @@ async fn run_v2_reader<R>(
                 }
                 // Closing on bounded receiver overflow makes loss explicit;
                 // the future journal owner can recover status on reconnect.
-                if action_sink.try_send(action).is_err() {
+                if let Err(error) = action_sink.try_send(action) {
+                    let (reason, frame) = match error {
+                        mpsc::error::TrySendError::Full(frame) => ("its reader is behind", frame),
+                        mpsc::error::TrySendError::Closed(frame) => ("nobody reads it", frame),
+                    };
+                    let frame: String = format!("{frame:?}").chars().take(120).collect();
+                    tracing::warn!(
+                        reason,
+                        frame,
+                        capacity = action_sink.max_capacity(),
+                        "relay session closed: a private frame found its queue full or closed"
+                    );
                     return;
                 }
             }
