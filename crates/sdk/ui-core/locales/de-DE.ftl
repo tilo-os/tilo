@@ -762,6 +762,8 @@ approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
 
 author-bot-chip = Bot
 author-via-chip = über { $service }
+author-from-service = Aus { $service }
+author-from-service-as = Aus { $service } als { $handle }
 author-bot-details = { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-linked = Mit { $person } auf Tilo verknüpft
