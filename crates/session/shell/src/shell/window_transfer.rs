@@ -1114,7 +1114,7 @@ fn follow(
         }
     };
     forget(&follower.address);
-    let instance = crate::shell::state::next_id();
+    let instance = st.tree().mint_id();
     if !reopen_on(&follower.address, &data_home, instance, record.as_ref()) {
         return Some(follower);
     }
@@ -1127,12 +1127,13 @@ fn follow(
 /// View are on the disk.
 fn open_followed(st: &mut ChromeState, follower: Follower, instance: u64) -> Option<()> {
     let strip = destination_strip(st, follower.workspace)?;
+    let id = st.tree().mint_id();
     let tab = place_in(
         st,
         follower.workspace,
         strip,
         Tab {
-            id: crate::shell::state::next_id(),
+            id,
             title: follower.title.clone(),
             tile: TileContent::LocalApp {
                 app_id: follower.address.app_id.clone(),
@@ -1630,12 +1631,13 @@ fn open_fresh(st: &mut ChromeState, plan: &Plan) {
         failed(st, plan, &t("window-move-unknown-workspace"));
         return;
     };
+    let id = st.tree().mint_id();
     place_in(
         st,
         plan.destination.workspace,
         strip,
         Tab {
-            id: crate::shell::state::next_id(),
+            id,
             title: plan.title.clone(),
             tile: TileContent::LocalApp {
                 app_id: plan.app_id.clone(),
@@ -1869,7 +1871,7 @@ fn begin(
         destination: profile_root(&data_home, plan.destination.room, &plan.app_id),
         instance: match mode {
             TransferMode::Move => *instance,
-            TransferMode::Copy => crate::shell::state::next_id(),
+            TransferMode::Copy => st.tree().mint_id(),
         },
     };
     if plan.source.hosted {
@@ -2012,12 +2014,13 @@ fn carry_over(
 /// `None` when the destination workspace is gone.
 fn opening_card(st: &mut ChromeState, plan: &Plan) -> Option<TabId> {
     let strip = destination_strip(st, plan.destination.workspace)?;
+    let id = st.tree().mint_id();
     Some(place_in(
         st,
         plan.destination.workspace,
         strip,
         Tab {
-            id: crate::shell::state::next_id(),
+            id,
             title: plan.title.clone(),
             tile: TileContent::LocalApp {
                 app_id: plan.app_id.clone(),

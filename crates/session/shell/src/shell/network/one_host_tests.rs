@@ -171,7 +171,6 @@ pub(crate) struct Device {
     identity: Identity,
     /// The id namespace this device mints its windows in.
     salt: u16,
-    minted: Mutex<u64>,
     pub(crate) tree: WorkspaceTreeHandle,
     net: Option<Arc<ShellNetwork>>,
     custody: Arc<Mutex<Option<(SigningKey, DeviceCert)>>>,
@@ -258,13 +257,20 @@ impl Device {
         capabilities: DeviceCapabilities,
         wakes: &Arc<Wakes>,
     ) -> Self {
-        let mut tree = WorkspaceTree::default();
-        tree.set_salt_override(salt);
-        Self::start_with(person, label, dir, salt, capabilities, wakes, tree)
+        Self::start_with(
+            person,
+            label,
+            dir,
+            salt,
+            capabilities,
+            wakes,
+            WorkspaceTree::default(),
+        )
     }
 
     /// [`Self::start`] over `tree`, which persists to the device's state
-    /// file.
+    /// file and mints under `salt` from now on, as a session sets its
+    /// device's salt on the tree it loads.
     pub(crate) fn start_with(
         person: &Person,
         label: &str,
@@ -290,13 +296,13 @@ impl Device {
         mut tree: WorkspaceTree,
     ) -> Self {
         std::fs::create_dir_all(dir).unwrap();
+        tree.set_peer_salt(salt);
         tree.persist_path = Some(dir.join("state.json"));
         let mut device = Self {
             label: label.into(),
             dir: dir.to_path_buf(),
             identity,
             salt,
-            minted: Mutex::new(0),
             tree: tree.shared(),
             net: None,
             custody: Arc::default(),
@@ -388,13 +394,13 @@ impl Device {
     /// does.
     pub(crate) fn come_back(&mut self) {
         let path = self.dir.join("state.json");
-        let (mut tree, notice) = crate::shell::persist::load_or_default(&path);
+        let (mut tree, notice) =
+            crate::shell::persist::load_device_tree_or_default(&path, self.salt);
         assert!(
             notice.is_none(),
             "{} reads its own state file: {notice:?}",
             self.label
         );
-        tree.set_salt_override(self.salt);
         tree.persist_path = Some(path);
         self.tree = tree.shared();
         *self.state.lock().unwrap() = Loop::default();
@@ -677,13 +683,9 @@ impl Device {
         }
     }
 
+    /// A fresh id in this device's namespace, as its tree mints.
     fn mint(&self) -> u64 {
-        let minted = {
-            let mut minted = self.minted.lock().unwrap();
-            *minted = minted.saturating_add(1);
-            *minted
-        };
-        tilo_desktop_model::compose_id(self.salt, minted.saturating_add(0x00E2_E000))
+        self.tree.read().mint_id()
     }
 
     /// Let the notes app keep records in `room`, as opening the app there

@@ -121,7 +121,7 @@ fn tree() -> WorkspaceTree {
             .collect(),
     }];
     let mut tree = WorkspaceTree::default();
-    tree.set_salt_override(SALT);
+    tree.set_peer_salt(SALT);
     tree.desktop.workspaces = vec![ws];
     tree.desktop.active = ws_id;
     tree.desktop.active_strip.insert(ws_id, STRIP);
@@ -929,7 +929,7 @@ fn renumbered_outputs_return_every_group_to_its_monitor() {
         assert_every_group_stays_on_its_display(&mut desk, fixture);
 
         let mut tree: WorkspaceTree = serde_json::from_str(&saved).expect("the saved state loads");
-        tree.set_salt_override(SALT);
+        tree.set_peer_salt(SALT);
         let outputs = desk.outputs.clone();
         let mut restarted = Desk::with_tree(tree, outputs);
         assert_groups_on_their_monitors(&mut restarted, &format!("{fixture}, restart"));

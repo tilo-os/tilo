@@ -72,11 +72,6 @@ impl ShellOverlayHost {
             let Some(&dest_ptr) = self.group_row_ptrs.get(&dest_strip_id) else {
                 continue;
             };
-            // One globally unique id is shared by the rendered group, the
-            // durable cache and the replicated document. Generating an id
-            // independently inside each strip made a later resync unable to
-            // identify the group the person had just moved.
-            let new_group_id = crate::shell::state::next_id();
             let target = {
                 let dest_row: &GroupRow = unsafe { &*dest_ptr };
                 dest_row
@@ -96,17 +91,25 @@ impl ShellOverlayHost {
             // host. If the destination or document is stale, returning the
             // payload to its source avoids a visual-only layout that a later
             // resync would appear to resurrect.
-            let committed = self.chrome.clone().is_some_and(|chrome| {
+            //
+            // One id, minted in the tree's namespace, is shared by the
+            // rendered group, the durable cache and the replicated document.
+            // Generating an id independently inside each strip made a later
+            // resync unable to identify the group the person had just moved.
+            let committed = self.chrome.clone().and_then(|chrome| {
                 let st = chrome.borrow_mut();
-                st.tree_mut().move_tab_across_strips(
+                let mut tree = st.tree_mut();
+                let new_group_id = tree.mint_id();
+                tree.move_tab_across_strips(
                     src_strip_id,
                     dest_strip_id,
                     payload.tab_id,
                     new_group_id,
                     target,
                 )
+                .then_some(new_group_id)
             });
-            if committed {
+            if let Some(new_group_id) = committed {
                 let Some(&target_ptr) = self.group_row_ptrs.get(&dest_strip_id) else {
                     continue;
                 };

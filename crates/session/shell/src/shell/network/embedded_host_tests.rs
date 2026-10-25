@@ -229,7 +229,7 @@ fn a_new_workspace_keeps_its_windows_and_never_joins_while_it_is_placed() {
     home.env()
         .set("TILO_USER_ID", hex::encode(root.verifying_key().to_bytes()));
     let mut tree = WorkspaceTree::default();
-    tree.set_salt_override(7);
+    tree.set_peer_salt(7);
     let (workspace, room) = tree.create_hosted_workspace("Plans");
     tree.persist_path = Some(dir.path().join("workspaces.json"));
     let tab = compose_id(7, 1);

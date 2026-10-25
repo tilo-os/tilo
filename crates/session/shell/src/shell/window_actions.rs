@@ -778,11 +778,12 @@ pub fn transfer_tab_to_workspace(
         let Some((dst_strip, gap_index)) = destination else {
             return Err(MoveTabError::UnknownWorkspace);
         };
+        let group = tree.mint_id();
         if !tree.move_tab_across_strips(
             src_strip,
             dst_strip,
             tab_id,
-            crate::shell::state::next_id(),
+            group,
             crate::shell::state::DropTarget::GroupGap { gap_index },
         ) {
             return Err(MoveTabError::DocumentRefused);

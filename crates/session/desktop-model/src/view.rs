@@ -10,10 +10,9 @@ use crate::workspace::Workspace;
 
 impl DesktopTree {
     /// The salt replication treats as this tree's own — the id range this
-    /// tree may write and sweep: [`Self::peer_salt_override`] when set,
-    /// otherwise the host's own `host_salt`.
-    pub fn local_salt_or(&self, host_salt: u16) -> u16 {
-        self.peer_salt_override.unwrap_or(host_salt)
+    /// tree mints in, writes and sweeps: [`Self::salt`].
+    pub const fn local_salt(&self) -> u16 {
+        self.salt
     }
 
     /// Every room this device is in, deduplicated, in workspace order. A
@@ -124,8 +123,8 @@ mod tests {
         let held = BTreeMap::from([("r".to_owned(), "doc".to_owned())]);
         assert!(tree.set_room_records(room, held.clone()));
         assert!(!tree.set_room_records(room, held));
-        assert_eq!(tree.local_salt_or(7), 7);
-        tree.peer_salt_override = Some(3);
-        assert_eq!(tree.local_salt_or(7), 3);
+        assert_eq!(tree.local_salt(), 0);
+        tree.salt = 3;
+        assert_eq!(tree.local_salt(), 3);
     }
 }

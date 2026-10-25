@@ -1004,7 +1004,7 @@ impl ShellDriver {
             let st = handle.borrow();
             let person = st.local_user_id.clone();
             let mut tree = st.tree_mut();
-            tree.set_salt_override(crate::own_device::SHOWN_SALT);
+            tree.set_peer_salt(crate::own_device::SHOWN_SALT);
             let before = all_tab_ids(&tree);
             crate::own_device::seed_research(&mut tree, crate::own_device::SHOWN_SALT, &person);
             let after = all_tab_ids(&tree);
@@ -1042,7 +1042,7 @@ impl ShellDriver {
         handle
             .borrow()
             .tree_mut()
-            .set_salt_override(crate::own_device::SHOWN_SALT);
+            .set_peer_salt(crate::own_device::SHOWN_SALT);
         self.own_device = Some((
             crate::own_device::OwnDevice::laptop(&person),
             crate::own_device::board_list(),
@@ -1115,8 +1115,8 @@ impl ShellDriver {
     /// Design. What the strip switcher shows faces for.
     pub fn seed_strips_with_people_for_shots(&mut self) {
         use shell::shell::state::{
-            AppKind, Collaborator, MintIds, ProcessIds, Strip, StripId, Tab, TileContent,
-            WindowGroup, WindowWidth,
+            AppKind, Collaborator, MintIds, Strip, StripId, Tab, TileContent, WindowGroup,
+            WindowWidth,
         };
         use tilo_action_policy::Role;
         self.seed_shared_room();
@@ -1127,6 +1127,7 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             let ws_id = tree.desktop.active;
             let _ = tree.admit_here_for_test(ws_id, &owner, "cy", Role::Editor);
+            let mut ids = tree.ids();
             let Some(ws) = tree.desktop.active_workspace_mut() else {
                 return;
             };
@@ -1137,7 +1138,6 @@ impl ShellDriver {
                 ("Research", AppKind::Browser, "Browser"),
                 ("Design", AppKind::Other("Word".into()), "Document"),
             ] {
-                let mut ids = ProcessIds;
                 let tab = Tab {
                     id: ids.mint_id(),
                     title: label.into(),
@@ -2959,18 +2959,16 @@ impl ShellDriver {
     /// One saved window that didn't reopen, alone on the strip: its app
     /// `app_id` (shown as `label`) and what the restore found, `note`.
     fn scene_saved_window(&mut self, app_id: &str, label: &str, note: &str) {
-        use shell::shell::state::{
-            MintIds, ProcessIds, Tab, TileContent, WindowGroup, WindowWidth,
-        };
+        use shell::shell::state::{MintIds, Tab, TileContent, WindowGroup, WindowWidth};
         self.with_chrome(|st| {
             {
                 let mut tree = st.tree_mut();
+                let mut ids = tree.ids();
                 if let Some(ws) = tree.desktop.active_workspace_mut() {
                     for strip in &mut ws.strips {
                         strip.window_groups.clear();
                     }
                     if let Some(strip) = ws.strips.first_mut() {
-                        let mut ids = ProcessIds;
                         let tab = Tab {
                             id: ids.mint_id(),
                             title: label.into(),

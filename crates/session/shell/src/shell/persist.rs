@@ -925,6 +925,17 @@ fn attach_saved_doc(tree: &mut WorkspaceTree, path: &Path) {
 /// a [`WorkspaceTree`], or its `schema_version` is not
 /// [`NATIVE_STATE_SCHEMA_VERSION`].
 pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
+    load_device_tree_from(path, 0)
+}
+
+/// [`load_tree_from`] for the device whose salt is `salt`: the tree mints
+/// under it from the start, the repairs at load included. Ids already saved
+/// keep theirs.
+///
+/// # Errors
+///
+/// As [`load_tree_from`].
+pub fn load_device_tree_from(path: &Path, salt: u16) -> std::io::Result<WorkspaceTree> {
     use std::io::Read;
     // A save still queued in this process is newer than the file.
     wait_for_saves();
@@ -974,6 +985,8 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // The file envelope's version is stamped on write; in memory the tree
     // carries the portable desktop schema.
     tree.desktop.schema_version = STATE_SCHEMA_VERSION;
+    // Before anything below mints: the repairs make strips and workspaces.
+    tree.set_peer_salt(salt);
     // Before the repairs below, so the seed after them records their outcome.
     attach_saved_doc(&mut tree, path);
     bind_workspaces_to_rooms(&mut tree);
@@ -1153,12 +1166,18 @@ fn clear_transient_launch_notes(desktop: &mut crate::shell::state::DesktopTree) 
 /// the person. Never modifies the file; a copy of the explanation is
 /// left beside it.
 pub fn load_or_default(path: &Path) -> (WorkspaceTree, Option<StateNotice>) {
-    match load_tree_from(path) {
+    load_device_tree_or_default(path, 0)
+}
+
+/// [`load_or_default`] for the device whose salt is `salt`: the loaded or
+/// first-boot tree mints under it.
+pub fn load_device_tree_or_default(path: &Path, salt: u16) -> (WorkspaceTree, Option<StateNotice>) {
+    match load_device_tree_from(path, salt) {
         Ok(t) => (t, None),
         Err(e) => {
             if !path.exists() {
                 tracing::info!(path = %path.display(), "no state file; first boot");
-                return (WorkspaceTree::bootstrap_default(), None);
+                return (WorkspaceTree::bootstrap_default_with_salt(salt), None);
             }
             // A newer layout means the data is intact and this build is
             // the wrong one; an unreadable file may be damage.
@@ -1180,7 +1199,10 @@ pub fn load_or_default(path: &Path) -> (WorkspaceTree, Option<StateNotice>) {
                 notice.one_line()
             );
             leave_notice_beside_the_file(path, &notice);
-            (WorkspaceTree::bootstrap_default(), Some(notice))
+            (
+                WorkspaceTree::bootstrap_default_with_salt(salt),
+                Some(notice),
+            )
         }
     }
 }
