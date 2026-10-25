@@ -4294,6 +4294,7 @@ impl PdfApp {
                     self.raster_links.clear();
                     self.raster_links_pending.clear();
                     self.raster_text_pending.clear();
+                    let hovered = self.text_hover.is_some();
                     self.page_plan_replaced("the pages changed");
                     if let Some(document) = self.raster_document.as_mut() {
                         document.page_sizes = page_sizes;
@@ -4301,6 +4302,12 @@ impl PdfApp {
                         document.rotations = rotations;
                     }
                     self.rebuild_page_maps();
+                    // A pointer resting on a page keeps its text read ahead:
+                    // the page under it in the new layout is asked for again,
+                    // or a press there would wait for a layer nobody asked.
+                    if hovered {
+                        self.hover_text(self.last_mouse);
+                    }
                     self.submit_text_batch();
                     self.dirty = true;
                 }
