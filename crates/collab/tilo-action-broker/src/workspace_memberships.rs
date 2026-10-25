@@ -86,6 +86,47 @@ impl CapnpBrokerState {
         )
     }
 
+    /// Let the app `route` names author its room before it opens there as
+    /// `certificate`'s person, when the room does not let it yet and that
+    /// person may grant it
+    /// ([`super::services::WorkspaceMemberships::app_opens_by_granting`]):
+    /// the same membership invocation a launch asks, waited for until the
+    /// grant is in this device's view of the room. Nothing to do otherwise.
+    ///
+    /// # Errors
+    /// The invocation was refused or ended without an answer.
+    pub(crate) async fn admit_opening_app(
+        &self,
+        route: &CrdtRoute,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        if route.app_id.is_empty() {
+            return Ok(());
+        }
+        let Some(memberships) = self.services.workspace_memberships.as_ref() else {
+            return Ok(());
+        };
+        if !memberships.app_opens_by_granting(&route.cluster_id, &route.app_id, certificate) {
+            return Ok(());
+        }
+        let job = self.invoke_workspace_membership(
+            &route.cluster_id,
+            &WorkspaceMembershipCommand::GrantAppAuthorship {
+                app: route.app_id.clone(),
+            },
+            certificate,
+        )?;
+        let completed = tokio::task::spawn_blocking(move || job.completion.recv())
+            .await
+            .map_err(|_| "app authorship worker stopped")?
+            .map_err(|_| "app authorship ended without an answer")?;
+        if completed.code.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("app authorship refused: {}", completed.message))
+        }
+    }
+
     fn invoke_workspace_person_action(
         &self,
         room: &str,
