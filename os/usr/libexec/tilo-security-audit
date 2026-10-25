@@ -568,10 +568,16 @@ else
   note "no TPM short-PIN authority verifier is installed; installation uses an independent strong passphrase"
 fi
 
-# Root filesystem encryption. Walk from the root mount to its backing device and
+# Root filesystem encryption. Walk from the physical root (/sysroot; / is
+# composefs, which no block device backs) to its backing device by number and
 # ask whether a dm-crypt layer is under it.
-rootsrc="$(findmnt -nro SOURCE / 2>/dev/null | sed 's/\[.*//')"
-roottype="$(lsblk -nro TYPE "$rootsrc" 2>/dev/null | head -1)"
+rootsrc="$(findmnt -nro SOURCE /sysroot 2>/dev/null | sed 's/\[.*//' | head -1)"
+rootdev="$(findmnt -nro MAJ:MIN /sysroot 2>/dev/null | head -1)"
+if [ -z "$rootdev" ]; then
+  rootsrc="$(findmnt -nro SOURCE / 2>/dev/null | sed 's/\[.*//')"
+  rootdev="$(findmnt -nro MAJ:MIN / 2>/dev/null | head -1)"
+fi
+roottype="$(lsblk -nro MAJ:MIN,TYPE 2>/dev/null | awk -v d="$rootdev" '$1==d {print $2; exit}')"
 case "${roottype:-}" in
   crypt) ok "root filesystem is encrypted ($rootsrc)" ;;
   "")    note "root filesystem is not backed by a block device (${rootsrc:-unknown}); encryption state undetermined" ;;
