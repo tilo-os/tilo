@@ -653,7 +653,6 @@ async fn legacy_window_write_respects_current_member_grants() {
     };
     sign_device_cert(&mut foreign, &owner_root).unwrap();
     let state = rooms.room(&created.room).await.unwrap();
-    let deadline = tilo_clock::try_unix_now().unwrap().checked_add(5).unwrap();
     {
         let mut room = state.lock().await;
         let now = SystemTime::now();
@@ -676,6 +675,12 @@ async fn legacy_window_write_respects_current_member_grants() {
         let mut room = state.lock().await;
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
+        // The grant lasts from its own commit, however long the room took
+        // to set up.
+        let deadline_ms = tilo_clock::try_unix_now_ms()
+            .unwrap()
+            .checked_add(5000)
+            .unwrap();
         let read_only = Grant::new(
             "legacy-window-read-only-foreign",
             Subject::ForeignDevice,
@@ -684,7 +689,7 @@ async fn legacy_window_write_respects_current_member_grants() {
             Answer::Deny,
             Subject::Person(hex::encode(cert.user_public_key)),
         )
-        .with_lifetime(Lifetime::Until(deadline.saturating_mul(1000)));
+        .with_lifetime(Lifetime::Until(deadline_ms));
         candidate
             .governance_mut()
             .put_governed_grants(&[read_only], &key, now)
