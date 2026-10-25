@@ -1723,6 +1723,65 @@ impl App {
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
 
+    /// [`Self::directory_explicit_visibility`] of `resources` and everything
+    /// under them, by resource id, found in one walk of the widget tree.
+    fn directory_explicit_visibilities(
+        &self,
+        resources: &[tilo_actions::Resource],
+    ) -> std::collections::HashMap<String, tilo_actions::ActionAddress> {
+        fn ids<'a>(resources: &'a [tilo_actions::Resource], out: &mut Vec<&'a str>) {
+            for resource in resources {
+                out.push(resource.id.as_str());
+                ids(&resource.children, out);
+            }
+        }
+        let mut all = Vec::new();
+        ids(resources, &mut all);
+        let targets: Vec<_> = all
+            .iter()
+            .map(|id| {
+                self.actions
+                    .bound_publication
+                    .target(&tilo_actions::ActionAddress::new(*id, ""))
+                    .ok()
+                    .flatten()
+            })
+            .collect();
+        let wanted: Vec<_> = all
+            .iter()
+            .zip(&targets)
+            .map(|(id, target)| {
+                (
+                    target.as_ref().map(|target| target.binding.clone()),
+                    target
+                        .as_ref()
+                        .map_or(*id, |target| target.address.address.resource.as_str())
+                        .to_owned(),
+                )
+            })
+            .collect();
+        let found = crate::bound_dispatch::publication_visibilities(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &wanted,
+        );
+        all.into_iter()
+            .zip(targets)
+            .zip(found)
+            .filter_map(|((id, target), address)| {
+                let mut address = address?;
+                if let Some(target) = &target {
+                    address.resource = self
+                        .actions
+                        .bound_publication
+                        .alias(&target.binding, &address.resource)
+                        .ok()?;
+                }
+                Some((id.to_owned(), address))
+            })
+            .collect()
+    }
+
     fn directory_explicit_visibility(
         &self,
         resource: &tilo_actions::Resource,
