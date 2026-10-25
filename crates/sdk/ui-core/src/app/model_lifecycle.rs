@@ -433,6 +433,15 @@ impl super::App {
         changed
     }
 
+    /// Whether a state pass outside a frame has work to do: a model update
+    /// anything asked for, a sync the tree owes, or a control invocation
+    /// settled state left queued for the sync to submit.
+    #[cfg(all(feature = "native", test))]
+    pub(super) fn state_tick_pending(&self) -> bool {
+        self.needs_sync
+            || crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref())
+    }
+
     #[cfg(feature = "native")]
     pub(super) fn service_native_idle_model(&mut self) -> IdleModelProgress {
         let mut changed = self.service_idle_model().changed;
@@ -445,6 +454,43 @@ impl super::App {
             changed |= self.sync_model(true);
         }
         IdleModelProgress { changed }
+    }
+
+    /// Run the passes a frame runs before it paints, for a window that will
+    /// not paint: model update, sync and the control invocations a sync
+    /// submits, plus the layout those effects address. Rendering and state
+    /// are decoupled, so an app nobody is looking at (occluded on macOS, on
+    /// another Space, behind a full-screen app) still answers the wakes its
+    /// workers, its engine and its action door send, and a deferred
+    /// invocation is executed instead of waiting for a `RedrawRequested`
+    /// that never comes.
+    #[cfg(feature = "native")]
+    pub(super) fn run_state_tick(&mut self) {
+        let _entry = self.enter_wake_scope();
+        self.poll_model_invocations();
+        let updated = self.update_native_model();
+        // A widget schedules work for itself ([`Widget::next_wake_deadline`]:
+        // an engine handshake that is due, an operation whose window is about
+        // to time out) and serves it from the sync. A window that paints
+        // reaches it through the loop's deadline; one that is never drawn
+        // reaches it here, and a deadline left to wait for a frame is a
+        // request that answered nobody.
+        let now = crate::time::now();
+        let deadline_due = self
+            .root_widget
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= now);
+        let served = deadline_due && self.root_widget.serve_deadline(now);
+        if !self.sync_model(updated || served) {
+            return;
+        }
+        // What the sync submitted and what widgets settled are geometry the
+        // effects behind them address.
+        self.layout.structure_dirty |= self.take_root_structure_dirty();
+        self.forget_replaced_widgets();
+        if self.layout.structure_dirty {
+            self.rebuild_structure();
+        }
     }
 
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {

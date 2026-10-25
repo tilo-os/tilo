@@ -3755,6 +3755,7 @@ mod private_continuity_route_tests {
 #[cfg(test)]
 pub(crate) mod ordinary_confirmation_tests {
     include!("app/deferred_invocation_tests.rs");
+    include!("app/state_tick_tests.rs");
     use super::*;
     use crate::history_mode::*;
     use std::{cell::RefCell, rc::Rc};
