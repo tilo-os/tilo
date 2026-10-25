@@ -59,11 +59,17 @@ struct State {
     /// it to the app: how the host knows which tab a program typed in a
     /// terminal belongs to.
     session: Option<String>,
+    /// The workspace the window is in, as its host knows it: an app that
+    /// shares its process with other windows has no workspace of its own.
+    workspace: Option<String>,
     /// The app asked to edit its location (its Ctrl+L).
     edit: bool,
     /// The app asked to open the window's search (its Ctrl+F, or Ctrl+H
     /// for the replacement field).
     search: Option<crate::window_toolbar::SearchOpening>,
+    /// Where the app wants other apps' views of resources drawn, and how
+    /// each is coming along ([`crate::window_share`]).
+    embeds: crate::window_share::Embeds,
     /// What the host runs when the app declared or asked to close, so it
     /// looks again even while nothing else is happening.
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -212,6 +218,17 @@ impl HostedWindow {
         self.state().session = session;
     }
 
+    /// Put the window in the workspace `room` (a workspace id).
+    pub fn set_workspace(&self, room: Option<String>) {
+        self.state().workspace = room;
+    }
+
+    /// The workspace the window is in, when its host said.
+    #[must_use]
+    pub fn workspace(&self) -> Option<String> {
+        self.state().workspace.clone()
+    }
+
     /// The slots as last declared.
     #[must_use]
     pub fn declared(&self) -> Option<WindowToolbar> {
@@ -245,7 +262,44 @@ impl HostedWindow {
         Self::wake(wake);
     }
 
+    /// Ask for `embeds` in this window ([`crate::window_share::declare`]).
+    /// Cheap when nothing changed.
+    pub fn declare_embeds(&self, embeds: Vec<crate::window_share::Embed>) {
+        let wake = {
+            let mut state = self.state();
+            if !state.embeds.declare(embeds) {
+                return;
+            }
+            state.wake.clone()
+        };
+        Self::wake(wake);
+    }
+
+    /// How the host said `key`'s embed is coming along.
+    #[must_use]
+    pub fn embed_state(&self, key: &str) -> Option<crate::window_share::EmbedState> {
+        self.state().embeds.states.get(key).cloned()
+    }
+
     // --- the host's side
+    /// The embeds the app asks for, as last declared.
+    #[must_use]
+    pub fn embeds(&self) -> Vec<crate::window_share::Embed> {
+        self.state().embeds.declared.clone()
+    }
+
+    /// Say how `key`'s embed is coming along.
+    pub fn set_embed_state(&self, key: &str, embed: crate::window_share::EmbedState) {
+        let mut state = self.state();
+        if state
+            .embeds
+            .declared
+            .iter()
+            .any(|declared| declared.key == key)
+        {
+            state.embeds.states.insert(key.to_owned(), embed);
+        }
+    }
 
     /// The session-supervisor session the tab runs, as the app named it.
     #[must_use]
@@ -376,5 +430,19 @@ mod tests {
             .expect("the reader thread");
         assert!(window.take_close());
         assert!(!window.take_close(), "one close per ask");
+    }
+
+    /// Apps sharing one process (the browser's) each learn their window's
+    /// workspace from it, not from the process.
+    #[test]
+    fn an_app_is_in_the_workspace_its_window_is_in() {
+        let window = HostedWindow::new();
+        window.set_workspace(Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979".into()));
+        assert_eq!(crate::window_toolbar::workspace(), None, "outside it");
+        let _running = crate::window_toolbar::enter(Some(&window));
+        assert_eq!(
+            crate::window_toolbar::workspace().as_deref(),
+            Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979")
+        );
     }
 }
