@@ -51,24 +51,6 @@ export function fetchProxyFor(url, {target = globalThis, pageHref = globalThis.l
   return {endpoint: endpoint.href, ...(typeof proxy.session === 'string' ? {session: proxy.session} : {})};
 }
 
-/** What a peer request's `url` query parameter says ([`tilo_net::proxy::PEER_PARAM`]): the target is not a site on the web but a path on the machine that admitted the page's person. */
-export const PEER_PARAM = 'tilo-peer';
-/** What [`PEER_PARAM`] says. */
-export const PEER_LOCAL = 'local';
-
-/** `fetch` arguments that read `path` — a path on the machine that admitted
- * the page's person, `/home/ada/Notes.md` — through `proxy`. The host reads
- * it as the file it is on its own disk, so an app in a page sees the same
- * files its person sees in the desktop session. */
-export function peerGet(path, proxy, {signal} = {}) {
-  const endpoint = new URL(proxy.endpoint, globalThis.location?.href);
-  endpoint.searchParams.set('url', `file://${path}`);
-  endpoint.searchParams.set(PEER_PARAM, PEER_LOCAL);
-  const headers = {'x-tilo-proxy': '1'};
-  if (proxy.session) headers['x-tilo-session'] = proxy.session;
-  return [endpoint.href, {signal, credentials: 'same-origin', headers}];
-}
-
 /** `fetch` arguments that send a GET of `url` through `proxy` (from
  * `fetchProxyFor`): the page's cookies never leave its own origin, and
  * the session rides in its header. */

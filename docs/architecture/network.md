@@ -98,23 +98,6 @@ reads like a direct one.
   - tilo-media's page backend loads a cross-origin source the element's CORS request cannot
     read through that form, when the page names a proxy, and again with the current session
     when the page reconnected while it played.
-- **A peer request:** `GET {endpoint}?url=file://{path}&tilo-peer=local`
-  (`tilo_net::proxy::peer_route`, `peerGet` in `web/fetch-proxy.mjs`). The target is not a
-  site on the web but a path on the machine that admitted the page's person, and the host
-  answers it as the file it is on its own disk — the way the desktop session reads the same
-  path. It is what lets an app in a page browse the workspace host's files without
-  downloading them into the page's own storage first.
-  - Only a host that offers it answers (`Config::peer`, on for a relay that serves the fetch
-    proxy); any other host refuses one with `bad-request`, and a client's own word for the
-    request never makes it one.
-  - `GET` and `HEAD` only: a page reads a file, it does not write one.
-  - The path is checked against nothing that guards a network, because it reaches none: the
-    host reads its own disk. The file's `200`, `304`, `403`, `404` or `413` is the answer,
-    with an `ETag` from the bytes, its type from its name, and the proxy's own bounds, clock
-    and budgets around it.
-  - An app names one with `RequestBuilder::peer_file(path)` (`tilo-net`, in a page). A page
-    with no host to ask is told `no workspace host to read this machine's files from` rather
-    than reading the path itself.
 - **Response:** the target's status, headers and body.
   - Hop-by-hop headers are removed.
   - Headers the host's origin would act on reach the app renamed `x-tilo-forward-<name>`:
