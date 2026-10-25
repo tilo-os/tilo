@@ -2206,6 +2206,11 @@ struct RelayRoom {
 
 impl RelayRoom {
     async fn start(url: &str) -> Self {
+        Box::pin(Self::granting(url, &[CHAT])).await
+    }
+
+    /// [`Self::start`], Ana granted `apps`.
+    async fn granting(url: &str, apps: &[&str]) -> Self {
         let (ada, _) = UserIdentity::generate("Ada", 1);
         let host_device = enrol(&ada, "home-server", DeviceCapabilities::host());
         let state = tempfile::tempdir().unwrap();
@@ -2228,7 +2233,7 @@ impl RelayRoom {
             ("ana-121641", "Ana"),
             &ada,
             (&host, &host_device),
-            &[CHAT],
+            apps,
             (endpoint_planner(url), tilo_content::ContentStore::memory()),
         )
         .await;
@@ -2804,3 +2809,7 @@ async fn a_plan_without_obligations_finishes_without_a_reminder() {
     assert!(sent.try_recv().is_err(), "one model request");
     Box::pin(room.close()).await;
 }
+
+/// Coordinated tasks: an agent per item of the checklist.
+#[path = "session_coverage/decompose.rs"]
+mod decompose;
