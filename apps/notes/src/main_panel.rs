@@ -62,6 +62,7 @@ use ui::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::model::PageId;
 use crate::note_header::NoteHeader;
 use crate::num;
+use crate::status_bar::count_words;
 
 /// The empty notebook's title and its one action, in this locale.
 struct EmptyLabels {
@@ -419,6 +420,10 @@ pub struct MainPanel {
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: NotesEditor,
+    /// Counting revision of the editor's blocks: bumped wherever this panel
+    /// changes what the editor shows without the editor itself editing — it
+    /// presents content, binds another page or clears.
+    content_generation: u64,
     /// The notebook's dispatcher, once the app is hosted: page bodies are
     /// edited through it.
     notebook: Option<Dispatcher<crate::resource::Notebook>>,
@@ -531,6 +536,7 @@ impl MainPanel {
             page_width: f64::INFINITY,
             pending_backlink_open: None,
             editor: notes_editor(None, None),
+            content_generation: 0,
             notebook: None,
             image_store: None,
             body: String::new(),
@@ -613,6 +619,7 @@ impl MainPanel {
     /// grammar that `BlockEditor::from_markdown` does not handle.
     pub fn load_page(&mut self, id: PageId, title: &str, body: impl AsRef<str>) {
         let body = body.as_ref();
+        self.content_generation = self.content_generation.wrapping_add(1);
         self.page_id = Some(id);
         self.dates = self.date_index.get(id);
         self.refresh_captions();
@@ -688,6 +695,7 @@ impl MainPanel {
             .unwrap_or((0, ui::widget::CursorPlacement::Start));
         editor.editor_mut().focus_block(index, placement);
         self.editor = editor;
+        self.content_generation = self.content_generation.wrapping_add(1);
         self.page_id = Some(page);
         self.dates = self.date_index.get(page);
         self.refresh_captions();
@@ -789,6 +797,7 @@ impl MainPanel {
         self.header.set_captions(Vec::new());
         self.metadata_height = 0.0;
         self.editor = self.fresh_editor(None);
+        self.content_generation = self.content_generation.wrapping_add(1);
         self.body = String::new();
         self.scroll_y = 0.0;
         self.glide.stop();
@@ -1331,6 +1340,32 @@ impl MainPanel {
     /// etc.).
     pub fn editor(&self) -> &BlockEditor {
         self.editor.editor()
+    }
+
+    /// A number that moves whenever the blocks the editor shows change: a
+    /// keystroke, an applied action, an undo, and every presentation, bind or
+    /// clear made on top of them. A caller that read something off the blocks
+    /// can reuse what it read until this moves.
+    #[must_use]
+    pub fn content_revision(&self) -> u64 {
+        ui::widget::find_bar::Findable::content_revision(self.editor.editor())
+            .wrapping_add(self.content_generation)
+    }
+
+    /// How many words the note's blocks hold, in the words a reader counts:
+    /// runs of non-whitespace in each block's plain text, so the markdown
+    /// chrome around a word (`- `, `**`, a fence) is not counted as one.
+    ///
+    /// Walking every block, so a caller on a hot path counts once and reuses
+    /// the total until [`Self::content_revision`] moves.
+    #[must_use]
+    pub fn word_count(&self) -> usize {
+        self.editor
+            .editor()
+            .blocks()
+            .iter()
+            .map(|block| count_words(block.text()))
+            .sum()
     }
 
     pub(crate) fn editor_route_available(&self) -> bool {
