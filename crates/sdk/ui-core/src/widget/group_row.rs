@@ -635,6 +635,20 @@ impl GroupDrawing {
     fn keep(self, carried: usize) -> Option<ApartDrawing> {
         (carried == 0 && !draws_external_pixels(&self.0.scene)).then_some(self.0)
     }
+
+    /// Keep the drawing as the window's live picture where one is wanted
+    /// ([`crate::window_pictures`]), under the rule [`Self::keep`] keeps
+    /// drawings by: one that cannot stand on its own is never shown small.
+    fn offer_picture(&self, carried: usize) {
+        if !crate::window_pictures::wanted(self.0.id) {
+            return;
+        }
+        if carried > 0 || draws_external_pixels(&self.0.scene) {
+            crate::window_pictures::forget(self.0.id);
+        } else {
+            self.0.offer_picture();
+        }
+    }
 }
 
 /// What of a strip drawn in canvas coordinates the screen shows this draw.
@@ -657,6 +671,32 @@ fn draws_external_pixels(scene: &Scene) -> bool {
     scene.encoding().resources.patches.iter().any(|patch| {
         matches!(patch, vello_encoding::Patch::Image { image, .. } if image.data.is_empty())
     })
+}
+
+impl ApartDrawing {
+    /// Keep this drawing, which stands on its own, as the window's live
+    /// picture where one is wanted ([`crate::window_pictures`]). One that
+    /// showed a secret is never shown small, and one that culled part of
+    /// the window leaves the last whole picture in place.
+    fn offer_picture(&self) {
+        if !crate::window_pictures::wanted(self.id) {
+            return;
+        }
+        if self.shows_secret {
+            crate::window_pictures::forget(self.id);
+            return;
+        }
+        let whole = self
+            .seen
+            .is_none_or(|(x0, x1)| x0 <= 0.5 && x1 >= self.rect.width() - 0.5);
+        if whole {
+            crate::window_pictures::keep(
+                self.id,
+                &self.scene,
+                self.transform.transform_rect_bbox(self.rect),
+            );
+        }
+    }
 }
 
 /// A group's drawing in canvas coordinates, kept while a presenter pans the
@@ -5496,11 +5536,11 @@ impl GroupRow {
                     scene.pop_layer();
                 }
             }
-            if let Some(g) = self.groups.get_mut(max_i) {
-                if self.shown_elsewhere.contains(&g.id) {
-                    self.culled_groups.push(g.id);
+            if let Some(id) = self.groups.get(max_i).map(|g| g.id) {
+                if self.shown_elsewhere.contains(&id) {
+                    self.culled_groups.push(id);
                 } else {
-                    g.draw(scene, transform, tr, theme, presence);
+                    self.draw_group_plain(max_i, scene, transform, (tr, theme, presence));
                 }
             }
             return;
@@ -5600,7 +5640,7 @@ impl GroupRow {
                     {
                         self.pan_kept.push(id);
                     }
-                    self.groups[i].draw(scene, t, tr, theme, presence);
+                    self.draw_group_plain(i, scene, t, (tr, theme, presence));
                 }
             }
             if source_is_lifted {
@@ -5716,6 +5756,7 @@ impl GroupRow {
                 crate::secret_paint::note_secret_painted();
             }
             if on_screen {
+                drawing.offer_picture();
                 self.replayed_groups.push(id);
                 crate::retained_present::note_replayed();
             } else {
@@ -5729,9 +5770,29 @@ impl GroupRow {
         let drawing = self.record_group(i, local, transform, (tr, theme, presence));
         let carried =
             crate::scene_parts::part(scene, key, bounds, |scene| drawing.append_to(scene));
+        drawing.offer_picture(carried);
         if let Some(drawing) = drawing.keep(carried) {
             self.apart_drawings.push(drawing);
         }
+    }
+
+    /// Draw group `i` as on any frame; while a live picture of it is wanted
+    /// ([`crate::window_pictures`]), through a drawing of its own, so the
+    /// picture is the drawing the window just made.
+    fn draw_group_plain(
+        &mut self,
+        i: usize,
+        scene: &mut Scene,
+        transform: Affine,
+        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+    ) {
+        if !crate::window_pictures::wanted(self.groups[i].id) {
+            self.groups[i].draw(scene, transform, tr, theme, presence);
+            return;
+        }
+        let drawing = self.record_group(i, Scene::new(), transform, (tr, theme, presence));
+        let carried = drawing.append_to(scene);
+        drawing.offer_picture(carried);
     }
 
     /// Draw group `i` on its own into `local`, a scene of its own that is
@@ -5805,7 +5866,7 @@ impl GroupRow {
     ) {
         let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
         if !self.group_at_rest(i, crate::time::now()) || self.pan_unkept.contains(&id) {
-            self.groups[i].draw(scene, transform, tr, theme, presence);
+            self.draw_group_plain(i, scene, transform, (tr, theme, presence));
             return;
         }
         let kept = self
@@ -5831,6 +5892,7 @@ impl GroupRow {
             if drawing.shows_secret {
                 crate::secret_paint::note_secret_painted();
             }
+            drawing.offer_picture();
             self.replayed_groups.push(id);
             crate::retained_present::note_replayed();
             return;
@@ -5842,6 +5904,7 @@ impl GroupRow {
         // is drawn again until it shows no more than a drawing of it saw.
         let drawing = self.record_group(i, local, transform, (tr, theme, presence));
         let carried = drawing.append_to(scene);
+        drawing.offer_picture(carried);
         match drawing.keep(carried) {
             Some(drawing) => self.pan_drawings.push(drawing),
             None => self.pan_unkept.push(id),
@@ -7339,6 +7402,48 @@ mod tests {
             &PresenceCtx::empty(),
         );
         (row, scene)
+    }
+
+    /// A window whose live picture is wanted is drawn as always and its
+    /// drawing kept as the picture, at its rect; a window not wanted keeps
+    /// none, a drawing that showed a secret is never kept, and wanting
+    /// nothing drops what was kept.
+    #[test]
+    fn a_wanted_window_keeps_its_drawing_as_a_live_picture() {
+        crate::time::testing::with_monotonic_time(crate::time::now(), || {
+            let (plain, _) = drawn_strip(3);
+            let wanted = plain.groups[0].id;
+            let other = plain.groups[1].id;
+            crate::window_pictures::want(&[wanted]);
+            let (row, scene) = drawn_strip(3);
+            assert!(!scene.encoding().is_empty(), "the window is still drawn");
+            let rect = crate::window_pictures::with_picture(wanted, |picture| {
+                assert!(!picture.scene.encoding().is_empty());
+                picture.rect
+            });
+            assert_eq!(rect, Some(row.groups[0].get_rect()));
+            assert!(crate::window_pictures::with_picture(other, |_| ()).is_none());
+
+            let secret = ApartDrawing {
+                id: wanted,
+                rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+                transform: Affine::IDENTITY,
+                scene: Scene::new(),
+                parts: None,
+                shows_secret: true,
+                seen: None,
+                current: true,
+            };
+            secret.offer_picture();
+            assert!(
+                crate::window_pictures::with_picture(wanted, |_| ()).is_none(),
+                "a secret is never shown small"
+            );
+            let _ = drawn_strip(3);
+            assert!(crate::window_pictures::with_picture(wanted, |_| ()).is_some());
+            crate::window_pictures::want(&[]);
+            assert!(crate::window_pictures::with_picture(wanted, |_| ()).is_none());
+        });
     }
 
     /// A desktop that accumulated dozens of windows must encode only those
