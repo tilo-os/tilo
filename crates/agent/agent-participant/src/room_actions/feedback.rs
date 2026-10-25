@@ -232,6 +232,14 @@ impl CanonicalReceiptSource for RetainedSource {
             serde_json::from_value(value.get("content").cloned().ok_or(Error::NotDurable)?)?;
         Ok((receipt, author))
     }
+    fn keeps_content(&self, hash: &str) -> Result<bool, Error> {
+        // Only bytes the host's own store keeps, verified against their
+        // address, witness a report's screenshot.
+        Ok(self
+            .link
+            .content_blob(self.workspace, hash)
+            .is_some_and(|bytes| blake3::hash(&bytes).to_hex().as_str() == hash))
+    }
 }
 struct OwnerSigner {
     owner: Caller,

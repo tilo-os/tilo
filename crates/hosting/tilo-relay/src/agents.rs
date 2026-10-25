@@ -419,9 +419,16 @@ impl RoomRecordsLink for RelayRecordsLink {
         })
     }
 
-    // `content_blob` keeps refusing: the relay keeps no room content store
-    // an avatar could be read from, so an appearance naming an avatar is
-    // refused here while a name alone is admitted.
+    /// What the room's host keeps ([`crate::rooms::Rooms::kept_content`]):
+    /// a bridged person's avatar its bots fetched, a file or a feedback
+    /// report's picture a member posted. A relay keeping no content for the
+    /// room answers none, which refuses an appearance naming an avatar.
+    fn content_blob(&self, workspace: u64, hash: &str) -> Option<Vec<u8>> {
+        let rooms = self.rooms.as_ref()?;
+        self.member
+            .runtime
+            .block_on(rooms.kept_content(workspace, hash))
+    }
 }
 
 /// Start `cfg`'s relay serving its rooms' records to pages, without agents:
