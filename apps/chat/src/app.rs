@@ -35,7 +35,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Collaborative, ContextMenu as SharedContextMenu, Continuable, FloatingSurfaceProvider,
-    MenuItem, NavFeed, SearchField, SidebarDrawer, VideoPlayer, WindowBarLink,
+    MenuItem, NavFeed, SidebarDrawer, VideoPlayer, WindowBarLink,
 };
 
 use crate::call::CallState;
@@ -586,14 +586,13 @@ pub struct ChatApp {
     pub(crate) emoji_open: bool,
     pub(crate) emoji_target: Option<Id>,
     pub(crate) emoji_anchor: Point,
-    /// The picker's query; empty shows the selected group.
-    pub(crate) emoji_search: SearchField,
-    pub(crate) emoji_group: usize,
-    /// How far the picker grid is scrolled, and the rect it scrolls in.
-    pub(crate) emoji_scroll: f64,
-    pub(crate) emoji_grid: Rect,
-    /// This user's recently picked emoji, most recent first.
-    pub(crate) emoji_recents: emoji::Recents,
+    /// The toolkit's shared picker, placed at `emoji_anchor` while
+    /// `emoji_open`.
+    pub(crate) emoji_picker: ui::widget::EmojiPicker,
+    /// Each message's reaction pills, in the timeline (`false`) and the
+    /// thread (`true`), with their arrival and count motion.
+    pub(crate) reaction_strips:
+        std::cell::RefCell<HashMap<(bool, Id), ui::widget::reaction_strip::ReactionStrip>>,
     pub(crate) history_open: Option<Id>,
     pub(crate) history_anchor: Point,
     /// Your own message currently being edited. The shared multiline input
@@ -969,6 +968,9 @@ impl ChatApp {
         reason = "the complete app state is deliberately initialized together so bounded channels and their lifecycles cannot drift"
     )]
     fn bare(content: ContentStore) -> Self {
+        // The shared picker and reaction strip name and search emoji through
+        // Chat's catalogue.
+        crate::i18n::offer_emoji_catalogue();
         // The host call tile is a real VideoPlayer with no frame until a live
         // capture feeds one; there is no synthesised stand-in. Its honest
         // "camera off" state is painted over the empty surface.
@@ -1016,12 +1018,8 @@ impl ChatApp {
             emoji_open: false,
             emoji_target: None,
             emoji_anchor: Point::ZERO,
-            // window-bar: picker, type-ahead in the emoji popover
-            emoji_search: SearchField::new().with_placeholder(&crate::i18n::t("chat-emoji-search")),
-            emoji_group: 0,
-            emoji_scroll: 0.0,
-            emoji_grid: Rect::ZERO,
-            emoji_recents: emoji::Recents::default(),
+            emoji_picker: ui::widget::EmojiPicker::framed(),
+            reaction_strips: std::cell::RefCell::default(),
             history_open: None,
             history_anchor: Point::ZERO,
             editing: None,
@@ -3773,14 +3771,7 @@ impl ChatApp {
                             })
                             .is_some_and(|reaction| reaction.includes(&self.me.id));
                         (
-                            crate::i18n::t_args(
-                                if mine {
-                                    "chat-reaction-remove"
-                                } else {
-                                    "chat-reaction-add"
-                                },
-                                &[("emoji", emoji.as_str().into())],
-                            ),
+                            ui::widget::reaction_strip::pill_name(emoji, mine),
                             Role::ToggleButton,
                             mine,
                         )
@@ -3813,7 +3804,7 @@ impl ChatApp {
                                 |group| group.label().to_owned(),
                             ),
                         Role::Tab,
-                        *group == self.emoji_group,
+                        *group == self.emoji_picker.group(),
                     ),
                     Hit::FocusEmojiSearch => {
                         (crate::i18n::t("chat-emoji-search"), Role::TextInput, false)
@@ -3889,6 +3880,23 @@ impl ChatApp {
     }
 
     pub(crate) fn hover_tooltip_target(&self, point: Point) -> Option<(Rect, String)> {
+        // A reaction pill says who reacted, with the strip's shared wording.
+        if let Some((_, Hit::Reaction { msg, .. })) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(rect, _)| rect.contains(point))
+            && let Some(tip) = self
+                .reaction_strips
+                .borrow()
+                .iter()
+                .filter(|((_, id), _)| id == msg)
+                .find_map(|(_, strip)| {
+                    strip.tooltip_at(point, &|reactor| self.user_name(&reactor.by))
+                })
+        {
+            return Some(tip);
+        }
         if let Some((rect, hit)) = self.hits.iter().rev().find(|(rect, hit)| {
             rect.contains(point)
                 && matches!(
@@ -4644,7 +4652,7 @@ impl Widget for ChatApp {
             .find(|(rect, _)| rect.contains(point))?;
         match hit {
             Hit::Dismiss => None,
-            Hit::FocusEmojiSearch => Some(CursorIcon::Text),
+            Hit::FocusEmojiSearch => ui::Widget::cursor_shape(&self.emoji_picker, point),
             Hit::AgentDragHandle | Hit::CallDragHandle => Some(CursorIcon::Grab),
             hit if self.text_field_access(hit).is_some() => Some(CursorIcon::Text),
             _ => Some(CursorIcon::Pointer),
