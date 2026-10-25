@@ -49,6 +49,17 @@ available separately from the ordinary message. The `triage` report action
 requires Write and records attributed status changes, duplicate targets or an
 address of an existing task. A task reference grants no access and creates no
 external task automatically.
+The report's message is read out of the stored submission for each reader
+(`chat::feedback::message`), never stored as sentences: the summary, then
+each pick as its place, app, what it was and its role, the reporter's note on
+it and the texts it showed, with hidden spans as their kind's placeholder
+(`‹name›`), then the last actions and, when it was slow, the frame timings.
+Its masked picture is the message's image (`report.png`). The report holds
+its own reactions field, so members react to it, or +1 it, as to any message;
+the timeline shows one message per report. Chat's `read-room` answers the
+report as that message, so the Discord bridge mirrors a filed report
+(`submit-feedback`) as a post with the picture uploaded beside it, and the
+reactions on it as the bot's.
 Opening a report reveals its exact message rather than just its channel.
 System search indexes the reviewed report text with its typed `chat.feedback`
 anchor and the same reveal action, so the result exposes the report’s existing
