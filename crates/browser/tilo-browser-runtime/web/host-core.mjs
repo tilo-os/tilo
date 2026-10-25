@@ -283,7 +283,9 @@ export function retainedWidget(state){return state?.semantics?.root?.widget;}
 
 /** How long a page status stays visible: the toolkit's notice lifetime. */
 export const HOST_STATUS_LIFETIME_MS=4000;
-const HOST_STATUS_SHOWN='position:absolute;bottom:12px;left:12px;max-width:80%;padding:8px 12px;background:#20242e;color:#fff;border-radius:8px;font:13px system-ui;pointer-events:none';
+// Clear of the screen's own lower-left corner: the home indicator or a
+// rounded corner on a phone, and nothing on a desktop.
+const HOST_STATUS_SHOWN='position:absolute;bottom:calc(12px + env(safe-area-inset-bottom));left:calc(12px + env(safe-area-inset-left));max-width:80%;padding:8px 12px;background:#20242e;color:#fff;border-radius:8px;font:13px system-ui;pointer-events:none';
 const HOST_STATUS_SPOKEN='position:absolute;top:0;left:0;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);pointer-events:none';
 /** The page's status line over the canvas. It belongs to no window, so it
  * may only flash briefly: every message hides after `lifetime`, and a status
@@ -350,5 +352,53 @@ export function createCompositionSession({scope,send,clear}) {
     update(text){if(valid())send('preedit',text);},
     end(text){if(!valid()){clear();return false;}send('preedit','');send('commit',text);session=null;canceled=true;clear();return true;},
     blocks(event){valid();return canceled||Boolean(session)||event.isComposing||event.inputType==='insertCompositionText';},
+  };
+}
+
+/** A phone's or a tablet's soft keyboard is not a layer over the page: the
+ * browser shrinks what the page can see to the viewport above the keyboard
+ * (`interactive-widget=resizes-content`, index.html), so the mount's surface
+ * is sized to what is left.
+ *
+ * While a field of the desktop has focus the keys are up, and the desktop
+ * fills that space as it fills the screen otherwise. Once the keys go — a tap
+ * on the desktop itself, a window opened somewhere else — the browser may
+ * keep the shrunk viewport for the moment it takes the keyboard to animate
+ * away, and growing the desktop back inside it would leave a band of page
+ * under the desktop for a frame. So the page's own edges (what a soft
+ * keyboard took, and nothing else) are measured as the surface sits with a
+ * field focused, and kept while the screen fills edge to edge, from the
+ * screen's edges, cut by a notch or a rounded corner like any other
+ * full-screen view (`env(safe-area-inset-*)`).
+ *
+ * Returns whether the surface fills the screen; its own element is the
+ * canvas unless one is given. */
+export function createScreenFill(surface,{canvas=surface,observe=globalThis.ResizeObserver}={}) {
+  const edges=['top','right','bottom','left'];
+  const openInsets={top:0,right:0,bottom:0,left:0};
+  let filling=true;
+  // Written as properties, not through `setProperty`: every browser keeps
+  // them, and a mount need not be given a style that has it.
+  const paint=()=>{
+    for(const node of new Set([surface,canvas])){
+      for(const edge of edges)node.style[edge]=filling?`env(safe-area-inset-${edge})`:`${openInsets[edge]}px`;
+      node.style.boxSizing=filling?'border-box':'';
+    }
+  };
+  if(observe){
+    new observe(entries=>{
+      const box=entries[entries.length-1]?.contentRect;
+      if(!box||filling)return;
+      const {width,height}=surface.getBoundingClientRect();
+      openInsets.top=Math.max(0,Math.round(box.top));
+      openInsets.left=Math.max(0,Math.round(box.left));
+      openInsets.right=Math.max(0,Math.round(width-box.right));
+      openInsets.bottom=Math.max(0,Math.round(height-box.bottom));
+    }).observe(surface);
+  }
+  paint();
+  return function fill(next){
+    if(next===filling)return;
+    filling=next;paint();
   };
 }
