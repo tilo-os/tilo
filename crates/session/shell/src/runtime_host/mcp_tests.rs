@@ -436,7 +436,7 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
     }).await;
     // Phase `invocation_preserves_typed_argument_maps_through_the_broker`.
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let (mut fixture, room, actor) = fixture();
             let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
             let original = json!({
@@ -500,7 +500,7 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
                 tilo_actions::ActionArgs::bind_json(&params, &numeric_crop).is_err(),
                 "a numeric crop region must fail canonical text validation"
             );
-        })
+        }))
         .await;
 }
 

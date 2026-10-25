@@ -237,6 +237,48 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
                 .as_ref()
                 .is_some_and(|action| action.kind == tilo_actions::OperationKind::View)
     }));
+    // The app filter travels with the query and the host narrows the record's
+    // own views by it: its own app keeps every row, another app is answered
+    // empty rather than refused, and a query naming no app is unchanged.
+    let matching = browser
+        .catalogue(CatalogueQuery {
+            app_id: Some("so.tilo.chat".into()),
+            ..query.clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        matching.rows, page.rows,
+        "the record's own app keeps its views"
+    );
+    assert_eq!(
+        matching
+            .locator
+            .as_ref()
+            .map(|locator| locator.provider.as_str()),
+        Some(provider.as_str()),
+        "a matching app is told where to browse the views"
+    );
+    let elsewhere = browser
+        .catalogue(CatalogueQuery {
+            app_id: Some("so.tilo.notes".into()),
+            ..query.clone()
+        })
+        .await
+        .unwrap();
+    assert!(
+        elsewhere.rows.is_empty(),
+        "another app's rows cannot be this record's views"
+    );
+    assert!(
+        elsewhere.locator.is_none(),
+        "an answer that found nothing names no page to browse"
+    );
+    let unscoped = browser.catalogue(query.clone()).await.unwrap();
+    assert_eq!(
+        unscoped.rows, page.rows,
+        "a query naming no app is unchanged"
+    );
     let locator = page.locator.unwrap();
     assert_eq!(locator.origin, hosted.web.origin);
     assert_eq!(locator.room, room.room);
