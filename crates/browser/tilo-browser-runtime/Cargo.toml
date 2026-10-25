@@ -88,6 +88,11 @@ deferred-model-clients = []
 # fetched the first time it opens, and hands its code over through
 # `install_feedback_composer`. Without it the composer is linked in.
 deferred-feedback-composer = []
+# The bundling crate supplies the pinned people overlay's code through
+# `defer_people_overlay`, which the browser desktop fetches as its own module
+# the first time someone pins who is here. Without it the overlay is linked
+# in.
+deferred-people-overlay = []
 
 [dependencies]
 # Sorts without a copy of std's sort per call site, which kept the web

@@ -957,6 +957,28 @@ a11y-shell-people-changes-description = Open History at their changes
 a11y-shell-people-change-description = Open History at this change
 people-panel-follow = Follow
 people-panel-stop-following = Stop
+
+# The people overlay: the roster pinned out of the bar, floating over windows
+people-panel-pin = Keep on screen
+a11y-people-pin = Keep who is here on screen
+people-overlay-title = { $count ->
+    [0] Just you
+    [one] 1 here
+   *[other] { $count } here
+}
+people-overlay-unpin = Put back in the bar
+people-overlay-follow-name = Follow { $name }
+people-overlay-doing-nothing = Here
+people-overlay-screen-private = { $name } keeps where they are to themselves
+people-overlay-empty-desk = Nothing open on { $name }’s screen
+people-overlay-message-placeholder = Message { $name }
+people-overlay-send = Send
+people-overlay-you = You
+people-overlay-no-messages = Say hello to { $name }
+people-overlay-messages-unavailable = Direct messages need the Tilo app on this device
+people-overlay-message-failed = The message to { $name } did not go: { $reason }
+a11y-people-follow = Follow { $name }
+a11y-people-stop-following = Stop following { $name }
 launchpad-subtitle = Pick a way to start. Everyone in this workspace sees what you make here.
 launchpad-subtitle-private = Pick a way to start. Only you see what you make here until you invite someone.
 launchpad-subtitle-public = Pick a way to start. This workspace is public: anyone who joins sees what you make here.
@@ -1111,3 +1133,8 @@ feedback-picker-picked = { $count ->
 }
 feedback-picker-continue = Continue
 feedback-picker-cancel = Cancel
+
+# Following someone's view
+follow-label = Following { $person }
+follow-stopped = Stopped following
+follow-stop = Stop

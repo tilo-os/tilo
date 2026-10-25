@@ -183,6 +183,7 @@ impl Widget for Stage {
                     unavailable: None,
                     exposure: None,
                     may_invite: true,
+                    may_pin: false,
                     followed_id: None,
                     following_pairs: &[],
                     expanded_id: None,
