@@ -1938,7 +1938,7 @@ impl VideoEditorApp {
                 if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
                     continue;
                 }
-                let inner = clip_inner_rect(cr);
+                let inner = clip_inner_rect(cr, self.clip_header_rect(cr).height());
                 if inner.height() <= 4.0 || inner.width() <= 4.0 {
                     continue;
                 }
