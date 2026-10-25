@@ -229,7 +229,10 @@ impl Answer {
         } else if *main_thread_starved_ms >= quarter || *main_thread_queued {
             StallKind::Starved
         } else if *main_thread_major_faults > 0
-            && halfway.as_ref().is_none_or(|thread| thread.state == "D")
+            // Thrashing, it alternates between waiting for a page (`D`) and
+            // the core it needs to take the next fault (`R`). Asleep (`S`)
+            // it waits on something else: a lock, a descriptor, a child.
+            && halfway.as_ref().is_none_or(|thread| thread.state != "S")
         {
             StallKind::Paging
         } else {
@@ -1141,6 +1144,19 @@ mod tests {
         let reading = waiting_for_a_page(0);
         assert!(!reading.stalled_but_working());
         assert!(render(&reading).contains("blocked"));
+        // Thrashing, the thread is as often runnable, between two faults.
+        let mut thrashing = waiting_for_a_page(1083);
+        if let Answer::Stalled { halfway, .. } = &mut thrashing {
+            *halfway = Some(main_thread_at_halfway("R", "0"));
+        }
+        assert!(thrashing.stalled_but_working());
+        assert!(render(&thrashing).contains("paging"));
+        // Asleep with a fault behind it, it waits on something else.
+        let mut asleep = waiting_for_a_page(1);
+        if let Answer::Stalled { halfway, .. } = &mut asleep {
+            *halfway = Some(main_thread_at_halfway("S", "futex_wait_queue"));
+        }
+        assert!(!asleep.stalled_but_working());
     }
 
     #[test]
