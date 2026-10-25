@@ -1019,14 +1019,15 @@ pub fn has_connector_secret(app_id: &str, purpose: &'static str) -> bool {
 
 /// What a host gives the connectors its bots listen to: where each worker
 /// program is, the blobs they fetch and publish (served to the room's
-/// members once the first connector runs), and where avatars of authors a
-/// bot bridged out are published.
+/// members once the first connector runs), and what the host serves
+/// publicly that a bridge's posts point at (avatars of authors it bridged
+/// out, links to the room's resources).
 #[derive(Clone)]
 pub struct ConnectorHost {
     /// Worker programs by connector, where the default place is not used.
     pub workers: BTreeMap<String, PathBuf>,
-    /// The public URL of the avatars a bridge publishes, if any.
-    pub avatars_url: Option<String>,
+    /// What the host serves publicly for a bridge's posts.
+    pub public: super::discord::Served,
     blobs: Arc<FsBlobs>,
     served: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -1036,11 +1037,11 @@ impl ConnectorHost {
     pub fn new(
         workers: BTreeMap<String, PathBuf>,
         blobs: FsBlobs,
-        avatars_url: Option<String>,
+        public: super::discord::Served,
     ) -> Self {
         Self {
             workers,
-            avatars_url,
+            public,
             blobs: Arc::new(blobs),
             served: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }

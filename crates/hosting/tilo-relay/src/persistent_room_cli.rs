@@ -1608,7 +1608,11 @@ pub(crate) async fn run(
         workers,
         tilo_relay::room_bots::installed::FsBlobs::new(state.join("blobs"), public)
             .context("prepare the blob store")?,
-        persistent.public_avatars_url.clone(),
+        tilo_relay::room_bots::discord::Served {
+            avatars_url: persistent.public_avatars_url.clone(),
+            web_entry: args.web.web_entry.clone(),
+            origin: Some(web.origin.clone()),
+        },
     );
     let runners = start_bots(
         &rooms,
@@ -1683,24 +1687,19 @@ pub(crate) async fn run(
 }
 
 /// Connect the room to the Discord server a bridge's inputs name
-/// ([`discord::link_bridge`](tilo_relay::room_bots::discord::link_bridge)).
+/// ([`discord::link_bridge`](tilo_relay::room_bots::discord::link_bridge)),
+/// its posts pointing at what `connectors`' host serves publicly.
 async fn link_discord(
     rooms: &Rooms,
     room: &str,
     host_cert: &DeviceCert,
     spec: &BotSpec,
     bot: &mut tilo_relay::room_bots::installed::InstalledBot,
-    persistent: &PersistentArgs,
+    connectors: &tilo_relay::room_bots::installed::ConnectorHost,
 ) -> Result<Vec<(String, String)>, String> {
-    tilo_relay::room_bots::discord::link_bridge(
-        rooms,
-        room,
-        host_cert,
-        &spec.inputs,
-        bot,
-        persistent.public_avatars_url.as_deref(),
-    )
-    .await
+    let public = &connectors.public;
+    tilo_relay::room_bots::discord::link_bridge(rooms, room, host_cert, &spec.inputs, bot, public)
+        .await
 }
 
 /// Install the bots the operator named (once: a restart finds the same
@@ -1746,7 +1745,7 @@ async fn start_bots(
         let shortcut = bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?;
         let wanted = InstalledBot::connectors(&shortcut);
         if wanted.contains(discord::APP) {
-            match link_discord(rooms, room, host_cert, spec, &mut bot, persistent).await {
+            match link_discord(rooms, room, host_cert, spec, &mut bot, connector_host).await {
                 Ok(env) => {
                     settings.insert(discord::APP.to_owned(), env);
                 }

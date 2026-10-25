@@ -42,7 +42,122 @@ fn context() -> Context {
     Context {
         avatars: "https://rooms.example/avatars/".into(),
         link: "https://app.example/#m".into(),
+        links: None,
     }
+}
+
+const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
+
+fn linked() -> Context {
+    Context {
+        links: Some(Box::new(Links {
+            web_entry: "https://tilo.example/".into(),
+            origin: "https://lounge.tilo.example".into(),
+            room: ROOM.into(),
+            host_device: "ab".repeat(32),
+        })),
+        ..context()
+    }
+}
+
+fn shared(id: &str, text: &str, share: &Value) -> Value {
+    msg(
+        id,
+        "u_ada",
+        text,
+        &json!({
+            "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Launch *plan*"},
+            "source_provider": "record:so.tilo.notes:notes:plan",
+            "share": share,
+        }),
+    )
+}
+
+/// A window shared live goes across as a line that says so and opens the
+/// resource on the room's web entry, where `share-link` would send its
+/// reader; its words go first unless they only repeat its name.
+#[test]
+fn a_live_share_links_to_where_it_opens_on_the_web() {
+    let url = format!(
+        "https://tilo.example/app/#/@lounge.tilo.example/w/{ROOM}/so.tilo.notes/notes:plan/notes.page:1"
+    );
+    let chat = chat(&[
+        shared(
+            "m1",
+            "Launch *plan*",
+            &json!({"access": {"$variant": "view"}, "open": true, "ended": false}),
+        ),
+        shared(
+            "m2",
+            "Look at this",
+            &json!({"access": {"$variant": "edit"}, "open": true, "ended": false}),
+        ),
+    ]);
+    let reference = crate::tilo::message(&chat, "m1")
+        .unwrap()
+        .reference
+        .unwrap();
+    assert_eq!(
+        linked()
+            .links
+            .unwrap()
+            .resource("record:so.tilo.notes:notes:plan", &reference),
+        Ok(url.clone())
+    );
+    let one = &plan_post(&guild(), &chat, "m1", &linked()).sends[0].op;
+    assert_eq!(
+        one.content,
+        format!("Sharing **Launch \\*plan\\*** live. Open it in Tilo: {url}")
+    );
+    let two = &plan_post(&guild(), &chat, "m2", &linked()).sends[0].op;
+    assert_eq!(
+        two.content,
+        format!("Look at this\nSharing **Launch \\*plan\\*** live. Open it in Tilo: {url}")
+    );
+    // A host that serves no web page leaves the link out.
+    let bare = &plan_post(&guild(), &chat, "m1", &context()).sends[0].op;
+    assert_eq!(bare.content, "Sharing **Launch \\*plan\\*** live in Tilo");
+}
+
+/// When the share ends, its Discord copy is edited to say so, without the
+/// link that no longer opens anything.
+#[test]
+fn an_ended_share_is_edited_to_say_it_is_no_longer_shared() {
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
+    let chat = chat(&[shared(
+        "m1",
+        "Launch *plan*",
+        &json!({"access": {"$variant": "view"}, "open": false, "ended": true}),
+    )]);
+    let edit = &plan_edit(&g, &chat, "m1", &linked())[0];
+    assert_eq!(
+        (edit.message.as_str(), edit.content.as_str()),
+        ("d_m1", "**Launch \\*plan\\*** is no longer shared")
+    );
+}
+
+/// A resource shared without a live window links to it too.
+#[test]
+fn a_shared_resource_links_to_it() {
+    let chat = chat(&[msg(
+        "m1",
+        "u_ada",
+        "Discuss",
+        &json!({
+            "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan"},
+            "source_provider": "record:so.tilo.notes:notes:plan",
+        }),
+    )]);
+    let send = &plan_post(&guild(), &chat, "m1", &linked()).sends[0].op;
+    assert!(
+        send.content
+            .starts_with("Discuss\n**Plan**: https://tilo.example/"),
+        "{}",
+        send.content
+    );
+    let bare = &plan_post(&guild(), &chat, "m1", &context()).sends[0].op;
+    assert_eq!(bare.content, "Discuss");
 }
 
 #[test]
