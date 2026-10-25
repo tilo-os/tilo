@@ -54,13 +54,13 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 test('live members carry an agent\'s record and activity, everyone\'s focus and a person\'s strip', () => {
   const seen = new Map([
     ['bot', {participant: {kind: 'agent', label: 'Scribe', color: '#010203', activity: 'Reading'}, focus: {app: 'a', record: 'r'}, place: '7'}],
-    ['ann', {participant: {kind: 'person', label: 'Ann'}, focus: {app: 'a', record: 'r'}, place: '7', wave: {seq: 2, target: 'b0b'}, layout: {size: [10, 10], windows: []}}],
+    ['ann', {participant: {kind: 'person', label: 'Ann'}, focus: {app: 'a', record: 'r'}, place: '7', wave: {seq: 2, target: 'b0b'}, layout: {size: [10, 10], windows: []}, following: 'b0b'}],
   ]);
   const layer = {available: true, members: () => ['bot', 'ann', 'new']};
   assert.deepEqual(liveMembers(layer, seen), [
-    {publisher: 'bot', kind: 'agent', label: 'Scribe', focus: {app: 'a', record: 'r'}, activity: 'Reading', place: null, wave: null, layout: null},
-    {publisher: 'ann', kind: 'person', label: 'Ann', focus: {app: 'a', record: 'r'}, activity: null, place: '7', wave: {seq: 2, target: 'b0b'}, layout: {size: [10, 10], windows: []}},
-    {publisher: 'new', kind: 'person', label: '', focus: null, activity: null, place: null, wave: null, layout: null},
+    {publisher: 'bot', kind: 'agent', label: 'Scribe', focus: {app: 'a', record: 'r'}, activity: 'Reading', place: null, wave: null, layout: null, following: null},
+    {publisher: 'ann', kind: 'person', label: 'Ann', focus: {app: 'a', record: 'r'}, activity: null, place: '7', wave: {seq: 2, target: 'b0b'}, layout: {size: [10, 10], windows: []}, following: 'b0b'},
+    {publisher: 'new', kind: 'person', label: '', focus: null, activity: null, place: null, wave: null, layout: null, following: null},
   ]);
   assert.equal(liveMembers({available: false}, seen), null, 'no live layer: the host lines decide');
 });
@@ -115,7 +115,7 @@ test('a hidden page neither posts nor reads; a member\'s name reaches the runtim
   layer.join('bot');
   layer.presence('bot', {participant: {kind: 'agent', label: 'Scribe', activity: 'Summarising'}, focus: {app: 'x', record: 'y'}});
   const last = h.calls.filter(([kind]) => kind === 'people').at(-1)[1];
-  assert.deepEqual(last.members, [{publisher: 'bot', kind: 'agent', label: 'Scribe', focus: {app: 'x', record: 'y'}, activity: 'Summarising', place: null, wave: null, layout: null}]);
+  assert.deepEqual(last.members, [{publisher: 'bot', kind: 'agent', label: 'Scribe', focus: {app: 'x', record: 'y'}, activity: 'Summarising', place: null, wave: null, layout: null, following: null}]);
   // A person's focus reaches the runtime too: in a room whose layout is
   // personal no window here is theirs, and the app they focus is all that
   // says where they are ("In Chat").

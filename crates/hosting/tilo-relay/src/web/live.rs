@@ -461,6 +461,7 @@ mod tests {
             reaction: None,
             wave: None,
             layout: None,
+            following: None,
             seq: 4,
             sent_at_ms: 1,
             focus: Some(record()),

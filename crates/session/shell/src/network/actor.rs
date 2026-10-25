@@ -7899,6 +7899,7 @@ mod tests {
                 reaction: None,
                 wave: None,
                 layout: None,
+                following: None,
                 seq: 1,
                 sent_at_ms: 1,
                 focus: None,
