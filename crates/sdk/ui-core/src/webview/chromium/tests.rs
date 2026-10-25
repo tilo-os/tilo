@@ -1468,6 +1468,69 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
         let malformed = json!({"event":"page_result","request_id":9,"ok":true,"message":"x"});
         assert!(validate_event(&malformed).is_err());
     }
+    // phase: the_pages_file_chooser_answers_through_one_rounded_command
+    {
+        assert_eq!(
+            encode_command(WebViewCommand::FileChooserAnswer {
+                id: 4,
+                paths: vec!["/tmp/scan.pdf".into()],
+            })
+            .unwrap(),
+            json!({"op":"file_chooser","id":4,"paths":["/tmp/scan.pdf"]})
+        );
+        let asked = json!({"event":"file_chooser","tab":2,"id":4,"title":"Choose a file",
+            "accept":".pdf","folder":false,"multiple":false});
+        assert!(validate_event(&asked).is_ok());
+        assert_eq!(
+            decode_event(&asked),
+            Some(WebViewEvent::FileChooserRequested {
+                id: 4,
+                title: "Choose a file".into(),
+                accept: ".pdf".into(),
+                folder: false,
+                multiple: false,
+            })
+        );
+        let answered = json!({"event":"file_chooser_result","tab":2,"id":4,"ok":false,
+            "count":0,"message":"This chooser takes .pdf"});
+        assert!(validate_event(&answered).is_ok());
+        assert_eq!(
+            decode_event(&answered),
+            Some(WebViewEvent::FileChooserResult {
+                id: 4,
+                accepted: false,
+                count: 0,
+                message: "This chooser takes .pdf".into(),
+            })
+        );
+        // A chooser that names neither what it takes nor which one it is, and
+        // an answer that does not say how many files it took, never surface.
+        assert!(
+            validate_event(&json!({"event":"file_chooser","id":4})).is_err(),
+            "a chooser names what it takes"
+        );
+        assert!(
+            validate_event(&json!({"event":"file_chooser_result","id":4,"ok":true})).is_err(),
+            "an answer says how many files it took"
+        );
+        let seventeen: Vec<String> = (0..17).map(|n| format!("/tmp/{n}.pdf")).collect();
+        assert!(
+            encode_command(WebViewCommand::FileChooserAnswer {
+                id: 4,
+                paths: seventeen,
+            })
+            .is_none(),
+            "one answer carries at most 16 files"
+        );
+        assert!(
+            encode_command(WebViewCommand::FileChooserAnswer {
+                id: 4,
+                paths: vec!["scan.pdf".into()],
+            })
+            .is_none(),
+            "a path that is not absolute is refused before it reaches the engine"
+        );
+    }
     // phase: engines_that_cannot_run_page_requests_answer_them
     {
         let unavailable = UnavailableEngine::new("missing runtime".into());

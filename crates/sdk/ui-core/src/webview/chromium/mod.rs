@@ -1989,9 +1989,11 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             *id > 0
                 && i32::try_from(*id).is_ok()
                 && paths.len() <= MAX_FILE_CHOOSER_PATHS
-                && paths
-                    .iter()
-                    .all(|path| !path.is_empty() && path.len() <= 4096)
+                && paths.iter().all(|path| {
+                    // The host reads paths from the root, and a NUL would cut
+                    // one short inside the engine.
+                    path.starts_with('/') && path.len() <= 4096 && !path.contains('\0')
+                })
         }
         WebViewCommand::Navigate(url) => url.len() <= 65536,
         WebViewCommand::StartDownload { uri } => {
@@ -2308,6 +2310,10 @@ fn decode_base64_bounded(input: &str, limit: usize) -> Option<Vec<u8>> {
 }
 
 fn encode_command(command: WebViewCommand) -> Option<Value> {
+    // One gate for every command: nothing the limits refuse reaches the host.
+    if !command_within_limits(&command) {
+        return None;
+    }
     Some(match command {
         WebViewCommand::Credentials(request) => request.encode()?,
         WebViewCommand::ImportServiceSession(request) => request.encode()?,
