@@ -6812,8 +6812,9 @@ impl TextInput {
         }
         match element_state {
             // The tap the toolkit synthesises when a finger lifts: that
-            // finger's own touch already pressed, and a second press would
-            // count as a double click.
+            // finger's own lift, which follows, presses once
+            // (`text_input_touch.rs`), and a second press would count as a
+            // double click.
             ElementState::Pressed if self.active_touch.is_some() => *handled = true,
             ElementState::Pressed if self.is_hovered && self.press_accessory() => {
                 *handled = true;
