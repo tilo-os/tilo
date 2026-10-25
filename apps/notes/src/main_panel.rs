@@ -962,6 +962,10 @@ impl MainPanel {
         self.editor.editor_mut().take_external_link_open()
     }
 
+    pub fn take_resource_link_open(&mut self) -> Option<String> {
+        self.editor.editor_mut().take_resource_link_open()
+    }
+
     /// The slash command the person chose that Notes carries out, once.
     pub fn take_slash_request(&mut self) -> Option<ui::widget::SlashRequest> {
         self.editor.editor_mut().take_slash_request()
