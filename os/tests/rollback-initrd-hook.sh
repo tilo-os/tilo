@@ -33,9 +33,14 @@ else
 fi
 
 mkdir "$work/bin"
+# The exported token is the same JSON cryptsetup stores in the header, so a
+# test can present a PIN-less token exactly as an automatic unlock would.
 cat >"$work/bin/cryptsetup" <<'EOF'
 #!/bin/bash
-case "${TILO_TEST_TOKEN:-1}:$*" in 1:*'--token-id 0'*) printf '{"type":"tilo-rollback"}\n'; exit 0 ;; *) exit 1 ;; esac
+case "${TILO_TEST_TOKEN:-1}:$*" in
+  1:*'--token-id 0'*) printf '{"type":"tilo-rollback","pin":%s}\n' "${TILO_TEST_PIN:-true}"; exit 0 ;;
+  *) exit 1 ;;
+esac
 EOF
 cat >"$work/bin/systemd-ask-password" <<'EOF'
 #!/bin/bash
@@ -81,6 +86,19 @@ if PATH="$work/bin:$PATH" TILO_TEST_FAIL=1 TILO_TEST_ARGS="$work/args" \
   ok "failed TPM unseal removes partial key material and yields to recovery"
 else
   bad "failed TPM unseal blocked fallback or left partial key material"
+fi
+
+# A volume sealed without a PIN opens by itself: no prompt, and no --pin-file on
+# the command line. tilo-rollback still decides whether this boot may try it.
+rm -f "$work/asked" "$work/args"
+if PATH="$work/bin:$PATH" TILO_TEST_PIN=false TILO_TEST_ARGS="$work/args" \
+     TILO_TEST_ASKED="$work/asked" TILO_ROLLBACK_RUNTIME_ROOT="$work/auto-root" \
+     "$helper" "/dev/disk/by-uuid/$uuid" "luks-$uuid" \
+   && [ -e "$work/args" ] && [ ! -e "$work/asked" ] \
+   && ! grep -Fq -- '--pin-file' "$work/args"; then
+  ok "a PIN-less volume unlocks without a prompt"
+else
+  bad "a PIN-less volume prompted for a PIN or withheld the unlock"
 fi
 
 if [ "$fail" -eq 0 ]; then
