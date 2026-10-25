@@ -10,7 +10,7 @@
 use std::rc::Rc;
 
 use ui::icons::Icon;
-use ui::widget::{NavAction, NavItem, NavList, NavSection, Widget};
+use ui::widget::{NavAction, NavItem, NavList, NavSection, RowStatus, Widget};
 use vello::kurbo::Point;
 
 use crate::app::{Core, Request, Requests, Shared};
@@ -89,9 +89,19 @@ impl Core {
         let mut sections = vec![NavSection::untitled("library", smart)];
 
         let feed_item = |id: &Id, title: &str, kind: FeedKind| {
-            NavItem::new(nav_id(&Filter::Feed(id.clone())), title)
+            let item = NavItem::new(nav_id(&Filter::Feed(id.clone())), title)
                 .icon(feed_icon(kind))
-                .counted(store.unread_for_feed(id))
+                .counted(store.unread_for_feed(id));
+            // A subscription whose last refresh failed keeps looking healthy
+            // otherwise: it holds its old articles and never updates. Its row
+            // takes the shared error status, and says why in the caption line
+            // under its name — the same reason assistive technology hears.
+            match self.feed_failures.get(id) {
+                Some(reason) => item
+                    .status(RowStatus::Error)
+                    .secondary(crate::i18n::failure_sentence(*reason)),
+                None => item,
+            }
         };
         let mut feeds: Vec<NavItem> = store
             .folders_sorted()

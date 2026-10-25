@@ -76,6 +76,7 @@ browser-address = Address and search
 browser-address-placeholder = Search or enter address
 browser-go = Go
 browser-suggestion-search = Search with { $engine }
+browser-suggestion-bookmark = Bookmark, { $url }
 browser-page-bookmarked = Page bookmarked
 browser-bookmark-page = Bookmark this page
 browser-library-open = Open browser library
@@ -218,3 +219,112 @@ browser-page-failed-not-secure = The site’s secure connection failed, so the p
 browser-page-failed-blocked = This page is blocked and can’t be opened here.
 browser-page-failed-retry = The page didn’t load. Try again.
 browser-page-retry = Try again
+
+## The Library: its sections, its empty states and its rows
+browser-library-title = Library
+browser-library-done = Done
+browser-library-section-history = History
+browser-library-section-bookmarks = Bookmarks
+browser-library-section-downloads = Downloads
+browser-library-section-extensions = Extensions
+browser-library-pause = Pause history
+browser-library-resume = Resume history
+browser-library-clear-filter = Clear library filter
+browser-library-no-match = No matching items
+browser-library-history-paused = History is paused in this window
+browser-library-history-empty = No browsing history yet
+browser-library-bookmarks-empty = No bookmarks yet
+browser-library-bookmarks-empty-hint = Select the star in the address bar to keep a page.
+browser-library-extensions-empty = No extensions installed
+browser-library-remove-bookmark = Remove bookmark { $title }
+browser-library-forget-visit = Remove { $title } from history
+
+## Downloads: the list in the Library and its progress
+browser-downloads-empty = No downloads yet
+browser-download-open = Open
+browser-download-cancel = Cancel
+browser-download-cancel-name = Cancel download { $name }
+browser-download-reveal = Show in Files
+browser-download-reveal-name = Show { $name } in Files
+browser-download-retry = Retry
+browser-download-retry-name = Retry download { $name }
+browser-download-cannot-retry = Can’t retry
+browser-download-downloading = Downloading { $name }
+browser-download-waiting-destination = Waiting for a save destination…
+browser-download-progress = { $received } of { $total }
+browser-download-received = { $received } downloaded
+browser-download-complete = Download complete
+browser-download-saved-to = Saved to { $path }
+browser-download-failed = The download failed
+browser-download-failed-notice = Download failed
+browser-download-cancelled = Cancelled
+browser-downloads-progress-status = { $count ->
+    [one] { $count } download at { $percent }%
+   *[other] { $count } downloads at { $percent }%
+}
+browser-downloads-active-status = { $count ->
+    [one] { $count } active download
+   *[other] { $count } active downloads
+}
+browser-download-prompt = Download { $name } from { $url }? Save in a new folder in Downloads.
+browser-download-save = Save
+browser-download-unavailable = The downloaded file is no longer available.
+browser-download-open-failed = Could not open the download. Try revealing its folder.
+
+## A site asking for a permission
+browser-permission-request = { $origin } requests { $rights }. Expires in { $seconds } seconds.
+browser-permission-allow = Allow
+browser-permission-deny = Deny
+
+## The site panel: information, permissions and tracker protection
+browser-site-information = Site information
+browser-site-launcher-tooltip = Connection, permissions and stored data
+browser-site-page-protection = Protection
+browser-site-page-connection = Connection and data
+browser-site-protection = Ads and trackers
+browser-site-done = Done
+browser-site-no-origin = No HTTP or HTTPS origin
+browser-site-connection-secure = Connection is secure
+browser-site-connection-mixed = Encrypted connection with mixed content
+browser-site-connection-insecure = HTTP connection is not encrypted
+browser-site-connection-unverified = Connection security is not verified
+browser-site-certificate = Certificate
+browser-site-issuer = Issuer
+browser-site-connection = Connection
+browser-site-certificate-problem = Certificate problem
+browser-site-status-code = Status code { $code }
+browser-site-expires = Expires
+browser-site-permission-camera = Camera
+browser-site-permission-microphone = Microphone
+browser-site-permission-location = Location
+browser-site-permission-notifications = Notifications
+browser-site-permission-ask = Ask
+browser-site-permission-blocked = Blocked
+browser-site-permission-allowed = Allowed
+browser-site-block-permissions = Block permissions
+browser-site-block-note = Blocks camera, microphone, location and notifications. Reload the page to end sessions already running.
+browser-site-ask-again = Ask again
+browser-site-clear-data = Clear site data
+browser-site-clear-note = Clears this site’s storage and cookies, including cookies shared with its subdomains. Reload the page to reset data it still holds.
+browser-site-protection-off-settings = Protection is off in Settings
+browser-site-protection-off = Protection is off for this site
+browser-site-protection-on = Protection is on for this site
+browser-site-blocked-count = { $count } requests blocked or replaced in this page
+browser-site-protection-enable = Turn on and reload
+browser-site-protection-disable = Turn off and reload
+browser-site-filters-updated-on = Filters last updated { $date }
+browser-site-filters-update = Update filters
+browser-site-working = Working…
+browser-site-query-timeout = Site information timed out; retrying…
+browser-site-action-timeout = The action timed out. Reload the page before trying it again.
+browser-site-reading = Reading site information…
+browser-site-tls-unknown = TLS version unavailable
+browser-site-unavailable = unavailable
+
+## The filter list the site panel reports
+browser-filters-built-in = Using the built-in filter list
+browser-filters-updating = Updating filter lists…
+browser-filters-updated = Filter lists updated
+browser-filters-cached = Using cached filter lists
+browser-filters-failed = Update failed: { $detail }. Previous rules retained.
+browser-filters-failed-worker = Update failed: worker unavailable. Previous rules retained.

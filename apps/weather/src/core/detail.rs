@@ -35,16 +35,19 @@ use ui::widget::{
 use super::{Core, ForecastNotice, SunArc, scroll_track, wheel_dx, wheel_dy, wheel_step};
 use crate::api;
 use crate::chart;
+use crate::freshness::{self, Updated};
+use crate::i18n::{arg, t, t_args};
 use crate::icon;
 use crate::model::{AirQuality, DayForecast, SavedLocation, WeatherSnapshot};
 use crate::units::{self, Units};
 use crate::wxcode::Sky;
 
 impl Core {
-    /// Semantic summary of the currently painted forecast. This mirrors the
-    /// hero's key reading while leaving the long forecast visually
-    /// scannable and avoids forcing assistive technology through decorative
-    /// glyphs and chart marks.
+    /// Semantic summary of the currently painted forecast: the hero's key
+    /// reading, the forecast's age, the current readings, and every hourly
+    /// and daily forecast as a row carrying the reading the paint shows.
+    /// Assistive technology reads the forecast itself instead of being told
+    /// that 24 readings exist behind a picture it cannot enter.
     pub fn detail_accessibility(&self, rect: Rect) -> AccessNode {
         let node = AccessNode::new(Role::Group)
             .with_name("Forecast")
@@ -56,17 +59,34 @@ impl Core {
                 "Choose a saved place to see its forecast."
             });
         };
-        let detail = self.model.snapshot_for(location.id).map_or_else(
+        let snapshot = self.model.snapshot_for(location.id);
+        let updated = snapshot.and_then(|snapshot| {
+            freshness::updated(snapshot.fetched_at, ui::clock::local_now().naive_local())
+        });
+        let detail = snapshot.map_or_else(
             || "Current conditions are loading.".to_string(),
             |snapshot| {
-                let temp = snapshot.temp_in(snapshot.current.temperature, self.units).round();
-                let feels = snapshot.temp_in(snapshot.current.apparent, self.units).round();
-                format!(
-                    "{temp:.0}°, {}, feels like {feels:.0}°. {} hourly readings and {} daily forecasts are available.",
-                    Sky::label(snapshot.current.weather_code),
-                    snapshot.hourly.len(),
-                    snapshot.daily.len()
-                )
+                let temp = snapshot
+                    .temp_in(snapshot.current.temperature, self.units)
+                    .round();
+                let feels = snapshot
+                    .temp_in(snapshot.current.apparent, self.units)
+                    .round();
+                let mut summary = t_args(
+                    "weather-summary",
+                    &[
+                        arg("temperature", format!("{temp:.0}°")),
+                        arg("condition", Sky::label(snapshot.current.weather_code)),
+                        arg("feels", format!("{feels:.0}°")),
+                        arg("hours", snapshot.hourly.len().to_string()),
+                        arg("days", snapshot.daily.len().to_string()),
+                    ],
+                );
+                if let Some(updated) = &updated {
+                    summary.push(' ');
+                    summary.push_str(&updated.text);
+                }
+                summary
             },
         );
         let mut children = Vec::new();
@@ -84,11 +104,21 @@ impl Core {
                 .with_name(name)
                 .with_children(tiles.iter().map(Tile::access_node).collect())
         };
-        if let Some(snapshot) = self.model.snapshot_for(location.id) {
+        if let Some(snapshot) = snapshot {
+            if let Some(updated) = &updated {
+                children.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(updated.text.clone())
+                        .with_hashed_key(UPDATED_KEY)
+                        .with_bounds(self.updated_rect),
+                );
+            }
             children.push(group(
                 "Current conditions",
                 reading_tiles(snapshot, self.units, true),
             ));
+            children.push(hours_group(snapshot, self.units));
+            children.push(days_group(snapshot, self.units));
         }
         if let Some(aq) = self.model.selected_air_quality().filter(|aq| aq.has_any()) {
             children.push(group("Air quality", air_tiles(aq)));
@@ -116,6 +146,7 @@ impl Core {
         self.body_rect = rect;
         self.wheel_step = wheel_step(theme);
         self.retry_rect = None;
+        self.updated_rect = Rect::ZERO;
 
         let ctx = &mut PaintCtx::new(scene, t, tr, theme);
 
@@ -202,7 +233,7 @@ impl Core {
             return;
         };
         let r = place(page.hero.height, &mut y);
-        page.hero.paint(ctx, r);
+        self.updated_rect = page.hero.paint(ctx, r).unwrap_or(Rect::ZERO);
         let r = place(page.readings.height, &mut y);
         page.readings.paint(ctx, r);
         let r = place(page.hourly_h, &mut y);
@@ -223,7 +254,7 @@ impl Core {
         page: &DetailPage<'_>,
     ) {
         let theme = ctx.theme;
-        section_heading(ctx, "Next 24 hours", r.origin());
+        section_heading(ctx, &t("weather-hours"), r.origin());
         let band_top = r.y0 + page.header_h + page.header_gap;
         let band = Rect::new(r.x0, band_top, r.x1, band_top + page.strip.height);
         let cols: Vec<chart::HourColumn> = snap
@@ -559,6 +590,12 @@ const RETRY: &str = "Retry";
 
 /// The Retry action's key among the forecast's accessible children.
 pub const RETRY_KEY: &str = "weather.retry";
+/// The forecast's age line's key among the forecast's accessible children.
+pub const UPDATED_KEY: &str = "weather.updated";
+/// The hourly strip's key among the forecast's accessible children.
+pub const HOURS_KEY: &str = "weather.hours";
+/// The 7-day forecast's key among the forecast's accessible children.
+pub const DAYS_KEY: &str = "weather.days";
 
 impl Notice {
     fn new(ctx: &mut PaintCtx<'_>, kind: ForecastNotice, width: f64) -> Self {
@@ -593,6 +630,9 @@ struct Hero {
     condition: String,
     range: String,
     place: String,
+    /// When the forecast on screen was fetched, and whether it is still
+    /// current (see [`crate::freshness`]).
+    updated: Option<Updated>,
     sun: Option<SunArc>,
     glyph: f64,
     height: f64,
@@ -632,11 +672,20 @@ impl Hero {
                 )
             },
         );
-        let text_h = ctx.line_box(TextRole::Display)
+        // The forecast's age is a caption of the reading above it: read the
+        // wall clock the whole app reads, so a capture and a live window
+        // agree.
+        let updated = snapshot.and_then(|snap| {
+            freshness::updated(snap.fetched_at, ui::clock::local_now().naive_local())
+        });
+        let mut text_h = ctx.line_box(TextRole::Display)
             + ctx.line_box(TextRole::Heading)
             + ctx.line_box(TextRole::Body)
             + ctx.line_box(TextRole::Caption)
             + 3.0 * s1;
+        if updated.is_some() {
+            text_h += ctx.line_box(TextRole::Caption) + s1;
+        }
         // The arc stands beside the hero only where the pane leaves the
         // text its own room: wider than a detail column's minimum.
         let sun = snapshot
@@ -657,6 +706,7 @@ impl Hero {
             condition,
             range,
             place: loc.subtitle(),
+            updated,
             sun,
             glyph,
             height: text_h.max(glyph).max(arc_h).ceil(),
@@ -667,7 +717,9 @@ impl Hero {
         self.sun.is_some()
     }
 
-    fn paint(&self, ctx: &mut PaintCtx<'_>, area: Rect) {
+    /// Paint the hero into `area`, returning where the forecast's age line
+    /// landed when it has one.
+    fn paint(&self, ctx: &mut PaintCtx<'_>, area: Rect) -> Option<Rect> {
         let theme = ctx.theme;
         let sp = &theme.tokens.spacing;
         let gap = f64::from(sp.s1);
@@ -702,12 +754,33 @@ impl Hero {
             ctx.text_role(text, role, ink, Point::new(left, top), None);
             top += ctx.line_box(role) + gap;
         }
+        // The forecast's age last, quiet while it is still current and in the
+        // theme's warning ink once it is not: the same information and the
+        // same treatment the notice above the page uses for a lasting
+        // problem.
+        let updated_rect = self.updated.as_ref().map(|updated| {
+            let line = ctx.line_box(TextRole::Caption);
+            let ink = if updated.stale {
+                colors.semantic.warning
+            } else {
+                colors.text_dim
+            };
+            ctx.text_role(
+                &updated.text,
+                TextRole::Caption,
+                ink,
+                Point::new(left, top),
+                None,
+            );
+            Rect::new(left, top, area.x1, top + line)
+        });
         if let Some(sun) = &self.sun {
             sun.paint(
                 ctx,
                 Rect::new(area.x1 - sun.width, area.y0, area.x1, area.y1),
             );
         }
+        updated_rect
     }
 }
 
@@ -853,7 +926,14 @@ fn reading_tiles(snap: &WeatherSnapshot, units: Units, with_sun: bool) -> Vec<Ti
         .unit(units.wind_suffix())
         .note(units::compass(cur.wind_direction)),
         Tile::new("Humidity", format!("{}", cur.humidity.round() as i64)).unit("%"),
-        Tile::new("Precipitation", format!("{:.1}", cur.precipitation)).unit("mm"),
+        // A rainfall depth follows the person's measurement system, like the
+        // temperature and the wind above it; there is no request parameter
+        // for it, so the snapshot's own unit is converted here.
+        Tile::new(
+            "Precipitation",
+            snap.precip_reading(cur.precipitation, units),
+        )
+        .unit(precip_unit(units)),
         Tile::new("Pressure", format!("{}", cur.pressure.round() as i64)).unit("hPa"),
         Tile::new("UV index", format!("{}", cur.uv_index.round() as i64))
             .note(uv_word(cur.uv_index)),
@@ -863,6 +943,111 @@ fn reading_tiles(snap: &WeatherSnapshot, units: Units, with_sun: bool) -> Vec<Ti
         tiles.push(Tile::new("Sunset", clock_label(&today.sunset)));
     }
     tiles
+}
+
+/// The chance of precipitation as both the strip and the words give it.
+fn chance(probability: f64) -> String {
+    format!("{}%", probability.round() as i64)
+}
+
+/// The 24-hour strip as a list of readings: the strip paints 24 columns that
+/// no screen reader can enter, so each hour is a row with the same reading
+/// the column shows — its hour, the temperature, the sky, and the chance of
+/// precipitation where the strip paints one.
+fn hours_group(snap: &WeatherSnapshot, units: Units) -> AccessNode {
+    let total = snap.hourly.len();
+    let rows = snap
+        .hourly
+        .iter()
+        .enumerate()
+        .map(|(index, hour)| {
+            let temperature = format!("{}°", snap.temp_in(hour.temperature, units).round() as i64);
+            let sky = Sky::label(hour.weather_code);
+            let description = if hour.precip_probability >= 5.0 {
+                t_args(
+                    "weather-hour-row-rain",
+                    &[
+                        arg("temperature", temperature),
+                        arg("sky", sky),
+                        arg("chance", chance(hour.precip_probability)),
+                    ],
+                )
+            } else {
+                t_args(
+                    "weather-hour-row",
+                    &[arg("temperature", temperature), arg("sky", sky)],
+                )
+            };
+            let label = if index == 0 {
+                t("weather-hour-now")
+            } else {
+                hour.hour_label()
+            };
+            AccessNode::new(Role::ListItem)
+                .with_name(label)
+                .with_description(description)
+                .with_position(index + 1, total)
+                .with_hashed_key(format!("weather.hour.{index}"))
+        })
+        .collect();
+    AccessNode::new(Role::List)
+        .with_name(t("weather-hours"))
+        .with_hashed_key(HOURS_KEY)
+        .with_children(rows)
+}
+
+/// The 7-day forecast as a list of readings: one row per day with the range
+/// the row's bar spans, the sky, the chance of precipitation, and the UV and
+/// wind the wide row adds — the same reading the painted row carries, which a
+/// narrow window hides rather than a screen reader losing.
+fn days_group(snap: &WeatherSnapshot, units: Units) -> AccessNode {
+    let total = snap.daily.len();
+    let rows = snap
+        .daily
+        .iter()
+        .enumerate()
+        .map(|(index, day)| {
+            let high = format!("{}°", snap.temp_in(day.temp_max, units).round() as i64);
+            let low = format!("{}°", snap.temp_in(day.temp_min, units).round() as i64);
+            let sky = Sky::label(day.weather_code);
+            let mut description = if day.precip_probability >= 5.0 {
+                t_args(
+                    "weather-day-row-rain",
+                    &[
+                        arg("high", high),
+                        arg("low", low),
+                        arg("sky", sky),
+                        arg("chance", chance(day.precip_probability)),
+                    ],
+                )
+            } else {
+                t_args(
+                    "weather-day-row",
+                    &[arg("high", high), arg("low", low), arg("sky", sky)],
+                )
+            };
+            let uv = day.uv_index_max.round().max(0.0) as i64;
+            let wind = format!(
+                "{} {}",
+                snap.wind_in(day.wind_max, units).round() as i64,
+                units.wind_suffix()
+            );
+            description.push_str(", ");
+            description.push_str(&t_args(
+                "weather-day-extras",
+                &[arg("uv", uv), arg("wind", wind)],
+            ));
+            AccessNode::new(Role::ListItem)
+                .with_name(day_label(index, day))
+                .with_description(description)
+                .with_position(index + 1, total)
+                .with_hashed_key(format!("weather.day.{index}"))
+        })
+        .collect();
+    AccessNode::new(Role::List)
+        .with_name(t("weather-days"))
+        .with_hashed_key(DAYS_KEY)
+        .with_children(rows)
 }
 
 /// The 7-day forecast: its heading, then one row per day.
@@ -899,7 +1084,7 @@ impl<'a> Days<'a> {
     }
 
     fn paint(&self, ctx: &mut PaintCtx<'_>, r: Rect, lead: f64) {
-        section_heading(ctx, "7-day forecast", r.origin());
+        section_heading(ctx, &t("weather-days"), r.origin());
         let Some(snap) = self.snapshot else {
             return;
         };
@@ -1330,6 +1515,15 @@ pub(super) fn hhmm(iso: &str) -> String {
     iso.get(11..16).unwrap_or("--:--").to_string()
 }
 
+/// The unit a precipitation reading is given in, in the person's language
+/// (`mm`, `in`, `Zoll`).
+fn precip_unit(units: Units) -> String {
+    t(match units.precip {
+        crate::units::PrecipUnit::Millimetres => "weather-unit-millimetres",
+        crate::units::PrecipUnit::Inches => "weather-unit-inches",
+    })
+}
+
 /// An ISO local time ("2026-06-30T07:40") as the person's clock shows it:
 /// "07:40" or "7:40 AM", like every other time on the desktop.
 pub(crate) fn clock_label(iso: &str) -> String {
@@ -1502,6 +1696,66 @@ mod helper_tests {
 }
 
 #[cfg(test)]
+mod precipitation_tests {
+    use super::reading_tiles;
+    use crate::units::Units;
+
+    fn tile(units: Units, precipitation: f64) -> (String, Option<String>) {
+        let model = crate::sample::sample_model();
+        let mut snap = model
+            .selected_snapshot()
+            .expect("a bundled forecast")
+            .clone();
+        snap.current.precipitation = precipitation;
+        let tile = reading_tiles(&snap, units, false)
+            .into_iter()
+            .find(|tile| tile.label == "Precipitation")
+            .expect("the readings include precipitation");
+        (tile.value, tile.unit)
+    }
+
+    #[test]
+    fn a_rainfall_reading_follows_the_measurement_system() {
+        // Metric: millimetres, one decimal, in the app's own words.
+        assert_eq!(tile(Units::METRIC, 0.0), ("0.0".into(), Some("mm".into())));
+        assert_eq!(tile(Units::METRIC, 2.44), ("2.4".into(), Some("mm".into())));
+        assert_eq!(
+            tile(Units::METRIC, 187.6),
+            ("187.6".into(), Some("mm".into()))
+        );
+        // Imperial: inches, two decimals — a shower reads 0.10, not 0.1 mm.
+        assert_eq!(
+            tile(Units::IMPERIAL, 0.0),
+            ("0.00".into(), Some("in".into()))
+        );
+        assert_eq!(
+            tile(Units::IMPERIAL, 2.44),
+            ("0.10".into(), Some("in".into()))
+        );
+        assert_eq!(
+            tile(Units::IMPERIAL, 187.6),
+            ("7.39".into(), Some("in".into()))
+        );
+    }
+
+    #[test]
+    fn the_screen_reader_hears_the_same_converted_reading() {
+        let model = crate::sample::sample_model();
+        let mut snap = model
+            .selected_snapshot()
+            .expect("a bundled forecast")
+            .clone();
+        snap.current.precipitation = 2.44;
+        let node = reading_tiles(&snap, Units::IMPERIAL, false)
+            .into_iter()
+            .find(|tile| tile.label == "Precipitation")
+            .expect("the readings include precipitation")
+            .access_node();
+        assert_eq!(node.value.as_deref(), Some("0.10 in"));
+    }
+}
+
+#[cfg(test)]
 mod page_tests {
     use super::{DetailPage, Tiles};
     use crate::core::Core;
@@ -1547,5 +1801,135 @@ mod page_tests {
             "a narrow pane shows sunrise and sunset as tiles"
         );
         let _ = Tiles::readings;
+    }
+}
+
+#[cfg(test)]
+mod accessibility_tests {
+    use super::*;
+    use crate::core::Core;
+
+    /// The bundled forecast for the selected place, stamped as just fetched so
+    /// the page has an age line to show.
+    fn core(units: Units) -> (Core, WeatherSnapshot) {
+        let mut model = crate::sample::sample_model();
+        let location = model.selected_location().expect("a bundled place").clone();
+        let snapshot = model
+            .snapshots
+            .get_mut(&location.id)
+            .expect("a bundled forecast");
+        snapshot.fetched_at = u64::try_from(ui::clock::local_now().timestamp()).unwrap_or_default();
+        let snapshot = snapshot.clone();
+        (Core::new(model, units), snapshot)
+    }
+
+    fn child<'a>(tree: &'a AccessNode, name: &str) -> &'a AccessNode {
+        tree.children
+            .iter()
+            .find(|child| child.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("the forecast exposes a {name:?} group"))
+    }
+
+    #[test]
+    fn every_hour_and_day_is_a_row_a_screen_reader_can_read() {
+        let (core, snapshot) = core(Units::IMPERIAL);
+        let tree = core.detail_accessibility(Rect::new(0.0, 0.0, 892.0, 700.0));
+
+        let hours = child(&tree, "Next 24 hours");
+        assert_eq!(hours.role, Role::List);
+        assert_eq!(
+            hours.children.len(),
+            snapshot.hourly.len(),
+            "every painted column is a row"
+        );
+        assert!(hours.children.iter().all(|row| row.role == Role::ListItem));
+        // The current hour reads as the strip's own "Now", and the next column
+        // names the clock time the strip prints.
+        assert_eq!(hours.children[0].name.as_deref(), Some("Now"));
+        assert_eq!(
+            hours.children[1].name.as_deref(),
+            Some(snapshot.hourly[1].hour_label().as_str())
+        );
+        // The reading is the column's: the temperature in the person's unit,
+        // the sky, and the chance of precipitation the strip paints.
+        let second = &snapshot.hourly[1];
+        let degrees = format!(
+            "{}°",
+            snapshot
+                .temp_in(second.temperature, Units::IMPERIAL)
+                .round() as i64
+        );
+        let reading = hours.children[1].description.clone().unwrap_or_default();
+        assert!(reading.starts_with(&degrees), "{reading}");
+        assert!(
+            reading.contains(Sky::label(second.weather_code)),
+            "{reading}"
+        );
+        if second.precip_probability >= 5.0 {
+            assert!(reading.contains("chance of precipitation"), "{reading}");
+        }
+
+        let days = child(&tree, "7-day forecast");
+        assert_eq!(days.role, Role::List);
+        assert_eq!(days.children.len(), snapshot.daily.len());
+        assert_eq!(days.children[0].name.as_deref(), Some("Today"));
+        let day = &snapshot.daily[0];
+        let high = format!(
+            "{}°",
+            snapshot.temp_in(day.temp_max, Units::IMPERIAL).round() as i64
+        );
+        let low = format!(
+            "{}°",
+            snapshot.temp_in(day.temp_min, Units::IMPERIAL).round() as i64
+        );
+        let reading = days.children[0].description.clone().unwrap_or_default();
+        assert_eq!(
+            reading.split(", ").next(),
+            Some(format!("{high} to {low}").as_str()),
+            "{reading}"
+        );
+        assert!(reading.contains(Sky::label(day.weather_code)), "{reading}");
+        assert!(reading.contains("UV index"), "{reading}");
+    }
+
+    #[test]
+    fn the_forecasts_age_is_part_of_the_semantics() {
+        let (core, _) = core(Units::METRIC);
+        let tree = core.detail_accessibility(Rect::new(0.0, 0.0, 892.0, 700.0));
+        let age = tree
+            .children
+            .iter()
+            .find(|child| child.role == Role::StaticText)
+            .expect("the page says when its forecast was fetched");
+        let text = age.name.clone().unwrap_or_default();
+        assert!(text.starts_with("Updated"), "{text}");
+        assert!(
+            tree.description
+                .as_deref()
+                .unwrap_or_default()
+                .contains(&text),
+            "the summary carries the same age"
+        );
+    }
+
+    #[test]
+    fn a_forecast_nothing_was_fetched_for_makes_no_claim_about_its_age() {
+        // The bundled capture fixtures carry no fetch time, so the page says
+        // nothing it cannot know.
+        let model = crate::sample::sample_model();
+        let core = Core::new(model, Units::METRIC);
+        let tree = core.detail_accessibility(Rect::new(0.0, 0.0, 892.0, 700.0));
+        assert!(
+            tree.children
+                .iter()
+                .all(|child| child.role != Role::StaticText)
+        );
+        assert!(
+            !tree
+                .description
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Updated")
+        );
     }
 }

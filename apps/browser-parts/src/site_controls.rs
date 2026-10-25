@@ -216,7 +216,7 @@ impl SiteControls {
             action: kind.clone(),
         });
         if kind != "reload" {
-            self.notice = "Working…".into();
+            self.notice = crate::CATALOG.t("browser-site-working");
         }
         self.action = Some((request_id, origin, generation, kind, ui::time::now()));
         true
@@ -262,7 +262,7 @@ impl SiteControls {
                 .is_some_and(|(_, sent)| sent.elapsed() > Duration::from_secs(5))
             {
                 self.query = None;
-                self.notice = "Site information timed out; retrying…".into();
+                self.notice = crate::CATALOG.t("browser-site-query-timeout");
                 dirty = true;
             }
             if self
@@ -271,7 +271,7 @@ impl SiteControls {
                 .is_some_and(|(_, _, _, _, sent)| sent.elapsed() > Duration::from_secs(20))
             {
                 self.action = None;
-                self.notice = "Action timed out; refresh the page before retrying".into();
+                self.notice = crate::CATALOG.t("browser-site-action-timeout");
                 dirty = true;
             }
             if self.query.is_none()
@@ -297,9 +297,13 @@ impl SiteControls {
         self.command(Pending::Open(information))
     }
     pub fn launcher(&self) -> Button {
-        Button::icon_only("browser.site.info", Icon::Info, "Site information")
-            .tooltip("Connection, permissions and stored data")
-            .on_effect(self.open_command(true))
+        Button::icon_only(
+            "browser.site.info",
+            Icon::Info,
+            &crate::CATALOG.t("browser-site-information"),
+        )
+        .tooltip(crate::CATALOG.t("browser-site-launcher-tooltip"))
+        .on_effect(self.open_command(true))
     }
     /// The panel's own page switcher: protection, or the connection and the
     /// data the site holds.
@@ -307,8 +311,8 @@ impl SiteControls {
         let pending = self.pending.clone();
         ui::widget::ViewTabs::new(
             vec![
-                Segment::new("Protection"),
-                Segment::new("Connection and data"),
+                Segment::new(crate::CATALOG.t("browser-site-page-protection")),
+                Segment::new(crate::CATALOG.t("browser-site-page-connection")),
             ],
             usize::from(self.information),
         )
@@ -329,30 +333,31 @@ impl SiteControls {
             Box::new(Text::new(text).with_role(TextRole::Caption).dimmed()) as Box<dyn Widget>
         };
         let facts = |rows: Vec<Property>| Box::new(PropertyList::new(rows)) as Box<dyn Widget>;
-        let title = if self.information {
-            "Site information"
+        let title = crate::CATALOG.t(if self.information {
+            "browser-site-information"
         } else {
-            "Ads and trackers"
-        };
+            "browser-site-protection"
+        });
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(
                 Row::new()
                     .no_wrap()
-                    .push(Box::new(Text::new(title).with_role(TextRole::Title)))
+                    .push(Box::new(Text::new(&title).with_role(TextRole::Title)))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(self.button(
                         "browser.site.close",
-                        "Done",
+                        &crate::CATALOG.t("browser-site-done"),
                         Pending::Close,
                     ))),
             ))
             .push(Box::new(
                 Text::new(
-                    self.committed
-                        .as_deref()
-                        .unwrap_or("No HTTP or HTTPS origin"),
+                    &self
+                        .committed
+                        .clone()
+                        .unwrap_or_else(|| crate::CATALOG.t("browser-site-no-origin")),
                 )
                 .with_role(TextRole::Caption)
                 .with_kind(TextKind::Url)
@@ -366,35 +371,59 @@ impl SiteControls {
                 kind: kind.into(),
             };
             if self.information {
-                let connection = match status.security.as_str() {
-                    "secure" if status.content_status == 0 => "Connection is secure",
-                    "secure" => "Encrypted connection with mixed content",
-                    "insecure" => "HTTP connection is not encrypted",
-                    _ => "Connection security is not verified",
+                // The engine's security state, in the catalogue's words.
+                let connection = if status.security == "secure" && status.content_status == 0 {
+                    crate::CATALOG.t("browser-site-connection-secure")
+                } else if status.security == "secure" {
+                    crate::CATALOG.t("browser-site-connection-mixed")
+                } else if status.security == "insecure" {
+                    crate::CATALOG.t("browser-site-connection-insecure")
+                } else {
+                    crate::CATALOG.t("browser-site-connection-unverified")
                 };
                 column = column.push(Box::new(
-                    Text::new(connection).with_role(TextRole::Subheading),
+                    Text::new(&connection).with_role(TextRole::Subheading),
                 ));
                 let mut rows = Vec::new();
                 if !status.subject.is_empty() {
                     rows.push(
-                        Property::new("Certificate", status.subject.clone())
-                            .with_kind(TextKind::Identifier),
+                        Property::new(
+                            crate::CATALOG.t("browser-site-certificate"),
+                            status.subject.clone(),
+                        )
+                        .with_kind(TextKind::Identifier),
                     );
-                    rows.push(Property::new("Issuer", status.issuer.clone()));
-                    rows.push(Property::new("Connection", tls_version(status.tls_version)));
+                    rows.push(Property::new(
+                        crate::CATALOG.t("browser-site-issuer"),
+                        status.issuer.clone(),
+                    ));
+                    rows.push(Property::new(
+                        crate::CATALOG.t("browser-site-connection"),
+                        tls_version(status.tls_version),
+                    ));
                     if status.certificate_status != 0 {
                         rows.push(
                             Property::new(
-                                "Certificate problem",
-                                format!("Status code {}", status.certificate_status),
+                                crate::CATALOG.t("browser-site-certificate-problem"),
+                                crate::CATALOG.t_args(
+                                    "browser-site-status-code",
+                                    &[(
+                                        "code",
+                                        ui::i18n::ArgValue::Number(f64::from(
+                                            status.certificate_status,
+                                        )),
+                                    )],
+                                ),
                             )
                             .with_kind(TextKind::Numeric),
                         );
                     }
                     rows.push(
-                        Property::new("Expires", certificate_date(status.expires))
-                            .with_kind(TextKind::Numeric),
+                        Property::new(
+                            crate::CATALOG.t("browser-site-expires"),
+                            certificate_date(status.expires),
+                        )
+                        .with_kind(TextKind::Numeric),
                     );
                 }
                 for (name, value) in &status.permissions {
@@ -408,74 +437,82 @@ impl SiteControls {
                 }
                 column = column
                     .push(Box::new(
-                        self.button("browser.site.revoke", "Block permissions", action("revoke"))
-                            .role(ButtonRole::Destructive)
-                            .with_enabled(self.action.is_none()),
+                        self.button(
+                            "browser.site.revoke",
+                            &crate::CATALOG.t("browser-site-block-permissions"),
+                            action("revoke"),
+                        )
+                        .role(ButtonRole::Destructive)
+                        .with_enabled(self.action.is_none()),
                     ))
-                    .push(note(
-                        "Blocks camera, microphone, location and notifications. Reload the page to end sessions already running.",
-                    ));
+                    .push(note(&crate::CATALOG.t("browser-site-block-note")));
                 // Undoes a block, and an allow given at a prompt: the site
                 // asks again. Offered where the engine can.
                 if status.can_reset {
                     column = column.push(Box::new(
-                        self.button("browser.site.reset", "Ask again", action("reset"))
-                            .with_enabled(self.action.is_none()),
+                        self.button(
+                            "browser.site.reset",
+                            &crate::CATALOG.t("browser-site-ask-again"),
+                            action("reset"),
+                        )
+                        .with_enabled(self.action.is_none()),
                     ));
                 }
                 column = column
                     .push(Box::new(
-                        self.button("browser.site.clear", "Clear site data", action("clear"))
-                            .role(ButtonRole::Destructive)
-                            .with_enabled(self.action.is_none()),
+                        self.button(
+                            "browser.site.clear",
+                            &crate::CATALOG.t("browser-site-clear-data"),
+                            action("clear"),
+                        )
+                        .role(ButtonRole::Destructive)
+                        .with_enabled(self.action.is_none()),
                     ))
-                    .push(note(
-                        "Clears this site’s storage and cookies, including cookies shared with its subdomains. Reload the page to reset data it still holds.",
-                    ));
+                    .push(note(&crate::CATALOG.t("browser-site-clear-note")));
             } else {
-                let state = if !status.global_enabled {
-                    "Protection is off in Settings"
+                let state = crate::CATALOG.t(if !status.global_enabled {
+                    "browser-site-protection-off-settings"
                 } else if status.excepted {
-                    "Protection is off for this site"
+                    "browser-site-protection-off"
                 } else {
-                    "Protection is on for this site"
-                };
+                    "browser-site-protection-on"
+                });
                 column = column
-                    .push(Box::new(Text::new(state).with_role(TextRole::Subheading)))
-                    .push(line(&format!(
-                        "{} requests blocked or replaced in this page",
-                        status.blocked
+                    .push(Box::new(Text::new(&state).with_role(TextRole::Subheading)))
+                    .push(line(&crate::CATALOG.t_args(
+                        "browser-site-blocked-count",
+                        &[("count", ui::i18n::ArgValue::Number(status.blocked as f64))],
                     )))
                     .push(Box::new(
                         self.button(
                             "browser.site.toggle",
-                            if status.excepted {
-                                "Turn on and reload"
+                            &crate::CATALOG.t(if status.excepted {
+                                "browser-site-protection-enable"
                             } else {
-                                "Turn off and reload"
-                            },
+                                "browser-site-protection-disable"
+                            }),
                             action(if status.excepted { "enable" } else { "disable" }),
                         )
                         .with_enabled(self.action.is_none() && self.pending_reload.is_none()),
                     ))
-                    .push(line(&self.filters.message));
+                    .push(line(&self.filters.message.text()));
                 if let Some(updated) = self.filters.updated {
-                    column = column.push(note(&format!(
-                        "Filters last updated {}",
-                        unix_date(updated)
+                    column = column.push(note(&crate::CATALOG.t_args(
+                        "browser-site-filters-updated-on",
+                        &[("date", ui::i18n::ArgValue::Text(unix_date(updated)))],
                     )));
                 }
                 column = column.push(Box::new(
                     self.button(
                         "browser.site.filters.retry",
-                        "Update filters",
+                        &crate::CATALOG.t("browser-site-filters-update"),
                         Pending::Refresh,
                     )
                     .with_enabled(!self.filters.busy),
                 ));
             }
         } else if self.committed.is_some() {
-            column = column.push(line("Reading site information…"));
+            column = column.push(line(&crate::CATALOG.t("browser-site-reading")));
         }
         if !self.notice.is_empty() {
             column = column.push(line(&self.notice));
@@ -497,22 +534,20 @@ impl SiteControls {
 /// How the engine's permission names and states read in the panel.
 fn permission_label(name: &str) -> String {
     match name {
-        "camera" => "Camera",
-        "microphone" => "Microphone",
-        "location" => "Location",
-        "notifications" => "Notifications",
-        other => other,
+        "camera" => crate::CATALOG.t("browser-site-permission-camera"),
+        "microphone" => crate::CATALOG.t("browser-site-permission-microphone"),
+        "location" => crate::CATALOG.t("browser-site-permission-location"),
+        "notifications" => crate::CATALOG.t("browser-site-permission-notifications"),
+        other => other.to_owned(),
     }
-    .to_owned()
 }
 fn permission_state(state: &str) -> String {
     match state {
-        "ask" => "Ask",
-        "blocked" => "Blocked",
-        "allowed" | "granted" => "Allowed",
-        other => other,
+        "ask" => crate::CATALOG.t("browser-site-permission-ask"),
+        "blocked" => crate::CATALOG.t("browser-site-permission-blocked"),
+        "allowed" | "granted" => crate::CATALOG.t("browser-site-permission-allowed"),
+        other => other.to_owned(),
     }
-    .to_owned()
 }
 /// A Unix time in the toolkit's timestamp style, on the local clock; never a
 /// page-controlled formatter.
@@ -521,22 +556,24 @@ fn unix_date(seconds: u64) -> String {
         i64::try_from(seconds).unwrap_or(i64::MAX),
     ))
 }
-fn tls_version(version: u32) -> &'static str {
-    match version {
+fn tls_version(version: u32) -> String {
+    // Wire protocol names, which every locale spells the same way.
+    let name = match version {
         3 => "TLS 1.0",
         4 => "TLS 1.1",
         5 => "TLS 1.2",
         6 => "TLS 1.3",
         7 => "QUIC",
-        _ => "TLS version unavailable",
-    }
+        _ => return crate::CATALOG.t("browser-site-tls-unknown"),
+    };
+    name.to_owned()
 }
 fn certificate_date(base_micros: f64) -> String {
     let unix = base_micros / 1_000_000.0 - 11_644_473_600.0;
     if unix.is_finite() && unix > 0.0 {
         unix_date(unix as u64)
     } else {
-        "unavailable".into()
+        crate::CATALOG.t("browser-site-unavailable")
     }
 }
 #[cfg(test)]
