@@ -321,12 +321,13 @@ else
   printf 'ok    desktop package CI restores checksum-pinned GitHub inputs\n'
 fi
 
-if grep -Fq 'ENV GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org' "$containerfile" \
-  && grep -Fq -- '--mount=type=cache,target=/go/pkg/mod' "$containerfile" \
-  && grep -Fq -- '--mount=type=cache,target=/root/.cache/go-build' "$containerfile"; then
-  printf 'ok    Go helper builds use verified persistent proxy caches without GitHub fallback\n'
+if grep -Fq 'ENV GOPROXY=file:///goproxy GOSUMDB=off GOTOOLCHAIN=local' "$containerfile" \
+  && grep -Fq 'RUN --network=none --mount=type=cache,target=/root/.cache/go-build' "$containerfile" \
+  && awk -F '\t' '$1 !~ /^#/ && $3 ~ /^https:\/\/proxy\.golang\.org\// { n++ } END { exit !n }' \
+    "$manifest"; then
+  printf 'ok    Go helper builds read checksum-pinned modules with no network\n'
 else
-  printf 'Go helper builds can bypass the verified module proxy or redownload unchanged modules\n' >&2
+  printf 'Go helper builds can reach the network for their modules\n' >&2
   fail=1
 fi
 
