@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+use ed25519_dalek::SigningKey;
+
 use super::*;
 
 /// A key source the test controls.
@@ -29,6 +31,10 @@ impl KeySource for Switch {
             Self::ABSENT => Err(Locked::NoIdentity),
             byte => Ok(SymmetricKey::from_bytes([byte; 32])),
         }
+    }
+
+    fn another(&self) -> Box<dyn KeySource> {
+        Box::new(self.clone())
     }
 }
 
@@ -491,6 +497,143 @@ fn sandbox_master_secrets_are_stable_separate_and_revocable() {
     // Forgetting drops the secret: the next one is a different secret.
     store.forget_app(&id).unwrap();
     assert_ne!(*one, *store.sandbox_secret("so.tilo.notes", None).unwrap());
+}
+
+#[test]
+fn the_persons_key_seals_the_vault_and_opens_it_without_this_device() {
+    use tilo_user_identity::persist::{IdentityPaths, write_signing_key};
+    let dir = tempfile::tempdir().unwrap();
+    let persons = |root: &Path| IdentityPaths::under(root);
+    let home = persons(&dir.path().join("home"));
+    let away = persons(&dir.path().join("away"));
+    let person = SigningKey::from_bytes(&[4; 32]);
+    for paths in [&home, &away] {
+        paths.ensure_directories().unwrap();
+        std::fs::write(&paths.user_pubkey, person.verifying_key().to_bytes()).unwrap();
+    }
+    let salt = dir.path().join("data/salt");
+    let key_of = |paths: &IdentityPaths| {
+        Box::new(UserKey::new(
+            paths.clone(),
+            salt.clone(),
+            Some(person.verifying_key().to_bytes()),
+        ))
+    };
+
+    // No private half yet: the machine that cannot reach the person's key
+    // holds the vault shut and mints no salt for a store it cannot open.
+    let store = Store::new(dir.path().join("data/vault.tseal"), key_of(&home));
+    assert_eq!(store.locked(), Some(Locked::NoIdentity));
+    assert!(!salt.exists());
+
+    write_signing_key(&home.user_privkey, &person).unwrap();
+    let made = store
+        .create_item(
+            &system(),
+            "default",
+            new_item("Mail", &[("service", "imap")], b"correct horse"),
+            true,
+        )
+        .unwrap();
+
+    // The same person's key on another machine, with the same salt and the
+    // same data directory, opens the very same vault: it belongs to them,
+    // not to the device that wrote it.
+    write_signing_key(&away.user_privkey, &person).unwrap();
+    let elsewhere = Store::new(dir.path().join("data/vault.tseal"), key_of(&away));
+    assert_eq!(elsewhere.locked(), None);
+    let (secret, _) = elsewhere.read_secret(&system(), &made).unwrap();
+    assert_eq!(secret.expose(), b"correct horse");
+
+    // The device key alone never opens it: what sealed it is the person.
+    let device = DeviceIdentityKey::new(home.clone(), salt.clone(), "1000");
+    let by_device = Store::new(dir.path().join("data/vault.tseal"), Box::new(device));
+    assert_eq!(by_device.locked(), Some(Locked::KeyChanged));
+
+    // Another person's key, or another salt, is another store.
+    let stranger = SigningKey::from_bytes(&[5; 32]);
+    write_signing_key(&home.user_privkey, &stranger).unwrap();
+    let other = Store::new(
+        dir.path().join("data/vault.tseal"),
+        Box::new(UserKey::new(
+            home,
+            salt.clone(),
+            Some(stranger.verifying_key().to_bytes()),
+        )),
+    );
+    assert_eq!(other.locked(), Some(Locked::KeyChanged));
+}
+
+#[test]
+fn a_vault_keyed_by_the_device_is_copied_whole_under_the_persons_key_once() {
+    use tilo_user_identity::persist::{
+        IdentityPaths, load_or_create_device_key, write_signing_key,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let system_root = dir.path().join("system");
+    let paths = IdentityPaths::under(system_root);
+    load_or_create_device_key(&paths).unwrap();
+    let salt = dir.path().join("data/salt");
+    let path = dir.path().join("data/vault.tseal");
+
+    // What an earlier build left: a vault sealed under the device identity.
+    let device = || DeviceIdentityKey::new(paths.clone(), salt.clone(), "1000");
+    let before = Store::new(path.clone(), Box::new(device()));
+    let made = before
+        .create_item(
+            &system(),
+            "default",
+            new_item("Mail", &[("service", "imap")], b"correct horse"),
+            true,
+        )
+        .unwrap();
+    let old_bytes = std::fs::read(&path).unwrap();
+
+    // The person's key cannot open it and the store says so without
+    // rewriting a byte; the machine relays the ciphertext until the old key
+    // is available again.
+    let person = SigningKey::from_bytes(&[6; 32]);
+    write_signing_key(&paths.user_privkey, &person).unwrap();
+    let person_key = || {
+        Box::new(UserKey::new(
+            paths.clone(),
+            salt.clone(),
+            Some(person.verifying_key().to_bytes()),
+        ))
+    };
+    let alone = Store::new(path.clone(), person_key());
+    assert_eq!(alone.locked(), Some(Locked::KeyChanged));
+    assert_eq!(std::fs::read(&path).unwrap(), old_bytes);
+
+    // Both keys present: the vault is copied whole under the person's key
+    // and the store switches to it.
+    let migrated = Store::open_vault_keyed_by(
+        path.clone(),
+        person_key(),
+        Box::new(DeviceIdentityKey::new(paths.clone(), salt.clone(), "1000")),
+    );
+    assert_eq!(migrated.locked(), None);
+    let (secret, _) = migrated.read_secret(&system(), &made).unwrap();
+    assert_eq!(secret.expose(), b"correct horse");
+    // Every id survived, and nothing of the old ciphertext is the store.
+    assert_eq!(
+        migrated
+            .search(&system(), None, &attributes(&[("service", "imap")]))
+            .unwrap(),
+        vec![made.clone()]
+    );
+    let new_bytes = std::fs::read(&path).unwrap();
+    assert_ne!(new_bytes, old_bytes);
+    assert!(!new_bytes.windows(4).any(|w| w == b"Mail"));
+
+    // The person's key alone opens it from now on; the device key does not.
+    let reopened = Store::new(path.clone(), person_key());
+    assert_eq!(reopened.locked(), None);
+    let (secret, _) = reopened.read_secret(&system(), &made).unwrap();
+    assert_eq!(secret.expose(), b"correct horse");
+    let by_device = Store::new(path.clone(), Box::new(device()));
+    assert_eq!(by_device.locked(), Some(Locked::KeyChanged));
+    assert_eq!(std::fs::read(&path).unwrap(), new_bytes);
 }
 
 #[test]
