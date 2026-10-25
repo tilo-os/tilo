@@ -52,6 +52,11 @@ pub struct PlayerHost {
     rect: Rect,
     /// The taffy node this host owns; the inner player is laid out against it.
     node: Option<NodeId>,
+    /// The caption lines of the open video: the host paints the one the
+    /// playhead is inside over the picture's lower edge, which the shared
+    /// player has no other door for. Empty when captions are off or the video
+    /// offers none.
+    captions: Vec<crate::captions::CaptionCue>,
 }
 
 impl PlayerHost {
@@ -61,9 +66,69 @@ impl PlayerHost {
             player_h,
             rect: Rect::ZERO,
             node: None,
+            captions: Vec::new(),
         }
     }
 
+    /// The caption lines to show over the picture, when the person turned
+    /// them on and the video offers them.
+    #[must_use]
+    pub fn with_captions(mut self, captions: Vec<crate::captions::CaptionCue>) -> Self {
+        self.captions = captions;
+        self
+    }
+
+    /// The caption line the playhead is inside, painted over the picture's
+    /// lower edge: on the media's own scrim in the media ink, above the
+    /// progress line, and above the transport when the controls are showing so
+    /// the words are never behind a control.
+    fn paint_captions(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.captions.is_empty() || self.rect.width() <= 0.0 {
+            return;
+        }
+        let (position_ms, controls_shown) = {
+            let player = self.player.borrow();
+            (player.position_ms(), player.controls_visible())
+        };
+        let Some(cue) = crate::captions::active_cue(&self.captions, position_ms) else {
+            return;
+        };
+        let style = theme.text(ui::TextRole::Body);
+        let inset = f64::from(theme.tokens.spacing.s3);
+        let max_text = (self.rect.width() * 0.86).max(1.0);
+        let (width, height) = text_renderer.measure_style(&cue.text, Some(max_text as f32), &style);
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let pad_x = f64::from(theme.tokens.spacing.s3);
+        let pad_y = f64::from(theme.tokens.spacing.s1);
+        let clear_of_controls = if controls_shown {
+            self.player.borrow().transport_rect(theme).y0 - inset
+        } else {
+            self.rect.y1 - inset
+        };
+        let y1 = clear_of_controls.max(self.rect.y0);
+        let y0 = (y1 - f64::from(height) - 2.0 * pad_y).max(self.rect.y0);
+        let x0 = (self.rect.center().x - f64::from(width) / 2.0 - pad_x).max(self.rect.x0);
+        let x1 = (self.rect.center().x + f64::from(width) / 2.0 + pad_x).min(self.rect.x1);
+        let scrim = Rect::new(x0, y0, x1, y1);
+        // A caption is a media overlay, not a control: the scrim and the line
+        // are painted together on purpose, and `paint_caption` keeps them out of
+        // reach of anything that would draw one without the other.
+        let caption = CaptionOverlay {
+            scrim,
+            pad_x,
+            pad_y,
+            max_text,
+        };
+        paint_caption(scene, text_renderer, theme, transform, &caption, &cue.text);
+    }
     /// Show the video's art until the player has a frame to show, so a
     /// watch page that is still starting playback never stands empty. The
     /// art is the player's own poster, under its controls: the thumbnail
@@ -148,6 +213,7 @@ impl Widget for PlayerHost {
         self.player
             .borrow_mut()
             .draw(scene, transform, text_renderer, theme, presence);
+        self.paint_captions(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -208,4 +274,52 @@ impl Widget for PlayerHost {
         // forcing a relayout every frame.
         false
     }
+}
+
+/// Where a caption sits and how wide it may be.
+struct CaptionOverlay {
+    scrim: Rect,
+    pad_x: f64,
+    pad_y: f64,
+    max_text: f64,
+}
+
+/// A caption over the picture: its scrim, then its line.
+fn paint_caption(
+    scene: &mut vello::Scene,
+    text_renderer: &mut ui::TextRenderer,
+    theme: &Theme,
+    transform: vello::kurbo::Affine,
+    caption: &CaptionOverlay,
+    text: &str,
+) {
+    let (scrim, pad_x, pad_y, max_text) = (
+        caption.scrim,
+        caption.pad_x,
+        caption.pad_y,
+        caption.max_text,
+    );
+    let media = &theme.tokens.colors.media;
+    let style = theme.text(ui::TextRole::Body);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        media.scrim,
+        None,
+        &vello::kurbo::RoundedRect::new(
+            scrim.x0,
+            scrim.y0,
+            scrim.x1,
+            scrim.y1,
+            f64::from(theme.tokens.spacing.s2),
+        ),
+    );
+    text_renderer.draw_style(
+        scene,
+        text,
+        media.ink,
+        transform.then_translate(vello::kurbo::Vec2::new(scrim.x0 + pad_x, scrim.y0 + pad_y)),
+        Some(max_text as f32),
+        &style,
+    );
 }

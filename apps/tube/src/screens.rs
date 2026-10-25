@@ -184,6 +184,18 @@ fn subscribers(count: u64) -> Option<String> {
 
 /// One video as a media card: thumbnail, title, creator, reach and age.
 fn video_card(ui: Ui<'_>, v: &Video) -> MediaCard {
+    video_card_for(ui, v, false)
+}
+
+/// [`video_card`], with the second line saying where the video was left
+/// instead of its reach: on the history page the question is "how much of
+/// this have I seen", not "how many people have seen it". A card shows two
+/// lines, so this is a choice rather than an addition.
+fn history_card(ui: Ui<'_>, v: &Video) -> MediaCard {
+    video_card_for(ui, v, true)
+}
+
+fn video_card_for(ui: Ui<'_>, v: &Video, resume_line: bool) -> MediaCard {
     let dearrow = ui.model.settings.dearrow_titles_on();
     let mut card = MediaCard::new(
         format!("video_card_{}", v.id),
@@ -206,9 +218,26 @@ fn video_card(ui: Ui<'_>, v: &Video) -> MediaCard {
     {
         card = card.meta_mark(Icon::CircleCheck);
     }
-    let reach = reach(v);
-    if !reach.is_empty() {
-        card = card.meta(reach);
+    // Where the person left this video, when the page is the history: a
+    // video left half way says so, so half-watched is never mistaken for
+    // watched.
+    let resume = resume_line
+        .then(|| ui.model.resume_at_ms(&v.id))
+        .flatten()
+        .map(|position| {
+            t_args(
+                "tube-resume-at",
+                &[arg("time", clock(position as f64 / 1000.0))],
+            )
+        });
+    match resume {
+        Some(resume) => card = card.meta(&resume),
+        None => {
+            let reach = reach(v);
+            if !reach.is_empty() {
+                card = card.meta(reach);
+            }
+        }
     }
     card = if v.live {
         card.badge(OwnedBadge::Live)
@@ -441,7 +470,9 @@ pub fn history(ui: Ui<'_>) -> Scrollable {
                 .with_message(t("tube-history-empty-message")),
         ));
     } else {
-        children.push(video_grid(ui, videos));
+        children.push(Box::new(MediaGrid::new(
+            videos.into_iter().map(|v| history_card(ui, v)).collect(),
+        )));
     }
     page(children)
 }
@@ -676,11 +707,19 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
             Container::new()
                 .with_no_padding()
                 .with_size(player_w as f32, player_h)
-                .with_child(Box::new(PlayerHost::new(player, player_h).with_poster(
-                    ui.imgs.store_handle(),
-                    ui.model.display_thumbnail_url(v),
-                    v.display_title(model.settings.dearrow_titles_on()),
-                ))),
+                .with_child(Box::new(
+                    PlayerHost::new(player, player_h)
+                        .with_poster(
+                            ui.imgs.store_handle(),
+                            ui.model.display_thumbnail_url(v),
+                            v.display_title(model.settings.dearrow_titles_on()),
+                        )
+                        .with_captions(if model.captions_of == v.id {
+                            model.captions.clone()
+                        } else {
+                            Vec::new()
+                        }),
+                )),
         ));
 
     let details = watch_details(ui, v);
@@ -789,10 +828,71 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
     player.set_setting(PlayerSetting::choice(
         "resolution",
         Icon::Monitor,
-        t("tube-resolution"),
+        // What the stream actually is, when that is not what was asked for:
+        // a choice that silently serves something else is the defect.
+        &if model.stream_quality.trim().is_empty() {
+            t("tube-quality")
+        } else {
+            t_args(
+                "tube-quality-now",
+                &[arg("quality", model.stream_quality.clone())],
+            )
+        },
         1,
         qualities,
         selected,
+    ));
+
+    let speeds: Vec<String> = crate::app::PLAYBACK_SPEEDS
+        .iter()
+        .map(|speed| t_args("tube-speed-value", &[arg("rate", speed.to_string())]))
+        .collect();
+    let speed = crate::app::PLAYBACK_SPEEDS
+        .iter()
+        .position(|speed| (speed - model.settings.playback_speed).abs() < 0.01)
+        .unwrap_or(3);
+    player.set_setting(PlayerSetting::choice(
+        SPEED_SETTING,
+        Icon::Gauge,
+        t("tube-playback-speed"),
+        2,
+        speeds,
+        speed,
+    ));
+    // Captions: what this video offers, plus Off. The label says what the
+    // choice is doing: off, on, or why it cannot be on.
+    let mut captions: Vec<String> = vec![t("tube-captions-off")];
+    captions.extend(model.caption_tracks.iter().map(|track| {
+        if track.automatic {
+            t_args(
+                "tube-captions-automatic",
+                &[arg("track", track.label.clone())],
+            )
+        } else {
+            track.label.clone()
+        }
+    }));
+    let chosen = model
+        .settings
+        .caption_language
+        .as_deref()
+        .and_then(|language| {
+            model
+                .caption_tracks
+                .iter()
+                .position(|track| track.language == language)
+        })
+        .map_or(0, |index| index.saturating_add(1));
+    player.set_setting(PlayerSetting::choice(
+        CAPTIONS_SETTING,
+        Icon::MessageSquare,
+        match &model.captions_notice {
+            Some(notice) => t_args("tube-captions-named", &[arg("why", notice.clone())]),
+            None => t("tube-captions"),
+        },
+        3,
+        captions,
+        chosen,
     ));
 
     let manual = v
@@ -815,6 +915,12 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
 
 /// The player command that skips the segment under the playhead.
 pub const SKIP_SETTING: &str = "skip-segment";
+
+/// The player's playback-speed menu.
+pub const SPEED_SETTING: &str = "playback-speed";
+
+/// The player's caption-track menu.
+pub const CAPTIONS_SETTING: &str = "captions";
 
 /// A `SponsorBlock` category's colour on the timeline and in Settings: one
 /// series of the theme's presence palette per category, so every category

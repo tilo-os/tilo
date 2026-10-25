@@ -78,6 +78,74 @@ fn channel(id: &str, name: &str, handle: &str, subs: u64, verified: bool, desc: 
               would only relocate the sample data, not shrink what a reader must trace for \
               one entry"
 )]
+/// The caption tracks the bundled sample videos offer, so a capture or a test
+/// can show the caption control with something to choose. A live video's
+/// tracks come from the source (`api::fetch_captions`).
+#[must_use]
+pub fn caption_tracks(id: &str) -> Vec<crate::captions::CaptionTrack> {
+    if id != SAMPLE_CAPTIONED_VIDEO {
+        return Vec::new();
+    }
+    vec![
+        crate::captions::CaptionTrack {
+            language: "en".into(),
+            label: "English".into(),
+            url: String::new(),
+            automatic: false,
+        },
+        crate::captions::CaptionTrack {
+            language: "de".into(),
+            label: "Deutsch (automatisch)".into(),
+            url: String::new(),
+            automatic: true,
+        },
+    ]
+}
+
+/// The bundled sample video whose captions a capture shows.
+pub const SAMPLE_CAPTIONED_VIDEO: &str = "vid_donut";
+
+/// The caption lines the sample video offers in `language`, or `None` when
+/// the sample has none: the same shape the worker delivers, so the page's
+/// caption path is exercised without the network. The first line is spoken
+/// where `play_demo` leaves the playhead, so a still shows the words.
+#[must_use]
+pub fn caption_cues(id: &str, language: &str) -> Option<Vec<crate::captions::CaptionCue>> {
+    if id != SAMPLE_CAPTIONED_VIDEO {
+        return None;
+    }
+    let lines: &[(u64, u64, &str)] = match language {
+        "en" => &[
+            (44_000, 47_500, "The glaze goes on in three thin coats."),
+            (48_000, 51_500, "Wait for each one to dry before the next."),
+            (
+                53_000,
+                56_500,
+                "That is what gives it the shine you see at the end.",
+            ),
+        ],
+        "de" => &[
+            (44_000, 47_500, "Die Glasur kommt in drei dünnen Schichten."),
+            (
+                48_000,
+                51_500,
+                "Jede Schicht trocknet, bevor die nächste kommt.",
+            ),
+        ],
+        _ => return None,
+    };
+    Some(
+        lines
+            .iter()
+            .map(|(start_ms, end_ms, text)| crate::captions::CaptionCue {
+                start_ms: *start_ms,
+                end_ms: *end_ms,
+                text: (*text).to_string(),
+            })
+            .collect(),
+    )
+}
+
 pub fn model() -> TubeModel {
     let chans = vec![
         channel(
@@ -608,5 +676,15 @@ pub fn model() -> TubeModel {
         feed_loading: false,
         feed_error: None,
         sources_unreached: None,
+        // The person watched the sample's history; one of them they left part
+        // way through, so the capture shows what "continue watching" is.
+        history_positions: [("vid_black_holes".to_string(), 246_000u64)]
+            .into_iter()
+            .collect(),
+        caption_tracks: Vec::new(),
+        captions: Vec::new(),
+        captions_of: String::new(),
+        captions_notice: None,
+        stream_quality: String::new(),
     }
 }
