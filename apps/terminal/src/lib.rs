@@ -31,6 +31,7 @@ pub mod runs;
 mod scenarios;
 pub mod screen;
 pub mod target;
+pub mod undoability;
 
 pub use graphics::TerminalImagePlacement;
 

@@ -147,6 +147,9 @@ pub struct Run {
     pub truncated: bool,
     /// The tool whose parser read it.
     pub tool: Atom,
+    /// It changed something a later action can put back, so the history
+    /// can undo it ([`crate::undoability`]).
+    pub undoable: bool,
     /// What its parsers found.
     pub items: Vec<RunItem>,
 }
@@ -187,6 +190,9 @@ pub struct Finished {
     pub output_len: u64,
     pub truncated: bool,
     pub tool: String,
+    /// Whether what it changed can be undone later: read from the command
+    /// when it ended ([`crate::undoability`]).
+    pub undoable: bool,
     pub items: Vec<RunItem>,
     /// The request it carried out, if `run` asked for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -350,6 +356,7 @@ impl Terminal {
                 output,
                 truncated: run.truncated,
                 tool: Atom(run.tool),
+                undoable: run.undoable,
                 items,
             },
         );

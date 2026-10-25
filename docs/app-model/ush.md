@@ -275,19 +275,26 @@ own (`/run/ush/runs.bash` in a guest; for the Host target one that reads
 `~/.bashrc` and then writes three marks into the pty stream:
 
 ```text
-ESC ] 133 ; A ; k=<key> BEL                           the prompt is shown
-ESC ] 133 ; C ; k=<key> ; cmd=<b64> ; cwd=<b64> BEL   a command line starts
-ESC ] 133 ; D ; <status> ; k=<key> BEL                it ended with <status>
+ESC ] 133 ; A ; k=<key> BEL                                     the prompt is shown
+ESC ] 133 ; C ; k=<key> ; cmd=<b64> ; cwd=<b64> ; t=<n> BEL     a command line starts
+ESC ] 133 ; D ; <status> ; k=<key> ; t=<n> BEL                  it ended with <status>
 ```
 
 `cmd` and `cwd` are base64 of the command line as the shell's history holds
-it and of the working directory. The key is a shell variable the rc file
-takes out of the environment before anything runs, so no program the session
-runs sees it, and output that imitates a mark (a `cat` of a file holding one)
-is not taken for one: Terminal acts only on marks carrying its key, and takes
-every mark out of what the screen shows. Another shell writes no marks; a
-`command` session and an environment on a relay answer `"runs":false`. Their
-output is live only.
+it and of the working directory, and `t` is that command's place in the
+shell's history, read from the history entry the shell is about to run. A
+line that runs nothing (an empty one, `exit`) takes no place there, so it
+marks no run, and the number makes the run tell itself apart from the one
+before it: a person typing a request's command by hand, before the shell
+reaches the request's own line, cannot take the id the request's run is
+recorded under. Which lines belong to which request is still decided by the
+lines themselves, in the order the shell reached them. The key is a shell
+variable the rc file takes out of the environment before anything runs, so no
+program the session runs sees it, and output that imitates a mark (a `cat` of
+a file holding one) is not taken for one: Terminal acts only on marks
+carrying its key, and takes every mark out of what the screen shows. Another
+shell writes no marks; a `command` session and an environment on a relay
+answer `"runs":false`. Their output is live only.
 
 ### A run
 
@@ -302,9 +309,17 @@ when it ends, by the Terminal that runs the session:
 | `started_ms`, `ended_ms`, `exit` | start, end and exit status; the duration is their difference |
 | `output` | the raw bytes it printed, escape sequences included, as one content-addressed `Bytes` blob (at most 4 MiB; `truncated` when it printed more) |
 | `tool`, `items` | which parser read it, and what it found |
+| `undoable` | whether what it changed is something Tilo can put back |
 
 No run writes a CRDT operation per character: the output is one blob, the
 rest a handful of fields.
+
+`undoable` is read once, from the command when it ended: a command that only
+looks (`ls`, `git status`, `cargo test`) is not undoable however much it
+printed, one whose change Tilo can put back (`rm`, `mv`, `cp`, `sed -i`) is,
+and one Tilo does not know is not offered. The past does not say: a `git
+commit` leaves what it replaced in the repository, so undo would have to ask
+git for it, and a command nobody listed is not guessed at.
 
 ### Parsers
 

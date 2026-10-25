@@ -9,14 +9,18 @@
 //! write
 //!
 //! ```text
-//! ESC ] 133 ; A ; k=<key> BEL                           the prompt is shown
-//! ESC ] 133 ; C ; k=<key> ; cmd=<b64> ; cwd=<b64> BEL   a command line starts
-//! ESC ] 133 ; D ; <status> ; k=<key> BEL                it ended with <status>
+//! ESC ] 133 ; A ; k=<key> BEL                                       the prompt is shown
+//! ESC ] 133 ; C ; k=<key> ; cmd=<b64> ; cwd=<b64> ; t=<n> BEL       a command line starts
+//! ESC ] 133 ; D ; <status> ; k=<key> ; t=<n> BEL                    it ended with <status>
 //! ```
 //!
 //! The key reaches the shell in [`KEY_ENV`], which the rc file takes into a
 //! shell variable and out of the environment before anything runs, so no
-//! program the session runs can write a mark Terminal believes.
+//! program the session runs can write a mark Terminal believes. `t` is the
+//! command's number in the shell's own history, so a run that does nothing (an
+//! empty line, `exit`) writes none, and Terminal tells a line its own `run`
+//! typed from one the person typed: a `run` is asked for before the shell has
+//! read it, both carry the same history number.
 
 use std::path::Path;
 
@@ -60,32 +64,52 @@ __ush_runs_armed=0
 __ush_runs_ran=0
 __ush_runs_seen=
 __ush_runs_b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
+# The number and the line of the command being run, from the shell's own
+# history: 0 and nothing when the history holds neither.
+__ush_runs_read() {
+  __ush_runs_number=0
+  __ush_runs_line=
+  local entry=${1-$(HISTTIMEFORMAT= builtin history 1)}
+  entry=${entry#"${entry%%[![:space:]]*}"}
+  __ush_runs_number=${entry%%[![:digit:]]*}
+  __ush_runs_number=${__ush_runs_number:-0}
+  __ush_runs_line=${entry#"$__ush_runs_number"}
+  __ush_runs_line=${__ush_runs_line#"${__ush_runs_line%%[![:space:]]*}"}
+}
+# A command line starts: the history number says which, so a line that runs
+# nothing (an empty one, `exit`) marks no run, and Terminal can tell a line
+# its own `run` typed from one the person typed.
+__ush_runs_start() {
+  __ush_runs_seen=$__ush_runs_number
+  __ush_runs_ran=1
+  printf '\033]133;C;k=%s;cmd=%s;cwd=%s;t=%s\007' "$__ush_runs_key" \
+    "$(__ush_runs_b64 "$__ush_runs_line")" "$(__ush_runs_b64 "$PWD")" \
+    "$__ush_runs_number"
+}
 __ush_runs_pre() {
   [ "$__ush_runs_armed" = 1 ] || return 0
   case "$BASH_COMMAND" in __ush_runs_post*) return 0 ;; esac
   __ush_runs_armed=0
-  local entry number line
-  entry=$(HISTTIMEFORMAT= builtin history 1)
-  entry=${entry#"${entry%%[![:space:]]*}"}
-  number=${entry%%[![:digit:]]*}
-  line=${entry#"$number"}
-  line=${line#"${line%%[![:space:]]*}"}
-  if [ -z "$line" ] || [ "$number" = "$__ush_runs_seen" ]; then
-    line=$BASH_COMMAND
+  __ush_runs_read
+  if [ "$__ush_runs_number" = 0 ] || [ "$__ush_runs_number" = "$__ush_runs_seen" ]; then
+    return 0
   fi
-  __ush_runs_seen=$number
-  __ush_runs_ran=1
-  printf '\033]133;C;k=%s;cmd=%s;cwd=%s\007' "$__ush_runs_key" \
-    "$(__ush_runs_b64 "$line")" "$(__ush_runs_b64 "$PWD")"
+  __ush_runs_start
 }
 __ush_runs_post() {
   local status=$?
   if [ "$__ush_runs_ran" = 1 ]; then
-    printf '\033]133;D;%s;k=%s\007' "$status" "$__ush_runs_key"
+    printf '\033]133;D;%s;k=%s;t=%s\007' "$status" "$__ush_runs_key" "$__ush_runs_seen"
     __ush_runs_ran=0
   fi
-  printf '\033]133;A;k=%s\007' "$__ush_runs_key"
-  __ush_runs_armed=1
+  __ush_runs_read
+  if [ "$__ush_runs_number" = 0 ] || [ "$__ush_runs_number" = "$__ush_runs_seen" ]; then
+    printf '\033]133;A;k=%s\007' "$__ush_runs_key"
+    __ush_runs_armed=1
+    return $status
+  fi
+  __ush_runs_start
+  __ush_runs_pre
   return $status
 }
 PROMPT_COMMAND="__ush_runs_post${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
@@ -140,20 +164,31 @@ mod tests {
         let out = String::from_utf8_lossy(&output.stdout);
         let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
         let cwd = b64(&home.path().display().to_string());
-        let started = |line: &str| format!("\x1b]133;C;k={key};cmd={};cwd={cwd}\x07", b64(line));
-        assert!(out.contains(&started("echo hello | tr h j")), "{out:?}");
+        let started = |line: &str, number: &str| {
+            format!(
+                "\x1b]133;C;k={key};cmd={};cwd={cwd};t={number}\x07",
+                b64(line)
+            )
+        };
+        // Numbers are the shell's own history: each command starts with the
+        // one it was typed as, and both lines of the session are numbered.
+        let commands = [
+            ("echo hello | tr h j", 1, 0),
+            ("false", 2, 1),
+            ("env | grep -c TILO_USH_RUNS", 3, 1),
+        ];
+        for (line, number, status) in commands {
+            let mark = started(line, &number.to_string());
+            let ended = format!("\x1b]133;D;{status};k={key};t={number}\x07");
+            assert!(out.contains(&mark), "{line} starts: {out:?}");
+            assert!(out.contains(&ended), "{line} ends: {out:?}");
+        }
         assert!(out.contains("jello"), "{out:?}");
         assert!(
-            out.contains(&format!("\x1b]133;D;0;k={key}\x07")),
-            "{out:?}"
-        );
-        assert!(out.contains(&started("false")), "{out:?}");
-        assert!(
-            out.contains(&format!("\x1b]133;D;1;k={key}\x07")),
-            "{out:?}"
-        );
-        assert!(
-            out.contains(&format!("{}0\n", started("env | grep -c TILO_USH_RUNS"))),
+            out.contains(&format!(
+                "{}0\n",
+                started("env | grep -c TILO_USH_RUNS", "3")
+            )),
             "no program sees the key: {out:?}"
         );
         assert!(out.contains(&format!("\x1b]133;A;k={key}\x07")), "{out:?}");
