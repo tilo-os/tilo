@@ -62,10 +62,27 @@ ARTICLE = f'''<!doctype html><title>The long read</title>
 <input id="kept" value="typed by the person">'''.encode()
 
 
+FRAMED = b'''<!doctype html><title>Framed</title>
+<h1>Framed page</h1>
+<iframe src="/widget" title="Payment form" style="width:600px;height:240px;border:0"></iframe>
+<button id="outside">Outside the frame</button>
+'''
+
+
+WIDGET = b'''<!doctype html><title>Payment details</title>
+<form action="/done" method="get">
+  <label>IBAN <input name="iban"></label>
+  <label>Account holder <input name="holder"></label>
+  <button>Save bank details</button>
+</form>
+'''
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
+            else FRAMED if path == '/framed' else WIDGET if path == '/widget' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -144,6 +161,37 @@ class PageActions(unittest.TestCase):
         self.assertNotIn('hunter2', again)
         self.assertEqual(self.main_world('typeof globalThis.__tiloPage'), 'undefined',
                          'page script must not reach the automation world')
+
+    def test_a_frame_is_named_by_the_outline_and_operated_in_its_own_document(self):
+        self.h.navigate(self.url + '/framed')
+        outline = self.outline()
+        # The frame is one line of the page, naming the id an action takes to
+        # run in it and the address it would reach.
+        self.assertRegex(outline, r'iframe "Payment form" \[frame=1\] src="http://127\.0\.0\.1:\d+/widget"')
+        # Inside the frame the outline is the frame's own document, and the
+        # page around it is not part of it.
+        inside = self.ok('outline', frame='1')
+        self.assertRegex(inside['outline'], r'textbox "IBAN" \[ref=d\d+e\d+\]')
+        self.assertNotIn('Outside the frame', inside['outline'])
+        iban = self.ref(inside['outline'], 'textbox "IBAN"')
+        self.ok('fill', element=iban, text='EX89370400440532013000', frame='1')
+        self.assertIn('value="EX89370400440532013000"', self.ok('outline', frame='1')['outline'])
+        # A frame's element belongs to the frame: the main document cannot name it.
+        wrong = self.page('click', element=iban)
+        self.assertEqual((wrong['ok'], wrong['code']), (False, 'stale_element'), wrong)
+        # A frame id the outline never printed is refused, not read as the page.
+        invented = self.page('outline', frame='7')
+        self.assertEqual((invented['ok'], invented['code']), (False, 'no_frame'), invented)
+
+    def test_a_click_inside_a_frame_is_a_click_in_the_page(self):
+        self.h.navigate(self.url + '/framed')
+        inside = self.ok('outline', frame='1')
+        button = self.ref(inside['outline'], 'button "Save bank details"')
+        self.ok('click', element=button, frame='1')
+        # The frame's widget submitted the form: reading the frame again shows
+        # the page it reached. The page around it did not move, so nothing is
+        # reported as a page navigation.
+        self.assertNotIn('Save bank details', self.ok('outline', frame='1')['outline'])
 
     def test_reader_view_shows_the_article_alone_and_puts_the_page_back(self):
         self.h.navigate(self.url + '/article')

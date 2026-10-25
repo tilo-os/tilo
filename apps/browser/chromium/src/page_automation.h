@@ -78,6 +78,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void OnDevToolsAgentDetached(CefRefPtr<CefBrowser>) override {
     world_=0;world_id_.clear();loader_.clear();text_owner_.reset();text_lease_.clear();
+    frame_world_.reset();world_request_.clear();main_world_=0;
     tree_=nullptr;++generation_;
     if(pending_ && call_) Fail("unavailable","The page's inspector connection closed");
   }
@@ -253,8 +254,13 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         Fail("unavailable","The page has no document to read");return;
       }
       main_id_=frame->GetString("id").ToString();
-      tree_=tree;tree_generation_=generation_;
-    } else if(stage_==Stage::TextWorld) {    } else if(stage_==Stage::TextWorld) {
+      // CEF owns a result value only for the callback that received it, so the
+      // tree is copied before it is kept for the next action.
+      tree_=tree->Copy(false);tree_generation_=generation_;
+      // The tree leads straight on: which document this action runs in is the
+      // next step, never the end of the action.
+      AfterTree();return;
+    } else if(stage_==Stage::TextWorld) {
       if(!success || !result || result->GetType("executionContextId")!=VTYPE_INT) { ProbeTextFrame();return; }
       text_frame_.world=result->GetInt("executionContextId");
       text_frame_.document=page_documents=page_documents%2147483647+1;
@@ -271,16 +277,29 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       if(!success || !result || result->GetType("executionContextId")!=VTYPE_INT) {
         Fail("unavailable","The page refused a script context");return;
       }
-      // A click inside a frame needs the frame's place in the page, which only
-      // the main document's world can measure.
-      if(world_frame_.id!=main_id_ && !main_world_ && !PrivateText()) {
-        world_=result->GetInt("executionContextId");world_id_=world_frame_.id;
-        auto params=CefDictionaryValue::Create();
-        params->SetString("frameId",main_id_);params->SetString("worldName","tilo-page-actions");
-        Call(Stage::World,"Page.createIsolatedWorld",params);return;
+      // Which world this result is depends on the frame it was asked for, so
+      // the page's world and the frame's never stand for each other.
+      const int context=result->GetInt("executionContextId");
+      const bool asked_for_page=world_request_==main_id_;
+      world_request_.clear();
+      const bool in_frame=world_frame_.id!=main_id_ && !PrivateText();
+      if(in_frame) {
+        if(asked_for_page) main_world_=context; else frame_world_=context;
+        // A click inside a frame needs the frame's place in the page, which
+        // only the page's own world can measure. Asking for it stays a second
+        // step: it never retargets the action away from the frame.
+        if(!main_world_) {
+          world_request_=main_id_;
+          auto params=CefDictionaryValue::Create();
+          params->SetString("frameId",main_id_);params->SetString("worldName","tilo-page-actions");
+          Call(Stage::World,"Page.createIsolatedWorld",params);return;
+        }
+        if(!frame_world_) { Fail("unavailable","The page refused a script context in this frame");return; }
+        world_=*frame_world_;
+      } else {
+        world_=context;main_world_=context;
       }
-      if(world_frame_.id==main_id_) main_world_=result->GetInt("executionContextId");
-      world_=result->GetInt("executionContextId");world_id_=world_frame_.id;
+      world_id_=world_frame_.id;
       document_=page_documents=page_documents%2147483647+1;
       Evaluate();
     } else {
@@ -295,7 +314,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         }
         // The document changed under a cached context. Retry once in the new
         // document; a ref from the old one then fails as stale.
-        world_=0;world_id_.clear();loader_.clear();
+        world_=0;world_id_.clear();loader_.clear();frame_world_.reset();world_request_.clear();main_world_=0;
         if(pending_->retried) { Fail("page_changed","The page changed while it was being read");return; }
         pending_->retried=true;Begin();return;
       }
@@ -405,13 +424,21 @@ class PageAutomation final : public CefDevToolsMessageObserver {
           :"The frame moved off the page before it could be clicked");return;
     }
     const auto number=[&](const char* key){return value->GetType(key)==VTYPE_DOUBLE?value->GetDouble(key):value->GetInt(key);};
-    world_frame_.x=number("x");world_frame_.y=number("y");
-    ClickTarget();
+    world_frame_.x=number("x");world_frame_.y=number("y");    ClickTarget();
   }
   void ClickTarget() {
     // A click is a pointer event in the top document, so a point read in a
     // frame's own document moves by the frame's place in the page.
     click_(clicked_.x+world_frame_.x,clicked_.y+world_frame_.y);
+    pending_->message="Clicked "+Text(pending_->command,"element");
+    SettleAction();
+  }
+  // Every action that changes the page ends the same way: it reports once the
+  // page has settled, or when the navigation it started has landed.
+  void SettleAction() {
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
+      if(self->pending_ && self->pending_->token==token) self->Settled();
+    },CefRefPtr<PageAutomation>(this),pending_->token),kSettleMs);
   }
   void Act(CefRefPtr<CefDictionaryValue> value) {
     const auto action=Action();
@@ -436,10 +463,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       for(const char* flag:{"ctrl","shift","alt","meta"}) key->SetBool(flag,pending_->command->GetBool(flag));
       key_(key);
     }
-    pending_->message=action=="press"?"Pressed "+Chord():Text(value,"message");
-    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
-      if(self->pending_ && self->pending_->token==token) self->Settled();
-    },CefRefPtr<PageAutomation>(this),pending_->token),kSettleMs);
+    if(action=="press") pending_->message="Pressed "+Chord();
+    else if(action!="click") pending_->message=Text(value,"message");
+    SettleAction();
   }
   void Settled() {
     if(navigations_==pending_->navigations || !browser_->IsLoading()) { Succeed(pending_->message,std::nullopt);return; }
@@ -499,6 +525,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   std::vector<TextFrame> text_candidates_;TextFrame text_frame_;std::optional<TextFrame> text_owner_;std::string text_lease_;
   bool native_attempted_=false;std::string native_object_;
   int world_=0,document_=0,main_world_=0;std::string main_id_;
+  // The frame's own context and the id it was made for, kept apart from the
+  // page's so measuring the frame's place cannot retarget the action.
+  std::optional<int> frame_world_;
+  // The frame whose isolated world the pending request is creating, empty for
+  // the world of the document the action runs in.
+  std::string world_request_;
   CefRefPtr<CefDictionaryValue> tree_;uint64_t tree_generation_=~uint64_t{0};uint64_t generation_=0;
   std::string loader_,world_id_;PageFrame world_frame_;Clicked clicked_;uint64_t token_=0,navigations_=0;
   IMPLEMENT_REFCOUNTING(PageAutomation);

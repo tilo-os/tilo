@@ -40,6 +40,8 @@ globalThis.__tiloPage ||= (() => {
   // The outlines this tab's agent last saw, per frame id ('' for the main
   // document), for `changes`.
   const lastLinesByFrame = new Map();
+  const getLastLines = () => lastLinesByFrame.get(frameId()) ?? null;
+  const setLastLines = lines => lastLinesByFrame.set(frameId(), lines);
   const MAX_DIFF_CELLS = 4000000, MAX_SETTLE_POLL_MS = 50;
 
   const clean = (text, limit) => {
@@ -217,14 +219,24 @@ globalThis.__tiloPage ||= (() => {
   // moves by this to become a point in this one.
   function frameOffset(number) {
     if (!/^\d+$/.test(number || '')) throw failure('invalid_request', 'A frame of this document is named by its number');
+    // Measuring a frame's place can be the first thing this document is asked,
+    // so the numbering is read from the document rather than from an outline
+    // that may never have run here.
+    for (const element of document.querySelectorAll('iframe,frame')) frameNumber(element);
     const frame = framesByNumber.get(Number(number));
     const element = frame?.deref?.();
     if (!element || !element.isConnected)
       throw failure('no_frame', `Frame ${number} has left the page; read the page again`);
+    // The click is a pointer event in the top document, at a point the caller
+    // never saw: the frame is brought into view so that point is reachable.
+    element.scrollIntoView({block: 'nearest', inline: 'nearest'});
     const rect = element.localName === 'frame'
       ? {x: Number(element.getAttribute('x')) || 0, y: Number(element.getAttribute('y')) || 0}
       : element.getBoundingClientRect();
-    return {ok: true, message: `Frame ${number}`, x: rect.x + scrollX, y: rect.y + scrollY};
+    // A point read in the frame's document is a point in the frame's viewport,
+    // and a click is placed from the page's viewport, so the frame's own
+    // viewport position is the whole of the offset: no scroll is added.
+    return {ok: true, message: `Frame ${number}`, x: rect.x, y: rect.y};
   }
 
   // A point in a frame's own document means nothing in the page: the caller

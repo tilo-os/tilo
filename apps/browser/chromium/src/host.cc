@@ -801,9 +801,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void PageClick(double x,double y) {
     if(!browser_)return;auto host=browser_->GetHost();const double zoom=std::pow(1.2,host->GetZoomLevel());
     CefMouseEvent event;event.x=static_cast<int>(std::lround(x*zoom));event.y=static_cast<int>(std::lround(y*zoom));event.modifiers=key_modifiers_;
+    // The move and the click reach the page on separate turns: a point inside a
+    // frame is routed to that frame only once the move that found it has been
+    // handled, so sending both at once clicks the page and nothing in it.
     host->SendMouseMoveEvent(event,false);
-    event.modifiers|=EVENTFLAG_LEFT_MOUSE_BUTTON;host->SendMouseClickEvent(event,MBT_LEFT,false,1);
-    event.modifiers&=~EVENTFLAG_LEFT_MOUSE_BUTTON;host->SendMouseClickEvent(event,MBT_LEFT,true,1);
+    CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<CefBrowserHost> h,CefMouseEvent e) {
+      e.modifiers|=EVENTFLAG_LEFT_MOUSE_BUTTON;h->SendMouseClickEvent(e,MBT_LEFT,false,1);
+      e.modifiers&=~EVENTFLAG_LEFT_MOUSE_BUTTON;h->SendMouseClickEvent(e,MBT_LEFT,true,1);
+    },host,event));
   }
   void PageKey(CefRefPtr<CefDictionaryValue> key) {
     if(!browser_)return;const int held=key_modifiers_;
