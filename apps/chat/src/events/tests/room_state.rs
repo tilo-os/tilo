@@ -687,7 +687,7 @@ fn reading_position_drives_unread_state_and_the_return_to_latest_control() {
         assert!(
             app.semantic_hits().iter().any(|(_, hit, name, role, _)| {
                 matches!(hit, Hit::JumpToLatest)
-                    && name == "Jump to latest message"
+                    && name.text == "Jump to latest message"
                     && *role == ui::a11y::Role::Button
             }),
             "the return route is a labelled semantic button, not pointer-only chrome"

@@ -2571,7 +2571,7 @@ fn a_bridged_calls_guests_get_their_own_tiles_and_volume() {
         .into_iter()
         .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if id == "discord:1"))
         .expect("Dana has a tile of her own");
-    assert_eq!(dana.2, "Dana (via Discord): volume and mute for you");
+    assert_eq!(dana.2.text, "Dana (via Discord): volume and mute for you");
     assert!(
         app.semantic_hits()
             .iter()
@@ -2597,4 +2597,80 @@ fn a_bridged_calls_guests_get_their_own_tiles_and_volume() {
     );
     let listening = app.call_listening("discord:1");
     assert_eq!((listening.percent, listening.silenced), (50, false));
+}
+
+/// Every node under `node`, depth first.
+fn access_nodes(node: &ui::a11y::AccessNode) -> Vec<&ui::a11y::AccessNode> {
+    std::iter::once(node)
+        .chain(node.children.iter().flat_map(access_nodes))
+        .collect()
+}
+
+#[test]
+fn the_composers_controls_are_chats_own_copy() {
+    let (mut app, _doc) = app_with_doc();
+    render_frame(&mut app, 1280.0, 720.0);
+    let tree = app.accessibility().unwrap();
+    let nodes = access_nodes(&tree);
+    for name in [
+        crate::i18n::t("chat-send-message"),
+        crate::i18n::t("chat-attach"),
+    ] {
+        let node = nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some(name.as_str()))
+            .unwrap_or_else(|| panic!("the composer shows {name}"));
+        assert!(node.interface_name, "{name} is Chat's own copy");
+    }
+    // A message is someone's words, never Chat's copy.
+    let message = nodes
+        .iter()
+        .find(|node| node.role == ui::a11y::Role::ListItem)
+        .expect("a message is shown");
+    assert!(!message.interface_name);
+}
+
+#[test]
+fn a_messages_texts_are_read_where_they_are_drawn() {
+    let (mut app, _doc) = app_with_doc();
+    render_frame(&mut app, 1280.0, 720.0);
+    let tree = app.accessibility().unwrap();
+    let rows: Vec<&ui::a11y::AccessNode> = access_nodes(&tree)
+        .into_iter()
+        .filter(|node| node.role == ui::a11y::Role::ListItem && !node.children.is_empty())
+        .collect();
+    assert!(!rows.is_empty(), "shown messages say where their texts are");
+    let mut headed = false;
+    for row in rows {
+        let bounds = row.bounds.expect("a shown message has bounds").to_rect();
+        let roles: Vec<ui::a11y::Role> = row.children.iter().map(|child| child.role).collect();
+        if roles.first() == Some(&ui::a11y::Role::Image) {
+            headed = true;
+            assert_eq!(
+                roles.get(1..3),
+                Some(&[ui::a11y::Role::StaticText, ui::a11y::Role::StaticText][..]),
+                "an avatar is followed by the author and the time"
+            );
+        }
+        assert!(
+            roles.contains(&ui::a11y::Role::StaticText),
+            "a shown message has texts"
+        );
+        // Laid out, a part may overhang the row by a hair of rounding.
+        let row_band = bounds.inflate(1.0, 1.0);
+        for child in &row.children {
+            let rect = child.bounds.expect("every part has its rect").to_rect();
+            assert!(rect.width() > 0.0 && rect.height() > 0.0);
+            assert!(
+                row_band.contains(rect.origin()) && row_band.contains(Point::new(rect.x1, rect.y1)),
+                "{child:?} is drawn inside its row {bounds:?}"
+            );
+            assert!(
+                !child.interface_name,
+                "a message's parts are not Chat's copy"
+            );
+            assert!(child.name.as_deref().is_some_and(|name| !name.is_empty()));
+        }
+    }
+    assert!(headed, "a message that starts a group shows its author");
 }
