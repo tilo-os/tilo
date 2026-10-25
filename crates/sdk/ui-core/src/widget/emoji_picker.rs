@@ -205,6 +205,15 @@ impl EmojiPicker {
     /// chosen.
     pub fn open_at(&mut self, anchor: Rect, viewport: Rect, theme: &Theme) {
         self.theme = theme.clone();
+        self.place_at(anchor, viewport, theme);
+        self.open = true;
+        self.reset();
+    }
+
+    /// Move beside `anchor` inside `viewport`, in `theme`, keeping what is
+    /// typed and chosen: a host placing an open picker on every frame, as
+    /// its window resizes.
+    pub fn place_at(&mut self, anchor: Rect, viewport: Rect, theme: &Theme) {
         let size = self.size(theme);
         let gap = f64::from(theme.tokens.spacing.s1);
         let room = crate::widget::floating_surface::panel_room(viewport, theme);
@@ -215,9 +224,10 @@ impl EmojiPicker {
             gap,
             room,
         );
-        self.rect = rect;
-        self.open = true;
-        self.reset();
+        if rect != self.rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
     }
 
     /// Open again where it was, as new: search empty and focused, the first
@@ -295,6 +305,12 @@ impl EmojiPicker {
         let cell = self.screen_cell(index)?;
         let shown = self.scroll.content_rect();
         (cell.y0 >= shown.y0 - 0.5 && cell.y1 <= shown.y1 + 0.5).then_some(cell)
+    }
+
+    /// The catalogue group shown, an index into its groups.
+    #[must_use]
+    pub fn group(&self) -> usize {
+        self.group
     }
 
     /// Where group tab `index` is on screen.
@@ -481,7 +497,9 @@ impl EmojiPicker {
             .scroll_into_view(Rect::new(cell.x0, top, cell.x1, cell.y1));
     }
 
-    fn select_group(&mut self, group: usize) {
+    /// Show catalogue group `group` (an index into its groups), as its tab
+    /// does.
+    pub fn select_group(&mut self, group: usize) {
         let count = self.groups.len();
         if count == 0 {
             return;

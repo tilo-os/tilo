@@ -28,21 +28,14 @@ chat-call-camera-off = Stop camera
 chat-call-share-screen = Share screen
 chat-call-stop-sharing = Stop sharing
 
-# Emoji picker: its title when inserting into the composer or reacting to a
-# message, the search field's placeholder and the grid's section headings.
-chat-emoji-title = Emoji
+# Emoji picker: the add-reaction button, the search field's name, the
+# composer's emoji button and a group tab without a name of its own.
 chat-emoji-add-reaction = Add reaction
 chat-emoji-search = Search emoji
-chat-emoji-recent = Recently used
-chat-emoji-results = Results
-chat-emoji-no-results = No emoji found
 chat-emoji-insert = Insert emoji
 chat-emoji-group = Emoji group
 # A picker cell; the name is the emoji's name in the desktop's language.
 chat-emoji-choose = Choose { $name }
-# A reaction chip under a message, which adds or removes the user's own.
-chat-reaction-add = Add { $emoji } reaction
-chat-reaction-remove = Remove { $emoji } reaction
 
 # Governed voice status, shared by native and browser hosts.
 chat-call-issue-unavailable = Voice isn't available in this room yet
