@@ -325,6 +325,12 @@ pub struct AccessNode {
     /// The export layer emits them as this node's subtree, nested as deeply
     /// as needed (rows containing cells).
     pub children: Vec<AccessNode>,
+    /// Whether [`name`](Self::name) is the app's own fixed, localized copy (a
+    /// button's label, a heading), the same for everyone, rather than
+    /// something a person or a resource put there. Unset means content: a
+    /// feedback report hides it until the reporter shows it.
+    #[serde(skip)]
+    pub interface_name: bool,
 }
 
 /// A widget's [`AccessNode`] with its synthetic children shared rather than
@@ -373,7 +379,15 @@ impl AccessNode {
             key: None,
             bounds: None,
             children: Vec::new(),
+            interface_name: false,
         }
+    }
+
+    /// Mark the name as the app's own fixed, localized copy
+    /// ([`Self::interface_name`]).
+    pub fn with_interface_name(mut self, interface: bool) -> Self {
+        self.interface_name = interface;
+        self
     }
 
     pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
