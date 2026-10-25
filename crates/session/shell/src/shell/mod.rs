@@ -159,6 +159,7 @@ pub mod personal_tethering_runtime;
 pub mod personal_workspaces;
 pub mod physical_gamepad;
 pub mod placement;
+pub mod pointer_readiness;
 pub mod portal_dialog;
 mod power_menu;
 pub mod present;
