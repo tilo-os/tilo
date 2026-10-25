@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "id": "legion-go-s-8aps1",
+  "architecture": "x86_64",
+  "devicetree": null,
+  "system_firmware": [],
+  "firmware": {},
+  "firmware_exclude": [
+    "intel-gpu-firmware",
+    "intel-npu-firmware",
+    "mt7xxx-firmware",
+    "nvidia-gpu-firmware",
+    "nxpwireless-firmware",
+    "tiwilink-firmware"
+  ],
+  "dmi": {
+    "sys_vendor": "LENOVO",
+    "product_name": "83L3"
+  },
+  "kernel_args": [
+    "video=eDP-1:panel_orientation=right_side_up"
+  ],
+  "crash_record": {
+    "storage": "efi-variable",
+    "watchdog": "none",
+    "lockup": "none"
+  },
+  "internal_keyboards": []
+}
