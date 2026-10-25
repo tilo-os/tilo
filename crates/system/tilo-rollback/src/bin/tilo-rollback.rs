@@ -21,7 +21,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use tilo_rollback::{
     Config, approval, certify, confirm, counter, dual_boot, exec, generation, keyslots, lockout,
-    policy, token::RollbackToken,
+    policy, token::RollbackToken, verified,
 };
 use zeroize::Zeroizing;
 
@@ -117,6 +117,11 @@ enum Cmd {
         /// Read the unlock PIN from this file.
         #[arg(long)]
         pin_file: Option<PathBuf>,
+        /// Seal without a PIN, so the volume opens by itself on a boot this machine can prove
+        /// was verified. `--pin-file` and this are mutually exclusive: with both, the volume
+        /// would open silently and the PIN would protect nothing.
+        #[arg(long, conflicts_with = "pin_file")]
+        automatic: bool,
     },
     /// Unseal a generation's passphrase.
     Unlock {
@@ -142,6 +147,12 @@ enum Cmd {
     Status {
         #[arg(long)]
         device: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Say whether this boot is verified — Secure Boot on, a `db` holding only trusted keys,
+    /// lockdown active — and therefore whether a PIN-less keyslot may open the volume here.
+    BootStatus {
         #[arg(long)]
         json: bool,
     },
@@ -348,9 +359,11 @@ fn run() -> Result<()> {
         Cmd::TpmStatus { .. } | Cmd::Harden { .. } | Cmd::Enroll { .. } => {
             dispatch_provisioning(&cli, &env)
         }
-        Cmd::Unlock { .. } | Cmd::Confirm(_) | Cmd::Status { .. } | Cmd::Certify { .. } => {
-            dispatch_runtime(&cli, &env)
-        }
+        Cmd::Unlock { .. }
+        | Cmd::Confirm(_)
+        | Cmd::Status { .. }
+        | Cmd::BootStatus { .. }
+        | Cmd::Certify { .. } => dispatch_runtime(&cli, &env),
         Cmd::FloorRequest { .. } | Cmd::ApproveFloor { .. } | Cmd::SignPrediction { .. } => {
             dispatch_authority(&cli, &env)
         }
@@ -385,12 +398,14 @@ fn dispatch_provisioning(cli: &Cli, env: &Env<'_>) -> Result<()> {
             generation: gen_num,
             recovery_key_file,
             pin_file,
+            automatic,
         } => cmd_enroll(
             env,
             device,
             *gen_num,
             recovery_key_file,
             pin_file.as_deref(),
+            *automatic,
         ),
         // Unreachable: `run` only calls this for TpmStatus/Harden/Enroll.
         _ => bail!("internal error: dispatch_provisioning called for a non-provisioning command"),
@@ -415,9 +430,7 @@ fn dispatch_runtime(cli: &Cli, env: &Env<'_>) -> Result<()> {
             proof_file,
             no_proof_file,
         } => cmd_unlock(
-            runner,
-            ws,
-            cfg,
+            env,
             device,
             output.as_deref(),
             pin_file.as_deref(),
@@ -430,6 +443,10 @@ fn dispatch_runtime(cli: &Cli, env: &Env<'_>) -> Result<()> {
         Cmd::Confirm(args) => cmd_confirm(env, args),
         Cmd::Status { device, json } => {
             cmd_status(runner, cfg, state_path, scratch, device.as_deref(), *json)
+        }
+        Cmd::BootStatus { json } => {
+            cmd_boot_status(state_path, *json);
+            Ok(())
         }
         Cmd::Certify { nonce, out_dir } => {
             cmd_certify(runner, ws, cfg, state_path, scratch, nonce, out_dir)
@@ -662,6 +679,7 @@ fn cmd_enroll(
     gen_num: Option<u64>,
     recovery_key_file: &Path,
     pin_file: Option<&Path>,
+    automatic: bool,
 ) -> Result<()> {
     let Env {
         runner,
@@ -678,6 +696,23 @@ fn cmd_enroll(
     let recovery = read_secret(recovery_key_file)?;
     let pin = pin_file.map(read_secret).transpose()?;
     let pin_bytes = pin.as_deref().map(|v| &v[..]);
+
+    // A PIN-less keyslot releases the volume with nothing typed, so the boot has to be one
+    // this machine can prove it approved. Establish that *before* the recovery key is even
+    // read, so an unverified machine is refused without touching the device.
+    let verified = if automatic {
+        let facts = verified::BootFacts::read();
+        let recorded = verified::require_verified(&facts)
+            .map_err(|why| anyhow::anyhow!("refusing a PIN-less keyslot: {why}"))?;
+        println!(
+            "verified boot: Secure Boot on, lockdown active, {} authority(ies) in db ({})",
+            recorded.authorities.len(),
+            recorded.authorities.join(", ")
+        );
+        Some(recorded)
+    } else {
+        None
+    };
 
     // SAFETY-CRITICAL: the independent unlock path has to work before we touch anything at all.
     if !keyslots::verify_recovery(runner, ws, device, &recovery)? {
@@ -738,6 +773,12 @@ fn cmd_enroll(
         );
     }
     println!("recovery key still verified. Enrollment complete.");
+    // Record what this machine trusted at the moment it created the PIN-less slot. Written
+    // after the seal is proven, so a failed enrollment leaves no claim behind, and written at
+    // all only when there is a slot that opens by itself.
+    if let Some(recorded) = &verified {
+        verified::save_enrollment(state_path, recorded)?;
+    }
     if approval::load_all(Path::new(&cfg.approval_dir))?.is_empty() {
         println!();
         println!(
@@ -860,19 +901,71 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Which tokens this boot is allowed to try, and why not when one is skipped.
+///
+/// A token sealed without a PIN opens the volume with nothing typed, so it is only tried on a
+/// boot this machine can prove it approved — Secure Boot on, a `db` still holding the
+/// authorities enrollment recorded, lockdown active. A token sealed with a PIN is still tried
+/// everywhere: the PIN is the factor, and the policy is what checks it.
+fn tokens_openable_now(
+    tokens: &[(u32, RollbackToken)],
+    state_path: &Path,
+) -> (Vec<(u32, RollbackToken)>, Option<String>) {
+    let openable: Vec<(u32, RollbackToken)> =
+        tokens.iter().filter(|(_, t)| t.pin).cloned().collect();
+    let pin_less: Vec<(u32, RollbackToken)> =
+        tokens.iter().filter(|(_, t)| !t.pin).cloned().collect();
+    if pin_less.is_empty() {
+        return (openable, None);
+    }
+    let recorded = verified::load_enrollment(state_path);
+    match verified::AutomaticUnlock::decide(&verified::BootFacts::read(), recorded.as_ref()) {
+        verified::AutomaticUnlock::Yes => {
+            let mut all = pin_less;
+            all.extend(openable);
+            (all, None)
+        }
+        verified::AutomaticUnlock::No(why) => (
+            openable,
+            Some(format!(
+                "this volume has {} keyslot(s) that open without a secret; not trying them: {why}",
+                pin_less.len()
+            )),
+        ),
+    }
+}
+
 fn cmd_unlock(
-    runner: &dyn exec::Runner,
-    ws: &policy::Workspace,
-    cfg: &Config,
+    env: &Env<'_>,
     device: &Path,
     output: Option<&Path>,
     pin_file: Option<&Path>,
     proof_file: Option<&Path>,
 ) -> Result<()> {
+    let Env {
+        runner,
+        ws,
+        cfg,
+        state_path,
+        ..
+    } = *env;
     let pin = pin_file.map(read_secret).transpose()?;
-    let tokens = keyslots::list_tokens(runner, device)?;
-    if tokens.is_empty() {
+    let all_tokens = keyslots::list_tokens(runner, device)?;
+    if all_tokens.is_empty() {
         bail!("no tilo-rollback token on {}", device.display());
+    }
+    let (tokens, skipped) = tokens_openable_now(&all_tokens, state_path);
+    if let Some(why) = &skipped {
+        eprintln!("tilo-rollback: {why}");
+    }
+    if tokens.is_empty() {
+        bail!(
+            "{skipped}",
+            skipped = skipped.unwrap_or_else(|| format!(
+                "no tilo-rollback token on {} can be tried on this boot",
+                device.display()
+            ))
+        );
     }
     let mut floor_refusals = Vec::new();
     for (id, t) in &tokens {
@@ -922,6 +1015,60 @@ fn cmd_unlock(
          key.",
         tokens.len()
     )
+}
+
+/// Report whether this boot is verified, and what that means for a PIN-less keyslot.
+fn cmd_boot_status(state_path: &Path, json: bool) {
+    let facts = verified::BootFacts::read();
+    let recorded = verified::load_enrollment(state_path);
+    let decision = verified::AutomaticUnlock::decide(&facts, recorded.as_ref());
+    let verified_now = verified::verified_boot(&facts);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "secure_boot": facts.secure_boot,
+                "db_authority_digest": verified_now.as_ref().ok().map(|a| a.0.clone()),
+                "db_unverified_reason": verified_now.as_ref().err().map(ToString::to_string),
+                "lockdown": facts.lockdown,
+                "recorded_authority_digest": recorded.as_ref().map(|a| a.0.clone()),
+                "automatic_unlock": decision.is_yes(),
+                "automatic_unlock_reason": match &decision {
+                    verified::AutomaticUnlock::No(why) => Some(why.clone()),
+                    verified::AutomaticUnlock::Yes => None,
+                },
+            })
+        );
+        return;
+    }
+    println!(
+        "Secure Boot: {}",
+        match facts.secure_boot {
+            Some(true) => "on",
+            Some(false) => "off",
+            None => "no UEFI firmware variables here",
+        }
+    );
+    println!(
+        "kernel lockdown: {}",
+        facts.lockdown.as_deref().unwrap_or("not active")
+    );
+    match &verified_now {
+        Ok(a) => println!("db authorities: {}", a.0),
+        Err(why) => println!("db authorities: not established — {why}"),
+    }
+    match &recorded {
+        Some(a) => println!("recorded at enrollment: {}", a.0),
+        None => println!("recorded at enrollment: nothing — no PIN-less keyslot was enrolled here"),
+    }
+    match &decision {
+        verified::AutomaticUnlock::Yes => {
+            println!("a PIN-less keyslot opens this volume on this boot");
+        }
+        verified::AutomaticUnlock::No(why) => {
+            println!("a PIN-less keyslot does not open this volume on this boot: {why}");
+        }
+    }
 }
 
 fn cmd_confirm(env: &Env<'_>, args: &ConfirmArgs) -> Result<()> {
