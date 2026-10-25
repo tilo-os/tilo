@@ -4824,6 +4824,16 @@ impl Widget for ChatApp {
                     .with_action_target(hit.semantic_id());
                 if let Some((_, value, (anchor, focus))) = input {
                     node = node.with_value(&value).with_text_selection(anchor, focus);
+                } else if let Hit::Reaction { msg, emoji } = &hit
+                    && let Some(reaction) = self.message(msg).and_then(|message| {
+                        message
+                            .reactions
+                            .iter()
+                            .find(|reaction| reaction.emoji == *emoji)
+                    })
+                {
+                    node =
+                        node.with_value(ui::widget::reaction_strip::pill_count(reaction.count()));
                 }
                 node
             })
