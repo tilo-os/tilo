@@ -141,7 +141,9 @@ fn follow(shared: &Weak<RwLock<Arc<Probe>>>) {
     .into_iter()
     .filter_map(|(directory, names)| {
         let notify = notify.clone();
-        tilo_files::native::watch_changes(directory, names, move || {
+        // Which devices and tools exist, not what is written to them: every write to
+        // /dev/null or /dev/fuse is a write to an entry of /dev.
+        tilo_files::native::watch_presence(directory, names, move || {
             let _ = notify.send(());
         })
         .inspect_err(|error| {

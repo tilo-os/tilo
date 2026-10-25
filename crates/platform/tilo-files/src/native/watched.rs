@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, mpsc};
 
-use super::change_watch::{ChangeWatch, watch_changes};
+use super::change_watch::{ChangeWatch, watch_changes, watch_presence};
 
 /// A value read from files and kept current by a worker. See the module
 /// docs. Cloning shares the value and its worker.
@@ -205,9 +205,16 @@ impl Watches {
             let whole = through == *target;
             // An ancestor reports only the entry on the way to the target.
             let names = move |path: &Path| whole || watched_target.starts_with(path);
-            match watch_changes(&through, names, move || {
+            let notify = move || {
                 let _ = changed.send(());
-            }) {
+            };
+            // An ancestor matters only when the entry on the way appears, goes or is renamed.
+            let watched = if whole {
+                watch_changes(&through, names, notify)
+            } else {
+                watch_presence(&through, names, notify)
+            };
+            match watched {
                 Ok(watch) => *armed = Some((through, watch)),
                 Err(error) => {
                     failed.get_or_insert(error);
