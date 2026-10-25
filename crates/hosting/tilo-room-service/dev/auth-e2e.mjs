@@ -67,6 +67,14 @@
 //                  the new host: the old state was never reused or handed to it
 //   stale-rejoined the old room's link once joined again: refused without a
 //                  join, the new membership kept
+//   lost-certificate
+//                  the person's browser loses what it kept for the host (its
+//                  records, as when site data is partly cleared) but keeps
+//                  its device key, which the room admitted under the
+//                  certificate now gone and never admits under another: the
+//                  bare entry joins again as the same person on a new
+//                  device (two joins at the door, both answered), never the
+//                  "couldn't let you in" page, and the desktop presents
 //   kept-membership
 //                  the host started again (not anew), and the person away
 //                  past the old prune passes: the host still has them. The bare entry joins at no door,
@@ -81,6 +89,9 @@
 //                  and nothing kept (screenshots at 1440x900, 390x844 and
 //                  2560x1440 at DPR 2); a pasted text that is no invite link
 //                  is said so
+//   stranger-own   another fresh profile opening the person's own desktop
+//                  (#/me) directly lands on that door: no desktop of their
+//                  own, nothing offered in its place, nothing kept
 //   wait-list      at that door, a text that is no email address is said so
 //                  beside the field; an address is kept and confirmed as
 //                  normalized, and the same address again is answered alike
@@ -1239,6 +1250,35 @@ async function main() {
     if (staleAgainOpened.entry !== 'refused') await shoot('stale-rejoined', staleAgain);
     await staleAgain.close();
 
+    // lost-certificate: the records gone, the device key kept.
+    const wiping = await browser.tab({context: person});
+    let wiped;
+    try {
+      await wiping.navigate(`${web}/healthz`);
+      await wiping.waitFor("location.pathname === '/healthz' && document.readyState === 'complete'", {timeout: 30_000});
+      wiped = await wiping.evaluate(`new Promise(done => {
+        const request = indexedDB.deleteDatabase('tilo-browser-records-v1');
+        request.onsuccess = () => done('deleted');
+        request.onerror = () => done(String(request.error));
+        request.onblocked = () => done('blocked');
+      })`);
+    } catch (error) {
+      wiped = error.message;
+    } finally {
+      await wiping.close();
+    }
+    const lost = await page(browser, person);
+    const lostOpened = await open(lost, `${web}/`, settleOptions);
+    keepLog('lost-certificate', lost);
+    const lostJoins = joinsTo(lost.requests, api);
+    check('lost-certificate', wiped === 'deleted' && lostOpened.entry === 'open' && lostOpened.arrival === 'done'
+      && lostJoins.length === 2 && lostJoins.every(j => j.status === 200)
+      && lostOpened.membership?.userPublicKey === me && lostOpened.membership?.room === stack.room,
+    {wiped, entry: lostOpened.entry, arrival: lostOpened.arrival, joins: lostJoins.map(j => j.status),
+      membership: lostOpened.membership, room: stack.room, status: lostOpened.status});
+    if (lostOpened.entry !== 'open') await shoot('lost-certificate', lost);
+    await lost.close();
+
     // kept-membership: the same host started again (its room kept), every
     // tab of the person closed, and the person away past its prune passes:
     // they are still a member, and come back without joining again.
@@ -1307,6 +1347,23 @@ async function main() {
       && /"waitList":true/.test(doorJoins.at(-1)?.body ?? '') && /isn’t an invite link/.test(notALink),
     {entry: doorTurned.entry, desktop: doorTurned.desktop, membership: doorTurned.membership, status: doorTurned.status, field, unfolded,
       joins: doorJoins.map(j => ({status: j.status, body: j.body})), notALink});
+
+    // stranger-own: the own desktop, asked for directly, is that door.
+    const ownStranger = await page(browser, await browser.context());
+    const strangerOpened = await open(ownStranger, `${web}/#/me`, settleOptions);
+    keepLog('stranger-own', ownStranger);
+    const strangerDoor = await ownStranger.evaluate(`(() => ({
+      door: document.documentElement.dataset.door ?? null,
+      own: 'ownDesktop' in document.documentElement.dataset,
+      offered: (() => { const el = document.getElementById('arrival-own'); return Boolean(el) && getComputedStyle(el).display !== 'none'
+        && getComputedStyle(el).visibility !== 'hidden' && el.getBoundingClientRect().height > 0; })(),
+    }))()`).catch(error => ({error: error.message}));
+    check('stranger-own', strangerOpened.entry === 'refused' && !strangerOpened.desktop && strangerOpened.membership === null
+      && strangerDoor.door === 'wait-list' && !strangerDoor.own && !strangerDoor.offered,
+    {entry: strangerOpened.entry, desktop: strangerOpened.desktop, membership: strangerOpened.membership,
+      status: strangerOpened.status, ...strangerDoor});
+    if (strangerOpened.entry !== 'refused') await shoot('stranger-own', ownStranger);
+    await ownStranger.close();
 
     // wait-list: an address that is none is said so on the page, a real one
     // is kept and confirmed, and the same one again (as typed differently)
