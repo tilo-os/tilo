@@ -321,12 +321,12 @@ pub(crate) fn person_dir() -> Option<PathBuf> {
 
 /// Settings' committed surface: the one its package ships, which the
 /// session's shell carries because it keeps Settings' records itself.
-fn settings_surface() -> Option<&'static [u8]> {
+fn settings_surface() -> &'static [u8] {
     static SURFACE: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../apps/settings/surface.toml"
     ));
-    Some(SURFACE)
+    SURFACE
 }
 
 /// Name Settings' surface in this process as its built-in app's, unless a
@@ -334,9 +334,7 @@ fn settings_surface() -> Option<&'static [u8]> {
 /// kinds it declares are what the broker admits its routes to the person's
 /// room for, and the session connects them.
 pub(crate) fn register_surface() {
-    if let Some(bytes) = settings_surface() {
-        ui::app_surface::register_built_in(settings_sections::APP_ID, bytes);
-    }
+    ui::app_surface::register_built_in(settings_sections::APP_ID, settings_surface());
 }
 
 /// Where the session keeps the records of the apps it shows itself.
