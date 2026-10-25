@@ -3884,6 +3884,19 @@ impl ForeignFrameStore {
         layout.to_surface(((x - drawn.x0) / scale_x, (y - drawn.y0) / scale_y))
     }
 
+    /// Where surface-local `(x, y)` of `id` shown in `tile` is drawn: the
+    /// inverse of [`Self::surface_point`]. `None` while it has no frame.
+    pub fn tile_point(&self, id: SurfaceId, tile: Rect, (x, y): (f64, f64)) -> Option<(f64, f64)> {
+        let layout = self.layout(id)?;
+        let (_, _, width, height) = layout.content;
+        let drawn = self.frame_rect(id, tile, width, height)?;
+        let (ix, iy) = layout.to_image((x, y));
+        Some((
+            drawn.x0 + ix * drawn.width() / f64::from(width),
+            drawn.y0 + iy * drawn.height() / f64::from(height),
+        ))
+    }
+
     /// The origin to hand the seat with a pointer or touch at desktop point
     /// `at` on `id` shown in `tile`: `at` less [`Self::surface_point`], so
     /// that `at - origin` is the surface-local point. A window drawn scaled
@@ -4366,6 +4379,9 @@ pub struct ForeignSurfaceWidget {
     /// Even when the client has not committed new pixels yet, the retained
     /// scene must be rebuilt so its cached image is drawn into the new rect.
     placement_dirty: bool,
+    /// The live views drawn over the window as last composed
+    /// ([`crate::shell::live_embeds::frames_over`]).
+    live_views_drawn: u64,
     /// Stable, human-addressable name so `FrameBuilder::widget_registry` (and the shell's click/rect resolver) can find the tile.
     test_id: String,
     /// The app's own name, resolved on the frame that first needs it.
@@ -4450,6 +4466,7 @@ impl ForeignSurfaceWidget {
             cached_seq: 0,
             sheet_images: Vec::new(),
             placement_dirty: true,
+            live_views_drawn: 0,
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
@@ -4816,6 +4833,40 @@ impl ForeignSurfaceWidget {
     /// The anchor is load-bearing: pointer input reaches the client by
     /// subtracting the tile origin from the global cursor
     /// (`client_input::surface_local`), so a *centred* draw instead would slide every pixel while input kept addressing the un-slid position.
+    /// Draw the live views the window's app embeds over its picture
+    /// ([`crate::shell::live_embeds`]), where its own coordinates are drawn,
+    /// clipped to the tile.
+    fn paint_live_views(&self, scene: &mut Scene, transform: Affine) {
+        // A window withheld from a capture shows none of what it embeds
+        // there either.
+        if self.cached.is_none()
+            || (crate::shell::capture_protection::painting_for_capture()
+                && self.capture_protected_rect().is_some())
+        {
+            return;
+        }
+        let tile = self.rect;
+        let surface = self.surface_id;
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &tile,
+        );
+        crate::shell::live_embeds::paint_over(surface, scene, transform, |rect| {
+            let store = store();
+            match (
+                store.tile_point(surface, tile, (rect.x0, rect.y0)),
+                store.tile_point(surface, tile, (rect.x1, rect.y1)),
+            ) {
+                (Some((x0, y0)), Some((x1, y1))) => Rect::new(x0, y0, x1, y1),
+                _ => Rect::ZERO,
+            }
+        });
+        scene.pop_layer();
+    }
+
     fn fit_rect(&self, img_w: u32, img_h: u32) -> Option<Rect> {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return None;
@@ -5091,6 +5142,7 @@ impl Widget for ForeignSurfaceWidget {
         presence: &PresenceCtx,
     ) {
         self.paint_window(scene, transform, text_renderer, theme, presence);
+        self.paint_live_views(scene, transform);
         self.paint_card(scene, transform, text_renderer, theme);
     }
 
@@ -5191,11 +5243,13 @@ impl Widget for ForeignSurfaceWidget {
         self.placement_dirty
             || self.awaiting_first_paint()
             || store().frame_seq(self.surface_id) != self.cached_seq
+            || crate::shell::live_embeds::frames_over(self.surface_id) != self.live_views_drawn
             || WindowCard::of(self.surface_id) != self.card.map(|(card, _)| card)
     }
 
     fn mark_drawn(&mut self) {
         self.placement_dirty = false;
+        self.live_views_drawn = crate::shell::live_embeds::frames_over(self.surface_id);
     }
 }
 
@@ -5669,6 +5723,8 @@ fn frame_throttle_releases(
         || state.is_floating_toplevel(id)
         || state.is_closing_toplevel(id)
         || state.active_sessions.contains_key(&id)
+        // A live view's window is drawn inside the window that embeds it.
+        || crate::shell::live_embeds::is_embed_surface(id)
 }
 
 #[cfg(test)]

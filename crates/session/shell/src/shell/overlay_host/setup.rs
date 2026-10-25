@@ -634,6 +634,7 @@ impl ShellOverlayHost {
             feedback_point: crate::shell::feedback_entry::FeedbackPoint::default(),
             feedback_picker: crate::shell::feedback_pick::NativePicker::default(),
             window_toolbars: window_toolbars::WindowToolbars::default(),
+            live_shares: live_shares::NativeLiveShares::default(),
             hosted_windows_revision: None,
             desktop_control: desktop_control_chips::DesktopControlMarks::default(),
             bar_tooltip: ui::widget::tooltip::TooltipHost::new(),
