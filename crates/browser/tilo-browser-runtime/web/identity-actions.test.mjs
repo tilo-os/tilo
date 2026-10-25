@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, NAME, PAIR, passkeysUsable, RECOVERY, SIGN_IN, syncProfile,
+  ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, NAME, PAIR, passkeysUsable, PHOTO, RECOVERY, RESET_PHOTO,
+  SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
 import {openInvites} from './pairing.mjs';
 import {browserIdentity, IdentityError, unlockIdentity} from './root-identity.mjs';
@@ -192,6 +193,33 @@ test('a chosen name goes to every host the person joined, as their profile', asy
   await actions.attach(fakeMount());
   await actions.perform(NAME.id);
   assert.deepEqual(published, [['https://a.example', 'Ada'], ['https://b.example', 'Ada']]);
+});
+
+test('a chosen picture is kept in the profile with the name, worn at once, and can be taken away', async () => {
+  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const published = [];
+  let current = null;
+  const photos = {current: () => current, choose: async () => 'data:image/webp;base64,UklGRg==', show: url => { current = url; }};
+  const mount = fakeMount();
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'], name: () => 'Ada',
+    profile: async ({displayName, photo}) => { published.push([displayName, photo]); },
+    photos, naming: {ask: async () => null, set: chosen => chosen}});
+  await actions.attach(mount);
+  assert.deepEqual(mount.actions, [NAME.id, PHOTO.id, KEEP.id, RECOVERY.id, SIGN_IN.id]);
+  await actions.perform(PHOTO.id);
+  assert.deepEqual(published, [['Ada', 'data:image/webp;base64,UklGRg==']]);
+  assert.equal(current, 'data:image/webp;base64,UklGRg==');
+  assert.deepEqual(mount.actions, [NAME.id, PHOTO.id, RESET_PHOTO.id, KEEP.id, RECOVERY.id, SIGN_IN.id]);
+  // A new name keeps the picture.
+  await actions.perform(NAME.id, 'Ada L');
+  assert.deepEqual(published.at(-1), ['Ada L', 'data:image/webp;base64,UklGRg==']);
+  await actions.perform(RESET_PHOTO.id);
+  assert.deepEqual(published.at(-1), ['Ada', null]);
+  assert.equal(current, null);
+  // Choosing no file changes nothing.
+  photos.choose = async () => null;
+  await actions.perform(PHOTO.id);
+  assert.equal(published.length, 3);
 });
 
 test('a name typed in the desktop is kept as typed, with no form', async () => {
