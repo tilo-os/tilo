@@ -193,6 +193,9 @@ struct McpClient {
     next_id: u64,
     /// The compositor's log, for what a failed wait says about it.
     log: crate::idle_wakeups::Log,
+    /// The compositor's control socket, for what its catalogue holds when a
+    /// wait fails.
+    control: PathBuf,
 }
 
 impl McpClient {
@@ -221,6 +224,7 @@ impl McpClient {
             replies,
             next_id: 1,
             log: session.log(),
+            control: session.control(),
         }
     }
 
@@ -274,7 +278,9 @@ impl McpClient {
             }
             assert!(
                 Instant::now() < deadline,
-                "{name} {arguments} never became ready; last answer: {text}\ncompositor log:\n{}",
+                "{name} {arguments} never became ready; last answer: {text}\n\
+                 the compositor's providers: {}\ncompositor log:\n{}",
+                self.providers(),
                 crate::idle_wakeups::matching(
                     &self.log,
                     &[
@@ -289,6 +295,33 @@ impl McpClient {
                 )
             );
             std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// Every provider the compositor's own catalogue offers, with its app and
+    /// room: whether an app the agent cannot see published at all.
+    fn providers(&self) -> String {
+        let listed = control(
+            &self.control,
+            &serde_json::json!({"op":"actions_enumerate","query":"","limit":2000}),
+        );
+        let mut providers: Vec<String> = listed["answer"]["actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|row| {
+                format!(
+                    "{} app={} room={}",
+                    row["provider"], row["app_id"], row["room"]
+                )
+            })
+            .collect();
+        providers.sort();
+        providers.dedup();
+        if providers.is_empty() {
+            format!("none in {listed}")
+        } else {
+            providers.join("; ")
         }
     }
 }
