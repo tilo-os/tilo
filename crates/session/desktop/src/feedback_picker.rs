@@ -10,12 +10,13 @@
 
 use ui::TextRole;
 use ui::i18n::ArgValue;
-use ui::motion::SpringSpec;
+use ui::motion::{Appear, Presence, SpringSpec, input_source};
 use ui::num::f32_of_f64;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
+use ui::tokens::EffectiveMotion;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Shape, Stroke};
 use vello::peniko::{Color, Fill};
@@ -30,8 +31,6 @@ pub const MAX_PICKS: usize = tilo_app::feedback::report::MAX_PICKS;
 /// How far the pointer travels with the button down before it drags a
 /// rectangle rather than clicks.
 const DRAG_SLOP: f64 = 4.0;
-/// How long the screen takes to dim.
-const DIM_SECS: f64 = 0.18;
 /// How far a highlight stands off the part it outlines.
 const OUTSET: f64 = 3.0;
 const RADIUS: f64 = 6.0;
@@ -103,7 +102,9 @@ impl Glide {
 }
 
 struct Session {
-    opened: Instant,
+    /// How far the screen is dimmed: it comes as a modal's scrim does, on
+    /// [`Appear`], so a shortcut dims it at once and a click fades it in.
+    dim: Presence,
     /// What is under the pointer, outermost first; `level` indexes the
     /// one lit.
     chain: Vec<PickTarget>,
@@ -141,13 +142,21 @@ impl Session {
 pub struct FeedbackPicker {
     session: Option<Session>,
     outcome: Option<PickerOutcome>,
+    /// The motion the person allows, as of the last draw: what the next
+    /// open dims with.
+    motion: EffectiveMotion,
 }
 
 impl FeedbackPicker {
+    /// Open as the input the toolkit handled last asked for it
+    /// ([`input_source`]): a key or an action dims the screen at once, a
+    /// click fades it in.
     pub fn open(&mut self, now: Instant) {
         self.outcome = None;
+        let mut dim = Presence::closed();
+        dim.show(true, Appear::SPEC, self.motion, input_source(), now);
         self.session = Some(Session {
-            opened: now,
+            dim,
             chain: Vec::new(),
             level: 0,
             glide: None,
@@ -194,10 +203,9 @@ impl FeedbackPicker {
 
     #[must_use]
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
-        self.session.as_ref().is_some_and(|s| {
-            now.saturating_duration_since(s.opened).as_secs_f64() < DIM_SECS
-                || s.glide.is_some_and(|g| !g.settled(now))
-        })
+        self.session
+            .as_ref()
+            .is_some_and(|s| s.dim.is_moving(now) || s.glide.is_some_and(|g| !g.settled(now)))
     }
 
     /// Light up what is under `point`.
@@ -360,12 +368,12 @@ impl FeedbackPicker {
         bounds: Rect,
         now: Instant,
     ) {
+        self.motion = theme.motion();
         let Some(session) = self.session.as_mut() else {
             return;
         };
         let colors = &theme.tokens.colors;
-        let opened = now.saturating_duration_since(session.opened).as_secs_f64();
-        let fade = ease_out((opened / DIM_SECS).clamp(0.0, 1.0));
+        let fade = session.dim.progress(now);
         let lit = session.glide.map(|g| g.at(now));
         // The screen dims, except over what is picked and what is lit.
         let mut holes: Vec<Rect> = session.selected.iter().map(|s| s.rect).collect();
@@ -438,10 +446,6 @@ fn relight(session: &mut Session, now: Instant) {
             });
         }
     }
-}
-
-fn ease_out(t: f64) -> f64 {
-    1.0 - (1.0 - t).powi(3)
 }
 
 fn round(rect: Rect) -> RoundedRect {

@@ -133,6 +133,19 @@ class FindingsTests(unittest.TestCase):
             "source file size: N problem(s); see tools/policy/check_source_file_size.py"])
         self.assertEqual(keys("\n1 image builder input problem(s)\n"), ["N image builder input problem(s)"])
 
+    def test_a_heading_is_reported_only_when_the_step_named_nothing_else(self):
+        # A heading says the rule the lines under it break: never a finding of its own, which
+        # would keep a step red on main for its heading after every file under it is fixed.
+        motion = ("Animations are composed from ui::motion (crates/sdk/ui-core/src/motion/):\n"
+                  "crates/session/desktop/src/feedback_picker.rs:368: easing helper; use a named motion\n")
+        self.assertEqual(keys(motion), ["crates/session/desktop/src/feedback_picker.rs"])
+        self.assertEqual(keys("GStreamer is the only media stack, and no shipped image carries Cisco's "
+                              "OpenH264:\n  openh264 in the dependency graph\n"), ["openh264 in the dependency graph"])
+        # A line ending in a colon that names a file is a finding about that file.
+        self.assertEqual(keys("apps/a.rs:\n"), ["apps/a.rs"])
+        # A step that says only its heading is compared as the whole it is.
+        self.assertEqual(keys("Nothing but a heading:\n"), ["Nothing but a heading:"])
+
     def test_a_step_that_passed_crashed_or_was_misused_found_nothing(self):
         ran = step("all good\n", 0)
         self.assertEqual((ran.returncode, failed(ran.stdout)), (0, []))

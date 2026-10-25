@@ -166,3 +166,33 @@ fn holes_inside_another_are_not_cut_twice() {
     );
     assert_eq!(one.elements().len(), nested.elements().len());
 }
+
+fn dim(picker: &FeedbackPicker, now: Instant) -> f64 {
+    picker.session.as_ref().unwrap().dim.progress(now)
+}
+
+#[test]
+fn a_shortcut_dims_the_screen_at_once() {
+    for source in [
+        ui::tokens::MotionSource::Keyboard,
+        ui::tokens::MotionSource::Action,
+    ] {
+        ui::motion::note_source(source);
+        let (picker, now) = opened();
+        assert!((dim(&picker, now) - 1.0).abs() < f64::EPSILON, "{source:?}");
+        assert!(!picker.needs_animation_frame(now), "{source:?}");
+    }
+}
+
+#[test]
+fn a_click_fades_the_dim_in_and_then_asks_for_no_frames() {
+    ui::motion::note_source(ui::tokens::MotionSource::Pointer);
+    let (picker, now) = opened();
+    assert!(dim(&picker, now) < 0.01);
+    assert!(picker.needs_animation_frame(now));
+    let between = dim(&picker, now + ui::time::Duration::from_millis(60));
+    assert!(between > 0.0 && between < 1.0, "{between}");
+    let settled = now + ui::time::Duration::from_secs(1);
+    assert!((dim(&picker, settled) - 1.0).abs() < f64::EPSILON);
+    assert!(!picker.needs_animation_frame(settled));
+}
