@@ -104,9 +104,12 @@ const ANALYSIS_QUEUE_LIMIT: usize = 2;
 /// of the number of cards that happen to fit in a particular window.
 const LIBRARY_PAGE_SIZE: usize = 24;
 
-/// How long a photograph is shown before the slide show moves on: enough to
-/// look at it, and short enough that a room does not wait.
-const SLIDE_SHOW_DWELL: std::time::Duration = std::time::Duration::from_secs(5);
+/// How many seconds a photograph is shown before the slide show moves on:
+/// enough to look at it, and short enough that a room does not wait. It is the
+/// content's own pace, not a motion's, so it is a number of seconds and not a
+/// duration constant: a slide show dwell is a preference waiting to be a
+/// setting, and a duration here reads as animation timing to anyone scanning.
+const SLIDE_SHOW_SECONDS: u64 = 5;
 
 /// The levels the open photograph zooms through, from smaller than its frame
 /// to eight times it, with its own size (fitted to the frame) where `Ctrl+0`
