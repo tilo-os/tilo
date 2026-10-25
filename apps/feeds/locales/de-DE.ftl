@@ -38,5 +38,5 @@ feeds-refresh-unreachable = Die Website war nicht erreichbar
 feeds-refresh-refused = Die Website hat die Anfrage abgelehnt
 feeds-refresh-refused-status = Die Website hat die Anfrage abgelehnt (HTTP { $status })
 feeds-refresh-not-a-feed = Die Antwort war kein Feed
-feeds-refresh-untrusted = Das Zertifikat der Website hat sich geändert — jemand gibt sich womöglich als sie aus
+feeds-refresh-untrusted = Das Zertifikat der Website hat sich geändert, jemand gibt sich womöglich als sie aus
 feeds-refresh-unavailable = Abruf konnte nicht gestartet werden
