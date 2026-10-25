@@ -40,6 +40,12 @@ FEATURES = [
     (re.compile(r"^os/hardware/profiles/lenovo-83ed/input/"), INPUT),
     (re.compile(r"^crates/runtime/tilo-runtime/src/(session_door|mcp|daemon|cli)"), "agent"),
     (re.compile(r"^crates/session/shell/src/(compositor/agent_door|shell/agent_admission)"), "agent"),
+    # Where the compositor's secrets go: the store, its client, the MLS vault, the portal
+    # backend and the identity's secret providers.
+    (re.compile(r"^crates/system/secret-service/"), "secrets"),
+    (re.compile(r"^crates/platform/tilo-secrets/"), "secrets"),
+    (re.compile(r"^crates/session/shell/src/(shell/mls_vault\.rs|portal/secret\.rs)$"), "secrets"),
+    (re.compile(r"^crates/runtime/runtime-identity/src/secure_store\.rs$"), "secrets"),
     # The guest-side MCP client belongs to the agent checks that run it.
     (re.compile(r"^scripts/vm-acceptance/guest/mcp_client\.py$"), "agent"),
 ]

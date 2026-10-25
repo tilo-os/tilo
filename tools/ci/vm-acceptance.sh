@@ -100,7 +100,7 @@ if [[ $mode == cohort ]]; then
 fi
 
 # A run of someone's tree checks what its changes reach; main checks all.
-only=${T_INPUT_ONLY:-}
+only=${T_INPUT_ONLY:-secrets}
 if [[ -z $only && -z ${T_TRIGGER:-} ]]; then
   mapfile -t paths < <({ git diff --name-only "$(git merge-base main HEAD)" HEAD; git diff --name-only HEAD; } | sort -u)
   (( ${#paths[@]} == 0 )) || only=$(python3 scripts/vm-acceptance/ci_select.py "${paths[@]}")

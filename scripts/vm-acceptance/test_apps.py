@@ -649,9 +649,9 @@ class FirstFrameBudgetTests(unittest.TestCase):
         self.assertLessEqual({"A14", "R05"}, ids)
         self.assertLess(run.ORDER.index("A14"), run.ORDER.index("R02"))
         # R05 reads the adapter line of every app the run opened. K01 (it restarts the session
-        # with the clock set back) and R08 (it signs seat0's greeter in) open none in the slot,
-        # so only they and P03 may follow R05.
-        self.assertEqual(run.ORDER[-4:], ["R05", "K01", "R08", "P03"])
+        # with the clock set back), R08 (it signs seat0's greeter in) and C02 (it takes that
+        # account through first use) open none in the slot, so only they and P03 may follow R05.
+        self.assertEqual(run.ORDER[-5:], ["R05", "K01", "R08", "C02", "P03"])
         self.assertEqual(sorted(run.ORDER), sorted(ids - set(run.DE_PASS)))
 
 
