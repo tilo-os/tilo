@@ -92,6 +92,12 @@ pub use feedback_composer::install_feedback_composer;
 #[cfg(target_arch = "wasm32")]
 pub use feedback_composer::{FEEDBACK_COMPOSER, FeedbackComposerCode, builtin_feedback_composer};
 #[cfg(target_arch = "wasm32")]
+mod pinned_roster;
+#[cfg(target_arch = "wasm32")]
+pub use pinned_roster::{MakePinnedRoster, PinnedRoster, builtin_pinned_roster};
+#[cfg(all(target_arch = "wasm32", feature = "deferred-people-overlay"))]
+pub use pinned_roster::{defer_people_overlay, install_people_overlay, people_overlay_load_failed};
+#[cfg(target_arch = "wasm32")]
 mod files;
 #[cfg(target_arch = "wasm32")]
 mod frame_metrics;

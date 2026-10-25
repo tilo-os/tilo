@@ -975,6 +975,28 @@ a11y-shell-people-changes-description = Den Verlauf bei ihren Änderungen öffne
 a11y-shell-people-change-description = Den Verlauf bei dieser Änderung öffnen
 people-panel-follow = Folgen
 people-panel-stop-following = Beenden
+
+# The people overlay: the roster pinned out of the bar, floating over windows
+people-panel-pin = Auf dem Bildschirm halten
+a11y-people-pin = Wer hier ist, auf dem Bildschirm halten
+people-overlay-title = { $count ->
+    [0] Nur du
+    [one] 1 hier
+   *[other] { $count } hier
+}
+people-overlay-unpin = Zurück in die Leiste
+people-overlay-follow-name = { $name } folgen
+people-overlay-doing-nothing = Hier
+people-overlay-screen-private = { $name } behält für sich, wo { $name } gerade ist
+people-overlay-empty-desk = Auf dem Bildschirm von { $name } ist nichts offen
+people-overlay-message-placeholder = Nachricht an { $name }
+people-overlay-send = Senden
+people-overlay-you = Du
+people-overlay-no-messages = Sag { $name } Hallo
+people-overlay-messages-unavailable = Direktnachrichten brauchen die Tilo-App auf diesem Gerät
+people-overlay-message-failed = Die Nachricht an { $name } ging nicht raus: { $reason }
+a11y-people-follow = { $name } folgen
+a11y-people-stop-following = { $name } nicht mehr folgen
 launchpad-subtitle = Wähle, wie du anfängst. Alle in diesem Arbeitsbereich sehen, was du hier machst.
 launchpad-subtitle-private = Wähle, wie du anfängst. Nur du siehst, was du hier machst, bis du jemanden einlädst.
 launchpad-subtitle-public = Wähle, wie du anfängst. Dieser Arbeitsbereich ist öffentlich: Alle, die beitreten, sehen, was du hier machst.
@@ -1130,3 +1152,8 @@ feedback-picker-picked = { $count ->
 }
 feedback-picker-continue = Weiter
 feedback-picker-cancel = Abbrechen
+
+# Der Ansicht einer Person folgen
+follow-label = Du folgst { $person }
+follow-stopped = Folgen beendet
+follow-stop = Beenden

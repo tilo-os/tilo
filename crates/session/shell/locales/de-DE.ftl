@@ -837,11 +837,6 @@ overview-site-here = { $count ->
 }
 a11y-leave-workspace = { $name } verlassen
 
-# Der Ansicht einer Person folgen
-follow-label = Du folgst { $person }
-follow-stopped = Folgen beendet
-follow-stop = Beenden
-
 # Filterchips der Suche
 search-filter-all = Alle
 search-filter-more = Mehr
@@ -3376,3 +3371,7 @@ search-action-app-remove-from-apps = Eine App aus deinen Apps entfernen…
 search-action-app-remove-from-apps-subtitle = Sie bleibt auf diesem Computer
 search-apps-uninstall = Deinstallieren
 search-apps-remove-from-apps = Aus Apps entfernen
+
+# The pinned people overlay's message box
+people-overlay-messages-unavailable = Direktnachrichten sind gerade nicht verfügbar
+people-overlay-message-failed = Die Nachricht an { $name } ging nicht raus
