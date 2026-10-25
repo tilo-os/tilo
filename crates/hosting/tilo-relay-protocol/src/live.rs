@@ -366,6 +366,11 @@ pub struct PresenceFrame {
     /// Sent under the same rule as [`Self::focus`].
     #[serde(default)]
     pub layout: Option<LiveLayout>,
+    /// Whose view the publisher follows: their live publisher, lower-case
+    /// hex, 1..=[`MAX_WAVE_TARGET_BYTES`] bytes. Restated with every frame
+    /// while it lasts, so every member's roster can say who follows whom.
+    #[serde(default)]
+    pub following: Option<String>,
 }
 
 /// Largest presence place.
@@ -429,17 +434,22 @@ pub struct LiveWave {
 
 impl LiveWave {
     fn validate(&self) -> Result<()> {
-        if self.target.is_empty()
-            || self.target.len() > MAX_WAVE_TARGET_BYTES
-            || !self
-                .target
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            Err(LiveWireError::Invalid)
-        } else {
-            Ok(())
-        }
+        publisher(&self.target)
+    }
+}
+
+/// A member named by their live publisher: lower-case hex,
+/// 1..=[`MAX_WAVE_TARGET_BYTES`] bytes.
+fn publisher(id: &str) -> Result<()> {
+    if id.is_empty()
+        || id.len() > MAX_WAVE_TARGET_BYTES
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Err(LiveWireError::Invalid)
+    } else {
+        Ok(())
     }
 }
 
@@ -492,6 +502,9 @@ impl PresenceFrame {
         }
         if let Some(layout) = &self.layout {
             layout.validate()?;
+        }
+        if let Some(following) = &self.following {
+            publisher(following)?;
         }
         if self
             .place
@@ -1071,6 +1084,7 @@ mod tests {
             reaction: None,
             wave: None,
             layout: None,
+            following: None,
             seq,
             sent_at_ms: 1,
             focus: Some(record()),
@@ -1098,6 +1112,7 @@ mod tests {
             reaction: None,
             wave: None,
             layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 1,
             focus: Some(primary.clone()),
@@ -1201,6 +1216,7 @@ mod tests {
             reaction: None,
             wave: None,
             layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 1,
             focus: None,
@@ -1247,6 +1263,7 @@ mod tests {
             reaction: None,
             wave: None,
             layout: None,
+            following: None,
             seq: 3,
             sent_at_ms: 10,
             focus: Some(record()),
@@ -1291,6 +1308,7 @@ mod tests {
             reaction: None,
             wave: None,
             layout: None,
+            following: None,
         });
         for frame in [
             presence,
@@ -1405,6 +1423,7 @@ mod tests {
             reaction: None,
             wave: None,
             layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1423,6 +1442,7 @@ mod tests {
             reaction: None,
             wave: None,
             layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1451,6 +1471,7 @@ mod tests {
                 reaction: None,
                 wave: None,
                 layout: None,
+                following: None,
             });
             assert_eq!(placed.encode(), Err(LiveWireError::Invalid));
         }

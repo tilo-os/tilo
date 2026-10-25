@@ -8405,6 +8405,8 @@ fn attach_peer_presence(
             let key = ui::presence::PresenceKey::Workspace {
                 id: room.to_string(),
             };
+            // Browser tabs hear it on the room's live presence.
+            follow_network.publish_following(&room.to_string(), target.as_deref());
             let payload = ui::collaboration::PresencePayload::Following { target };
             if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
                 follow_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);

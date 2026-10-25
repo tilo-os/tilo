@@ -463,6 +463,8 @@ struct Mount {
     live_place: RefCell<Option<serde_json::Value>>,
     /// The last `liveWave` the page was told.
     live_wave: RefCell<Option<serde_json::Value>>,
+    /// The last `liveFollowing` the page was told.
+    live_following: RefCell<Option<String>>,
     /// Calls into this mount that can change what its semantics tree
     /// shows without a frame saying so: every call but a redraw, a wheel,
     /// pointer motion the frame lays out and the idle scheduler
@@ -1759,6 +1761,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         focus_presence: RefCell::new(None),
         live_place: RefCell::new(None),
         live_wave: RefCell::new(None),
+        live_following: RefCell::new(None),
         entries: 0,
         tree_entries: std::cell::Cell::new(0),
         tree_root_rect: std::cell::Cell::new([0.0; 4]),
@@ -2940,23 +2943,7 @@ impl Mount {
         if !(unbuilt && change == FrameChange::Nothing) {
             self.add_presence_changes(&mut value);
         }
-        // This person's latest wave, for the page's presence to carry.
-        let wave = self.desktop.as_ref().and_then(|desktop| {
-            desktop
-                .here
-                .borrow()
-                .sent_wave()
-                .and_then(|wave| serde_json::to_value(wave).ok())
-        });
-        if *self.live_wave.borrow() != wave
-            && let Some(object) = value.as_object_mut()
-        {
-            object.insert(
-                "liveWave".into(),
-                wave.clone().unwrap_or(serde_json::Value::Null),
-            );
-            *self.live_wave.borrow_mut() = wave;
-        }
+        self.add_live_signals(&mut value);
         if self.error.is_none() && self.frames > 0 {
             FIRST_FRAME_PRESENTED.store(true, std::sync::atomic::Ordering::Release);
         }
@@ -3269,6 +3256,7 @@ pub fn request_semantics(id: u64) -> Result<(), JsValue> {
 mod desktop_exports;
 mod fonts;
 mod live_layout;
+mod live_signals;
 use crate::first_frame::{self, GpuStep};
 pub(crate) mod pointers;
 mod retained;

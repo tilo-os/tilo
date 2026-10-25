@@ -209,6 +209,7 @@ export async function mountDesktop(target,options={}) {
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});liveCursors?.wake();}
     // This person's latest wave, which the one it is for shows once.
     if('liveWave' in state)liveLayer()?.publishPresence({wave:state.liveWave});
+    if('liveFollowing' in state)liveLayer()?.publishPresence({following:state.liveFollowing});
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
       desktopOwnership=Boolean(runtime.desktop_input_ownership&&runtime.desktop_navigation_snapshot?.(id));
       runtimeReady=true;

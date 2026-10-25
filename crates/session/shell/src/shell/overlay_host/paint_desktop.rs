@@ -491,6 +491,13 @@ impl ShellOverlayHost {
         // Who is in which voice channel, as the room's calls say, and the
         // Join each row offers.
         self.decorate_calls(&mut rows, presence);
+        // Whom each follows, as every roster here says it.
+        let following = self.roster_following_pairs(presence, &rows);
+        tilo_desktop::collaborators::note_following(
+            &mut rows,
+            &following,
+            Some(super::follow::OWN_ROSTER_ID),
+        );
         RosterFrame {
             rows,
             workspace,

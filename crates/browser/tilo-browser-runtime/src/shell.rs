@@ -262,6 +262,23 @@ impl PageChrome {
         here_people(&self.here, &self.shared, tree)
     }
 
+    /// The roster's rows for `people`, each follower's saying whom they
+    /// follow, and those `(follower, followed)` pairs.
+    fn roster_rows(
+        &self,
+        people: &[tilo_desktop::here::Person],
+        theme: &Theme,
+    ) -> (Vec<RosterRow>, Vec<(String, String)>) {
+        let mut rows: Vec<RosterRow> = people
+            .iter()
+            .map(|person| roster_row(person, theme))
+            .collect();
+        let here = self.here.borrow();
+        let pairs = here.following_pairs(people);
+        tilo_desktop::collaborators::note_following(&mut rows, &pairs, here.own_id());
+        (rows, pairs)
+    }
+
     /// This page's person as everyone here sees them: their name (numbered
     /// when someone else here shares it) and colour.
     fn own_chip(&self) -> tilo_desktop::chrome::OwnChip {
@@ -635,12 +652,8 @@ impl BrowserShell {
         theme: &Theme,
     ) {
         let tree = self.handle.read(Clone::clone);
-        let rows: Vec<RosterRow> = self
-            .chrome
-            .people(&tree)
-            .iter()
-            .map(|person| roster_row(person, theme))
-            .collect();
+        let people = self.chrome.people(&tree);
+        let (rows, following_pairs) = self.chrome.roster_rows(&people, theme);
         if self
             .expanded
             .as_ref()
@@ -667,7 +680,7 @@ impl BrowserShell {
                 may_invite: self.chrome.may_invite(),
                 may_pin: !self.pinned.is_pinned(),
                 followed_id: self.pinned.followed(),
-                following_pairs: &[],
+                following_pairs: &following_pairs,
                 expanded_id: self.expanded.as_deref(),
                 watching,
                 waved: &self.chrome.here.borrow().waved(now_ms()),
@@ -706,10 +719,10 @@ impl BrowserShell {
         if self.pinned.track(&people, handle, &open_app) {
             (self.chrome.wake)();
         }
-        let rows: Vec<RosterRow> = people
-            .iter()
-            .map(|person| roster_row(person, theme))
-            .collect();
+        // Everyone here hears whom this person follows, while they do.
+        let followed = self.pinned.followed().map(str::to_owned);
+        self.chrome.here.borrow_mut().set_following(followed);
+        let (rows, _) = self.chrome.roster_rows(&people, theme);
         // Every window here, by the record it shows as the live layer names
         // it: a window on someone's screen showing one of these is shared.
         // A spectator only watches: nobody here reads them, so no row.
