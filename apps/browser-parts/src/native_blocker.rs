@@ -34,14 +34,55 @@ fn cached_rules(directory: &Path) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Status {
     pub busy: bool,
-    pub message: String,
+    pub message: FilterMessage,
     pub updated: Option<u64>,
 }
+
+/// What the filter list is doing, as the site panel says it.
+///
+/// The state is kept, not the sentence: a refresh finishes on the worker's
+/// own thread, where the language the person chose is not installed, and the
+/// panel draws it on the frame's. [`FilterMessage::text`] is that sentence.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum FilterMessage {
+    /// The rules built into Browser are the ones in force.
+    #[default]
+    BuiltIn,
+    Updating,
+    Updated,
+    /// The rules kept on this device, while a refresh runs or after one
+    /// failed to reach the network.
+    Cached,
+    /// The refresh failed, in the worker's own words for why.
+    Failed {
+        detail: String,
+    },
+    /// The refresh could not start at all.
+    WorkerUnavailable,
+}
+
+impl FilterMessage {
+    /// The sentence the site panel shows for this state.
+    pub fn text(&self) -> String {
+        match self {
+            Self::BuiltIn => crate::CATALOG.t("browser-filters-built-in"),
+            Self::Updating => crate::CATALOG.t("browser-filters-updating"),
+            Self::Updated => crate::CATALOG.t("browser-filters-updated"),
+            Self::Cached => crate::CATALOG.t("browser-filters-cached"),
+            Self::Failed { detail } => crate::CATALOG.t_args(
+                "browser-filters-failed",
+                &[("detail", ui::i18n::ArgValue::Text(detail.clone()))],
+            ),
+            Self::WorkerUnavailable => crate::CATALOG.t("browser-filters-failed-worker"),
+        }
+    }
+}
+
 impl Default for Status {
     fn default() -> Self {
         Self {
             busy: false,
-            message: "Using the built-in filter list".into(),
+            message: FilterMessage::BuiltIn,
             updated: None,
         }
     }
@@ -124,7 +165,7 @@ fn begin_refresh(status: &std::sync::Mutex<Status>) -> bool {
         return false;
     }
     status.busy = true;
-    status.message = "Updating filter lists…".into();
+    status.message = FilterMessage::Updating;
     true
 }
 fn last_successful_update(directory: &Path) -> Option<u64> {
@@ -188,23 +229,24 @@ pub fn refresh(engine: &SharedEngine, force: bool) {
                         status.updated = ui::time::try_unix_now();
                     }
                     status.message = if downloaded {
-                        "Filter lists updated"
+                        FilterMessage::Updated
                     } else {
-                        "Using cached filter lists"
-                    }
-                    .into();
+                        FilterMessage::Cached
+                    };
                 }
                 Err(error) => {
                     let error = error.chars().take(512).collect::<String>();
-                    status.message = format!("Update failed: {error}. Previous rules retained.");
+                    status.message = FilterMessage::Failed { detail: error };
                 }
             }
+            // The panel may read the state as soon as it is woken.
+            drop(status);
             wake.wake();
         });
     if worker.is_err() {
         let mut status = state().lock_recover();
         status.busy = false;
-        status.message = "Update failed: worker unavailable. Previous rules retained.".into();
+        status.message = FilterMessage::WorkerUnavailable;
     }
 }
 /// Hand `engine` the cached rules, then `then` (the window's first
@@ -467,7 +509,10 @@ mod tests {
             }
             let result = status();
             assert!(!result.busy);
-            assert!(result.message.starts_with("Update failed:"), "{result:?}");
+            assert!(
+                matches!(&result.message, FilterMessage::Failed { detail } if !detail.is_empty()),
+                "{result:?}"
+            );
             assert_eq!(
                 result.updated,
                 Some(LAST_SUCCESS),

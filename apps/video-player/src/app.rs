@@ -54,22 +54,35 @@ use ui::framework::{
 use ui::tilo_resource::{ActionDecl, Id};
 
 use crate::actions::VideoEffect;
-use crate::preferences::{PlayerSettings, RecentMedia};
+use crate::preferences::{PLAYBACK_RATES, PlayerSettings, RecentMedia, ResumePoints};
 use crate::shared::{Library as PlayerResource, library as verbs};
 
 /// The playback preferences the player follows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct PlaybackPreferences {
     autoplay: bool,
     loop_enabled: bool,
+    /// The output volume, `0.0..=1.0`.
+    volume: f32,
+    /// The playback speed, one of [`PLAYBACK_RATES`].
+    rate: f32,
 }
 
 impl Default for PlaybackPreferences {
     fn default() -> Self {
         let defaults = PlayerSettings::default();
+        Self::from_settings(&defaults)
+    }
+}
+
+impl PlaybackPreferences {
+    /// What this device stored, as the player follows it.
+    fn from_settings(stored: &PlayerSettings) -> Self {
         Self {
-            autoplay: defaults.autoplay,
-            loop_enabled: defaults.loop_enabled,
+            autoplay: stored.autoplay,
+            loop_enabled: stored.loop_enabled,
+            volume: stored.volume,
+            rate: stored.rate,
         }
     }
 }
@@ -176,7 +189,7 @@ impl LibraryTab {
 /// decodes with the system's engine and announces itself to the session's
 /// media controls. A capture or a past version gets the deterministic
 /// synthesized engine and reaches nothing outside the process.
-fn configured_player(mode: RunMode, autoplay: bool, loop_enabled: bool) -> VideoPlayer {
+fn configured_player(mode: RunMode, preferences: PlaybackPreferences) -> VideoPlayer {
     let engine = if mode.is_live() {
         media::MediaEngine::new()
     } else {
@@ -188,14 +201,35 @@ fn configured_player(mode: RunMode, autoplay: bool, loop_enabled: bool) -> Video
     if mode.is_live() {
         player.enable_mpris("tilo_video_player", "Video Player");
     }
-    configure_player_settings(&mut player, autoplay, loop_enabled);
+    configure_player_settings(&mut player, preferences);
     player
 }
 
-/// The playback speeds the settings menu offers.
-const PLAYBACK_RATES: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0];
+/// How often a playing video's resume point is written while it plays.
+const RESUME_WRITE_INTERVAL_MS: u64 = 3_000;
+/// Within this of the end, a video counts as finished: replaying it starts at
+/// the beginning rather than in its last moments.
+const RESUME_END_MARGIN_MS: u64 = 2_000;
+/// A volume change is kept once it settles: a slider drag writes one value
+/// instead of one per step, and the value it comes to rest at is never
+/// dropped.
+const VOLUME_SETTLE_MS: u64 = 400;
 
-fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enabled: bool) {
+/// Put this device's own volume and speed on `player`: what the person last
+/// chose here, whatever video it plays next. The volume is only set when it
+/// differs, so an unrelated preference change does not unmute a player the
+/// person muted.
+fn apply_playback_levels(player: &mut VideoPlayer, preferences: PlaybackPreferences) {
+    if (player.volume() - preferences.volume).abs() > f32::EPSILON {
+        player.set_volume(preferences.volume);
+    }
+    if let Some(engine) = player.engine_mut() {
+        engine.set_rate(preferences.rate);
+    }
+}
+
+fn configure_player_settings(player: &mut VideoPlayer, preferences: PlaybackPreferences) {
+    apply_playback_levels(player, preferences);
     // These settings are implemented by this app, so the shared settings
     // popover is never decorative.
     player.set_setting(PlayerSetting::toggle(
@@ -203,16 +237,18 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
         Icon::Play,
         "Autoplay",
         0,
-        autoplay,
+        preferences.autoplay,
     ));
     player.set_setting(PlayerSetting::toggle(
         "loop",
         Icon::Repeat1,
         "Repeat current video",
         0,
-        loop_enabled,
+        preferences.loop_enabled,
     ));
-    let rate = player.engine().map_or(1.0, media::MediaEngine::rate);
+    let rate = player
+        .engine()
+        .map_or(preferences.rate, media::MediaEngine::rate);
     let selected = PLAYBACK_RATES
         .iter()
         .position(|candidate| (*candidate - rate).abs() < f32::EPSILON)
@@ -353,6 +389,14 @@ fn local_source_token(source: &media::Source, generation: u64) -> String {
     format!("local-media-{hash:016x}-open-{generation}")
 }
 
+/// The identity a resume point is kept by. It is the same opaque token a
+/// queue row is named by (and, through [`RecentMedia`]'s source, a Recent
+/// row), so a video opened from a row, the picker, the file manager or a drop
+/// on the window resumes at the same place.
+fn resume_key(source: &media::Source) -> String {
+    local_source_token(source, 0)
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "overlay, local library, portal, and frame-dirty flags are independent widget state"
@@ -408,6 +452,18 @@ pub struct PlayerApp {
     /// This device's settings, where a live window keeps its preferences
     /// and recent videos; `None` for a capture or a past version.
     setting: Option<Setting<PlayerSettings>>,
+    /// Where each video left off on this device, by its opaque identity, so
+    /// opening it again resumes: see [`ResumePoints`].
+    resume: ResumePoints,
+    /// The resume point last written for the open video, so a playing video
+    /// writes every few seconds and a still one only when it moves.
+    resume_write: Option<ResumeWrite>,
+    /// Where the open video is to be moved once its length is known: the
+    /// decoder answers that asynchronously, and a seek before then would be
+    /// clamped to the unknown length.
+    pending_resume: Option<PendingResume>,
+    /// When the volume last changed, while it is still settling.
+    volume_settling_since: Option<u64>,
     /// Deterministic decoder metadata used only by the explicit headless
     /// `metadata` screenshot fixture. Live runs always read the active engine.
     shot_metadata: Option<DecoderMetadata>,
@@ -483,6 +539,23 @@ enum TogetherStep {
     /// Say where playback stands here: this player moved it.
     Publish(media::TransportState),
     Stay,
+}
+
+/// The resume point of the open video as it was last written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResumeWrite {
+    media_ref: String,
+    position_ms: u64,
+    playing: bool,
+    at_ms: u64,
+}
+
+/// Where a just-opened video is to be moved, for its identity: applied once
+/// the decoder knows how long the video is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingResume {
+    media_ref: String,
+    position_ms: u64,
 }
 
 /// What this player last knew of playback watched together.
@@ -796,7 +869,7 @@ impl PlayerApp {
         #[cfg(test)]
         ui::host::install_default(ui::host::HostServices::recording().0);
         let preferences = PlaybackPreferences::default();
-        let player = configured_player(mode, preferences.autoplay, preferences.loop_enabled);
+        let player = configured_player(mode, preferences);
         Self::from_prepared(player, preferences, VecDeque::new(), mode)
     }
 
@@ -847,6 +920,10 @@ impl PlayerApp {
             together: Together::default(),
             preferences,
             setting: None,
+            resume: ResumePoints::default(),
+            resume_write: None,
+            pending_resume: None,
+            volume_settling_since: None,
             shot_metadata: None,
             shot_loading: false,
             pending_pip: None,
@@ -890,6 +967,9 @@ impl PlayerApp {
             return;
         }
         if let Some(handoff) = handoff {
+            // The handoff says where playback stood a moment ago, which is
+            // newer than anything this device stored: it wins.
+            self.pending_resume = None;
             self.player.seek_to_ms(handoff.position_ms);
             if handoff.resume_playing {
                 self.player.play();
@@ -1103,17 +1183,11 @@ impl PlayerApp {
         }
     }
 
-    /// Follow this device's stored preferences and recent videos.
+    /// Follow this device's stored preferences, the levels it plays at, its
+    /// recent videos and where each of them left off.
     fn adopt_settings(&mut self, stored: &PlayerSettings) {
-        self.preferences = PlaybackPreferences {
-            autoplay: stored.autoplay,
-            loop_enabled: stored.loop_enabled,
-        };
-        configure_player_settings(
-            &mut self.player,
-            self.preferences.autoplay,
-            self.preferences.loop_enabled,
-        );
+        self.preferences = PlaybackPreferences::from_settings(stored);
+        configure_player_settings(&mut self.player, self.preferences);
         self.recent = stored
             .recent_history
             .iter()
@@ -1123,6 +1197,15 @@ impl PlayerApp {
                 source: entry.source.clone(),
             })
             .collect();
+        // Rows are newest first; the map is oldest first, so it drops the
+        // same row a bounded recent history would.
+        self.resume.clear();
+        for entry in stored.recent_history.iter().rev() {
+            // A row read back from a launch is a place to resume from, never
+            // an instruction to start playing: a restart never autoplays.
+            self.resume
+                .record(&resume_key(&entry.source), entry.position_ms, false);
+        }
         self.kept_retained = self
             .recent
             .iter()
@@ -1151,6 +1234,13 @@ impl PlayerApp {
     /// a decoded frame landed.
     pub fn player(&self) -> &VideoPlayer {
         &self.player
+    }
+
+    /// What this device keeps between launches, as the next launch reads it:
+    /// `None` for a capture or a past version, which keep nothing.
+    #[cfg(test)]
+    pub(crate) fn stored_settings(&self) -> Option<PlayerSettings> {
+        self.setting.as_ref().map(Setting::get)
     }
 
     /// Whether a decoded picture is currently on the surface. The `--shots`
@@ -1314,6 +1404,9 @@ impl PlayerApp {
             self.recall_kept(&token, title, queue_id);
             return Ok(());
         }
+        // This open leaves the video that was open: keep where it stood
+        // before its decoder is replaced.
+        self.remember_position(true);
         if let Err(error) = self.set_current_source(&source) {
             self.open_error = Some(error.clone());
             self.dirty = true;
@@ -1326,7 +1419,22 @@ impl PlayerApp {
         self.title = title;
         self.current_queue_id = queue_id;
         self.player.open(source);
-        if self.preferences.autoplay {
+        // Every open plays at this device's own levels, loudly enough and at
+        // the speed this person chose here.
+        apply_playback_levels(&mut self.player, self.preferences);
+        self.resume_write = None;
+        // Where this video left off, if it did: the seek lands once the
+        // decoder reports the length (see `apply_pending_resume`).
+        let resume = self
+            .current_media_ref
+            .as_deref()
+            .and_then(|media_ref| self.resume.point(media_ref));
+        self.pending_resume = resume.map(|(position_ms, _)| PendingResume {
+            media_ref: self.current_media_ref.clone().unwrap_or_default(),
+            position_ms,
+        });
+        let playing = resume.map_or(self.preferences.autoplay, |(_, playing)| playing);
+        if playing {
             self.player.play();
         } else {
             self.player.pause();
@@ -1369,29 +1477,156 @@ impl PlayerApp {
     }
 
     fn persist_recent_history(&self) -> std::io::Result<()> {
-        // A page's `blob:` source dies with the page: an entry is kept by its
-        // kept copy, while that copy is retained, or not at all.
         let entries: Vec<RecentMedia> = self
             .recent
             .iter()
-            .filter_map(|entry| {
-                let source = match self.kept.get(&entry.id) {
-                    Some(token) => crate::kept::source(token),
-                    None => entry.source.clone(),
-                };
-                let retained = crate::kept::token_of(&source)
-                    .is_none_or(|token| self.kept_retained.iter().any(|kept| kept == token));
-                (retained && !crate::kept::page_local(&source)).then(|| RecentMedia {
-                    id: entry.id.clone(),
-                    title: entry.title.clone(),
-                    source,
-                })
-            })
+            .filter_map(|entry| self.saved_recent_row(entry))
             .collect();
         match &self.setting {
             Some(setting) => setting.update(|stored| stored.recent_history = entries),
             None => Ok(()),
         }
+    }
+
+    /// The row `entry` is kept as, or `None` when it cannot be kept: a page's
+    /// `blob:` source dies with the page, so an entry is kept by its kept
+    /// copy, while that copy is retained, or not at all. The row carries where
+    /// the video stood, which is the only place a resume point outlives the
+    /// session.
+    fn saved_recent_row(&self, entry: &LocalMediaEntry) -> Option<RecentMedia> {
+        let source = match self.kept.get(&entry.id) {
+            Some(token) => crate::kept::source(token),
+            None => entry.source.clone(),
+        };
+        let retained = crate::kept::token_of(&source)
+            .is_none_or(|token| self.kept_retained.iter().any(|kept| kept == token));
+        (retained && !crate::kept::page_local(&source)).then(|| RecentMedia {
+            id: entry.id.clone(),
+            title: entry.title.clone(),
+            position_ms: self.position_of(&source),
+            source,
+        })
+    }
+
+    /// Where `source` left off here, `0` when it has nothing to resume.
+    fn position_of(&self, source: &media::Source) -> u64 {
+        self.resume
+            .point(&resume_key(source))
+            .map_or(0, |(position_ms, _)| position_ms)
+    }
+
+    /// Write where the open video stands into its Recent row, leaving the
+    /// rest of this device's settings as they are.
+    fn persist_resume_position(&self) -> std::io::Result<()> {
+        let Some(setting) = &self.setting else {
+            return Ok(());
+        };
+        let resume = &self.resume;
+        setting.update(|stored| {
+            for row in &mut stored.recent_history {
+                row.position_ms = resume
+                    .point(&resume_key(&row.source))
+                    .map_or(0, |(position_ms, _)| position_ms);
+            }
+        })
+    }
+
+    /// Remember where the open video stands, so opening it again resumes
+    /// there. A playing video writes every few seconds; `settled` writes at
+    /// once, for the moments playback pauses, the item closes and another
+    /// item replaces it. A video within [`RESUME_END_MARGIN_MS`] of its end
+    /// has finished, so its point is cleared and replaying starts at the
+    /// beginning.
+    ///
+    /// A source whose length the decoder never reports (a live stream) has no
+    /// place to seek back to, so it keeps no point: the pending seek of the
+    /// point it was opened with is never spent, and nothing is written.
+    fn remember_position(&mut self, settled: bool) {
+        // While a stored point is still waiting for the decoder's length, the
+        // playhead means nothing yet: writing it would forget that point.
+        if self.pending_resume.is_some() {
+            return;
+        }
+        let Some(media_ref) = self.current_media_ref.clone() else {
+            return;
+        };
+        if !self.player.has_media() {
+            return;
+        }
+        let position = self.player.position_ms();
+        let playing = self.player.is_playing();
+        let now = unix_now_ms();
+        let written = self.resume_write.as_ref();
+        if written.is_some_and(|written| {
+            written.media_ref == media_ref
+                && written.position_ms == position
+                && written.playing == playing
+        }) {
+            return;
+        }
+        // A drag across the timeline, or a video playing on, is one write
+        // every few seconds, not one per frame. The newest value still lands:
+        // playback comes to rest with a `settled` write.
+        if !settled
+            && playing
+            && written.is_some_and(|written| {
+                written.media_ref == media_ref
+                    && now.saturating_sub(written.at_ms) < RESUME_WRITE_INTERVAL_MS
+            })
+        {
+            return;
+        }
+        self.resume_write = Some(ResumeWrite {
+            media_ref: media_ref.clone(),
+            position_ms: position,
+            playing,
+            at_ms: now,
+        });
+        let duration = self.player.duration_ms();
+        let position = if duration > 0 {
+            position.min(duration)
+        } else {
+            position
+        };
+        if duration > 0 && position.saturating_add(RESUME_END_MARGIN_MS) >= duration {
+            // Finished: replay starts at the beginning.
+            self.resume.forget(&media_ref);
+        } else {
+            self.resume.record(&media_ref, position, playing);
+        }
+        if let Err(error) = self.persist_resume_position() {
+            tracing::warn!(%error, "video player: could not keep where the video stood");
+        }
+    }
+
+    /// Move a just-opened video to where it left off, once the decoder knows
+    /// how long it is: a seek is clamped to the length the player knows, and
+    /// until the decoder answers, that is only the placeholder length it was
+    /// built with.
+    fn apply_pending_resume(&mut self) {
+        let Some(pending) = self.pending_resume.clone() else {
+            return;
+        };
+        if self.current_media_ref.as_deref() != Some(pending.media_ref.as_str()) {
+            // The video it was taken for is gone.
+            self.pending_resume = None;
+            return;
+        }
+        let duration = self
+            .player
+            .engine()
+            .and_then(media::MediaEngine::duration_ms);
+        let Some(duration) = duration.filter(|duration| *duration > 0) else {
+            return;
+        };
+        if self.player.duration_ms() != duration {
+            // The player has not picked the length up yet: a seek now would be
+            // clamped to the placeholder it still holds.
+            return;
+        }
+        self.pending_resume = None;
+        self.player.seek_to_ms(pending.position_ms.min(duration));
+        self.dirty = true;
     }
 
     fn clear_recent_history(&mut self) -> Result<(), String> {
@@ -1401,6 +1636,9 @@ impl PlayerApp {
             self.recent = previous;
             return Err(format!("could not clear local recent history: {error}"));
         }
+        // A cleared history is a cleared memory of where those videos stood.
+        self.resume.clear();
+        self.resume_write = None;
         if !self.kept_retained.is_empty() {
             self.kept.clear();
             self.kept_retained.clear();
@@ -1458,11 +1696,11 @@ impl PlayerApp {
     fn close_media(&mut self) {
         self.missing_codec = None;
         self.fail_open("video was closed before decoding a first frame".into());
-        let player = configured_player(
-            self.mode,
-            self.preferences.autoplay,
-            self.preferences.loop_enabled,
-        );
+        // Closing is one of the moments the video rests: keep where it stood.
+        self.remember_position(true);
+        self.pending_resume = None;
+        self.resume_write = None;
+        let player = configured_player(self.mode, self.preferences);
         self.player = player;
         self.title = "No media".into();
         self.current_source_id = None;
@@ -1962,9 +2200,7 @@ impl PlayerApp {
             }
             VideoEffect::Restart => self.player.seek_to_ms(0),
             VideoEffect::JumpToEnd => self.player.seek_to_ms(self.player.duration_ms()),
-            VideoEffect::SetVolume { volume } => {
-                self.player.set_volume(volume.clamp(0.0, 1.0) as f32);
-            }
+            VideoEffect::SetVolume { volume } => self.volume_changed(volume),
             VideoEffect::SetAutoplay { enabled } => {
                 if self.preferences.autoplay != enabled {
                     self.preferences.autoplay = enabled;
@@ -1988,6 +2224,13 @@ impl PlayerApp {
                 if let Some(selected) = selected {
                     self.player.set_choice_selection("playback-rate", selected);
                 }
+                // The speed this device plays at is remembered like its
+                // volume: 1.5× opened the same lecture quickly next time.
+                self.preferences.rate = self
+                    .player
+                    .engine()
+                    .map_or(rate as f32, media::MediaEngine::rate);
+                self.persist_preferences();
             }
             VideoEffect::SelectAudioTrack { track } => {
                 let index = self
@@ -2078,22 +2321,57 @@ impl PlayerApp {
 
     /// Show and keep the preferences just changed.
     fn preferences_changed(&mut self) {
-        configure_player_settings(
-            &mut self.player,
-            self.preferences.autoplay,
-            self.preferences.loop_enabled,
-        );
-        if let Some(setting) = &self.setting {
-            let preferences = self.preferences;
-            // A device-local preference must never prevent playback; the
-            // next change retries the write.
-            if let Err(error) = setting.update(|stored| {
-                stored.autoplay = preferences.autoplay;
-                stored.loop_enabled = preferences.loop_enabled;
-            }) {
-                tracing::warn!(%error, "video player: could not keep playback preferences");
-            }
+        configure_player_settings(&mut self.player, self.preferences);
+        self.persist_preferences();
+    }
+
+    /// Keep the playback preferences with this device's settings. A
+    /// device-local preference must never prevent playback, so a refused write
+    /// is logged and the next change retries it.
+    fn persist_preferences(&self) {
+        let Some(setting) = &self.setting else {
+            return;
+        };
+        let preferences = self.preferences;
+        if let Err(error) = setting.update(|stored| {
+            stored.autoplay = preferences.autoplay;
+            stored.loop_enabled = preferences.loop_enabled;
+            stored.volume = preferences.volume;
+            stored.rate = preferences.rate;
+        }) {
+            tracing::warn!(%error, "video player: could not keep playback preferences");
         }
+    }
+
+    /// A volume change is kept once it settles, so a drag writes one value
+    /// instead of one per step.
+    fn volume_changed(&mut self, volume: f64) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a fraction in 0.0..=1.0; f32 precision is sufficient"
+        )]
+        let volume = volume.clamp(0.0, 1.0) as f32;
+        self.player.set_volume(volume);
+        // `set_volume` clamps and unmutes, so the player answers the level
+        // that actually plays.
+        if (self.preferences.volume - self.player.volume()).abs() > f32::EPSILON {
+            self.preferences.volume = self.player.volume();
+            self.volume_settling_since = Some(unix_now_ms());
+        }
+    }
+
+    /// Keep the volume once the person has stopped changing it. The last
+    /// value always lands, because a change that keeps arriving keeps the
+    /// timer running until it stops.
+    fn settle_volume(&mut self) {
+        let Some(since) = self.volume_settling_since else {
+            return;
+        };
+        if unix_now_ms().saturating_sub(since) < VOLUME_SETTLE_MS {
+            return;
+        }
+        self.volume_settling_since = None;
+        self.persist_preferences();
     }
 
     /// Drain a pending picker answer, opening the chosen file.
@@ -2218,7 +2496,6 @@ impl PlayerApp {
 
     /// Do what the player's own settings menu chose.
     fn drain_player_settings(&mut self) {
-        const RATES: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0];
         for event in self.player.take_setting_events() {
             let source_id = self.current_source_id.clone().unwrap_or_default();
             let effect = match event {
@@ -2228,9 +2505,11 @@ impl PlayerApp {
                 PlayerSettingEvent::Toggled { id, on } if id == "loop" => {
                     Some(VideoEffect::SetLoop { enabled: on })
                 }
-                PlayerSettingEvent::Chose { id, index } if id == "playback-rate" => RATES
+                PlayerSettingEvent::Chose { id, index } if id == "playback-rate" => PLAYBACK_RATES
                     .get(index)
-                    .map(|rate| VideoEffect::SetPlaybackRate { rate: *rate }),
+                    .map(|rate| VideoEffect::SetPlaybackRate {
+                        rate: f64::from(*rate),
+                    }),
                 PlayerSettingEvent::Chose { id, index } if id == "audio-track" => {
                     self.shown_metadata.audio_tracks.get(index).map(|track| {
                         VideoEffect::SelectAudioTrack {
@@ -2501,10 +2780,13 @@ impl Widget for PlayerApp {
         self.drain_portal();
         self.tick_together();
         self.player.sync(state, path);
+        self.apply_pending_resume();
         self.drain_player_media_events();
         self.sync_decoder_settings();
         self.drain_player_settings();
         self.maybe_loop_current_media();
+        self.remember_position(false);
+        self.settle_volume();
         self.poll_open_frame();
     }
 
@@ -3817,11 +4099,7 @@ mod tests {
         {
             let mut app = synth_app();
             app.preferences.autoplay = false;
-            configure_player_settings(
-                &mut app.player,
-                app.preferences.autoplay,
-                app.preferences.loop_enabled,
-            );
+            configure_player_settings(&mut app.player, app.preferences);
             app.open_path(Path::new("/tmp/Clip.mp4"))
                 .expect("source identity available");
             assert!(
@@ -3832,11 +4110,7 @@ mod tests {
             let doc = automerge::AutoCommit::new();
             app.sync(&doc, &automerge::ROOT);
             app.preferences.loop_enabled = true;
-            configure_player_settings(
-                &mut app.player,
-                app.preferences.autoplay,
-                app.preferences.loop_enabled,
-            );
+            configure_player_settings(&mut app.player, app.preferences);
             let end = app.player.duration_ms();
             app.player.seek_to_ms(end);
             app.player.pause();
@@ -4141,5 +4415,205 @@ mod tests {
         app.perform(VideoEffect::Reveal).unwrap();
         assert!(!app.player.is_playing());
         assert_eq!(app.player.position_ms(), position);
+    }
+
+    /// A recent row for `path`, as this device would have saved it.
+    fn recent_row(path: &str, position_ms: u64) -> (RecentMedia, String) {
+        let source = source_for_path(Path::new(path));
+        let id = format!("local-queue-{}", resume_key(&source));
+        (
+            RecentMedia {
+                id: id.clone(),
+                title: source_title(&source),
+                source,
+                position_ms,
+            },
+            id,
+        )
+    }
+
+    #[test]
+    fn the_volume_and_speed_this_device_chose_are_kept_and_restored() {
+        use ui::framework::testing::TestApp;
+
+        // A live window keeps this device's settings on its own profile.
+        let mut app = TestApp::<crate::resource::VideoPlayerShell>::new()
+            .expect("a live window opens on a private profile");
+        let stored = |app: &mut TestApp<crate::resource::VideoPlayerShell>| {
+            app.with_surface::<PlayerApp, _>(|player| player.stored_settings())
+                .flatten()
+        };
+        let fresh = stored(&mut app).expect("the window keeps its settings");
+        assert!((fresh.volume - crate::preferences::DEFAULT_VOLUME).abs() < f32::EPSILON);
+        assert!((fresh.rate - crate::preferences::DEFAULT_RATE).abs() < f32::EPSILON);
+
+        // The person drags the volume to a third and picks 1.5×. (The
+        // production path, past the effect door's open-video guard.)
+        app.with_surface::<PlayerApp, _>(|player| {
+            player
+                .perform(VideoEffect::SetVolume { volume: 0.35 })
+                .expect("the volume follows");
+            player
+                .perform(VideoEffect::SetPlaybackRate { rate: 1.5 })
+                .expect("the speed follows");
+        })
+        .expect("the window shows the player");
+        assert!(
+            (stored(&mut app).expect("settings").rate - 1.5).abs() < f32::EPSILON,
+            "a chosen speed is kept at once"
+        );
+
+        // The volume is kept once the drag settles, and the value it came to
+        // rest at is the one kept.
+        tilo_test_env::wait_until("the chosen volume settles into the settings", || {
+            app.settle();
+            stored(&mut app).is_some_and(|stored| (stored.volume - 0.35).abs() < 1e-6)
+        });
+
+        // The next launch's player follows what this device kept.
+        let kept = stored(&mut app).expect("settings");
+        let mut restarted = synth_app();
+        restarted.adopt_settings(&kept);
+        assert!(
+            (restarted.player.volume() - 0.35).abs() < 1e-6,
+            "the volume it was left at plays: {}",
+            restarted.player.volume()
+        );
+        let engine = restarted.player.engine().expect("an engine");
+        assert!(
+            (engine.rate() - 1.5).abs() < f32::EPSILON,
+            "1.5× is restored: {}",
+            engine.rate()
+        );
+        let speed = restarted
+            .player
+            .settings()
+            .iter()
+            .find(|setting| setting.id == "playback-rate")
+            .expect("the speed is in the settings menu");
+        assert_eq!(
+            speed.control,
+            ui::widget::video_player::PlayerSettingControl::Choice {
+                options: PLAYBACK_RATES
+                    .iter()
+                    .map(|rate| format!("{rate}×"))
+                    .collect(),
+                selected: 5,
+            },
+            "the menu shows the restored speed, so it is not lying"
+        );
+
+        // Closing the video builds a fresh player; it plays at the same
+        // levels, so a clip opened next is not suddenly loud again.
+        restarted.perform(VideoEffect::Close).unwrap();
+        assert!((restarted.player.volume() - 0.35).abs() < 1e-6);
+        assert!((restarted.player.engine().expect("an engine").rate() - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn reopening_a_video_resumes_where_it_was_left_and_does_not_autoplay() {
+        let (row, id) = recent_row("/videos/Lecture.mp4", 30_000);
+        let mut app = synth_app();
+        app.adopt_settings(&PlayerSettings {
+            autoplay: true,
+            recent_history: vec![row],
+            ..PlayerSettings::default()
+        });
+        app.open_local_entry(&id)
+            .expect("the recent row opens its video");
+        assert!(
+            !app.player.is_playing(),
+            "a video resumed mid-way does not start playing on its own"
+        );
+        let doc = automerge::AutoCommit::new();
+        tilo_test_env::wait_until("the decoder reports the lecture's length", || {
+            app.sync(&doc, &automerge::ROOT);
+            app.pending_resume.is_none()
+        });
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            app.player.position_ms(),
+            30_000,
+            "it continues where this device left it, not at 0:00"
+        );
+        assert!(!app.player.is_playing(), "and stays paused");
+
+        // A video with nothing stored opens as the autoplay preference says.
+        let (fresh_row, fresh_id) = recent_row("/videos/Talk.mp4", 0);
+        app.adopt_settings(&PlayerSettings {
+            autoplay: true,
+            recent_history: vec![fresh_row],
+            ..PlayerSettings::default()
+        });
+        app.open_local_entry(&fresh_id)
+            .expect("the other recent row opens");
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(app.player.position_ms(), 0, "a new video starts at 0:00");
+        assert!(app.player.is_playing(), "and autoplay starts it");
+    }
+
+    #[test]
+    fn finishing_a_video_clears_its_resume_point_so_a_replay_starts_at_the_top() {
+        let (row, id) = recent_row("/videos/Seminar.mp4", 20_000);
+        let source = row.source.clone();
+        let mut app = synth_app();
+        app.adopt_settings(&PlayerSettings {
+            recent_history: vec![row],
+            ..PlayerSettings::default()
+        });
+        app.open_local_entry(&id).expect("the recent row opens");
+        let doc = automerge::AutoCommit::new();
+        tilo_test_env::wait_until("the video resumes where it was left", || {
+            app.sync(&doc, &automerge::ROOT);
+            app.player.position_ms() == 20_000
+        });
+        assert_eq!(app.position_of(&source), 20_000, "the row carries it");
+
+        // Playback reaches the end.
+        let end = app.player.duration_ms();
+        assert!(end > 0, "the decoder reported a length");
+        app.player.seek_to_ms(end);
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            app.resume.point(&resume_key(&source)),
+            None,
+            "a finished video has nowhere to resume"
+        );
+        assert_eq!(app.position_of(&source), 0, "its saved row says so too");
+
+        // Opened again, it starts at the beginning.
+        app.open_local_entry(&id).expect("the row opens again");
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(app.player.position_ms(), 0, "the replay starts at 0:00");
+    }
+
+    #[test]
+    fn a_paused_video_keeps_where_it_stopped_in_its_recent_row() {
+        let (row, id) = recent_row("/videos/Panel.mp4", 0);
+        let mut app = synth_app();
+        app.adopt_settings(&PlayerSettings {
+            recent_history: vec![row],
+            ..PlayerSettings::default()
+        });
+        app.open_local_entry(&id).expect("the recent row opens");
+        let doc = automerge::AutoCommit::new();
+        app.sync(&doc, &automerge::ROOT);
+        app.player.seek_to_ms(12_000);
+        app.player.pause();
+        app.sync(&doc, &automerge::ROOT);
+
+        let entry = app
+            .recent
+            .iter()
+            .find(|entry| entry.id == id)
+            .cloned()
+            .expect("the video is in Recent");
+        let saved = app
+            .saved_recent_row(&entry)
+            .expect("the row is kept on this device");
+        assert_eq!(
+            saved.position_ms, 12_000,
+            "pausing writes where playback stopped, into the row a restart reads"
+        );
     }
 }

@@ -449,7 +449,8 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
 
         tx.send(FetchResult::Failed {
             feed_id: Some(nth_feed(&a, 1)),
-            message: "unreachable".into(),
+            reason: RefreshFailure::Unreachable,
+            message: "request: connection refused".into(),
         })
         .unwrap();
         a.core_mut().drain_fetches_live();
@@ -572,7 +573,8 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             } else {
                 FetchResult::Failed {
                     feed_id: Some(f.clone()),
-                    message: "x".into(),
+                    reason: RefreshFailure::Refused { status: Some(503) },
+                    message: "HTTP 503".into(),
                 }
             };
             tx.send(result).unwrap();
@@ -1516,4 +1518,152 @@ fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
             "the bar's toggle now hides it {width} wide"
         );
     }
+}
+
+/// The sidebar row for `feed`, with its own status and second line.
+fn feed_row(core: &Core, feed: &Id) -> ui::widget::NavItem {
+    fn find(items: &[ui::widget::NavItem], id: &str) -> Option<ui::widget::NavItem> {
+        for item in items {
+            if item.id == id {
+                return Some(item.clone());
+            }
+            if let Some(found) = find(&item.children, id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let id = crate::sidebar::nav_id(&Filter::Feed(feed.clone()));
+    core.nav_sections()
+        .iter()
+        .find_map(|section| find(&section.items, &id))
+        .unwrap_or_else(|| panic!("the sidebar holds {id}"))
+}
+
+/// A failed refresh of one subscription marks that row with an honest reason
+/// and leaves the others alone; its next success clears the mark. The batch
+/// summary stays a count.
+#[test]
+fn a_failed_subscription_says_so_in_its_own_row_until_it_refreshes() {
+    let mut a = app();
+    let _doc = synced(&mut a);
+    let (worker, tx) = FetchWorker::for_test();
+    a.core_mut().worker = Some(worker);
+    let failing = nth_feed(&a, 0);
+    let healthy = nth_feed(&a, 1);
+    // Neither row says anything before a refresh has failed.
+    assert_eq!(feed_row(&a.core(), &failing).status, None);
+    assert_eq!(feed_row(&a.core(), &healthy).status, None);
+
+    a.core_mut()
+        .refresh_feeds(&[failing.clone(), healthy.clone()]);
+    tx.send(FetchResult::Failed {
+        feed_id: Some(failing.clone()),
+        reason: RefreshFailure::Refused { status: Some(403) },
+        message: "HTTP 403".into(),
+    })
+    .unwrap();
+    tx.send(FetchResult::Articles {
+        feed_id: healthy.clone(),
+        title: None,
+        articles: vec![],
+        certificate_pin: None,
+    })
+    .unwrap();
+    a.core_mut().drain_fetches_live();
+
+    let marked = feed_row(&a.core(), &failing);
+    assert_eq!(
+        marked.status.as_ref().map(|status| status.row_status()),
+        Some(ui::widget::RowStatus::Error),
+        "the subscription that failed is marked"
+    );
+    assert_eq!(
+        marked.status_label, None,
+        "the reason itself is the second line, not a word beside the name"
+    );
+    assert_eq!(
+        marked.secondary.as_deref(),
+        Some("The site refused the request (HTTP 403)"),
+        "the row says why, and a refusal is not a network fault"
+    );
+    let untouched = feed_row(&a.core(), &healthy);
+    assert_eq!(
+        untouched.status, None,
+        "the subscription that answered is not marked"
+    );
+    assert_eq!(untouched.secondary, None);
+    // The batch summary is a count of the batch, and stays that.
+    assert_eq!(a.core().refresh.failed_feeds, 1);
+    assert!(
+        a.core().refresh.status().contains("could not be refreshed"),
+        "{}",
+        a.core().refresh.status()
+    );
+
+    // The next successful refresh of that subscription clears the mark.
+    a.core_mut().refresh_feeds(std::slice::from_ref(&failing));
+    tx.send(FetchResult::Articles {
+        feed_id: failing.clone(),
+        title: None,
+        articles: vec![],
+        certificate_pin: None,
+    })
+    .unwrap();
+    a.core_mut().drain_fetches_live();
+    let cleared = feed_row(&a.core(), &failing);
+    assert_eq!(cleared.status, None);
+    assert_eq!(cleared.secondary, None);
+    assert!(a.core().feed_failures.is_empty());
+}
+
+/// The failing subscription's row says why to assistive technology too: the
+/// list folds the row's second line and its error status into the description
+/// a screen reader hears.
+#[test]
+fn the_failing_rows_reason_reaches_assistive_technology() {
+    let mut a = app();
+    let _doc = synced(&mut a);
+    let (worker, tx) = FetchWorker::for_test();
+    a.core_mut().worker = Some(worker);
+    let failing = nth_feed(&a, 0);
+    let title = a
+        .core()
+        .store
+        .feed(&failing)
+        .map(|feed| feed.shown_title())
+        .expect("a bundled subscription");
+    a.core_mut().refresh_feeds(std::slice::from_ref(&failing));
+    tx.send(FetchResult::Failed {
+        feed_id: Some(failing),
+        reason: RefreshFailure::Unreachable,
+        message: "request: connection refused".into(),
+    })
+    .unwrap();
+    a.core_mut().drain_fetches_live();
+    // The sidebar's list is built from exactly these sections.
+    let list = ui::widget::NavList::new(a.core().nav_sections())
+        .with_id("feeds.sidebar")
+        .with_accessible_name("Subscriptions");
+    let tree = Widget::accessibility(&list).expect("the subscriptions are semantics");
+    let row = named_node(&tree, &title).unwrap_or_else(|| panic!("the row for {title:?}"));
+    let description = row.description.clone().unwrap_or_default();
+    assert!(
+        description.contains("Couldn't reach the site"),
+        "the row reads out why it failed: {description:?}"
+    );
+    assert!(
+        description.contains("Error"),
+        "and its status: {description:?}"
+    );
+}
+
+/// The first semantic node named `name`, at any depth.
+fn named_node<'a>(node: &'a AccessNode, name: &str) -> Option<&'a AccessNode> {
+    if node.name.as_deref() == Some(name) {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| named_node(child, name))
 }

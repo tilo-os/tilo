@@ -52,6 +52,19 @@ const CHANNEL_VIDEOS: &str = "EgZ2aWRlb3PyBgQKAjoA";
 /// Player answers kept for playback (stream URLs last hours).
 const KEPT_STREAMS: usize = 16;
 
+/// Whether a kept stream at `quality` answers a request for `wanted`: the
+/// same size, or — for a quality nobody can be under — any size at all, so a
+/// source with one small stream still plays rather than re-resolving forever.
+fn covers(wanted: Option<u32>, quality: &str) -> bool {
+    let Some(wanted) = wanted else {
+        return true;
+    };
+    quality
+        .trim_end_matches('p')
+        .parse::<u32>()
+        .is_ok_and(|height| height <= wanted)
+}
+
 /// `YouTube` answered the player request but would not play the video,
 /// in its own words (such as "Sign in to confirm you're not a bot"): no
 /// other source is likely to do better, and the person should hear why.
@@ -190,15 +203,33 @@ impl InnerTube {
     }
 
     /// A stream the media element plays for `id`.
-    pub async fn stream(&self, id: &str) -> anyhow::Result<Stream> {
-        if let Some(stream) = self.kept_stream(id) {
+    ///
+    /// `wanted` is the height the person chose (`Some(480)` for 480p), which
+    /// decides which of the streams the answer names is served: the kept
+    /// stream only answers when it is the size asked for, so a choice of a
+    /// smaller size is not silently ignored.
+    pub async fn stream(&self, id: &str, wanted: Option<u32>) -> anyhow::Result<Stream> {
+        if let Some(stream) = self.kept_stream(id)
+            && covers(wanted, &stream.quality)
+        {
             return Ok(stream);
         }
         let player = self.player(id).await?;
         if let Some(reason) = parse::refusal(&player) {
             return Err(Refused(reason).into());
         }
-        parse::stream(&player).map_err(|reason| anyhow::anyhow!("{id}: {reason}"))
+        parse::stream(&player, wanted).map_err(|reason| anyhow::anyhow!("{id}: {reason}"))
+    }
+
+    /// The caption tracks `id` offers, from its player answer: each one's
+    /// language, what it calls itself, and the timed-text URL that serves it.
+    /// An empty answer means the video has no captions, which is not an error.
+    pub async fn caption_tracks(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Vec<crate::captions::CaptionTrack>> {
+        let player = self.player(id).await?;
+        Ok(parse::caption_tracks(&player))
     }
 
     /// A channel's page and its newest uploads.
@@ -222,7 +253,7 @@ impl InnerTube {
                 json!({ "videoId": id, "contentCheckOk": true, "racyCheckOk": true }),
             )
             .await?;
-        if let Ok(stream) = parse::stream(&player) {
+        if let Ok(stream) = parse::stream(&player, None) {
             let mut streams = self.streams.lock_recover();
             if streams.len() >= KEPT_STREAMS {
                 streams.clear();
@@ -404,7 +435,7 @@ mod client_tests {
         );
 
         // Playback asks nothing more: the server has no answers left.
-        let stream = block(youtube.stream("n61ULEU7CO0")).expect("the kept stream");
+        let stream = block(youtube.stream("n61ULEU7CO0", None)).expect("the kept stream");
         assert_eq!(stream.quality, "360p");
     }
 
@@ -414,7 +445,7 @@ mod client_tests {
             200,
             include_str!("fixtures/player-bot-check.json").to_string(),
         )]);
-        let error = block(reader(&base).stream("n61ULEU7CO0")).expect_err("a bot check");
+        let error = block(reader(&base).stream("n61ULEU7CO0", None)).expect_err("a bot check");
         assert_eq!(
             refusal(&error).as_deref(),
             Some("Sign in to confirm you\u{2019}re not a bot"),

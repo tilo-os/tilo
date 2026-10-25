@@ -218,6 +218,14 @@ pub enum BrowserEffect {
     /// Clear library filter
     #[effect(view, row)]
     ClearLibraryFilter,
+    /// Forget one visited page
+    ///
+    /// Removes this one page from your browsing history. Bookmarks are kept.
+    #[effect(row, returns, destructive)]
+    ForgetVisit {
+        #[param("The page's address")]
+        url: String,
+    },
     /// Clear browsing history
     ///
     /// Your saved browsing history will be removed. Bookmarks are kept.
@@ -555,6 +563,7 @@ impl BrowserEffect {
             Self::ShowSettings => BrowserOperation::ShowSettings,
             Self::SetLibraryFilter { query } => BrowserOperation::SetLibraryFilter { query },
             Self::ClearLibraryFilter => BrowserOperation::ClearLibraryFilter,
+            Self::ForgetVisit { url } => BrowserOperation::ForgetVisit { url },
             Self::ClearHistory => BrowserOperation::ClearHistory,
             Self::RequestSiteDataClear => BrowserOperation::RequestWebsiteDataClear,
             Self::TogglePause => BrowserOperation::ToggleHistoryPause,
@@ -702,6 +711,10 @@ pub enum BrowserOperation {
     ClearLibraryFilter,
     ShowSettings,
     ShowPage,
+    /// Forget one visited page (`forget_visit`).
+    ForgetVisit {
+        url: String,
+    },
     ClearHistory,
     RequestWebsiteDataClear,
     TogglePictureInPicture,

@@ -47,6 +47,14 @@ mod window_bar;
 
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
+/// The playback speeds the player's menu offers, slowest first.
+pub(crate) const PLAYBACK_SPEEDS: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
+
+/// How far the playhead moves between two writes of the watch history: a
+/// two-hour video is a few hundred small edits, not one per frame, and still
+/// resumes at the minute the person stopped at.
+const PROGRESS_STEP_MS: u64 = 5_000;
+
 /// Pull the frames the player's engine decoded into its surface, as the
 /// player's own `sync` does every frame; it reads no document.
 fn pump_player(player: &mut VideoPlayer) {
@@ -153,6 +161,15 @@ pub struct TubeApp {
     /// so we open a source exactly once per resolution and can mirror the engine
     /// playhead back onto the model only while it's the open video.
     player_video: Option<String>,
+    /// Where the stream that is about to load should start, in milliseconds:
+    /// the place the person left this video. Taken when the resolution lands,
+    /// because a seek before the source exists would be lost.
+    resume_at_ms: Option<u64>,
+    /// The last position written to the person's watch history, as
+    /// `(video, whole seconds)`: writes are throttled to a few seconds apart so
+    /// a two-hour video is not two hours of history edits, and the final
+    /// position is still written when playback stops or the page closes.
+    progress_written: Option<(String, u64)>,
 
     /// Async image loader/cache for real thumbnails / avatars / banners, keyed
     /// by URL. `Some` when online (or seeded for a real-image `--shots` proof);
@@ -239,6 +256,8 @@ impl TubeApp {
             // No engine until something plays: see `playing_player`.
             player: Rc::new(RefCell::new(VideoPlayer::new())),
             player_video: None,
+            resume_at_ms: None,
+            progress_written: None,
             images: None,
             waiting: screens::Waiting::default(),
             show_skip_end: None,
@@ -459,6 +478,7 @@ impl TubeApp {
                 .map_err(|error| error.to_string())
         } else {
             let shown = &self.model.history;
+            let positions = &self.model.history_positions;
             let replica = self.local_history.get_or_insert_with(|| {
                 let mut replica = ui::tilo_resource::Replica::<WatchHistory>::new();
                 let count = shown.len();
@@ -468,6 +488,13 @@ impl TubeApp {
                     .map(|(at, video)| (video.clone(), u64::try_from(count - at).unwrap_or(0)))
                     .collect();
                 let _ = replica.apply(WatchHistory::IMPORT.with(watched));
+                // A window opened on a history that already knows where each
+                // video was left keeps those places, so continuing works here
+                // too.
+                for (video, position) in positions {
+                    let _ =
+                        replica.apply(WatchHistory::PROGRESS.with((video.clone(), *position, 0)));
+                }
                 replica
             });
             let applied = replica
@@ -485,6 +512,7 @@ impl TubeApp {
             Ok(videos) => {
                 self.model.history_notice = None;
                 self.model.history = videos;
+                self.model.history_positions = self.history_positions();
                 self.structure_dirty = true;
                 true
             }
@@ -498,17 +526,34 @@ impl TubeApp {
         }
     }
 
-    /// Show the history another window or device stored.
+    /// Show the history another window or device stored, including where
+    /// each video was left: continuing a video on this device continues from
+    /// the minute another one stopped at.
     fn follow_history(&mut self) -> bool {
         let Some(history) = &self.history else {
             return false;
         };
         let stored = history.with(WatchHistory::videos);
-        if stored == self.model.history {
+        let positions = history.with(WatchHistory::positions);
+        if stored == self.model.history && positions == self.model.history_positions {
             return false;
         }
         self.model.history = stored;
+        self.model.history_positions = positions;
         true
+    }
+
+    /// Where each video the history knows about was left, from the person's
+    /// record or (in a capture or a test) the window's own replica.
+    fn history_positions(&self) -> std::collections::BTreeMap<String, u64> {
+        match (&self.history, &self.local_history) {
+            (Some(record), _) => record.with(WatchHistory::positions),
+            (None, Some(replica)) => replica
+                .state()
+                .map(|state| state.positions())
+                .unwrap_or_default(),
+            (None, None) => std::collections::BTreeMap::new(),
+        }
     }
 
     /// Bring in what an approved Grayjay device sent: its subscriptions as
@@ -639,12 +684,19 @@ impl TubeApp {
     }
 
     fn play_demo(&mut self) {
+        // The sample video that carries captions, so the still shows the whole
+        // watch page: picture, transport, settings and the lines being spoken.
         let id = self
             .model
-            .videos
-            .first()
-            .map_or_else(|| "vid_donut".to_string(), |v| v.id.clone());
+            .video(crate::sample::SAMPLE_CAPTIONED_VIDEO)
+            .map(|v| v.id.clone())
+            .or_else(|| self.model.videos.first().map(|v| v.id.clone()))
+            .unwrap_or_else(|| crate::sample::SAMPLE_CAPTIONED_VIDEO.to_string());
         self.model.route = Route::Watch(id.clone());
+        // The still shows captions: they are part of what a watch page is, and
+        // a capture that leaves them out reviews a page nobody sees.
+        self.model.settings.caption_language = Some("en".to_string());
+        self.request_captions_for(&id);
         {
             let mut p = self.player.borrow_mut();
             // Pin the deterministic synthesized-frame backend for the shot: the
@@ -1275,13 +1327,19 @@ impl TubeApp {
                 }
                 // The decoder starts up while the stream URL resolves.
                 media::MediaEngine::prepare_in_background();
-                self.request_live(Request::PlayVideo(id));
+                // The quality the person chose is what the stream resolves to:
+                // the choice is not a preference that never reaches the wire.
+                let quality = self.model.settings.preferred_quality.clone();
+                self.request_live(Request::PlayVideo { id, quality });
             }
             // Left the watch page: pause the engine so audio stops and it isn't
             // still streaming a video the user is no longer watching.
             _ => {
-                if self.playing_id.take().is_some() {
+                if let Some(left) = self.playing_id.take() {
+                    // The minute they stopped at is the one to come back to.
+                    self.remember_progress_of(&left, true);
                     self.player_video = None;
+                    self.resume_at_ms = None;
                     self.player.borrow_mut().pause();
                 }
             }
@@ -1320,6 +1378,10 @@ impl TubeApp {
         };
         self.model.playhead = pos_ms as f64 / 1000.0;
         self.model.playing = playing;
+        // Where this video was left, kept for "continue watching" on this
+        // device and every other one; throttled, and forced when playback
+        // stops or the page closes.
+        self.remember_progress(false);
 
         // Auto-skip runs against the real playhead and seeks the engine.
         let mut changed = self.apply_auto_skip();
@@ -1337,6 +1399,11 @@ impl TubeApp {
         // the end (or an explicitly non-playing engine at the end) as finished.
         let known_dur = dur_ms > 0;
         let at_end = known_dur && pos_ms + 250 >= dur_ms;
+        if at_end {
+            // Watched to the end: there is no minute to come back to, and
+            // "continue watching" must not offer the credits.
+            self.remember_progress_of(&id, true);
+        }
         if at_end && self.maybe_autoplay_next() {
             changed = true;
         }
@@ -1366,16 +1433,45 @@ impl TubeApp {
     fn apply_player_setting_event(&mut self, ev: ui::widget::video_player::PlayerSettingEvent) {
         use ui::widget::video_player::PlayerSettingEvent as E;
         match ev {
-            E::Chose { id, index }
-                if id == "resolution"
-                    && QUALITIES
-                        .get(index)
-                        .is_some_and(|q| self.model.settings.preferred_quality != *q) =>
-            {
-                if let Some(q) = QUALITIES.get(index) {
-                    self.change_preferences(|settings| {
-                        settings.preferred_quality = (*q).to_string();
-                    });
+            E::Chose { id, index } if id == "resolution" => {
+                let Some(quality) = QUALITIES.get(index) else {
+                    return;
+                };
+                if self.model.settings.preferred_quality == *quality {
+                    return;
+                }
+                if self.change_preferences(|settings| {
+                    settings.preferred_quality = (*quality).to_string();
+                }) {
+                    self.reload_stream_at_current_position();
+                }
+            }
+            E::Chose { id, index } if id == screens::SPEED_SETTING => {
+                let Some(speed) = PLAYBACK_SPEEDS.get(index).copied() else {
+                    return;
+                };
+                self.change_preferences(|settings| settings.playback_speed = speed);
+                if let Some(engine) = self.player.borrow_mut().engine_mut() {
+                    engine.set_rate(speed);
+                }
+            }
+            E::Chose { id, index } if id == screens::CAPTIONS_SETTING => {
+                // The first row is "Off"; the rest are the tracks the video
+                // offers, in the order the page listed them.
+                let language = match index {
+                    0 => None,
+                    index => self
+                        .model
+                        .caption_tracks
+                        .get(index.saturating_sub(1))
+                        .map(|track| track.language.clone()),
+                };
+                if self.change_preferences(|settings| {
+                    settings.caption_language = language.clone();
+                }) {
+                    self.model.captions.clear();
+                    self.model.captions_notice = None;
+                    self.load_chosen_captions();
                 }
             }
             E::Activated { id } if id == screens::SKIP_SETTING => {
@@ -1386,6 +1482,30 @@ impl TubeApp {
             }
             _ => {}
         }
+    }
+
+    /// Resolve the open video again, for a choice that changes what is
+    /// fetched (a smaller quality), starting from where the playhead is now so
+    /// the change is not a jump back to the beginning.
+    fn reload_stream_at_current_position(&mut self) {
+        if !self.online {
+            // Nothing was fetched: the page plays what it was given.
+            return;
+        }
+        let position = {
+            let player = self.player.borrow();
+            if player.has_media() {
+                player.position_ms()
+            } else {
+                (self.model.playhead * 1000.0).max(0.0) as u64
+            }
+        };
+        self.resume_at_ms = Some(position);
+        self.playing_id = None;
+        self.player_video = None;
+        self.player.borrow_mut().pause();
+        self.ensure_playback();
+        self.structure_dirty = true;
     }
 
     /// Load a resolved, directly-playable stream URL into the shared player
@@ -1414,14 +1534,37 @@ impl TubeApp {
                 art_url: v.thumbnail_url.clone(),
             }
         });
+        // Continue where the person left off: the seek can only happen once
+        // the source exists, so it is taken here rather than when the page
+        // opened. Everything the player needs is read before it is borrowed.
+        let duration_ms =
+            u64::from(self.model.video(&video).map_or(0, |video| video.duration)) * 1000;
+        let resume = self.resume_at_ms.take().map(|resume| {
+            if duration_ms > 0 {
+                resume.min(duration_ms)
+            } else {
+                resume
+            }
+        });
+        let speed = self.model.settings.playback_speed;
         {
             let mut p = self.playing_player();
             p.open(media::Source::Remote { url });
+            if let Some(resume) = resume {
+                p.seek_to_ms(resume);
+            }
+            if let Some(engine) = p.engine_mut() {
+                engine.set_rate(speed);
+            }
             p.play();
             if let Some(np) = now_playing {
                 p.set_now_playing(np);
             }
         }
+        if let Some(resume) = resume {
+            self.model.playhead = resume as f64 / 1000.0;
+        }
+        self.model.stream_quality = quality.to_string();
         // Bring up MPRIS once, in the live app, so media keys + the system media
         // widget can drive this player and show its now-playing.
         if self.online && !self.mpris_started {
@@ -1565,8 +1708,20 @@ impl TubeApp {
         let watched_at_ms = ui::time::unix_now_ms();
         self.edit_history(&WatchHistory::RECORD.with((id.clone(), watched_at_ms)));
         self.navigate_to(Route::Watch(id.clone()));
-        self.model.playhead = 0.0;
+        // Continue where the person left this video (here or on another
+        // device), rather than at 0:00 as though they had never seen it. The
+        // seek itself waits for the stream: `load_resolved_stream` takes it.
+        let resume_at_ms = self.model.resume_at_ms(&id);
+        self.model.playhead = resume_at_ms.map_or(0.0, |position| position as f64 / 1000.0);
+        self.resume_at_ms = resume_at_ms;
+        self.progress_written = None;
+        self.model.stream_quality.clear();
+        self.model.captions.clear();
+        self.model.caption_tracks.clear();
+        self.model.captions_of.clear();
+        self.model.captions_notice = None;
         self.model.playing = true;
+        self.request_captions_for(&id);
         // SponsorBlock, DeArrow and dislikes come from the network, so an
         // offline window (a capture, a staged test) asks for none of them.
         self.request_live(Request::Branding(id.clone()));
@@ -1578,6 +1733,118 @@ impl TubeApp {
             self.request_channel_if_stub(&cid);
         }
         self.request_live(Request::VideoMeta(id));
+    }
+
+    /// Ask for the caption tracks the open video offers, and for the lines of
+    /// the track the person chose. Offline (a capture, a staged test) the
+    /// bundled sample video's captions are used instead, so the surface is
+    /// reviewable without the network.
+    fn request_captions_for(&mut self, id: &str) {
+        if !self.online {
+            let tracks = crate::sample::caption_tracks(id);
+            self.model.captions_of = id.to_string();
+            self.model.caption_tracks = tracks;
+            self.load_chosen_captions();
+            return;
+        }
+        let language = self.model.settings.caption_language.clone();
+        // Looking the tracks up is part of opening the page: the caption
+        // control lists what this video offers, on or off.
+        self.request_live(Request::Captions {
+            id: id.to_string(),
+            language,
+        });
+    }
+
+    /// Take up the caption track the person chose, from the tracks the open
+    /// video offers, and say so when it is not there. Shared by a fresh page,
+    /// a track list that arrives from the worker, and a change of choice.
+    fn load_chosen_captions(&mut self) {
+        let id = self.model.captions_of.clone();
+        if id.is_empty() {
+            return;
+        }
+        let Some(language) = self.model.settings.caption_language.clone() else {
+            self.model.captions.clear();
+            self.model.captions_notice = None;
+            return;
+        };
+        if let Some(cues) = crate::sample::caption_cues(&id, &language) {
+            self.model.captions = cues;
+            self.model.captions_notice = None;
+            return;
+        }
+        if self.model.caption_tracks.is_empty() {
+            // The list has not arrived yet (or the video offers none): the
+            // page says nothing about captions until it knows.
+            return;
+        }
+        if self.model.chosen_caption_track().is_none() {
+            self.model.captions.clear();
+            self.model.captions_notice = Some(t("tube-captions-not-offered"));
+            return;
+        }
+        if self.online && self.model.captions.is_empty() {
+            self.model.captions_notice = Some(t("tube-captions-loading"));
+            self.request_live(Request::Captions {
+                id,
+                language: Some(language),
+            });
+        }
+    }
+
+    /// Write where the open video was left into the person's watch history,
+    /// at most a few seconds apart: pausing, closing the page and finishing
+    /// write at once, and a running playhead writes when it crosses another
+    /// [`PROGRESS_STEP_MS`].
+    fn remember_progress(&mut self, force: bool) {
+        let Route::Watch(id) = self.model.route.clone() else {
+            return;
+        };
+        self.remember_progress_of(&id, force);
+    }
+
+    /// [`Self::remember_progress`] for `id`: the page may have moved on (the
+    /// video just ended, the reveal left it), and the place it was left still
+    /// belongs to it.
+    fn remember_progress_of(&mut self, id: &str, force: bool) {
+        let id = id.to_string();
+        if self.player_video.as_deref() != Some(id.as_str()) {
+            return;
+        }
+        let position = {
+            let player = self.player.borrow();
+            if player.has_media() {
+                player.position_ms()
+            } else {
+                (self.model.playhead * 1000.0).max(0.0) as u64
+            }
+        };
+        let bucket = position / PROGRESS_STEP_MS;
+        let written = self.progress_written.clone();
+        let recorded = self.model.history_positions.get(&id).copied();
+        if !force
+            && written
+                .as_ref()
+                .is_some_and(|(video, bucket_written)| *video == id && *bucket_written == bucket)
+        {
+            return;
+        }
+        if !force && recorded.is_some_and(|recorded| recorded / PROGRESS_STEP_MS == bucket) {
+            return;
+        }
+        let duration_ms = {
+            let player = self.player.borrow();
+            if player.duration_ms() > 0 {
+                player.duration_ms()
+            } else {
+                self.model
+                    .video(&id)
+                    .map_or(0, |video| u64::from(video.duration) * 1000)
+            }
+        };
+        self.progress_written = Some((id.clone(), bucket));
+        self.edit_history(&WatchHistory::PROGRESS.with((id, position, duration_ms)));
     }
 
     /// Ask the worker for a channel page (avatar + subscriber count + uploads)
@@ -1768,7 +2035,8 @@ impl TubeApp {
             | Request::VideoMeta(_)
             | Request::Channel(_)
             | Request::PlaylistPage(_)
-            | Request::PlayVideo(_) => self.model.push_notice(message),
+            | Request::PlayVideo { .. }
+            | Request::Captions { .. } => self.model.push_notice(message),
         }
         self.structure_dirty = true;
     }
@@ -2075,6 +2343,39 @@ impl TubeApp {
                     quality,
                 } => {
                     if self.load_resolved_stream(video, url, has_audio, &quality) {
+                        changed = true;
+                    }
+                }
+                Update::Captions {
+                    video,
+                    tracks,
+                    language,
+                    lines,
+                    failure,
+                } => {
+                    // A list (or lines) for a page that has moved on is
+                    // dropped: one video's words never land on another's.
+                    if watching(&self.model.route, &video) {
+                        self.model.captions_of = video;
+                        self.model.caption_tracks = tracks;
+                        match (language, lines, failure) {
+                            (Some(_), Some(lines), _) => {
+                                self.model.captions = lines;
+                                self.model.captions_notice = None;
+                            }
+                            (Some(_), None, why) => {
+                                self.model.captions.clear();
+                                self.model.captions_notice =
+                                    Some(why.unwrap_or_else(|| t("tube-captions-unavailable")));
+                            }
+                            (None, _, _) => {
+                                self.model.captions.clear();
+                                self.model.captions_notice = None;
+                                // The person may have chosen a track before
+                                // this list arrived; take it up now it is here.
+                                self.load_chosen_captions();
+                            }
+                        }
                         changed = true;
                     }
                 }
@@ -2486,6 +2787,36 @@ mod tests {
 
     fn fresh() -> (TubeApp, AutoCommit) {
         (TubeApp::new(), AutoCommit::new())
+    }
+
+    #[test]
+    fn the_demo_page_shows_the_sample_captions_over_the_picture() {
+        let mut app = TubeApp::new();
+        app.stage_scenario("play-demo");
+        let model = app.model_for_test();
+        assert_eq!(model.captions_of, crate::sample::SAMPLE_CAPTIONED_VIDEO);
+        assert!(!model.captions.is_empty(), "the still shows captions");
+        assert!(
+            crate::captions::active_cue(&model.captions, 45_000).is_some(),
+            "the playhead the still shows is inside the first line"
+        );
+        assert_eq!(model.caption_tracks.len(), 2);
+        assert_eq!(model.settings.caption_language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn a_half_watched_video_offers_where_it_was_left() {
+        let model = crate::sample::model();
+        assert_eq!(
+            model.resume_at_ms("vid_black_holes"),
+            Some(246_000),
+            "the sample history remembers the minute it stopped at"
+        );
+        assert_eq!(
+            model.resume_at_ms(crate::sample::SAMPLE_CAPTIONED_VIDEO),
+            None,
+            "a video never left part way has nothing to continue"
+        );
     }
 
     /// A fresh app whose player uses the deterministic **synthesized** media
