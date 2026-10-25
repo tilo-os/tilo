@@ -104,9 +104,10 @@ fn at<T>(start: Instant, after_ms: u64, run: impl FnOnce() -> T) -> T {
 }
 
 fn shown_overlay() -> PeopleOverlay {
-    let mut overlay = PeopleOverlay::default();
-    overlay.shown = ui::motion::Presence::opened();
-    overlay
+    PeopleOverlay {
+        shown: ui::motion::Presence::opened(),
+        ..PeopleOverlay::default()
+    }
 }
 
 /// A person's own words lead their row; a model's description comes only
