@@ -13,12 +13,13 @@
 //! tests that need a stateful fake server (a `WebDAV` store, say). Each
 //! connection is served on its own thread, so concurrent clients work.
 
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
+use std::net::{Ipv6Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// How long [`Responder::next_request`] waits before declaring the client
@@ -151,11 +152,39 @@ impl Request {
 }
 
 /// A listener on `127.0.0.1` that answers a scripted reply sequence.
+///
+/// It also holds `[::1]` on the same port where the host has IPv6, so a
+/// client given `http://localhost:<port>` reaches it whichever address the
+/// name resolves to first. Holding only `127.0.0.1`, a client trying `::1`
+/// first reached whatever else on the machine listened on `[::1]:<port>`:
+/// with a whole workspace's tests running at once, sometimes another
+/// test's server.
 pub struct Responder {
     listener: TcpListener,
+    listener_v6: Option<TcpListener>,
     port: u16,
     requests: Receiver<Request>,
     stop: Option<Arc<AtomicBool>>,
+}
+
+/// A loopback listener on `127.0.0.1` and, where the host has IPv6, one on
+/// `[::1]` with the same port.
+#[allow(
+    clippy::expect_used,
+    reason = "a test fixture that cannot bind loopback has no meaningful fallback"
+)]
+fn bind_loopback() -> (TcpListener, Option<TcpListener>, u16) {
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback responder");
+        let port = listener.local_addr().expect("responder address").port();
+        match TcpListener::bind((Ipv6Addr::LOCALHOST, port)) {
+            Ok(v6) => return (listener, Some(v6), port),
+            // Another listener holds this port on `::1`: try another port.
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+            // No IPv6 loopback here: `localhost` cannot resolve to it either.
+            Err(_) => return (listener, None, port),
+        }
+    }
 }
 
 impl Responder {
@@ -168,15 +197,20 @@ impl Responder {
         reason = "a test fixture that cannot bind loopback has no meaningful fallback"
     )]
     pub fn start(replies: Vec<Reply>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback responder");
-        let port = listener.local_addr().expect("responder address").port();
+        let (listener, listener_v6, port) = bind_loopback();
         let (sender, requests) = mpsc::channel();
         if !replies.is_empty() {
-            let worker = listener.try_clone().expect("clone responder listener");
-            std::thread::spawn(move || serve(&worker, replies, &sender));
+            let replies = Arc::new(Mutex::new(VecDeque::from(replies)));
+            for listener in std::iter::once(&listener).chain(listener_v6.as_ref()) {
+                let worker = listener.try_clone().expect("clone responder listener");
+                let replies = Arc::clone(&replies);
+                let sender = sender.clone();
+                std::thread::spawn(move || serve(&worker, port, &replies, &sender));
+            }
         }
         Self {
             listener,
+            listener_v6,
             port,
             requests,
             stop: None,
@@ -198,35 +232,39 @@ impl Responder {
     where
         F: Fn(&Request) -> Option<Reply> + Send + Sync + 'static,
     {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback responder");
-        let port = listener.local_addr().expect("responder address").port();
+        let (listener, listener_v6, port) = bind_loopback();
         let (sender, requests) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let worker = listener.try_clone().expect("clone responder listener");
         let handler = Arc::new(handler);
-        let stopping = Arc::clone(&stop);
-        std::thread::spawn(move || {
-            for stream in worker.incoming() {
-                if stopping.load(Ordering::SeqCst) {
-                    return;
-                }
-                let Ok(mut stream) = stream else { continue };
-                let handler = Arc::clone(&handler);
-                let sender = sender.clone();
-                std::thread::spawn(move || {
-                    let Some(request) = read_request(&mut stream) else {
+        for listener in std::iter::once(&listener).chain(listener_v6.as_ref()) {
+            let worker = listener.try_clone().expect("clone responder listener");
+            let handler = Arc::clone(&handler);
+            let sender = sender.clone();
+            let stopping = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                for stream in worker.incoming() {
+                    if stopping.load(Ordering::SeqCst) {
                         return;
-                    };
-                    let reply = handler(&request);
-                    let _ = sender.send(request);
-                    if let Some(reply) = reply {
-                        let _ = reply.write_to(&mut stream);
                     }
-                });
-            }
-        });
+                    let Ok(mut stream) = stream else { continue };
+                    let handler = Arc::clone(&handler);
+                    let sender = sender.clone();
+                    std::thread::spawn(move || {
+                        let Some(request) = read_request(&mut stream) else {
+                            return;
+                        };
+                        let reply = handler(&request);
+                        let _ = sender.send(request);
+                        if let Some(reply) = reply {
+                            let _ = reply.write_to(&mut stream);
+                        }
+                    });
+                }
+            });
+        }
         Self {
             listener,
+            listener_v6,
             port,
             requests,
             stop: Some(stop),
@@ -272,13 +310,15 @@ impl Responder {
         reason = "an unexpected connection is the test failure this fixture reports"
     )]
     pub fn assert_untouched(&self) {
-        self.listener
-            .set_nonblocking(true)
-            .expect("nonblocking responder");
-        match self.listener.accept() {
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Ok(_) => panic!("a client connected to a responder that must stay untouched"),
-            Err(error) => panic!("responder listener failed: {error}"),
+        for listener in std::iter::once(&self.listener).chain(self.listener_v6.as_ref()) {
+            listener
+                .set_nonblocking(true)
+                .expect("nonblocking responder");
+            match listener.accept() {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Ok(_) => panic!("a client connected to a responder that must stay untouched"),
+                Err(error) => panic!("responder listener failed: {error}"),
+            }
         }
     }
 }
@@ -287,20 +327,50 @@ impl Drop for Responder {
     fn drop(&mut self) {
         if let Some(stop) = &self.stop {
             stop.store(true, Ordering::SeqCst);
-            // Wake the accept loop so it sees the flag and exits.
+            // Wake the accept loops so they see the flag and exit.
             let _ = TcpStream::connect(("127.0.0.1", self.port));
+            if self.listener_v6.is_some() {
+                let _ = TcpStream::connect((Ipv6Addr::LOCALHOST, self.port));
+            }
         }
     }
 }
 
-fn serve(listener: &TcpListener, replies: Vec<Reply>, sender: &Sender<Request>) {
-    for reply in replies {
+/// Answer connections on `listener` with the next of `replies`, shared with
+/// the responder's other listener, until none is left.
+#[allow(
+    clippy::expect_used,
+    reason = "a poisoned script means another serving thread panicked, which the test reports"
+)]
+fn serve(
+    listener: &TcpListener,
+    port: u16,
+    replies: &Mutex<VecDeque<Reply>>,
+    sender: &Sender<Request>,
+) {
+    loop {
+        if replies.lock().expect("responder script").is_empty() {
+            return;
+        }
         let Ok((mut stream, _)) = listener.accept() else {
             return;
         };
         let Some(request) = read_request(&mut stream) else {
             return;
         };
+        let (reply, last) = {
+            let mut replies = replies.lock().expect("responder script");
+            let Some(reply) = replies.pop_front() else {
+                return;
+            };
+            (reply, replies.is_empty())
+        };
+        if last {
+            // The other listener's thread waits for a connection that will
+            // not come: wake it, so it sees the script is done and ends.
+            let _ = TcpStream::connect(("127.0.0.1", port));
+            let _ = TcpStream::connect((Ipv6Addr::LOCALHOST, port));
+        }
         if sender.send(request).is_err() {
             return;
         }
