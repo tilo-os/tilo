@@ -136,6 +136,26 @@ fn sharing_posts_and_stopping_a_share_edits_its_copy() {
     assert_eq!(plan.edits[0]["message"], "dm1");
 }
 
+/// Its sharer closing or reopening the shared window edits the Discord copy,
+/// so it says whether the share is live right now.
+#[test]
+fn closing_or_reopening_a_shared_window_edits_its_copy() {
+    let mut sent = guild();
+    sent.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    for open in [false, true] {
+        let event = json!({
+            "kind": CHAT_KIND,
+            "did": verb("share-open"),
+            "item": {"kind": "messages", "id": "m1"},
+            "actor": {"id": "u_ada"},
+            "arguments": {"open": open},
+        });
+        let plan = planned(&sent, &event);
+        assert_eq!(plan.edits.len(), 1, "{plan:?}");
+        assert_eq!(plan.edits[0]["message"], "dm1");
+    }
+}
+
 #[test]
 fn a_chat_delete_finds_the_channel_the_message_was_in() {
     let mut g = guild();

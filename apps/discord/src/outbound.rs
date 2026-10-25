@@ -109,8 +109,9 @@ fn plain(text: &str) -> String {
 }
 
 /// The line a message that shares something ends with: a live window says
-/// so and links to where it opens, an ended share says it is no longer
-/// shared, and a shared resource links to it. `None` for any other message.
+/// so and links to where it opens, a window its sharer has closed says it
+/// is not live right now, an ended share says it is no longer shared, and a
+/// shared resource links to it. `None` for any other message.
 fn shared_line(message: &Message, context: &Context) -> Option<String> {
     let reference = message.reference.as_ref()?;
     let label = plain(&reference.label);
@@ -121,6 +122,10 @@ fn shared_line(message: &Message, context: &Context) -> Option<String> {
         .and_then(|(provider, links)| links.resource(provider, reference).ok());
     Some(match (&message.share, url) {
         (Some(share), _) if share.ended => format!("**{label}** is no longer shared"),
+        (Some(share), Some(url)) if !share.open => {
+            format!("Shared **{label}**, not live right now. Open it in Tilo: {url}")
+        }
+        (Some(share), None) if !share.open => format!("Shared **{label}**, not live right now"),
         (Some(_), Some(url)) => format!("Sharing **{label}** live. Open it in Tilo: {url}"),
         (Some(_), None) => format!("Sharing **{label}** live in Tilo"),
         (None, Some(url)) => format!("**{label}**: {url}"),
