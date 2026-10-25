@@ -124,8 +124,11 @@ impl GroupRow {
             let last = shown
                 .get(k.saturating_add(1))
                 .is_none_or(|next| !adjacent(window, next));
-            let leading = Rect::new(r.x0, r.y0, r.x0 + RESIZE_HANDLE_PX, r.y1);
-            let trailing = Rect::new(r.x1 - RESIZE_HANDLE_PX, r.y0, r.x1, r.y1);
+            // An outer edge reaches as far out over the empty canvas as it
+            // does into the window, so it is as easy a target as a seam
+            // without taking any more of the window's content.
+            let leading = Rect::new(r.x0 - RESIZE_HANDLE_PX, r.y0, r.x0 + RESIZE_HANDLE_PX, r.y1);
+            let trailing = Rect::new(r.x1 - RESIZE_HANDLE_PX, r.y0, r.x1 + RESIZE_HANDLE_PX, r.y1);
             if first && leading.contains(p) {
                 return Some(EdgeGrab {
                     group: i,
@@ -169,8 +172,8 @@ impl GroupRow {
             || self.groups.iter().any(WindowGroup::drag_in_flight)
     }
 
-    /// Show which window a press at `p` would change: the owner's edge grip,
-    /// and with Shift held the grip of the window it would trade with.
+    /// Show which window a press at `p` would change: the owner's edge, and
+    /// with Shift held the edge of the window it would trade with.
     fn hover_edge(&mut self, p: Point, shift: bool) {
         let hover = if self.edge_resize_blocked() {
             None
@@ -180,6 +183,16 @@ impl GroupRow {
         if hover != self.edge_hover {
             self.edge_hover = hover;
             self.show_edge_hover();
+        }
+    }
+
+    /// A window that moved under a still pointer (a drag let go, the strip
+    /// settling) no longer lights an edge the pointer has left.
+    pub(super) fn recheck_edge_hover(&mut self) {
+        if self.edge_drag.is_none()
+            && let Some((_, shift)) = self.edge_hover
+        {
+            self.hover_edge(self.last_cursor, shift);
         }
     }
 

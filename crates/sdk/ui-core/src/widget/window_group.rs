@@ -275,11 +275,18 @@ pub struct WindowGroup {
     /// An edge drag the parent row is carrying out on this window
     /// ([`super::edge_resize`]).
     edge_drag: Option<GroupEdgeDrag>,
-    /// The edge of this window a press would resize, shown before anything
-    /// is pressed. The parent row decides it ([`super::edge_resize::seam_owner`]).
-    edge_highlight: Option<WindowEdge>,
+    /// The edge of this window a press would resize, and since when the
+    /// pointer has rested on it: it lights up once that rest outlasts
+    /// [`EDGE_HOVER_DWELL`]. The parent row decides it
+    /// ([`super::edge_resize::seam_owner`]).
+    edge_highlight: Option<(WindowEdge, Instant)>,
+    /// The last frame painted the lit edge.
+    edge_lit_drawn: bool,
+    /// A finished edge drag's size label, fading out: when the drag let go,
+    /// the edge it was on, and the size it shows.
+    size_label_fade: Option<(Instant, WindowEdge, (f64, f64))>,
     /// The edge highlight changed since the last frame, which shows, moves
-    /// or hides the grip.
+    /// or hides the lit edge.
     grip_dirty: bool,
     pub maximized: bool,
     pub search_active: bool,
@@ -457,12 +464,11 @@ pub fn merged_controls_width(theme: &Theme) -> f64 {
     let m = crate::chrome::HeaderRowMetrics::resolve(theme);
     3.0 * m.chip + 2.0 * m.gap
 }
-/// The per-group right-edge resize grip: two bars, each this wide, filling
-/// the `RESIZE_HANDLE_PX` band between them.
-const GRIP_BAR_PX: f64 = 2.0;
-/// The grip runs a quarter of the group's height, clamped to
-/// `spacing.s6 ..= spacing.s16 + spacing.s4`.
-const GRIP_HEIGHT_SHARE: f64 = 0.25;
+/// How long the pointer rests on a window edge before the edge lights up:
+/// passing over one on the way elsewhere changes nothing but the cursor.
+const EDGE_HOVER_DWELL: Duration = Duration::from_millis(120);
+/// The stroke of a lit edge, inside the window's outline.
+const EDGE_LIT_PX: f64 = 2.0;
 
 impl WindowGroup {
     /// Paint a whole group while its window handle is being reordered. The
@@ -565,6 +571,8 @@ impl WindowGroup {
             fullscreen_bar: fullscreen_bar::FullscreenBar::default(),
             edge_drag: None,
             edge_highlight: None,
+            edge_lit_drawn: false,
+            size_label_fade: None,
             grip_dirty: false,
             maximized: false,
             search_active: false,
@@ -1253,22 +1261,55 @@ impl WindowGroup {
             .resolve_in_strip(self.strip_usable_px, self.alone)
     }
 
-    /// Show (or, with `None`, hide) the grip on the edge of this window a
-    /// press would resize. Set by the parent row from
+    /// Light up (or, with `None`, put out) the edge of this window a press
+    /// would resize, once the pointer has rested there for
+    /// [`EDGE_HOVER_DWELL`]. Set by the parent row from
     /// [`super::edge_resize::seam_owner`]; the window itself never decides.
     pub fn set_edge_highlight(&mut self, edge: Option<WindowEdge>) {
-        if self.edge_highlight != edge {
-            self.edge_highlight = edge;
+        if self.edge_highlight.map(|(edge, _)| edge) != edge {
+            self.edge_highlight = edge.map(|edge| (edge, crate::time::now()));
+            self.edge_lit_drawn = false;
             self.grip_dirty = true;
         }
     }
 
-    /// The edge whose grip shows: the one being dragged, else the one a
-    /// press would resize.
+    /// The edge a drag is moving, else the one a press would resize.
     pub fn edge_highlight(&self) -> Option<WindowEdge> {
         self.edge_drag
             .map(|drag| drag.moving)
-            .or(self.edge_highlight)
+            .or(self.edge_highlight.map(|(edge, _)| edge))
+    }
+
+    /// When the hovered edge lights up, while it has not yet.
+    fn edge_reveal_at(&self) -> Option<Instant> {
+        let (_, since) = self.edge_highlight?;
+        (self.edge_drag.is_none() && !self.edge_lit_drawn)
+            .then(|| since.checked_add(EDGE_HOVER_DWELL))
+            .flatten()
+    }
+
+    /// The edge lit at `now`: the one being dragged, else the hovered one
+    /// once the pointer has rested on it.
+    fn lit_edge(&self, now: Instant) -> Option<WindowEdge> {
+        if let Some(drag) = self.edge_drag {
+            return Some(drag.moving);
+        }
+        let (edge, since) = self.edge_highlight?;
+        (now.saturating_duration_since(since) >= EDGE_HOVER_DWELL
+            || crate::motion::testing::is_settled())
+        .then_some(edge)
+    }
+
+    /// How far a released drag's size label has faded out, `None` once gone.
+    fn size_label_fading(&self, now: Instant) -> Option<f64> {
+        let (released, ..) = self.size_label_fade?;
+        let progress = crate::motion::CROSS_FADE.progress_after(
+            crate::motion::Direction::Exit,
+            crate::tokens::EffectiveMotion::default(),
+            crate::tokens::MotionSource::Pointer,
+            now.saturating_duration_since(released),
+        );
+        (!self.reduce_motion && progress < 1.0).then_some(progress)
     }
 
     /// The widths this window may be resized to: the strictest minimum and
@@ -1314,6 +1355,7 @@ impl WindowGroup {
             live_px,
         });
         self.edge_highlight = None;
+        self.size_label_fade = None;
         self.grip_dirty = true;
         self.style_dirty = true;
         self.set_live_resize_anchor(Some(moving.opposite()));
@@ -1348,6 +1390,11 @@ impl WindowGroup {
         let Some(drag) = self.edge_drag.take() else {
             return 0.0;
         };
+        self.size_label_fade = Some((
+            crate::time::now(),
+            drag.moving,
+            (drag.live_px, self.rect.height().round()),
+        ));
         if commit {
             self.width = WindowWidth::from_px(drag.live_px, self.strip_usable_px);
             self.width_before_share = None;
@@ -1984,6 +2031,8 @@ impl WindowGroup {
             fullscreen_bar: fullscreen_bar::FullscreenBar::default(),
             edge_drag: None,
             edge_highlight: None,
+            edge_lit_drawn: false,
+            size_label_fade: None,
             grip_dirty: false,
             maximized: false,
             search_active: false,
@@ -3057,65 +3106,112 @@ impl WindowGroup {
         }
     }
 
-    /// The two-bar resize grip on the edge of this window a press would
-    /// resize, or is resizing ([`Self::edge_highlight`]): it marks which
-    /// window will change before anything is pressed. Nothing at rest.
-    #[allow(
-        clippy::similar_names,
-        reason = "cx/cy is the standard center-x/center-y coordinate naming convention; \
-                  distinguishing them further would reduce clarity"
-    )]
-    fn draw_resize_grip(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let Some(edge) = self.edge_highlight() else {
+    /// The edge of this window a press would resize, or is resizing
+    /// ([`Self::lit_edge`]), lit along its whole length: the window's own
+    /// outline brightens on that side, so which window and which edge will
+    /// move is plain before anything is pressed. Neutral ink, never the
+    /// accent: secondary on hover, primary while dragging. Nothing at rest.
+    fn draw_lit_edge(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let edge = self.lit_edge(crate::time::now());
+        self.edge_lit_drawn = edge.is_some();
+        let Some(edge) = edge else {
             return;
         };
-        // Neutral ink, never the accent: secondary at rest, primary while
-        // the edge is being dragged.
-        let grip_col = if self.edge_drag.is_some() {
+        let ink = if self.edge_drag.is_some() {
             theme.tokens.colors.text_primary
         } else {
             theme.tokens.colors.text_dim
         };
-        let total_h = self.rect.height();
-        let grip_h = (total_h * GRIP_HEIGHT_SHARE).clamp(
-            f64::from(theme.tokens.spacing.s6),
-            f64::from(theme.tokens.spacing.s16) + f64::from(theme.tokens.spacing.s4),
+        // The card's outline (the window's body under its bar), inset so
+        // the stroke lies inside it, cut to the lit side: it runs round both
+        // corners into the top and bottom edges as far as the corners reach.
+        let card = self.card_rect();
+        let radius = f64::from(theme.tokens.radii.tile);
+        let outline = vello::kurbo::RoundedRect::from_rect(
+            card.inset(-EDGE_LIT_PX / 2.0),
+            (radius - EDGE_LIT_PX / 2.0).max(0.0),
         );
-        // Two bars, each `GRIP_BAR_PX` wide, that together fill the
-        // `RESIZE_HANDLE_PX` band exactly: centred on the band's own centre,
-        // one on either side of it, so the painted grip and the pointer
-        // zone are the same thing.
-        let grip_cx = match edge {
-            WindowEdge::Leading => self.rect.x0 + RESIZE_HANDLE_PX / 2.0,
-            WindowEdge::Trailing => self.rect.x1 - RESIZE_HANDLE_PX / 2.0,
+        let reach = radius.max(EDGE_LIT_PX);
+        let side = match edge {
+            WindowEdge::Leading => Rect::new(card.x0, card.y0, card.x0 + reach, card.y1),
+            WindowEdge::Trailing => Rect::new(card.x1 - reach, card.y0, card.x1, card.y1),
         };
-        let grip_cy = self.rect.center().y;
-        let bar = |dx: f64| {
-            vello::kurbo::RoundedRect::from_rect(
-                Rect::new(
-                    grip_cx + dx - GRIP_BAR_PX / 2.0,
-                    grip_cy - grip_h / 2.0,
-                    grip_cx + dx + GRIP_BAR_PX / 2.0,
-                    grip_cy + grip_h / 2.0,
-                ),
-                GRIP_BAR_PX / 2.0,
-            )
+        scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &side);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(EDGE_LIT_PX),
+            transform,
+            ink,
+            None,
+            &outline,
+        );
+        scene.pop_layer();
+    }
+
+    /// The window's body under its bar, across the window's whole width.
+    fn card_rect(&self) -> Rect {
+        self.active_host()
+            .map(Widget::get_rect)
+            .filter(|card| card.height() > 0.0)
+            .map_or(self.rect, |card| {
+                Rect::new(self.rect.x0, card.y0, self.rect.x1, card.y1)
+            })
+    }
+
+    /// The window's size while its edge is dragged, and fading out once let
+    /// go: a small chip inside the window beside the moving edge, at its
+    /// middle, where it never covers the pointer's path.
+    fn draw_size_label(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let now = crate::time::now();
+        let (edge, (width, height), alpha) = if let Some(drag) = self.edge_drag {
+            (drag.moving, (drag.live_px, self.rect.height().round()), 1.0)
+        } else if let (Some(faded), Some((_, edge, size))) =
+            (self.size_label_fading(now), self.size_label_fade)
+        {
+            (edge, size, 1.0 - faded)
+        } else {
+            // Faded out: this frame is the first without it.
+            self.size_label_fade = None;
+            return;
         };
-        let offset = RESIZE_HANDLE_PX / 2.0 - GRIP_BAR_PX / 2.0;
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            grip_col,
-            None,
-            &bar(-offset),
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let label = format!("{width:.0} \u{d7} {height:.0}");
+        let card = self.card_rect();
+        let inset = f64::from(theme.tokens.spacing.rhythm.related);
+        let x = match edge {
+            WindowEdge::Leading => card.x0 + inset,
+            WindowEdge::Trailing => card.x1 - inset,
+        };
+        let anchor = Rect::new(x, card.center().y, x, card.center().y);
+        let within = card.inset(-inset);
+        let chip = crate::widget::tooltip::hover_chip_rect_on(
+            tr,
+            theme,
+            (anchor, crate::widget::tooltip::TooltipSide::Beside),
+            &label,
+            within,
         );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            grip_col,
-            None,
-            &bar(offset),
-        );
+        let faded = alpha < 1.0;
+        if faded {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                f32_of_f64(alpha),
+                transform,
+                &crate::widget::tooltip::chip_paint_bounds(chip, theme),
+            );
+        }
+        crate::widget::tooltip::draw_chip(scene, transform, tr, theme, chip, &label);
+        if faded {
+            scene.pop_layer();
+        }
     }
 
     /// Paint the app being carried as one lifted object: real app pixels tucked
@@ -3393,6 +3489,7 @@ impl Widget for WindowGroup {
             .into_iter()
             .filter_map(Widget::next_wake_deadline)
             .chain(reveal)
+            .chain(self.edge_reveal_at())
             .min()
     }
 
@@ -3823,12 +3920,12 @@ impl Widget for WindowGroup {
             let band = self.bar.get_rect().inflate(0.0, 6.0);
             self.bar.draw_holder_chip(scene, transform, tr, theme, band);
         }
-        // Only under the pointer or while dragging: at rest the grip sits on
-        // the window's own trailing edge, over its content, where it reads
-        // as that app's scrollbar (and stays put when the app's panels go).
-        // The east-west cursor already marks the band before it shows.
+        // Only after the pointer rests on an edge, or while dragging: at
+        // rest nothing marks the edges, and the east-west cursor already
+        // says what a press there does before the edge lights up.
         if !self.maximized && !self.fullscreen_presentation {
-            self.draw_resize_grip(scene, transform, theme);
+            self.draw_lit_edge(scene, transform, theme);
+            self.draw_size_label(scene, transform, tr, theme);
         }
 
         // No outline rings around `self.rect` for drag/search/maximize:
@@ -3983,7 +4080,13 @@ impl Widget for WindowGroup {
                 .top_edge
                 .deadline()
                 .is_some_and(|due| crate::time::now() >= due);
-        self.grip_dirty || reveal_due || self.children().into_iter().any(Widget::needs_redraw)
+        let edge_due = self
+            .edge_reveal_at()
+            .is_some_and(|due| crate::time::now() >= due);
+        self.grip_dirty
+            || reveal_due
+            || edge_due
+            || self.children().into_iter().any(Widget::needs_redraw)
     }
     fn mark_drawn(&mut self) {
         self.grip_dirty = false;
@@ -4089,8 +4192,15 @@ impl Widget for WindowGroup {
             .tab_fade
             .as_ref()
             .is_some_and(|fade| fade.is_moving(crate::motion::frame_now()));
+        // Until the frame that no longer paints it: the fade, and a frame
+        // to spare, whether or not this window is drawn meanwhile.
+        let size_label_fading = self.size_label_fade.is_some_and(|(released, ..)| {
+            crate::time::now().saturating_duration_since(released)
+                < crate::tokens::Durations::default().fast().saturating_mul(2)
+        });
         spawn_in_flight
             || tab_fade
+            || size_label_fading
             || self.fullscreen_bar_fading()
             || top_slide
             || chrome_fade
@@ -4254,20 +4364,17 @@ mod tests {
         }
     }
 
-    /// The trailing-edge grip lies over the window's own content, so at
-    /// rest it is not painted: an app's panels came and went under a pair
-    /// of bars that looked like their scrollbar. Hovering the band or
-    /// dragging shows it.
-    /// The docked strip is a body of its own under the tabs, and the tabs
-    /// on it lift off its ground, inset from its ends as from its top.
-
+    /// At rest nothing marks a window's edges. Resting the pointer on one
+    /// lights that edge along its whole length, after a short dwell so
+    /// passing over it shows nothing; dragging it lights it at once and
+    /// shows the window's size beside it, which fades once let go.
     #[test]
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "sample points are small positive pixel coordinates"
     )]
-    fn the_resize_grip_shows_only_on_the_edge_that_will_change() {
+    fn a_resting_pointer_lights_the_whole_edge_that_will_change() {
         use crate::offscreen::OffscreenRenderer;
         use taffy::prelude::TaffyMaxContent;
         let theme = Theme::dark();
@@ -4300,46 +4407,79 @@ mod tests {
             );
             renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255))
         };
+        let start = crate::time::now();
+        let later = start.checked_add(EDGE_HOVER_DWELL).unwrap();
+        use crate::time::testing::with_monotonic_time as at;
         let mut group = make_group();
-        let idle = render(&mut group);
+        let idle = at(start, || render(&mut group));
         let rect = group.rect;
-        let (x, y) = (rect.x1 - RESIZE_HANDLE_PX / 2.0 - 2.0, rect.center().y);
-        let at = |rgba: &[u8], x: f64, y: f64| {
+        let px = |rgba: &[u8], x: f64, y: f64| {
             let (r, g, b, _) = OffscreenRenderer::sample(rgba, 400, x as u32, y as u32);
             (r, g, b)
         };
-        // Nothing on the edge at the grip's height that is not also there
-        // well below it.
-        let below = rect.y1 - 40.0;
+        let trailing = rect.x1 - EDGE_LIT_PX / 2.0;
+        let leading = rect.x0 + EDGE_LIT_PX / 2.0;
+        // Near the top and the bottom of the window's body as well as the
+        // middle: the whole edge.
+        let card = group.card_rect();
+        let heights = [card.y0 + 24.0, card.center().y, card.y1 - 24.0];
+
+        let passing = at(start, || {
+            group.set_edge_highlight(Some(WindowEdge::Trailing));
+            render(&mut group)
+        });
+        for y in heights {
+            assert_eq!(
+                px(&passing, trailing, y),
+                px(&idle, trailing, y),
+                "passing over an edge lights nothing (y = {y})"
+            );
+        }
+        assert!(
+            at(later, || group.needs_redraw()),
+            "the dwell's end is a frame of its own"
+        );
+        assert_eq!(group.next_wake_deadline(), Some(later));
+
+        let rested = at(later, || render(&mut group));
+        for y in heights {
+            assert_ne!(
+                px(&rested, trailing, y),
+                px(&idle, trailing, y),
+                "a resting pointer lights the edge a press would resize (y = {y})"
+            );
+            assert_eq!(
+                px(&rested, leading, y),
+                px(&idle, leading, y),
+                "and only that edge"
+            );
+        }
         assert_eq!(
-            at(&idle, x, y),
-            at(&idle, x, below),
-            "an idle group paints a grip over its window's edge"
+            group.edge_reveal_at(),
+            None,
+            "lit, it waits for nothing more"
         );
 
-        group.set_edge_highlight(Some(WindowEdge::Trailing));
-        let hovered = render(&mut group);
+        let dragging = at(start, || {
+            group.set_edge_highlight(None);
+            group.begin_edge_drag(WindowEdge::Leading);
+            render(&mut group)
+        });
+        let y = card.center().y;
         assert_ne!(
-            at(&hovered, x, y),
-            at(&idle, x, y),
-            "the grip shows on the edge a press would resize"
+            px(&dragging, leading, y),
+            px(&idle, leading, y),
+            "a drag lights its edge at once"
         );
-        group.set_edge_highlight(Some(WindowEdge::Leading));
-        let leading = render(&mut group);
-        assert_eq!(at(&leading, x, y), at(&idle, x, y), "and only on that edge");
-        assert_ne!(
-            at(&leading, rect.x0 + RESIZE_HANDLE_PX / 2.0 + 2.0, y),
-            at(&idle, rect.x0 + RESIZE_HANDLE_PX / 2.0 + 2.0, y),
-            "the leading edge's grip shows when that edge is the one"
-        );
-
-        group.set_edge_highlight(None);
-        group.begin_edge_drag(WindowEdge::Trailing);
-        let dragging = render(&mut group);
-        assert_ne!(
-            at(&dragging, x, y),
-            at(&idle, x, y),
-            "the grip shows while resizing"
+        // The size chip stands inside the window beside the moving edge.
+        let beside = (12..60)
+            .map(|dx| rect.x0 + f64::from(dx))
+            .any(|x| px(&dragging, x, y) != px(&idle, x, y));
+        assert!(beside, "the window's size shows beside the dragged edge");
+        group.end_edge_drag(true);
+        assert!(
+            group.needs_animation_frame(),
+            "the size fades out once let go"
         );
     }
 
