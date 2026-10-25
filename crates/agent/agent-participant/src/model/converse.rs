@@ -240,12 +240,15 @@ pub(crate) fn plan(
     let mut run = [0_u8; 16];
     getrandom::fill(&mut run).map_err(|_| "no randomness for the model call".to_string())?;
     let mut talk = Talk::open(asked);
-    let tools = planning_tools(
+    let mut tools = planning_tools(
         asked.most_steps,
         asked.briefing.describes(),
         asked.briefing.searches(),
         talk.eyes.sees(),
     );
+    if asked.briefing.role.coordinated() {
+        coordinated_tools(&mut tools);
+    }
     for turn in 0..MOST_DISCOVERY_TURNS {
         talk.eyes.next_turn();
         let request = talk.request(&tools);
@@ -379,6 +382,7 @@ impl Talk {
             eyes,
             context: PlanContext {
                 may_plan_nothing: asked.briefing.may_plan_nothing,
+                role: asked.briefing.role.clone(),
                 ..PlanContext::default()
             },
             no_call: NoCall::default(),
@@ -799,6 +803,76 @@ fn add_obligations(properties: &mut serde_json::Map<String, serde_json::Value>) 
     );
 }
 
+/// How a coordinated task's items are listed and adjusted, told once in
+/// the `plan` tool's description of such a task.
+pub(crate) const DECOMPOSE_NOTE: &str = " This request is carried out item by item, each \
+    item by a fresh agent of its own. A coordinator lists the items in `obligations`, each an \
+    object: its `text` (a few words, with the values it uses), the `apps` it needs, the earlier \
+    items it needs done first in `after`, and, for an item that only waits for something someone \
+    will send (a code, a reply), `wait_for` instead of apps: the host waits for it and gives \
+    what arrived to the items after it. An item's agent plans only its own item. On news or \
+    the final check, the coordinator plans no steps: `adjust` gives an item a note (the running \
+    item's next turn gets it, a pending item starts with it, a done item is done again by a \
+    fresh agent with it), `obligations` adds items and `set_aside` drops pending ones.";
+
+/// The `plan` tool of a coordinated task ([`DECOMPOSE_NOTE`]): its
+/// `obligations` are items with their apps, the items they follow and what
+/// they wait for, and it takes `adjust`. Only such a task is offered it, so
+/// every other task's requests stay byte-identical.
+pub(crate) fn coordinated_tools(tools: &mut [ToolDefinition]) {
+    for tool in tools {
+        if tool.name != tilo_agent::tools::PLAN {
+            continue;
+        }
+        tool.description.push_str(DECOMPOSE_NOTE);
+        let Some(properties) = tool
+            .input_schema
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        let wait_for = properties
+            .get(tilo_agent::tools::WAIT_FOR)
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"type": "object"}));
+        properties.insert(
+            "obligations".into(),
+            serde_json::json!({
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "apps": {"type": "array", "items": {"type": "string"}},
+                        "after": {"type": "array", "items": {"type": "integer"}},
+                        "wait_for": wait_for
+                    },
+                    "required": ["text"],
+                    "additionalProperties": false
+                },
+                "description": "A coordinator's items, in order, numbered from 1."
+            }),
+        );
+        properties.insert(
+            "adjust".into(),
+            serde_json::json!({
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "item": {"type": "integer"},
+                        "note": {"type": "string"}
+                    },
+                    "required": ["item", "note"],
+                    "additionalProperties": false
+                },
+                "description": "Notes on items, by number, for news or the check."
+            }),
+        );
+    }
+}
+
 /// The [`READ_VIEW`] tool definition.
 fn read_view_definition() -> ToolDefinition {
     ToolDefinition {
@@ -1150,6 +1224,7 @@ pub(crate) fn record_usage(
     if let (Some(tier), Some(fields)) = (tier, line.as_object_mut()) {
         fields.insert("service_tier".into(), tier.into());
     }
+    with_role(&mut line, plan_role().as_ref());
     // One write per line: `writeln!` writes in pieces, and agents in other
     // processes append to the same log at once.
     let written = std::fs::OpenOptions::new()
@@ -1159,6 +1234,37 @@ pub(crate) fn record_usage(
         .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
     if let Err(error) = written {
         tracing::warn!(%error, "cannot record model usage");
+    }
+}
+
+std::thread_local! {
+    /// Who the plan being made on this thread is, in a coordinated task.
+    static PLAN_ROLE: std::cell::RefCell<Option<crate::planner::PlanRole>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `plan` as `role`: the usage lines of the calls it makes on this
+/// thread ([`plan_role`]) carry it.
+pub(crate) fn as_role<T>(role: Option<crate::planner::PlanRole>, plan: impl FnOnce() -> T) -> T {
+    let before = PLAN_ROLE.with(|current| current.replace(role));
+    let made = plan();
+    PLAN_ROLE.with(|current| *current.borrow_mut() = before);
+    made
+}
+
+/// Who the plan being made on this thread is ([`as_role`]), for a call
+/// made on a thread of its own to carry along.
+pub(crate) fn plan_role() -> Option<crate::planner::PlanRole> {
+    PLAN_ROLE.with(|current| current.borrow().clone())
+}
+
+/// `line` with `role`'s fields (role, item, task), so a run's cost is
+/// summed per role; a line of an uncoordinated task is left as it was.
+pub(crate) fn with_role(line: &mut serde_json::Value, role: Option<&crate::planner::PlanRole>) {
+    if let (Some(role), Some(fields)) = (role, line.as_object_mut())
+        && let serde_json::Value::Object(added) = role.fields()
+    {
+        fields.extend(added);
     }
 }
 
@@ -1206,3 +1312,6 @@ pub(crate) fn usage_line(
         "retry": attempt.retry,
     })
 }
+
+#[cfg(test)]
+mod tests;

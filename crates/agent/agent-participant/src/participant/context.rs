@@ -157,14 +157,20 @@ impl AgentParticipant {
             pictures,
             rendered,
             room_pictures: self.room_pictures == crate::vision::RoomPictures::Shown,
-            new_documents: self
-                .running
-                .as_ref()
-                .map(|running| running.new_documents.clone())
-                .unwrap_or_default(),
+            new_documents: self.new_documents(),
             retries: self.task_retries.clone(),
             obligations: obligations.unwrap_or_default(),
+            role: crate::planner::Role::Whole,
         }
+    }
+
+    /// The apps the running task is offered a new document of
+    /// ([`PlanContext::new_documents`]).
+    fn new_documents(&self) -> Vec<String> {
+        self.running
+            .as_ref()
+            .map(|running| running.new_documents.clone())
+            .unwrap_or_default()
     }
 
     /// The room's records of `apps` for the planner's search
