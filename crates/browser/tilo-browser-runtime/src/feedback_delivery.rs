@@ -19,6 +19,17 @@ use tilo_desktop::feedback::transport::{
 };
 use tilo_user_identity::DeviceCert;
 
+/// How long the owner's admission of this reporter stands: long enough to
+/// write and send a report after reviewing it, short enough that a person
+/// the room removes cannot file for long after. While the page is admitted
+/// it asks again before then ([`ADMISSION_RENEW`]), so a Send never meets a
+/// lapsed admission.
+const ADMISSION_FRESH: Duration = Duration::from_secs(60);
+/// How old an admission is when the page asks the owner for a new one.
+const ADMISSION_RENEW: Duration = Duration::from_secs(40);
+/// How long a question to the owner is waited for before it is asked again.
+const ASK_TIMEOUT: Duration = Duration::from_secs(30);
+
 thread_local! { static CONNECTIONS: RefCell<HashMap<u32, Rc<RefCell<Connection>>>> = RefCell::new(HashMap::new()); }
 thread_local! {
     static STARTUPS: RefCell<HashMap<u32, Startup>> = RefCell::new(HashMap::new());
@@ -114,7 +125,7 @@ pub(crate) fn status(id: u32) -> String {
 impl Connection {
     fn request(&mut self, submission: Option<Submission>) -> Result<(), String> {
         self.pending
-            .retain(|_, (sent, _)| sent.elapsed() < Duration::from_secs(30));
+            .retain(|_, (sent, _)| sent.elapsed() < ASK_TIMEOUT);
         if self.pending.len() >= 8 {
             return Err("feedback owner requests pending".into());
         }
@@ -202,7 +213,7 @@ impl Connection {
         }
         self.admission
             .as_ref()
-            .filter(|(_, received)| received.elapsed() < Duration::from_secs(5))
+            .filter(|(_, received)| received.elapsed() < ADMISSION_FRESH)
             .map(|(admission, _)| admission.clone())
             .ok_or(Error::Invalid(
                 "fresh authenticated feedback admission required",
@@ -246,6 +257,7 @@ pub(crate) fn pump(id: u32) {
     let Some(connection) = connection else {
         return;
     };
+    renew_admission(&mut connection.borrow_mut());
     let events = connection.borrow().events.drain();
     for event in events {
         let mut state = connection.borrow_mut();
@@ -324,6 +336,24 @@ pub(crate) fn pump(id: u32) {
         }
     }
 }
+/// Ask the owner again before the admission lapses, once at a time, while
+/// the page holds one.
+fn renew_admission(connection: &mut Connection) {
+    let aging = connection
+        .admission
+        .as_ref()
+        .is_some_and(|(_, received)| received.elapsed() >= ADMISSION_RENEW);
+    let asking = connection
+        .pending
+        .values()
+        .any(|(sent, submission)| submission.is_none() && sent.elapsed() < ASK_TIMEOUT);
+    if aging && !asking {
+        // A refusal to send shows on the next pump as the owner's answer
+        // or as undeliverable; the admission held stays until then.
+        let _ = connection.request(None);
+    }
+}
+
 /// Keeps a report's masked picture in the page's content store, as a file
 /// posted in Chat is kept: the room's host asks the room for the pictures of
 /// the reports filed in its Chat and keeps its own copy, which its receipt

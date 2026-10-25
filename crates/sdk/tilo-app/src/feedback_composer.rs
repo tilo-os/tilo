@@ -515,13 +515,13 @@ fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> b
         let _lease = &lease;
         let Some(services) = &services else {
             shown.status.set("feedback-unconfigured".to_owned());
-            return Err("feedback-unconfigured".to_owned());
+            return Err(said("feedback-unconfigured"));
         };
         let draft = effect_cx.live().with(Clone::clone);
         let mut composer = services
             .controller
             .try_borrow_mut()
-            .map_err(|_| "feedback-busy".to_owned())?;
+            .map_err(|_| said("feedback-busy"))?;
         // Context is only offered while there is a window to describe; the
         // review shows exactly what is attached either way. A screenshot the
         // host cannot take is refused rather than dropped.
@@ -549,7 +549,7 @@ fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> b
             (FeedbackEffect::Submit, _) => {
                 let id = effect_cx
                     .invocation()
-                    .ok_or_else(|| "feedback-busy".to_owned())?
+                    .ok_or_else(|| said("feedback-busy"))?
                     .0
                     .simple()
                     .to_string();
@@ -569,17 +569,27 @@ fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> b
         } else {
             match composer
                 .state()
-                .map_err(|_| "feedback-retry-needed".to_owned())?
+                .map_err(|_| said("feedback-retry-needed"))?
             {
                 None => "feedback-reviewed",
                 Some(state) => delivery_label(&state),
             }
         };
         shown.status.set(key.to_owned());
-        result.map_err(|_| key.to_owned())?;
+        result.map_err(|error| {
+            // The person reads what to do; the log keeps why, which names
+            // no content of the report.
+            tracing::warn!(%error, "a feedback action did not run");
+            said(key)
+        })?;
         Ok(Effected::done())
     });
     screenshots
+}
+
+/// Why an action did not run, as the person reads it where it is said.
+fn said(key: &str) -> String {
+    ui_core::i18n::I18nManager::lookup(key, None)
 }
 
 fn error_label(error: &crate::feedback::Error) -> &'static str {
