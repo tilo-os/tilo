@@ -164,7 +164,13 @@ for attempt in $(seq 1 60); do
   fi
   sleep 1
 done
-"$vm" keys tab ret
+# The ready screen is finished with the keyboard: Tab reaches its primary
+# action once the screen holds focus, and Return takes it.
+"$vm" test native-atspi-smoke.sh oobe-ready
+"$vm" keys tab
+"$vm" test native-atspi-smoke.sh oobe-finish-focused
+"$vm" keys ret
+"$vm" test native-atspi-smoke.sh oobe-finished
 
 # A desktop that reached its first session can still be degraded. No unit may
 # have failed by now, and the rollback confirmation (which refuses to confirm
