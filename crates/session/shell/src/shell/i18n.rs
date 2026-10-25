@@ -32,7 +32,7 @@ pub fn ensure() {
     ui::i18n::I18nManager::register_widget_messages();
     // The window bars' reaction pickers (the toolkit's shared picker, drawn
     // here for every app's window) pick from the whole catalogue.
-    tilo_emoji_catalogue::offer();
+    tilo_desktop::emoji_picker::offer_catalogue();
 }
 
 /// Resolve a shell string key.
