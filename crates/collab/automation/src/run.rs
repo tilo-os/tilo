@@ -38,7 +38,9 @@ use tilo_actions::remote::{
 use uuid::Uuid;
 
 use crate::catalog::{ResourceTarget, find_row};
-use crate::grant::{StepGrant, grant_answer, step_node};
+use crate::grant::{
+    EDIT_PARAM, FIELD_EDIT, StepGrant, edit_reach, grant_answer, step_node, step_node_at,
+};
 use crate::path::StepPath;
 use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
 use crate::template::{self, Piece, render_value};
@@ -658,15 +660,6 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 reason: "the row offers no action".into(),
             });
         };
-        let granted = self.granted(app_id, action, descriptor)?;
-        if let tilo_actions::contract::Availability::Unavailable { code, reason } =
-            &descriptor.contract.availability
-        {
-            return Err(StepFailure::Unavailable {
-                code: code.clone(),
-                reason: reason.clone(),
-            });
-        }
         let mut supplied = Map::new();
         for (name, binding) in args {
             let Some(value) = self.evaluate(binding)? else {
@@ -682,6 +675,15 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             if !omitted {
                 supplied.insert(name.clone(), value);
             }
+        }
+        let granted = self.granted(app_id, action, descriptor, &supplied)?;
+        if let tilo_actions::contract::Availability::Unavailable { code, reason } =
+            &descriptor.contract.availability
+        {
+            return Err(StepFailure::Unavailable {
+                code: code.clone(),
+                reason: reason.clone(),
+            });
         }
         let bound = ActionArgs::bind_json(&descriptor.params, &supplied).map_err(|error| {
             StepFailure::Arguments {
@@ -730,18 +732,37 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
 
     /// What the shortcut's grant answers for the step: a refusal, or an
     /// answer the step may proceed under.
+    /// A field edit is decided where its path (in `supplied`) acts, as
+    /// the room decides it.
     fn granted(
         &self,
         app_id: &str,
         action: &str,
         descriptor: &ActionDescriptor,
+        supplied: &Map<String, Value>,
     ) -> Result<StepGrant, StepFailure> {
-        let node = step_node(
-            self.caller.room(),
-            app_id,
-            &descriptor.resource_kind,
-            &descriptor.address,
-        );
+        let at = (action == FIELD_EDIT)
+            .then(|| {
+                supplied
+                    .get(EDIT_PARAM)
+                    .and_then(|edit| edit_reach(&Binding::Literal(edit.clone())))
+            })
+            .flatten();
+        let node = match &at {
+            Some(at) => step_node_at(
+                self.caller.room(),
+                app_id,
+                &descriptor.resource_kind,
+                &descriptor.address,
+                at,
+            ),
+            None => step_node(
+                self.caller.room(),
+                app_id,
+                &descriptor.resource_kind,
+                &descriptor.address,
+            ),
+        };
         let granted = grant_answer(&self.shortcut.grant, &node, descriptor.contract.kind);
         let (app_id, action) = (app_id.to_string(), action.to_string());
         match (granted.answer, self.mode) {
@@ -1034,6 +1055,20 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 }
                 Ok(Some(Value::String(rendered)))
             }
+            Binding::Object(members) => {
+                let mut object = Map::new();
+                for (name, member) in members {
+                    if let Some(value) = self.evaluate(member)? {
+                        object.insert(name.clone(), value);
+                    }
+                }
+                Ok(Some(Value::Object(object)))
+            }
+            Binding::List(items) => items
+                .iter()
+                .map(|item| Ok(self.evaluate(item)?.unwrap_or(Value::Null)))
+                .collect::<Result<Vec<_>, _>>()
+                .map(|items| Some(Value::Array(items))),
         }
     }
 
@@ -1055,6 +1090,8 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     )
             }),
             Binding::Var(name) => self.secret_vars.contains(Binding::named_part(name).0),
+            Binding::Object(members) => members.values().any(|member| self.is_secret(member)),
+            Binding::List(items) => items.iter().any(|item| self.is_secret(item)),
             Binding::Literal(_) | Binding::Template(_) => false,
         }
     }
