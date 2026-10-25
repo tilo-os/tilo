@@ -713,18 +713,27 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
         posted.author, "agent-task:44444444-4444-4444-8444-444444444444",
         "the post is the agent's, not its person's"
     );
+    let react = crate::parts::ChatPart::paths()
+        .messages
+        .item(&ui::tilo_resource::Id::from_raw(&posted.id))
+        .reactions
+        .react("👀");
     app.call_by(
         agent,
-        &crate::testing::message_item(&posted.id),
-        "react",
-        serde_json::json!({"emoji": "👀"}),
+        &crate::testing::chain(),
+        ui::tilo_resource::FIELD_EDIT,
+        serde_json::json!({ (ui::tilo_resource::EDIT_PARAM): react }),
     )
     .unwrap();
     app.settle();
     let reacted = messages(&mut app).pop().unwrap();
     assert_eq!(reacted.reactions[0].emoji, "👀");
     assert_eq!(
-        reacted.reactions[0].users,
+        reacted.reactions[0]
+            .reactors
+            .iter()
+            .map(|reactor| reactor.by.as_str())
+            .collect::<Vec<_>>(),
         ["agent-task:44444444-4444-4444-8444-444444444444"],
         "the reaction is the agent's"
     );
@@ -746,12 +755,18 @@ fn history_entries_render_as_the_apps_sentences() {
     )
     .unwrap();
     app.settle();
-    let posted = crate::testing::message_item(&messages(&mut app).pop().unwrap().id);
+    let posted_id = messages(&mut app).pop().unwrap().id;
+    let posted = crate::testing::message_item(&posted_id);
+    let react = crate::parts::ChatPart::paths()
+        .messages
+        .item(&ui::tilo_resource::Id::from_raw(&posted_id))
+        .reactions
+        .react("👍");
     app.call_by(
         agent.clone(),
-        &posted,
-        "react",
-        serde_json::json!({"emoji": "👍"}),
+        &crate::testing::chain(),
+        ui::tilo_resource::FIELD_EDIT,
+        serde_json::json!({ (ui::tilo_resource::EDIT_PARAM): react }),
     )
     .unwrap();
     app.call_by(

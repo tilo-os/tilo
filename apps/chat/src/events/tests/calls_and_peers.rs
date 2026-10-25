@@ -526,7 +526,7 @@ fn two_participants_converge_on_messages_and_edits() {
                 2,
                 "peer {who}: both distinct reactors counted once each"
             );
-            assert!(thumbs.reacted_by("u_alice") && thumbs.reacted_by("u_bob"));
+            assert!(thumbs.includes("u_alice") && thumbs.includes("u_bob"));
         }
 
         // Full convergence: identical timelines on both peers.

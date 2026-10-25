@@ -262,20 +262,9 @@ impl Attachment {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Reaction {
-    pub emoji: String,
-    pub users: Vec<Id>,
-}
-
-impl Reaction {
-    pub fn count(&self) -> usize {
-        self.users.len()
-    }
-    pub fn reacted_by(&self, user: &str) -> bool {
-        self.users.iter().any(|u| u == user)
-    }
-}
+/// Everyone who reacted to a message with one emoji: the framework's
+/// reactions, grouped as a reaction strip shows them.
+pub type Reaction = ui::tilo_resource::ReactionGroup;
 
 /// One prior version of a message body, captured when the author edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
