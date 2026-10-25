@@ -55,7 +55,9 @@ impl WindowEmoji {
     }
 
     /// Take up what the chooser answered and add each picture chosen: once
-    /// a frame, from the window's refresh.
+    /// a frame, from the window's refresh. The chooser's answer and the
+    /// image tools' arrival each wake the window, so the refresh that takes
+    /// them up comes without anything else changing in it.
     pub(crate) fn settle(&self) {
         if self.choosing.borrow().is_empty() && self.waiting.borrow().is_empty() {
             return;
@@ -79,6 +81,11 @@ impl WindowEmoji {
         for file in chosen {
             let small = make_small(&file.bytes);
             if small == Small::Pending {
+                // Asked again on each refresh that finds them missing: a
+                // failed fetch wakes too, and the next asks for them anew.
+                if let Some(window) = self.state.wake() {
+                    ui_core::workspace_emoji::wake_when_tools_are_in(window);
+                }
                 self.waiting.borrow_mut().push(file);
                 continue;
             }
@@ -197,6 +204,12 @@ impl EmojiSource for WindowEmoji {
         )
         .max_contents_bytes(MAX_CHOSEN_BYTES)
         .thread_name("workspace-emoji-choose");
+        // The chooser wakes the window it was asked in when it answers:
+        // this one, whichever window's code the press ran in.
+        let _window = self
+            .state
+            .wake()
+            .and_then(|window| window.enter_if_open().ok());
         self.choosing.borrow_mut().push(request.send_contents());
     }
 }
