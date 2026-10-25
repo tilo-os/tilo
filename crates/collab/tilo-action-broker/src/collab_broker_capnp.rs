@@ -702,7 +702,7 @@ fn cert_capped_in(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct AdmittedJoinIdentity {
+pub(crate) struct AdmittedJoinIdentity {
     /// Only an actual broker-allocated private descriptor can carry this scope.
     host_scope: Option<LocalHostWorkerScope>,
     worker_registration: Option<PrivateWorkerRegistration>,
@@ -2195,6 +2195,7 @@ impl PendingInvocation {
 
 // Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
 mod action_host;
+pub(crate) use action_host::{LEGACY_DOOR_FOREIGN_APP, legacy_door_may_act_as_person};
 mod admission_memo;
 mod app_consent;
 mod app_open_door;
@@ -11720,6 +11721,17 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .filter(|surface| surface.route.cluster_id == cluster)
                 .and_then(|surface| surface.action_projection(&resource, &action))
                 .ok_or_else(|| capnp::Error::failed("unknown application action".into()))?;
+            // The target app comes from the same clone the action was taken
+            // from, and is checked before any confirmation is minted.
+            let invoke_access = state.app_action_access(&origin_route.app_id).invoke;
+            if !legacy_door_may_act_as_person(
+                &current,
+                &origin_route,
+                &publication.0.app_id,
+                invoke_access,
+            ) {
+                return Err(capnp::Error::failed(LEGACY_DOOR_FOREIGN_APP.into()));
+            }
             let offered = &publication.1;
             let actor = current.broker_actor();
             let phrase = confirmation
@@ -16181,6 +16193,8 @@ pub mod tests {
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
+    include!("legacy_invoke_door_tests.rs");
+    #[cfg(test)]
     include!("record_content_tests.rs");
     #[cfg(test)]
     include!("offload_door_tests.rs");
@@ -19933,7 +19947,7 @@ pub mod tests {
     }
 
     #[test]
-    fn current_connection_invocation_sentinel_cannot_target_another_app() {
+    fn the_current_connection_sentinel_names_the_callers_own_peer() {
         assert_eq!(
             invocation_target_peer(ui::collaboration::CURRENT_CONNECTION_PEER_ID, 41),
             41
