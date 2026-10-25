@@ -394,7 +394,7 @@ pub enum BrowserEffect {
     /// a relative path, a folder or an unreadable file is refused. It also
     /// answers a file chooser a click opened, so a page that asks for a file
     /// can be finished without a native picker.
-    #[effect(row, job, returns, programmatic, untrusted)]
+    #[effect(row, job, returns, audience = "agents", untrusted)]
     FillPageFiles {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,

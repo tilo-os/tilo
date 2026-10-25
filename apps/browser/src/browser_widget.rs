@@ -7862,21 +7862,21 @@ mod tests {
             let file = folder.join("proof of address.pdf");
             std::fs::write(&file, b"%PDF-1.4").unwrap();
             let shared = file.to_string_lossy().into_owned();
-            let fill = start(
+            let chosen = start(
                 &mut widget,
                 &mut doc,
                 &root,
                 "fill-page-files",
-                &serde_json::json!({"element": "d4e1", "paths": [shared.clone()]}),
+                &serde_json::json!({"element": "d4e1", "paths": [&shared]}),
             )
             .unwrap();
             widget.sync(&doc, &root);
-            assert!(widget.poll_invocation(fill).is_some());
+            assert!(widget.poll_invocation(chosen).is_some());
             assert_eq!(
                 page_requests(&engine),
                 vec![PageRequest::FillFiles {
                     element: "d4e1".into(),
-                    paths: vec![shared.clone()],
+                    paths: vec![shared],
                 }],
                 "a checked file reaches the page as the path it was named by"
             );
