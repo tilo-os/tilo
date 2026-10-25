@@ -299,16 +299,21 @@ mod tests {
         // wrong-typed key never takes its neighbours with it.
         let levels =
             read(r#"{"volume":"loud","rate":"fast","autoplay":false,"loop_enabled":true}"#);
-        assert_eq!(levels.volume, DEFAULT_VOLUME);
-        assert_eq!(levels.rate, DEFAULT_RATE);
+        assert!((levels.volume - DEFAULT_VOLUME).abs() < f32::EPSILON);
+        assert!((levels.rate - DEFAULT_RATE).abs() < f32::EPSILON);
         assert!(!levels.autoplay, "the neighbours are untouched");
         assert!(levels.loop_enabled);
         let out_of_range = read(r#"{"volume":7.5,"rate":-3.0}"#);
-        assert_eq!(out_of_range.volume, 1.0, "a volume is a fraction");
-        assert_eq!(out_of_range.rate, 0.25, "a speed is one the menu offers");
-        assert_eq!(
-            read(r#"{"volume":0.4,"rate":1.1}"#).rate,
-            1.0,
+        assert!(
+            (out_of_range.volume - 1.0).abs() < f32::EPSILON,
+            "a volume is a fraction"
+        );
+        assert!(
+            (out_of_range.rate - 0.25).abs() < f32::EPSILON,
+            "a speed is one the menu offers"
+        );
+        assert!(
+            (read(r#"{"volume":0.4,"rate":1.1}"#).rate - 1.0).abs() < f32::EPSILON,
             "a foreign speed restores to the nearest offered one"
         );
         assert!(

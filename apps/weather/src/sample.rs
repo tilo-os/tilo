@@ -151,8 +151,22 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
         hourly,
         daily,
         source_units: Units::METRIC,
-        fetched_at: 0,
+        // The sample forecast is the one a capture is looking at right now, so
+        // its observation time is minutes ago rather than never: the "Updated"
+        // line is part of the page and a review must be able to see it. A
+        // restored record with no time (`0`) still says nothing, because an
+        // invented age would be worse than none.
+        fetched_at: sample_fetched_at(),
     }
+}
+
+/// When the sample forecast was fetched: a couple of minutes before the
+/// capture, as a live one would have been.
+fn sample_fetched_at() -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    now.saturating_sub(2 * 60)
 }
 
 /// Synthesize a plausible air-quality reading from a [`DaySpec`]'s AQI, so the

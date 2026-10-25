@@ -210,12 +210,14 @@ pub fn stream(player: &Value, wanted: Option<u32>) -> Result<Stream, String> {
         })
         .collect();
     formats.sort_by_key(|(rank, ..)| *rank);
-    let chosen = wanted
-        .and_then(|wanted| {
-            let wanted = u64::from(wanted);
-            formats.iter().rev().find(|(rank, ..)| *rank <= wanted)
-        })
-        .or_else(|| wanted.and(formats.first()))
+    let under = wanted.and_then(|wanted| {
+        let wanted = u64::from(wanted);
+        formats.iter().rev().find(|(rank, ..)| *rank <= wanted)
+    });
+    // A source with nothing that small offers its smallest, and a request for
+    // the best is the largest.
+    let chosen = under
+        .or_else(|| wanted.and_then(|_| formats.first()))
         .or_else(|| formats.last());
     chosen
         .map(|(_, url, quality)| Stream {

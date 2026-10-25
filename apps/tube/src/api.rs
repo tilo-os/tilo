@@ -112,6 +112,20 @@ impl Updates {
     }
 }
 
+/// A video's caption tracks, and the lines of the one the person chose when
+/// they asked for it.
+#[derive(Clone, Debug)]
+pub struct CaptionsAnswer {
+    pub video: String,
+    pub tracks: Vec<crate::captions::CaptionTrack>,
+    /// The language whose lines were asked for; `None` when only the list was.
+    pub language: Option<String>,
+    /// The lines, when they arrived: `None` when only the list was asked for.
+    pub lines: Option<Vec<crate::captions::CaptionCue>>,
+    /// Why a chosen track could not be read, when that is what happened.
+    pub failure: Option<String>,
+}
+
 /// A result folded back into the model on the UI thread.
 #[derive(Clone, Debug)]
 pub enum Update {
@@ -181,15 +195,9 @@ pub enum Update {
         quality: String,
     },
     /// The caption tracks a video offers, and the lines of one of them when
-    /// the person chose it. `lines` is `None` when only the list was asked
-    /// for; `failure` says why a chosen track could not be read.
-    Captions {
-        video: String,
-        tracks: Vec<crate::captions::CaptionTrack>,
-        language: Option<String>,
-        lines: Option<Vec<crate::captions::CaptionCue>>,
-        failure: Option<String>,
-    },
+    /// the person chose it. Boxed: a caption answer is the largest result the
+    /// worker posts, and the queue's own error carries an `Update`.
+    Captions(Box<CaptionsAnswer>),
     /// No source gave a playable stream for a watch id: the page says so
     /// rather than showing its still poster as if it were about to play.
     Unplayable {
@@ -943,13 +951,13 @@ impl Worker {
                                 Some(format!("the caption worker stopped: {error}")),
                             )
                         });
-                        let _ = up_tx.send(Update::Captions {
+                        let _ = up_tx.send(Update::Captions(Box::new(CaptionsAnswer {
                             video: id,
                             tracks,
                             language,
                             lines,
                             failure,
-                        });
+                        })));
                     }
                     Request::PlayVideo { id, quality } => {
                         // Resolve a real, fully-rangeable stream URL for the
@@ -1117,8 +1125,8 @@ async fn fetch_captions(
     }
 }
 
-/// The caption tracks an Invidious video answer lists: `/api/v1/captions/{id}`
-/// names each one's label, language and the URL that serves its WebVTT.
+/// The caption tracks an `Invidious` video answer lists: `/api/v1/captions/{id}`
+/// names each one's label, language and the URL that serves its `WebVTT`.
 fn caption_tracks_of(answer: &serde_json::Value) -> Vec<crate::captions::CaptionTrack> {
     answer
         .get("captions")
@@ -1153,8 +1161,8 @@ fn caption_tracks_of(answer: &serde_json::Value) -> Vec<crate::captions::Caption
         .collect()
 }
 
-/// A caption track's WebVTT text. The URL arrives relative to the instance
-/// that listed it (Invidious), so it is resolved against the instance that
+/// A caption track's `WebVTT` text. The URL arrives relative to the instance
+/// that listed it (`Invidious`), so it is resolved against the instance that
 /// answers for it, exactly as the listing did.
 async fn fetch_timed_text(
     client: &tilo_net::Client,
@@ -1503,13 +1511,13 @@ async fn answer(
         Request::Captions { id, language } => {
             let (tracks, lines, failure) =
                 fetch_captions(Some(youtube), Some(client), &id, language.as_deref()).await;
-            post(Update::Captions {
+            post(Update::Captions(Box::new(CaptionsAnswer {
                 video: id,
                 tracks,
                 language,
                 lines,
                 failure,
-            });
+            })));
         }
         Request::PlayVideo { id, quality } => post(play(client, youtube, id, &quality).await),
     }

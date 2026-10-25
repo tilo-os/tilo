@@ -71,13 +71,6 @@ fn channel(id: &str, name: &str, handle: &str, subs: u64, verified: bool, desc: 
     }
 }
 
-/// Build the full offline catalogue.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one block of fixture literals per bundled channel/video/comment; splitting it \
-              would only relocate the sample data, not shrink what a reader must trace for \
-              one entry"
-)]
 /// The caption tracks the bundled sample videos offer, so a capture or a test
 /// can show the caption control with something to choose. A live video's
 /// tracks come from the source (`api::fetch_captions`).
@@ -146,6 +139,13 @@ pub fn caption_cues(id: &str, language: &str) -> Option<Vec<crate::captions::Cap
     )
 }
 
+/// Build the full offline catalogue.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one block of fixture literals per bundled channel/video/comment; splitting it \
+              would only relocate the sample data, not shrink what a reader must trace for \
+              one entry"
+)]
 pub fn model() -> TubeModel {
     let chans = vec![
         channel(

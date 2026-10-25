@@ -284,7 +284,10 @@ struct CaptionOverlay {
     max_text: f64,
 }
 
-/// A caption over the picture: its scrim, then its line.
+/// A caption over the picture: the toolkit's own chrome-over-media material —
+/// the floating panel the transport beside it is drawn on — and the line inked
+/// for that panel's ground, so captions and controls speak one language rather
+/// than two.
 fn paint_caption(
     scene: &mut vello::Scene,
     text_renderer: &mut ui::TextRenderer,
@@ -293,32 +296,23 @@ fn paint_caption(
     caption: &CaptionOverlay,
     text: &str,
 ) {
-    let (scrim, pad_x, pad_y, max_text) = (
+    let (plinth, pad_x, pad_y, max_text) = (
         caption.scrim,
         caption.pad_x,
         caption.pad_y,
         caption.max_text,
     );
-    let media = &theme.tokens.colors.media;
+    ui::widget::floating_surface::paint(scene, transform, plinth, theme);
+    let panel = theme.on_ground(ui::chrome::panel_ground(theme));
     let style = theme.text(ui::TextRole::Body);
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        media.scrim,
-        None,
-        &vello::kurbo::RoundedRect::new(
-            scrim.x0,
-            scrim.y0,
-            scrim.x1,
-            scrim.y1,
-            f64::from(theme.tokens.spacing.s2),
-        ),
-    );
     text_renderer.draw_style(
         scene,
         text,
-        media.ink,
-        transform.then_translate(vello::kurbo::Vec2::new(scrim.x0 + pad_x, scrim.y0 + pad_y)),
+        panel.text_primary,
+        transform.then_translate(vello::kurbo::Vec2::new(
+            plinth.x0 + pad_x,
+            plinth.y0 + pad_y,
+        )),
         Some(max_text as f32),
         &style,
     );

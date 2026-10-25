@@ -252,16 +252,18 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
             .zoom_content(ZoomStep::In)
             .expect("the photograph takes the gesture");
         assert!(factor > before, "the picture grew");
-        assert_eq!(
-            app.viewer.as_ref().expect("a viewer").zoom(),
-            factor,
+        assert!(
+            (app.viewer.as_ref().expect("a viewer").zoom() - factor).abs() < 1e-6,
             "the surface shows the factor it answered"
         );
         let reset = app
             .zoom_content(ZoomStep::Reset)
             .expect("reset is the picture's own size");
         assert!((reset - 1.0).abs() < 1e-6);
-        assert_eq!(app.viewer.as_ref().expect("a viewer").zoom(), 1.0);
+        assert!(
+            (app.viewer.as_ref().expect("a viewer").zoom() - 1.0).abs() < 1e-6,
+            "actual size is the picture's own"
+        );
 
         // In the library the gesture belongs to the window, not the grid.
         app.show_library();

@@ -230,13 +230,12 @@ fn video_card_for(ui: Ui<'_>, v: &Video, resume_line: bool) -> MediaCard {
                 &[arg("time", clock(position as f64 / 1000.0))],
             )
         });
-    match resume {
-        Some(resume) => card = card.meta(&resume),
-        None => {
-            let reach = reach(v);
-            if !reach.is_empty() {
-                card = card.meta(reach);
-            }
+    if let Some(resume) = resume {
+        card = card.meta(&resume);
+    } else {
+        let reach = reach(v);
+        if !reach.is_empty() {
+            card = card.meta(reach);
         }
     }
     card = if v.live {
@@ -793,8 +792,14 @@ fn unplayable_banner(ui: Ui<'_>, unplayable: &crate::model::Unplayable) -> Banne
         )
 }
 
-/// Hand the shared player this video's `SponsorBlock` segments, the quality
-/// choice and, inside a segment the person skips by hand, the Skip command.
+/// Hand the shared player this video's `SponsorBlock` segments, the quality,
+/// speed and caption choices and, inside a segment the person skips by hand,
+/// the Skip command.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the player's whole settings cluster is read and written together, so a reader can \
+              see every choice the menu offers in one place"
+)]
 fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
     use ui::widget::video_player::PlayerSetting;
     let model = ui.model;

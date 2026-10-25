@@ -1467,7 +1467,7 @@ impl TubeApp {
                         .map(|track| track.language.clone()),
                 };
                 if self.change_preferences(|settings| {
-                    settings.caption_language = language.clone();
+                    settings.caption_language.clone_from(&language);
                 }) {
                     self.model.captions.clear();
                     self.model.captions_notice = None;
@@ -2346,13 +2346,14 @@ impl TubeApp {
                         changed = true;
                     }
                 }
-                Update::Captions {
-                    video,
-                    tracks,
-                    language,
-                    lines,
-                    failure,
-                } => {
+                Update::Captions(answer) => {
+                    let crate::api::CaptionsAnswer {
+                        video,
+                        tracks,
+                        language,
+                        lines,
+                        failure,
+                    } = *answer;
                     // A list (or lines) for a page that has moved on is
                     // dropped: one video's words never land on another's.
                     if watching(&self.model.route, &video) {
