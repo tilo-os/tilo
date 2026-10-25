@@ -49,6 +49,7 @@ mod own_devices_tests;
 mod paired_continuity_tests;
 mod peer_sync_worker;
 mod personal_device_peers;
+pub(crate) mod presence_visibility;
 mod private_chat;
 #[cfg(test)]
 mod surface_update_tests;
@@ -1601,11 +1602,10 @@ pub struct ShellNetwork {
     /// The last reaction counter said in each room over its presence
     /// channel (a room with no live plane), so each new one is told apart.
     room_reactions: Mutex<std::collections::HashMap<String, u32>>,
-    /// What the people in each room may see of this person, as the person
-    /// chose ([`Self::set_presence_visibility`]); a room not named yet is
-    /// "Nothing": until the desktop has said what the person chose there,
-    /// nothing of them leaves, and they see nobody's pointer.
-    presence_visibility: Mutex<std::collections::HashMap<String, ui::PresenceVisibility>>,
+    /// What the people in each room may see of this person: the person's
+    /// choices and whether each room is public
+    /// ([`Self::presence_visibility`]).
+    presence_visibility: Mutex<presence_visibility::Visibilities>,
     /// The colour each peer session said its person wears, by handle: the
     /// latest any presence plane carried ([`neighbour_wire::PresenceColour`],
     /// a live frame's participant colour).
@@ -2338,7 +2338,7 @@ impl ShellNetwork {
             live_waves: Mutex::default(),
             live_keys: Box::new(crate::shell::live_presence::session_keys),
             room_reactions: Mutex::default(),
-            presence_visibility: Mutex::default(),
+            presence_visibility: Mutex::new(presence_visibility::Visibilities::saved()),
             peer_colours: Mutex::default(),
             peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
@@ -2517,6 +2517,19 @@ impl ShellNetwork {
             .into_iter()
             .filter(|device| crate::network::behaviour::peer_liveness_handle(device) != local)
             .collect()
+    }
+
+    /// The other devices of `room`'s people, whom a wave may be aimed at:
+    /// in an enrolled room every device its governance admits, the host's
+    /// own included when the room is hosted on someone's device; else the
+    /// devices its document names.
+    pub fn room_people_devices(&self, room: crate::shell::state::RoomId) -> Vec<iroh::EndpointId> {
+        if self.native_topic_required(room_topic_id(room))
+            && let Some(devices) = self.governed_devices(room)
+        {
+            return devices;
+        }
+        self.room_devices(room)
     }
 
     /// This device's copy of the workspace that is `room`, when it hosts it.
@@ -3707,27 +3720,6 @@ impl ShellNetwork {
         self.cmd_tx
             .try_send(NetCmd::PublishLive { ws, frame })
             .is_ok()
-    }
-
-    /// What the people in `room` see of this person from now on. Every
-    /// pointer, caret, selection and live frame this session publishes in
-    /// that room is held to it here, whoever asked for it to go out.
-    pub fn set_presence_visibility(&self, room: &str, visibility: ui::PresenceVisibility) {
-        if let Ok(mut rooms) = self.presence_visibility.lock() {
-            rooms.insert(room.to_owned(), visibility);
-        }
-    }
-
-    /// What the people in `room` see of this person. A room the desktop
-    /// has not told about yet (the moments after start, before the person's
-    /// choice is read and handed over) is held to the most private choice,
-    /// never to a default looser than what they may have chosen.
-    pub fn presence_visibility(&self, room: &str) -> ui::PresenceVisibility {
-        self.presence_visibility
-            .lock()
-            .ok()
-            .and_then(|rooms| rooms.get(room).copied())
-            .unwrap_or(ui::PresenceVisibility::Nothing)
     }
 
     /// Who waved at this person on a live plane since the last call, by
@@ -8223,13 +8215,13 @@ pub(crate) fn shell_network_for_test(
     let mut joined_topics = std::collections::HashSet::from([DEFAULT_WS_TOPIC]);
     joined_topics.extend(tree.read().rooms().into_iter().map(room_topic_id));
     // As the desktop tells it on start for every workspace it is in: what
-    // the person chose there, here "Where I am". A room added later is
-    // unknown, and held to "Nothing", until a test says otherwise.
+    // the person chose there, here "Where I am". A room added later takes
+    // its default once its host answers whether it is public.
     let presence_visibility = tree
         .read()
         .rooms()
         .into_iter()
-        .map(|room| (room.to_string(), ui::PresenceVisibility::WhereIAm))
+        .map(|room| (room, ui::PresenceVisibility::WhereIAm))
         .collect();
     let readiness = tree.room_readiness().clone();
     let net = ShellNetwork {
@@ -8338,7 +8330,9 @@ pub(crate) fn shell_network_for_test(
         live_waves: Mutex::default(),
         live_keys: Box::new(crate::shell::live_presence::session_keys),
         room_reactions: Mutex::default(),
-        presence_visibility: Mutex::new(presence_visibility),
+        presence_visibility: Mutex::new(presence_visibility::Visibilities::with_choices(
+            presence_visibility,
+        )),
         peer_colours: Mutex::default(),
         peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),

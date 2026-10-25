@@ -410,23 +410,7 @@ impl CollaborationPreferences {
             .and_then(ui::Availability::from_id)
             .filter(|chosen| *chosen != ui::Availability::Idle)
             .unwrap_or_default();
-        // A room or choice this build does not read is left out: that
-        // workspace takes its default, never something looser.
-        let visibility = values
-            .get("presence_visibility")
-            .and_then(serde_json::Value::as_object)
-            .map(|rooms| {
-                rooms
-                    .iter()
-                    .filter_map(|(room, choice)| {
-                        Some((
-                            crate::shell::state::RoomId::parse(room)?,
-                            ui::PresenceVisibility::from_id(choice.as_str()?)?,
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let visibility = crate::shell::network::presence_visibility::saved_choices(values);
         let introduced = values
             .get("presence_introduced")
             .and_then(serde_json::Value::as_array)
@@ -448,7 +432,7 @@ impl CollaborationPreferences {
     }
 
     /// The settings section these preferences own as a whole.
-    const SECTION: &'static str = "collaboration";
+    const SECTION: &'static str = crate::shell::network::presence_visibility::SECTION;
 
     pub(super) fn load() -> Self {
         Self::from_values(&settings_store::load_section(Self::SECTION))
@@ -479,7 +463,7 @@ impl CollaborationPreferences {
             ),
         );
         values.insert(
-            "presence_visibility".into(),
+            crate::shell::network::presence_visibility::KEY.into(),
             serde_json::Value::Object(
                 self.visibility
                     .iter()

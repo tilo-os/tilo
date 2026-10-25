@@ -41,6 +41,9 @@ enum Work {
     HostRooms(Option<iroh::EndpointId>),
     SyncRound,
     Outbox(Vec<crate::shell::state::Outgoing>),
+    /// Ask a room's host whether it is public, for what its people see of
+    /// this person ([`ShellNetwork::presence_visibility`]).
+    Publication(crate::shell::state::RoomId),
 }
 
 #[derive(Default)]
@@ -122,6 +125,11 @@ impl ShellNetwork {
                             }
                             Work::Outbox(entries) => {
                                 network.send_outbox(&entries);
+                                false
+                            }
+                            // Held by the network; nothing on screen waits on it.
+                            Work::Publication(room) => {
+                                let _ = network.publication(room);
                                 false
                             }
                         }));
@@ -320,7 +328,8 @@ impl ShellNetwork {
                 | Work::FollowList(_)
                 | Work::HostRooms(_)
                 | Work::SyncRound
-                | Work::Outbox(_),
+                | Work::Outbox(_)
+                | Work::Publication(_),
             )) => Ok(()),
         }
     }
@@ -431,6 +440,15 @@ impl ShellNetwork {
         if !self.publish_sync_requests_off_loop() {
             self.publish_sync_requests_now();
         }
+    }
+
+    /// Ask `room`'s host whether it is public on the peer-sync worker:
+    /// whether there is one to ask it.
+    pub(super) fn ask_publication_off_loop(&self, room: crate::shell::state::RoomId) -> bool {
+        self.peer_sync_worker
+            .worker
+            .get()
+            .is_some_and(|worker| worker.send(Work::Publication(room)).is_ok())
     }
 
     /// Queue a sync round on the peer-sync worker: whether there is one to
