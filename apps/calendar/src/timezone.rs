@@ -258,26 +258,36 @@ fn offset_following(observances: &[Observance], at: NaiveDateTime) -> Option<i32
 /// The IANA zone whose offsets in `year` are the ones `observances` give,
 /// for a `VTIMEZONE` whose TZID names no zone (`Customized Time Zone`,
 /// `(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna`). The
-/// zones Windows names come first, and among zones that fit, one whose city
-/// the TZID mentions. `None` when no zone keeps those offsets.
+/// zones Windows names come first; among zones that fit, one whose city the
+/// TZID mentions, then one that changes its clocks at the very instants the
+/// rules do (US Eastern time, not Havana, which moves its clocks on the same
+/// days two hours earlier). `None` when no zone keeps those offsets.
 pub fn zone_following(observances: &[Observance], year: i32, tzid: &str) -> Option<String> {
     let noon =
         |month| NaiveDate::from_ymd_opt(year, month, 1).and_then(|date| date.and_hms_opt(12, 0, 0));
     let mut samples: Vec<NaiveDateTime> = [noon(1), noon(7)].into_iter().flatten().collect();
+    // Either side of each onset, to the minute: a zone that keeps the same
+    // offsets but moves its clocks hours apart differs only here.
+    let mut instants = Vec::new();
     for observance in observances {
         for onset in observance.onsets(year..=year) {
             if onset.year() == year {
                 samples.push(onset - Duration::days(1));
                 samples.push(onset + Duration::days(1));
+                instants.push(onset - Duration::minutes(1));
+                instants.push(onset + Duration::minutes(1));
             }
         }
     }
-    let wanted = samples
-        .iter()
-        .map(|at| offset_following(observances, *at))
-        .collect::<Option<Vec<_>>>()?;
-    let fits = |zone: &Tz| {
-        samples.iter().zip(&wanted).all(|(at, offset)| {
+    let wanted_at = |at: &[NaiveDateTime]| {
+        at.iter()
+            .map(|at| offset_following(observances, *at).map(|offset| (*at, offset)))
+            .collect::<Option<Vec<_>>>()
+    };
+    let wanted = wanted_at(&samples)?;
+    let wanted_instants = wanted_at(&instants).unwrap_or_default();
+    let keeps = |zone: &Tz, wanted: &[(NaiveDateTime, i32)]| {
+        wanted.iter().all(|(at, offset)| {
             zone.offset_from_utc_datetime(at).fix().local_minus_utc() == *offset
         })
     };
@@ -286,7 +296,8 @@ pub fn zone_following(observances: &[Observance], year: i32, tzid: &str) -> Opti
         .filter_map(|(_, iana)| iana.parse::<Tz>().ok())
         .chain(chrono_tz::TZ_VARIANTS.iter().copied());
     let mut first = None;
-    for zone in candidates.filter(fits) {
+    let mut on_time = None;
+    for zone in candidates.filter(|zone| keeps(zone, &wanted)) {
         let city = zone
             .name()
             .rsplit('/')
@@ -296,9 +307,14 @@ pub fn zone_following(observances: &[Observance], year: i32, tzid: &str) -> Opti
         if city.len() > 2 && tzid.contains(&city) {
             return canonical_zone(zone.name());
         }
+        if on_time.is_none() && keeps(&zone, &wanted_instants) {
+            on_time = Some(zone);
+        }
         first.get_or_insert(zone);
     }
-    first.and_then(|zone| canonical_zone(zone.name()))
+    on_time
+        .or(first)
+        .and_then(|zone| canonical_zone(zone.name()))
 }
 
 #[cfg(test)]
