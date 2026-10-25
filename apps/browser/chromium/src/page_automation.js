@@ -1,8 +1,10 @@
 // Page reading and operation for browser actions. The browser process
-// evaluates this in an isolated world of the main frame: it shares the page's
-// DOM, but the page's own scripts can neither see nor call it. Refs are
+// evaluates this in an isolated world of one frame, the main frame unless the
+// caller named a frame from the outline: it shares that document's DOM, but
+// the page's own scripts can neither see nor call it. Refs are
 // `d<document>e<element>`; the document number is the world's, so a ref never
-// resolves in a later document.
+// resolves in a later document, and a ref only ever resolves in the frame it
+// was read from.
 globalThis.__tiloPage ||= (() => {
   const execNativeHistory = Document.prototype.execCommand;
   const queryNativeHistory = Document.prototype.queryCommandEnabled;
@@ -36,8 +38,11 @@ globalThis.__tiloPage ||= (() => {
 
   const ids = new WeakMap(), refs = new Map();
   let next = 0, doc = 0;
-  // The outline this tab's agent last saw, for `changes`.
-  let lastLines = null;
+  // The outlines this tab's agent last saw, per frame id ('' for the main
+  // document), for `changes`.
+  const lastLinesByFrame = new Map();
+  const getLastLines = () => lastLinesByFrame.get(frameId()) ?? null;
+  const setLastLines = lines => lastLinesByFrame.set(frameId(), lines);
   const MAX_DIFF_CELLS = 4000000, MAX_SETTLE_POLL_MS = 50;
   // Revealed lines one hover reports, and moves between a drag's two ends.
   const MAX_REVEAL_LINES = 40, MAX_DRAG_STEPS = 64;
@@ -169,6 +174,21 @@ globalThis.__tiloPage ||= (() => {
   function prune() {
     if (refs.size < 20000) return;
     for (const [id, ref] of refs) if (!ref.deref()?.isConnected) refs.delete(id);
+  }
+
+  // Frame 1 is the first frame of this document, numbered in document order
+  // and kept with the frame element for as long as the document is; a frame of
+  // a frame is addressed `1.2`.
+  const frameNumbers = new Map(), framesByNumber = new Map();
+  function frameNumber(element) {
+    if (frameNumbers.size >= 4096) { frameNumbers.clear(); framesByNumber.clear(); }
+    for (const [number, frame] of framesByNumber) {
+      if (frame.deref?.() === element) return number;
+    }
+    const number = ++next;
+    frameNumbers.set(element, number);
+    framesByNumber.set(number, new WeakRef(element));
+    return number;
   }
 
   const type = element => (element.getAttribute('type') || 'text').toLowerCase();
@@ -375,18 +395,91 @@ globalThis.__tiloPage ||= (() => {
     return false;
   }
 
+  // How the caller addresses this frame's document: the dotted ids its
+  // ancestors' outlines printed, '' for the main document itself.
+  let frameAddress = '';
+  const frameId = () => (window.frameElement ? frameAddress : '');
+
+  // The frame an action named, by the number the page prints for it: the frame
+  // element this document holds it in, or the frame element the page numbered.
+  function numberedFrame(number) {
+    if (!/^\d+$/.test(number || '')) return null;
+    // A frame this document may not read is still placed from the frame
+    // element that holds it, which this document does see.
+    const held = holdingFrame(Number(number));
+    return held || framesByNumber.get(String(Number(number)))?.deref?.() || null;
+  }
+
+  // The frame element this document numbers `number`: the one holding this
+  // document itself, or the one holding the frame this document numbers. The
+  // walk descends only into frames this document may read: a frame out of
+  // reach is placed from the mark-up around it, which is never out of reach.
+  function holdingFrame(number) {
+    if (document.frameElement) return document.frameElement;
+    const walk = root => {
+      for (const element of [...root.querySelectorAll('iframe,frame')].slice(0, 4096)) {
+        let child = null;
+        try { child = element.contentDocument; } catch { child = null; }
+        if (!child) continue;
+        const inner = child.querySelectorAll?.('iframe,frame') || [];
+        if (inner.length < number) return element;
+        const found = walk(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    return walk(document);
+  }
+
+  // Where a frame this document lists sits in it now, in this document's
+  // coordinates with its scrolling: a point read in the frame's own document
+  // moves by this to become a point in this one.
+  function frameOffset(number, anchored) {
+    if (!/^\d+$/.test(number || '')) throw failure('invalid_request', 'A frame of this document is named by its number');
+    // Measuring a frame's place can be the first thing this document is asked,
+    // so the numbering is read from the document rather than from an outline
+    // that may never have run here.
+    const element = numberedFrame(number);
+    if (!element)
+      throw failure('no_frame', `Frame ${number} has left the page; read the page again`);
+    // The click is a pointer event in the top document, at a point the caller
+    // never saw: the frame is brought into view so that point is reachable.
+    // A gesture stands where its step is, though: the box the step resolves to
+    // is read in the frame's own document against coordinates the frame's
+    // place then has to match, so it is measured where the page put it.
+    if (anchored !== true) element.scrollIntoView({block: 'nearest', inline: 'nearest'});
+    const rect = element.localName === 'frame'
+      ? {x: Number(element.getAttribute('x')) || 0, y: Number(element.getAttribute('y')) || 0}
+      // An iframe is a replaced element: its content view starts inside its
+      // border, and a point placed in it is that view's own.
+      : (() => { const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+        return {x: box.x + (parseFloat(style.borderLeftWidth) || 0), y: box.y + (parseFloat(style.borderTopWidth) || 0)}; })();
+    // A point read in the frame's document is a point in the frame's viewport,
+    // and a click is placed from the page's viewport, so the frame's own
+    // viewport position is the whole of the offset: no scroll is added.
+    return {ok: true, message: `Frame ${number}`, x: rect.x, y: rect.y};
+  }
+
+  // A point in a frame's own document means nothing in the page: the caller
+  // reads points in the main document, where clicking happens.
+  function atInFrame() {
+    return failure('invalid_request', `Read the element at a point in the page itself, not in frame ${frameId()}`);
+  }
+
   function outline() {
-    const {lines} = outlineLines();
-    lastLines = lines;
-    return {ok: true, message: `Read ${lines.length} lines`, outline: lines.join('\n')};
+    const {lines, frames: listed} = outlineLines();
+    setLastLines(lines);
+    const frame = frameId();
+    return {ok: true, message: frame ? `Read ${lines.length} lines in frame ${frame}` : `Read ${lines.length} lines`,
+      outline: lines.join('\n'), data: {frames: listed}};
   }
 
   // Lines added and removed since the last read, by longest common
   // subsequence; refs are stable within a document, so an unchanged element
   // keeps its line.
   function changes() {
-    const before = lastLines, {lines} = outlineLines();
-    lastLines = lines;
+    const before = getLastLines(), {lines} = outlineLines();
+    setLastLines(lines);
     if (!before)
       return {ok: true, message: `First read: ${lines.length} lines`, outline: lines.join('\n')};
     if (before.length * lines.length > MAX_DIFF_CELLS)
@@ -585,6 +678,20 @@ globalThis.__tiloPage ||= (() => {
       throw failure('cross_origin_submit', `This form sends its data to ${target}, another site than ${location.origin}; submit it with cross_origin to allow that`);
   }
 
+  // Where each frame this document lists sits in it, so the browser process can
+  // turn a point in a frame's document into a point in the page.
+  function frames() {
+    const out = [];
+    for (const [number, frame] of framesByNumber) {
+      const element = frame.deref?.();
+      if (!element || !element.isConnected) continue;
+      const x = element.localName === 'frame' ? Number(element.getAttribute('x')) || 0 : element.getBoundingClientRect().x + scrollX;
+      const y = element.localName === 'frame' ? Number(element.getAttribute('y')) || 0 : element.getBoundingClientRect().y + scrollY;
+      out.push({number: String(number), x, y});
+    }
+    return out;
+  }
+
   function outlineLines() {
     const lines = [];
     let chars = 0, visited = 0, truncated = false, pending = '', pendingDepth = 0;
@@ -653,22 +760,34 @@ globalThis.__tiloPage ||= (() => {
       else if (visible && !context.inside && element.getAttribute('draggable') === 'true') kind = 'draggable';
       // A bound label's words are its control's name; listing them again is noise.
       const inner = {inside: context.inside || (tag === 'label' && !!element.control), pointer, visible};
-      if (kind === 'img' || kind === 'iframe' || kind === 'canvas') {
+      if (kind === 'img') {
         flush();
-        // A drawing surface has a ref and a size; its pixels are not text.
-        const label = kind === 'img' ? name(element, kind)
-          : kind === 'iframe' ? clean(element.title || element.name || element.src, MAX_NAME)
-          : name(element, kind);
-        const size = kind === 'canvas' ? ` ${Math.round(element.width || element.clientWidth || 0)}x${Math.round(element.height || element.clientHeight || 0)} [ref=${refOf(element)}]` : '';
-        emit(depth, (label ? `${kind} ${quote(label)}` : kind) + size);
+        const label = name(element, kind);
+        emit(depth, label ? `${kind} ${quote(label)}` : kind);
         return;
       }
       // A drawing surface is one element a gesture draws on, never the boxes
-      // of whatever the page painted into it.
+      // of whatever the page painted into it. Its size is part of what a
+      // gesture needs: a point is drawn in the surface's own coordinates.
       if (tag === 'canvas') {
         flush();
         const label = name(element, kind);
-        emit(depth, `${kind}${label ? ' ' + quote(label) : ''} [ref=${refOf(element)}]`);
+        const size = `${Math.round(element.width || element.clientWidth || 0)}x${Math.round(element.height || element.clientHeight || 0)}`;
+        emit(depth, `${kind}${label ? ' ' + quote(label) : ''} ${size} [ref=${refOf(element)}]`);
+        return;
+      }
+      if (kind === 'iframe') {
+        flush();
+        // A frame is its own document: the line names the id an action takes to
+        // run there, and the address, so the caller knows what it would reach.
+        const label = clean(element.title || element.name, MAX_NAME);
+        const id = frameNumber(element);
+        const parts = [kind];
+        if (label) parts.push(quote(label));
+        parts.push(`[frame=${id}]`);
+        const src = element.src ? `src=${quote(clean(element.src, 300))}` : '';
+        if (src) parts.push(src);
+        emit(depth, parts.join(' '));
         return;
       }
       if (INTERACTIVE.has(kind) || kind === 'heading') {
@@ -717,7 +836,7 @@ globalThis.__tiloPage ||= (() => {
     flush();
     prune();
     if (truncated) lines.push('- text "… outline truncated; act on what is listed or scroll and read again"');
-    return {lines, truncated};
+    return {lines, truncated, frames: frames()};
   }
 
   function clip(rect) {
@@ -1424,6 +1543,7 @@ globalThis.__tiloPage ||= (() => {
     run(command) {
       try {
         if (!doc) doc = command.doc;
+        frameAddress = typeof command.frame === 'string' ? command.frame : '';
         // A gesture that spans two engine steps: read what is about to
         // change, let the pointer do its work, then answer with the change.
         if (command.action === 'gesture_begin') {
@@ -1452,8 +1572,6 @@ globalThis.__tiloPage ||= (() => {
             return answer;
           }
         }
-        // The engine rests its pointer, presses it or lets it go: the page's
-        // hover styles follow where it is, as they would for a person's.
         if (command.action === 'pointer_rest')
           return {ok: true, rested: !!restPointer(command.nowhere ? null : command.x, command.y, gestureMirror)};
         if (command.action === 'gesture_end') {
@@ -1480,7 +1598,9 @@ globalThis.__tiloPage ||= (() => {
           // is enough and nothing is applied.
           case 'need_styles': { const n = markHoverTargets(); return {ok: true, need_styles: n > 0, doc: typeof doc === 'number' ? doc : command.doc}; }
           case 'changes': return changes();
-          case 'at': return at(command.x, command.y);
+          case 'at': return frameId() ? atInFrame() : at(command.x, command.y);
+          case 'frame_offset': return frameOffset(command.frame, command.anchored);
+          case 'frame_fence': return fence();
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
           case 'locate_box': return locateBox(command.element);
