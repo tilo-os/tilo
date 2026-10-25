@@ -31,6 +31,11 @@ use crate::tokens::{EffectiveMotion, MotionSource};
 
 /// Drop-target indicator line width; thin enough not to compete with pill chrome.
 const HOVER_DROP_LINE_PX: f64 = 1.5;
+
+/// Strength the insertion mark starts at while it fades in, already at
+/// its final thickness: a line that grows out of nothing reads as a flicker
+/// at the start of a drag, one that fades in reads as the gap opening.
+const DROP_LINE_MIN_ALPHA: f32 = 0.55;
 /// The tab bar's motions, from the standard ones (`motion::ListChange`
 /// and friends): pills change places on the list change's move, arrive and
 /// leave on its fade (opacity and a small rise; no per-pill scale layer), a
@@ -5059,6 +5064,16 @@ impl TabBar {
         }
     }
 
+    /// Which gap the landing spot sits in for the gap index the drop logic
+    /// uses (`drop_index_for`). A carried pill always lands *between* two
+    /// pills, so an index past the last pill — the pointer to the right of
+    /// them, or past the "+" — is drawn at the gap left of that last pill:
+    /// pinned pills lead the bar, so dropping there is a pinned slot, which
+    /// is where the tab actually goes (`insert_tab` puts it there).
+    fn landing_gap_index(gap_idx: usize, len: usize) -> usize {
+        if len == 0 { 0 } else { gap_idx.min(len - 1) }
+    }
+
     /// Drop-indicator line at `hover_drop_idx`, serving both the single-bar
     /// case and the cross-group case (where `pending_drag.is_some()` is false
     /// on sibling bars). Eased fade-in on the list change's fade.
@@ -5078,6 +5093,7 @@ impl TabBar {
             )
         });
         // 4px above/below the pill's extent for bleed past the rounded caps.
+        let gap_idx = Self::landing_gap_index(gap_idx, self.tab_rects.len());
         let (cx, y0, y1) = if gap_idx == 0 {
             self.tab_rects
                 .first()
@@ -5099,26 +5115,29 @@ impl TabBar {
         };
         let half_w = HOVER_DROP_LINE_PX / 2.0;
         let line = Rect::new(cx - half_w, y0, cx + half_w, y1);
-        // Derived against the bar's ground at 85% terminal alpha (HIG §9.5):
-        // crisp but restrained, and it survives a light palette.
+        // The gap a carried tab opens out to. A hairline in the bar's own
+        // edge value is the same weight as the seams around it, so it reads
+        // as part of the chrome rather than as a place that is about to
+        // open. The landing spot is a *chosen* one — where the dropped tab
+        // will stand — which is what the accent is for, and it is the same
+        // accent the window gap's capsule is drawn in, so a drop between
+        // windows and a drop between tabs mark the same fact the same way.
+        // The line fades in rather than growing: a rule that appears at full
+        // thickness reads as the gap opening, one that fades up from nothing
+        // flickers at the start of a drag.
         #[allow(
             clippy::cast_possible_truncation,
             reason = "eased_t stays in 0.0..=1.0"
         )]
-        let alpha = (0.85 * eased_t as f32).clamp(0.0, 1.0);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "alpha is clamped to 0.0..=1.0 before scaling into a u8 channel"
-        )]
-        let alpha_u8 = (alpha * 255.0) as u8;
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            Colors::hairline_on(self.ground(theme), alpha_u8),
-            None,
-            &line,
-        );
+        let eased = eased_t as f32;
+        let accent = theme.tokens.colors.intent.accent_ink;
+        let ink = if theme.colors_are_forced() {
+            accent
+        } else {
+            let alpha = DROP_LINE_MIN_ALPHA + (1.0 - DROP_LINE_MIN_ALPHA) * eased;
+            crate::paint::with_alpha_scaled(accent, alpha)
+        };
+        scene.fill(vello::peniko::Fill::NonZero, transform, ink, None, &line);
     }
 
     /// The dragged pill's cursor-following ghost, painted LAST so it composites
@@ -5159,6 +5178,17 @@ impl TabBar {
             },
             transform,
             &clip,
+        );
+        // A lifted handle carries a shadow: without one a half-transparent
+        // pill reads as a smear rather than as the tab in the hand. The
+        // contact layer alone — the wide floating layer would draw a halo
+        // twice the pill's height on a bar barely taller than it.
+        crate::surface::shadow(
+            scene,
+            transform,
+            ghost_rect,
+            f64::from(theme.tokens.radii.control),
+            &theme.tokens.elevation.contact,
         );
         self.draw_pill_inner(
             &mut PaintCtx::new(scene, transform, tr, theme),
@@ -5588,6 +5618,45 @@ mod tests {
             Rect::new(180.0, 10.0, 196.0, 30.0),
         ];
         b
+    }
+
+    /// A carried pill always lands *between* pills, so the gap the bar marks
+    /// has to be a gap it has: a pointer past the right-hand pill — or past
+    /// the "+" — is as far right as the bar goes, and the mark belongs at the
+    /// gap left of that pill rather than nowhere at all. Where it is drawn is
+    /// also where `insert_tab` puts the tab, so the mark never promises a
+    /// slot the drop does not produce.
+    #[test]
+    fn the_landing_mark_stands_at_a_gap_the_bar_has() {
+        let mut b = ghost_test_bar();
+        // Three pills: gaps 0 (before A), 1 (A|B), 2 (B|C).
+        for (gap, expected) in [(0, 0), (1, 1), (2, 2), (3, 2)] {
+            assert_eq!(
+                TabBar::landing_gap_index(gap, b.tab_rects.len()),
+                expected,
+                "gap {gap} of a three-pill bar"
+            );
+        }
+        // An empty bar has no gap to be past; the caller returns before
+        // drawing anything, and the index must not underflow.
+        assert_eq!(TabBar::landing_gap_index(0, 0), 0);
+        assert_eq!(TabBar::landing_gap_index(5, 0), 0);
+
+        // The pointer right of every pill: the drop index is one past the
+        // last, and the mark stands at the last real gap. The tab then goes
+        // where the mark was.
+        let past_the_end = b.drop_index_for(Point::new(239.0, 20.0));
+        assert_eq!(past_the_end, 3, "to the right of the last pill");
+        let marked = TabBar::landing_gap_index(past_the_end, b.tab_rects.len());
+        assert_eq!(marked, 2);
+        let before: Vec<String> = b.tabs.iter().map(|t| t.title.clone()).collect();
+        b.insert_tab(marked, TabDescriptor::new(9, "D"));
+        let after: Vec<String> = b.tabs.iter().map(|t| t.title.clone()).collect();
+        assert_eq!(
+            after,
+            vec!["A", "B", "D", "C"],
+            "the tab stands where the mark did (was {before:?})"
+        );
     }
 
     /// A window whose app may control the desktop says so beside its pill,
