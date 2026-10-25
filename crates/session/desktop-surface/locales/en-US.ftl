@@ -999,7 +999,6 @@ people-overlay-screen-private = { $name } keeps where they are to themselves
 people-overlay-empty-desk = Nothing open on { $name }’s screen
 people-overlay-message-placeholder = Message { $name }
 people-overlay-send = Send
-people-overlay-you = You
 people-overlay-own-status = What you're doing
 people-overlay-own-status-placeholder = What are you working on?
 people-overlay-own-status-clear = Clear what you're doing

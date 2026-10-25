@@ -4985,6 +4985,13 @@ impl Widget for GroupRow {
                 maximized_idx,
                 &in_run,
             );
+            // A window this draw left off screen keeps the picture it had,
+            // which no longer follows it: shown as it last looked.
+            crate::window_pictures::unseen(
+                self.culled_groups
+                    .iter()
+                    .filter(|id| !self.shown_elsewhere.contains(id)),
+            );
             self.draw_handles(
                 scene,
                 transform,
