@@ -155,6 +155,12 @@ impl Navigation {
         }
     }
 
+    /// Whether [`Self::label`] is the catalogue's copy alone, without a
+    /// failure's own words.
+    pub(crate) fn label_is_copy(&self, message: &str) -> bool {
+        !matches!(self.outcome(message, false), Some(Err(_)))
+    }
+
     /// The name `message`'s reference chip, which reads `label`, is
     /// announced by: what pressing it does, or why it did not open.
     pub(crate) fn open_label(&self, message: &str, label: &str) -> String {

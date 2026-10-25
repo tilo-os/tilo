@@ -305,6 +305,37 @@ impl ChatApp {
         blocks
     }
 
+    /// Each line of a message's body as [`Self::draw_body`] last drew it:
+    /// the line's rect and the words on it. Read off the laid-out view, so
+    /// it shapes nothing again.
+    fn body_lines(&self, id: &str) -> Vec<(Rect, String)> {
+        let mut views = self.body_views.borrow_mut();
+        let Some((_, view)) = views.get_mut(&(0, id.to_owned())) else {
+            return Vec::new();
+        };
+        let mut lines = Vec::new();
+        for block in view.editor_mut().blocks() {
+            let words = block.line.value();
+            if words.trim().is_empty() {
+                continue;
+            }
+            let input = block.line.inner();
+            for rect in block.line.prepared_range_rects(0..words.len()) {
+                let middle = rect.center().y;
+                // A row's two ends; a right-to-left row has its start on
+                // the right.
+                let a = input.byte_at_point(Point::new(rect.x0 + 0.5, middle));
+                let b = input.byte_at_point(Point::new(rect.x1 - 0.5, middle));
+                let row = words.get(a.min(b)..a.max(b)).unwrap_or_default();
+                let row = row.trim();
+                if !row.is_empty() && rect.width() > 0.0 && rect.height() > 0.0 {
+                    lines.push((rect, row.to_owned()));
+                }
+            }
+        }
+        lines
+    }
+
     /// Paint a message's body where [`Self::layout_body`] last put it.
     fn draw_body(&self, m: &Message, paint: &mut PaintCtx<'_>) {
         if let Some((_, view)) = self.body_views.borrow_mut().get_mut(&(0, m.id.clone())) {
@@ -315,7 +346,8 @@ impl ChatApp {
     /// Paint `m`'s author through the shared author helper: the avatar (an
     /// agent's mark, a bot's tile) into `mark`, the name from `name_at`, and
     /// for a bot its `BOT` chip, which is never elided. Nothing goes past
-    /// `max_x`. Returns where the line ends and the name line's height.
+    /// `max_x`. Returns where the line ends, the name line's height and
+    /// where its parts went.
     fn paint_author(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -323,7 +355,7 @@ impl ChatApp {
         mark: Rect,
         name_at: Point,
         max_x: f64,
-    ) -> (f64, f64) {
+    ) -> (f64, f64, ui::author::AuthorLine) {
         let name = self.message_author_name(m);
         let initiator = self.user_name(&m.author);
         // The avatar the bot showed, once the content store has it.
@@ -345,7 +377,7 @@ impl ChatApp {
             *chip = chip.with_origin((chip.x0, name_at.y + (line_h - chip.height()) / 2.0));
         }
         author.paint(&line, ctx);
-        (line.chip.map_or(line.name.x1, |chip| chip.x1), line_h)
+        (line.chip.map_or(line.name.x1, |chip| chip.x1), line_h, line)
     }
 
     pub(crate) fn message_author<'a>(
@@ -597,18 +629,18 @@ impl ChatApp {
         self.scroll_content = 0.0;
         self.scroll_viewport = area.height().max(0.0);
         self.scroll = 0.0;
-        let title = if self.can_participate() {
-            "No messages yet"
+        let title = crate::i18n::t(if self.can_participate() {
+            "chat-empty-title"
         } else {
-            "Nothing has been said here yet"
-        };
+            "chat-empty-title-read-only"
+        });
         // An empty channel says what it is for, or invites the first word:
         // a visitor arriving in a quiet room should know they may start it.
         let channel_message = self.empty_channel_message();
         let content = EmptyStateContent {
             icon: Some(Icon::Send),
             message: channel_message.as_deref(),
-            ..EmptyStateContent::new(title)
+            ..EmptyStateContent::new(&title)
         };
         EmptyState::paint(
             &mut PaintCtx::new(scene, tf, tr, theme),
@@ -778,7 +810,7 @@ impl ChatApp {
         area: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let label = "Jump to latest";
+        let label = &crate::i18n::t("chat-jump-latest");
         let face = ButtonFace::new(Rect::ZERO, label).icon(Icon::ArrowDown);
         let w = face.intrinsic_width(tr, theme);
         let h = ButtonFace::height(ControlSize::Regular, theme);
@@ -1035,9 +1067,19 @@ impl ChatApp {
         }
         *y += rm.top_gap;
         let content_top = *y;
+        // Only a row that shows notes where its texts are: one scrolled out
+        // costs nothing more.
+        let shown = *y < area.y1 && *y + rm.height() - rm.top_gap > area.y0;
+        let mut parts = crate::app::PaintedMessage::default();
 
         if rm.show_header {
-            self.draw_row_header(PaintCtx::new(scene, tf, tr, theme), column, &m, y);
+            self.draw_row_header(
+                PaintCtx::new(scene, tf, tr, theme),
+                column,
+                &m,
+                y,
+                &mut parts,
+            );
         }
         if rm.editing {
             self.draw_message_editor(
@@ -1067,20 +1109,8 @@ impl ChatApp {
             *y += rm.body_h;
         }
         if rm.reasoning_h > 0.0 {
-            let caption = crate::i18n::t(if self.expanded_reasoning.contains(&m.id) {
-                "chat-agent-hide-reasoning"
-            } else {
-                "chat-agent-show-reasoning"
-            });
-            let rect = Rect::new(
-                column.text_x,
-                *y,
-                column.text_x + f64::from(column.text_width),
-                *y + rm.reasoning_h - f64::from(theme.tokens.spacing.s2),
-            );
-            Button::paint(scene, tf, tr, theme, &ButtonFace::new(rect, &caption));
-            Self::push_hit(hits, rect, Hit::AgentReasoning(m.id.clone()));
-            *y += rm.reasoning_h;
+            let paint = PaintCtx::new(scene, tf, tr, theme);
+            self.draw_reasoning_toggle(paint, rm, &m.id, column, y, hits);
         }
         if !rm.editing
             && let Some(work) = &m.work
@@ -1108,6 +1138,9 @@ impl ChatApp {
                 Hit::MessageMenu { msg: m.id.clone() },
             );
         }
+        if shown {
+            self.note_painted(&m.id, parts, !rm.editing, area);
+        }
         if rm.resource_h > 0.0 && m.share.is_some() {
             let place = (column.text_x, f64::from(column.text_width), column.area);
             self.draw_share_card(PaintCtx::new(scene, tf, tr, theme), &m, place, y, hits);
@@ -1116,6 +1149,57 @@ impl ChatApp {
         }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;
+    }
+
+    /// The button that shows or hides the reasoning an agent's provider
+    /// shared. Advances `*y` past it.
+    fn draw_reasoning_toggle(
+        &self,
+        paint: PaintCtx<'_>,
+        rm: &RowM,
+        id: &str,
+        column: MessageColumn,
+        y: &mut f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let caption = crate::i18n::t(if self.expanded_reasoning.contains(id) {
+            "chat-agent-hide-reasoning"
+        } else {
+            "chat-agent-show-reasoning"
+        });
+        let rect = Rect::new(
+            column.text_x,
+            *y,
+            column.text_x + f64::from(column.text_width),
+            *y + rm.reasoning_h - f64::from(theme.tokens.spacing.s2),
+        );
+        Button::paint(scene, tf, tr, theme, &ButtonFace::new(rect, &caption));
+        Self::push_hit(hits, rect, Hit::AgentReasoning(id.to_owned()));
+        *y += rm.reasoning_h;
+    }
+
+    /// Keep where a shown message drew its texts, its body's lines read off
+    /// the view when `body` was drawn, cut to the timeline's `area`.
+    fn note_painted(
+        &mut self,
+        id: &str,
+        mut parts: crate::app::PaintedMessage,
+        body: bool,
+        area: Rect,
+    ) {
+        if body {
+            parts.lines = self.body_lines(id);
+        }
+        let parts = parts.clipped(area);
+        if !parts.is_empty() {
+            self.painted_messages.insert(id.to_owned(), parts);
+        }
     }
 
     fn draw_resource_navigation(
@@ -1176,13 +1260,14 @@ impl ChatApp {
     }
 
     /// A message group's header: avatar, author and time. Advances `*y`
-    /// past it.
+    /// past it and notes in `parts` where each was drawn.
     fn draw_row_header(
         &self,
         paint: PaintCtx<'_>,
         column: MessageColumn,
         m: &Message,
         y: &mut f64,
+        parts: &mut crate::app::PaintedMessage,
     ) {
         let PaintCtx {
             scene,
@@ -1199,7 +1284,7 @@ impl ChatApp {
             *y + side,
         );
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        let (end_x, nh) = self.paint_author(
+        let (end_x, nh, line) = self.paint_author(
             &mut ctx,
             m,
             avatar,
@@ -1212,7 +1297,7 @@ impl ChatApp {
         let clock = clock_label(m.ts);
         let th = line_of(ctx.text, &time_style);
         let clock_x = end_x + f64::from(theme.tokens.spacing.s2);
-        text(
+        let (clock_w, clock_h) = text(
             &mut ctx,
             &clock,
             &time_style,
@@ -1220,12 +1305,22 @@ impl ChatApp {
             Point::new(clock_x, *y + nh - th),
             None,
         );
+        let clock_w = f64::from(clock_w);
+        parts.avatar = Some(line.mark);
+        parts.author = Some((line.name, line.shown));
+        parts.time = Some((
+            Rect::new(
+                clock_x,
+                *y + nh - th,
+                clock_x + clock_w,
+                *y + nh - th + f64::from(clock_h),
+            ),
+            clock,
+        ));
         // A pinned message says so where its time is.
         if m.pinned {
             let icon = f64::from(theme.tokens.metrics.icon_sm);
-            let x = clock_x
-                + width_of(ctx.text, &clock, &time_style)
-                + f64::from(theme.tokens.spacing.s2);
+            let x = clock_x + clock_w + f64::from(theme.tokens.spacing.s2);
             let cy = *y + nh - th / 2.0;
             Icon::Pin.draw(
                 ctx.scene,
@@ -1235,7 +1330,7 @@ impl ChatApp {
             );
             text(
                 &mut ctx,
-                "Pinned",
+                &crate::i18n::t("chat-message-pinned-marker"),
                 &time_style,
                 theme.text_dim,
                 Point::new(x + icon + f64::from(theme.tokens.spacing.s1), *y + nh - th),
@@ -1305,7 +1400,7 @@ impl ChatApp {
         } = column;
         if m.edited && !rm.editing {
             let style = theme.text(TextRole::Caption);
-            let label = "Edited";
+            let label = &crate::i18n::t("chat-message-edited");
             let w = width_of(tr, label, &style);
             let band = Rect::new(
                 text_x,
@@ -1393,7 +1488,8 @@ impl ChatApp {
             *y + rm.body_h + 2.0 * pad,
         );
         paint_field(scene, tf, theme, field);
-        self.edit_input.set_placeholder("Edit message");
+        self.edit_input
+            .set_placeholder(&crate::i18n::t("chat-edit-field"));
         self.edit_input.set_mention_paint(self.mention_paint(theme));
         self.edit_input.layout(
             Rect::new(field.x0, field.y0 + pad, field.x1, field.y1 - pad),
@@ -1407,7 +1503,9 @@ impl ChatApp {
 
         // Cancel and Save at the field's trailing edge.
         let h = ButtonFace::height(ControlSize::Small, theme);
-        let save_face = ButtonFace::new(Rect::ZERO, "Save").control_size(ControlSize::Small);
+        let save_label = crate::i18n::t("chat-edit-save-button");
+        let cancel_label = crate::i18n::t("chat-edit-cancel-button");
+        let save_face = ButtonFace::new(Rect::ZERO, &save_label).control_size(ControlSize::Small);
         let save_w = save_face.intrinsic_width(tr, theme);
         let save = Rect::new(field.x1 - save_w, *y, field.x1, *y + h);
         Button::paint(
@@ -1415,13 +1513,13 @@ impl ChatApp {
             tf,
             tr,
             theme,
-            &ButtonFace::new(save, "Save")
+            &ButtonFace::new(save, &save_label)
                 .role(ButtonRole::Primary)
                 .control_size(ControlSize::Small)
                 .hovered(self.hovered(save)),
         );
         ChatApp::push_hit(hits, save, Hit::EditSave);
-        let cancel_w = ButtonFace::new(Rect::ZERO, "Cancel")
+        let cancel_w = ButtonFace::new(Rect::ZERO, &cancel_label)
             .control_size(ControlSize::Small)
             .intrinsic_width(tr, theme);
         let cancel = Rect::new(
@@ -1435,7 +1533,7 @@ impl ChatApp {
             tf,
             tr,
             theme,
-            &ButtonFace::new(cancel, "Cancel")
+            &ButtonFace::new(cancel, &cancel_label)
                 .control_size(ControlSize::Small)
                 .hovered(self.hovered(cancel)),
         );
@@ -1519,14 +1617,19 @@ impl ChatApp {
         } else {
             0.0
         };
-        let replies = format!("{count} {}", if count == 1 { "reply" } else { "replies" });
+        let replies = crate::i18n::t_args("chat-thread-replies", &[("count", count.into())]);
         let last = self
             .messages
             .iter()
             .filter(|reply| reply.parent.as_deref() == Some(m.id.as_str()))
             .map(|reply| reply.ts)
             .max()
-            .map(|ts| format!("Last reply {}", clock_label(ts)));
+            .map(|ts| {
+                crate::i18n::t_args(
+                    "chat-thread-last-reply",
+                    &[("time", clock_label(ts).into())],
+                )
+            });
         let label_style = theme.text(TextRole::Label).strong();
         let meta_style = theme.text(TextRole::Caption);
         let replies_w = width_of(tr, &replies, &label_style);
@@ -1780,12 +1883,12 @@ impl ChatApp {
         } = paint;
         let style = theme.text(TextRole::Caption);
         let y = field.y1 + f64::from(theme.tokens.spacing.s1);
-        let retry = "Retry";
+        let retry = &crate::i18n::t("chat-retry");
         let strong = style.clone().strong();
         let retry_w = width_of(tr, retry, &strong);
         let line = elide(
             tr,
-            &format!("Not sent: {reason}"),
+            &crate::i18n::t_args("chat-not-sent", &[("reason", reason.to_owned().into())]),
             &style,
             (field.width() - retry_w - f64::from(theme.tokens.spacing.s3)).max(0.0),
         );
@@ -1831,8 +1934,8 @@ impl ChatApp {
         } = paint;
         let style = theme.text(TextRole::Caption);
         let y = field.y1 + f64::from(theme.tokens.spacing.s1);
-        let line = "Message deleted";
-        let undo = "Undo";
+        let line = &crate::i18n::t("chat-message-deleted");
+        let undo = &crate::i18n::t("chat-undo");
         let strong = style.clone().strong();
         let line_w = width_of(tr, line, &style);
         let undo_w = width_of(tr, undo, &strong);
@@ -1947,8 +2050,9 @@ impl ChatApp {
             .control_size(ControlSize::Regular);
         let send_w = send_probe.intrinsic_width(tr, theme);
         let leading = if attach { vec![btn] } else { Vec::new() };
+        let emoji_label = crate::i18n::t("chat-emoji-insert");
         let emoji_w =
-            ButtonFace::icon_only(Rect::ZERO, Icon::Smile, "Emoji").intrinsic_width(tr, theme);
+            ButtonFace::icon_only(Rect::ZERO, Icon::Smile, &emoji_label).intrinsic_width(tr, theme);
         let frame =
             tilo_rich_text::ComposerFrame::layout(rect, theme, &leading, &[send_w, emoji_w]);
         if attach {
@@ -1958,7 +2062,7 @@ impl ChatApp {
                 tf,
                 tr,
                 theme,
-                &ButtonFace::icon_only(plus, Icon::Paperclip, "Attach a file")
+                &ButtonFace::icon_only(plus, Icon::Paperclip, &crate::i18n::t("chat-attach"))
                     .hovered(self.hovered(plus)),
             );
             ChatApp::push_hit(hits, plus, Hit::Attach);
@@ -1989,7 +2093,7 @@ impl ChatApp {
             tf,
             tr,
             theme,
-            &ButtonFace::icon_only(emoji, Icon::Smile, "Emoji").hovered(self.hovered(emoji)),
+            &ButtonFace::icon_only(emoji, Icon::Smile, &emoji_label).hovered(self.hovered(emoji)),
         );
         ChatApp::push_hit(hits, emoji, Hit::ComposerEmoji(emoji));
 
@@ -2143,7 +2247,7 @@ impl ChatApp {
         let close_label = if matches!(&close_hit, Hit::CloseThread) {
             crate::i18n::t("chat-thread-close")
         } else {
-            "Close".into()
+            crate::i18n::t("chat-close")
         };
         let title_x = head.x0 + f64::from(sp.s4);
         let close = square(
@@ -2391,7 +2495,7 @@ impl ChatApp {
         let tx = column.x0 + side + f64::from(sp.s2);
         let tw = (column.x1 - tx).max(f64::from(theme.tokens.spacing.s16)) as f32;
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        let (end_x, nh) = self.paint_author(
+        let (end_x, nh, _) = self.paint_author(
             &mut ctx,
             m,
             Rect::new(column.x0, y, column.x0 + side, y + side),
@@ -2570,7 +2674,7 @@ impl ChatApp {
         let head = self.draw_panel_header(
             PaintCtx::new(scene, tf, tr, theme),
             panel,
-            "Pinned messages",
+            &crate::i18n::t("chat-pins"),
             Hit::TogglePins,
             hits,
         );
@@ -2578,10 +2682,12 @@ impl ChatApp {
         let pinned: Vec<&Message> = self.messages.iter().rev().filter(|m| m.pinned).collect();
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         if pinned.is_empty() {
+            let title = crate::i18n::t("chat-pins-empty");
+            let message = crate::i18n::t("chat-pins-empty-detail");
             let content = EmptyStateContent {
                 icon: Some(Icon::Pin),
-                message: Some("Pin a message from its menu to keep it here for everyone."),
-                ..EmptyStateContent::new("Nothing pinned yet")
+                message: Some(&message),
+                ..EmptyStateContent::new(&title)
             };
             EmptyState::paint(&mut ctx, body, &content, self.last_mouse);
             return;
@@ -2687,7 +2793,7 @@ impl ChatApp {
         let title_band = Rect::new(panel.x0, y, panel.x1, y + title_h);
         line_in(
             &mut ctx,
-            "Share a file",
+            &crate::i18n::t("chat-attach"),
             &local.text(TextRole::Subheading),
             local.text_primary,
             inner_x,
@@ -2717,8 +2823,8 @@ impl ChatApp {
             y = band.y1 + pad;
         }
         let device = Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + row_h);
-        ListRowFace::new("Upload from this device")
-            .secondary("Files, pictures and videos up to 32 MiB")
+        ListRowFace::new(&crate::i18n::t("chat-attach-device"))
+            .secondary(&crate::i18n::t("chat-attach-device-detail"))
             .leading(RowLeading::Icon(Icon::Upload))
             .interaction(ui::widget::Interaction {
                 hovered: self.hovered(device),
@@ -2736,7 +2842,7 @@ impl ChatApp {
             let band = Rect::new(panel.x0, y + pad, panel.x1, y + pad + caption_h);
             line_in(
                 &mut ctx,
-                "From the workspace",
+                &crate::i18n::t("chat-attach-workspace"),
                 &local.text(TextRole::Caption),
                 local.text_dim,
                 inner_x,
@@ -2770,7 +2876,7 @@ impl ChatApp {
         }
         if more > 0 {
             let band = Rect::new(panel.x0, y + pad, panel.x1, y + pad + caption_h);
-            let label = format!("{more} more in the workspace");
+            let label = crate::i18n::t_args("chat-attach-more", &[("count", more.into())]);
             line_in(
                 &mut ctx,
                 &label,
@@ -2831,9 +2937,18 @@ pub(crate) fn typing_line(
     writers.dedup();
     match writers.as_slice() {
         [] => None,
-        [one] => Some(format!("{one} is typing…")),
-        [one, two] => Some(format!("{one} and {two} are typing…")),
-        _ => Some("Several people are typing…".to_owned()),
+        [one] => Some(crate::i18n::t_args(
+            "chat-typing-one",
+            &[("name", one.clone().into())],
+        )),
+        [one, two] => Some(crate::i18n::t_args(
+            "chat-typing-two",
+            &[
+                ("first", one.clone().into()),
+                ("second", two.clone().into()),
+            ],
+        )),
+        _ => Some(crate::i18n::t("chat-typing-several")),
     }
 }
 
