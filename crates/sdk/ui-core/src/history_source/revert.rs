@@ -519,6 +519,32 @@ pub fn revert_run(
     Ok(outcome)
 }
 
+/// Undo one entry's share of a run of work by writing its inverse forward
+/// into `doc`: [`revert_run`] for a run of one change, which is what a step
+/// of an agent's run names ([`RunStep`](crate::history_source::RunStep)).
+///
+/// This is the step the reader's history takes back, and it is the same one
+/// `undo` publishes: a run undone by an agent's report and one undone by
+/// Ctrl+Z write the same inverse, through the same classification of what a
+/// later writer has since changed.
+///
+/// The transaction is left **open**, as with [`revert_run`]: the caller
+/// commits.
+///
+/// # Errors
+///
+/// Propagates [`RevertError`] from [`run_bounds`] when the change cannot be
+/// addressed in `doc`.
+pub fn revert_step(
+    doc: &mut AutoCommit,
+    change: &ChangeHash,
+    by: Option<&str>,
+    authors: &AuthorDirectory,
+) -> Result<RevertOutcome, RevertError> {
+    let run = ChangeRun::single(entry_id_from_hash(&change.to_string()));
+    revert_run(doc, &run, by, authors)
+}
+
 /// Undo several changes, each on its own, into one open transaction:
 /// `changes` pairs each change with the actor hex whose work it is, newest
 /// first. Every revert is planned before any is written, because reading
