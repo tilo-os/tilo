@@ -60,12 +60,16 @@ def digest(path: Path) -> str:
 # region, and the tolerance is stated rather than implied.
 TOLERATED_PIXELS = 64
 
-# And a difference of one step in one channel is not a difference: a rounded or
-# gradient-filled edge can land on the other side of a rounding boundary between
-# two runs of the same layout (Settings differs in 5,861 pixels at 1920x1080
-# between two identical layouts, every one of them by exactly 1). Counting those
-# drowns the signal, so a pixel only counts when a channel moves perceptibly.
-IMPERCEPTIBLE_DELTA = 8
+# What the check asks is whether the *layout* differs, and pixels cannot answer
+# that directly: the same layout re-rastered at a fractional offset moves every
+# glyph edge by up to 136 steps while moving nothing, and rounding moves
+# thousands of pixels by one step. Both drown the signal.
+#
+# So both frames are box-downsampled by this factor and compared at that scale.
+# A subpixel shift averages away; a block of text in a different place, a control
+# that lost a row, a bar that moved 40 pixels, does not.
+STRUCTURAL_SCALE = 4
+IMPERCEPTIBLE_DELTA = 6
 
 
 def differing_pixels(first: Path, second: Path) -> tuple[int, int, int]:
@@ -81,6 +85,15 @@ def differing_pixels(first: Path, second: Path) -> tuple[int, int, int]:
     right = Image.open(second).convert("RGB")
     if left.size != right.size:
         return left.size[0] * left.size[1], 0, 255
+    from PIL import Image as _Image  # noqa: PLC0415
+
+    width, height = left.size
+    small = (
+        max(1, width // STRUCTURAL_SCALE),
+        max(1, height // STRUCTURAL_SCALE),
+    )
+    left = left.resize(small, _Image.Resampling.BOX)
+    right = right.resize(small, _Image.Resampling.BOX)
     difference = ImageChops.difference(left, right)
     meaningful = 0
     rounding = 0
@@ -93,7 +106,7 @@ def differing_pixels(first: Path, second: Path) -> tuple[int, int, int]:
             meaningful += 1
         elif delta:
             rounding += 1
-    return meaningful, rounding, largest
+    return meaningful * STRUCTURAL_SCALE * STRUCTURAL_SCALE, rounding, largest
 
 
 def run(binary: Path, arguments: list[str]) -> None:
