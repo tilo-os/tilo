@@ -78,10 +78,7 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         const NH: f32 = 820.0;
         let config = crate::support::ScratchConfig::new();
         // Start drilled into a category's content screen (narrow layout).
-        let app = config
-            .app()
-            .with_category(Category::Network)
-            .with_width_hint(NW);
+        let app = config.app().with_category(Category::Network);
         let mut app = lay_out_at(app, NW, NH);
         sync(&mut app);
         assert!(app.is_narrow(), "440px resolves to the narrow layout");

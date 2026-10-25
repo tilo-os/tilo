@@ -3234,6 +3234,8 @@ pub mod edge_resize;
 pub use edge_resize::{EdgeGrab, ResizeMode, WidthLimits, WindowEdge};
 mod resize_handle;
 pub use resize_handle::{HANDLE_HIT_HALF_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle};
+mod overflow_door;
+pub use overflow_door::{DoorPlan, OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
     CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, Pan,
