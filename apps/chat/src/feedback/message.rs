@@ -130,19 +130,17 @@ fn pick(index: usize, selection: &ReviewedSelection) -> Vec<String> {
             &[("note", note.into())],
         ));
     }
-    let shown: Vec<String> = selection
-        .texts
-        .iter()
-        .map(read)
-        .filter(|text| !text.trim().is_empty())
-        .take(SHOWN_TEXTS)
-        .collect();
-    if !shown.is_empty() {
-        lines.push(crate::i18n::t_args(
-            "chat-feedback-texts",
-            &[("texts", shown.join(" \u{00B7} ").into())],
-        ));
-    }
+    // One line per text: a text may hold any punctuation, so no separator
+    // between them can be told apart from the text itself.
+    lines.extend(
+        selection
+            .texts
+            .iter()
+            .map(read)
+            .filter(|text| !text.trim().is_empty())
+            .take(SHOWN_TEXTS)
+            .map(|text| crate::i18n::t_args("chat-feedback-text", &[("text", text.into())])),
+    );
     lines
 }
 

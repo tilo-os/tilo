@@ -135,7 +135,8 @@ fn a_picked_report_reads_out_its_picks_notes_actions_and_timings() {
             "1. Files: Save (button)",
             "\u{201C}Nothing happens when \u{2039}name\u{203A} clicks it\u{201D}",
             "2. so.tilo.files: row (row)",
-            "Modified \u{00B7} \u{2039}personal\u{203A}",
+            "Modified",
+            "\u{2039}personal\u{203A}",
             "Just before: open on files.folder, save on files.file (refused)",
             "Slow: 2 of the last 4 frames over 16 ms, the slowest 52 ms",
         ]
