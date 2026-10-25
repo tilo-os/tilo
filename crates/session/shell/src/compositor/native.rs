@@ -6,6 +6,7 @@
 use crate::shell::input_policy::{
     is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch, winit_event_to_lock_key,
 };
+use crate::shell::pointer_readiness::PressFacts;
 pub use crate::shell::session_policy::*;
 use crate::shell::state::WorkspaceAuthority as _;
 pub use crate::shell::test_control::{
@@ -3563,6 +3564,22 @@ impl FrameBuilderControlState<'_> {
 impl ControlState for FrameBuilderControlState<'_> {
     fn widget_registry(&self) -> HashMap<String, Rect> {
         self.fb.widget_registry()
+    }
+
+    /// What a press is proven against: the overlay host the registry was just
+    /// walked from, the identity of the frame on screen, and whether the
+    /// desktop is between two arrangements — opening setup, or switching
+    /// workspace, strip or window group — where a rectangle read now is not
+    /// the one a caller was shown.
+    ///
+    /// The side is asked of the host rather than of the whole desktop: a
+    /// widget asking for frames for its own reasons is not a reason to hold
+    /// every unrelated target back.
+    fn press_witness(&self) -> Option<(&dyn ui::widget::Widget, PressFacts)> {
+        let drawn = self.fb.drawn_revisions().last().copied();
+        let host = self.fb.host();
+        let in_transition = drawn.is_none() || host.desktop_is_moving();
+        Some((host, PressFacts::at(drawn, in_transition)))
     }
 
     /// The peers the overlay would paint this frame, read from the same

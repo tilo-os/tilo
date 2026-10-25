@@ -617,6 +617,23 @@ impl ShellOverlayHost {
         self.workspace_switch_owed
     }
 
+    /// Whether the desktop is being rearranged right now: a workspace switch
+    /// owes its frame, or the overview's windows or a workspace slide are in
+    /// flight, or setup has the screen instead of the desktop. A pointer
+    /// action read meanwhile names a rectangle the caller was not shown.
+    pub fn desktop_is_moving(&self) -> bool {
+        let now = ui::time::now();
+        self.onboarding_is_open()
+            || self.workspace_switch_owed()
+            || self.overview_zoom_moving(now)
+            || self.workspace_slide_moving(now)
+    }
+
+    /// Whether setup stands in front of the desktop.
+    pub fn onboarding_is_open(&self) -> bool {
+        self.onboarding.is_some()
+    }
+
     /// A key opened or closed the overview: the windows fly at `fast`, as
     /// spatial context, and input acts on the new state at once.
     pub(super) fn latch_keyboard_overview(&mut self) {
