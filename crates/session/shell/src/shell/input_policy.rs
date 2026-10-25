@@ -800,6 +800,11 @@ fn chrome_takes_all_input(fb: &FrameBuilder) -> bool {
     if fb.host().tab_renaming() {
         return true;
     }
+    // Pointing at what is wrong to report it: the picker takes every key
+    // and the pointer everywhere until the person finishes or leaves.
+    if fb.host().feedback_picker_open() {
+        return true;
+    }
     // Cursor chat is typed beside the pointer: every key is the message's
     // until Enter or Escape.
     if fb.host().cursor_chat_open() {

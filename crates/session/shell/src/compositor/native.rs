@@ -2372,6 +2372,16 @@ fn pump_floating_surface_service(
                         .host_mut()
                         .receive_pointed(&app_id, request, control);
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::PickAnswered {
+                    request,
+                    answer,
+                } => {
+                    // Credited to the launcher's app id, and taken only as
+                    // the answer to what the picker asked that app.
+                    changed |= frame_builder
+                        .host_mut()
+                        .receive_pick_answer(&app_id, request, answer);
+                }
                 message @ (ui::floating_surface::FloatingSurfaceClientMessage::Toolbar {
                     ..
                 }
@@ -2476,6 +2486,11 @@ fn pump_floating_surface_service(
         .host_mut()
         .route_feedback_point(Instant::now())
     {
+        service.send(connection, &message);
+    }
+    // Picking what to report asks the windows under the pointer what is
+    // there, and reads the picks again once the person finished.
+    for (connection, message) in frame_builder.host_mut().route_feedback_pick(Instant::now()) {
         service.send(connection, &message);
     }
     // The ask-agent chord asks the focused app for its selection, or opens
@@ -15241,6 +15256,10 @@ pub fn run() {
                 (
                     "feedback-point",
                     frame_builder.host().feedback_point_deadline(park_now),
+                ),
+                (
+                    "feedback-pick",
+                    frame_builder.host().feedback_pick_deadline(park_now),
                 ),
                 (
                     "dictation-service",

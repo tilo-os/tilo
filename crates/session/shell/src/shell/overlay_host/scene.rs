@@ -71,6 +71,7 @@ impl ShellOverlayHost {
                 window_previews: self.window_previews.changed(),
                 peer_sync: self.peer_sync_overlay.needs_animation_frame(),
                 directory_sheet: self.directory_sheet.needs_animation_frame(),
+                feedback_picker: self.feedback_picker.needs_animation_frame(now),
             },
         )
     }
@@ -154,6 +155,7 @@ impl ShellOverlayHost {
             );
             return sections;
         }
+        let drawing_since = ui::time::now();
         // The root needs the active text scale before any of its popover
         // geometry is resolved below; otherwise a first frame at large type
         // has a default-height card and clips its two-line controls.
@@ -470,6 +472,15 @@ impl ShellOverlayHost {
         });
         overlay_part(
             above_quick_settings,
+            "shell.feedback-picker",
+            desktop,
+            |scene| {
+                self.draw_feedback_picker(scene, transform, text_renderer, theme);
+                None
+            },
+        );
+        overlay_part(
+            above_quick_settings,
             "shell.capture-studio",
             desktop,
             |scene| {
@@ -484,6 +495,7 @@ impl ShellOverlayHost {
         );
         sections.topbar_bounds = topbar_bounds;
         sections.quick_settings_bounds = quick_settings_bounds;
+        self.feedback_frame_built(drawing_since);
         sections
     }
 

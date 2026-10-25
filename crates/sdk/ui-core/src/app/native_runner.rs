@@ -2152,6 +2152,7 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
                 | crate::floating_surface::FloatingSurfaceHostMessage::ShareSelection
                 | crate::floating_surface::FloatingSurfaceHostMessage::PointAt { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::Pick { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HistoryDescriptions {
                     ..

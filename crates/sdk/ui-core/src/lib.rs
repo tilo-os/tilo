@@ -228,6 +228,7 @@ pub mod pen;
 pub mod permissions;
 pub mod persist;
 pub mod pick;
+pub mod pick_wire;
 pub mod platform;
 pub mod pointer_replay;
 pub mod portable_storage;
