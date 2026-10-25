@@ -17,7 +17,8 @@ globalThis.__tiloPage ||= (() => {
     number: 'spinbutton', search: 'searchbox'};
   const INTERACTIVE = new Set(['link', 'button', 'checkbox', 'radio', 'switch', 'textbox',
     'searchbox', 'combobox', 'listbox', 'option', 'slider', 'spinbutton', 'tab', 'menuitem',
-    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable', 'file']);
+    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable', 'file', 'draggable', 'canvas',
+    'hoverable']);
   const CONTAINERS = new Set(['navigation', 'main', 'banner', 'contentinfo', 'complementary',
     'form', 'dialog', 'alertdialog', 'region', 'search', 'list', 'listitem', 'table', 'row',
     'cell', 'columnheader', 'rowheader', 'menu', 'menubar', 'tablist', 'tabpanel', 'tree',
@@ -26,9 +27,9 @@ globalThis.__tiloPage ||= (() => {
   const COLLAPSE = new Set(['list', 'listitem', 'row', 'cell', 'columnheader', 'rowheader', 'group']);
   const NAMED_FROM_CONTENT = new Set(['link', 'button', 'heading', 'option', 'tab', 'menuitem',
     'menuitemcheckbox', 'menuitemradio', 'treeitem', 'checkbox', 'radio', 'switch', 'cell',
-    'columnheader', 'rowheader', 'clickable']);
+    'columnheader', 'rowheader', 'clickable', 'draggable', 'canvas', 'hoverable']);
   const SKIP = new Set(['script', 'style', 'noscript', 'template', 'head', 'meta', 'link',
-    'title', 'base', 'svg', 'canvas', 'object', 'embed']);
+    'title', 'base', 'svg', 'object', 'embed']);
   const NOT_TEXT = new Set(['button', 'submit', 'reset', 'image', 'file', 'checkbox', 'radio',
     'hidden']);
   const SET_VALUE = new Set(['date', 'time', 'datetime-local', 'month', 'week', 'color', 'range']);
@@ -100,6 +101,7 @@ globalThis.__tiloPage ||= (() => {
       case 'fieldset': return 'group';
       case 'iframe': case 'frame': return 'iframe';
       case 'option': return 'option';
+      case 'canvas': return 'canvas';
     }
     if (element.isContentEditable && !element.parentElement?.isContentEditable) return 'textbox';
     return '';
@@ -336,6 +338,45 @@ globalThis.__tiloPage ||= (() => {
       throw failure('cross_origin_submit', `This form sends its data to ${target}, another site than ${location.origin}; submit it with cross_origin to allow that`);
   }
 
+  // Elements a page keeps something hidden under, shown while the pointer
+  // rests on them. A hand has to find them, so the outline names them.
+  const HOVER_RULES = 4000;
+  function hoverTargets() {
+    const found = new Set();
+    const texts = [];
+    for (const style of document.querySelectorAll('style, link[rel=stylesheet]')) {
+      if (style.localName === 'style') texts.push(style.textContent || '');
+    }
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try { rules = sheet.cssRules; } catch { continue; }
+      texts.push([...(rules || [])].map(rule => rule.cssText || '').join('\n'));
+    }
+    const declarations = text => text.split('}');
+    let seen = 0;
+    for (const text of texts) {
+      if (!text.includes(':hover')) continue;
+      for (const rule of declarations(text)) {
+        if (++seen > HOVER_RULES) return [...found];
+        const brace = rule.indexOf('{');
+        if (brace < 0 || !rule.slice(0, brace).includes(':hover')) continue;
+        // Something has to appear when the pointer arrives, or the rule is
+        // only a colour change and nothing waits to be revealed.
+        if (!/(display|visibility|opacity|height|max-height)\s*:/.test(rule.slice(brace))) continue;
+        for (const selector of rule.slice(0, brace).split(',')) {
+          const index = selector.indexOf(':hover');
+          if (index < 0) continue;
+          const before = selector.slice(0, index).trim();
+          let owner = null;
+          try { owner = document.querySelector(before.endsWith('>') || before.endsWith('+') || before.endsWith('~')
+            ? before.slice(0, -1) : before || ':root'); } catch { continue; }
+          if (owner) found.add(owner);
+        }
+      }
+    }
+    return [...found];
+  }
+
   function outlineLines() {
     const lines = [];
     let chars = 0, visited = 0, truncated = false, pending = '', pendingDepth = 0;
@@ -351,6 +392,7 @@ globalThis.__tiloPage ||= (() => {
       pending = '';
       if (text) emit(pendingDepth, `text ${quote(text)}`);
     };
+    const hovering = new Set(hoverTargets());
     const children = parent => {
       if (parent.shadowRoot) return parent.shadowRoot.childNodes;
       const assigned = parent.localName === 'slot' ? parent.assignedNodes({flatten: true}) : null;
@@ -382,6 +424,13 @@ globalThis.__tiloPage ||= (() => {
       if (block) flush();
       const pointer = style.cursor === 'pointer';
       let kind = visible ? role(element) : '';
+      // A page's drag source is what a gesture grabs, so a gesture addresses
+      // it by ref: a list item that is also a listitem is still the thing a
+      // hand moves. Roles only a container carries keep their words.
+      if (!INTERACTIVE.has(kind) && kind !== 'heading' && element.draggable) kind = 'draggable';
+      // A page that keeps a menu hidden until the pointer rests on it names
+      // the element a hand has to reach, so a gesture can address it by ref.
+      if (!INTERACTIVE.has(kind) && kind !== 'heading' && hovering.has(element)) kind = 'hoverable';
       if (!kind && visible && !context.inside && tag !== 'label' && tag !== 'body' && tag !== 'html' &&
           (element.hasAttribute('onclick') || (element.hasAttribute('tabindex') && element.tabIndex >= 0) ||
            (pointer && !context.pointer))) kind = 'clickable';
@@ -391,6 +440,14 @@ globalThis.__tiloPage ||= (() => {
         flush();
         const label = kind === 'img' ? name(element, kind) : clean(element.title || element.name || element.src, MAX_NAME);
         emit(depth, label ? `${kind} ${quote(label)}` : kind);
+        return;
+      }
+      // A drawing surface is one element a gesture draws on, never the boxes
+      // of whatever the page painted into it.
+      if (tag === 'canvas') {
+        flush();
+        const label = name(element, kind);
+        emit(depth, `${kind}${label ? ' ' + quote(label) : ''} [ref=${refOf(element)}]`);
         return;
       }
       if (INTERACTIVE.has(kind) || kind === 'heading') {
@@ -502,6 +559,16 @@ globalThis.__tiloPage ||= (() => {
     if (!within(hit, target))
       throw failure('obscured', `${ref} is covered by ${describe(hit)}; close or scroll past it first`);
     return {ok: true, x: center.x, y: center.y, message: `Clicked ${summary(element)}`};
+  }
+
+  // A pointer step named this element, so the box it is stepped around
+  // is the element's own scroll-adjusted box, never a point inside it.
+  function locateBox(ref) {
+    const element = resolve(ref);
+    const box = element.getBoundingClientRect();
+    if (!(box.width > 0 && box.height > 0))
+      throw failure('not_visible', `${ref} has no box on the page`);
+    return {ok: true, message: `Found ${summary(element)}`, data: {x: box.left, y: box.top, width: box.width, height: box.height}};
   }
 
   function fill(ref, text, allowSecret) {
@@ -1067,6 +1134,7 @@ globalThis.__tiloPage ||= (() => {
           case 'at': return at(command.x, command.y);
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
+          case 'locate_box': return locateBox(command.element);
           case 'fill': arm('script'); return fill(command.element, command.text, command.secret);
           case 'fill_files': arm('script'); return fillFilesTarget(command.element, command.paths);
           case 'select': arm('script'); return select(command.element, command.values);
