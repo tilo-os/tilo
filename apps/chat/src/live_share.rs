@@ -247,17 +247,8 @@ impl ChatApp {
         let top = header.center().y - f64::midpoint(title_h, caption_h);
         let (heading, caption) = if share.ended {
             (crate::i18n::t("chat-share-ended"), label.to_owned())
-        } else if let Some(Err(why)) = self.resource_navigation.status(&m.id) {
-            // Why pressing it opened nothing, where the access stood.
-            (label.to_owned(), why.clone())
-        } else if share.access == ShareAccess::View
-            && !self.is_me(&m.author)
-            && self.can_already_edit(&m.id)
-        {
-            // The share limits no one: say what this reader may do.
-            (label.to_owned(), crate::i18n::t("chat-share-already-edit"))
         } else {
-            (label.to_owned(), access_label(share.access))
+            (label.to_owned(), self.share_caption(m, share))
         };
         let ink = if share.ended {
             theme.text_dim
@@ -282,6 +273,23 @@ impl ChatApp {
             Rect::new(text_x, top + title_h, text_end, top + title_h + caption_h),
             text_end - text_x,
         );
+    }
+
+    /// What a live share's card says under its title, to this reader: why
+    /// opening it failed, that they may edit it anyway, or the share's access.
+    pub(crate) fn share_caption(&self, m: &Message, share: &crate::record::WindowShare) -> String {
+        if let Some(Err(why)) = self.resource_navigation.status(&m.id) {
+            // Why pressing it opened nothing, where the access stood.
+            why.clone()
+        } else if share.access == ShareAccess::View
+            && !self.is_me(&m.author)
+            && self.can_already_edit(&m.id)
+        {
+            // The share limits no one: say what this reader may do.
+            crate::i18n::t("chat-share-already-edit")
+        } else {
+            access_label(share.access)
+        }
     }
 
     /// The app's mark at the head's start, or, ended, a closed eye.

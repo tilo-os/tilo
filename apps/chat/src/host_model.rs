@@ -102,7 +102,9 @@ impl ChatApp {
                     label.push_str(&crate::i18n::t("chat-share-live"));
                     label.push('\n');
                 }
-                label.push_str(&crate::live_share::access_label(share.access));
+                // What the card says to this reader, not the share's
+                // access alone: an Editor hears they can edit it anyway.
+                label.push_str(&self.share_caption(message, share));
             }
         }
         if let Some(stream) = message.work.as_ref().and_then(|work| work.stream.as_ref()) {
