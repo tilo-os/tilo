@@ -901,7 +901,9 @@ mod tests {
     /// The cases a probe scenario ran, in order, so the test below can say
     /// that a failure did not stop the cases after it.
     fn note(ran: &std::sync::Mutex<Vec<&'static str>>, case: &'static str) {
-        ran.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(case);
+        ran.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(case);
     }
 
     #[test]
@@ -918,7 +920,8 @@ mod tests {
             }),
         ]);
         assert_eq!(
-            ran.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner),
+            ran.into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             ["first", "fails", "after_a_failure"],
             "a failing case does not stop the ones after it",
         );

@@ -115,7 +115,11 @@ impl Report {
             !self.cases.is_empty(),
             "the scenario ran no case, so it proved nothing",
         );
-        let failed: Vec<&Case> = self.cases.iter().filter(|case| case.failure.is_some()).collect();
+        let failed: Vec<&Case> = self
+            .cases
+            .iter()
+            .filter(|case| case.failure.is_some())
+            .collect();
         if failed.is_empty() {
             return;
         }
@@ -168,7 +172,11 @@ fn hook(info: &panic::PanicHookInfo<'_>) {
         );
         return;
     }
-    if let Some(previous) = PREVIOUS.lock().unwrap_or_else(|held| held.into_inner()).as_ref() {
+    if let Some(previous) = PREVIOUS
+        .lock()
+        .unwrap_or_else(|held| held.into_inner())
+        .as_ref()
+    {
         previous(info);
     }
 }
@@ -198,7 +206,12 @@ pub fn run(phases: Vec<Phase<'_>>) -> Report {
     }
     CURRENT.with(|current| *current.borrow_mut() = None);
     let mut cases = Vec::with_capacity(phases.len());
-    for Phase { name, location, run } in phases {
+    for Phase {
+        name,
+        location,
+        run,
+    } in phases
+    {
         CURRENT.with(|current| *current.borrow_mut() = Some(name));
         let outcome = panic::catch_unwind(AssertUnwindSafe(run));
         CURRENT.with(|current| *current.borrow_mut() = None);
