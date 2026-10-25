@@ -3593,18 +3593,24 @@ impl CollaborationManager {
     /// [`Self::native_initial_named_fixture_for_test`] whose broker admits
     /// the connection's own invocations against the surface it published;
     /// the probe lists each invocation as it arrived and whether it was
-    /// offered then.
+    /// offered then. It refuses every committed read of the `refused`
+    /// routes, so they never open.
     #[cfg(test)]
     #[cfg(unix)]
     pub(crate) fn native_initial_named_invocation_fixture_for_test(
         route: RouteSpec,
         history: Vec<u8>,
+        refused: &[RouteSpec],
     ) -> (
         Self,
         Box<dyn Fn() -> Vec<(tilo_actions::ActionAddress, bool)>>,
     ) {
-        let (mut manager, invocations) =
-            tests::native_initial_invocation_fixture(&route.app_id, route.cluster_id, history);
+        let (mut manager, invocations) = tests::native_initial_invocation_fixture(
+            &route.app_id,
+            route.cluster_id,
+            history,
+            refused.iter().map(RouteSpec::channel_id).collect(),
+        );
         assert!(manager.send(CollabRequest::Hello {
             app_id: route.app_id,
             cluster_id: route.cluster_id,
@@ -3950,6 +3956,24 @@ impl CollaborationManager {
     #[cfg(unix)]
     pub(crate) fn connected_for_lifecycle_test() -> Self {
         tests::connected_manager()
+    }
+
+    /// The routes an accepted invocation waits to be current on before it
+    /// runs, as the owner last set them.
+    #[cfg(test)]
+    #[cfg(unix)]
+    pub(crate) fn invocation_document_routes_for_test(&self) -> Vec<String> {
+        let Backend::Transport(transport) = &self.backend else {
+            panic!("a broker transport");
+        };
+        transport
+            .as_any()
+            .and_then(|any| any.downcast_ref::<BrokerTransport>())
+            .expect("a broker transport")
+            .state
+            .document_reads
+            .document_owner_routes("")
+            .expect("document owner routes")
     }
 
     /// Retire the actual socket-backed capture generation, as a rejoin does.
@@ -7899,6 +7923,9 @@ mod tests {
         committed_ack_reply: Option<runtime_collab::committed_document::Reply>,
         /// Refuse every committed Open, as a broker does for a revoked peer.
         committed_open_failure: Option<String>,
+        /// Refuse committed Opens on these channels only, as the session
+        /// host does for a route this connection holds no read custody of.
+        committed_open_refused_channels: Vec<String>,
         /// Hold committed-read `Await`s until this is notified, as the broker
         /// does until the read changes. Without it every `Await` fails, as a
         /// call to a broker can, and the reader re-Opens at its own pace.
@@ -8334,6 +8361,8 @@ mod tests {
     }
 
     struct FakeChannel {
+        /// The channel this handle joined.
+        channel_id: String,
         captures: SharedCaptures,
         op_backlog: OpBacklog,
         presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
@@ -8644,10 +8673,18 @@ mod tests {
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
                 let changes = captures.committed_changes.clone();
-                if matches!(request, Request::Open { .. } | Request::OpenChanges { .. })
-                    && let Some(error) = captures.committed_open_failure.clone()
-                {
-                    return Err(capnp::Error::failed(error));
+                if matches!(request, Request::Open { .. } | Request::OpenChanges { .. }) {
+                    if let Some(error) = captures.committed_open_failure.clone() {
+                        return Err(capnp::Error::failed(error));
+                    }
+                    if captures
+                        .committed_open_refused_channels
+                        .contains(&self.channel_id)
+                    {
+                        return Err(capnp::Error::failed(
+                            "committed read custody refused for this route".into(),
+                        ));
+                    }
                 }
                 let current_revision = captures.committed_revision.unwrap_or([7; 32]);
                 let reply = match captures.committed_history_fixture.as_ref() {
@@ -8991,7 +9028,7 @@ mod tests {
                 .and_then(|kind| kind.to_str().ok().map(str::to_owned))
                 .unwrap_or_default();
             let mut captures = self.captures.lock().unwrap();
-            captures.joined.push((channel_id, identity));
+            captures.joined.push((channel_id.clone(), identity));
             captures.joined_record_kinds.push(record_kind);
             let gate = captures.join_gates.pop_front();
             if gate.is_none()
@@ -9002,6 +9039,7 @@ mod tests {
             drop(captures);
 
             let chan = FakeChannel {
+                channel_id,
                 captures: self.captures.clone(),
                 op_backlog: Rc::new(RefCell::new(self.op_backlog.clone())),
                 presence_backlog: Rc::new(RefCell::new(self.presence_backlog.clone())),
@@ -11741,6 +11779,7 @@ mod tests {
         app: &str,
         room: Uuid,
         history: Vec<u8>,
+        refused_channels: Vec<String>,
     ) -> (
         CollaborationManager,
         Box<dyn Fn() -> Vec<(tilo_actions::ActionAddress, bool)>>,
@@ -11748,6 +11787,7 @@ mod tests {
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(Captures {
                 committed_history_fixture: Some(history),
+                committed_open_refused_channels: refused_channels,
                 ..Captures::default()
             })),
             ..FakeBroker::default()
