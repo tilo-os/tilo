@@ -15,6 +15,9 @@ git-diff-split-name = Side-by-side diff
 git-syntax-name = Syntax highlighting
 git-dismiss-error = Dismiss error
 
+git-switched = Switched to { $name }
+git-switched-stashed = Switched to { $name }; the changes are stashed as { $stash }
+
 # Confirmation
 git-confirm-discard-file-title = Discard changes to { $name }?
 git-confirm-discard-hunk-title = Discard this change?
@@ -23,6 +26,12 @@ git-confirm-discard-untracked-body = The file is deleted from your working tree.
 git-confirm-discard-body = Your edits are lost. This can't be undone.
 git-confirm-delete-branch-body = Commits that only this branch holds are lost.
 git-confirm-discard = Discard
+git-confirm-switch-title = Switch to { $name }?
+git-confirm-switch-body = The working tree is clean, so nothing changes hands but the branch.
+git-confirm-switch-dirty-body = You have uncommitted changes. Park them on the stash and switch, or take them with you; a change that would be overwritten refuses either way.
+git-switch-stash = Stash and switch
+git-switch-carry = Switch, keeping my changes
+git-switch-go = Switch
 git-cancel = Cancel
 
 # Changes
@@ -158,3 +167,19 @@ git-worktree-read-error = Could not read working directories: { $error }
 
 git-client-git-client-repository = Opened the repository { $new }
 git-client-record-repository = Recorded the repository's branches and history
+
+# Conflicts and a commit's changed files
+git-conflict-resolved = Kept { $side } for { $file }
+git-conflict-ours = our side
+git-conflict-theirs = their side
+git-conflict-take-ours = Take ours
+git-conflict-take-theirs = Take theirs
+git-conflict-explainer = This file is conflicted.
+git-back-to-commit = Back to commit
+git-commit-file-heading = { $file } in { $commit }
+git-commit-file-name = { $file } ({ $kind })
+git-show-commit-file = Show this file's changes in the commit
+
+# Diff controls in the window bar
+git-whitespace-name = Show whitespace
+git-wrap-name = Wrap long lines
