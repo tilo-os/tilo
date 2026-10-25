@@ -1,15 +1,177 @@
 //! Real local sockets, the native launcher record and production host service.
 //! This does not mount a Files surface or qualify SDK history integration.
 use super::*;
-use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+use crate::shell::network::one_host_tests::{
+    Device, Person, Wakes, hosted_workspace, scratch, until,
+};
+use crate::shell::state::{RoomId, Workspace, WorkspaceId};
 use ed25519_dalek::{Signer as _, SigningKey};
 use runtime_collab::file_clipboard::ObjectIdentity;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
+use tilo_action_policy::roles::owner_commands::{GRANT_SANDBOX, REVOKE_SANDBOX};
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 
 use std::os::unix::fs::PermissionsExt as _;
 
 const APP: &str = "so.tilo.file-explorer";
+/// The person whose Files windows connect, and their device's key.
+const CONNECTING: u8 = 119;
+const CONNECTING_DEVICE: u8 = 120;
+/// The owner of the room when the connecting person is only a member.
+const OTHER_OWNER: u8 = 121;
+
+/// The fixture's workspace: a room this device's own host holds, as every
+/// workspace is.
+struct HostedRoom {
+    device: Device,
+    wakes: Arc<Wakes>,
+    local: WorkspaceId,
+    room: RoomId,
+}
+impl HostedRoom {
+    fn start(owner: &Person, dir: &Path) -> Self {
+        let wakes = Arc::new(Wakes::default());
+        let device = Device::start(
+            owner,
+            "Clipboard fixture host",
+            dir,
+            0x0C11,
+            tilo_user_identity::DeviceCapabilities::primary(),
+            &wakes,
+        );
+        let (local, room) = hosted_workspace(&device, &[], "Clipboard bridge fixture");
+        Self {
+            device,
+            wakes,
+            local,
+            room,
+        }
+    }
+
+    fn workspace<T>(&self, read: impl FnOnce(&Workspace) -> T) -> T {
+        let tree = self.device.tree.read();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == self.room)
+            .expect("the room's workspace");
+        let read = read(workspace);
+        drop(tree);
+        read
+    }
+
+    /// `person` joins the room from their own device, its state under
+    /// `dir`, through the invitation the room's host issues them.
+    fn admit(&self, person: &Person, dir: &Path) -> Device {
+        let member = Device::start(
+            person,
+            "Clipboard fixture member",
+            dir,
+            0x0C12,
+            tilo_user_identity::DeviceCapabilities::primary(),
+            &self.wakes,
+        );
+        member
+            .join(
+                &self
+                    .device
+                    .invite(self.local, "Member", Some(person.user())),
+            )
+            .expect("the member's join field takes the invitation");
+        let id = person.id();
+        until(
+            &[&self.device, &member],
+            "the member to join the room",
+            || {
+                self.workspace(|workspace| workspace.role_of(&id).is_some())
+                    .then_some(())
+            },
+        );
+        member
+    }
+
+    /// Ask the room's host, as its owner, for `action` with `arguments`,
+    /// and wait until the room here shows what `shown` looks for.
+    fn govern(
+        &self,
+        action: &str,
+        arguments: serde_json::Value,
+        what: &str,
+        shown: impl Fn(&Workspace) -> bool,
+    ) {
+        let serde_json::Value::Object(arguments) = arguments else {
+            panic!("governance arguments are an object");
+        };
+        self.device
+            .govern(self.room, action, arguments)
+            .unwrap_or_else(|error| panic!("the room's host takes the change: {error}"));
+        until(&[&self.device], what, || {
+            self.workspace(|workspace| shown(workspace)).then_some(())
+        });
+    }
+
+    /// Give Files `directory`, read-write, as the room's owner grants it.
+    fn grant_files(&self, directory: &Path) {
+        let mut asked = Workspace::new(WorkspaceId(119), "Files grant");
+        asked.grant_app(
+            APP,
+            &Capability::Filesystem {
+                path: directory.to_path_buf(),
+                mode: FsMode::ReadWrite,
+                scope: crate::shell::state::GRANT_ALWAYS,
+            },
+        );
+        for capability in &asked.sandbox {
+            self.govern(
+                GRANT_SANDBOX,
+                serde_json::json!({ "capability": capability }),
+                "the Files grant to reach the room",
+                |workspace| {
+                    workspace.sandbox.iter().any(|held| {
+                        held.subject == capability.subject
+                            && held.scope == capability.scope
+                            && held.access == capability.access
+                    })
+                },
+            );
+        }
+    }
+
+    /// Take back every sandbox grant of the room, as its owner does.
+    fn revoke_sandbox(&self) {
+        let held: Vec<String> = self.workspace(|workspace| {
+            workspace
+                .sandbox
+                .iter()
+                .map(|capability| capability.id.clone())
+                .collect()
+        });
+        for id in held {
+            self.govern(
+                REVOKE_SANDBOX,
+                serde_json::json!({ "capability": id }),
+                "the revoked grant to leave the room",
+                |workspace| !workspace.sandbox.iter().any(|held| held.id == id),
+            );
+        }
+    }
+
+    /// Make `person`, a member, a viewer of the room, as its owner does.
+    fn make_viewer(&self, person: &Person) {
+        self.device.set_role(self.room, person, "viewer");
+        let id = person.id();
+        until(&[&self.device], "the member to view the room only", || {
+            self.workspace(|workspace| {
+                matches!(
+                    workspace.role_of(&id),
+                    Some(tilo_action_policy::Role::Viewer)
+                )
+            })
+            .then_some(())
+        });
+    }
+}
 
 struct Fixture {
     directory: tempfile::TempDir,
@@ -19,13 +181,28 @@ struct Fixture {
     tree: WorkspaceTreeHandle,
     clipboard: Arc<NativeFileClipboard>,
     _broker: BrokerHandle,
+    hosted: HostedRoom,
+    /// The connecting person's own device, when they are a member the
+    /// room's owner admitted.
+    _member: Option<Device>,
+    _devices: tempfile::TempDir,
     /// This test's own data home, where its Trash lives: never the host's,
     /// nor one another test running alongside creates at the same time.
     _data_home: tilo_test_env::ScopedEnv,
     _data: tempfile::TempDir,
 }
 impl Fixture {
+    /// The connecting person owns the room.
     fn new() -> Self {
+        Self::start(false)
+    }
+
+    /// The connecting person is a member of a room another person owns.
+    fn as_member() -> Self {
+        Self::start(true)
+    }
+
+    fn start(as_member: bool) -> Self {
         let data = tempfile::tempdir().expect("private data home");
         fs::set_permissions(data.path(), fs::Permissions::from_mode(0o700))
             .expect("owner-only data home");
@@ -35,40 +212,27 @@ impl Fixture {
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
             .expect("owner-only fixture socket directory");
         let socket = directory.path().join("broker.sock");
-        let signing_root = SigningKey::from_bytes(&[119; 32]);
-        let device = SigningKey::from_bytes(&[120; 32]);
-        let mut workspace = Workspace::new(WorkspaceId(119), "Clipboard bridge fixture");
-        workspace.set_owner(
-            tilo_action_broker::collab_broker_capnp::principal_id_for_root(
-                signing_root.verifying_key().to_bytes(),
-            ),
-        );
-        workspace.grant_app(
-            APP,
-            &Capability::Filesystem {
-                path: directory.path().to_path_buf(),
-                mode: FsMode::ReadWrite,
-                scope: crate::shell::state::GRANT_SESSION,
-            },
-        );
-        let room = workspace.room().to_string();
-        let mut tree = WorkspaceTree {
-            persist_path: Some(directory.path().join("state.json")),
-            ..Default::default()
+        let devices = scratch();
+        let person = Person::new(CONNECTING);
+        let (hosted, member) = if as_member {
+            let hosted = HostedRoom::start(&Person::new(OTHER_OWNER), &devices.path().join("host"));
+            let member = hosted.admit(&person, &devices.path().join("member"));
+            (hosted, Some(member))
+        } else {
+            (
+                HostedRoom::start(&person, &devices.path().join("host")),
+                None,
+            )
         };
-        tree.workspaces.push(workspace);
-        let tree = tree.shared();
-        let mut certificate = tilo_user_identity::DeviceCert {
-            user_public_key: signing_root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Clipboard fixture device".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_device_cert(&mut certificate, &signing_root)
-            .expect("signed certificate");
+        hosted.grant_files(directory.path());
+        let room = hosted.room.to_string();
+        let tree = hosted.device.tree.clone();
+        let device = SigningKey::from_bytes(&[CONNECTING_DEVICE; 32]);
+        let certificate = person.certify(
+            &device,
+            "Clipboard fixture device",
+            tilo_user_identity::DeviceCapabilities::primary(),
+        );
         let identity = runtime_collab::CertifiedJoinIdentity {
             workspace_id: room.clone(),
             device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
@@ -80,7 +244,11 @@ impl Fixture {
         .encode()
         .expect("certified identity");
         let clipboard = Arc::new(NativeFileClipboard::new(tree.clone()));
-        let mut services = super::super::native_services(Some(tree.clone()), None, None);
+        let mut services = super::super::native_services(
+            Some(tree.clone()),
+            Some(Arc::clone(hosted.device.net())),
+            None,
+        );
         services.file_clipboard = Some(clipboard.clone());
         // This fixture enrolls its signed device explicitly through the broker's
         // test-support configuration; it has no installed native identity host.
@@ -109,9 +277,35 @@ impl Fixture {
             tree,
             clipboard,
             _broker: broker,
+            hosted,
+            _member: member,
+            _devices: devices,
             _data_home: data_home,
             _data: data,
         }
+    }
+
+    /// The room's owner takes back every sandbox grant, from off this
+    /// test's runtime as the session's own thread would.
+    fn revoke_grants(&self) {
+        let hosted = &self.hosted;
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| hosted.revoke_sandbox())
+                .join()
+                .expect("the room's host revokes the grants");
+        });
+    }
+
+    /// The room's owner makes the connecting member a viewer.
+    fn demote_to_viewer(&self) {
+        let hosted = &self.hosted;
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| hosted.make_viewer(&Person::new(CONNECTING)))
+                .join()
+                .expect("the room's host changes the role");
+        });
     }
     #[expect(
         clippy::future_not_send,
@@ -346,8 +540,8 @@ fn clipboard_bridge_refuses_replacement_before_capture_and_foreign_window_ticket
         .enable_all()
         .build()
         .expect("runtime");
+    let fixture = Fixture::new();
     tokio::task::LocalSet::new().block_on(&runtime, async {
-        let fixture = Fixture::new();
         let a = fixture.connect("window-a").await;
         let b = fixture.connect("window-b").await;
         let path = fixture.directory.path().join("selected");
@@ -409,8 +603,8 @@ fn clipboard_bridge_pastes_exact_tickets_and_observes_retry_without_duplicate_co
         .enable_all()
         .build()
         .expect("runtime");
+    let fixture = Fixture::new();
     tokio::task::LocalSet::new().block_on(&runtime, async {
-        let fixture = Fixture::new();
         let a = fixture.connect("window-a").await;
         let b = fixture.connect("window-b").await;
         let path = fixture.directory.path().join("report");
@@ -485,7 +679,7 @@ fn clipboard_bridge_pastes_exact_tickets_and_observes_retry_without_duplicate_co
             fs::read_dir(&folder).expect("receiving contents").count(),
             1
         );
-        fixture.tree.write().workspaces[0].sandbox.clear();
+        fixture.revoke_grants();
         let reply = b
             .compensate(Command::Undo { operation })
             .await
@@ -509,8 +703,8 @@ fn clipboard_bridge_refuses_replaced_destination_before_capture_and_paste() {
         .enable_all()
         .build()
         .expect("runtime");
+    let fixture = Fixture::new();
     tokio::task::LocalSet::new().block_on(&runtime, async {
-        let fixture = Fixture::new();
         let a = fixture.connect("window-a").await;
         let b = fixture.connect("window-b").await;
         let source = fixture.directory.path().join("source");
@@ -561,8 +755,8 @@ fn clipboard_bridge_expired_ticket_and_closed_source_cannot_publish_or_paste() {
         .enable_all()
         .build()
         .expect("runtime");
+    let fixture = Fixture::new();
     tokio::task::LocalSet::new().block_on(&runtime, async {
-        let fixture = Fixture::new();
         let a = fixture.connect("window-a").await;
         let b = fixture.connect("window-b").await;
         let source = fixture.directory.path().join("source");
@@ -621,8 +815,8 @@ fn clipboard_bridge_cut_restores_exact_receipt_under_current_undo_authority() {
         .enable_all()
         .build()
         .expect("runtime");
+    let fixture = Fixture::new();
     tokio::task::LocalSet::new().block_on(&runtime, async {
-        let fixture = Fixture::new();
         let a = fixture.connect("window-a").await;
         let b = fixture.connect("window-b").await;
         let source = fixture.directory.path().join("source");
@@ -720,19 +914,13 @@ fn clipboard_bridge_current_viewer_can_copy_but_cannot_cut_or_replace_offer() {
         .enable_all()
         .build()
         .expect("runtime");
+    let fixture = Fixture::as_member();
     tokio::task::LocalSet::new().block_on(&runtime, async {
-        let fixture = Fixture::new();
         let connection = fixture.connect("viewer-window").await;
         let path = fixture.directory.path().join("source");
         fs::write(&path, b"viewer readable bytes").expect("source");
         let ticket = connection.capture(&path, false).await;
-        {
-            let mut tree = fixture.tree.write();
-            let workspace = tree.workspaces.first_mut().expect("fixture workspace");
-            let principal = workspace.policy.owner.take().expect("original owner");
-            workspace.admit(principal, tilo_action_policy::Role::Viewer);
-            drop(tree);
-        }
+        fixture.demote_to_viewer();
         let offer = connection.publish(ticket.clone(), false).await;
         let error = connection
             .command(Command::Publish {
@@ -766,8 +954,8 @@ fn clipboard_bridge_same_process_connection_cannot_spend_another_routes_ticket()
         .enable_all()
         .build()
         .expect("runtime");
+    let fixture = Fixture::new();
     tokio::task::LocalSet::new().block_on(&runtime, async {
-        let fixture = Fixture::new();
         let connection = fixture.connect("window-a").await;
         let path = fixture.directory.path().join("source");
         fs::write(&path, b"retained source").expect("source");
@@ -835,7 +1023,7 @@ fn clipboard_bridge_local_home_consent_refuses_foreign_person_without_blocking_s
     registry
         .bind_workspace(&fixture.room, &identity_id)
         .unwrap();
-    let workspace = fixture.tree.read().workspaces.first().unwrap().id;
+    let workspace = fixture.hosted.local;
     assert!(
         crate::shell::search::providers::applications::grant_file_manager_home(
             &mut fixture.tree.write(),
@@ -990,8 +1178,8 @@ fn clipboard_bridge_copies_a_large_named_selection_and_settles_clashes() {
         .enable_all()
         .build()
         .expect("runtime");
+    let fixture = Fixture::new();
     tokio::task::LocalSet::new().block_on(&runtime, async {
-        let fixture = Fixture::new();
         let a = fixture.connect("window-a").await;
         let many = fixture.directory.path().join("many");
         fs::create_dir(&many).expect("source folder");
