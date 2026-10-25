@@ -704,26 +704,30 @@ impl Device {
                 tree.committed_record_rooms.contains(&room),
             )
         };
+        let status = self.net().native_owner_status();
+        let standing = status.describe();
+        let failure = self.net().open_failure().unwrap_or_default();
+        let governor = status
+            .open()
+            .and_then(|owner| {
+                owner
+                    .with_current(room, |view| {
+                        Ok(format!(
+                            "{:?} {:?}",
+                            view.governor().device_label,
+                            view.governor().capabilities
+                        ))
+                    })
+                    .ok()
+            })
+            .unwrap_or_default();
         assert!(
             sealed,
             "{} holds {room} as a sealed room (its records committed instead: {committed}; \
-             its enrollment names a governor that stewards them: {}, the governor {})",
+             its enrollment names a governor that stewards them: {}, the governor {governor}; \
+             its native owner is {standing} {failure})",
             self.label,
-            self.net().native_room_seals_records(room),
-            self.net()
-                .opened_native_owner()
-                .and_then(|owner| {
-                    owner
-                        .with_current(room, |view| {
-                            Ok(format!(
-                                "{:?} {:?}",
-                                view.governor().device_label,
-                                view.governor().capabilities
-                            ))
-                        })
-                        .ok()
-                })
-                .unwrap_or_default()
+            self.net().native_room_seals_records(room)
         );
     }
 
