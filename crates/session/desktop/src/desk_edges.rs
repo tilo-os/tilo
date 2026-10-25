@@ -19,7 +19,7 @@
 
 use vello::kurbo::{Point, Rect, Size, Vec2};
 
-pub use settings_store::desk_widgets::DockEdge;
+pub use ui::desk_widgets::DockEdge;
 
 /// Gap between a widget and the display edge, and between stacked widgets.
 pub const MARGIN: f64 = ui::tokens::Spacing::BASE.s3 as f64;
@@ -254,7 +254,7 @@ fn reach_zone(area: Rect, edge: DockEdge, glance: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use settings_store::desk_widgets::WidgetId;
+    use ui::desk_widgets::WidgetId;
 
     const AREA: Rect = Rect::new(0.0, 24.0, 1600.0, 900.0);
 
