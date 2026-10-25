@@ -21,6 +21,8 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 iroh.workspace = true
 iroh-relay = { version = "1.0.3", features = ["server"], optional = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
+# iroh's address-lookup trait hands a lookup's results back as this stream.
+n0-future = "0.3.2"
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
 

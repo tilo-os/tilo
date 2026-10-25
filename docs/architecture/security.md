@@ -610,20 +610,31 @@ reviewed report; it travels to that room over the collaboration transport,
 never to a Tilo service (`docs/architecture/feedback.md`). What does leave,
 without anyone asking each time:
 
-- **number 0's iroh infrastructure.** Every peer-to-peer endpoint (the shell,
-  fs, the initrd's sibling unlock, the app-registry transport, `tilo-relay`)
-  binds with iroh's `presets::N0`. That preset publishes a signed record of the
+- **number 0's iroh infrastructure.** Tilo keeps n0's public relays
+  (`*.relay.n0.iroh.link`) and its DNS directory at `dns.iroh.link` as the
+  way two devices find each other without a Tilo-operated server: the
+  alternative is hosting both, which does not remove the disclosure, only
+  chooses who receives it. An endpoint publishes a signed record of its
   endpoint id — this device's public key — and its home relay URL (no IP
-  addresses) to n0's DNS service at `dns.iroh.link`, re-sent when it changes
-  and every five minutes, and looks peers up there; n0 sees the requesting IP
-  and the key. The shell holds n0's public relays (`*.relay.n0.iroh.link`)
-  back until something needs the device reachable — a shared room, an invite,
-  another of the person's devices — and lets them rest five minutes after the
-  last need (`endpoint-reachability`); fs mounts, sibling unlock and the
-  registry transport use them from the start. A relay sees IP addresses,
-  endpoint ids, which peers talk, timing and sizes; never content. Whether a
-  desktop whose relays are dormant still publishes to n0's DNS is not pinned
-  by a test.
+  addresses) and looks peers up there, so n0 sees the requesting IP and the
+  key. A relay sees IP addresses, endpoint ids, which peers talk, timing and
+  sizes; never content.
+  What is *published* is gated, in `tilo-endpoint-reachability`'s
+  `directory` module and nowhere else. The shell holds n0's relays back until
+  something needs the device reachable — a shared room, an invite, another of
+  the person's devices — and lets them rest five minutes after the last need;
+  its endpoint's record is held by the same condition, so a desktop with
+  nobody to talk to signs nothing in to n0's directory. fs endpoints
+  (`bind_endpoint_with_key`, and so `fs serve`) never publish at all: the
+  devices that mount a filesystem already hold its address, so a record would
+  be a sign-in nobody looks up. The initrd's sibling unlock, the app-registry
+  transport and `tilo-relay` still bind iroh's `presets::N0`, which publishes
+  from the start. Resolving stays open everywhere: it asks n0 for a
+  *collaborator's* key, which is the same disclosure that device already
+  made.
+  Three tests in that module pin this: a resting desktop's gate stays shut
+  with a record waiting in it, resting again closes a gate that opened, and
+  the filesystem's lookups publish nothing.
 - **OS updates.** `bootc-fetch-apply-updates.timer` is enabled and checks the
   machine's recorded origin, `registry.tilo.so/tilo/tilo` by default, on the
   owner's schedule, optionally deferred on metered links
