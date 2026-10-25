@@ -71,6 +71,7 @@ const SCENARIOS: &[&str] = &[
     "find",
     "error",
     "image-object",
+    "reactions",
 ];
 
 pub struct WordProcessorApp;
@@ -152,7 +153,7 @@ impl ResourceApp for WordProcessorApp {
     /// staged on the editor, which knows the paragraphs these actions made.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Document>> {
         let texts: &[&str] = match name {
-            Some("comments" | "threaded-comments") => &["Quarterly planning summary"],
+            Some("comments" | "threaded-comments" | "reactions") => &["Quarterly planning summary"],
             Some("find") => &[
                 "Quarterly report",
                 "The report covers revenue, costs and headcount for the quarter.",
@@ -161,9 +162,19 @@ impl ResourceApp for WordProcessorApp {
             Some("image-object") => &["Product direction image"],
             _ => &[],
         };
+        let reactions: &[&str] = if name == Some("reactions") {
+            &["🎉", "👍"]
+        } else {
+            &[]
+        };
         texts
             .iter()
             .map(|text| Document::APPEND_PARAGRAPH.with(*text))
+            .chain(
+                reactions.iter().filter_map(|emoji| {
+                    Invoke::edit(&Document::paths().reactions.react(*emoji)).ok()
+                }),
+            )
             .collect()
     }
 }
