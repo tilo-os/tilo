@@ -37,6 +37,9 @@
 //! deferred without a delay never rests: the filesystem daemon wakes its
 //! relays for conditions that last as long as the process.
 
+pub mod directory;
+pub use directory::{Gate, Watchonly, collaborating};
+
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 

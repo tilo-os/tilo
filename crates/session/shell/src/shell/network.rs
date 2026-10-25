@@ -2052,7 +2052,13 @@ impl ShellNetwork {
         // session, moments in a test of it.
         let (builder, deferred_relays, rest_after) = match reach {
             Reach::Internet => (
-                iroh::Endpoint::builder(presets::N0).relay_mode(held_back),
+                // What `presets::N0` builds, with its publisher behind the
+                // directory gate and its public relays held back
+                // (`tilo_endpoint_reachability::directory`).
+                iroh::Endpoint::builder(presets::Minimal)
+                    .address_lookup(tilo_endpoint_reachability::collaborating())
+                    .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
+                    .relay_mode(held_back),
                 iroh::endpoint::default_relay_mode().relay_map(),
                 crate::network::reachability::REST_AFTER,
             ),
