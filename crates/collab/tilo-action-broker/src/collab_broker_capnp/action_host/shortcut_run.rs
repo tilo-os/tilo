@@ -72,7 +72,14 @@ impl CapnpBrokerState {
                     mode: automation::run_mode(request.confirmation.as_ref()),
                     inputs,
                 },
-                |runtime| automation::DoorHooks::new(request.confirmation.clone(), runtime),
+                |runtime, run| {
+                    automation::DoorHooks::new(
+                        request.confirmation.clone(),
+                        runtime,
+                        self.shortcut_runs.clone(),
+                        run,
+                    )
+                },
                 Some(ShortcutAdmission { origin, request }),
             )
             .map_err(abandon)?;
@@ -102,7 +109,9 @@ impl CapnpBrokerState {
             .ok_or(ActionHostError::UnknownAction)?;
         let prompts = self.step_prompts.clone();
         let name = shortcut.name.clone();
-        let hooks = |runtime| automation::SheetHooks::new(prompts, name, runtime);
+        let runs = self.shortcut_runs.clone();
+        let hooks =
+            move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
         self.start_shortcut_run(
             caller,
             room,
@@ -177,7 +186,9 @@ impl CapnpBrokerState {
         if matches!(trigger, tilo_automation::TriggerSpec::Keyboard { .. }) {
             let prompts = self.step_prompts.clone();
             let name = shortcut.name.clone();
-            let hooks = |runtime| automation::SheetHooks::new(prompts, name, runtime);
+            let runs = self.shortcut_runs.clone();
+            let hooks =
+                move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
             return self.start_shortcut_run(
                 caller,
                 room,
@@ -202,7 +213,9 @@ impl CapnpBrokerState {
                 mode: tilo_automation::RunMode::Unattended,
                 inputs,
             },
-            |runtime| automation::DoorHooks::new(None, runtime),
+            |runtime, run| {
+                automation::DoorHooks::new(None, runtime, self.shortcut_runs.clone(), run)
+            },
             None,
         )
     }
@@ -234,7 +247,7 @@ impl CapnpBrokerState {
         room: &str,
         shortcut: tilo_automation::Shortcut,
         start: automation::RunStart,
-        hooks: impl FnOnce(tokio::runtime::Handle) -> K,
+        hooks: impl FnOnce(tokio::runtime::Handle, tilo_automation::RunId) -> K,
         admission: Option<ShortcutAdmission<'_>>,
     ) -> Result<u64, ActionHostError>
     where
@@ -247,7 +260,7 @@ impl CapnpBrokerState {
             .ok_or(ActionHostError::UnknownAction)?
             .runtime()
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
-        let hooks = hooks(runtime.clone());
+        let hooks = hooks(runtime.clone(), start.run);
         let actor = BrokerActor::for_caller(caller).id;
         let _lifecycle = self
             .lifecycle
@@ -263,6 +276,18 @@ impl CapnpBrokerState {
         let state = Arc::clone(self);
         let caller = caller.clone().running_shortcut(shortcut.id.clone());
         let room = room.to_string();
+        // Registered before the first step, so a stop can find it; it leaves
+        // as it ends, whether or not it was stopped.
+        let running = automation::RunningRun {
+            room: room.clone(),
+            shortcut: shortcut.id.clone(),
+            name: shortcut.name.clone(),
+            run: start.run,
+            at: None,
+            stopped: None,
+        };
+        self.shortcut_runs.register(running);
+        let registered = self.shortcut_runs.clone();
         runtime.spawn(async move {
             let report = tilo_automation::run(
                 &host,
@@ -278,6 +303,7 @@ impl CapnpBrokerState {
                 },
             )
             .await;
+            registered.leave(start.run);
             let update = automation::completion(invocation, &report);
             if let Err(error) = state.complete_host_action(&admitted, update) {
                 tracing::warn!(%error, "shortcut completion could not be recorded");
@@ -388,5 +414,22 @@ impl CapnpBrokerState {
     /// Whether a finished shortcut run is waiting to be taken.
     pub fn has_finished_shortcut_runs(&self) -> bool {
         self.ended_runs.shortcuts.has_finished()
+    }
+
+    /// The shortcut runs going in `room`, so the workspace can say what is
+    /// running and offer to stop it.
+    pub fn running_shortcut_runs(&self, room: &str) -> Vec<automation::RunningRun> {
+        self.shortcut_runs.going(room)
+    }
+
+    /// Stop the shortcut runs `request` names in `room`, before their next
+    /// step. Returns those it reached.
+    pub fn stop_shortcut_runs(
+        &self,
+        room: &str,
+        request: &automation::StopRequest,
+        reason: &str,
+    ) -> Vec<automation::RunningRun> {
+        self.shortcut_runs.stop(room, request, reason)
     }
 }
