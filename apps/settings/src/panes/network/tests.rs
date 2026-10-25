@@ -2312,6 +2312,64 @@ fn a_vpn_is_switched_edited_and_deleted() {
     assert_eq!(changes.last().map(String::as_str), Some("vpn-delete Work"));
 }
 
+/// While what the device made of a change is read back, a VPN's page keeps
+/// its settings and its row keeps offering them, so a second change can
+/// follow the first at once; what is read back last holds both.
+#[test]
+fn a_vpns_settings_stay_offered_while_a_change_is_read_back() {
+    let fake = Arc::new(FakeNetwork::default());
+    let vpn = work_vpn();
+    *fake.vpns.lock().unwrap() = vec![vpn.clone()];
+    fake.vpn_settings.lock().unwrap().insert(
+        vpn.uuid.clone(),
+        SampleNetwork::vpn_settings(SAMPLE_VPN_HOME).unwrap(),
+    );
+    let mut model = model(&fake);
+    run_vpn(&mut model, VpnEffect::ShowVpns).unwrap();
+    run_vpn(
+        &mut model,
+        VpnEffect::ShowVpnProfile {
+            connection: vpn.uuid.clone(),
+        },
+    )
+    .unwrap();
+    settle(&mut model);
+    for server in ["9.9.9.9", "2620:fe::fe"] {
+        run_vpn(
+            &mut model,
+            VpnEffect::AddVpnDnsServer {
+                connection: vpn.uuid.clone(),
+                server: server.into(),
+            },
+        )
+        .unwrap();
+        assert!(!model.jobs.is_empty(), "the read back has not landed yet");
+        let row = model.vpn_rows().remove(0).into_resource();
+        assert!(
+            row.actions
+                .iter()
+                .any(|action| action.id == "add-vpn-dns-server"),
+            "the row still offers its name servers after adding {server}"
+        );
+        let text = shown(&model);
+        assert!(
+            !text.contains(&t("net-pending")),
+            "the page keeps its settings: {text:#?}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains(server)),
+            "the page shows {server} as added: {text:#?}"
+        );
+    }
+    let both = ["10.7.0.1", "9.9.9.9", "2620:fe::fe"];
+    assert_eq!(fake.vpn_settings.lock().unwrap()[&vpn.uuid].dns, both);
+    settle(&mut model);
+    assert_eq!(
+        model.vpn.settings[&vpn.uuid].dns, both,
+        "read back as the device holds it"
+    );
+}
+
 /// A plugin's tunnel is called by the protocol its service type names,
 /// before its page is opened and without its plugin installed here.
 #[test]
