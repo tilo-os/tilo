@@ -1433,6 +1433,9 @@ async fn route(
                 tilo_clock::unix_now_ms(),
             );
             here::pair_members(&mut reply, &web.grants.persons_in(workspace_id));
+            for person in &mut reply.people {
+                person.profile_ms = web.profiles.issued_at(&person.user).unwrap_or(0);
+            }
             if let Some(job) = job {
                 tokio::spawn(web.here.clone().summarize(job));
             }
