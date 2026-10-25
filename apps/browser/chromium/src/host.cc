@@ -1639,7 +1639,10 @@ int RunHost(int argc,char** argv) {
 #endif
   if(!CefInitialize(CefMainArgs(argc,argv),settings,MakeHostApp(),nullptr)) return CefGetExitCode();
 #if defined(OS_MAC)
-  if(!private_mode) {
+  // Saved passwords live in the login keychain only for an engine with a team
+  // identity: an item one ad hoc build saved would make every rebuild ask the
+  // person for it again (as tilo-secrets never lets an unsigned build ask).
+  if(!private_mode && HostHasStableSigningIdentity()) {
     auto store=tilo::MakeMacCredentialStore(tilo::CredentialServiceForProfile(profile));
     if(store)credential_worker=std::make_shared<tilo::CredentialWorker>(false,std::move(store));
   }
