@@ -53,16 +53,18 @@ python3 tools/dev/install-git-hooks.py
   opt-in checks `t suggest` says the change touches, and runs none of them. A failure the change
   causes refuses the push; one that `main` has too, at the commit the push branched from,
   doesn't. A check red on `main` runs all the same and is compared with `main`'s one finding at
-  a time: each lint of `clippy/*` by lint and file, each problem a `policy/*` step prints by its
-  line (`tools/policy/findings.py`), so a push that adds one is refused however red `main` is. A
-  check that fails as a whole (a compile error, a stale generated file) is compared as a whole,
-  and the hook names each one that passed that way; a test check whose tests did not run is
-  refused instead, since main failing it as a whole says nothing of which tests the change
-  breaks. A test check is compared test by test: cargo's and nextest's tests, and each test of
-  the policy suite's Python tests (`tools/policy/run_unit_tests.py`). A failure that a check's `fix`
-  repairs is fixed for you to commit, never amended: into your working tree when you push
-  `HEAD` (files you edited since are left alone), else as a patch in `.git/t-fix.patch`. Inputs
-  the change doesn't touch are cached, so a push after a rebase costs little.
+  a time: each lint of `clippy/*` by lint and file, each problem a `policy/*` step prints by the
+  file it is about (`tools/policy/findings.py`), so a push that adds one is refused however red
+  `main` is -- a file pushed over a limit is its own finding even when `main` is already red for
+  other files. A check that fails as a whole (a compile error, a stale generated file) is
+  compared as a whole, and the hook names each one that passed that way; a test check whose
+  tests did not run is refused instead, since main failing it as a whole says nothing of which
+  tests the change breaks. A test check is compared test by test: cargo's and nextest's tests,
+  and each test of the policy suite's Python tests (`tools/policy/run_unit_tests.py`). A failure
+  that a check's `fix` repairs is fixed for you to commit, never amended: into your working
+  tree when you push `HEAD` (files you edited since are left alone), else as a patch in
+  `.git/t-fix.patch`. Inputs the change doesn't touch are cached, so a push after a rebase costs
+  little.
 - **CI on `main`** runs every default check on each new commit, finds the commit a failure began
   with and tells whoever is behind it (`t inbox`). `main` is sometimes red; whoever broke it fixes
   it forward. Nothing is reverted.
