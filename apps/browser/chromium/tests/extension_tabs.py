@@ -1738,8 +1738,10 @@ class ExtensionTabs(unittest.TestCase):
         host.navigate(page)
         ours = {'Mark the page', 'Look up "selected words"', 'Mark the link', 'Mark the image', 'Remember the page', 'Everywhere'}
 
-        # The page itself: its items, and those for every context.
-        menu, items = self.page_menu(host, 400, 400, 'Mark the page')
+        # The page itself: its items, and those for every context. The
+        # worker makes its items one after another; the last it makes says
+        # they are all there.
+        menu, items = self.page_menu(host, 400, 400, 'Save && share')
         self.assertEqual(ours & set(items), {'Mark the page', 'Remember the page', 'Everywhere'})
         self.assertFalse({'Elsewhere', 'Gone', 'Before'} & set(items), items)
         self.close_menu(host, menu)
@@ -2059,6 +2061,9 @@ class ExtensionTabs(unittest.TestCase):
         host, ids = self.start('downloader', access={'downloader': (['downloads', 'downloads.open'], [])})
         host.navigate(self.url + '/page')
         worker = lambda expression: self.in_worker(host, ids['downloader'], f'outcome({expression})')
+        # A worker attached to as it starts has not yet run its script,
+        # which makes `outcome`.
+        self.worker_value(host, ids['downloader'], 'typeof globalThis.outcome', lambda kind: kind == 'function')
 
         def first(match):
             """The first event since the last one `first` returned that
