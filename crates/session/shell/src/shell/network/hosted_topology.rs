@@ -1177,42 +1177,38 @@ mod tests {
         assert_eq!(shown, vec![own(3)], "the room shows the window");
     }
 
-    /// The same through the governor's admission, as every receiver takes
-    /// a batch: the window published before the governor started the room
-    /// over reaches it only after the base. It waits there, since it could
-    /// as well build on what the governor has yet to receive; the window
-    /// published again on the base holds the same sequence number of the
-    /// windows' actor, which shows the waiting one to be of the history the
-    /// base replaced. It goes, and the room shows the window once.
-    #[test]
-    fn a_window_the_governor_had_not_admitted_before_the_room_started_over_ends_up_in_it() {
+    /// Room `id` as its governor `host` holds it: owned by person `0x11`,
+    /// who admitted `person` as an editor, and the windows of `salt` owned
+    /// by `device`.
+    fn governed_room(
+        id: &str,
+        host: [u8; 32],
+        person: [u8; 32],
+        (salt, device): (u16, [u8; 32]),
+    ) -> automerge::AutoCommit {
         use automerge::transaction::Transactable as _;
-        use tilo_peer_state::room::{
-            AuthorityPin, ContentOwnership, RoomAdmission, Standing, Writer, admit_room_changes,
-        };
-        const ROOM: &str = "0b5c3f1e-7d2a-4c1b-9e8f-6a5d4c3b2a19";
-        let salt = 0x0045;
-        let device = [0x5d; 32];
-        let person = [0x22; 32];
-        let host = [0xa0; 32];
-        let own = |counter: u64| (u64::from(salt) << 48) | counter;
-        let windows = one_window(salt);
         let mut room =
             automerge::AutoCommit::new().with_actor(automerge::ActorId::from(host.to_vec()));
-        room.put(automerge::ROOT, "room", ROOM).expect("a room");
-        room.put(automerge::ROOT, "owner", hex::encode([0x11; 32]))
-            .expect("an owner");
-        let members = room
-            .put_object(automerge::ROOT, "members", automerge::ObjType::Map)
-            .expect("a map");
-        room.put(
-            &members,
-            hex::encode(person),
-            automerge::ScalarValue::Bytes(
-                serde_json::to_vec(&tilo_action_policy::Role::Editor).expect("a role"),
-            ),
-        )
-        .expect("a member");
+        room.put(automerge::ROOT, "room", id).expect("a room");
+        // The room's authority as its owner governs it: every role's
+        // grants, and the person admitted as an editor.
+        let owner = hex::encode([0x11; 32]);
+        let mut policy = tilo_action_policy::RoomPolicy::new(id, owner.clone());
+        let governing = policy.clone();
+        policy
+            .apply(
+                &owner,
+                &governing.person_on_device(&owner, false, &[]),
+                tilo_action_policy::Change::AddMember {
+                    person: hex::encode(person),
+                    role: tilo_action_policy::Role::Editor,
+                },
+                &tilo_action_policy::Context::at_secs(1_000),
+                false,
+            )
+            .expect("the owner admits the person");
+        tilo_desktop_model::projection::project_room_policy(&mut room, &policy)
+            .expect("the room's authority");
         let owners = room
             .put_object(
                 automerge::ROOT,
@@ -1223,6 +1219,29 @@ mod tests {
         room.put(&owners, format!("{salt:x}"), hex::encode(device))
             .expect("an owner");
         room.commit();
+        room
+    }
+
+    /// The same through the governor's admission, as every receiver takes
+    /// a batch: the window published before the governor started the room
+    /// over reaches it only after the base. It waits there, since it could
+    /// as well build on what the governor has yet to receive; the window
+    /// published again on the base holds the same sequence number of the
+    /// windows' actor, which shows the waiting one to be of the history the
+    /// base replaced. It goes, and the room shows the window once.
+    #[test]
+    fn a_window_the_governor_had_not_admitted_before_the_room_started_over_ends_up_in_it() {
+        use tilo_peer_state::room::{
+            AuthorityPin, ContentOwnership, RoomAdmission, Standing, Writer, admit_room_changes,
+        };
+        const ROOM: &str = "0b5c3f1e-7d2a-4c1b-9e8f-6a5d4c3b2a19";
+        let salt = 0x0045;
+        let device = [0x5d; 32];
+        let person = [0x22; 32];
+        let host = [0xa0; 32];
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let windows = one_window(salt);
+        let room = governed_room(ROOM, host, person, (salt, device));
         let (host_key, device_key) = (hex::encode(host), hex::encode(device));
         let admit = |before: &automerge::AutoCommit, changes: &[Vec<u8>]| {
             admit_room_changes(

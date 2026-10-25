@@ -145,6 +145,54 @@ fn authority_bootstrap_needs_no_roster_and_others_need_held_governance() {
     );
 }
 
+/// A room started over from a base holds the authority it held, so a member
+/// writes on the base as before it. An editor writes by the grants every role
+/// holds in the room, not by the role alone: without them, the role is held
+/// and the write is still refused.
+#[test]
+fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
+    let room = governed();
+    let based = super::super::base::rebase(&room, automerge::ActorId::random()).unwrap();
+    assert_eq!(
+        tilo_desktop_model::projection::room_policy_of(&based, ROOM),
+        tilo_desktop_model::projection::room_policy_of(&room, ROOM)
+    );
+    let authority = key(0xA0);
+    let writer = key(0x02);
+    let salted = ContentOwnership::Salted { local_salt: 0x0001 };
+    let edit = changes_after(&based, |doc| strip_name(doc, "0002000000000001", "Edited"));
+    assert!(
+        admit(
+            Some(&based),
+            member(&writer, EDITOR),
+            AuthorityPin::Device(&authority),
+            salted,
+            &edit,
+        )
+        .is_ok()
+    );
+
+    let mut ungranted = room;
+    ungranted.delete(ROOT, "grants").unwrap();
+    ungranted.commit();
+    let policy = tilo_desktop_model::projection::room_policy_of(&ungranted, ROOM);
+    assert_eq!(policy.active_role(&person_id(EDITOR)), Some(Role::Editor));
+    let edit = changes_after(&ungranted, |doc| {
+        strip_name(doc, "0002000000000001", "Edited");
+    });
+    assert_eq!(
+        admit(
+            Some(&ungranted),
+            member(&writer, EDITOR),
+            AuthorityPin::Device(&authority),
+            salted,
+            &edit,
+        )
+        .unwrap_err(),
+        RoomRefusal::WriteForbidden
+    );
+}
+
 #[test]
 fn sender_needs_write_on_the_room_it_already_governs() {
     let before = governed();
