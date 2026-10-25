@@ -22,7 +22,7 @@ use library::{
 };
 
 use std::collections::{HashMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::style_helpers::percent;
@@ -34,10 +34,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::icons::Icon;
 use ui::paint::fill_rect;
-use ui::portal::{
-    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PickedContents, PortalChannel,
-    PortalOutcome,
-};
+use ui::portal::{ContentsOutcome, PickedContents, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -90,43 +87,9 @@ impl PlaybackPreferences {
 /// A decoder open is asynchronous. Do not turn portal/direct admission into a
 /// false successful history entry until a first picture has actually arrived.
 const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
-/// One file-picker request at a time.  A portal response is asynchronous and
-/// cannot be cancelled at the protocol level, so the app owns the receiver and
-/// drops it when a newer direct open supersedes the request.  `generation` is
-/// deliberately separate from the media generation: it identifies *this
-/// chooser* rather than the media that may eventually be selected.
-struct PendingPortalOpen {
-    channel: PickerChannel,
-    generation: u64,
-    /// The caller of the open effect, answered once a picture decodes.
-    reply: Option<EffectReply>,
-}
+mod opening;
 
-/// A host with paths answers with the chosen path; a host without them (a
-/// browser page) hands over the file's bytes.
-enum PickerChannel {
-    Path(PortalChannel),
-    Contents(ContentsChannel),
-}
-
-/// What the picker chose, in the form the host could give it.
-enum Picked {
-    Path(PathBuf),
-    Contents(PickedContents),
-}
-
-/// A picker's answer, with the request generation it answers.
-type PortalOpenOutcome = (u64, Result<Picked, Option<String>>);
-
-/// A canonical open invocation awaiting its decoder's first picture. This is
-/// separate from the file-picker request: the picker can succeed while decode
-/// fails, stalls, or is superseded before a frame appears.
-struct PendingMediaOpen {
-    reply: EffectReply,
-    source_id: String,
-    deadline: ui::time::Instant,
-}
-
+use opening::*;
 /// A file-backed local record. The source is deliberately kept only in this
 /// process; public resources expose the opaque `id` and friendly basename.
 #[derive(Clone)]
@@ -272,9 +235,11 @@ fn configure_player_settings(player: &mut VideoPlayer, preferences: PlaybackPref
     ));
 }
 
-/// Build a taffy node from `children` already built in the same tree.
-/// `new_with_children` only fails when a child id does not resolve in this
-/// tree, which cannot happen for children this same call just built.
+pub(crate) mod source;
+
+pub(crate) use source::demo_media_ref;
+use source::*;
+
 #[allow(
     clippy::unwrap_used,
     reason = "new_with_children cannot fail for children built in this same tree; see doc comment"
@@ -282,121 +247,6 @@ fn configure_player_settings(player: &mut VideoPlayer, preferences: PlaybackPref
 fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
     taffy.new_with_children(style, children).unwrap()
 }
-
-fn video_open_request() -> PickRequest {
-    PickRequest::open("Open a video", "Play")
-        .thread_name("video-player-portal")
-        .filter(
-            FileFilter::new("Video")
-                .mimetype("video/mp4")
-                .mimetype("video/webm")
-                .mimetype("video/x-matroska")
-                .mimetype("video/quicktime")
-                .glob("*.mp4")
-                .glob("*.webm")
-                .glob("*.mkv")
-                .glob("*.mov")
-                .glob("*.avi"),
-        )
-        .all_files()
-}
-
-/// Build a [`media::Source`] for a filesystem path: a path under the FUSE
-/// workspace mount becomes a [`media::Source::Workspace`] (read-through,
-/// hydrate-on-demand); anything else is a [`media::Source::LocalFile`].
-pub fn source_for_path(path: &Path) -> media::Source {
-    let root = media::Source::workspace_root();
-    if path.starts_with(&root) {
-        media::Source::Workspace(path.to_path_buf())
-    } else {
-        media::Source::LocalFile(path.to_path_buf())
-    }
-}
-
-/// The source a launch argument names: a stream's `http(s)` URL, else a
-/// path.
-pub fn source_for_argument(argument: &str) -> media::Source {
-    if argument.starts_with("http://") || argument.starts_with("https://") {
-        media::Source::Remote {
-            url: argument.to_owned(),
-        }
-    } else {
-        source_for_path(Path::new(argument))
-    }
-}
-
-/// What a source is called before anyone names it: a file's name, or a
-/// stream's.
-fn source_title(source: &media::Source) -> String {
-    match source {
-        media::Source::LocalFile(path) | media::Source::Workspace(path) => path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("selected video")
-            .to_string(),
-        media::Source::Remote { .. } => "Streaming video".to_string(),
-    }
-}
-
-/// The video a capture plays when its launch named none: a four-second
-/// generated VP9/AAC clip (a decode fixture, `tests/fixtures`; no
-/// third-party media), decoded by the system's engine like any opened file.
-/// VP9 decodes with the royalty-free software decoders in the OS image, so
-/// a capture shows a picture wherever it runs.
-#[cfg(feature = "decode")]
-const DEMO_CLIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vp9-aac.mp4"));
-
-/// What the capture's demo clip is called.
-const DEMO_TITLE: &str = "Demo clip";
-
-/// Where a capture parks the demo clip, for a stable picture.
-const DEMO_POSITION_MS: u64 = 2_000;
-
-/// The capture's demo clip, staged as a file named by its contents, so every
-/// capture names the same source.
-#[cfg(feature = "decode")]
-fn demo_source() -> media::Source {
-    media::Source::from_contents("Demo clip.mp4", DEMO_CLIP).unwrap_or_else(|error| {
-        tracing::warn!(%error, "video player: the demo clip could not be staged");
-        media::Source::LocalFile(PathBuf::from("Demo clip.mp4"))
-    })
-}
-
-/// Without the system's decoder there is no clip to decode; the capture
-/// says so instead of showing a picture.
-#[cfg(not(feature = "decode"))]
-fn demo_source() -> media::Source {
-    media::Source::LocalFile(PathBuf::from("Demo clip.mp4"))
-}
-
-/// The shareable identity of the capture's demo clip, which its scenarios'
-/// shared annotations point at.
-pub(crate) fn demo_media_ref() -> String {
-    local_source_token(&demo_source(), 0)
-}
-
-/// Opaque, deterministic per-process identity for a local source. Resource
-/// IDs and action payload guards need a stable token, but publishing a URI
-/// would expose an absolute path to search, history, or a collaborator.
-fn local_source_token(source: &media::Source, generation: u64) -> String {
-    // FNV-1a is used only as an opaque UI identifier, not as a security
-    // boundary. The monotonic generation prevents a same-path reopen from
-    // accepting stale dynamic stream/chapter actions.
-    let mut hasher = fnv::FnvHasher::default();
-    std::hash::Hasher::write(&mut hasher, media::session::session_key(source).as_bytes());
-    let hash = std::hash::Hasher::finish(&hasher);
-    format!("local-media-{hash:016x}-open-{generation}")
-}
-
-/// The identity a resume point is kept by. It is the same opaque token a
-/// queue row is named by (and, through [`RecentMedia`]'s source, a Recent
-/// row), so a video opened from a row, the picker, the file manager or a drop
-/// on the window resumes at the same place.
-fn resume_key(source: &media::Source) -> String {
-    local_source_token(source, 0)
-}
-
 #[allow(
     clippy::struct_excessive_bools,
     reason = "overlay, local library, portal, and frame-dirty flags are independent widget state"
@@ -3266,6 +3116,7 @@ impl PlayerApp {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use ui::headless::Framed;
 
     #[test]
