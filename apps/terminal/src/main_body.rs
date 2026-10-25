@@ -764,8 +764,9 @@ struct RunState {
     /// out the session's outbox.
     queue: crate::runs::RunQueue,
     waiting: std::collections::VecDeque<crate::runs::Asked>,
-    /// Typed at the prompt, waiting for the shell to start it.
-    typed: Option<crate::runs::Asked>,
+    /// Typed at the prompt, waiting for the shell to start them, oldest
+    /// first.
+    typed: std::collections::VecDeque<crate::runs::Asked>,
     /// Started for whoever asked.
     running: Option<crate::runs::Asked>,
     /// Ended, waiting to be recorded.
@@ -2533,7 +2534,7 @@ impl TerminalWidget {
         let unanswered: Vec<_> = runs
             .waiting
             .drain(..)
-            .chain(runs.typed.take())
+            .chain(runs.typed.drain(..))
             .chain(runs.running.take())
             .collect();
         for asked in unanswered {
@@ -2550,13 +2551,28 @@ impl TerminalWidget {
         match piece {
             Piece::Mark(Mark::Prompt) => {
                 runs.at_prompt = true;
-                if let Some(asked) = runs.typed.take() {
+                if let Some(asked) = runs.typed.pop_front() {
                     fail_run(asked, "the shell did not run the command");
                 }
             }
-            Piece::Mark(Mark::Started { .. }) => {
+            Piece::Mark(Mark::Started { command, .. }) => {
                 runs.at_prompt = false;
-                runs.running = runs.typed.take();
+                // The line this terminal typed for `run` starts when the
+                // shell stops showing its prompt and says it runs the
+                // command that was typed: lines reach the shell in the order
+                // they were typed, so the oldest waiting one that matches is
+                // it. Anything else the shell runs — a person's line, a
+                // `.bashrc` command — is nobody's request.
+                let typed = if runs
+                    .typed
+                    .front()
+                    .is_some_and(|asked| asked.command.trim() == command.trim())
+                {
+                    runs.typed.pop_front()
+                } else {
+                    None
+                };
+                runs.running = typed;
             }
             Piece::Mark(Mark::Ended { .. }) | Piece::Output(_) => {}
         }
@@ -2579,7 +2595,7 @@ impl TerminalWidget {
             match runs
                 .waiting
                 .iter_mut()
-                .chain(runs.typed.as_mut())
+                .chain(runs.typed.iter_mut())
                 .chain(runs.running.as_mut())
                 .find(|known| known.request == asked.request)
             {
@@ -2610,7 +2626,7 @@ impl TerminalWidget {
             }
             return;
         }
-        if !self.runs.at_prompt || self.runs.typed.is_some() {
+        if !self.runs.at_prompt || !self.runs.typed.is_empty() {
             return;
         }
         let Some(asked) = self.runs.waiting.pop_front() else {
@@ -2624,7 +2640,7 @@ impl TerminalWidget {
         match self.try_write_input(&line) {
             Ok(()) => {
                 self.runs.at_prompt = false;
-                self.runs.typed = Some(asked);
+                self.runs.typed.push_back(asked);
             }
             Err(error) => fail_run(asked, &error),
         }
@@ -2650,11 +2666,24 @@ impl TerminalWidget {
                 }
             };
             let request = asked.as_ref().map(|asked| asked.request.clone());
-            let id = request.clone().unwrap_or_else(|| {
-                ui::tilo_resource::Id::from_raw(uuid::Uuid::new_v4().simple().to_string())
+            // The run a request asked for takes the request's id, so the
+            // answer names it. Only a line the person started before this
+            // terminal saw the request's line reach the shell can hold that
+            // id already: this run is the request's all the same, under an
+            // id of its own.
+            let taken = request.as_ref().is_some_and(|request| {
+                self.runs
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.runs.contains(request))
             });
+            let id = match request.clone() {
+                Some(request) if !taken => request,
+                _ => ui::tilo_resource::Id::from_raw(uuid::Uuid::new_v4().simple().to_string()),
+            };
             let finished = crate::resource::Finished {
                 tool: crate::parse::tool_of(&run.command).to_owned(),
+                undoable: crate::undoability::of(&run.command) == Some(true),
                 items: crate::parse::items(&run.command, &run.output),
                 output_len: if output.is_some() {
                     u64::try_from(run.output.len()).unwrap_or(u64::MAX)
