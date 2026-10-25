@@ -137,6 +137,16 @@ pub fn learn_field_titles(shape: &tilo_resource::Shape) {
 /// The published labels learned on this thread.
 struct ThreadLabels;
 
+/// The label this thread's app publishes for `action` of a resource of
+/// `kind` (or of any kind, when that one has none), in the reader's language.
+#[must_use]
+pub fn action_label(kind: &str, action: &str) -> Option<String> {
+    tilo_history::Labels::action(
+        &ThreadLabels,
+        &tilo_actions::ActionKey::new("", kind, action),
+    )
+}
+
 impl tilo_history::Labels for ThreadLabels {
     fn field(&self, ty: &str, field: &str) -> Option<String> {
         FIELD_TITLES.with(|titles| {

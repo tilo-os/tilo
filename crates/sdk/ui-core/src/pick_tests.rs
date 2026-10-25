@@ -299,3 +299,67 @@ fn a_picture_is_masked_over_content_images_and_secrets_not_interface_copy() {
         "a part no longer there is masked whole"
     );
 }
+
+fn placed(role: Role, name: &str, (x0, y0, x1, y1): (f64, f64, f64, f64)) -> AccessNode {
+    let mut node = AccessNode::new(role).with_name(name);
+    node.bounds = Some(AccessBounds { x0, y0, x1, y1 });
+    node
+}
+
+/// A message row in a synthetic list: its name, and parts that say where
+/// the author, the avatar and each line of the text are drawn.
+fn message_list(lines: &[&str]) -> Node {
+    let mut row = placed(
+        Role::ListItem,
+        "Ada: Thanks Grace for the tip",
+        (0.0, 0.0, 400.0, 60.0),
+    );
+    row.children
+        .push(placed(Role::Image, "Ada", (8.0, 8.0, 32.0, 32.0)));
+    row.children
+        .push(placed(Role::StaticText, "Ada", (40.0, 8.0, 80.0, 24.0)));
+    let mut top = 28.0;
+    for line in lines {
+        row.children.push(placed(
+            Role::StaticText,
+            line,
+            (40.0, top, 200.0, top + 14.0),
+        ));
+        top += 16.0;
+    }
+    row.children
+        .push(placed(Role::Button, "Reply", (360.0, 8.0, 392.0, 24.0)).with_interface_name(true));
+    let mut list = AccessNode::new(Role::List).with_name("Messages");
+    list.children.push(row);
+    node(
+        "Chat",
+        Rect::new(0.0, 0.0, 400.0, 100.0),
+        Some(list),
+        vec![],
+    )
+}
+
+#[test]
+fn a_row_its_parts_spell_out_is_masked_part_by_part() {
+    let window = message_list(&["Thanks Grace", "for the tip"]);
+    let whole = Rect::new(0.0, 0.0, 400.0, 60.0);
+    assert_eq!(
+        sensitive_areas(&window, "Chat[0]#0", whole),
+        [
+            Rect::new(8.0, 8.0, 32.0, 32.0),
+            Rect::new(40.0, 8.0, 80.0, 24.0),
+            Rect::new(40.0, 28.0, 200.0, 42.0),
+            Rect::new(40.0, 44.0, 200.0, 58.0),
+        ],
+        "the avatar, the author and each line; the row's ground and Reply stay"
+    );
+}
+
+#[test]
+fn a_row_whose_parts_leave_words_out_is_masked_whole() {
+    // The second line is drawn by the row itself: nothing says where.
+    let window = message_list(&["Thanks Grace"]);
+    let whole = Rect::new(0.0, 0.0, 400.0, 60.0);
+    let areas = sensitive_areas(&window, "Chat[0]#0", whole);
+    assert_eq!(areas[0], Rect::new(0.0, 0.0, 400.0, 60.0), "{areas:?}");
+}

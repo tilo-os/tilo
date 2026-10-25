@@ -331,6 +331,11 @@ pub struct AccessNode {
     /// feedback report hides it until the reporter shows it.
     #[serde(skip)]
     pub interface_name: bool,
+    /// What kind of thing this is in the app's own words, where its role
+    /// says too little ("Message" for a chat row that is a list item), in
+    /// the reader's language. Always the app's own copy, never content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_description: Option<String>,
 }
 
 /// A widget's [`AccessNode`] with its synthetic children shared rather than
@@ -380,6 +385,7 @@ impl AccessNode {
             bounds: None,
             children: Vec::new(),
             interface_name: false,
+            role_description: None,
         }
     }
 
@@ -387,6 +393,13 @@ impl AccessNode {
     /// ([`Self::interface_name`]).
     pub fn with_interface_name(mut self, interface: bool) -> Self {
         self.interface_name = interface;
+        self
+    }
+
+    /// Say what kind of thing this is in the app's own words
+    /// ([`Self::role_description`]).
+    pub fn with_role_description(mut self, kind: impl Into<String>) -> Self {
+        self.role_description = Some(kind.into()).filter(|kind| !kind.trim().is_empty());
         self
     }
 

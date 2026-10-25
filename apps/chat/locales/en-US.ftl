@@ -281,18 +281,64 @@ chat-sheet-topic = Topic
 chat-sheet-topic-placeholder = What this channel is for (optional)
 chat-mention-alert = { $name } mentioned you in #{ $channel }
 
+# What kind of thing a message row is, for assistive technology and the
+# feedback picker ("Message in Chat").
+chat-message-kind = Message
+
 ## A filed feedback report as its channel shows it
-# One picked part of the screen: its place, the app, what it was and its role.
-chat-feedback-pick = { $index }. { $app }: { $what } ({ $role })
+# One picked part of the screen: its place, what it was, and the app.
+chat-feedback-pick = { $index }. { $what } in { $app }
+# What a picked part was, when the app said what kind of thing it is.
+chat-feedback-part-kind = { $kind }
+# What a picked part was, by the app's own name for it and its role.
+chat-feedback-part-named = The “{ $name }” { $role ->
+    [Button] button
+    [ToggleButton] button
+    [Link] link
+    [Tab] tab
+    [MenuItem] menu item
+    [Checkbox] checkbox
+    [Switch] switch
+    [TextInput] field
+    [MultilineTextInput] field
+    [Heading] heading
+   *[other] { $role }
+}
+# What a picked part was, known only by its role.
+chat-feedback-part-role = { $role ->
+    [ListItem] A list item
+    [Row] A row
+    [Cell] A cell
+    [Button] A button
+    [ToggleButton] A button
+    [Link] A link
+    [Image] A picture
+    [TextInput] A field
+    [MultilineTextInput] A field
+    [StaticText] A text
+    [Paragraph] A paragraph
+    [Heading] A heading
+    [List] A list
+    [Group] A group
+    [Window] A window
+    [Toolbar] A toolbar
+    [Menu] A menu
+    [MenuItem] A menu item
+    [Tab] A tab
+   *[other] A part
+}
 chat-feedback-note = “{ $note }”
 # One text a picked part showed, as reviewed.
 chat-feedback-text = { $text }
-# One of the reporter's last actions; $outcome is done, refused or failed.
+# One of the reporter's last actions, by the label its app gives it;
+# $outcome is done, refused or failed.
 chat-feedback-action = { $outcome ->
-    [refused] { $action } on { $resource } (refused)
-    [failed] { $action } on { $resource } (failed)
-   *[done] { $action } on { $resource }
+    [refused] { $label } (refused)
+    [failed] { $label } (failed)
+   *[done] { $label }
 }
+# An action whose app gave it no label, by its id and resource kind.
+chat-feedback-action-unnamed = { $action } on { $resource }
 chat-feedback-recent = Just before: { $actions }
 chat-feedback-slow = Slow: { $slow } of the last { $frames } frames over { $budget } ms, the slowest { $worst } ms
 # A hidden span of a reported text, by what it hid.

@@ -37,9 +37,12 @@ const RADIUS: f64 = 6.0;
 /// How much of the theme's modal scrim the picker dims with: enough that
 /// the lit part stands out even when it is most of the screen.
 const DIM_SHARE: f32 = 0.75;
-/// The hint's distance from the top, when it moves out of the way: below
-/// the desktop's top bar.
-const HINT_TOP: f64 = 64.0;
+/// The hint's distance from the screen's top: over the desktop's top bar,
+/// where the least of what people report sits.
+const HINT_TOP: f64 = 6.0;
+/// The hint's distance from the screen's bottom, when it moves out of the
+/// way of what is lit up top.
+const HINT_BOTTOM: f64 = 28.0;
 
 /// One part of the screen the picker can light up and pick.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,20 +56,25 @@ pub struct PickTarget {
 }
 
 impl PickTarget {
-    /// The caption a part of `app` with role `role` (as assistive
-    /// technology names it, `ListItem`) is shown with: "Chat · List item".
+    /// What a part of `app` is called while picking it and in the review:
+    /// what kind of thing the app says it is ("Message in Chat"), else the
+    /// app's own name for it by its role ("The “Send message” button in
+    /// Chat"), else its role (`ListItem`, as assistive technology names it:
+    /// "A list item in Chat"). Content never names a part here.
     #[must_use]
-    pub fn caption(app: &str, role: &str) -> String {
-        let mut spaced = String::new();
-        for (index, c) in role.chars().enumerate() {
-            if c.is_uppercase() && index > 0 {
-                spaced.push(' ');
-                spaced.extend(c.to_lowercase());
-            } else {
-                spaced.push(c);
-            }
-        }
-        format!("{app} \u{b7} {spaced}")
+    pub fn caption(app: &str, role: &str, kind: Option<&str>, copy: Option<&str>) -> String {
+        let what = match (kind, copy) {
+            (Some(kind), _) => kind.to_owned(),
+            (None, Some(name)) => t_args(
+                "feedback-part-named",
+                &[("name", name.into()), ("role", role.into())],
+            ),
+            (None, None) => t_args("feedback-part-role", &[("role", role.into())]),
+        };
+        t_args(
+            "feedback-part-in",
+            &[("what", what.into()), ("app", app.into())],
+        )
     }
 }
 
@@ -535,7 +543,7 @@ fn caption(
     );
 }
 
-/// The calm line at the bottom saying what to do, with Continue and
+/// The calm line at the top saying what to do, with Continue and
 /// Cancel once something is picked. Where its buttons are.
 fn hint(
     scene: &mut Scene,
@@ -579,17 +587,23 @@ fn hint(
     let pill_h = button_h + 12.0;
     let pill_w = (w + 2.0 * pad + buttons_w).min(bounds.width() - 16.0);
     let x0 = bounds.center().x - pill_w / 2.0;
-    // Low on the screen, unless that covers what is lit or picked: then
-    // high, so the hint never hides the part it talks about.
-    let low = Rect::new(x0, bounds.y1 - pill_h - 28.0, x0 + pill_w, bounds.y1 - 28.0);
+    // Over the top bar, clear of the windows and their composers, unless
+    // that covers what is lit or picked: then low, so the hint never hides
+    // the part it talks about.
+    let high = Rect::new(
+        x0,
+        bounds.y0 + HINT_TOP,
+        x0 + pill_w,
+        bounds.y0 + HINT_TOP + pill_h,
+    );
     let pill = if avoid
         .iter()
-        .any(|part| part.intersect(low.inflate(0.0, 12.0)).area() > 0.0)
+        .any(|part| part.intersect(high.inflate(0.0, 12.0)).area() > 0.0)
     {
-        let y0 = bounds.y0 + HINT_TOP;
-        Rect::new(x0, y0, x0 + pill_w, y0 + pill_h)
+        let y1 = bounds.y1 - HINT_BOTTOM;
+        Rect::new(x0, y1 - pill_h, x0 + pill_w, y1)
     } else {
-        low
+        high
     };
     let x0 = pill.x0;
     let on = ui::widget::paint_surface(scene, transform, pill, SurfaceLevel::Floating, theme);
