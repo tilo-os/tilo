@@ -541,8 +541,11 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("names its channel", result.stderr)
         result = self.publish("release:sha-{commit}", ref="main")
         self.assertIn("no tags for the dev channel", result.stderr)
+        # A branch publishes only where a check publishes for branches, and only signed.
         result = self.publish("dev:x", ref="feature")
-        self.assertIn("no channel for feature", result.stderr)
+        self.assertIn("no tags for the branch channel", result.stderr)
+        result = self.publish("x", ref="feature", channel="branch")
+        self.assertIn("a branch build is published signed only", result.stderr)
 
     def test_version_tags_come_from_release_tags(self):
         self.signed()
@@ -741,11 +744,16 @@ class ScriptTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("only releases are signed", result.stderr)
 
-    def test_development_signing_is_for_main_only(self):
+    def test_development_signing_is_for_main_and_branches_only(self):
         self.env["TILO_DEV_SIGNING"] = "1"
         result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="stable")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("signs main's candidates only", result.stderr)
+        self.assertIn("signs development candidates only", result.stderr)
+        result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="feature")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.publish("feature-x", ref="feature", channel="branch")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.receipt()["signed"])
         result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="main")
         self.assertEqual(result.returncode, 0, result.stderr)
         result = self.publish("{commit}", ref="main", channel="dev")
@@ -762,7 +770,12 @@ class ScriptTests(unittest.TestCase):
                          {"docker-manifest-digest": self.digest})
 
     def board(self, revision: str = COMMIT, board: str = "lenovo-83ed") -> subprocess.CompletedProcess:
-        """os-board-publish.sh on what `os-image.sh board` leaves in OUT."""
+        """os-board-publish.sh on what `os-image.sh board` and its signing leave in OUT."""
+        (self.out / "payload.json").write_text(
+            '{"critical":{"identity":{"docker-reference":"registry.tilo.so/tilo/tilo-vm"},"image":'
+            '{"docker-manifest-digest":"' + self.digest + '"},'
+            '"type":"cosign container image signature"},"optional":null}')
+        (self.out / "signature").write_text("sig")
         (self.out / "board").write_text(board + "\n")
         (self.out / "revision").write_text(revision + "\n")
         (self.out / "disk").mkdir(exist_ok=True)
@@ -784,7 +797,7 @@ class ScriptTests(unittest.TestCase):
         receipt = self.receipt()
         self.assertEqual(receipt["repository"], "registry.tilo.so/tilo/tilo-vm")
         self.assertEqual(receipt["tags"], [f"main-{COMMIT[:7]}-lenovo-83ed", "lenovo-83ed-ci"])
-        self.assertEqual((receipt["digest"], receipt["signed"]), (self.digest, False))
+        self.assertEqual((receipt["digest"], receipt["signed"]), (self.digest, True))
         # Its flashable disk, named for the board, with the commit it is of.
         disks = self.tmp / "registry/packages/aarch64-lenovo-83ed"
         self.assertEqual((disks / "tilo-vm-lenovo-83ed.qcow2").read_bytes(), b"flashable disk")
@@ -812,6 +825,12 @@ class ScriptTests(unittest.TestCase):
         result = self.board()
         self.assertEqual(self.receipt()["tags"], [f"main-{COMMIT[:7]}-lenovo-83ed"])
         self.assertIn("could not be compared", result.stderr)
+
+    def test_a_board_image_is_published_only_signed(self):
+        self.board()
+        (self.out / "signature").unlink()
+        result = self.run_script("os-board-publish.sh", "lenovo-83ed", str(self.out), ref="main")
+        self.assertIn("holds no signature", result.stderr)
 
     def test_a_board_publication_refuses_another_build_and_branch(self):
         result = self.board(board="orangepi-3b-v2-1")

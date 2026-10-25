@@ -1367,20 +1367,36 @@ on = ["stable", "dispatch", "idle"]
 default = false
 
 [[matrix.check]]
+name = "sign-dev-os-{arch}"
+comment = """
+The development key in KMS (keys/cosign-dev.pub) signs os-dev-image-{arch}'s digest, from main
+only, as registry.tilo.so/tilo/tilo-vm: what devices on the dev channel require of an image
+(os/etc/containers/policy.json). No registry token; publish-os-dev-{arch} attaches it."""
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-vm /target/publish/os-dev/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-dev-image-{arch}", "os-dev-gate-{arch}", "signing-tools"]
+outputs = ["/target/publish/os-dev/{arch}/payload.json", "/target/publish/os-dev/{arch}/signature", "/target/publish/os-dev/{arch}/dry-run.pub"]
+id_token = ["tilo-dev-signing"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
+requires = ["arch=any"]
+
+[[matrix.check]]
 name = "publish-os-dev-{arch}"
 comment = """
-Main's dev VM image and its disk, the dev channel, once os-dev-gate-{arch} passed on them
+Main's dev image and its disk, once os-dev-gate-{arch} passed on them
 (tools/ci/publish/os-dev-publish.sh): registry.tilo.so/tilo/tilo-ci:main-<commit7>-{arch} (the
-OS image), registry.tilo.so/tilo/tilo-vm:main-<commit7>-ci (an index of the architectures
-published so far) and its disk in the tilo-vm-disk package, which `tilo-vm vm create` and `vm
-upgrade --from sha:<commit>` take; tilo-vm:latest and, with both architectures, tilo-vm:main-ci
-move forward to it. It runs on main's newest head whenever t has room (and when dispatched:
+OS image), registry.tilo.so/tilo/tilo-vm:main-<commit7>-ci-{arch} (the dev image, with
+sign-dev-os-{arch}'s signature), to which tilo-vm:{arch}-ci, the dev channel of the
+architecture, moves forward, and tilo-vm:main-<commit7>-ci (an index of the architectures
+published so far) with its disk in the tilo-vm-disk package, which `tilo-vm vm create` takes;
+tilo-vm:latest moves forward to it. It runs on main's newest head whenever t has room (and when dispatched:
 `t dispatch publish-os-dev-x86_64 --ref main`), so a dev device gets main's code as soon as
 it is built and gated, not a night later."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-publish.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-dev-gate/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh"]
-needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-gate-{arch}"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-publish.sh", "tools/ci/publish/oci-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-gate-{arch}", "sign-dev-os-{arch}", "signing-tools"]
 git = true
 id_token = ["registry.tilo.so"]
 secrets = ["TILO_PACKAGES_TOKEN"]
@@ -1729,7 +1745,8 @@ Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): t
 firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
 since bootc takes a device tree only from one. Whenever t has room (and when dispatched: `t dispatch
 publish-os-board-lenovo-83ed --ref main`), main's newest head is built and, once os-board-<board>,
-os-board-size-<board> and os-dev-gate-aarch64 (the dev image it is built on) pass, pushed as
+os-board-size-<board> and os-dev-gate-aarch64 (the dev image it is built on) pass, signed with
+the development key (sign-dev-os-board-<board>) and pushed as
 registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade --from
 sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
 follow on their own; its flashable disk, which os-board-<board> installs (with the Lenovo's audio
@@ -1772,11 +1789,25 @@ requirement = { cores = 2, memory = "4GiB" }
 default = false
 
 [[matrix.check]]
+name = "sign-dev-os-board-{board}"
+comment = """
+The development key in KMS (keys/cosign-dev.pub) signs os-board-{board}'s digest, from main
+only, as registry.tilo.so/tilo/tilo-vm, for publish-os-board-{board} to attach."""
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-vm /target/publish/os-board/{board}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-board-{board}", "os-board-size-{board}", "os-dev-gate-aarch64", "signing-tools"]
+outputs = ["/target/publish/os-board/{board}/payload.json", "/target/publish/os-board/{board}/signature", "/target/publish/os-board/{board}/dry-run.pub"]
+id_token = ["tilo-dev-signing"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
+requires = ["arch=any"]
+
+[[matrix.check]]
 name = "publish-os-board-{board}"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-board-publish.sh {board} /target/publish/os-board/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh"]
-needs = ["os-board-{board}", "os-board-size-{board}", "os-dev-gate-aarch64"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-board-{board}", "os-board-size-{board}", "os-dev-gate-aarch64", "sign-dev-os-board-{board}", "signing-tools"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
 secrets = ["TILO_PACKAGES_TOKEN"]

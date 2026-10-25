@@ -301,7 +301,7 @@ max = 5000.0
 source = "#4000: shared runtime budget targets"
 
 # OS image size: main's newest production-layout image (the tilo-ci
-# base tilo-vm:main-ci names), measured by tools/perf/image_size.py in the
+# base tilo-vm:<arch>-ci names), measured by tools/perf/image_size.py in the
 # footprint group. One sample per night: compressed layer bytes (a full pull)
 # and unique content (what composefs stores after install; /sysroot, which
 # bootc does not deploy, is left out). Byte counts are deterministic, so one
