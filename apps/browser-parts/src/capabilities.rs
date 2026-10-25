@@ -1,9 +1,15 @@
 //! Device-local permission and download surfaces backed by engine outcomes.
 use std::collections::BTreeMap;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::tokens::TextRole;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::{Button, Column, Container, EmptyState, ListRow, Row, Text, Widget};
+
+/// How long a site's permission question stands before the engine withdraws
+/// it. The question says so, in the person's words: the number lives here
+/// once.
+const PERMISSION_SECONDS: u32 = 60;
 
 /// An extension's request for more access (`chrome.permissions.request`),
 /// as the person is asked it: its name and what it could then do, one line
@@ -89,7 +95,7 @@ fn open_download(
     reveal: bool,
 ) -> Result<ui::portal::LaunchChannel, String> {
     if !path.is_absolute() || !path.is_file() {
-        return Err("The downloaded file is no longer available.".into());
+        return Err(crate::CATALOG.t("browser-download-unavailable"));
     }
     let request = if reveal {
         ui::portal::LaunchRequest::reveal(path)
@@ -112,7 +118,7 @@ fn launch_download(path: &std::path::Path, reveal: bool, notice: &ui::LocalState
                     notice.set(match channel.recv() {
                         Ok(ui::portal::LaunchOutcome::Opened) => String::new(),
                         Ok(ui::portal::LaunchOutcome::Failed(reason)) => reason,
-                        Err(_) => "Could not open the download. Try revealing its folder.".into(),
+                        Err(_) => crate::CATALOG.t("browser-download-open-failed"),
                     });
                 });
         }
@@ -201,14 +207,17 @@ impl Capabilities {
                     .checked_div(total)
                     .unwrap_or(0)
                     .min(100);
-                return Some(format!(
-                    "{count} {} at {percent}%",
-                    if count == 1 { "download" } else { "downloads" }
+                return Some(crate::CATALOG.t_args(
+                    "browser-downloads-progress-status",
+                    &[
+                        ("count", ArgValue::Number(count as f64)),
+                        ("percent", ArgValue::Number(percent as f64)),
+                    ],
                 ));
             }
-            return Some(format!(
-                "{count} active {}",
-                if count == 1 { "download" } else { "downloads" }
+            return Some(crate::CATALOG.t_args(
+                "browser-downloads-active-status",
+                &[("count", ArgValue::Number(count as f64))],
             ));
         }
         (!downloads.terminal_notice.is_empty()).then(|| downloads.terminal_notice.clone())
@@ -329,9 +338,9 @@ impl Capabilities {
                     }
                     if state != "progress" {
                         downloads.terminal_notice = match state.as_str() {
-                            "complete" => "Download complete".into(),
-                            "failed" => "Download failed".into(),
-                            "cancelled" => "Download cancelled".into(),
+                            "complete" => crate::CATALOG.t("browser-download-complete"),
+                            "failed" => crate::CATALOG.t("browser-download-failed-notice"),
+                            "cancelled" => crate::CATALOG.t("browser-download-cancelled"),
                             _ => String::new(),
                         };
                     }
@@ -370,7 +379,7 @@ impl Capabilities {
                     error.clone_into(&mut record.error);
                 }
             }
-            downloads.terminal_notice = "Download failed".into();
+            downloads.terminal_notice = crate::CATALOG.t("browser-download-failed-notice");
         }
     }
     pub fn prompt(&self, engine: &SharedEngine) -> Option<Box<dyn Widget>> {
@@ -382,13 +391,26 @@ impl Capabilities {
             if let Some((&id, (origin, rights))) = self.permissions.first_key_value() {
                 (
                     id,
-                    format!("{origin} requests {rights}. Expires in 60 seconds."),
+                    crate::CATALOG.t_args(
+                        "browser-permission-request",
+                        &[
+                            ("origin", ArgValue::Text(origin.clone())),
+                            ("rights", ArgValue::Text(rights.clone())),
+                            ("seconds", ArgValue::Number(f64::from(PERMISSION_SECONDS))),
+                        ],
+                    ),
                     true,
                 )
             } else if let Some((&id, (url, name))) = downloads.prompts.first_key_value() {
                 (
                     id,
-                    format!("Download {name} from {url}? Save in a new folder in Downloads."),
+                    crate::CATALOG.t_args(
+                        "browser-download-prompt",
+                        &[
+                            ("name", ArgValue::Text(name.clone())),
+                            ("url", ArgValue::Text(url.clone())),
+                        ],
+                    ),
                     false,
                 )
             } else {
@@ -397,14 +419,21 @@ impl Capabilities {
         drop(downloads);
         let mut row = Row::new();
         for (label, allow) in [
-            (if permission { "Allow" } else { "Save" }, true),
-            ("Deny", false),
+            (
+                crate::CATALOG.t(if permission {
+                    "browser-permission-allow"
+                } else {
+                    "browser-download-save"
+                }),
+                true,
+            ),
+            (crate::CATALOG.t("browser-permission-deny"), false),
         ] {
             let engine = engine.clone();
             row = row.push(Box::new(
                 Button::new(
                     &format!("browser.decision.{permission}.{id}.{allow}"),
-                    label,
+                    &label,
                 )
                 .control_size(ui::widget::ControlSize::Regular)
                 .on_effect(move || {
@@ -450,13 +479,16 @@ impl Capabilities {
             ));
         }
         let mut row = Row::new();
-        for (label, allow) in [("Allow", true), ("Deny", false)] {
+        for (label, allow) in [
+            (crate::CATALOG.t("browser-permission-allow"), true),
+            (crate::CATALOG.t("browser-permission-deny"), false),
+        ] {
             let engine = engine.clone();
             let questions = self.extension_questions.clone();
             row = row.push(Box::new(
                 Button::new(
                     &format!("browser.decision.extension.{request}.{allow}"),
-                    label,
+                    &label,
                 )
                 .control_size(ui::widget::ControlSize::Regular)
                 .on_effect(move || questions.borrow_mut().answer(&engine, request, allow)),
@@ -540,9 +572,12 @@ impl Capabilities {
         }
         if downloads.records.is_empty() {
             drop(downloads);
-            return Box::new(column.push(Box::new(
-                EmptyState::new("No downloads yet").with_icon(Icon::Download),
-            )));
+            return Box::new(
+                column.push(Box::new(
+                    EmptyState::new(crate::CATALOG.t("browser-downloads-empty"))
+                        .with_icon(Icon::Download),
+                )),
+            );
         }
         let mut rows: Vec<Box<dyn Widget>> = Vec::new();
         for (&id, d) in downloads.records.iter().rev().filter(|(_, item)| {
@@ -551,16 +586,22 @@ impl Capabilities {
                 &[&item.name, &item.url, &item.path, &item.state],
             )
         }) {
+            let size = |bytes: u64| ArgValue::Text(ui::format::size(bytes));
             let status = match d.state.as_str() {
-                "progress" if d.total > 0 => format!(
-                    "{} of {}",
-                    ui::format::size(d.received),
-                    ui::format::size(d.total)
+                "progress" if d.total > 0 => crate::CATALOG.t_args(
+                    "browser-download-progress",
+                    &[("received", size(d.received)), ("total", size(d.total))],
                 ),
-                "progress" => format!("{} downloaded", ui::format::size(d.received)),
-                "complete" => format!("Saved to {}", d.path),
-                "cancelled" => "Cancelled".to_owned(),
-                _ if d.error.is_empty() => "The download failed".to_owned(),
+                "progress" => crate::CATALOG.t_args(
+                    "browser-download-received",
+                    &[("received", size(d.received))],
+                ),
+                "complete" => crate::CATALOG.t_args(
+                    "browser-download-saved-to",
+                    &[("path", ArgValue::Text(d.path.clone()))],
+                ),
+                "cancelled" => crate::CATALOG.t("browser-download-cancelled"),
+                _ if d.error.is_empty() => crate::CATALOG.t("browser-download-failed"),
                 _ => d.error.clone(),
             };
             let mut row = ListRow::new(format!("browser.download.row.{id}"), &d.name);
@@ -573,21 +614,25 @@ impl Capabilities {
                     (d.total > 0).then_some(d.total),
                 ));
                 buttons.push(
-                    Button::new(&format!("browser.download.cancel.{id}"), "Cancel").on_effect(
-                        move || {
-                            engine.send(WebViewCommand::CancelNativeDownload { id });
-                        },
-                    ),
+                    Button::new(
+                        &format!("browser.download.cancel.{id}"),
+                        &crate::CATALOG.t("browser-download-cancel"),
+                    )
+                    .on_effect(move || {
+                        engine.send(WebViewCommand::CancelNativeDownload { id });
+                    }),
                 );
             }
             if d.state == "complete" && !d.path.is_empty() {
-                for (name, label, reveal) in
-                    [("open", "Open", false), ("reveal", "Show in Files", true)]
-                {
+                for (name, key, reveal) in [
+                    ("open", "browser-download-open", false),
+                    ("reveal", "browser-download-reveal", true),
+                ] {
+                    let label = crate::CATALOG.t(key);
                     let path = std::path::PathBuf::from(&d.path);
                     let notice = self.notice.writer();
                     buttons.push(
-                        Button::new(&format!("browser.download.{name}.{id}"), label)
+                        Button::new(&format!("browser.download.{name}.{id}"), &label)
                             .on_effect(move || launch_download(&path, reveal, &notice)),
                     );
                 }
@@ -596,14 +641,16 @@ impl Capabilities {
                 if d.retryable {
                     let engine = engine.clone();
                     buttons.push(
-                        Button::new(&format!("browser.download.retry.{id}"), "Retry").on_effect(
-                            move || {
-                                engine.send(WebViewCommand::RetryDownload { id });
-                            },
-                        ),
+                        Button::new(
+                            &format!("browser.download.retry.{id}"),
+                            &crate::CATALOG.t("browser-download-retry"),
+                        )
+                        .on_effect(move || {
+                            engine.send(WebViewCommand::RetryDownload { id });
+                        }),
                     );
                 } else {
-                    row = row.meta("Can’t retry");
+                    row = row.meta(crate::CATALOG.t("browser-download-cannot-retry"));
                 }
             }
             row = row.secondary(status);
@@ -611,7 +658,10 @@ impl Capabilities {
             rows.push(match bar {
                 Some(bar) => crate::rows::with_progress(
                     line,
-                    bar.with_label(format!("Downloading {}", d.name)),
+                    bar.with_label(crate::CATALOG.t_args(
+                        "browser-download-downloading",
+                        &[("name", ArgValue::Text(d.name.clone()))],
+                    )),
                     theme,
                 ),
                 None => Box::new(line),
@@ -619,9 +669,12 @@ impl Capabilities {
         }
         drop(downloads);
         if rows.is_empty() {
-            return Box::new(column.push(Box::new(
-                EmptyState::new("No matching items").with_icon(Icon::Search),
-            )));
+            return Box::new(
+                column.push(Box::new(
+                    EmptyState::new(crate::CATALOG.t("browser-library-no-match"))
+                        .with_icon(Icon::Search),
+                )),
+            );
         }
         Box::new(column.push(crate::rows::separated(rows, theme)))
     }

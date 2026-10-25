@@ -31,3 +31,12 @@ feeds-new-folder = Created the folder { $name }
 feeds-delete-folder = Deleted the folder { $item }
 feeds-import-subscriptions = Subscribed to what an OPML file lists
 feeds-refreshed = Brought in new articles
+
+## A subscription that failed to refresh, as its row says it
+
+feeds-refresh-unreachable = Couldn't reach the site
+feeds-refresh-refused = The site refused the request
+feeds-refresh-refused-status = The site refused the request (HTTP { $status })
+feeds-refresh-not-a-feed = The answer wasn't a feed
+feeds-refresh-untrusted = The site's certificate changed — someone may be impersonating it
+feeds-refresh-unavailable = Couldn't start fetching

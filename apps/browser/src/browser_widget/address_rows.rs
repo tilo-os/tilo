@@ -1,7 +1,7 @@
 //! The list under the address: the omnibox's rows for what is typed
-//! (pages visited before, the engine's searches, an inline completion), or,
-//! after an extension's keyword and a space, the extension's own, and what
-//! choosing one does.
+//! (pages saved as bookmarks, pages visited before, the engine's searches,
+//! an inline completion), or, after an extension's keyword and a space, the
+//! extension's own, and what choosing one does.
 
 use ui::widget::Widget;
 
@@ -141,13 +141,17 @@ impl BrowserWidget {
     pub(super) fn rebuild_rows(&mut self, query: &str) {
         if self.omni_stale {
             self.omni_index.rebuild(self.history.entries());
+            let saved = saved_pages(&self.personal_bookmarks.bookmarks, &self.bookmarks);
+            self.omni_bookmarks.rebuild(saved);
             self.omni_stale = false;
         }
         let now = tilo_clock::unix_now();
         let matches = self.omni_index.search(query, omnibox::MAX_ROWS, now);
+        let saved = self.omni_bookmarks.search(query, omnibox::MAX_ROWS);
         let mut rows = omnibox::build_rows(
             query,
             &matches,
+            &saved,
             &self.remote,
             &self.current_uri,
             omnibox::MAX_ROWS,
@@ -230,4 +234,22 @@ impl BrowserWidget {
         self.address.set(destination.clone());
         self.queue_navigate(destination);
     }
+}
+
+/// Every saved page this window suggests from, most personal first: the
+/// bookmarks of the person's own library, then the room's, which the Library
+/// lists beneath them. One address is one row there, whichever library saved
+/// it.
+fn saved_pages<'a>(
+    personal: &'a crate::continuity_library::Bookmarks,
+    room: &'a crate::library::Bookmarks,
+) -> Vec<(&'a str, &'a str)> {
+    let mut pages = Vec::new();
+    for entry in personal.entries() {
+        pages.push((entry.url.as_str(), entry.title.as_str()));
+    }
+    for entry in room.entries() {
+        pages.push((entry.url.as_str(), entry.title.as_str()));
+    }
+    pages
 }

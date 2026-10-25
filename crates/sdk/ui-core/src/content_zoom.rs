@@ -14,6 +14,13 @@
 //!
 //! A window's factor is remembered per app on this device, and every change
 //! is said in the window's bar for a while ("110%").
+//!
+//! An app whose content has a scale of its own — a photograph fitted to its
+//! frame, a PDF page, a board — does not invent its levels, its bounds or its
+//! percentage: it holds a [`ZoomModel`] over its own levels and draws the
+//! toolkit's own controls for it ([`controls`]). `Ctrl+0` then means the same
+//! thing in every window: the content at its own size (a page at 100 %, a
+//! picture fitted to the frame), never one app's private idea of "fit".
 
 use winit::event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
@@ -52,24 +59,34 @@ pub enum ZoomStep {
 }
 
 impl ZoomStep {
-    /// The factor one step from `current`: the next level above or below it,
-    /// or `1.0` for [`Self::Reset`].
+    /// The factor one step from `current`, between the toolkit's
+    /// [`LEVELS`], or [`ZoomModel::default_factor`] for [`Self::Reset`].
     #[must_use]
     pub fn apply(self, current: f32) -> f32 {
-        let current = if current.is_finite() { current } else { 1.0 };
+        self.apply_in(&LEVELS, 1.0, current)
+    }
+
+    /// The factor one step from `current`, between `levels` (ascending) and
+    /// back to `reset` for [`Self::Reset`]: the rule every app's own scale
+    /// follows, whatever its levels are.
+    #[must_use]
+    pub fn apply_in(self, levels: &[f32], reset: f32, current: f32) -> f32 {
+        let current = if current.is_finite() { current } else { reset };
+        let levels = levels
+            .iter()
+            .copied()
+            .filter(|level| level.is_finite() && *level > 0.0);
         match self {
-            Self::Reset => 1.0,
-            Self::In => LEVELS
-                .iter()
-                .copied()
+            Self::Reset => reset,
+            Self::In => levels
+                .clone()
                 .find(|level| *level > current + 0.001)
-                .unwrap_or(MAX),
-            Self::Out => LEVELS
-                .iter()
+                .or_else(|| levels.clone().next_back())
+                .unwrap_or(current),
+            Self::Out => levels
                 .rev()
-                .copied()
                 .find(|level| *level < current - 0.001)
-                .unwrap_or(MIN),
+                .unwrap_or(current),
         }
     }
 
@@ -95,6 +112,218 @@ impl ZoomStep {
             _ => None,
         }
     }
+}
+
+/// The scale of one app's content: the levels it steps through, where
+/// `Ctrl+0` returns to, and the factor it shows now.
+///
+/// A window zooms its whole content ([`WindowZoom`], the theme's UI scale). A
+/// widget or an app whose content has a size of its own — a photograph, a PDF
+/// page, a board — keeps a `ZoomModel` instead: the levels and bounds are its
+/// own (a picture fits a frame and magnifies to 8×; a page is 25 %–1600 %),
+/// and the *rules* are this module's, so `Ctrl+=`, `Ctrl+-` and `Ctrl+0` mean
+/// the same thing everywhere and every app states its level the same way.
+///
+/// ```
+/// use ui_core::content_zoom::{ZoomModel, ZoomStep};
+/// let mut model = ZoomModel::stepping([1.0, 2.0, 4.0], 1.0);
+/// assert_eq!(model.step(ZoomStep::In), 2.0);
+/// assert_eq!(model.label("Fit to window"), "200%");
+/// assert_eq!(model.step(ZoomStep::Reset), 1.0);
+/// assert_eq!(model.label("Fit to window"), "Fit to window");
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZoomModel {
+    /// The factors it steps between, ascending, all finite and above zero.
+    levels: Vec<f32>,
+    /// Where [`ZoomStep::Reset`] goes: the content at its own size.
+    reset: f32,
+    /// The factor shown now.
+    factor: f32,
+}
+
+impl ZoomModel {
+    /// The toolkit's levels ([`LEVELS`]): the window's own content zoom, and
+    /// the default for content with no scale of its own.
+    #[must_use]
+    pub fn standard() -> Self {
+        Self::stepping(LEVELS, 1.0)
+    }
+
+    /// `levels` as an app's content steps through them, with `reset` where
+    /// `Ctrl+0` goes. Levels are sorted, and a level that is not a finite
+    /// positive factor is dropped; a model with no usable level keeps the
+    /// toolkit's.
+    #[must_use]
+    pub fn stepping(levels: impl IntoIterator<Item = f32>, reset: f32) -> Self {
+        let mut levels: Vec<f32> = levels
+            .into_iter()
+            .filter(|level| level.is_finite() && *level > 0.0)
+            .collect();
+        levels.sort_by(f32::total_cmp);
+        levels.dedup_by(|a, b| (*a - *b).abs() <= 0.001);
+        if levels.is_empty() {
+            levels = LEVELS.to_vec();
+        }
+        let reset = if reset.is_finite() && reset > 0.0 {
+            reset
+        } else {
+            1.0
+        };
+        Self {
+            levels,
+            reset,
+            factor: reset,
+        }
+    }
+
+    /// The factor the content shows at its own size: what `Ctrl+0` returns
+    /// to (100 % for a page, a picture fitted to its frame).
+    #[must_use]
+    pub fn default_factor(&self) -> f32 {
+        self.reset
+    }
+
+    /// The levels, ascending.
+    #[must_use]
+    pub fn levels(&self) -> &[f32] {
+        &self.levels
+    }
+
+    /// The factor the content shows now.
+    #[must_use]
+    pub fn factor(&self) -> f32 {
+        self.factor
+    }
+
+    /// The factor as a whole percentage of the content's own size.
+    #[must_use]
+    pub fn percent(&self) -> f64 {
+        (f64::from(self.factor) * 100.0).round()
+    }
+
+    /// Whether the content shows at its own size.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        (self.factor - self.reset).abs() <= 0.001
+    }
+
+    /// Take `step`, between this model's levels, and answer the factor the
+    /// content shows now.
+    pub fn step(&mut self, step: ZoomStep) -> f32 {
+        self.factor = step.apply_in(&self.levels, self.reset, self.factor);
+        self.factor
+    }
+
+    /// Adopt `factor` as what the content shows (a wheel notch, a pinch, a
+    /// fit computed from the frame), left inside what the levels allow.
+    pub fn set(&mut self, factor: f32) -> f32 {
+        let (Some(min), Some(max)) = (self.min(), self.max()) else {
+            return self.factor;
+        };
+        if factor.is_finite() {
+            self.factor = factor.clamp(min, max);
+        }
+        self.factor
+    }
+
+    /// Adopt `factor` as what the content shows, without clamping: the value
+    /// came from the content itself (a wheel notch, a fit it computed), so the
+    /// model reports what is on screen even when that is outside its own
+    /// levels.
+    pub fn adopt(&mut self, factor: f32) -> f32 {
+        if factor.is_finite() && factor > 0.0 {
+            self.factor = factor;
+        }
+        self.factor
+    }
+
+    /// The smallest factor the levels allow.
+    #[must_use]
+    pub fn min(&self) -> Option<f32> {
+        self.levels.first().copied()
+    }
+
+    /// The largest factor the levels allow.
+    #[must_use]
+    pub fn max(&self) -> Option<f32> {
+        self.levels.last().copied()
+    }
+
+    /// Whether `step` would change the factor: in below the largest, out
+    /// above the smallest, and reset unless already at the default.
+    #[must_use]
+    pub fn can_step(&self, step: ZoomStep) -> bool {
+        (self.step_of(step) - self.factor).abs() > 0.001
+    }
+
+    /// What `step` would make the factor, without taking it.
+    #[must_use]
+    pub fn step_of(&self, step: ZoomStep) -> f32 {
+        step.apply_in(&self.levels, self.reset, self.factor)
+    }
+
+    /// What a control says about the level: `default_label` ("Fit to
+    /// window") while the content shows at its own size, else the
+    /// percentage ("120%").
+    #[must_use]
+    pub fn label(&self, default_label: &str) -> String {
+        if self.is_default() {
+            default_label.to_string()
+        } else {
+            crate::format::percent(f64::from(self.factor))
+        }
+    }
+}
+
+impl Default for ZoomModel {
+    fn default() -> Self {
+        Self::standard()
+    }
+}
+
+/// The toolkit's zoom controls, in the toolkit's own buttons: out, the level
+/// (which returns the content to its own size), and in. `prefix` names the
+/// three of them for tests and assistive technology (`.zoom-out`,
+/// `.zoom-level`, `.zoom-in`); `default_label` is what the middle one says
+/// while the content shows at its own size ("Fit to window", "Actual size").
+///
+/// The caller places the buttons where its chrome keeps them — a toolbar
+/// row, a window's control cluster — and handles the step. A button whose
+/// step would change nothing is disabled, so the bounds are visible rather
+/// than mysterious.
+pub fn controls<F: FnMut(ZoomStep) + 'static>(
+    prefix: &str,
+    model: &ZoomModel,
+    default_label: &str,
+    on_step: F,
+) -> Vec<crate::widget::Button> {
+    let handler = std::rc::Rc::new(std::cell::RefCell::new(on_step));
+    let step = |wanted: ZoomStep| {
+        let handler = std::rc::Rc::clone(&handler);
+        move || (handler.borrow_mut())(wanted)
+    };
+    let label = |id: &str, key: &str, wanted: ZoomStep| {
+        crate::widget::Button::icon_only(
+            &format!("{prefix}.{id}"),
+            match wanted {
+                ZoomStep::In => crate::icons::Icon::Plus,
+                ZoomStep::Out => crate::icons::Icon::Minus,
+                ZoomStep::Reset => crate::icons::Icon::Maximize2,
+            },
+            &crate::i18n::I18nManager::lookup_plain(key),
+        )
+        .with_enabled(model.can_step(wanted))
+        .on_effect(step(wanted))
+    };
+    vec![
+        label("zoom-out", "host-zoom-out", ZoomStep::Out),
+        crate::widget::Button::new(&format!("{prefix}.zoom-level"), &model.label(default_label))
+            .role(crate::widget::ButtonRole::Plain)
+            .with_enabled(!model.is_default())
+            .on_effect(step(ZoomStep::Reset)),
+        label("zoom-in", "host-zoom-in", ZoomStep::In),
+    ]
 }
 
 /// A zoom gesture as it arrives: a key, a Ctrl+scroll or a touchpad
@@ -367,6 +596,62 @@ mod tests {
         assert!((ZoomStep::Reset.apply(2.5) - 1.0).abs() < 1e-6);
         // A factor between levels steps to the next one, not past it.
         assert!((ZoomStep::In.apply(1.2) - 1.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_model_steps_between_its_own_levels_and_resets_to_its_own_size() {
+        // A photograph: fitted to its frame is the default, and the levels
+        // are its own, not the toolkit's.
+        let mut photo = ZoomModel::stepping([1.0, 1.5, 2.0, 4.0, 8.0], 1.0);
+        assert!(photo.is_default());
+        assert_eq!(photo.label("Fit to frame"), "Fit to frame");
+        assert_eq!(photo.step(ZoomStep::In), 1.5);
+        assert_eq!(photo.label("Fit to frame"), "150%");
+        assert_eq!(photo.step(ZoomStep::In), 2.0);
+        assert_eq!(photo.step(ZoomStep::Reset), 1.0);
+        assert!(!photo.can_step(ZoomStep::Reset), "already at its own size");
+        // Out at the smallest level stays there, and says so.
+        assert!(!photo.can_step(ZoomStep::Out));
+        assert_eq!(photo.step(ZoomStep::Out), 1.0);
+        assert_eq!(photo.step(ZoomStep::In), 1.5);
+        assert_eq!(photo.max(), Some(8.0));
+        assert_eq!(photo.min(), Some(1.0));
+    }
+
+    #[test]
+    fn a_models_levels_are_sorted_and_its_bad_ones_dropped() {
+        let model = ZoomModel::stepping([4.0, f32::NAN, 0.0, 1.0, 2.0, -1.0], f32::NAN);
+        assert_eq!(model.levels(), [1.0, 2.0, 4.0]);
+        assert!((model.default_factor() - 1.0).abs() < 1e-6);
+        // A model with no usable level keeps the toolkit's rather than an
+        // empty scale nobody can step through.
+        assert_eq!(ZoomModel::stepping([], 1.0).levels(), LEVELS);
+    }
+
+    #[test]
+    fn an_adopted_factor_stays_inside_the_levels() {
+        let mut model = ZoomModel::stepping([1.0, 2.0, 4.0], 1.0);
+        assert_eq!(model.set(3.0), 3.0, "a fit computed from the frame is kept");
+        assert_eq!(model.set(100.0), 4.0);
+        assert_eq!(model.set(0.1), 1.0);
+        assert_eq!(model.set(f32::NAN), 1.0, "a broken reading changes nothing");
+    }
+
+    #[test]
+    fn a_step_is_offered_only_where_it_changes_the_factor() {
+        let mut model = ZoomModel::stepping([1.0, 2.0], 1.0);
+        assert!(!model.can_step(ZoomStep::Out), "nothing under its own size");
+        assert!(model.can_step(ZoomStep::In));
+        assert!(!model.can_step(ZoomStep::Reset), "already at its own size");
+        model.step(ZoomStep::In);
+        assert_eq!(model.label("Fit to frame"), "200%");
+        assert!(model.can_step(ZoomStep::Reset));
+        assert!(
+            !model.can_step(ZoomStep::In),
+            "already at the largest level"
+        );
+        // The three controls are the toolkit's, ready for a toolbar row.
+        assert_eq!(controls("photo", &model, "Fit to frame", |_| {}).len(), 3);
     }
 
     #[test]

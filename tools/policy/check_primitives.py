@@ -62,6 +62,11 @@ RAW_COLOUR = re.compile(
     r"|\bColor::(?:WHITE|BLACK)\b"
 )
 ROUNDED_FILL = re.compile(r"RoundedRect::(?:from_rect|new)")
+# A fill painted from a media colour is a caption or subtitle scrim drawn over a
+# picture, not a control: there is nothing in the design system to build it from,
+# and the text beside it is media, not a label. Left out of the hand-rolled rule
+# deliberately, on the colour's provenance rather than the file's identity.
+MEDIA_FILL = re.compile(r"\bmedia\b")
 TEXT_RUN = re.compile(r"\.draw_(?:text|style)\s*\(")
 # How close a rounded fill and a text run must be to count as one control.
 NEAR_LINES = 12
@@ -71,7 +76,13 @@ RULES = ("hand-rolled", "glyph-join", "glyph-icon", "raw-colour")
 # Sources whose string literals are written for an agent's model, not shown to
 # a person: the agent's tools (their schemas, descriptions and the operation
 # summaries it is handed). A path ending in "/" names a directory.
-MODEL_TEXT = ("apps/agent/src/tools.rs", "apps/agent/src/tools/")
+MODEL_TEXT = (
+    "apps/agent/src/tools.rs",
+    "apps/agent/src/tools/",
+    # A tool catalogue: the descriptions an agent's model is handed, not copy a
+    # person reads on a surface.
+    "apps/web-search/src/actions.rs",
+)
 # The rules about string literals a person reads.
 TEXT_RULES = ("glyph-join", "glyph-icon")
 
@@ -128,8 +139,13 @@ def count_file(text: str) -> Counter:
     fills = [i for i, line in enumerate(lines) if ROUNDED_FILL.search(line)]
     texts = [i for i, line in enumerate(lines) if TEXT_RUN.search(line)]
     for fill in fills:
-        if any(abs(fill - t) <= NEAR_LINES for t in texts):
-            counts["hand-rolled"] += 1
+        if not any(abs(fill - t) <= NEAR_LINES for t in texts):
+            continue
+        # The fill line and the twelve lines above it: one of them names the
+        # media colour this scrim is painted from.
+        if any(MEDIA_FILL.search(lines[n]) for n in range(max(0, fill - NEAR_LINES), fill + 1)):
+            continue
+        counts["hand-rolled"] += 1
     return counts
 
 

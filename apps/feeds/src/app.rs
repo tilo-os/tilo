@@ -42,7 +42,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
 
 use crate::chrome::reader_settings_panel;
-use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
+use crate::fetch::{FetchRequest, FetchResult, FetchWorker, RefreshFailure};
 use crate::list_pane::{ListPane, ListState};
 use crate::modal::{ModalBody, ModalIntent};
 use crate::model::{
@@ -453,6 +453,10 @@ pub(crate) struct Core {
     /// change instead.
     undo_offered: bool,
     pub(crate) refresh: RefreshState,
+    /// Subscriptions whose last refresh failed, and why, kept until that
+    /// subscription refreshes successfully: the batch summary counts them,
+    /// and each failing row names its own reason.
+    pub(crate) feed_failures: HashMap<Id, RefreshFailure>,
     pub(crate) pending_landings: Vec<Landing>,
     /// Articles opened from search or by an agent, to mark read on the next
     /// pass that holds the document, as a click does.
@@ -513,6 +517,7 @@ impl Core {
             toast: None,
             undo_offered: false,
             refresh: RefreshState::default(),
+            feed_failures: HashMap::new(),
             pending_landings: Vec::new(),
             pending_reads: Vec::new(),
             awaited: Vec::new(),
@@ -1271,6 +1276,8 @@ impl Core {
                     articles,
                     certificate_pin,
                 } => {
+                    // It answered: whatever went wrong last time is over.
+                    self.feed_failures.remove(&feed_id);
                     let Some(feed) = self.store.feed(&feed_id) else {
                         self.refresh.done += 1;
                         self.maybe_finish_refresh();
@@ -1317,10 +1324,23 @@ impl Core {
                     }
                     self.maybe_finish_refresh();
                 }
-                FetchResult::Failed { feed_id, message } => {
-                    if feed_id.is_some() {
+                FetchResult::Failed {
+                    feed_id,
+                    reason,
+                    message,
+                } => {
+                    if let Some(feed_id) = feed_id {
+                        // The subscription keeps its place in the summary, and
+                        // its row keeps the reason: "two failed" is a count,
+                        // not an answer.
                         self.refresh.done += 1;
                         self.refresh.failed_feeds += 1;
+                        // The row names the kind of failure; the transport's
+                        // own words are for a failure with no subscription to
+                        // blame, where there is no row to put them on.
+                        if self.store.feed(&feed_id).is_some() {
+                            self.feed_failures.insert(feed_id, reason);
+                        }
                         self.maybe_finish_refresh();
                     } else {
                         self.set_toast(format!("Could not fetch the feed: {message}"));
@@ -2592,6 +2612,9 @@ impl FeedsApp {
         if first && core.selected.is_none() {
             core.select_featured();
         }
+        // A subscription that is gone takes its recorded failure with it.
+        let store = Rc::clone(&core.store);
+        core.feed_failures.retain(|id, _| store.feed(id).is_some());
         core.synced = true;
     }
     pub(crate) fn attach_dispatcher(&self, dispatcher: ui::framework::Dispatcher<Library>) {
