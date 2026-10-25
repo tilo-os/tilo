@@ -229,9 +229,12 @@ fn luminance(c: Color) -> f64 {
 }
 
 const PAGE_TOP: f64 = 28.0;
+/// The least a page keeps beside either pane: the column it would lose the
+/// sheet whole in. Below that width the pane floats instead of docking.
+const PAGE_KEEPS: f64 = MAX_PAGE_W / 2.0;
 /// The window width (at 1×) from which the outline docks beside a page it
 /// leaves readable; below it the outline is a drawer over the page.
-const OUTLINE_DOCKS_FROM: f64 = ui::tokens::Metrics::BASE.sidebar_width as f64 + 600.0;
+const OUTLINE_DOCKS_FROM: f64 = ui::tokens::Metrics::BASE.panel_min_width as f64 + PAGE_KEEPS;
 /// The width from which the inspector docks beside a whole page; below it
 /// the inspector is a sheet over the page.
 const INSPECTOR_DOCKS_FROM: f64 =

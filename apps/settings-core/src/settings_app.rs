@@ -313,7 +313,7 @@ impl SettingsApp {
     /// minimum beside a settings page's (`NavShell`, `ContentKind::Page`).
     fn dock_width() -> f32 {
         let m = Metrics::BASE;
-        m.sidebar_min_width + ui::widget::ContentKind::Page.min_width(&m)
+        m.panel_min_width + ui::widget::ContentKind::Page.min_width(&m)
     }
 
     /// Whether the current frame resolves to the narrow (phone) layout.
