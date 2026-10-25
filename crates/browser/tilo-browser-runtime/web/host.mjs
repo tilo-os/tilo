@@ -4,7 +4,7 @@ import {createDataLoader} from './data-loader.mjs';
 import {createImageDecoder} from './image-decode.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
-import {MountRegistry,applyEditorHints,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
+import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
@@ -109,6 +109,7 @@ export async function mountDesktop(target,options={}) {
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
+  const fillScreen=createScreenFill(surface,{canvas,observe:globalThis.ResizeObserver});
   let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
@@ -246,6 +247,7 @@ export async function mountDesktop(target,options={}) {
     if(state.semantics)semantic.update(state.semantics);
     placeSemantics();
     const ownership=inputScope.capture(),ime=ownership?.legacy?state.ime:ownership?.ime;
+    fillScreen(!ime);
     if(ime){
       editor.style.left=`${ime.x}px`;editor.style.top=`${ime.y}px`;editor.style.height=`${Math.max(1,ime.height)}px`;
       applyEditorHints(editor,ime.hints);
