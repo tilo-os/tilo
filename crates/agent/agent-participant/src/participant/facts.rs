@@ -15,6 +15,11 @@ use crate::planner::Step;
 /// The most records a check is shown the facts of.
 const MOST_FACT_RECORDS: usize = 3;
 
+/// The most records a coordinated task's check is shown the facts of: its
+/// items act in more records than one agent's task, and it is checked
+/// once.
+const MOST_COORDINATED_FACT_RECORDS: usize = 6;
+
 /// The most characters of one record's facts a check is shown.
 const MOST_FACT_CHARS: usize = 4_000;
 
@@ -75,26 +80,38 @@ impl AgentParticipant {
         &mut self,
         open: &[(DocumentRoute, Vec<ActionDescriptor>)],
     ) -> Vec<String> {
-        let Some(running) = self.running.as_ref() else {
-            return Vec::new();
+        // A coordinated task is checked once, by its coordinator, over every
+        // record its items made or acted on.
+        let (task, made, most) = if let Some(checked) = self.coordinator_check() {
+            (checked.0, checked.1, MOST_COORDINATED_FACT_RECORDS)
+        } else {
+            let Some(running) = self.running.as_ref() else {
+                return Vec::new();
+            };
+            if !matches!(
+                running.follow_ups.turn,
+                Some(FollowUp::Checking | FollowUp::Obligations)
+            ) {
+                return Vec::new();
+            }
+            let made: Vec<DocumentRoute> = running
+                .made
+                .iter()
+                .chain(&running.touched)
+                .cloned()
+                .collect();
+            (running.id.clone(), made, MOST_FACT_RECORDS)
         };
-        if !matches!(
-            running.follow_ups.turn,
-            Some(FollowUp::Checking | FollowUp::Obligations)
-        ) {
-            return Vec::new();
-        }
-        let task = running.id.clone();
         let mut routes: Vec<DocumentRoute> = Vec::new();
-        for route in running.made.iter().chain(&running.touched) {
-            if !routes.contains(route) {
-                routes.push(route.clone());
+        for route in made {
+            if !routes.contains(&route) {
+                routes.push(route);
             }
         }
         let mut shown = Vec::new();
         let mut records = 0_usize;
         for route in routes {
-            if records >= MOST_FACT_RECORDS {
+            if records >= most {
                 break;
             }
             let Some(address) = open
