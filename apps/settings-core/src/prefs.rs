@@ -513,6 +513,7 @@ mod tests {
             suspend_minutes: 20,
             blank_minutes: 5,
             lock_minutes: 10,
+            lock_on_sleep: false,
             lid_close_action: PowerActionPref::Lock,
             power_key_action: PowerActionPref::Ignore,
             low_battery_percent: 18,
@@ -523,7 +524,7 @@ mod tests {
         // Stored over values that differ from each of these, so every leaf
         // is written (a store writes only what changes).
         let root = stored(
-            r#"{"power":{"auto_suspend":false,"suspend_minutes":30,"blank_minutes":1,"lock_minutes":1,"lid_close_action":"suspend","power_key_action":"suspend","low_battery_percent":30,"critical_battery_percent":2,"critical_action":"ignore"}}"#,
+            r#"{"power":{"auto_suspend":false,"suspend_minutes":30,"blank_minutes":1,"lock_minutes":1,"lock_on_sleep":true,"lid_close_action":"suspend","power_key_action":"suspend","low_battery_percent":30,"critical_battery_percent":2,"critical_action":"ignore"}}"#,
             &power,
         );
         let power = &root["power"];
@@ -531,6 +532,7 @@ mod tests {
         assert_eq!(power["suspend_minutes"], serde_json::json!(20));
         assert_eq!(power["blank_minutes"], serde_json::json!(5));
         assert_eq!(power["lock_minutes"], serde_json::json!(10));
+        assert_eq!(power["lock_on_sleep"], serde_json::json!(false));
         // Actions must be the lowercase labels the reader expects.
         assert_eq!(power["lid_close_action"], serde_json::json!("lock"));
         assert_eq!(power["power_key_action"], serde_json::json!("ignore"));
