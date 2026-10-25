@@ -39,6 +39,8 @@ pub(super) struct State {
 struct Background {
     running: bool,
     failed_at: Option<Instant>,
+    /// Why the last open failed, for the diagnostic that has to say so.
+    failed: Option<String>,
     /// The owner the last background open produced, until it is retained.
     opened: Option<NativeWorkspaceOwner>,
 }
@@ -61,6 +63,17 @@ impl NativeOwnerStatus {
         match self {
             Self::Open(owner) => Some(owner),
             Self::Opening | Self::Unavailable => None,
+        }
+    }
+
+    /// Where the owner stands, in words, for a diagnostic that must say
+    /// why a room looked ungoverned.
+    #[cfg(test)]
+    pub(crate) fn describe(&self) -> &'static str {
+        match self {
+            Self::Open(_) => "open",
+            Self::Opening => "opening",
+            Self::Unavailable => "unavailable",
         }
     }
 }
@@ -118,6 +131,17 @@ impl ShellNetwork {
     /// must never wait for the state file ([`Self::native_owner_status`]).
     pub(crate) fn opened_native_owner(&self) -> Option<NativeWorkspaceOwner> {
         self.native_owner_status().open()
+    }
+
+    /// Why the last open of the owner failed, when one did: what a
+    /// diagnostic that found no owner must print.
+    #[cfg(test)]
+    pub(crate) fn open_failure(&self) -> Option<String> {
+        self.native_enrollment
+            .background
+            .lock()
+            .ok()
+            .and_then(|background| background.failed.clone())
     }
 
     /// Where the native owner stands, never waiting for the state file:
@@ -180,9 +204,11 @@ impl ShellNetwork {
                     Ok(owner) => {
                         background.opened = Some(owner);
                         background.failed_at = None;
+                        background.failed = None;
                     }
                     Err(error) => {
                         background.failed_at = Some(Instant::now());
+                        background.failed = Some(error.clone());
                         tracing::debug!(%error, "native owner unavailable");
                     }
                 }
@@ -198,6 +224,7 @@ impl ShellNetwork {
             if let Ok(mut background) = slot.lock() {
                 background.running = false;
                 background.failed_at = Some(Instant::now());
+                background.failed = Some(error.to_string());
             }
             return NativeOwnerStatus::Unavailable;
         }
