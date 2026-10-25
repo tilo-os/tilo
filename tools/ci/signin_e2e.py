@@ -47,7 +47,7 @@ REPO = Path(__file__).resolve().parents[2]
 VM_SH = REPO / "os/dev/vm.sh"
 TILO_ROOT_TYPE = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab"
 SHELL_PORT = "org.tilo.test-shell.0"
-RECOVERY_SHAPE = re.compile(r"\b[bcdfghjkmnpqrstvwxyz]{8}(?:-[bcdfghjkmnpqrstvwxyz]{8}){7}\b")
+RECOVERY_SHAPE = re.compile(r"\b[cbdefghijklnrtuv]{8}(?:-[cbdefghijklnrtuv]{8}){7}\b")
 
 _spec = importlib.util.spec_from_file_location("installer_console", REPO / "os/dev/installer-console.py")
 console = importlib.util.module_from_spec(_spec)
@@ -478,7 +478,7 @@ exit 1
         path, text = self.cycle.screen("private-recovery")
         if path:
             ocr = subprocess.run(["tesseract", str(path), "stdout", "-c",
-                                  "tessedit_char_whitelist=bcdfghjkmnpqrstvwxyz-"],
+                                  "tessedit_char_whitelist=cbdefghijklnrtuv-"],
                                  capture_output=True, text=True)
             path.unlink(missing_ok=True)
             found = RECOVERY_SHAPE.search(ocr.stdout.replace(" ", ""))
@@ -728,6 +728,9 @@ cryptsetup close e2e-target
         _, pending = self.guest("test -e /etc/tilo/firstboot-autologin-pending && echo pending || echo consumed")
         _, greetd = self.guest("journalctl -b -u greetd --no-pager -o cat | tail -n 40", quiet=True)
         self.save("first-boot-greetd.txt", greetd)
+        _, sessions = self.guest("loginctl list-sessions --no-pager; systemctl --failed --no-pager "
+                                 "--plain --no-legend", quiet=True)
+        self.save("first-boot-sessions.txt", sessions)
         path, text = self.cycle.screen()
         self.cycle.keep_screen("first-boot-after-unlock", path, text)
         evidence = {"disk_prompts_answered": typed, "user_session": session,
@@ -761,6 +764,20 @@ cryptsetup close e2e-target
         except TimeoutError as error:
             path, text = self.cycle.screen()
             self.cycle.keep_screen("migration-no-greeter", path, text)
+            try:
+                last = console.state(self.cycle.console, 10)
+            except Exception as reason:
+                last = {"unreachable": str(reason)}
+            self.save("migration-no-greeter-console.json", last)
+            try:
+                self.connect(120)
+                _, sessions = self.guest("loginctl list-sessions --no-pager; systemctl --failed "
+                                         "--no-pager --plain --no-legend; journalctl -b -u greetd "
+                                         "--no-pager -o cat | tail -n 60", quiet=True)
+                self.save("migration-no-greeter-guest.txt", sessions)
+                self.collect_journal(label)
+            except Failed as reason:
+                say(f"no guest shell after the greeter wait: {reason}")
             raise Failed("the greeter never accepted input on the second boot") from error
         self.greeter_log(label, state)
         path, text = self.cycle.screen()
@@ -1225,7 +1242,34 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
     (out / "report.md").write_text(text)
     print(text)
     bad = [k for k, v in items.items() if v["status"] in ("failed", "not-run")]
+    if bad:
+        print_evidence(out, document)
     return 1 if bad or withheld else 0
+
+
+JOURNAL_LINES = re.compile(r"greetd|greeter|tilo|pam_|systemd-logind|session|autologin|cryptsetup|"
+                           r"plymouth|tpm|fail|error|denied", re.IGNORECASE)
+
+
+def print_evidence(out: Path, document: dict) -> None:
+    """A failed check publishes no outputs, so the log carries what the files hold: every item's
+    evidence, each small text file, and each journal's lines about sign-in. All of it was
+    redacted and scrubbed of secrets before this runs."""
+    print("\n## Evidence\n")
+    for key, item in sorted(document["items"].items()):
+        print(f"### item {key} ({item.get('variant', '')}): {item['status']}")
+        print(json.dumps(item.get("evidence", {}), indent=1, sort_keys=True, default=str)[:6000])
+    for path in sorted(out.rglob("*")):
+        if not path.is_file() or path.suffix not in (".txt", ".json", ".jsonl", ".log") \
+                or path.name in ("report.json", "log.txt"):
+            continue
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if path.name.startswith("journal-") or path.name.startswith("serial-"):
+            lines = [line for line in lines if JOURNAL_LINES.search(line)][-400:]
+        else:
+            lines = lines[-150:]
+        print(f"\n### {path.relative_to(out)} ({len(lines)} lines shown)")
+        print("\n".join(line[:400] for line in lines))
 
 
 def main(argv: list[str]) -> int:
