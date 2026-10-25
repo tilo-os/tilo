@@ -211,3 +211,92 @@ fn removing_banning_and_unbanning_a_linked_person_reaches_discord() {
     // A guest with no linked account has nothing to act on in Discord.
     assert!(planned(&g, &room("ban", "u_bo")).bans.is_empty());
 }
+
+/// A Chat change's history entry for a reaction: the framework's field
+/// edit of a message's reactions.
+fn reaction_edit(op: &str, message: &str, emoji: &str) -> Value {
+    json!({"did": "edit", "ty": "message", "field": "reactions", "op": op, "new": emoji,
+           "path": [{"field": "messages"}, {"item": message}, {"field": "reactions"}]})
+}
+
+#[test]
+fn a_tilo_reaction_is_routed_to_its_message_and_becomes_the_bots() {
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    let event = json!({"kind": MESSAGES_KIND, "did": {"did": "group", "members": [reaction_edit("react", "m1", "👍")]}});
+    assert_eq!(route(&g, &event), "m1");
+    let chat = json!({"messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "hello",
+        "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1}]}}]});
+    let read = |chat: &Value, event: &Value| {
+        plan(
+            Reading {
+                guild: &g,
+                chat,
+                context: &Context::default(),
+                room: &Value::Null,
+            },
+            event,
+        )
+    };
+    let planned = read(&chat, &event);
+    assert_eq!(
+        planned.reacts,
+        [json!({"channel": "d1", "message": "dm1", "emoji": "👍"})]
+    );
+    assert!(planned.apply_channels.is_empty() && !planned.again);
+
+    let taken = json!({"kind": MESSAGES_KIND, "did": reaction_edit("unreact", "m1", "👍")});
+    let none = json!({"messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "hello", "reactions": []}}]});
+    assert_eq!(
+        read(&none, &taken).unreacts,
+        [json!({"channel": "d1", "message": "dm1", "emoji": "👍"})]
+    );
+    // Another field edit of a message is no reaction.
+    let pinned = json!({"kind": MESSAGES_KIND, "did": {"did": "edit", "op": "set", "new": true,
+        "path": [{"field": "messages"}, {"item": "m1"}, {"field": "pinned"}]}});
+    assert_eq!(read(&chat, &pinned), BridgePlan::default());
+}
+
+#[test]
+fn a_discord_reaction_is_the_members_own_reaction_on_the_mapped_message() {
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    let event = discord(
+        source::REACTION_ADDED,
+        &json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm1", "user_id": "d7",
+                "user_name": "Dee", "emoji": ":party:", "emoji_id": "77", "animated": true}),
+    );
+    assert_eq!(route(&g, &event), "m1", "read with the message it is on");
+    let planned = planned(&g, &event);
+    assert_eq!(planned.chat_reacts.len(), 1, "{planned:?}");
+    let react = &planned.chat_reacts[0];
+    assert_eq!(react["message"], "m1");
+    assert_eq!(react["emoji"], ":party:");
+    assert_eq!(react["appearance"]["name"], "Dee");
+    assert_eq!(react["appearance"]["persona"]["account"], "d7");
+    // The bot's own reaction comes back from Discord as nothing.
+    let echo = discord(
+        source::REACTION_REMOVED,
+        &json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm1", "user_id": "9", "emoji": "👍"}),
+    );
+    assert_eq!(planned_in(&g, &Value::Null, &echo), BridgePlan::default());
+}
+
+#[test]
+fn the_servers_custom_emoji_are_recorded_with_its_layout() {
+    let payload = json!({"guild_id": "1", "bot_user": "9", "channels": [], "roles": [],
+        "emojis": [{"id": "55", "name": "tilo_hello", "animated": false}]});
+    let mut g = guild();
+    let first = planned(&g, &discord("layout-changed", &payload));
+    assert_eq!(first.observe[0]["emojis"][0]["name"], "tilo_hello");
+    g.observe_emojis(vec![discord_wire::event::EmojiInfo {
+        id: "55".into(),
+        name: "tilo_hello".into(),
+        animated: false,
+    }]);
+    assert!(
+        planned(&g, &discord("layout-changed", &payload))
+            .observe
+            .is_empty()
+    );
+}
