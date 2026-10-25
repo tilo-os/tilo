@@ -91,14 +91,8 @@ const PROFILE_FIELDS: [&str; 6] = [
     "devicetree_sha256",
     "target_update_ref",
 ];
-const INTERNAL_KEYBOARD_FIELDS: [&str; 6] = [
-    "name",
-    "bus",
-    "vendor",
-    "product",
-    "devicetree_compatible",
-    "dmi",
-];
+const INTERNAL_KEYBOARD_FIELDS: [&str; 5] =
+    ["name", "bus", "vendor", "product", "devicetree_compatible"];
 /// Fedora firmware RPMs a board layer may remove, each with the subtrees of
 /// /usr/lib/firmware it owns.
 const FIRMWARE_PACKAGE_TREES: [(&str, &[&str]); 10] = [
@@ -161,7 +155,7 @@ pattern!(KERNEL_VERSION, r"[A-Za-z0-9][A-Za-z0-9._+-]*");
 pattern!(DTB_DIGEST, r"[0-9a-f]{64}");
 pattern!(
     KERNEL_ARG,
-    r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})?"
+    r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})*"
 );
 
 /// The image root the profile is read from, and who must own its inputs
@@ -711,7 +705,9 @@ fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
             }
         };
         require(
-            keyboard.values().all(Value::is_string),
+            keyboard
+                .values()
+                .all(|value| value.is_string() || value.is_null()),
             "hardware definition internal keyboard fields must be strings",
         )?;
         let text = |key: &str| {
@@ -732,13 +728,18 @@ fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
             KEYBOARD_NAME.is_match(text("name")),
             "hardware definition internal keyboard name is invalid",
         )?;
+        // A device-tree board confines the quirk by its compatible; a
+        // firmware-described one has no compatible and is confined by the
+        // definition's DMI identity instead. Exactly one applies, so a quirk
+        // can never name an identity that cannot both apply and be true.
+        let board_has_devicetree = !data.get("devicetree").unwrap_or(&Value::Null).is_null();
         require(
-            COMPATIBLE.is_match(text("devicetree_compatible")),
+            if board_has_devicetree {
+                COMPATIBLE.is_match(text("devicetree_compatible"))
+            } else {
+                keyboard.get("devicetree_compatible") == Some(&Value::Null)
+            },
             "hardware definition internal keyboard device-tree compatible is invalid",
-        )?;
-        require(
-            keyboard.get("dmi") == data.get("dmi"),
-            "hardware definition internal keyboard DMI differs from the board's",
         )?;
         require(
             seen.insert((text("bus"), text("vendor"), text("product"))),
