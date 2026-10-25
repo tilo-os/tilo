@@ -1851,8 +1851,7 @@ pub enum ShortcutAction {
     ToggleMaximize,
     /// Maximize the focused window group; nothing when it already is.
     MaximizeWindow,
-    /// Restore the focused window group from maximized; nothing when it
-    /// is not maximized.
+    /// Restore the focused window group from maximized; nothing when it is not maximized.
     RestoreWindow,
     DetachTab,
     AttachTabLeft,
@@ -1873,8 +1872,7 @@ pub enum ShortcutAction {
     ResizeWider,
     /// Bring back the most recently closed tab in the current workspace.
     ReopenClosedTab,
-    /// Focus the Nth window group of the current strip (Ctrl+Super+1 …
-    /// Ctrl+Super+9).
+    /// Focus the Nth window group of the current strip (Ctrl+Super+1 … Ctrl+Super+9).
     FocusGroup1,
     FocusGroup2,
     FocusGroup3,
@@ -1914,6 +1912,8 @@ pub enum ShortcutAction {
     /// Say something beside the pointer, to the people in the window
     /// under it (cursor chat), wherever the keyboard is.
     SaySomething,
+    /// Point at what is not working and report it (the feedback picker).
+    ReportProblem,
     DictationToggle,
     DictationFinish,
     DictationCancel,
@@ -2429,6 +2429,7 @@ impl Default for ShortcutConfig {
             // Cursor chat from anywhere: a bare "/" opens it only where the
             // focused widget takes no text.
             (ShortcutAction::SaySomething, super_chord("/")),
+            (ShortcutAction::ReportProblem, super_chord("r")),
             // Spatial arrows are the always-visible desktop model. Alt+Tab
             // remains an immutable conventional ring alias in the shell.
             (ShortcutAction::FocusPreviousWindow, super_chord("left")),
@@ -3369,7 +3370,7 @@ mod tests {
         }
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 63);
+            assert_eq!(cfg.bindings.len(), 64);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(

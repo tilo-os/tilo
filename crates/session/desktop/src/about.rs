@@ -259,12 +259,18 @@ impl TiloMenu {
     /// somewhere to send it.
     #[must_use]
     pub fn with_feedback(mut self) -> Self {
+        self.offer_feedback();
+        self
+    }
+
+    /// [`Self::with_feedback`] for a menu already shown, once the host has
+    /// somewhere to send it.
+    pub fn offer_feedback(&mut self) {
         self.offers_feedback = true;
         self.menu.set_items(vec![
             MenuItem::action(self.about_label.clone(), || {}),
             MenuItem::action(t("tilo-menu-feedback"), || {}),
         ]);
-        self
     }
 
     /// Whether Feedback was chosen since the last call; the host opens it
