@@ -38,6 +38,8 @@ pub(super) struct Frame<'a> {
     /// The page's desktop, the bar included.
     pub rect: Rect,
     pub rows: &'a [RosterRow],
+    /// This page's person, whose own row leads the list.
+    pub own: Option<&'a RosterRow>,
     pub people: &'a [Person],
     pub tree: &'a DesktopTree,
     /// The records this page shows, by the window showing each, as the
@@ -287,6 +289,7 @@ impl PagePeople {
                 messages: &[],
                 followed_id: followed.as_deref(),
                 messaging_unavailable: Some(&unavailable),
+                own: frame.own,
             },
             &mut LivePictures,
         );

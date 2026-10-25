@@ -21,8 +21,8 @@ use ui::time::Instant;
 use ui::tokens::EffectiveMotion;
 use ui::widget::{ButtonFace, ButtonRole};
 
-use super::{FACE, PeekPictures, PeerScreen, PeerWindow, doing};
-use crate::collaborators::{LineSource, RosterRow};
+use super::{FACE, PeekPictures, PeerScreen, PeerWindow, row_line};
+use crate::collaborators::RosterRow;
 use crate::desk_edges::DockEdge;
 use crate::i18n::{t, t_args};
 
@@ -153,10 +153,13 @@ impl Peek {
         let spacing = &theme.tokens.spacing;
         let pad = f64::from(spacing.s3);
         let width = f64::from(theme.tokens.metrics.panel_width_utility);
-        let header_h = ui::widget::ListRowFace::new("Ag")
+        let mut header_face = ui::widget::ListRowFace::new("Ag")
             .secondary("Ag")
-            .leading_column(FACE)
-            .height(text, theme);
+            .leading_column(FACE);
+        if row_line(model.row).is_some_and(|line| line.place.is_some()) {
+            header_face = header_face.subtitle("Ag");
+        }
+        let header_h = header_face.height(text, theme);
         let screen_w = width - 2.0 * pad;
         let aspect = model
             .screen
@@ -224,15 +227,15 @@ impl Peek {
     }
 }
 
-/// The peek's header: their face, name and what they are doing, a model's
-/// line marked as such.
+/// The peek's header: their face, name and what they are doing (with
+/// where they are), software's line marked as such.
 fn paint_header(ctx: &mut ui::paint::PaintCtx<'_>, header: Rect, row: &RosterRow) {
-    let line = doing(row);
+    let line = row_line(row);
     let fallback = t("people-overlay-doing-nothing");
-    let (secondary, generated) = line
+    let (doing, place, generated) = line
         .as_ref()
-        .map_or((fallback.as_str(), false), |(text, source)| {
-            (text.as_str(), *source == LineSource::Generated)
+        .map_or((fallback.as_str(), None, false), |line| {
+            (line.doing.as_str(), line.place.as_deref(), line.automatic)
         });
     let paint_face = |ctx: &mut ui::paint::PaintCtx<'_>, rect: Rect| {
         let mut face = ui::presence::Face::new(&row.label, &row.id, row.color);
@@ -251,9 +254,12 @@ fn paint_header(ctx: &mut ui::paint::PaintCtx<'_>, header: Rect, row: &RosterRow
         );
     };
     let mut stack = ui::widget::ListRowFace::new(&row.label)
-        .secondary(secondary)
         .leading(ui::widget::RowLeading::Paint(&paint_face))
         .leading_column(FACE);
+    stack = match place {
+        Some(place) => stack.subtitle(doing).secondary(place),
+        None => stack.secondary(doing),
+    };
     if generated {
         stack = stack.mark(Icon::Sparkles);
     }

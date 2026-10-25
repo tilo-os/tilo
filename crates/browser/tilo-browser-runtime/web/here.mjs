@@ -71,6 +71,7 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
   let postedAt = -Infinity;
   let posting = false;
   let watchedAt = -Infinity;
+  let saidStatus = null; // the own words last put on the person's presence
   let lines = [];
   let again = false; // asked to check while busy: check once it is done
   const arrivedAt = new Map(); // publisher -> when it joined, while unpaired
@@ -149,6 +150,13 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
       if (active() && visible()) {
         const at = now();
         const state = JSON.parse(runtime.desktop_here_tick(mountId(), at - RECENT_MS));
+        // What they say they are doing, in their own words, travels on
+        // their presence: everyone here reads it at once.
+        const status = typeof state.status === 'string' && state.status ? state.status : null;
+        if (status !== saidStatus && typeof peer?.setStatus === 'function') {
+          saidStatus = status;
+          peer.setStatus(status);
+        }
         const key = JSON.stringify([state.window, state.actions.map(action => action.id)]);
         if (typeof peer?.here === 'function' && !posting && (key !== postedKey || at - postedAt >= POST_EVERY_MS || awaitingPerson(at))) {
           postedKey = key;

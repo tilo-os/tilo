@@ -793,12 +793,16 @@ async function connect({
   let voice;
   let disposed = false;
   let drawName = null;
+  // What the person says they are doing, in their own words: their
+  // presence carries it as their participant's activity.
+  let activity = null;
+  const publishParticipant = () => live?.publishPresence({participant: {kind: 'person',
+    label: (displayName || label).slice(0, 32), color: ownColor(), activity}});
   // The person's name, as history and presence show it from now on.
   const rename = name => {
     displayName = fitDisplayName(name);
     peer?.setDisplayName?.(displayName);
-    live?.publishPresence({participant: {kind: 'person', label: (displayName || label).slice(0, 32),
-      color: ownColor(), activity: null}});
+    publishParticipant();
   };
   let snapshot = {phase: 'authenticating', records: []};
   // The session's remote-action events are taken once per change and read
@@ -1002,7 +1006,7 @@ async function connect({
       peer.joinRoom(room);
       if (liveEnabled) {
         live = createLiveLayer(peer, runtime, room, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, watching, participant: {
-          kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity: null,
+          kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity,
         }});
       }
       agents?.dispose();
@@ -1157,6 +1161,15 @@ async function connect({
     /** This person as their presence names them: `{label, color}`. */
     get participant() {
       return {label: (displayName || label).slice(0, 32), color: ownColor()};
+    },
+    /** Say what this person is doing in their own words (`null` clears
+     * it): everyone here reads it on their presence, before anything
+     * the host words for them. */
+    setStatus(text) {
+      const said = typeof text === 'string' && text.trim() ? text.trim() : null;
+      if (said === activity) return;
+      activity = said;
+      publishParticipant();
     },
     /** Post this person's name, the window they focus (tab id, hex, or
      * null) and their own recent steps (`[{id, action, resource, app,
