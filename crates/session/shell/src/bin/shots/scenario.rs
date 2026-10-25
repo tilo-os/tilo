@@ -36,6 +36,7 @@ mod launcher;
 mod motion_gallery;
 mod motion_review;
 mod one_place;
+mod window_bar_reactions;
 mod window_search;
 
 /// One tab of a window seeded for the window-bar shots.
@@ -2546,6 +2547,7 @@ fn build_scenarios() -> Vec<Scenario> {
         window_bar_files_scenario(),
         window_bar_terminal_scenario(),
         window_bar_writer_scenario(),
+        window_bar_reactions::window_bar_reactions(),
         window_bar_overflow_scenario(),
         window_bar_suggestions_scenario(),
         desk_widgets_scenario(),
