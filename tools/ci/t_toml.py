@@ -847,10 +847,21 @@ def micro_vm_tested() -> list[str]:
     return re.findall(r"package\(([\w-]+)\)", filters["micro_vm"])
 
 
+# Packages whose tests and lints cost main a lot for what they catch: no breaking commit in a
+# week of main while running on most pushes. Their checks run as `test-idle/<package>` and
+# `clippy-idle/<package>`, on main's newest head when t has room (which bisects a failure to
+# its commit), on release candidates and by name.
+IDLE_TESTS = ["canvas", "music", "pdf-viewer", "tilo-ui"]
+IDLE_LINTS = ["music", "tilo-messaging-protocol"]
+
+
 def test_families(packages: dict[str, dict]) -> dict[str, str]:
-    excluded = {*X86_64_ONLY_TESTS, *untested(packages), *micro_vm_tested()}
+    excluded = {*X86_64_ONLY_TESTS, *IDLE_TESTS, *untested(packages), *micro_vm_tested()}
     return {"test-exclude": f"exclude = {array(sorted(excluded))}\n",
-            "test-x86_64-packages": f"packages = {array(X86_64_ONLY_TESTS)}\n"}
+            "test-x86_64-packages": f"packages = {array(X86_64_ONLY_TESTS)}\n",
+            "test-idle-packages": f"packages = {array(IDLE_TESTS)}\n",
+            "clippy-exclude": f"exclude = {array(['workspace-unify', *IDLE_LINTS])}\n",
+            "clippy-idle-packages": f"packages = {array(IDLE_LINTS)}\n"}
 
 
 def cargo_checks(manifest: suites.Manifest, metadata: dict | None = None) -> dict[str, str]:
@@ -884,8 +895,8 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
     metadata = workspace_graph.cargo_metadata(ROOT)
     manifest = with_dependency_inputs(manifest, {p["name"]: p for p in metadata["packages"]}, ROOT)
     inputs = package_inputs(manifest)
-    return {"test-package-inputs": inputs, "test-x86_64-package-inputs": inputs, "clippy-package-inputs": inputs,
-            "check-package-inputs": inputs, "suites": suite_checks(manifest),
+    return {"test-package-inputs": inputs, "test-x86_64-package-inputs": inputs, "test-idle-package-inputs": inputs,
+            "clippy-package-inputs": inputs, "clippy-idle-package-inputs": inputs, "check-package-inputs": inputs, "suites": suite_checks(manifest),
             "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "security-reads": security_reads(), "policy-steps": policy_checks(),
