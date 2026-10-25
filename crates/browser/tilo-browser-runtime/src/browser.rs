@@ -27,6 +27,7 @@ use winit::window::{Window, WindowId};
 use tilo_desktop::feedback::PrivateFeedback;
 
 use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
+use crate::workspace_records::in_page;
 use tilo_lock::MutexRecover as _;
 
 thread_local! {
@@ -1424,9 +1425,12 @@ fn present_component(
     if definition.app_id == tilo_desktop::feedback::PACKAGE {
         return present_private_feedback(config);
     }
-    let record = RecordOwners::with_store(Rc::clone(&dyn_store))
+    let owners = RecordOwners::with_store(Rc::clone(&dyn_store));
+    let record = owners
+        .clone()
         .open(definition.app_id, &config.room)
         .map_err(error)?;
+    let stores = Rc::new(RefCell::new(vec![record.clone()]));
     // The instance's default record, named by the host so a reload opens the
     // same document, as a native launch does.
     let default = RecordCheckout::new(
@@ -1475,7 +1479,7 @@ fn present_component(
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
     let inputs = HostContextInputs {
-        records: record.clone(),
+        records: record,
         views,
         device_id: config.device.clone(),
         instance_id: config.instance,
@@ -1490,6 +1494,7 @@ fn present_component(
     .map_err(error)?;
     context.provide_models(config.models()?);
     context.provide_content(crate::page_content());
+    context.provide_workspace_records(in_page(&owners, &stores, &config.room, config.author()));
     crate::host_services::provide_provider_admin(&mut context, config.provider_admin()?)
         .map_err(error)?;
     let loaders = Rc::new(RefCell::new(Vec::new()));
@@ -1513,7 +1518,7 @@ fn present_component(
     );
     Ok(Presentation {
         root: Root::Component(Box::new(component)),
-        stores: Rc::new(RefCell::new(vec![record])),
+        stores,
         checkout: Some(checkout),
         images: loaders,
         image_owners,
