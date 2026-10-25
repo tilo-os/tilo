@@ -5194,6 +5194,31 @@ cost = "heavy"
 timeout_secs = 5400
 default = false
 
+# Pictures of the shell's scenes (`shots`' scene catalogue: workspace settings' tabs, quick
+# settings, the launcher...), light and dark, for reviewing a change to them without building the
+# shell locally: `t outputs shell-scenes` puts them in target/shell-scenes/<theme>/.
+[[check]]
+name = "shell-scenes"
+run = """
+rm -rf /target/shell-scenes
+cargo build --locked -p shell --features test-support --bin shots
+for theme in light dark; do
+  mkdir -p "/target/shell-scenes/$theme"
+  TILO_SHOTS_THEME="$theme" bash tools/test-env.sh "$CARGO_TARGET_DIR/debug/shots" \\
+    --mode offscreen --width 1280 --height 800 --out "/target/shell-scenes/$theme"
+done
+"""
+# The dictation scenes draw only with the toolkit's debug paths on.
+env = { TILO_TEST_NTFS_FIXTURES = "0", TILO_UI_DEBUG = "1" }
+cargo_packages = ["shell"]
+inputs = ["tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
+outputs = ["/target/shell-scenes/**"]
+requires = ["arch=x86_64"]
+requirement = { cores = 16, memory = "24GiB" }
+cost = "heavy"
+timeout_secs = 3600
+default = false
+
 # The imager's setup journey as its tests draw it, light and dark, wide and narrow, with the
 # production renderer: `t outputs imager-journey-screenshots` puts the pictures in
 # target/imager-journey-screenshots/ (installer-journey/ and current-review/), the evidence the
