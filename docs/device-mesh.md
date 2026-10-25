@@ -403,6 +403,9 @@ authorization.
 - **Use as a screen** stores the person's spatial arrangement and maps an edge
   crossing through physical layout coordinates. Input still requires a
   short-lived, target-issued lease; adjacency grants no input authority.
+  [Filming two devices](filming-two-device-setup.md) is the setup a person
+  follows to put two machines side by side and what a test already proves of
+  it.
 - **App continuation** remains in `personal_continuity`. The fabric advertises
   capability but does not duplicate launch intents, CRDT records, topology, or
   focus state.
