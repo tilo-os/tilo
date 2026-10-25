@@ -779,6 +779,66 @@ mod tests {
     }
 
     #[test]
+    fn every_catch_up_card_cites_exactly_the_changes_it_summarises() {
+        let (mut tree, workspace, _) = peers_busy_room();
+        let mut pane = native_pane();
+        pane.begin_view(workspace.raw());
+        pane.refresh(&mut tree);
+        show_summary(&mut pane);
+        let digest = pane.digest().clone();
+        assert!(
+            !digest.briefs.is_empty(),
+            "the seeded session leaves work for Catch Up to stand for"
+        );
+        // A card is one work session: the evidence it cites is the changes
+        // it opens onto, and the count it states is that many.
+        for brief in &digest.briefs {
+            assert!(
+                !brief.title.trim().is_empty(),
+                "a card says what came of the session"
+            );
+            assert!(
+                !brief.entry_ids.is_empty(),
+                "a card stands for the changes that made it: {brief:?}"
+            );
+            assert_eq!(
+                brief.actions.len(),
+                brief.entry_ids.len(),
+                "every cited change is one sub-action of its card"
+            );
+            assert_eq!(
+                brief.changes,
+                brief.entry_ids.len(),
+                "the count the card states is the count of rows it opens"
+            );
+            assert!(
+                brief
+                    .actions
+                    .iter()
+                    .all(|action| !action.summary.trim().is_empty()
+                        && !action.author.name.trim().is_empty()),
+                "a sub-action says what was done and who did it: {:?}",
+                brief.actions
+            );
+        }
+        // And no change is cited by two cards, so opening one cannot show
+        // work another one already owns.
+        for (at, brief) in digest.briefs.iter().enumerate() {
+            for id in &brief.entry_ids {
+                assert_eq!(
+                    digest
+                        .briefs
+                        .iter()
+                        .filter(|other| other.entry_ids.contains(id))
+                        .count(),
+                    1,
+                    "change {id:?} is cited only by the card at {at}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn refreshed_catch_up_keeps_the_open_session_and_does_not_acknowledge_late_work() {
         let (mut tree, workspace, user) = peers_busy_room();
         let mut pane = native_pane();
@@ -1075,9 +1135,31 @@ mod tests {
             ids.contains(&HISTORY_COMPARE) && ids.contains(&HISTORY_RESTORE),
             "selected row must offer compare and restore, got {ids:?}"
         );
-        // Compare is an action, not a click-only chip.
+        // Compare is an action, not a click-only chip: invoking it
+        // materialises the exact two sides of the selected change, so the
+        // diff the person sees comes from the history layer, not a click.
+        assert!(!pane.has_comparison(), "nothing is compared before Compare");
         let compared = pane.apply_selection_history_action(HISTORY_COMPARE, &mut tree, None);
-        assert!(compared.compared || compared.handled || !ids.is_empty());
+        assert!(compared.compared, "Compare reports the comparison it made");
+        assert!(
+            pane.has_comparison(),
+            "the compared row leaves a materialised comparison behind"
+        );
+        let comparison = pane.comparison().expect("the comparison Compare made");
+        assert_eq!(
+            comparison.entries.len(),
+            1,
+            "one selected change compares one change: {:?}",
+            comparison.entries
+        );
+        assert!(
+            !comparison.before_document.is_empty() && !comparison.after_document.is_empty(),
+            "both sides are full snapshots a resource renderer can load"
+        );
+        assert_ne!(
+            comparison.before_document, comparison.after_document,
+            "a change that changed nothing would compare identical sides"
+        );
     }
 
     #[test]
