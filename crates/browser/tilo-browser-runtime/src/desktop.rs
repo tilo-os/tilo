@@ -29,6 +29,7 @@ use ui::automerge::AutoCommit;
 use ui::permissions::{PermissionContext, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
+use ui::window_share::ResourceView;
 
 /// Applications the page can open, in launcher order: every application
 /// the bundle registered from its manifests (`ui::application::registry`),
@@ -981,11 +982,36 @@ impl Tiles {
             .load(tab.id)
             .map_err(|error| error.to_string())?
             .map_or(RestoreInput::None, RestoreInput::Local);
+        let component =
+            self.instantiate(definition, store, (target, named_new), tab.id, restore)?;
+        let record = component.record().clone();
+        let previous = self
+            .shared
+            .records
+            .borrow_mut()
+            .insert(tab.id, record.clone());
+        if previous.is_none_or(|previous| previous.id != record.id) {
+            self.shared.records_changed.set(true);
+        }
+        Ok(component)
+    }
+
+    /// `definition`'s app on `target` (or the new record `named_new`
+    /// names), as instance `instance`, mounted to wake this desktop when
+    /// its records change.
+    fn instantiate(
+        &self,
+        definition: &'static ApplicationDefinition,
+        store: RecordStore,
+        (target, named_new): (LaunchTarget, Option<RecordId>),
+        instance: TabId,
+        restore: RestoreInput,
+    ) -> Result<AppComponent, String> {
         let inputs = HostContextInputs {
             records: store,
             views: Rc::clone(&self.inputs.views),
             device_id: self.inputs.device.clone(),
-            instance_id: tab.id,
+            instance_id: instance,
             permissions: Rc::clone(&self.inputs.permissions),
             author: UserId(self.inputs.author.clone()),
             action_context: tilo_actions::ActionContext::default(),
@@ -1046,17 +1072,57 @@ impl Tiles {
                 notify();
             })
             .map_err(|error| error.to_string())?;
-        let record = component.record().clone();
-        let previous = self
-            .shared
-            .records
-            .borrow_mut()
-            .insert(tab.id, record.clone());
-        if previous.is_none_or(|previous| previous.id != record.id) {
-            self.shared.records_changed.set(true);
-        }
         Ok(component)
     }
+
+    /// `view`'s app on this page's copy of its record, for a window that
+    /// embeds it. A record not here yet is said so, never created.
+    fn embedded(&mut self, view: &ResourceView) -> Result<TileHost, String> {
+        const NO_APP: &str = "Its app doesn't run in the browser";
+        let title = known_application(&view.app).ok_or(NO_APP)?;
+        may_open(&self.inputs.permissions.borrow(), &view.app)
+            .map_err(|_| format!("You can't open {title} here"))?;
+        // An app whose code the page has not fetched yet is not among the
+        // loaded ones: fetch it, and the view is tried again once it is in.
+        if ui::application::registry::is_deferred(&view.app) {
+            self.load(&view.app);
+            return Ok(TileHost::new(ui::widget::TileContent::Arriving));
+        }
+        let definition = application(&view.app)
+            .filter(|definition| definition.app_id != tilo_desktop::feedback::PACKAGE)
+            .ok_or(NO_APP)?;
+        let id = RecordId::from_route(&view.record).ok_or("It is no longer there")?;
+        let store = self.store(definition)?;
+        let checkout = RecordCheckout::new(id, definition.record_kind.clone());
+        match store.try_open_record(&checkout) {
+            Ok(_) => {}
+            Err(ui::record::RecordOpenError::MissingRecord) => {
+                return Err("It shows once it reaches you".into());
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+        let target = LaunchTarget::Record {
+            checkout,
+            reveal: None,
+        };
+        let component = self.instantiate(
+            definition,
+            store,
+            (target, None),
+            embed_instance(view),
+            RestoreInput::None,
+        )?;
+        Ok(TileHost::from_component(component))
+    }
+}
+
+/// The instance id an embedded view runs as: one per view, clear of the
+/// desktop's tab ids, which are minted below the top bit.
+fn embed_instance(view: &ResourceView) -> TabId {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    view.hash(&mut hasher);
+    hasher.finish() | (1 << 63)
 }
 
 /// Where an app's code comes from: the host that served this page, by
@@ -1281,12 +1347,55 @@ impl TileSource for Tiles {
             self.shared.peer_windows.borrow_mut().insert(id, window);
             return Some(tab);
         }
+        let (app, record) = match tilo_desktop_surface::session::launched_record(app) {
+            Some((app, record)) => (app, Some(record)),
+            None => (app, None),
+        };
         let title = known_application(app)?;
+        if let Some(record) = record {
+            // The window opens on the record a shared link or window named.
+            self.shared
+                .unbound
+                .borrow_mut()
+                .insert(id, record.to_owned());
+        }
         self.shared
             .authors
             .borrow_mut()
             .insert(id, self.inputs.author.clone());
         Some(app_tab(id, app, title))
+    }
+
+    fn showing(&self, app: &str) -> Option<TabId> {
+        let (app, record) = tilo_desktop_surface::session::launched_record(app)?;
+        let kind = application(app)?.record_kind.clone();
+        self.shared
+            .records
+            .borrow()
+            .iter()
+            .find(|(_, checkout)| checkout.id.route() == record && checkout.kind == kind)
+            .map(|(tab, _)| *tab)
+    }
+
+    fn window_record(&self, tab: TabId) -> Option<(String, String)> {
+        self.shared.records.borrow().get(&tab).map(|checkout| {
+            (
+                checkout.id.route().to_owned(),
+                checkout.kind.as_str().to_owned(),
+            )
+        })
+    }
+
+    fn workspace_room(&self) -> Option<String> {
+        Some(self.inputs.room.clone())
+    }
+
+    fn draws_embeds(&self) -> bool {
+        true
+    }
+
+    fn embed(&mut self, view: &ResourceView) -> Result<TileHost, String> {
+        self.embedded(view)
     }
 
     fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {

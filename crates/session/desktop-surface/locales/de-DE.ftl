@@ -1180,3 +1180,7 @@ feedback-picker-cancel = Abbrechen
 follow-label = Du folgst { $person }
 follow-stopped = Folgen beendet
 follow-stop = Beenden
+
+# A window shared live into a conversation, from its own menu.
+window-share-to-channel = In Kanal teilen…
+window-stop-sharing-in = Teilen in { $place } beenden
