@@ -19,16 +19,18 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::charts::{BarGauge, Chart, ChartStyle, Series, nice_step};
+use ui::fact::{Fact, Measure};
 use ui::format::memory as format_bytes;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::card::{CardGrid, CardWidth};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::{
     AppModel, Button, ButtonRole, Column, Element, EmptyState, FilterCount, Filterable, ModelPath,
-    Property, PropertyList, Row, Scrollable, Section, StatGroup, StatTile, TaffyTreeExt, Widget,
-    layout_rect,
+    Property, PropertyList, Row, Scrollable, Section, StatGroup, StatTile, TaffyTreeExt, Text,
+    Widget, layout_rect,
 };
 
 use crate::app::{SortKey, Tab};
@@ -74,9 +76,20 @@ impl Stat {
     fn label(self) -> &'static str {
         match self {
             Self::Cpu => "CPU",
-            Self::Memory => "Memory",
+            Self::Memory => "Memory in use",
             Self::Network => "Network",
             Self::Disk => "Disk",
+        }
+    }
+
+    /// What the tile's value counts, named so it cannot be confused with a
+    /// process row's different measure.
+    fn measure(self) -> &'static str {
+        match self {
+            Self::Cpu => "CPU load across all cores",
+            Self::Memory => "Memory in use on this device",
+            Self::Network => "Network throughput",
+            Self::Disk => "Disk throughput",
         }
     }
 
@@ -246,38 +259,46 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
     let tiles = Stat::ALL
         .iter()
         .map(|&stat| {
-            let (value, unit, samples) = match stat {
+            let (value, unit, samples, scale) = match stat {
                 Stat::Cpu => (
                     format!("{:.0}", metrics.cpu_overall()),
                     "%".to_owned(),
                     metrics.cpu_hist.as_slice().to_vec(),
+                    "0–100%".to_owned(),
                 ),
                 Stat::Memory => {
                     let (value, unit) = value_and_unit(&format_bytes(metrics.mem_used));
-                    (value, unit, metrics.mem_hist.as_slice().to_vec())
+                    (
+                        value,
+                        unit,
+                        metrics.mem_hist.as_slice().to_vec(),
+                        "0–100% of RAM".to_owned(),
+                    )
                 }
                 Stat::Network => {
-                    let (value, unit) = value_and_unit(&fmt_rate(metrics.net_rx + metrics.net_tx));
-                    let samples = metrics
+                    let samples: Vec<f32> = metrics
                         .net_rx_hist
                         .as_slice()
                         .iter()
                         .zip(metrics.net_tx_hist.as_slice())
                         .map(|(rx, tx)| rx + tx)
                         .collect();
-                    (value, unit, samples)
+                    let peak = samples.iter().copied().fold(1.0_f32, f32::max);
+                    let (value, unit) = value_and_unit(&fmt_rate(metrics.net_rx + metrics.net_tx));
+                    (value, unit, samples, format!("peak {}", fmt_rate(peak)))
                 }
                 Stat::Disk => {
-                    let (value, unit) =
-                        value_and_unit(&fmt_rate(metrics.disk_read + metrics.disk_write));
-                    let samples = metrics
+                    let samples: Vec<f32> = metrics
                         .disk_read_hist
                         .as_slice()
                         .iter()
                         .zip(metrics.disk_write_hist.as_slice())
                         .map(|(read, write)| read + write)
                         .collect();
-                    (value, unit, samples)
+                    let peak = samples.iter().copied().fold(1.0_f32, f32::max);
+                    let (value, unit) =
+                        value_and_unit(&fmt_rate(metrics.disk_read + metrics.disk_write));
+                    (value, unit, samples, format!("peak {}", fmt_rate(peak)))
                 }
             };
             let requests = Rc::clone(shared);
@@ -289,7 +310,38 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
             if !unit.is_empty() {
                 tile = tile.unit(unit);
             }
-            Box::new(tile) as Element
+            let now = ui::time::wall();
+            let fact = match metrics.sampled_at {
+                Some(at) => Fact::measured(
+                    Measure::new(stat.measure()),
+                    "1 sample",
+                    "this device",
+                    at,
+                    Some(ui::time::Duration::from_millis(
+                        u64::from(metrics.sample_interval_ms.max(1)) * 2,
+                    )),
+                ),
+                None => Fact::unknown(
+                    Measure::new(stat.measure()),
+                    "the system information service has not answered",
+                ),
+            };
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_rhythm(ui::tokens::Rhythm::Tight)
+                    .push(Box::new(tile))
+                    .push(Box::new(
+                        Text::new(&format!(
+                            "{} · {scale} · {}",
+                            metrics.history_period(),
+                            fact.caption(now)
+                        ))
+                        .with_role(TextRole::Caption)
+                        .dimmed(),
+                    )),
+            ) as Element
         })
         .collect();
     StatGroup::new(tiles)
@@ -299,6 +351,8 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TableShape {
     tree: bool,
+    /// Rows show their subtree's sum rather than the process alone.
+    sum: bool,
     /// A narrow window drops the thread and PID columns.
     compact: bool,
 }
@@ -317,9 +371,17 @@ fn process_table(shape: TableShape, shared: &Shared) -> (DataTable<ProcessRow>, 
     ));
     columns.push((
         SortKey::Mem,
-        ColumnDef::new("memory", "Memory", ColumnWidth::Auto)
-            .with_kind(TextKind::Numeric)
-            .with_text(|row: &ProcessRow| format_bytes(row.mem_bytes)),
+        ColumnDef::new(
+            "memory",
+            if shape.sum {
+                "Memory (with children)"
+            } else {
+                "Memory (RSS)"
+            },
+            ColumnWidth::Auto,
+        )
+        .with_kind(TextKind::Numeric)
+        .with_text(|row: &ProcessRow| format_bytes(row.mem_bytes)),
     ));
     if !shape.compact {
         columns.push((
@@ -476,6 +538,7 @@ impl ProcessesPane {
     pub(crate) fn new(shared: Shared) -> Self {
         let shape = TableShape {
             tree: true,
+            sum: true,
             compact: false,
         };
         let (table, sort_keys) = process_table(shape, &shared);
@@ -524,9 +587,12 @@ impl ProcessesPane {
             && self.options != Some(options)
         {
             let tree_changed = self.options.is_none_or(|old| old.tree != options.tree);
+            let sum = options.tree && options.sum == SumMode::SumSubtree;
+            let sum_changed = self.shape.sum != sum;
             self.options = Some(options);
-            if tree_changed {
+            if tree_changed || sum_changed {
                 self.shape.tree = options.tree;
+                self.shape.sum = sum;
                 self.rebuild_table();
             }
             self.show_sort(options);
@@ -1027,6 +1093,11 @@ fn processor_section(metrics: &Metrics, theme: &Theme) -> Section {
         "Processor",
         vec![
             Box::new(cpu_chart),
+            Box::new(
+                Text::new(&format!("{} · 0–100%", metrics.history_period()))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ),
             Box::new(CardGrid::new(cores).with_card_width(CardWidth::Compact)),
         ],
     )
@@ -1065,6 +1136,11 @@ fn memory_section(metrics: &Metrics, theme: &Theme) -> Section {
                 100.0,
                 "100%",
             )),
+            Box::new(
+                Text::new(&format!("{} · 0–100% of RAM", metrics.history_period()))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ),
         ],
     )
 }
@@ -1083,6 +1159,7 @@ fn throughput_section(
     flows: &[Flow<'_>; 2],
     first_series: usize,
     theme: &Theme,
+    period: &str,
 ) -> Section {
     let peak = flows
         .iter()
@@ -1102,7 +1179,14 @@ fn throughput_section(
         .collect();
     Section::titled(
         title,
-        vec![Box::new(history_chart(series, max, &fmt_rate(max)))],
+        vec![
+            Box::new(history_chart(series, max, &fmt_rate(max))),
+            Box::new(
+                Text::new(&format!("{period} · 0–{}", fmt_rate(max)))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ),
+        ],
     )
 }
 
@@ -1153,6 +1237,7 @@ fn dashboard(
         ],
         2,
         theme,
+        &metrics.history_period(),
     );
     let disk = throughput_section(
         "Disk",
@@ -1170,6 +1255,7 @@ fn dashboard(
         ],
         4,
         theme,
+        &metrics.history_period(),
     );
     let mut sections = [
         (Stat::Cpu, processor_section(metrics, theme)),
@@ -1464,7 +1550,7 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
     let (memory, unit) = value_and_unit(&format_bytes(process.mem_bytes));
     let tiles = StatGroup::new(vec![
         Box::new(cpu),
-        Box::new(StatTile::new("Memory", memory).unit(unit)),
+        Box::new(StatTile::new("Memory (RSS)", memory).unit(unit)),
     ]);
 
     let mut properties = Vec::new();

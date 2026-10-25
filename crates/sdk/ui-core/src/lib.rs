@@ -120,6 +120,7 @@ pub mod agent_identity;
 pub mod animation;
 pub mod arriving;
 pub mod author;
+pub mod capability_door;
 pub mod content_zoom;
 pub mod motion;
 #[cfg(test)]
@@ -166,6 +167,7 @@ mod dx12_shader_cache;
 pub mod edge_autoscroll;
 pub mod element_pictures;
 pub mod evdev;
+pub mod fact;
 pub mod floating_surface;
 pub mod focus_visible;
 pub mod font_catalog;

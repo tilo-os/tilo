@@ -246,6 +246,7 @@ fn list_containers() -> Option<Vec<Container>> {
                 stats: stat,
                 logs_error: None,
                 logs: Vec::new(),
+                logs_fetched_unix_ms: None,
             }
         })
         .collect();
@@ -287,6 +288,7 @@ fn collect_stats() -> Vec<(String, Stats)> {
                 e.id,
                 Stats {
                     available: true,
+                    fetched_unix_ms: ui::time::try_unix_now_ms(),
                     cpu_percent,
                     mem_bytes,
                     mem_limit_bytes,

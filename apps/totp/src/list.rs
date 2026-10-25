@@ -41,6 +41,8 @@ const CODE_PROBE: &str = "0000\u{2009}0000";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListEvent {
     Copy(AccountId),
+    /// Show this row's code for a few seconds, then veil it again.
+    Reveal(AccountId),
     Select(AccountId),
     Edit(AccountId),
     MoveUp(AccountId),
@@ -210,6 +212,8 @@ pub struct AccountList {
     layouts: Vec<RowLayout>,
     /// The empty state's action, once painted.
     empty_action: Rect,
+    /// The one row whose code is shown, and when the veil returns.
+    revealed: Option<(AccountId, ui::time::Instant)>,
 }
 
 impl Default for AccountList {
@@ -233,6 +237,7 @@ impl AccountList {
             metrics: None,
             layouts: Vec::new(),
             empty_action: Rect::ZERO,
+            revealed: None,
         }
     }
 
@@ -285,6 +290,18 @@ impl AccountList {
             .position(|account| account.id == id)
             .map(|index| self.row_rect(index))
             .filter(|rect| rect.intersect(self.rect).area() > 0.0)
+    }
+
+    /// Show `id`'s code for a short while. The code is unreadable at a
+    /// glance by design; this is the deliberate reveal.
+    pub fn show_code(&mut self, id: AccountId) {
+        self.revealed = Some((id, ui::time::now() + ui::time::Duration::from_secs(10)));
+    }
+
+    /// Whether `id`'s code is shown now.
+    pub fn is_revealed(&self, id: AccountId) -> bool {
+        self.revealed
+            .is_some_and(|(shown, until)| shown == id && ui::time::now() < until)
     }
 
     /// Scroll so the row of `id` is fully inside the viewport.
@@ -588,6 +605,7 @@ impl AccountList {
         now: f64,
         hovered: bool,
     ) {
+        let shown = self.is_revealed(account.id);
         let Some(layout) = self.layouts.get(i) else {
             return;
         };
@@ -605,7 +623,11 @@ impl AccountList {
                 theme,
             );
         }
-        let code = totp::group_code(&totp::code_at(account, now));
+        let code = if shown {
+            totp::group_code(&totp::code_at(account, now))
+        } else {
+            totp::group_code(&"\u{2022}".repeat(account.digits.clamp(4, 10) as usize))
+        };
         let style = code_style(theme);
         let (width, height) = ctx.text.measure_style(&code, None, &style);
         let ring_x1 = self.at(i, layout.code).x1 - m.edge;
@@ -620,7 +642,8 @@ impl AccountList {
         );
         if hovered {
             let side = f64::from(theme.tokens.metrics.icon_md);
-            Icon::Copy.draw(
+            let icon = if shown { Icon::Copy } else { Icon::Eye };
+            icon.draw(
                 ctx.scene,
                 ctx.transform,
                 Rect::from_center_size(ring.center(), (side, side)),
@@ -744,7 +767,8 @@ impl AccountList {
         let id = account.id;
         let event = match zone {
             Zone::Body => ListEvent::Select(id),
-            Zone::Code => ListEvent::Copy(id),
+            Zone::Code if self.is_revealed(id) => ListEvent::Copy(id),
+            Zone::Code => ListEvent::Reveal(id),
             Zone::SetUp => ListEvent::SetUp(id),
             Zone::Action(index) => match commands(i, self.accounts.len()).get(index) {
                 Some(command) => command.event(id),
@@ -862,8 +886,20 @@ mod tests {
             let copy = list.at(row, list.layouts[row].code).center();
             assert!(dispatch(&mut list, &cursor_at(copy)));
             assert!(dispatch(&mut list, &left_press()));
-            assert_eq!(list.take_events(), vec![ListEvent::Copy(id)]);
+            assert_eq!(
+                list.take_events(),
+                vec![ListEvent::Reveal(id)],
+                "codes are veiled at rest; the first press reveals this row"
+            );
             assert_eq!(list.selected(), Some(id));
+            // The app grants the reveal the event asked for.
+            list.show_code(id);
+            assert!(dispatch(&mut list, &left_press()));
+            assert_eq!(
+                list.take_events(),
+                vec![ListEvent::Copy(id)],
+                "once revealed, the same control copies"
+            );
             for (index, command) in commands(row, list.len()).iter().enumerate() {
                 let point = list.at(row, list.layouts[row].actions[index]).center();
                 dispatch(&mut list, &cursor_at(point));
