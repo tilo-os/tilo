@@ -85,8 +85,15 @@ pub struct Metrics {
     /// The inspector column at the trailing edge of a window.
     pub inspector_width: f32,
     /// Narrowest a person can drag a docked sidebar; dragging it below this
-    /// hides it.
+    /// hides it. The same width a docked panel keeps beside a content column
+    /// before it floats over it ([`Self::panel_min_width`]).
     pub sidebar_min_width: f32,
+    /// The narrowest a sidebar or panel works at beside a painted app's own
+    /// content column, as a split of the app's window: a name beside its
+    /// value, a destination's label whole. Beside a content *kind*'s minimum
+    /// a shell panel shrinks toward this first
+    /// (`SidebarDrawer::content_kind`) and stops docking there.
+    pub panel_min_width: f32,
     /// Widest a person can drag a docked sidebar.
     pub sidebar_max_width: f32,
     /// A generous content column: the width of a sheet
@@ -232,6 +239,7 @@ impl Metrics {
         rail_max_width: 160.0,
         inspector_width: 300.0,
         sidebar_min_width: 200.0,
+        panel_min_width: 200.0,
         sidebar_max_width: 420.0,
         content_min_width: 560.0,
         detail_min_width: 360.0,
@@ -356,6 +364,7 @@ impl Metrics {
             rail_max_width: self.rail_max_width * factor,
             inspector_width: self.inspector_width * factor,
             sidebar_min_width: self.sidebar_min_width * factor,
+            panel_min_width: self.panel_min_width * factor,
             sidebar_max_width: self.sidebar_max_width * factor,
             content_min_width: self.content_min_width * factor,
             detail_min_width: self.detail_min_width * factor,
