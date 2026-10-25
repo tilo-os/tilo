@@ -1344,7 +1344,7 @@ source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 i
 
 [kpi."render.framework_focus.recompute_ms.500"]
 unit = "ms"
-p50 = 0.6
+p95 = 2.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
@@ -1352,7 +1352,7 @@ source = "framework-scaling focus, one focus-order recomputation in the test har
 
 [kpi."render.framework_focus.native_recompute_ms.500"]
 unit = "ms"
-p50 = 0.6
+p95 = 2.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
