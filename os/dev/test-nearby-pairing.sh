@@ -323,7 +323,13 @@ for attempt in $(seq 1 60); do
   [ "$attempt" -lt 60 ] || die "VM A did not create its identity"
   sleep 1
 done
-vm_a keys tab ret
+# The ready screen is finished with the keyboard: Tab reaches its primary
+# action once the screen holds focus, and Return takes it.
+vm_a test native-atspi-smoke.sh oobe-ready
+vm_a keys tab
+vm_a test native-atspi-smoke.sh oobe-finish-focused
+vm_a keys ret
+vm_a test native-atspi-smoke.sh oobe-finished
 identity="$(vm_a ssh 'od -An -v -tx1 /var/lib/tilo/user-identity/pubkey.bin' | tr -d ' \n')"
 [[ $identity =~ ^[0-9a-f]{64}$ ]] || die "VM A has no readable identity public key"
 note "VM A holds identity $identity"
@@ -359,6 +365,8 @@ await_code() {
     fi
     sleep 1
   done
+  # What its screen says instead: the code it should show, or why not.
+  "$each" test native-atspi-smoke.sh oobe-text "Verification code" >&2 || true
   die "$each never reported waiting_for_approval: ${status:-no status file}"
 }
 # A discovers the asking device, checks the code both sides show, approves.
