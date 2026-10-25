@@ -112,9 +112,9 @@ pub enum ChatEffect {
     /// Read room
     ///
     /// The room's categories and channels and its people as the record
-    /// stores them, and, when asked, one message with the message it
-    /// answers or a channel's latest messages: what a bot mirroring the
-    /// room elsewhere works from.
+    /// stores them, the names of the workspace's own emoji, and, when
+    /// asked, one message with the message it answers or a channel's latest
+    /// messages: what a bot mirroring the room elsewhere works from.
     #[effect(kind = "read", returns, audience = "agents")]
     ReadRoom {
         #[param("A message to include, with the message it answers")]
@@ -805,8 +805,9 @@ const READ_LATEST: usize = 20;
 
 /// The answer of [`ChatEffect::ReadRoom`]: the record's own JSON form of
 /// the room's categories and channels, every person, the channels holding
-/// any message (`busy`), and `message` and the latest messages of
-/// `channel`, each with the message it answers.
+/// any message (`busy`), the names of the workspace's own emoji (`emoji`,
+/// each written `:name:` in reactions and text), and `message` and the
+/// latest messages of `channel`, each with the message it answers.
 pub(crate) fn read_room(
     chat: &Chat,
     held: &crate::messages::Messages,
@@ -852,6 +853,10 @@ pub(crate) fn read_room(
         "channels": chat.channels.to_json(),
         "people": chat.people.to_json(),
         "busy": busy,
+        "emoji": ui::workspace_emoji::emoji()
+            .iter()
+            .map(|emoji| emoji.name.clone())
+            .collect::<Vec<_>>(),
         "messages": messages,
     })
 }

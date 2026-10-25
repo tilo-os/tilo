@@ -426,6 +426,37 @@ params = [
 ]
 
 [[resources]]
+kind = "tilo.workspace.emoji"
+label = "Workspace emoji"
+version = 1
+fields = [
+  { path = "emoji", type = "Map<Emoji>" },
+]
+
+[[resources.verbs]]
+id = "add-emoji"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "image", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-emoji"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-any-emoji"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
 kind = "chat.drafts"
 label = "Chat drafts"
 version = 1
