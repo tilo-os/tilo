@@ -16,6 +16,11 @@
     "tiwilink-firmware"
   ],
   "always_on": true,
+  "crash_record": {
+    "storage": "none",
+    "watchdog": "none",
+    "lockup": "none"
+  },
   "kernel_args": [
     "earlycon",
     "console=ttyS2,1500000n8"
