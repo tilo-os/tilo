@@ -81,7 +81,10 @@ def worded(line: str) -> str:
     """The finding a line of a step's output reports in the step's own words, or "" for a blank
     one; its numbers blanked (see the module)."""
     text = " ".join(line.split())
-    text = TEMPORARY.sub("/tmp/…", NUMBER.sub("N", text))
+    # The temporary name goes before the numbers: a random one carries digits, and blanking the
+    # numbers first would leave them half blanked (`/tmp/NN`), so two runs of one step would
+    # report different findings.
+    text = NUMBER.sub("N", TEMPORARY.sub("/tmp/…", text))
     for reserved in RESERVED:
         text = text.replace(reserved, " ")
     text = spaced(text)

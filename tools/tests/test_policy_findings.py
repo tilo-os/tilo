@@ -87,6 +87,13 @@ class FindingsTests(unittest.TestCase):
                          "crates/a/src/lib.rs")
         self.assertEqual(findings.finding("apps/a.rs:10: copy starts with a capital (apps/a.rs)"), "apps/a.rs")
 
+    def test_a_temporary_directory_is_one_finding_however_its_random_name_reads(self):
+        # t runs a step twice, once on main and once on the branch, and compares the findings: a
+        # temporary path whose random name carries digits must read the same both times.
+        self.assertEqual(findings.finding("/tmp/skill-check-a1b2c3/app.rs: 12: uses a private shaper"),
+                         findings.finding("/tmp/skill-check-9f8e7d/app.rs: 12: uses a private shaper"))
+        self.assertEqual(findings.finding("/tmp/tmp51ee5d3c/x.rs: bad"), "/tmp/…/x.rs: bad")
+
     def test_the_second_finding_about_one_file_is_a_finding_of_its_own(self):
         # The first line of a step about a file is that file's finding; a second one about it is
         # another, so a step that finds one more than main about a file is the branch's.
