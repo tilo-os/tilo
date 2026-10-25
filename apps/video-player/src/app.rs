@@ -3797,7 +3797,6 @@ mod tests {
                 1.0,
             );
             Framed::harness_mut(&mut app).relayout();
-            let theme = Theme::dark().with_reduce_motion(true);
             let sheet = app.drawer.sidebar_rect();
             assert!(
                 app.drawer.is_push(),
