@@ -85,9 +85,12 @@ pub struct CatalogueQuery {
     /// (case-insensitive).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub needle: String,
-    /// Only top-level resources this names: their kind, or their label
-    /// ignoring ASCII case. A host answers it whole, wherever the resource
-    /// would fall in a paged listing; it takes no cursor, needle or parent.
+    /// Only resources this names: their kind, or their label ignoring ASCII
+    /// case, at the top level or, with [`Self::parent_resource`], among that
+    /// resource's direct children. A host answers it whole, wherever the
+    /// resource would fall in a paged listing; it takes no cursor or needle.
+    /// A host from before parents were named answers with top-level rows,
+    /// whose parent says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_name: Option<String>,
     /// Only this exact action, re-resolved against the provider now: the

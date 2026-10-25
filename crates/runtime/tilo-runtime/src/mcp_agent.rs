@@ -34,8 +34,13 @@ const SEARCH_PAGES: usize = 3;
 /// Containers a name that is not where it was looked for reads on, one by
 /// one, before it is called missing.
 const DEEP_READS: usize = 16;
+/// Longest name asked of an app whole; a longer one is a key or an id.
+const NAME_BYTES: usize = 256;
 /// Lines `tilo_ls` answers before a cursor.
 const LS_LINES: usize = 40;
+/// Hits of one app a search asks for by name before it reads the app's
+/// containers whole instead.
+const HITS_ASKED: usize = 8;
 /// Hits `tilo_find` answers.
 const FIND_HITS: usize = 15;
 /// Characters of a read answered before the rest is cut.
@@ -380,6 +385,8 @@ struct Level {
     /// Actions of the parent itself.
     own: Vec<ActionDescriptor>,
     children: Vec<Node>,
+    /// The directory revision it was read at.
+    revision: String,
 }
 
 fn level_of(rows: &[CatalogueRow], parent: &str) -> Level {
@@ -975,6 +982,8 @@ struct Resolved {
     /// next (finding the action that reads the target) reads again from
     /// here rather than asking the app twice.
     levels: Levels,
+    /// The directory revision the target was found at.
+    revision: String,
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
@@ -999,6 +1008,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .checked_add(std::time::Duration::from_millis(DEFAULT_WAIT_MS));
         let mut rows = Vec::new();
         let mut reads: u32 = 0;
+        let mut read_at = String::new();
         'snapshot: loop {
             let pause = restart_pause(reads);
             if !pause.is_zero()
@@ -1038,6 +1048,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     );
                 }
                 rows.extend(page.rows);
+                read_at.clone_from(&page.revision);
                 if page.exhausted || page.next_cursor.is_empty() {
                     break 'snapshot;
                 }
@@ -1046,7 +1057,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             break;
         }
-        let read = level_of(&rows, parent);
+        let mut read = level_of(&rows, parent);
+        read.revision = read_at;
         levels.insert(parent.to_owned(), read.clone());
         Ok(read)
     }
@@ -1189,40 +1201,136 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(root)
     }
 
-    /// Resolve `segments` below the app `provider`, one name at a time.
-    async fn resolve_segments(
+    /// The resources under `parent` that `name` names (by label or kind),
+    /// asked of the app whole: one note among a notebook's thousands costs
+    /// the rows naming it, not a page of every note. `None` when the app
+    /// cannot say (a host from before parents were named answers about its
+    /// top level), and the level is listed instead.
+    async fn named(
+        &self,
+        provider: &str,
+        parent: &str,
+        name: &str,
+    ) -> Result<Option<Level>, String> {
+        let name = name.trim();
+        if name.is_empty() || name.len() > NAME_BYTES {
+            return Ok(None);
+        }
+        let Ok(page) = self
+            .ask(CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                parent_resource: (!parent.is_empty()).then(|| parent.to_owned()),
+                resource_name: Some(name.to_owned()),
+                max_results: PAGE_ROWS,
+                ..CatalogueQuery::default()
+            })
+            .await
+        else {
+            return Ok(None);
+        };
+        if !page.exhausted
+            || page.stale_cursor
+            || page.rows.iter().any(|row| row.parent_resource != parent)
+        {
+            return Ok(None);
+        }
+        let mut named = level_of(&page.rows, parent);
+        named.revision = page.revision;
+        Ok(Some(named))
+    }
+
+    /// What `name` may mean at the app's level, asked by name: the app's top
+    /// level and, inside each of its containers, what `name` names there,
+    /// less what another of them owns. `None` when a container cannot be
+    /// asked by name.
+    async fn named_at_app(
+        &self,
+        provider: &str,
+        name: &str,
+        levels: &mut Levels,
+    ) -> Result<Option<Level>, String> {
+        let root = self.level(provider, "", levels).await?;
+        let mut revision = root.revision.clone();
+        let mut pool = root.children.clone();
+        for container in root
+            .children
+            .iter()
+            .filter(|node| node.container)
+            .take(ROOT_PEEK)
+        {
+            let Some(inside) = self.named(provider, &container.id, name).await? else {
+                return Ok(None);
+            };
+            revision = inside.revision;
+            for child in inside.children {
+                if !pool.iter().any(|seen| seen.id == child.id) {
+                    pool.push(child);
+                }
+            }
+        }
+        let all = pool.clone();
+        pool.retain(|node| !all.iter().any(|owner| owner.owns(node)));
+        Ok(Some(Level {
+            own: Vec::new(),
+            children: pool,
+            revision,
+        }))
+    }
+
+    /// The resource `segment` names under `parent` (the app itself for
+    /// `None`), and the resources it was named among. A name only one
+    /// resource there carries is asked of the app by name; anything else (a
+    /// key, the start of a name, a name several carry, one that is not
+    /// there) is decided on the whole level, as listing it shows. With them
+    /// comes the directory revision it was found at.
+    async fn step(
         &self,
         provider: &str,
         app: &str,
-        segments: &[String],
+        parent: Option<&Node>,
+        segment: &str,
         levels: &mut Levels,
-    ) -> Result<(Vec<Node>, Level), String> {
-        let mut here = self.app_children(provider, levels).await?;
-        let mut chain: Vec<Node> = Vec::new();
-        let written = app;
-        for segment in segments {
-            let found = match pick(segment, &here.children)? {
-                Some(node) => node.clone(),
-                None => self
-                    .deep(provider, segment, chain.last(), levels)
-                    .await?
-                    .ok_or_else(|| {
-                        format!(
-                            "no {segment} in {written}; it has: {}",
-                            list_names(
-                                &here
-                                    .children
-                                    .iter()
-                                    .map(|node| node.name(&here.children))
-                                    .collect::<Vec<_>>()
-                            )
-                        )
-                    })?,
-            };
-            here = self.level(provider, &found.id, levels).await?;
-            chain.push(found);
+    ) -> Result<(Node, Level), String> {
+        let asked = match parent {
+            Some(owner) if !levels.contains_key(&owner.id) => {
+                self.named(provider, &owner.id, segment).await?
+            }
+            None => self.named_at_app(provider, segment, levels).await?,
+            Some(_) => None,
+        };
+        if let Some(among) = asked {
+            let mut named = among
+                .children
+                .iter()
+                .filter(|node| node.answers_to(segment) == Some(0));
+            if let (Some(only), None) = (named.next(), named.next()) {
+                let only = only.clone();
+                return Ok((only, among));
+            }
         }
-        Ok((chain, here))
+        let here = match parent {
+            Some(owner) => self.level(provider, &owner.id, levels).await?,
+            None => self.app_children(provider, levels).await?,
+        };
+        let found = match pick(segment, &here.children)? {
+            Some(node) => node.clone(),
+            None => self
+                .deep(provider, segment, parent, levels)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "no {segment} in {app}; it has: {}",
+                        list_names(
+                            &here
+                                .children
+                                .iter()
+                                .map(|node| node.name(&here.children))
+                                .collect::<Vec<_>>()
+                        )
+                    )
+                })?,
+        };
+        Ok((found, here))
     }
 
     /// A resource `name` names somewhere below `within` (or anywhere in the
@@ -1290,27 +1398,44 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     async fn resolve(&self, parsed: &ParsedPath) -> Result<Result<Resolved, String>, String> {
         match self.app_ref(&parsed.app).await? {
             AppRef::Running { app_id, provider } => {
-                Ok(Ok(self.resolve_in(parsed, app_id, provider).await?))
+                Ok(Ok(self.resolve_in(parsed, app_id, provider, true).await?))
             }
             AppRef::Installed { opens, .. } => Ok(Err(Self::not_running_note(&parsed.app, opens))),
         }
     }
 
     /// Resolve the segments of `parsed` in the running app `app_id`, whose
-    /// instance is `provider`.
+    /// instance is `provider`. With `list`, what the target holds and the
+    /// actions on it are read too; without, a resource on the path is only
+    /// found (an action named on it is resolved by its address).
     async fn resolve_in(
         &self,
         parsed: &ParsedPath,
         app_id: String,
         provider: String,
+        list: bool,
     ) -> Result<Resolved, String> {
         let app = parsed.app.to_lowercase();
         let mut levels = Levels::new();
-        let (chain, here) = self
-            .resolve_segments(&provider, &app, &parsed.segments, &mut levels)
-            .await?;
+        let mut chain: Vec<Node> = Vec::new();
+        // What each resource on the path was named among, and the revision
+        // the last of them was found at.
+        let mut among: Vec<Vec<Node>> = Vec::new();
+        let mut revision = String::new();
+        for segment in &parsed.segments {
+            let (found, siblings) = self
+                .step(&provider, &app, chain.last(), segment, &mut levels)
+                .await?;
+            chain.push(found);
+            among.push(siblings.children);
+            revision = siblings.revision;
+        }
+        let mut here = match chain.last() {
+            Some(_) if !list => Level::default(),
+            Some(node) => self.level(&provider, &node.id, &mut levels).await?,
+            None => self.app_children(&provider, &mut levels).await?,
+        };
         let mut written = app;
-        let mut here = here;
         if let Some(owner) = chain.last() {
             // Published beside the resource, not inside it, but its key says
             // whose it is: listed as one of its children.
@@ -1328,15 +1453,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .collect();
             here.children.extend(related);
         }
-        let mut siblings = self.app_children(&provider, &mut levels).await?.children;
         let mut previous: Option<Node> = None;
-        for node in &chain {
+        for (node, siblings) in chain.iter().zip(&among) {
             // Named against what it sits among and the resource it sits
             // under, whose title it may share.
-            let mut among = siblings.clone();
-            among.extend(previous.clone());
-            written = format!("{written}/{}", node.name(&among));
-            siblings = self.level(&provider, &node.id, &mut levels).await?.children;
+            let mut named = siblings.clone();
+            named.extend(previous.clone());
+            written = format!("{written}/{}", node.name(&named));
             previous = Some(node.clone());
         }
         Ok(Resolved {
@@ -1357,6 +1480,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             children: here.children,
             chain,
             levels,
+            revision,
         })
     }
 
@@ -1840,10 +1964,28 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             AppRef::Running { app_id, provider } => (app_id, provider),
         };
-        let resolved = self.resolve_in(&parsed, app_id, provider).await?;
-        let descriptor = pick_action(&action, &resolved.actions, &resolved.path)
-            .map_err(|error| format!("{error}; tilo_ls {} lists them", resolved.path))?
-            .clone();
+        let mut resolved = self.resolve_in(&parsed, app_id, provider, false).await?;
+        let descriptor = if let Some(descriptor) = self.action_named(&resolved, &action).await? {
+            descriptor
+        } else {
+            // Not one of the target's actions by its id: what the target
+            // offers decides (a label, the start of an id), as listing it
+            // shows.
+            if let Some(node) = resolved.node.clone() {
+                let mut levels = std::mem::take(&mut resolved.levels);
+                let here = self
+                    .level(&resolved.provider, &node.id, &mut levels)
+                    .await?;
+                resolved.actions = if here.own.is_empty() {
+                    node.actions.clone()
+                } else {
+                    here.own
+                };
+            }
+            pick_action(&action, &resolved.actions, &resolved.path)
+                .map_err(|error| format!("{error}; tilo_ls {} lists them", resolved.path))?
+                .clone()
+        };
         let value = Box::pin(self.invoke_one(OneCall {
             provider: Addressed {
                 provider: resolved.provider.clone(),
@@ -1863,6 +2005,38 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             let _ = write!(reply.text, "\n{}", action_page(&resolved.path, &descriptor));
         }
         Ok(reply)
+    }
+
+    /// The action `action` on the resolved target, by its id, asked of the
+    /// app by its address at the revision the target was found at: an
+    /// action on a notebook is found without a page of the notebook's notes.
+    /// `None` when the target offers no action by that id (or the directory
+    /// moved on), for the caller to list it.
+    async fn action_named(
+        &self,
+        resolved: &Resolved,
+        action: &str,
+    ) -> Result<Option<ActionDescriptor>, String> {
+        let (Some(node), false) = (&resolved.node, resolved.revision.is_empty()) else {
+            return Ok(None);
+        };
+        let Ok(page) = self
+            .ask(CatalogueQuery {
+                provider: Some(resolved.provider.clone()),
+                target: Some(tilo_actions::ActionAddress::new(node.id.clone(), action)),
+                revision: Some(resolved.revision.clone()),
+                max_results: 1,
+                ..CatalogueQuery::default()
+            })
+            .await
+        else {
+            return Ok(None);
+        };
+        Ok(page
+            .rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find(|found| found.address.resource == node.id && found.address.action == action))
     }
 
     /// `notes#open`: start an installed app, then say what is in it.
@@ -2087,30 +2261,28 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // The words as one phrase first: a name searched whole (a note's
         // title) is then found in the few rows that carry it, even when its
         // longest word is shared by more rows than the pages below hold, as
-        // in a notebook of notes titled alike.
+        // in a notebook of notes titled alike. The words are searched apart,
+        // by the longest, only when the phrase names nothing: "new note"
+        // costs the rows naming it, not every note's "Rename note".
         let mut rows = if words.len() > 1 {
             self.needle_rows(provider, &words.join(" ")).await?
         } else {
             Vec::new()
         };
-        for row in self.needle_rows(provider, &longest).await? {
-            let same = |seen: &CatalogueRow| {
-                seen.resource.id == row.resource.id
-                    && seen.action.as_ref().map(|action| &action.address)
-                        == row.action.as_ref().map(|action| &action.address)
-            };
-            if !rows.iter().any(same) {
-                rows.push(row);
+        if !rows.iter().any(|row| page::matches_words(row, words)) {
+            for row in self.needle_rows(provider, &longest).await? {
+                let same = |seen: &CatalogueRow| {
+                    seen.resource.id == row.resource.id
+                        && seen.action.as_ref().map(|action| &action.address)
+                            == row.action.as_ref().map(|action| &action.address)
+                };
+                if !rows.iter().any(same) {
+                    rows.push(row);
+                }
             }
         }
         let nodes = level_of(&rows, "").children;
-        let mut levels = Levels::new();
-        let mut pool = self.app_children(provider, &mut levels).await?.children;
-        for node in &nodes {
-            if !pool.iter().any(|seen| seen.id == node.id) {
-                pool.push(node.clone());
-            }
-        }
+        let pool = self.hit_owners(provider, &nodes).await?;
         let mut hits = Vec::new();
         for row in &rows {
             if !page::matches_words(row, words) {
@@ -2148,13 +2320,78 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(hits)
     }
 
+    /// What the hits `nodes` of one app are named under: the app's top level
+    /// and the hits themselves. A hit whose nearest owner among those is one
+    /// of the app's containers (a note under the notebook) is asked for by
+    /// name there; one that is not among the container's children sits
+    /// deeper, under a resource the search did not find (a note's body found
+    /// without the note), and the containers are read whole to name it, as
+    /// they are once more hits ask than a listing costs.
+    async fn hit_owners(&self, provider: &str, nodes: &[Node]) -> Result<Vec<Node>, String> {
+        let mut levels = Levels::new();
+        let root = self.level(provider, "", &mut levels).await?;
+        let mut pool = root.children.clone();
+        for node in nodes {
+            if !pool.iter().any(|seen| seen.id == node.id) {
+                pool.push(node.clone());
+            }
+        }
+        let containers: Vec<&Node> = root
+            .children
+            .iter()
+            .filter(|node| node.container)
+            .take(ROOT_PEEK)
+            .collect();
+        let mut asked = 0usize;
+        let mut whole = false;
+        for hit in nodes {
+            let owner = pool
+                .iter()
+                .filter(|owner| owner.owns(hit))
+                .max_by_key(|owner| owner.token().len());
+            let Some(container) =
+                owner.filter(|owner| containers.iter().any(|seen| seen.id == owner.id))
+            else {
+                continue;
+            };
+            asked = asked.saturating_add(1);
+            let found = if asked > HITS_ASKED {
+                None
+            } else {
+                self.named(provider, &container.id, &hit.label).await?
+            };
+            if !found.is_some_and(|found| found.children.iter().any(|node| node.id == hit.id)) {
+                whole = true;
+                break;
+            }
+        }
+        if whole {
+            for node in self.app_children(provider, &mut levels).await?.children {
+                if !pool.iter().any(|seen| seen.id == node.id) {
+                    pool.push(node);
+                }
+            }
+        }
+        Ok(pool)
+    }
+
     /// The rows of `provider` whose names hold `needle`, as many pages as a
     /// search reads.
     async fn needle_rows(&self, provider: &str, needle: &str) -> Result<Vec<CatalogueRow>, String> {
+        // One search reads one revision, as a level does: when a busy app's
+        // directory moves on between pages, what was read belongs to the old
+        // revision and the search starts again at the new one, pausing as a
+        // level read does, for as long as an action is waited for; past that
+        // it answers what it read.
+        let deadline = tokio::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(DEFAULT_WAIT_MS));
         let mut rows = Vec::new();
         let mut cursor = Vec::new();
         let mut revision = None;
-        for _ in 0..SEARCH_PAGES {
+        let mut pages = 0;
+        let mut reads: u32 = 1;
+        while pages < SEARCH_PAGES {
+            pages = pages.saturating_add(1);
             let page = self
                 .ask(CatalogueQuery {
                     provider: Some(provider.to_owned()),
@@ -2171,6 +2408,20 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 })
                 .await?;
             if page.stale_cursor {
+                if let Some(deadline) =
+                    deadline.filter(|deadline| tokio::time::Instant::now() < *deadline)
+                {
+                    reads = reads.saturating_add(1);
+                    let until = tokio::time::Instant::now()
+                        .checked_add(restart_pause(reads))
+                        .map_or(deadline, |until| until.min(deadline));
+                    tokio::time::sleep_until(until).await;
+                    rows.clear();
+                    cursor.clear();
+                    revision = None;
+                    pages = 0;
+                    continue;
+                }
                 break;
             }
             rows.extend(page.rows);
