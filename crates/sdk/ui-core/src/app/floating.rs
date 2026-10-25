@@ -97,6 +97,23 @@ pub(super) struct FloatingRuntime {
     /// The window bar's search and History control for this app
     /// ([`window_bar`]).
     pub window_bar: window_bar::WindowBarRuntime,
+    /// The record this window shows, as its route names it, and the kind of
+    /// resource it keeps: what the desktop lists it under for sharing.
+    pub window_record: Option<(String, String)>,
+    /// What of [`crate::window_share`] the shell was told on this
+    /// connection.
+    pub window_share_sent: WindowShareSent,
+}
+
+/// What of a window's live sharing the shell was told on one connection.
+#[derive(Default)]
+pub struct WindowShareSent {
+    /// The revision of the embeds last sent (0: none declared).
+    pub embeds: u64,
+    /// The revision of the shares last sent (0: none).
+    pub shared: u64,
+    /// The window's record was sent.
+    pub record: bool,
 }
 
 impl FloatingRuntime {
@@ -154,6 +171,8 @@ impl FloatingRuntime {
             close_window_requested: false,
             toolbar_sent: None,
             window_bar: window_bar::WindowBarRuntime::default(),
+            window_record: None,
+            window_share_sent: WindowShareSent::default(),
         }
     }
 }
@@ -613,6 +632,7 @@ impl App {
             )?;
             self.floating.window_resource_sent = Told::Was(window);
         }
+        self.send_window_share(client, instance)?;
         for request in crate::shared_selection::take_agent_requests() {
             let (selection, bounds) = self.agent_reference(request);
             client.send(
@@ -650,6 +670,61 @@ impl App {
             )?;
         }
         Ok(())
+    }
+
+    /// Tell the shell what changed of this window's live sharing
+    /// ([`crate::window_share`]): its record once, its embeds and what it
+    /// shares whenever they change.
+    #[cfg(feature = "native")]
+    fn send_window_share(
+        &mut self,
+        client: &mut FloatingSurfaceServiceClient,
+        instance: Option<u64>,
+    ) -> Result<(), String> {
+        let sent = &mut self.floating.window_share_sent;
+        if !sent.record
+            && let Some((record, kind)) = self.floating.window_record.clone()
+        {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::WindowRecord {
+                    record,
+                    kind,
+                    instance,
+                },
+            )?;
+            sent.record = true;
+        }
+        if let Some((revision, embeds)) = crate::window_share::own_embeds_since(sent.embeds) {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::Embeds {
+                    embeds: embeds
+                        .iter()
+                        .map(crate::window_share::DeclaredEmbed::from)
+                        .collect(),
+                    instance,
+                },
+            )?;
+            sent.embeds = revision;
+        }
+        if let Some((revision, shared)) = crate::window_share::shared_since(sent.shared) {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::SharedWindows {
+                    shared: shared
+                        .into_iter()
+                        .take(crate::window_share::MAX_SHARED)
+                        .collect(),
+                },
+            )?;
+            sent.shared = revision;
+        }
+        Ok(())
+    }
+
+    /// What the desktop said of windows shared live changed what the app
+    /// shows: it syncs and lays out again.
+    fn window_share_changed(&mut self) {
+        self.needs_sync = true;
+        self.layout.layout_dirty = true;
     }
 
     #[cfg(feature = "native")]
@@ -988,6 +1063,32 @@ impl App {
                         );
                     }
                 }
+                // What the desktop says of windows shared live reaches the
+                // app's next sync, where it reads them
+                // (`crate::window_share`).
+                FloatingSurfaceHostMessage::DrawsEmbeds => {
+                    crate::window_share::set_drawn(true);
+                    self.window_share_changed();
+                }
+                FloatingSurfaceHostMessage::EmbedStates { states } => {
+                    if crate::window_share::set_own_states(states.clone()) {
+                        self.window_share_changed();
+                    }
+                }
+                FloatingSurfaceHostMessage::OpenWindows { windows } => {
+                    let windows = windows
+                        .iter()
+                        .take(crate::window_share::MAX_WINDOWS)
+                        .map(crate::window_share::OpenWindow::bounded)
+                        .collect();
+                    if crate::window_share::publish_windows(windows) {
+                        self.window_share_changed();
+                    }
+                }
+                FloatingSurfaceHostMessage::WindowShareAsk { ask } => {
+                    crate::window_share::deliver_ask(ask.bounded());
+                    self.window_share_changed();
+                }
                 FloatingSurfaceHostMessage::DesktopBounds { bounds } => {
                     match crate::floating_surface::protocol_rect(*bounds) {
                         Ok(bounds) => self.root_widget.set_floating_surface_bounds(bounds),
@@ -1015,6 +1116,11 @@ impl App {
         crate::window_toolbar::set_hosted(false);
         self.floating.toolbar_sent = None;
         self.floating.window_resource_sent = Told::Nothing;
+        // Nothing draws the embeds or lists the windows any more; a new
+        // shell is told the embeds, the shares and the record afresh.
+        crate::window_share::host_lost();
+        self.floating.window_share_sent = WindowShareSent::default();
+        self.window_share_changed();
         // Nothing presents the app's search and History any more: it shows
         // its own again.
         self.floating.window_bar.disconnected();

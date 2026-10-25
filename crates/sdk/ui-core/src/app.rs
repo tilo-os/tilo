@@ -931,6 +931,10 @@ impl App {
         app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
         app.appearance_reconcile = behaviour.appearance_reconcile;
         app.set_capture_protected(behaviour.capture_protected);
+        app.floating.window_record = Some((
+            binding.checkout.id.route().to_owned(),
+            binding.checkout.kind.as_str().to_owned(),
+        ));
         if let Some(app_id) = input_surface_id {
             app.window.app_id = Some(app_id);
         }

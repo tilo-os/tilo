@@ -609,6 +609,11 @@ host-source-app-actions = Application actions
 # App launches and session actions
 host-app-did-not-open-title = Application did not open
 host-app-did-not-open-body = The app started but did not create a window. Check the session log and try again.
+# A live view of a resource shared into a conversation, when it cannot show.
+live-view-not-installed = Its app isn't on this computer
+live-view-gone = It is no longer there
+live-view-did-not-open = It didn't open here
+live-view-closed = Its app closed
 host-session-action-failed = Session action failed
 host-session-lock-failed = Couldn’t lock the session. Check the session log and try again.
 host-session-logout-failed = Couldn’t log out. Check the session log and try again.
