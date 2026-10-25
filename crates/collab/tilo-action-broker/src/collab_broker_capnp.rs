@@ -3638,6 +3638,8 @@ pub struct CapnpBrokerState {
     app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
     /// Steps of interactive shortcut runs waiting for their person.
     step_prompts: crate::automation::StepPrompts,
+    /// The shortcut runs going, so one can be stopped before its next step.
+    shortcut_runs: crate::automation::RunningRuns,
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.
@@ -4402,6 +4404,7 @@ impl CapnpBrokerState {
                 run_question_notices: Mutex::new(HashMap::new()),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 step_prompts: crate::automation::StepPrompts::default(),
+                shortcut_runs: crate::automation::RunningRuns::default(),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),

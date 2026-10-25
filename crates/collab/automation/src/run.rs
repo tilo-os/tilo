@@ -475,8 +475,10 @@ enum Wait {
 /// polled any number of times, and polling a settled one reads as abandoned.
 /// Looking at the move first keeps a host that pushes changes on the fast
 /// path: its answer ends the wait. A host that cannot tell falls back to
-/// [`POLL_INTERVAL`], and every look at the clock asks the stop first.
-async fn wait_for<M, S>(moved: M, stopped: S, left: std::time::Duration) -> Wait
+/// [`POLL_INTERVAL`] while `refreshing` says so, and every look at the clock
+/// asks the stop first, so a long wait still ends as soon as someone stops
+/// it.
+async fn wait_for<M, S>(moved: M, stopped: S, left: std::time::Duration, refreshing: bool) -> Wait
 where
     M: Future<Output = Result<(), StepFailure>>,
     S: Future<Output = Option<Result<(), String>>>,
@@ -518,7 +520,7 @@ where
             Wait::Stopped(reason) => return Wait::Stopped(reason),
             // A host that cannot tell when an invocation moves falls back to
             // a poll interval: the move is tried again before the wait ends.
-            Wait::TimedOut if !moved_done => {
+            Wait::TimedOut if refreshing && !moved_done => {
                 moved_done = true;
                 left = left.saturating_sub(POLL_INTERVAL);
             }
@@ -527,21 +529,18 @@ where
     }
 }
 
-/// Resolve once `at` has passed, on whichever waker looks at it: the timer
-/// belongs to the caller's runtime, so the interpreter needs none of its
-/// own. `None` is a deadline already gone.
+/// Resolve once `at` has passed, on the waker that looks at it: the timer
+/// belongs to whoever waits, so the interpreter needs none of its own.
+/// `None` is a deadline already gone.
 struct WaitUntil(Option<std::time::Instant>);
 
 impl Future for WaitUntil {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, context: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+    fn poll(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
         match self.0 {
             Some(at) if std::time::Instant::now() >= at => std::task::Poll::Ready(()),
-            _ => {
-                context.waker().wake_by_ref();
-                std::task::Poll::Pending
-            }
+            _ => std::task::Poll::Pending,
         }
     }
 }
@@ -1153,8 +1152,10 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     // only a host that cannot tell falls back to the hooks'
                     // poll interval. A stop or a timeout ends the wait; the
                     // invocation itself is left to the host.
+                    let change = self.host.next_change(&self.caller, &id);
+                    let refreshing = change.is_none();
                     let moved = async {
-                        match self.host.next_change(&self.caller, &id) {
+                        match change {
                             Some(change) => change.await.ok_or(StepFailure::Abandoned),
                             None => self.hooks.settle(id).await.ok_or(StepFailure::Abandoned),
                         }
@@ -1163,7 +1164,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                         path,
                         since: std::time::Instant::now(),
                     });
-                    match wait_for(moved, stopped, left).await {
+                    match wait_for(moved, stopped, left, refreshing).await {
                         Wait::Moved(Ok(())) => {}
                         Wait::Moved(Err(failure)) => return Err(failure),
                         Wait::Stopped(reason) => return Err(StepFailure::Stopped { reason }),
