@@ -54,6 +54,11 @@ pub const LEAD: ChipLead = ChipLead::Glyph(ui_core::icons::Icon::Link);
 
 /// The workspace this window is in, or why nothing opens from it.
 pub fn room() -> Result<String, String> {
+    // A window hosted among others in one process (the browser) is in the
+    // workspace its host put it in, not the process's.
+    if let Some(room) = ui_core::window_toolbar::workspace() {
+        return Ok(room);
+    }
     let room = ui_core::collaboration::local_cluster_id();
     if room.is_nil() {
         Err("This window is in no workspace".into())
