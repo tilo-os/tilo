@@ -228,8 +228,9 @@ pub trait WorkspaceMemberships: Send + Sync {
     fn requires_room(&self, room: &str) -> bool;
 
     /// Whether `room` is held here but governed by the node that stewards
-    /// it, where the one membership change this device asks is the
-    /// authorship an app opening there needs, committed by that host.
+    /// it, where this device asks that host to commit the room's own
+    /// membership changes, decided by the room's governance as they are
+    /// where this device governs the room itself.
     fn grants_authorship_at_host(&self, _room: &str) -> bool {
         false
     }
