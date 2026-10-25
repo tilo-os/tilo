@@ -2794,8 +2794,13 @@ impl InboundBridge {
 /// durable identity and requested route; an old handoff must not be replayed.
 pub struct HostSessionConnector {
     connect: Box<dyn FnOnce(RouteSpec) -> HostSessionFuture + Send>,
+    /// What the connect waits for first: the host's word that the services
+    /// it reaches are up, or will not come ([`Self::once_ready`]).
+    ready: Option<Box<dyn FnOnce() -> HostReadyFuture + Send>>,
     identity_exchange_timeout: Duration,
 }
+
+type HostReadyFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
 
 trait HostAsyncIo: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite> HostAsyncIo for T {}
@@ -2847,6 +2852,7 @@ impl HostSessionConnector {
                     ))
                 })
             }),
+            ready: None,
             identity_exchange_timeout: HOST_IDENTITY_EXCHANGE_TIMEOUT,
         }
     }
@@ -2875,8 +2881,29 @@ impl HostSessionConnector {
                     ))
                 })
             }),
+            ready: None,
             identity_exchange_timeout: HOST_IDENTITY_EXCHANGE_TIMEOUT,
         }
+    }
+}
+
+impl HostSessionConnector {
+    /// Connect only once `ready` resolves: when the host says the services
+    /// this connection reaches are listening, or that their start is over.
+    /// A host showing an app while it is still starting those services
+    /// (a session restoring its tabs before it binds its broker) is not
+    /// wedged, so this wait is not under the bound on the connect itself;
+    /// connecting before then finds no socket and leaves the app offline.
+    /// `ready` must resolve once the host's start is over, whatever its
+    /// outcome.
+    #[must_use]
+    pub fn once_ready<F, Fut>(mut self, ready: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + 'static,
+    {
+        self.ready = Some(Box::new(move || Box::pin(ready()) as HostReadyFuture));
+        self
     }
 }
 
@@ -4254,6 +4281,9 @@ fn run_shovel(
             SdkConnectSource::Host(connector, route) => {
                 let cluster_id = route.cluster_id;
                 let identity_timeout = connector.identity_exchange_timeout;
+                if let Some(ready) = connector.ready {
+                    ready().await;
+                }
                 match tokio::time::timeout(SHOVEL_INIT_TIMEOUT, (connector.connect)(route)).await {
                     Ok(Ok((collaboration_stream, identity_stream, lane))) => {
                         let identity =
