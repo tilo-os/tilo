@@ -115,6 +115,14 @@ tilo-rollback enroll --device /dev/vda3 --recovery-key-file -
 # Seal the keyslot for an incoming generation, before rebooting into it.
 tilo-rollback enroll --device /dev/vda3 --generation 42 --recovery-key-file -
 
+# A system volume slot that opens by itself, on a boot this machine can prove it
+# approved. Refused unless Secure Boot is on, lockdown is active, and db holds only
+# the authorities recorded here.
+tilo-rollback enroll --device /dev/vda3 --recovery-key-file - --automatic
+
+# Is this boot verified, and would a PIN-less slot open here?
+tilo-rollback boot-status
+
 # Where the floor is and which generations it permits.
 tilo-rollback status --device /dev/vda3
 
@@ -156,6 +164,59 @@ measurements", while a floor approval permanently narrows what a machine will bo
 `TILO_ROLLBACK_DEBUG=1` prints the failing TPM tool's own diagnostics, which is
 what you want when a boot could not unseal. It never prints a secret — the PIN and
 passphrases are always passed by file reference, never on `argv`.
+
+## A keyslot with no PIN
+
+A PIN is a factor, and typing one on every boot is what the short-PIN design
+reduced it to. On a machine that can prove its own boot, the same seal works
+without one: `enroll --automatic` seals a generation with no auth value
+(`TPM2_NoAuth`), and early userspace opens the volume with nothing typed.
+
+What stops that from being a machine that opens for anybody is not the PIN — it
+is the policy. The seal is the same one:
+
+```text
+PolicyPCR(prediction)                      PCR 11, the signed UKI measurement
+  -> PolicyAuthorize(generation)           only a prediction the authority signed
+    -> PolicyNV(counter <= base+generation) the rollback floor still permits it
+      -> PolicyAuthValue                    only when a PIN was sealed
+```
+
+`PolicyAuthValue` is the one step that is absent, and everything above it is
+unchanged, so a PIN-less slot is exactly as strong against a *replayed* image as
+a PIN-sealed one: an old generation cannot unseal it, because `PolicyAuthorize`
+binds the generation and `PolicyNV` binds the floor. What it is weaker at is the
+boot itself, which nothing but the boot can vouch for. Hence three conditions,
+all required:
+
+| Condition | Why | Refused as |
+|---|---|---|
+| Secure Boot on | with it off, PCR 7 still holds a value and a prediction still matches, but nothing checked the boot image | `verified::Unverified::SecureBootOff` |
+| `db` holds only authorities this machine trusts | anything else in `db` boots under the same PCR 7 | comparing the recorded digest |
+| kernel lockdown active | otherwise early userspace can reach kernel memory and lift the seal from the inside | `verified::Unverified::LockdownInactive` |
+
+The `db` condition is the one that needs a record rather than a reading. A
+signature database that gained a Microsoft third-party CA — which signs shims for
+drivers and other vendors — admits boots this machine never chose, and PCR 7 alone
+cannot tell the two policies apart from a legitimate firmware update. So
+enrollment writes the digest of the authorities in `db` (and nothing else: an
+image hash can admit one binary and sign nothing) beside the rollback state, and
+every unlock compares against it. A `db` that changed since enrollment turns the
+quiet unlock into the typed one, which is how the machine asks rather than either
+silently trusting a boot it no longer recognises or leaving a person with an
+unbootable disk.
+
+The generation is sealed the same way as a PIN-sealed one, with one difference
+that is not optional: the PIN-less token is offered *last* in the initramfs,
+after any PIN-sealed generation token, so an install that has both does not lose
+the stronger one. `tilo-rollback boot-status` prints the whole decision —
+Secure Boot state, lockdown level, the `db` digest, the recorded one, and whether a
+PIN-less slot would open this boot — without touching a device.
+
+Repair mode is unaffected and stays gated on a typed secret. Its command line
+measures differently, so both kinds of generation token refuse it
+([repair-mode.md](repair-mode.md), "Why generation-bound unlock is still
+stronger").
 
 ## Build side
 
@@ -319,6 +380,9 @@ It is what unlocks the disk when:
 - the firmware changed and no signed prediction covers the new state,
 - the TPM was cleared or replaced,
 - the PIN was forgotten and the lockout is exhausted,
+- the boot stopped being one the machine can prove it approved — Secure Boot
+  turned off, lockdown off, or a `db` that changed since enrollment — so a
+  PIN-less slot is not tried and the typed secret is asked for,
 - the NV index was destroyed, or recreated with a different floor authority key
   (its TPM Name changes, and every token is sealed against the old Name —
   `tilo-rollback enroll` reports this by name rather than letting it surface as an
