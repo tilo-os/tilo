@@ -956,3 +956,8 @@ emoji-chooser-tone-medium-light = medium-light skin tone
 emoji-chooser-tone-medium = medium skin tone
 emoji-chooser-tone-medium-dark = medium-dark skin tone
 emoji-chooser-tone-dark = dark skin tone
+
+## The workspace's own emoji
+workspace-emoji-choose-title = Add an emoji
+workspace-emoji-choose-accept = Add
+workspace-emoji-image-files = Pictures

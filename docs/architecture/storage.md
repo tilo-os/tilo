@@ -1880,6 +1880,28 @@ topic, never through a workspace host.
   mutation) is refused like any record's; one that grows toward it should become
   a collection.
 
+#### Workspace records
+
+A few records belong to the workspace rather than to one app's window: its
+custom emoji, which any app draws for `:name:`. Each is listed in
+`collab_types::WORKSPACE_RECORDS` as an owner app and a kind; its record is
+`workspace_record_id(kind)` in the workspace's room, on the owner's route
+`(owner, room, record)`. Every window of the room opens it beside its own
+record, in the owner's store of that room (`RecordOwners::open_beside`), and
+reads and changes it through the framework (`cx.workspace::<P>(owner)`,
+`WorkspaceRecord<P>`): the owner's resource actions, attributed to the person,
+an undo step of theirs. The identity host signs a change to a listed record on
+the room's route for any app bound to that room, and nothing else of the
+owner's; whether the change stands is decided as for any change, by the room's
+grants on the owner's node (`decide_op`), so a role that may not add emoji in
+Chat may not from Notes either. Only the owner's window lists the kind in its
+surface (`apps/chat/surface.toml`); a change another app signs names no
+surface and is decided at the record. In a browser the store is kept among
+the page's replicated stores, so the record syncs as the window's own does.
+Every framework window registers the emoji for its views
+(`ui_core::workspace_emoji::register`), which read them with
+`ui_core::workspace_emoji::emoji()`.
+
 ### 13.10 Connector peers
 
 Status: design (2026-10-19, agreed with the owner). Not implemented.

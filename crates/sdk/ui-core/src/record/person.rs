@@ -248,7 +248,7 @@ impl PersonRecords {
     }
 }
 
-fn open_in(
+pub(super) fn open_in(
     store: &RecordStore,
     checkout: &RecordCheckout,
     initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
@@ -262,8 +262,10 @@ fn open_in(
     }
 }
 
-/// One of the person's records, open. Edits are attributed to the person,
-/// recorded as undo steps of their own and synced on the record's route.
+/// One of the person's records, open, or one of the workspace's
+/// ([`super::workspace`]), held the same way. Edits are attributed to the
+/// person, recorded as undo steps of their own and synced on the record's
+/// route.
 pub struct PersonRecord {
     store: RecordStore,
     checkout: RecordCheckout,
@@ -273,13 +275,20 @@ pub struct PersonRecord {
 }
 
 impl PersonRecord {
-    fn new(store: RecordStore, checkout: RecordCheckout, author: UserId) -> Self {
+    pub(super) fn new(store: RecordStore, checkout: RecordCheckout, author: UserId) -> Self {
         Self {
             store,
             checkout,
             author,
             lifetime: LegacyHistoryLifetime::new(),
         }
+    }
+
+    /// Wake the window `reader` belongs to whenever another replica's change
+    /// to the records kept with this one arrives
+    /// ([`RecordStore::wake_on_arrival`]).
+    pub fn wake_on_arrival(&self, reader: crate::WakeHandle) {
+        self.store.wake_on_arrival(reader);
     }
 
     /// The record's identity.

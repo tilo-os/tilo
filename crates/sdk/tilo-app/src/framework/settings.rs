@@ -137,6 +137,11 @@ pub(crate) struct ViewStorage {
     room: Option<super::chain::RoomRecords>,
     /// The chains the views opened ([`super::Chain`]).
     chains: super::chain::Chains,
+    /// The records every app of the room opens, when the host keeps them:
+    /// not in a view of a past version.
+    workspace: Option<Rc<super::workspace::WorkspaceState>>,
+    /// The workspace's emoji, as the window's views draw them.
+    emoji: Option<Rc<super::workspace_emoji::WindowEmoji>>,
 }
 
 /// What the host gives a live window beside its record: the person's own
@@ -152,6 +157,12 @@ pub(crate) struct Hosted {
         String,
         ui_core::permissions::LivePermissions,
     )>,
+    /// The records every app of the room opens, and the window's wake
+    /// scope, against which the workspace's emoji are registered.
+    pub(crate) workspace: Option<(
+        ui_core::record::workspace::WorkspaceRecords,
+        ui_core::wake::WakeHandle,
+    )>,
 }
 
 /// [`Hosted`], with the person's records opened for one app.
@@ -159,11 +170,31 @@ pub(crate) struct Attached {
     person: Option<super::person::PersonState>,
     device: Option<String>,
     room: Option<super::chain::RoomRecords>,
+    workspace: Option<Rc<super::workspace::WorkspaceState>>,
+    emoji: Option<Rc<super::workspace_emoji::WindowEmoji>>,
 }
 
 impl Hosted {
     pub(crate) fn attach(self, app_id: &'static str, app_title: &'static str) -> Attached {
+        let permissions = self
+            .room
+            .as_ref()
+            .map(|(_, _, permissions)| permissions.clone());
+        let workspace = self.workspace.map(|(records, wake)| {
+            let state = Rc::new(super::workspace::WorkspaceState::new(
+                records,
+                app_id,
+                app_title,
+                permissions,
+                Some(wake.clone()),
+            ));
+            let emoji = super::workspace_emoji::register(&wake, Rc::clone(&state));
+            (state, emoji)
+        });
+        let (workspace, emoji) = workspace.unzip();
         Attached {
+            workspace,
+            emoji,
             person: self
                 .person
                 .map(|records| super::person::PersonState::new(records, app_id, app_title)),
@@ -194,6 +225,8 @@ impl ViewStorage {
             kept_by: RefCell::default(),
             room: hosted.room,
             chains: super::chain::Chains::default(),
+            workspace: hosted.workspace,
+            emoji: hosted.emoji,
         })
     }
 
@@ -251,6 +284,23 @@ impl ViewStorage {
     ) -> Option<super::person::PersonRecord<P>> {
         super::controls::opened::<P>();
         self.person.as_ref()?.open::<P>()
+    }
+
+    /// Open the record `P` every app of the room opens that this app
+    /// keeps.
+    pub(crate) fn workspace_record<P: tilo_resource::Resource>(&self) {
+        if let Some(workspace) = &self.workspace {
+            let _ = workspace.open::<P>(workspace.app_id());
+        }
+    }
+
+    /// The record `P` every app of the room opens that `owner` keeps,
+    /// opened on first use.
+    pub(crate) fn workspace<P: tilo_resource::Resource>(
+        &self,
+        owner: &'static str,
+    ) -> Option<super::workspace::WorkspaceRecord<P>> {
+        self.workspace.as_ref()?.open::<P>(owner)
     }
 
     /// The shared record of the person's `P`.
@@ -411,12 +461,18 @@ impl ViewStorage {
             .answer(payload)
     }
 
-    /// The routes of the person's records the views opened.
+    /// The routes of the person's records the views opened, and of the
+    /// records every app of the room opens.
     pub(crate) fn person_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
-        self.person
+        let mut owners = self
+            .person
             .as_ref()
             .map(super::person::PersonState::owners)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some(workspace) = &self.workspace {
+            owners.extend(workspace.owners());
+        }
+        owners
     }
 
     /// `T`, followed for as long as `alive` is.
@@ -463,6 +519,12 @@ impl ViewStorage {
         let _profile = tilo_resource::profiling::Phase::start("framework.view_storage_refresh");
         if let Some(person) = &self.person {
             person.refresh();
+        }
+        if let Some(workspace) = &self.workspace {
+            workspace.refresh();
+        }
+        if let Some(emoji) = &self.emoji {
+            emoji.settle();
         }
         for chain in self.chains.doors() {
             let _ = chain.revision();

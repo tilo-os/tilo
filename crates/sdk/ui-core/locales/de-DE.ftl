@@ -945,3 +945,8 @@ emoji-chooser-tone-medium-light = mittelheller Hautton
 emoji-chooser-tone-medium = mittlerer Hautton
 emoji-chooser-tone-medium-dark = mitteldunkler Hautton
 emoji-chooser-tone-dark = dunkler Hautton
+
+## The workspace's own emoji
+workspace-emoji-choose-title = Emoji hinzufügen
+workspace-emoji-choose-accept = Hinzufügen
+workspace-emoji-image-files = Bilder

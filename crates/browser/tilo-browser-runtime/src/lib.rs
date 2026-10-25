@@ -129,6 +129,8 @@ mod storage;
 mod throttle;
 #[cfg(target_arch = "wasm32")]
 mod video_pictures;
+#[cfg(target_arch = "wasm32")]
+mod workspace_records;
 // When graphics start-up is said to stall: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(
