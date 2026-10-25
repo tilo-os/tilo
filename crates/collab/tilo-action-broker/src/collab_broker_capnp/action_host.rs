@@ -432,6 +432,17 @@ pub(super) enum RowScope<'a> {
 }
 
 impl RowScope<'_> {
+    fn applications(
+        self,
+        launcher: &dyn crate::services::LauncherServices,
+    ) -> Vec<crate::services::LaunchableApplication> {
+        match self {
+            Self::App { app_id, .. } => launcher.applications_for(app_id),
+            Self::None => Vec::new(),
+            Self::All | Self::Provider(_) => launcher.applications(),
+        }
+    }
+
     fn wants(self, provider: &str) -> bool {
         match self {
             Self::None => false,
@@ -1022,7 +1033,10 @@ impl CapnpBrokerState {
                     .filter(|_| scope.wants_application_providers())
                 {
                     let applications = applications.get_or_insert_with(|| {
-                        (launcher.applications(), launcher.closes_applications())
+                        (
+                            scope.applications(launcher.as_ref()),
+                            launcher.closes_applications(),
+                        )
                     });
                     Self::offered_catalogue(
                         (&workspace, &policy, now),
@@ -1147,7 +1161,10 @@ impl CapnpBrokerState {
                 && let Some(launcher) = self.services.launcher.as_ref()
             {
                 let applications = applications.get_or_insert_with(|| {
-                    (launcher.applications(), launcher.closes_applications())
+                    (
+                        scope.applications(launcher.as_ref()),
+                        launcher.closes_applications(),
+                    )
                 });
                 let (applications, closes_applications) = (&applications.0, applications.1);
                 // An agent of this machine is told every installed app, one
