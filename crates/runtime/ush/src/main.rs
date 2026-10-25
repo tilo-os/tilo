@@ -44,7 +44,7 @@ fn main() -> ExitCode {
         // The file actions: GNU's names, answered here so each invocation is
         // one action the environment's grants are checked against and the
         // recoverable history can take back.
-        "cp" | "mv" | "rm" | "mkdir" | "rmdir" | "ln" | "truncate" => {
+        "cp" | "mv" | "rm" | "mkdir" | "rmdir" | "ln" | "truncate" | "touch" | "append" => {
             guest::file_action(&prog_name, rest)
         }
         "ush" => host(rest),
@@ -994,7 +994,9 @@ explain when the host does not offer them.\n";
         fn the_file_verbs_are_the_runtimes_own_names_in_a_guest() {
             // Each one is a shim in the guest's bin directory, and none of
             // them is mistaken for a legacy app's command.
-            for name in ["cp", "mv", "rm", "mkdir", "rmdir", "ln", "truncate", "undo"] {
+            for name in [
+                "cp", "mv", "rm", "mkdir", "rmdir", "ln", "truncate", "touch", "append", "undo",
+            ] {
                 assert!(
                     ush::GUEST_COMMANDS.contains(&name),
                     "{name} is not put on the guest's PATH"
@@ -1026,6 +1028,15 @@ explain when the host does not offer them.\n";
             assert!(matches!(
                 parse("ln", "-s target"),
                 FileAction::Link(op) if op.symbolic && op.into_directory
+            ));
+            assert!(matches!(
+                parse("touch", "notes/today.md"),
+                FileAction::Touch(op) if op.files == [PathBuf::from("notes/today.md")]
+            ));
+            assert!(matches!(
+                parse("append", "bought-milk notes/today.md"),
+                FileAction::Append(op) if op.text == "bought-milk"
+                    && op.files == [PathBuf::from("notes/today.md")]
             ));
         }
 
