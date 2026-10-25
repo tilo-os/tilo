@@ -279,7 +279,10 @@ impl<'a> AttachmentSummary<'a> {
     }
 
     /// What a screen reader hears for this attachment: what it is, what it is
-    /// called, how big it is, and what happened to it.
+    /// called, how big it is, and what state it is in. A copy on this device is
+    /// stated as a state rather than announced as an event: saving says nothing
+    /// unless it stalls or fails, and a person reading a list with a screen
+    /// reader still needs to know where the file is.
     #[must_use]
     pub fn describe(&self) -> String {
         let mut parts = vec![self.kind.label(), self.name.to_owned()];

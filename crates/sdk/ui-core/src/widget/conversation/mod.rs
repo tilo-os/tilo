@@ -52,19 +52,13 @@ pub use list::{
     ConversationLine, ConversationList, ConversationRole, ListFace, bubble_colors, run_breaks,
 };
 
-/// The module's own labels — the delivery vocabulary's words and the
-/// attachment ladder's action names — in the toolkit's source language.
+/// Resolve one of the conversation's labels in the desktop's language.
 ///
-/// A toolkit module cannot put its strings in the crate's shared catalogue
-/// without every widget paying for them, so they live beside the code that
-/// paints them. An app may override any key in its own catalogue.
-static CATALOG: crate::i18n::EmbeddedCatalog =
-    crate::i18n::EmbeddedCatalog::new("en-US", &[("en-US", include_str!("locales/en-US.ftl"))])
-        .with_system_locale();
-
-/// Resolve one of this module's labels in the desktop's language.
+/// The words live in the toolkit's catalogue with every other widget's, one
+/// namespace per module (`conversation-`), so a language that ships the toolkit
+/// ships these too and an app can override any key in its own catalogue.
 pub(crate) fn t(key: &str) -> String {
-    CATALOG.t(key)
+    crate::i18n::widget_format(key, &[])
 }
 
 #[cfg(test)]
