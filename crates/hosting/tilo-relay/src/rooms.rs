@@ -83,7 +83,18 @@ pub use admin::RoomAdminProtocol;
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
 pub use pages::PreAdmitRequest;
-pub use wait_list::WaitListed;
+pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListed};
+
+/// An invitation someone who may invite asked the room to mail to an
+/// address on its wait list ([`Rooms::mail_wait_list`]).
+pub struct WaitListMail {
+    pub to: Mailbox,
+    /// The invitation's web link.
+    pub link: String,
+    /// A secret that takes the entry off the list, for the mail's removal
+    /// link; the entry keeps only its SHA-256.
+    pub removal: [u8; 32],
+}
 // The administration vocabulary (the actions' names and answers, and the
 // wire door's) and the device's client, under the daemon's historic paths.
 pub use tilo_relay_session::rooms::{
@@ -516,6 +527,28 @@ impl GovernedRoom {
         &self.record.collaboration
     }
 
+    /// Take off the wait list everyone who joined with an invitation sent
+    /// for their entry. A failed write leaves them for the next time.
+    fn forget_joined_wait_list(&mut self) {
+        let ledger = &self.record.collaboration;
+        match self
+            .wait_list
+            .joined(|invite| ledger.redeemed(invite), tilo_clock::unix_now_ns())
+        {
+            Ok(0) => {}
+            Ok(count) => tracing::info!(
+                room = %self.record.room,
+                count,
+                "invited addresses left the wait list on joining"
+            ),
+            Err(error) => tracing::warn!(
+                room = %self.record.room,
+                %error,
+                "the wait list kept invited addresses that joined"
+            ),
+        }
+    }
+
     /// Record `state` alone: challenges, invitations, receipts. Governance and
     /// its publication are unchanged.
     fn commit_state(&mut self, state: collaboration::CollaborationState) -> Result<(), String> {
@@ -769,6 +802,9 @@ struct RoomsInner {
     /// the host's operator decided it ([`crate::reseal`]).
     #[cfg(feature = "agents")]
     resealing: std::sync::atomic::AtomicBool,
+    /// Where invitations to mail to wait-list addresses go, once whoever
+    /// runs the relay sends mail ([`Rooms::mail_wait_list`]).
+    wait_list_mail: std::sync::OnceLock<(String, tokio::sync::mpsc::UnboundedSender<WaitListMail>)>,
 }
 
 /// What a member sent a room's channel steward.
@@ -894,6 +930,7 @@ impl Rooms {
                 layouts: layout_scope::Layouts::default(),
                 #[cfg(feature = "agents")]
                 resealing: std::sync::atomic::AtomicBool::new(false),
+                wait_list_mail: std::sync::OnceLock::new(),
             }),
         };
         this.learn_layouts().await;
@@ -1078,6 +1115,25 @@ impl Rooms {
     #[must_use]
     pub fn governance_changes(&self) -> tokio::sync::broadcast::Receiver<String> {
         self.inner.changes.subscribe()
+    }
+
+    /// The invitations members ask to mail to addresses on a wait list,
+    /// for whoever runs the relay to send from the web entry `door`: until
+    /// this is called, the rooms send no mail and refuse to, and they mail
+    /// only invitations on that door
+    /// ([`tilo_relay_protocol::rooms::invitation_on_door`]). `None` once
+    /// called before.
+    #[must_use]
+    pub fn mail_wait_list(
+        &self,
+        door: &str,
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<WaitListMail>> {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        self.inner
+            .wait_list_mail
+            .set((door.to_owned(), sender))
+            .ok()?;
+        Some(receiver)
     }
 
     /// Each member write to a record the governor's copy took in. A slow

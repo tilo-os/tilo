@@ -16,8 +16,9 @@
  * has no seat for watches live instead and is let in once a seat frees up.
  */
 import {AdmissionError} from './admission.mjs';
-import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside, visitLine, waitListFailure} from './arrival.mjs';
+import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside, visitLine} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
+import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, profileDevice, withCustody} from './peer.mjs';
@@ -31,10 +32,10 @@ import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, Identity
 import {createReconnect, domReconnectView} from './reconnect.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
-import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
+import {createWorkspaceActions, INVITE, invitedLine} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneRooms, HostAdmissionError,
-  hostDeviceOf, hostToReconnect, isPublicHome, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, leaveOnWaitList, listedWorkspaces,
+  hostDeviceOf, hostToReconnect, isPublicHome, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces,
   doorPresence, joinWhenSeated, membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
   settleFailedRoom, spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
@@ -481,7 +482,7 @@ function waitingCard({load, admit, decline, invite, unlist}) {
       if (!contacts.length) return;
       const title = Object.assign(document.createElement('h3'), {textContent: `Wait list · ${contacts.length}`});
       const about = Object.assign(document.createElement('p'), {className: 'tilo-waiting-note',
-        textContent: 'They asked to join without an invitation. Invite makes a link for you to email them.'});
+        textContent: 'They asked to join without an invitation. Invite sends them a link to join; they leave the list once they join.'});
       const rows = document.createElement('ul');
       rows.append(...contacts.map(entry => {
         const item = document.createElement('li');
@@ -489,18 +490,39 @@ function waitingCard({load, admit, decline, invite, unlist}) {
         who.className = 'tilo-waiting-who';
         who.append(Object.assign(document.createElement('span'), {className: 'tilo-waiting-contact', textContent: entry.contact, title: entry.contact}),
           Object.assign(document.createElement('time'), {dateTime: new Date(entry.addedAtMs).toISOString(), textContent: addedAt(entry.addedAtMs)}));
-        item.append(who, button('Invite', () => decide(() => invite(entry), entry.requestId)),
-          button('Remove', () => decide(unlist, entry.requestId)));
+        // Invited already: said, so nobody invites them twice.
+        if (entry.invitedAtMs != null) {
+          who.append(Object.assign(document.createElement('time'), {className: 'tilo-waiting-invited',
+            dateTime: new Date(entry.invitedAtMs).toISOString(), textContent: invitedLine(entry.invitedAtMs)}));
+        }
+        item.append(who, button(entry.invitedAtMs == null ? 'Invite' : 'Invite again', () => decide(async () => {
+          const sent = await invite(entry);
+          if (sent?.mailed) mailed(entry.contact, sent.link);
+        }, entry.requestId)), button('Remove', () => decide(unlist, entry.requestId)));
         return item;
       }));
       listed.append(title, about, rows);
     };
+    // A mailed invitation, said, with its link to copy should the mail not
+    // arrive.
+    const sent = document.createElement('p');
+    sent.className = 'tilo-waiting-sent';
+    sent.setAttribute('role', 'status');
+    sent.hidden = true;
+    const mailed = (contact, link) => {
+      const copy = button('Copy link', async () => {
+        copy.textContent = await navigator.clipboard.writeText(link).then(() => 'Copied', () => 'Copy failed');
+      });
+      sent.replaceChildren(`Invitation emailed to ${contact}. `, copy);
+      sent.hidden = false;
+    };
     const decide = async (choice, requestId) => {
       error.hidden = true;
+      sent.hidden = true;
       try { await choice(requestId); } catch (refusal) { said(refusal); }
       await show();
     };
-    form.append(heading, list, listed, error, close);
+    form.append(heading, list, listed, sent, error, close);
     document.body.append(form);
     void show();
   });
@@ -1208,7 +1230,7 @@ const DOOR_SIGNED_IN = 'tilo-door-signed-in';
  * On a page turned away for coming without an invitation, the door
  * (index.html, `#arrival-door`). Where the host keeps a wait list
  * (`error.door`), it apologises that Tilo is invite-only for now and asks
- * for an email to invite (`leaveOnWaitList`); else it names the workspace
+ * for an email to invite (`offerWaitList`); else it names the workspace
  * `named` and asks for the invite link someone sends. Under either: signing
  * in with an identity the person already has (a passkey, then the page
  * loads again and joins as them, and a member gets in), and the field to
@@ -1237,7 +1259,7 @@ function offerDoor({messages, named, error, workspace}) {
       door.querySelector('.door-foot')?.append(own);
     });
   }
-  if (waitList) offerWaitList({workspace, contact: error.door.contact, messages});
+  if (waitList) offerWaitList({workspace, contact: error.door.contact, mail: error.door.mail === true, messages});
   offerSignIn({workspace, named, messages});
   // The invite link: behind a small toggle beside the wait list; shown
   // where it is the only way in.
@@ -1257,72 +1279,39 @@ function offerDoor({messages, named, error, workspace}) {
     problem.textContent = target ? '' : say('arrival-invite-not-a-link', 'That isn’t an invite link. Paste the whole link you were sent.');
     if (target) loadPage(target);
   });
+  // An invite link opened in this tab while it shows the door (followed
+  // from a mail, or typed into the address bar) changes only the fragment:
+  // the page loads again to follow it.
+  window.addEventListener('hashchange', () => {
+    if (inviteLinkTarget(location.href)) location.reload();
+  });
   document.documentElement.dataset.door = waitList ? 'wait-list' : 'invite';
 }
 
-/** The door's wait list: an email field that leaves the address at the
- * host's door, the address confirmed once it took it, and a note on what the
- * address is for and where to be taken off the list (`contact`). */
-function offerWaitList({workspace, contact, messages}) {
-  const say = (key, english, args) => localized(messages, key, english, args);
-  const wait = document.getElementById('arrival-wait');
-  const email = document.getElementById('arrival-wait-email');
-  const note = document.getElementById('arrival-wait-note');
-  const done = document.getElementById('arrival-wait-done');
-  const submit = wait?.querySelector('button');
-  if (!wait || !email || !note || !done || !submit) return;
-  email.placeholder = say('arrival-wait-placeholder', 'you@example.com');
-  email.setAttribute('aria-label', say('arrival-wait-email', 'Email'));
-  submit.textContent = say('arrival-wait-join', 'Join the wait list');
-  const privacy = () => {
-    note.classList.remove('door-problem');
-    note.removeAttribute('role');
-    const used = say('arrival-wait-privacy', 'We only use your email to send you an invite.');
-    if (!contact) {
-      note.textContent = used;
-      return;
-    }
-    // The contact is a link inside the localized sentence: split at it.
-    const marker = '\u0000';
-    const [before, after = ''] = say('arrival-wait-removal', 'To be taken off the list, write to { $contact }.', {contact: marker}).split(marker);
-    const page = contact.startsWith('https://');
-    const link = Object.assign(document.createElement('a'), {
-      textContent: page ? contact.slice('https://'.length) : contact,
-      href: page ? contact : `mailto:${contact}`, rel: 'noopener',
-    });
-    if (page) link.target = '_blank';
-    note.replaceChildren(`${used} ${before}`, link, after);
-  };
-  privacy();
-  email.addEventListener('input', () => {
-    if (email.getAttribute('aria-invalid') !== 'true') return;
-    email.removeAttribute('aria-invalid');
-    privacy();
-  });
-  wait.addEventListener('submit', async event => {
-    event.preventDefault();
-    if (submit.disabled) return;
-    if (!email.value.trim()) {
-      email.focus();
-      return;
-    }
-    submit.disabled = true;
-    try {
-      const kept = await leaveOnWaitList({workspace, email: email.value});
-      done.textContent = say('arrival-wait-done', 'You’re on the list. We’ll email you at { $email }.', {email: kept});
-      document.documentElement.dataset.waitListed = '';
-      privacy();
-    } catch (refusal) {
-      console.warn('wait list:', refusal?.message ?? refusal);
-      note.textContent = waitListFailure(refusal?.code, messages);
-      note.classList.add('door-problem');
-      note.setAttribute('role', 'alert');
-      email.setAttribute('aria-invalid', 'true');
-      email.focus();
-    } finally {
-      submit.disabled = false;
-    }
-  });
+/** The door's wait list (door-wait-list.mjs): an email field that leaves
+ * the address at the host's door, where it stands once it took it, this
+ * browser's way to take it off again, and where questions go (`contact`).
+ * A door that mails (`mail`) sends links back to this page: one that
+ * confirms the address (`?wait-list-confirm=`) or takes it off
+ * (`?wait-list-remove=`), done here and taken out of the address bar. */
+function offerWaitList({workspace, contact, mail, messages}) {
+  const form = document.getElementById('arrival-wait');
+  const elements = {form, submit: form?.querySelector('button')};
+  for (const [name, id] of [['email', 'arrival-wait-email'], ['done', 'arrival-wait-done'], ['againLine', 'arrival-wait-again-line'],
+    ['againPrompt', 'arrival-wait-again-prompt'], ['again', 'arrival-wait-again'], ['change', 'arrival-wait-change'],
+    ['leave', 'arrival-wait-leave'], ['note', 'arrival-wait-note'], ['contact', 'arrival-wait-contact']]) {
+    elements[name] = document.getElementById(id);
+  }
+  if (Object.values(elements).some(element => !element)) return;
+  const url = new URL(location.href);
+  const arrival = {confirm: url.searchParams.get('wait-list-confirm'), remove: url.searchParams.get('wait-list-remove')};
+  if (arrival.confirm || arrival.remove) {
+    url.searchParams.delete('wait-list-confirm');
+    url.searchParams.delete('wait-list-remove');
+    history.replaceState(history.state, '', url);
+  }
+  mountWaitList({elements, root: document.documentElement, workspace, contact, mail,
+    arrival: arrival.confirm || arrival.remove ? arrival : null, messages});
 }
 
 /**

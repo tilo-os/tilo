@@ -383,6 +383,7 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
             role: RoomRole::Editor,
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: Some("Ada".into()),
+            wait_list_entry: None,
         },
     )
     .await
