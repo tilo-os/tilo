@@ -321,7 +321,11 @@ fn build_item(
             crate::Segment::Item(id.clone()),
         ];
         child = child.with_children(crate::child::nested_children(
-            vocabulary, item, &parent, &path,
+            vocabulary,
+            item,
+            &parent,
+            &path,
+            Some(label),
         ));
     }
     child
