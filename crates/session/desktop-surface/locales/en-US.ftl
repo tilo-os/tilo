@@ -566,6 +566,29 @@ workspace-settings-tab-privacy-security = Privacy & Security
 workspace-settings-tab-privacy = Privacy
 workspace-settings-tab-apps-files = Apps & Files
 workspace-settings-tab-apps = Apps
+workspace-settings-tab-emoji = Emoji
+workspace-settings-emoji-count = { $count ->
+    [0] This workspace's own emoji
+    [one] 1 emoji of this workspace
+   *[other] { $count } emoji of this workspace
+}
+workspace-settings-emoji-help = Write :name: in any app of this workspace, or pick one from a reaction's emoji.
+workspace-settings-emoji-add = Add emoji
+workspace-settings-emoji-empty-title = This workspace has no emoji of its own yet
+workspace-settings-emoji-empty-detail = Choose Add emoji and pick a picture: its file name becomes the emoji's name.
+workspace-settings-emoji-empty-detail-viewer = Anyone who may edit this workspace can add them.
+workspace-settings-emoji-unavailable = This workspace's emoji are not available on this device.
+workspace-settings-emoji-editors-add = Only people who may edit this workspace can add emoji.
+workspace-settings-emoji-added-by = Added by { $name }
+workspace-settings-emoji-added-by-you = Added by you
+workspace-settings-emoji-remove = Remove :{ $name }:
+workspace-settings-emoji-not-chosen = No picture was chosen
+workspace-settings-emoji-not-added = { $file } was not added as an emoji
+workspace-settings-emoji-not-removed = :{ $name }: was not removed
+workspace-settings-emoji-tools-loading = The picture tools are still loading. Try again in a moment.
+workspace-settings-emoji-not-a-picture = Only PNG, JPEG and WebP pictures can become emoji.
+workspace-settings-emoji-too-detailed = The picture is too detailed to stay sharp at emoji size. Try a simpler one.
+workspace-settings-emoji-no-name = Its file name has no letters or digits to name an emoji by.
 workspace-settings-role-owner = Owner
 workspace-settings-role-moderator = Moderator
 workspace-settings-role-editor = Editor

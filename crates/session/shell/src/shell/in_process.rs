@@ -82,6 +82,22 @@ pub struct InProcessApps {
 pub type SessionBroker = Rc<dyn Fn(&str, &str) -> ui::collaboration::HostSessionConnector>;
 
 impl InProcessApps {
+    /// The records every app of `room` opens (the workspace's emoji), in
+    /// the store the apps mounted here share, changed as `author`: what a
+    /// host that is no app window, such as workspace settings, opens them
+    /// from, so it and the room's windows hold the one record.
+    pub(crate) fn workspace_records(
+        &self,
+        room: &str,
+        author: &str,
+    ) -> ui::record::workspace::WorkspaceRecords {
+        ui::record::workspace::WorkspaceRecords::in_room(
+            self.owners.clone(),
+            room.to_owned(),
+            UserId(author.to_owned()),
+        )
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn bind_messaging_network_prompts(
         &mut self,

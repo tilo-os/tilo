@@ -96,6 +96,8 @@ pub enum WorkspaceSettingsRoute {
     Members,
     PrivacySecurity,
     AppsFiles,
+    /// The workspace's own emoji.
+    Emoji,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

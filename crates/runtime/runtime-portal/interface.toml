@@ -164,6 +164,7 @@ capnp = [
 "VpnRoute::profile" = "#1 unit"
 "WorkspaceSettingsRoute" = "enum external"
 "WorkspaceSettingsRoute::apps_files" = "#3 unit"
+"WorkspaceSettingsRoute::emoji" = "#4 unit"
 "WorkspaceSettingsRoute::general" = "#0 unit"
 "WorkspaceSettingsRoute::members" = "#1 unit"
 "WorkspaceSettingsRoute::privacy_security" = "#2 unit"

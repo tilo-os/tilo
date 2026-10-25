@@ -177,6 +177,7 @@ impl Widget for ShellOverlayHost {
             apps.pump_messaging_records();
             apps.pump_feedback();
         }
+        self.settle_workspace_emoji();
         steps.mark("in-process-apps");
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network

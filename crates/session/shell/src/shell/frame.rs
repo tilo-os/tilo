@@ -6123,6 +6123,7 @@ impl FrameBuilder {
             ("members", WsTab::Members),
             ("permissions", WsTab::Permissions),
             ("apps", WsTab::Apps),
+            ("emoji", WsTab::Emoji),
         ] {
             put(
                 format!("ws_settings_tab[{key}]"),

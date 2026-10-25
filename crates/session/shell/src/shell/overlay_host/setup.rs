@@ -487,6 +487,7 @@ impl ShellOverlayHost {
             strip_pan_active: false,
             qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
+            ws_emoji: None,
             workspace_rename_submit_held: false,
             palette_was_visible: false,
             palette_transition: ui::motion::Presence::closed(),
