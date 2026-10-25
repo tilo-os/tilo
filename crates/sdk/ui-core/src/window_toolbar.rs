@@ -394,6 +394,12 @@ pub struct ToolbarLocation {
     /// the same. Every editor marks its unsaved document this one way.
     #[serde(default)]
     pub edited: bool,
+    /// The person may only look at what the location names: the bar says
+    /// "View only" after the label, in place of [`Self::edited`], and tells
+    /// assistive technology the same. Set by the window's framework from
+    /// what the person may do there ([`show_view_only`]), not by the app.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub view_only: bool,
 }
 
 /// One row of a location's picker.
@@ -1138,6 +1144,7 @@ thread_local! {
     static DECLARED: RefCell<Option<WindowToolbar>> = const { RefCell::new(None) };
     static NOTICE: RefCell<Option<ToolbarNotice>> = const { RefCell::new(None) };
     static REACTIONS: RefCell<Option<ToolbarReactions>> = const { RefCell::new(None) };
+    static VIEW_ONLY: Cell<bool> = const { Cell::new(false) };
     static REACTION_PRESSES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static REVISION: Cell<u64> = const { Cell::new(0) };
     static EVENTS: RefCell<VecDeque<ToolbarEvent>> = const { RefCell::new(VecDeque::new()) };
@@ -1313,15 +1320,24 @@ pub fn notice() -> Option<ToolbarNotice> {
 /// the reactions shown.
 #[must_use]
 pub fn shown() -> Option<WindowToolbar> {
-    with_window_owned(declared(), notice(), reactions())
+    with_window_owned(declared(), notice(), reactions(), view_only())
 }
 
-/// `toolbar` with `notice` up in it and `reactions` at its end.
+/// `toolbar` with `notice` up in it, `reactions` at its end and its
+/// location marked [`ToolbarLocation::view_only`] when `view_only`.
 pub(crate) fn with_window_owned(
-    toolbar: Option<WindowToolbar>,
+    mut toolbar: Option<WindowToolbar>,
     notice: Option<ToolbarNotice>,
     reactions: Option<ToolbarReactions>,
+    view_only: bool,
 ) -> Option<WindowToolbar> {
+    if view_only
+        && let Some(location) = toolbar
+            .as_mut()
+            .and_then(|toolbar| toolbar.location.as_mut())
+    {
+        location.view_only = true;
+    }
     if notice.is_none() && reactions.is_none() {
         return toolbar;
     }
@@ -1330,6 +1346,29 @@ pub(crate) fn with_window_owned(
         reactions,
         ..toolbar.unwrap_or_default()
     })
+}
+
+/// Say in the window's bar whether its person may only look at what it
+/// shows ([`ToolbarLocation::view_only`]). Cheap when nothing changed.
+pub fn show_view_only(view_only: bool) {
+    if let Some(window) = window() {
+        window.show_view_only(view_only);
+        return;
+    }
+    VIEW_ONLY.with(|current| {
+        if current.replace(view_only) != view_only {
+            REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
+        }
+    });
+}
+
+/// Whether the window's bar says its person may only look.
+#[must_use]
+pub fn view_only() -> bool {
+    if let Some(window) = window() {
+        return window.view_only();
+    }
+    VIEW_ONLY.with(Cell::get)
 }
 
 /// Show `reactions` at the end of the window's bar (`None`: none), as the

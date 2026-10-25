@@ -273,8 +273,8 @@ fn an_edited_document_says_so_after_its_label_and_to_assistive_technology() {
     };
     let mut tr = TextRenderer::new();
     let theme = Theme::dark();
-    let saved = LocationLabel::measure(&mut tr, &theme, "Harbour cut", false, 400.0);
-    let edited = LocationLabel::measure(&mut tr, &theme, "Harbour cut", true, 400.0);
+    let saved = LocationLabel::measure(&mut tr, &theme, "Harbour cut", None, 400.0);
+    let edited = LocationLabel::measure(&mut tr, &theme, "Harbour cut", Some(edited_word()), 400.0);
     assert!(saved.edited.is_none());
     let (word, after) = edited.edited.clone().expect("an edited document says so");
     assert_eq!(word, text("window-toolbar-edited"));
@@ -282,7 +282,7 @@ fn an_edited_document_says_so_after_its_label_and_to_assistive_technology() {
     assert!(edited.width > saved.width);
     assert_eq!(edited.line, saved.line, "the label itself is unchanged");
     // Too narrow for both: the label keeps the room.
-    let narrow = LocationLabel::measure(&mut tr, &theme, "Harbour cut", true, 30.0);
+    let narrow = LocationLabel::measure(&mut tr, &theme, "Harbour cut", Some(edited_word()), 30.0);
     assert!(narrow.edited.is_none());
 
     let node = |edited: bool| {
@@ -305,6 +305,38 @@ fn an_edited_document_says_so_after_its_label_and_to_assistive_technology() {
     };
     assert_eq!(node(true).description, Some(text("window-toolbar-edited")));
     assert_eq!(node(false).description, None);
+}
+
+/// A window whose person may only look says so after its location, in
+/// place of "Edited", which no edit of theirs can follow; the framework
+/// sets it on whatever location the app declared.
+#[test]
+fn a_view_only_window_says_so_after_its_label() {
+    let location = ToolbarLocation {
+        label: "Plan".into(),
+        edited: true,
+        ..Default::default()
+    };
+    let toolbar = WindowToolbar {
+        location: Some(location),
+        ..Default::default()
+    };
+    let shown = crate::window_toolbar::with_window_owned(Some(toolbar), None, None, true)
+        .and_then(|toolbar| toolbar.location)
+        .expect("the location stays");
+    assert!(shown.view_only);
+    assert_eq!(
+        trailing_word(&shown),
+        Some(text("window-toolbar-view-only"))
+    );
+    let editable = ToolbarLocation {
+        view_only: false,
+        ..shown.clone()
+    };
+    assert_eq!(
+        trailing_word(&editable),
+        Some(text("window-toolbar-edited"))
+    );
 }
 
 fn text(key: &str) -> String {

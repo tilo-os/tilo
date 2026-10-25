@@ -258,11 +258,14 @@ impl ShellOverlayHost {
                     _ => tab.app_title.clone().unwrap_or_else(|| tab.title.clone()),
                 };
                 // What the window says it shows (a note's title) names the
-                // share better than its tab, which may name the app.
-                let title = self
+                // share better than its tab, which may name the app; what it
+                // anchors (the note) is what the share shares.
+                let location = self
                     .window_toolbars
                     .toolbar(tab.id)
-                    .and_then(|toolbar| toolbar.location.as_ref())
+                    .and_then(|toolbar| toolbar.location.as_ref());
+                let item = location.and_then(|location| location.anchor.clone());
+                let title = location
                     .map(|location| location.label.clone())
                     .filter(|label| !label.trim().is_empty())
                     .unwrap_or_else(|| tab.title.clone());
@@ -273,6 +276,7 @@ impl ShellOverlayHost {
                     title,
                     record: record.clone(),
                     kind: kind.clone(),
+                    item,
                 })
             })
             .filter(|window| window.app != SHARING_APP)

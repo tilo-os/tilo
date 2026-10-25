@@ -61,6 +61,7 @@ window-toolbar-more = Weitere Aktionen
 window-toolbar-views = Ansicht
 window-toolbar-suggestions = Vorschläge
 window-toolbar-edited = Bearbeitet
+window-toolbar-view-only = Nur ansehen
 segmented-choose = Auswählen
 window-toolbar-show-sidebar = Seitenleiste einblenden
 window-toolbar-hide-sidebar = Seitenleiste ausblenden

@@ -39,6 +39,8 @@ fn notes_window() -> OpenWindow {
         title: "Plan".into(),
         record: "plan".into(),
         kind: "notes.workspace".into(),
+        // The note the window shows, not the whole notebook.
+        item: Some("notes.workspace/pages/p1".into()),
     }
 }
 
@@ -274,6 +276,12 @@ fn the_desktop_shares_and_stops_through_chat_and_hears_what_is_shared() {
         .expect("shared from the panel");
     assert_eq!(shared.share.as_ref().unwrap().access, ShareAccess::Edit);
     assert_eq!(shared.source_provider.as_deref(), Some(PLAN));
+    let reference = shared.reference.as_ref().unwrap();
+    assert_eq!(
+        (reference.id.as_str(), reference.kind.as_str()),
+        ("notes.workspace/pages/p1", "notes.workspace.pages"),
+        "the note the window shows is what is shared"
+    );
     assert!(app.surface_mut::<ChatApp>().live_shares.panel.is_none());
     app.settle();
     let told = ui::window_share::shared();

@@ -500,6 +500,8 @@ struct Desktop {
     session: std::sync::Arc<tilo_desktop_surface::session::DesktopSession>,
     /// The desktop's end of that session.
     openings: tilo_desktop_surface::session::Openings,
+    /// What the session asked of the page for its windows, still open.
+    asks: session_asks::Asks,
     /// What this person may do here, which decides what the session opens
     /// as the workspace broker decides it on a native desktop.
     permissions: Rc<RefCell<PermissionContext>>,
@@ -522,6 +524,7 @@ impl Desktop {
     /// Open the apps the windows asked for since the last frame. Whether
     /// any were asked.
     fn open_requested_apps(&self) -> bool {
+        self.ask_room_of_nodes();
         let permissions = self.permissions.borrow();
         self.openings.open(&self.handle, &self.generation, |app| {
             crate::desktop::may_open(&permissions, app)
@@ -1412,6 +1415,7 @@ fn present_desktop(
             people,
             session,
             openings,
+            asks: session_asks::Asks::new(config.peer),
             permissions: opening_permissions,
             room: config.room.clone(),
         }),
@@ -2323,6 +2327,8 @@ impl Mount {
             self.held = "an empty canvas";
             return Ok(());
         }
+        // A window the last frame opened shows what its open named.
+        self.reveal_opened();
         let Some(gpu) = self.gpu.as_mut() else {
             self.held = "no surface";
             return Ok(());
@@ -3262,6 +3268,7 @@ mod desktop_exports;
 mod fonts;
 mod live_layout;
 mod live_signals;
+mod session_asks;
 use crate::first_frame::{self, GpuStep};
 pub(crate) mod pointers;
 mod retained;

@@ -69,13 +69,17 @@ impl DesktopSurface {
                     };
                     // What the window says it shows (a note's title) names
                     // the share better than its tab, which may name the app.
-                    let title = self
+                    let location = self
                         .window_slots
                         .toolbar(tab.id)
-                        .and_then(|toolbar| toolbar.location.as_ref())
+                        .and_then(|toolbar| toolbar.location.as_ref());
+                    let title = location
                         .map(|location| location.label.clone())
                         .filter(|label| !label.trim().is_empty())
                         .unwrap_or_else(|| tab.title.clone());
+                    // Where in the record the window is: the note, not the
+                    // notebook.
+                    let item = location.and_then(|location| location.anchor.clone());
                     Some(OpenWindow {
                         tab: tab.id,
                         app: app.as_str().to_owned(),
@@ -83,6 +87,7 @@ impl DesktopSurface {
                         title,
                         record,
                         kind,
+                        item,
                     })
                 })
                 .filter(|window| window.app != window_share::SHARING_APP)

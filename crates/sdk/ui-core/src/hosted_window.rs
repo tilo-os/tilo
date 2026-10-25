@@ -51,6 +51,8 @@ struct State {
     reactions: Option<crate::window_toolbar::ToolbarReactions>,
     /// The emoji pressed among them, not yet taken by their shower.
     reaction_presses: Vec<String>,
+    /// Whether its person may only look ([`crate::window_toolbar::show_view_only`]).
+    view_only: bool,
     /// Bumped by every declaration that changed the slots.
     revision: u64,
     events: VecDeque<ToolbarEvent>,
@@ -179,6 +181,26 @@ impl HostedWindow {
         Self::wake(wake);
     }
 
+    /// Say whether the window's person may only look at what it shows.
+    pub fn show_view_only(&self, view_only: bool) {
+        let wake = {
+            let mut state = self.state();
+            if state.view_only == view_only {
+                return;
+            }
+            state.view_only = view_only;
+            state.revision = state.revision.wrapping_add(1);
+            state.wake.clone()
+        };
+        Self::wake(wake);
+    }
+
+    /// Whether the window's person may only look.
+    #[must_use]
+    pub fn view_only(&self) -> bool {
+        self.state().view_only
+    }
+
     /// The reactions shown.
     #[must_use]
     pub fn reactions(&self) -> Option<crate::window_toolbar::ToolbarReactions> {
@@ -245,6 +267,7 @@ impl HostedWindow {
             state.toolbar.clone(),
             state.notice.clone(),
             state.reactions.clone(),
+            state.view_only,
         )
     }
 
