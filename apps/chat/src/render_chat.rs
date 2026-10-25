@@ -1446,7 +1446,7 @@ impl ChatApp {
         let gap = f64::from(theme.tokens.spacing.s2);
         let mut x = text_x;
         for reaction in &m.reactions {
-            let mine = reaction.reacted_by(&self.me.id);
+            let mine = reaction.includes(&self.me.id);
             let label = format!("{} {}", reaction.emoji, reaction.count());
             let chip_w = ChipFace::intrinsic_width(&label, ChipLead::None, false, tr, theme);
             let chip = Rect::new(x, y, x + chip_w, y + chip_h);
@@ -2451,7 +2451,7 @@ impl ChatApp {
                 let label = format!("{} {}", reaction.emoji, reaction.count());
                 let chip_w = ChipFace::intrinsic_width(&label, ChipLead::None, false, tr, theme);
                 ChipFace::new(Rect::new(chip_x, yy, chip_x + chip_w, yy + chip_h), &label)
-                    .selected(reaction.reacted_by(&self.me.id))
+                    .selected(reaction.includes(&self.me.id))
                     .paint(scene, tf, tr, theme);
                 chip_x += chip_w + f64::from(sp.s2);
             }

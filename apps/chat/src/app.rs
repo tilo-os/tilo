@@ -1523,29 +1523,30 @@ impl ChatApp {
         self.canonical_dirty = true;
     }
 
-    /// Build the reaction action a click on `msg`/`emoji` should dispatch,
-    /// deciding add-vs-remove from the currently-loaded state at authoring time.
-    /// A toggle is a presentation decision; the resulting action is a pure,
-    /// idempotent add or remove — the single source of truth both the reaction
-    /// chip and the emoji picker resolve to.
+    /// Build the reaction a click on `msg`/`emoji` should dispatch, deciding
+    /// add-vs-remove from the currently-loaded state at authoring time. A
+    /// toggle is a presentation decision; the result is the framework's
+    /// idempotent `react` or `unreact` field edit of the message — the single
+    /// source of truth both the reaction pill and the emoji picker resolve to.
     pub(crate) fn reaction_toggle_action(
         &self,
         msg: &str,
         emoji: &str,
-    ) -> ui::tilo_resource::Invoke<crate::parts::ChatPart> {
-        use crate::messages::chat_part;
+    ) -> ui::tilo_resource::Edit<crate::parts::ChatPart> {
         use crate::parts::ChatPart;
         let reacting = self.message(msg).is_some_and(|m| {
             m.reactions
                 .iter()
-                .any(|r| r.emoji == emoji && r.reacted_by(&self.me.id))
+                .any(|r| r.emoji == emoji && r.includes(&self.me.id))
         });
-        let message = ui::tilo_resource::Id::from_raw(msg);
-        let emoji = emoji.to_owned();
+        let reactions = ChatPart::paths()
+            .messages
+            .item(&ui::tilo_resource::Id::from_raw(msg))
+            .reactions;
         if reacting {
-            ChatPart::UNREACT.with(chat_part::Unreact { message, emoji })
+            reactions.unreact(emoji)
         } else {
-            ChatPart::REACT.with(chat_part::React { message, emoji })
+            reactions.react(emoji)
         }
     }
 
@@ -3064,7 +3065,7 @@ impl ChatApp {
             for message in messages.into_iter().flatten() {
                 ids.insert(message.author.clone());
                 for reaction in &message.reactions {
-                    ids.extend(reaction.users.iter().cloned());
+                    ids.extend(reaction.reactors.iter().map(|reactor| reactor.by.clone()));
                 }
                 ids.extend(message.mentions.iter().map(|mention| mention.user.clone()));
             }
@@ -3770,7 +3771,7 @@ impl ChatApp {
                                     .iter()
                                     .find(|reaction| reaction.emoji == *emoji)
                             })
-                            .is_some_and(|reaction| reaction.reacted_by(&self.me.id));
+                            .is_some_and(|reaction| reaction.includes(&self.me.id));
                         (
                             crate::i18n::t_args(
                                 if mine {
