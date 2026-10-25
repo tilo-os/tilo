@@ -4456,11 +4456,20 @@ fn native_app_open_access(
         // A member who just joined holds the room's governance before any of
         // its app data: an app the governor lets write in the room opens
         // before this device has its document.
-        if view.peer().document(package, "").is_some() {
+        //
+        // The authorship decides, not whether this device happens to hold a
+        // copy of the app's document. A member whose device already has one
+        // opens the app exactly as a member whose device is still catching up
+        // does, so every launch path gives the same answer for the same
+        // member, room and app.
+        if !administrator && !application_writes {
+            if view.peer().document(package, "").is_none() {
+                return Err(
+                    "creating an application requires governor-authorized authorship".into(),
+                );
+            }
             view.peer()
                 .check_document_read(certificate.device_public_key, package, "", now)?;
-        } else if !administrator && !application_writes {
-            return Err("creating an application requires governor-authorized authorship".into());
         }
         if person_writes && application_writes {
             return Ok(NativeAppOpenAccess::Author);
