@@ -222,6 +222,39 @@ impl PageRequest {
         }
     }
 
+    /// What the request does, in the words an answer that a dialog it opened
+    /// cut short repeats: `Clicked element d1e5`, `Submitted form d1e7`.
+    pub fn described(&self) -> String {
+        match self {
+            Self::Outline => "Read the page".to_string(),
+            Self::Click { element } => format!("Clicked element {element}"),
+            Self::Fill { element, .. } => format!("Filled element {element}"),
+            Self::Select { element, values } => {
+                format!("Chose {} on element {element}", values.join(", "))
+            }
+            Self::FillFiles { element, paths } => {
+                format!("Chose {} file(s) for element {element}", paths.len())
+            }
+            Self::Press { element: None, key } => format!("Pressed {}", key.chord()),
+            Self::Press {
+                element: Some(element),
+                key,
+            } => format!("Pressed {} on element {element}", key.chord()),
+            Self::Submit { element, .. } => format!("Submitted form {element}"),
+            Self::Changes => "Read what changed".to_string(),
+            Self::At { x, y } => format!("Read the element at {x}, {y}"),
+            Self::Settle {
+                quiet_ms,
+                timeout_ms,
+            } => format!("Waited for the page to settle ({quiet_ms} ms, up to {timeout_ms} ms)"),
+            Self::Console { .. } => "Read the console".to_string(),
+            Self::Network { .. } => "Read the network".to_string(),
+            Self::Reader { enabled: true } => "Showed the article alone".to_string(),
+            Self::Reader { enabled: false } => "Put the page back as it was".to_string(),
+            Self::Pointer { steps, .. } => format!("Moved the pointer ({} steps)", steps.len()),
+        }
+    }
+
     pub fn element(&self) -> Option<&str> {
         match self {
             Self::Outline
@@ -701,6 +734,53 @@ pub(crate) fn decode_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_says_what_it_did_in_the_words_its_answer_repeats() {
+        let element = || "d1e5".to_string();
+        let described = |request: PageRequest| request.described();
+        assert_eq!(
+            described(PageRequest::Click { element: element() }),
+            "Clicked element d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Fill {
+                element: element(),
+                text: "Maria".into(),
+                secret: false,
+            }),
+            "Filled element d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Submit {
+                element: element(),
+                cross_origin: false,
+            }),
+            "Submitted form d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Select {
+                element: element(),
+                values: vec!["a".into(), "b".into()],
+            }),
+            "Chose a, b on element d1e5"
+        );
+        let enter = PageKey::parse("Enter").unwrap();
+        assert_eq!(
+            described(PageRequest::Press {
+                element: None,
+                key: enter.clone(),
+            }),
+            "Pressed Enter"
+        );
+        assert_eq!(
+            described(PageRequest::Press {
+                element: Some(element()),
+                key: enter,
+            }),
+            "Pressed Enter on element d1e5"
+        );
+    }
 
     #[test]
     fn requests_are_bounded_and_round_trip_to_the_wire() {

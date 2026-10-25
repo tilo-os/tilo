@@ -507,12 +507,32 @@ fn a_question_the_page_asks_is_answered_from_its_dialog() {
         .unwrap();
     ask(9, PageDialogKind::Prompt);
     let (tree, node) = tests::layout_keeping_tree(&mut widget, 1000.0, 700.0, &theme);
-    let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+    // The click happened; the page only asks before it goes on. So the action
+    // succeeds, and its answer carries the question for the agent to answer.
+    let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
         widget.poll_invocation(click)
     else {
-        panic!("the action the question stopped answers at once");
+        panic!("the action the question stopped answers at once, as what it did");
     };
-    assert_eq!(error.code, "browser.page.question");
+    let value = output
+        .value
+        .expect("the answer carries the question it opened");
+    assert!(
+        value["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("Clicked element d1e5")),
+        "it says what it did: {value}"
+    );
+    assert_eq!(value["dialog"]["kind"], "prompt");
+    assert_eq!(value["dialog"]["message"], "Name the list");
+    assert_eq!(value["dialog"]["default_text"], "Groceries");
+    assert_eq!(value["provenance"], "web-content");
+    assert!(
+        value["outline"]
+            .as_str()
+            .is_some_and(|line| line.starts_with("- dialog prompt \"Name the list\"")),
+        "the outline names the question: {value}"
+    );
     assert!(
         widget
             .published()
@@ -639,6 +659,23 @@ fn a_page_action_while_the_page_waits_on_its_question_answers_at_once() {
     assert!(
         !error.retryable,
         "trying again changes nothing until it is answered"
+    );
+    assert!(
+        error
+            .message
+            .contains("waiting on its confirm dialog \"Empty the basket?\""),
+        "the refusal quotes the question: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("answer-page-dialog"),
+        "and says how to answer it: {}",
+        error.message
+    );
+    assert_eq!(
+        error.details.as_ref().map(|details| &details["kind"]),
+        Some(&serde_json::json!("confirm")),
+        "with the question as a value"
     );
     assert_eq!(sent(), 0, "nothing is sent to a page that runs nothing");
 
@@ -814,4 +851,61 @@ fn a_history_row_forgets_only_its_own_page() {
             "{kept} keeps its row"
         );
     }
+}
+
+/// Answering the page's question says what answering did and what to do
+/// next, so an agent that never read the question still knows the page goes
+/// on: the answer is the action's output, not a bare acknowledgement.
+#[test]
+fn answering_a_pages_question_says_what_happens_next() {
+    use ui::webview::{PageDialog, PageDialogKind};
+    let engine = std::sync::Arc::new(Asking(std::sync::Mutex::new(Vec::new()), TestEngine::new()));
+    let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+    let theme = Theme::dark();
+    tests::layout_keeping_tree(&mut widget, 1000.0, 700.0, &theme);
+    let ask = |id, kind| {
+        engine
+            .0
+            .lock()
+            .unwrap()
+            .push(WebViewEvent::PageDialog(PageDialog {
+                id,
+                kind,
+                origin: "https://forms.example".into(),
+                message: "Security code".into(),
+                default_text: "0000".into(),
+            }));
+    };
+    let answer =
+        |dialog: u32, accept: bool, text: Option<&str>| BrowserOperation::AnswerPageDialog {
+            dialog,
+            accept,
+            text: text.map(str::to_string),
+        };
+
+    ask(21, PageDialogKind::Prompt);
+    tests::layout_keeping_tree(&mut widget, 1000.0, 700.0, &theme);
+    let done = widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            answer(21, true, Some("7391")),
+        )
+        .unwrap();
+    let ui::framework::Effected::Done(output) = done else {
+        panic!("answering the question answers at once");
+    };
+    let message = output
+        .value
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        message.contains("Answered the page's prompt dialog: OK with \"7391\""),
+        "it says what answering took: {message}"
+    );
+    assert!(
+        message.contains("read-page"),
+        "and what to do next: {message}"
+    );
 }
