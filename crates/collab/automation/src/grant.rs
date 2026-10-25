@@ -256,10 +256,6 @@ pub struct Permission {
     pub kind: ActionKind,
     /// How the catalogue names it: "List notes in Inbox".
     pub label: String,
-    /// For a field edit whose program names the field it changes, where
-    /// below the resource it acts ([`edit_reach`]): the rule reaches field
-    /// edits there and nowhere else in the resource.
-    pub at: Option<TreePath>,
 }
 
 impl Permission {
@@ -268,17 +264,23 @@ impl Permission {
     /// weaker ones. It reaches the action anywhere in the resource: a record
     /// holding the kind's resources as items (a chat's workspace) publishes
     /// it on the item, and every member decides the change there.
+    ///
+    /// A field edit is granted anywhere in the resource too, even where its
+    /// program names the field: a door publishes and admits a field edit at
+    /// the resource, before it reads the edit's path, so a rule reaching
+    /// only one field would never be offered. What the edit may change is
+    /// the record's to say: its read-only fields take no field edit.
     #[must_use]
     pub fn rule(&self) -> Rule {
         let kinds = ActionKind::ALL
             .into_iter()
             .filter(|kind| *kind <= self.kind)
             .fold(KindSet::NONE, KindSet::with);
-        let node = match &self.at {
-            Some(at) => self.resources().joined(at),
-            None => self.reached(),
-        };
-        Rule::new(node.action(self.action.clone()), kinds, Answer::Allow)
+        Rule::new(
+            self.reached().action(self.action.clone()),
+            kinds,
+            Answer::Allow,
+        )
     }
 
     /// The resources it reaches, in any room.
@@ -314,10 +316,7 @@ fn collect(steps: &[Step], catalog: &ActionCatalog, out: &mut Vec<Permission>) {
     for step in steps {
         match &step.kind {
             StepKind::Invoke {
-                action,
-                resource,
-                args,
-                ..
+                action, resource, ..
             } => {
                 let target = match resource {
                     Selector::Fixed(id)
@@ -327,16 +326,12 @@ fn collect(steps: &[Step], catalog: &ActionCatalog, out: &mut Vec<Permission>) {
                     Selector::FirstOfKind(kind) => ResourceTarget::Kind(kind),
                     Selector::FromBinding(_) => ResourceTarget::Any,
                 };
-                let at = (action.action == FIELD_EDIT)
-                    .then(|| args.get(EDIT_PARAM).and_then(edit_reach))
-                    .flatten();
-                add(catalog, action, target, at, out);
+                add(catalog, action, target, out);
             }
             StepKind::Ai { transform, .. } => add(
                 catalog,
                 &transform.key(),
                 ResourceTarget::Kind(AGENT_TRANSFORM_KIND),
-                None,
                 out,
             ),
             StepKind::If {
@@ -355,7 +350,6 @@ fn add(
     catalog: &ActionCatalog,
     key: &ActionKey,
     target: ResourceTarget<'_>,
-    at: Option<TreePath>,
     out: &mut Vec<Permission>,
 ) {
     let (app_id, action) = (key.app.as_str(), key.action.as_str());
@@ -391,10 +385,7 @@ fn add(
         }
     };
     if let Some(existing) = out.iter_mut().find(|existing| {
-        existing.app_id == app_id
-            && existing.reach == reach
-            && existing.action == action
-            && existing.at == at
+        existing.app_id == app_id && existing.reach == reach && existing.action == action
     }) {
         existing.kind = existing.kind.max(kind);
         return;
@@ -405,7 +396,6 @@ fn add(
         action: action.to_owned(),
         kind,
         label,
-        at,
     });
 }
 
@@ -747,7 +737,6 @@ mod tests {
             action: action.into(),
             kind,
             label: String::new(),
-            at: None,
         };
         let settles = settle_rules(&[
             permission("send", ActionKind::Outside),
@@ -795,7 +784,7 @@ mod tests {
     /// A field edit whose program names the field it changes is granted
     /// that field of any item, and decided where the room decides it.
     #[test]
-    fn a_field_edit_naming_its_field_is_granted_that_field_only() {
+    fn a_field_edit_is_granted_where_the_doors_decide_it() {
         use std::collections::BTreeMap;
 
         let literal = Binding::Literal;
@@ -832,9 +821,7 @@ mod tests {
                 .iter()
                 .map(|rule| rule.node.to_string())
                 .collect::<Vec<_>>(),
-            [
-                "room:*/app:so.tilo.notes/kind:notes.chat/resource:*/item:*/field:reactions/action:field-edit"
-            ]
+            ["room:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"]
         );
 
         // The room decides a run's edit at its concrete path.
@@ -856,19 +843,7 @@ mod tests {
             ),
             Answer::Allow
         );
-        assert_eq!(
-            decided(serde_json::json!([{"field": "messages"}, {"item": "m1"}, {"field": "text"}])),
-            Answer::Deny,
-            "another field of the item is not granted"
-        );
-        assert_eq!(
-            decided(serde_json::json!([{"field": "messages"}])),
-            Answer::Deny,
-            "nor is inserting or removing whole messages"
-        );
-
-        // An edit bound whole when it runs names no field: the grant reaches
-        // every field edit of the resource.
+        // An edit bound whole when it runs is granted the same.
         let whole = rules(&least_privilege(
             &[step(Binding::Var("item/edit".into()))],
             &catalog,
