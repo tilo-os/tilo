@@ -378,14 +378,14 @@ impl<'a> AttachmentFace<'a> {
         f64::from(height)
     }
 
-    /// Paint the badge in `preview`'s top-trailing corner that says the preview
-    /// opens — a chip with the open glyph and, while the pointer is on the
-    /// picture, its word.
+    /// Paint the badge in `preview`'s top-trailing corner that says it opens —
+    /// a chip with the open glyph and, while the pointer is on the card, its
+    /// word.
     ///
     /// Nothing is painted when there is nothing to open: an affordance that
     /// leads nowhere is worse than none.
     pub fn paint_open_badge(&self, paint: &mut PaintCtx<'_>, preview: Rect, hovered: bool) {
-        if self.summary.availability != Availability::Ready || !self.summary.kind.previews() {
+        if self.summary.availability != Availability::Ready {
             return;
         }
         let PaintCtx {
