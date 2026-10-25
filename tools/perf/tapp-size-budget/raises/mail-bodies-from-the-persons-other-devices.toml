@@ -1,0 +1,6 @@
+reason = "Mail takes an old message from the person's other device when its own server cannot be reached (90d40ab898, 64d939328f): a folder sync keeps the exact bytes the server sent, a person record (mail.copies) names each kept message by hash and server place, and a device without a message asks the person's other devices for it, newest first, refusing bytes that do not match their hash. The new record, its schema and the fetch path add 62,464 bytes on x86_64 and 35,840 on aarch64 over the budget, measured by t's app-sizes-x86_64 at 5f8e7a062b and app-sizes-aarch64 at 64f8670b0a; with this raise both pass in t run rc2e69bcde4. Each amount is that overage plus the budget's 1 % headroom, rounded up to 64 KiB."
+run = "rc2e69bcde4"
+
+[apps."so.tilo.mail"]
+x86_64 = 131072
+aarch64 = 65536
