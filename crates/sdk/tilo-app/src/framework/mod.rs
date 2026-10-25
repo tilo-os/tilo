@@ -336,6 +336,7 @@ mod people;
 mod person;
 mod preview;
 mod query;
+mod reactions;
 mod reactive;
 mod record;
 pub mod reference;
