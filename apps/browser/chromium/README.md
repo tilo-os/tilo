@@ -604,8 +604,9 @@ content scripts (with `sender.tab`) work without help.
   button over it (`activeTab`), which also lets it script the page until the
   page navigates. A click gives an extension without `activeTab` nothing.
   The Browser sends an extension's host permissions apart from the sites its
-  content scripts run on (`extension_access`, `hosts` and `scriptable`), and
-  no tab API counts the second: as in Chrome, content scripts on every page
+  content scripts run on (`extension_access`, `hosts` and `scriptable`, and
+  of those, where they run in frames too, `framed`), and
+  no tab API counts the content scripts' sites: as in Chrome, content scripts on every page
   let an extension see no tab's address, script no page and capture none.
 - `tabs.detectLanguage` answers the language the page declares, and
   `tabs.getZoom` the page's zoom. `tabs.onZoomChange` fires when a tab's
@@ -681,8 +682,10 @@ content scripts (with `sender.tab`) work without help.
   replied, and no receiver when none listens. It asks no frame its id, and
   of the frames other sites' processes render it attaches only to those the
   extension may have a world in: its own page, a page its content scripts
-  match (`scriptable`), or one the host met its world in before; another
-  site's frame without one costs no session. Chromium knows a frame and
+  match where they run in frames too (`framed`, their `all_frames`), or one
+  the host met its world in before; another site's frame without one, as
+  every frame is to scripts that run in the main frame alone, costs no
+  session. Chromium knows a frame and
   its document by ids the inspector does not show, so the host asks the
   extension's world
   in the frame (or its page there) over a port only the tab script answers

@@ -310,14 +310,15 @@ class ExtensionTabs {
   // What the extension may do, from its manifest as installed: its API
   // permissions, its host permissions (`hosts`) and, apart from those, where
   // its declared content scripts run (`scriptable`), which as in Chrome
-  // gives no access to the tab APIs.
+  // gives no access to the tab APIs, and where they run in a page's frames
+  // too (`framed`: `all_frames`).
   // `token` is what its worker shows the bridge: the Browser wrote it with
   // the tab APIs into the extension's worker, which alone can read it.
   // `commands` are its manifest's (`commands`), keyboard shortcuts.
   void SetAccess(const std::string& id, std::set<std::string> permissions, std::vector<std::string> hosts, std::vector<std::string> scriptable,
-                 const std::string& token, CefRefPtr<CefDictionaryValue> commands) {
+                 std::vector<std::string> framed, const std::string& token, CefRefPtr<CefDictionaryValue> commands) {
     permissions_.SetRequired(id, permissions, hosts);
-    access_[id] = Access{std::move(permissions), std::move(hosts), std::move(scriptable)};
+    access_[id] = Access{std::move(permissions), std::move(hosts), std::move(scriptable), std::move(framed)};
     commands_.Set(id, CommandsOf(commands));
     TellShortcuts();
     // The items its button's menu kept from an earlier run.
@@ -1232,7 +1233,7 @@ class ExtensionTabs {
 
   // `scriptable` is kept apart from `hosts` so that no tab API counts it:
   // Chromium runs the declared content scripts itself.
-  struct Access { std::set<std::string> permissions; std::vector<std::string> hosts; std::vector<std::string> scriptable; };
+  struct Access { std::set<std::string> permissions; std::vector<std::string> hosts; std::vector<std::string> scriptable; std::vector<std::string> framed; };
   // A manifest's `commands`, each with the key it suggests on this
   // platform: its own (`mac`, `linux`), else its `default`, or one for all.
   static std::vector<ExtensionCommand> CommandsOf(CefRefPtr<CefDictionaryValue> commands) {
@@ -2815,14 +2816,15 @@ class ExtensionTabs {
   }
   // Whether the extension may have a world in the frame another site's
   // process renders as `target`, showing `url`: its own page, a page its
-  // declared content scripts match (`scriptable`), or a frame the host met
-  // a content script's world in before.
+  // declared content scripts match where they run in frames too (`framed`:
+  // one that runs in the main frame alone has no world in any other), or a
+  // frame the host met a content script's world in before.
   bool MayHaveWorld(const std::string& extension, int key, const std::string& target, const std::string& url) const {
     if (url.rfind("chrome-extension://" + extension + "/", 0) == 0) return true;
     if (auto met = frame_ids_.find({key, target}); met != frame_ids_.end() && met->second.world) return true;
     auto access = access_.find(extension);
     if (access == access_.end()) return false;
-    return std::any_of(access->second.scriptable.begin(), access->second.scriptable.end(), [&](const std::string& pattern) { return MatchPattern(pattern, url); });
+    return std::any_of(access->second.framed.begin(), access->second.framed.end(), [&](const std::string& pattern) { return MatchPattern(pattern, url); });
   }
   // The frames under `local` that other sites' processes render, each a
   // target on the pipe: attached, with what runs in it, after `local`.
@@ -2848,8 +2850,9 @@ class ExtensionTabs {
       }
       if (query.broadcast) {
         // Only the frames the extension may have a world in: its own page,
-        // a page its content scripts match, or a frame the host met its
-        // world in before. Another site's frame with none costs no session.
+        // a page its content scripts match in frames, or a frame the host
+        // met its world in before. Another site's frame with none costs no
+        // session.
         std::vector<std::string> reached;
         for (const auto& target : targets)
           if (MayHaveWorld(extension, key, target, placed[target].second)) reached.push_back(target);
