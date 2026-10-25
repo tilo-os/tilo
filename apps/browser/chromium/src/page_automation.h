@@ -107,7 +107,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // A held file chooser waits this long for `fill_files`, then is cancelled so
   // the page is never left waiting on input that will not come.
   static constexpr int64_t kFileDialogWaitMs=60000;
-  enum class Stage { FrameTree, World, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileNode, FileSet, Evaluate, Fence };
+  enum class Stage { FrameTree, World, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileFrameTree, FileWorld, FileTarget, FileNode, FileSet, Evaluate, Fence };
   struct TextFrame { std::string id,loader;int world=0,document=0;bool same_origin=true; };
   struct Pending {
     int request;uint64_t token;uint64_t navigations;bool retried;
@@ -142,6 +142,17 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // No universal access, origin bypass or debugger pause is requested.
     Call(Stage::TextWorld,"Page.createIsolatedWorld",params);
   }
+  // Give the next frame its own isolated context, where the same outline
+  // script lives and resolves the refs of that frame's document.
+  void ProbeFileFrame() {
+    while(file_frame_<file_frames_.size() && file_frames_[file_frame_].world==0) {
+      auto params=CefDictionaryValue::Create();
+      params->SetString("frameId",file_frames_[file_frame_].id);params->SetString("worldName","tilo-page-actions");
+      Call(Stage::FileWorld,"Page.createIsolatedWorld",params);return;
+    }
+    if(file_frame_>=file_frames_.size()) { Fail("stale_element","The page has no element with that ref; read the page again");return; }
+    world_=file_frames_[file_frame_].world;Evaluate();
+  }
   void Begin() {
     // A press with no element arms a key: nothing on the page is read first.
     if(Action()=="press" && !pending_->command->HasKey("element")) { Act(nullptr);return; }
@@ -150,6 +161,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // completion path, so its input and change events are the picker's, and
     // no DOM node has to be reached while that dialog is open.
     if(Action()=="fill_files" && file_dialog_) { AnswerFileDialog(pending_->command->GetList("paths"));return; }
+    // Choosing files needs the ref resolved where the page wrote it, so an
+    // upload to a cross-origin frame's field reaches that frame's document,
+    // which the outline already names by its own ref.
+    if(Action()=="fill_files") { Call(Stage::FileFrameTree,"Page.getFrameTree",nullptr);return; }
     Call(Stage::FrameTree,"Page.getFrameTree",nullptr);
   }
   // Answer the held chooser with these paths. The page then runs exactly what
@@ -213,6 +228,16 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         stage_==Stage::FileTarget || stage_==Stage::FileNode || stage_==Stage::FileSet) {
       NativeResult(success,result);return;
     }
+    if(stage_==Stage::FileFrameTree) {
+      // Every frame in the tree, in outline order: a ref names an element of
+      // exactly one of them, and the others refuse it as unknown.
+      auto tree=success && result?result->GetDictionary("frameTree"):nullptr;
+      std::vector<TextFrame> frames;
+      if(!CollectTextFrames(tree,frames)) { Fail("unavailable","The frame tree cannot be bounded and observed");return; }
+      file_frames_=std::move(frames);
+      file_frame_=0;
+      ProbeFileFrame();return;
+    }
     if(stage_==Stage::TextFailureFrameTree) {
       std::vector<TextFrame> frames;
       auto tree=success && result?result->GetDictionary("frameTree"):nullptr;
@@ -265,6 +290,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       auto remote=success && result?result->GetDictionary("result"):nullptr;
       if(!remote || remote->GetType("value")!=VTYPE_BOOL || !remote->GetBool("value")) { ProbeTextFrame();return; }
       Evaluate();
+    } else if(stage_==Stage::FileWorld) {
+      if(!success || !result || result->GetType("executionContextId")!=VTYPE_INT) {
+        Fail("unavailable","The page refused a script context");return;
+      }
+      file_frames_[file_frame_].world=result->GetInt("executionContextId");
+      ProbeFileFrame();
     } else if(stage_==Stage::World) {
       if(!success || !result || result->GetType("executionContextId")!=VTYPE_INT) {
         Fail("unavailable","The page refused a script context");return;
@@ -514,7 +545,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   std::optional<Pending> pending_;Stage stage_=Stage::FrameTree;int call_=0;
   std::vector<TextFrame> text_candidates_;TextFrame text_frame_;std::optional<TextFrame> text_owner_;std::string text_lease_;
   bool native_attempted_=false;std::string native_object_;
-  std::string file_object_;int file_node_=0;
+  std::string file_object_;int file_node_=0;size_t file_frame_=0;std::vector<TextFrame> file_frames_;
   CefRefPtr<CefFileDialogCallback> file_dialog_;int file_dialog_request_=0;
   int world_=0,document_=0;std::string loader_;uint64_t token_=0,navigations_=0;
   IMPLEMENT_REFCOUNTING(PageAutomation);
