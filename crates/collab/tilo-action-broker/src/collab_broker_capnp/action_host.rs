@@ -24,10 +24,48 @@ use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
-    BrokerActor, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES, InvocationInputs, LaunchScope,
-    PublishedAction, PublishedSurface, app_node, confirmation_satisfied,
+    AdmittedJoinIdentity, BrokerActor, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES,
+    InvocationInputs, LaunchScope, PublishedAction, PublishedSurface, app_node,
+    confirmation_satisfied,
 };
 use crate::automation;
+use crate::route::CrdtRoute;
+
+/// Whether the connection admitted as `current` on `route` may reach
+/// `target_app`'s published actions through one of the legacy invoke doors,
+/// whose target peer or binding the caller names itself, and be decided as
+/// the person who admitted the connection.
+///
+/// It applies the same ceiling `remote_action` does. An agent channel is its
+/// own principal and is decided for itself. Every other connection is an
+/// application, decided for the person who opened it, and reaches another
+/// application's action only when that application declared the reach in its
+/// manifest (`[actions] invoke`) — the same access `app_door` reads. Without
+/// it the call belongs on `remoteAction`, where the application door also
+/// applies the workspace's grant to that application and the person's
+/// consent.
+///
+/// A connection that named no application on its route is the shell's own
+/// device connection, not an application: it is admitted by the workspace and
+/// reaches what the person using that device reaches.
+pub(crate) fn legacy_door_may_act_as_person(
+    current: &AdmittedJoinIdentity,
+    route: &CrdtRoute,
+    target_app: &str,
+    invoke_access: bool,
+) -> bool {
+    current.agent_id.is_some()
+        || route.app_id.is_empty()
+        || route.app_id == target_app
+        || invoke_access
+}
+
+/// Refusal of a legacy invoke door aimed at another application's action.
+/// Worded so the door's `refusal()` maps it to `NotPermitted`, the answer the
+/// same request gets through `remoteAction`.
+pub(crate) const LEGACY_DOOR_FOREIGN_APP: &str =
+    "another application's action is not allowed through this door";
+
 use crate::services::LaunchPlace;
 use tilo_automation::SHORTCUTS_APP_ID;
 
