@@ -92,6 +92,17 @@ pub struct PersistentArgs {
         value_parser = crate::room_strips::strip_name
     )]
     pub strips: Vec<String>,
+    /// A text published outside the room, announced so its readers find a
+    /// discussion thread to arrive in: `<address>=<title>`, the address of
+    /// the text and the title its thread is named; repeatable. A text whose
+    /// thread the room keeps is left as it is.
+    #[arg(
+        long = "discussion",
+        value_name = "ADDRESS=TITLE",
+        requires = "persistent",
+        value_parser = crate::room_discussions::parse
+    )]
+    pub discussions: Vec<crate::room_discussions::Published>,
     /// The room's owner root: a file of 64 hex characters (the Ed25519
     /// seed), mounted from the operator's encrypted secrets.
     #[arg(long = "root-file", value_name = "PATH")]
@@ -1088,6 +1099,7 @@ pub(crate) async fn settle_chat(
     channels: &[String],
     feedback: Option<&str>,
     files: chat::record::RoomFiles,
+    discussions: &[crate::room_discussions::Published],
 ) -> anyhow::Result<()> {
     if !apps.iter().any(|app| app == crate::room_chat::CHAT_APP) {
         return Ok(());
@@ -1106,7 +1118,8 @@ pub(crate) async fn settle_chat(
                 if let Some(name) = feedback {
                     crate::room_chat::settle_feedback_channel(doc, name)?;
                 }
-                crate::room_chat::settle_files(doc, files)
+                crate::room_chat::settle_files(doc, files)?;
+                crate::room_discussions::settle_threads(doc, discussions).map(drop)
             },
         )
         .await
@@ -1356,6 +1369,7 @@ pub(crate) async fn run(
         &persistent.chat_channels,
         persistent.feedback_channel.as_deref(),
         room_files(&persistent),
+        &persistent.discussions,
     )
     .await?;
     settle_strips(&rooms, &room, &host_cert, &shown, &persistent.strips).await?;

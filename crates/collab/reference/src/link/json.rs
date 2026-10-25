@@ -64,6 +64,8 @@ pub struct TargetJson {
     pub resource: Option<ResourceJson>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discuss: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +104,10 @@ impl From<&LinkTarget> for TargetJson {
                 }),
             }),
             view: target.view.clone(),
+            discuss: target
+                .discuss
+                .as_ref()
+                .map(|discuss| discuss.as_str().to_owned()),
         }
     }
 }
@@ -153,6 +159,7 @@ impl TryFrom<TargetJson> for LinkTarget {
                 })
                 .transpose()?,
             view: json.view,
+            discuss: json.discuss.as_deref().map(Slug::parse).transpose()?,
         };
         target.check()?;
         Ok(target)
