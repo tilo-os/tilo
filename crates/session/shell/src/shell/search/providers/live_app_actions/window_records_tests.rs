@@ -12,8 +12,11 @@ use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt 
 
 use super::{LiveAppActionsProvider, PROVIDER_ID};
 use crate::shell::chrome_state::ChromeState;
+use crate::shell::network::one_host_tests::{
+    Device, Person, Wakes, hosted_workspace, scratch, until,
+};
 use crate::shell::search::{ResourceKind, SearchBudget, SearchContext, SearchProvider as _};
-use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
+use crate::shell::state::WorkspaceTreeHandle;
 
 const APP: &str = "so.tilo.notes";
 
@@ -24,6 +27,10 @@ struct Broker {
     identity: Vec<u8>,
     tree: WorkspaceTreeHandle,
     handle: BrokerHandle,
+    /// This device, whose own host holds the workspace's room, as every
+    /// workspace's is.
+    _host: Device,
+    _devices: tempfile::TempDir,
 }
 
 impl Broker {
@@ -33,33 +40,33 @@ impl Broker {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
             .expect("owner-only broker socket directory");
         let socket = directory.path().join("broker.sock");
-        let signing_root = SigningKey::from_bytes(&[131; 32]);
+        let owner = Person::new(131);
         let device = SigningKey::from_bytes(&[132; 32]);
-        let mut workspace = Workspace::new(WorkspaceId(131), "Window records fixture");
-        workspace.set_owner(
-            tilo_action_broker::collab_broker_capnp::principal_id_for_root(
-                signing_root.verifying_key().to_bytes(),
-            ),
+        let devices = scratch();
+        let wakes = Arc::new(Wakes::default());
+        let host = Device::start(
+            &owner,
+            "Window records host",
+            &devices.path().join("host"),
+            0x0C31,
+            tilo_user_identity::DeviceCapabilities::primary(),
+            &wakes,
         );
-        let room = workspace.room().to_string();
-        let mut tree = WorkspaceTree {
-            persist_path: Some(directory.path().join("state.json")),
-            ..Default::default()
-        };
-        tree.workspaces.push(workspace);
-        tree.set_active(WorkspaceId(131));
-        let tree = tree.shared();
-        let mut certificate = tilo_user_identity::DeviceCert {
-            user_public_key: signing_root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Window records fixture device".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_device_cert(&mut certificate, &signing_root)
-            .expect("signed certificate");
+        let (local, room_id) = hosted_workspace(&host, &[], "Window records fixture");
+        // The app opens in the room first: the room's host lets it author.
+        until(&[&host], "the room to seal its records", || {
+            host.tree.read().seals_records(room_id).then_some(())
+        });
+        host.let_app_author(room_id, APP)
+            .unwrap_or_else(|error| panic!("the room's host lets {APP} author: {error}"));
+        let room = room_id.to_string();
+        host.tree.write().set_active(local);
+        let tree = host.tree.clone();
+        let certificate = owner.certify(
+            &device,
+            "Window records fixture device",
+            tilo_user_identity::DeviceCapabilities::primary(),
+        );
         let identity = runtime_collab::CertifiedJoinIdentity {
             workspace_id: room.clone(),
             device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
@@ -70,8 +77,11 @@ impl Broker {
         }
         .encode()
         .expect("certified identity");
-        let mut services =
-            crate::shell::broker_services::native_services(Some(tree.clone()), None, None);
+        let mut services = crate::shell::broker_services::native_services(
+            Some(tree.clone()),
+            Some(Arc::clone(host.net())),
+            None,
+        );
         // The fixture device is enrolled through the broker's test-support
         // configuration; launcher admission and workspace policy stay the
         // production implementations.
@@ -97,6 +107,8 @@ impl Broker {
             identity,
             tree,
             handle,
+            _host: host,
+            _devices: devices,
         }
     }
 
@@ -248,8 +260,8 @@ fn a_window_holding_two_records_shows_each_once_and_withdraws_the_one_it_closes(
         .enable_all()
         .build()
         .expect("test runtime");
+    let broker = Broker::new();
     tokio::task::LocalSet::new().block_on(&runtime, async {
-        let broker = Broker::new();
         let provider =
             LiveAppActionsProvider::new(broker.handle.app_action_broker().expect("live broker"));
         let (window, driver) = broker.window().await;

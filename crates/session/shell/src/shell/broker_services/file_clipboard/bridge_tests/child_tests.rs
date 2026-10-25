@@ -51,8 +51,10 @@ fn clipboard_bridge_runs_in_a_real_sandboxed_child() {
         .enable_all()
         .build()
         .expect("host runtime");
+    // Built outside the runtime: the host device's network blocks on its
+    // own, and drops there too.
+    let fixture = Fixture::new();
     tokio::task::LocalSet::new().block_on(&runtime, async {
-        let fixture = Fixture::new();
         let protected = tempfile::tempdir().expect("ungranted control");
         let protected_path = protected.path().join("private");
         fs::write(&protected_path, b"ungranted control bytes").expect("control bytes");
