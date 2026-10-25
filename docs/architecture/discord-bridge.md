@@ -601,9 +601,10 @@ visitor is their own person, and joining is rate-limited.
 - **Declarative administration.** `TILO_ROOMS_OWNERS` and
   `TILO_ROOMS_MODERATORS` list user public keys. At start the host root makes
   them Owner or Moderator members with an ordinary `set-role`, and drops the
-  role of keys removed from the lists. `TILO_ROOMS_BOTS` lists bot directory
-  entries to install at first start (`so.tilo.bots.discord-bridge`), with their
-  inputs, approved by the host-held root. `TILO_ROOMS_SEED_APPS` lists apps
+  role of keys removed from the lists. `TILO_ROOMS_BOTS` lists what to install
+  at first start — a bot directory entry (`so.tilo.bots.discord-bridge`) or,
+  for a bridge the image ships, its program file — with their inputs, approved
+  by the host-held root. `TILO_ROOMS_SEED_APPS` lists apps
   authored into the room at first start (`so.tilo.chat`), via
   `Rooms::author_application`. `TILO_ROOMS_CHAT_CHANNELS` names the
   channels Chat starts with while the room's workspace has none; each id is
@@ -699,7 +700,7 @@ id>)`), never in a record, the environment or a log.
   | `TILO_ROOMS_TRUSTED_PROXIES` | the ingress's address range |
   | `TILO_ROOMS_MAX_GUESTS` | `300` |
   | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat` |
-  | `TILO_ROOMS_BOTS` | `so.tilo.bots.discord-bridge` with `guild=<Discord server id>`, `channel=<id>` to bridge one channel only, `mirror-channels=yes` to make channels created in Tilo in Discord too, and `map-roles=yes` to mirror Tilo roles as the bridge's own Discord roles (both off by default) |
+  | `TILO_ROOMS_BOTS` | `so.tilo.bots.discord-bridge`, or the image's program file `/usr/local/share/tilo/bots/discord-bridge.json`, with `guild=<Discord server id>`, `channel=<id>` to bridge one channel only, `mirror-channels=yes` to make channels created in Tilo in Discord too, and `map-roles=yes` to mirror Tilo roles as the bridge's own Discord roles (both off by default) |
   | `TILO_ROOMS_OWNERS`, `TILO_ROOMS_MODERATORS` | the operators' user public keys |
   | `TILO_SECRETS_DIR` | a directory on the volume, e.g. `/state/<name>/secrets` |
 

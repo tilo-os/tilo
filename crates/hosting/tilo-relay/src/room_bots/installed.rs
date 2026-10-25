@@ -52,8 +52,11 @@ pub const DEAD_LETTERS_KEPT: usize = 200;
 pub struct InstalledBot {
     /// The installation's id; the bot acts as `bot:<installation>`.
     pub installation: String,
+    /// Where it was installed from: the directory entry it came from, or the
+    /// program file on this host when the room runs a program it ships.
     pub entry: String,
-    /// Its name, as the directory lists it.
+    /// Its name: the directory listing's, or the program's own when it is a
+    /// program file (a path names nobody).
     pub name: String,
     /// The program, canonical text.
     pub program: String,

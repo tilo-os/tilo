@@ -162,9 +162,10 @@ pub struct PersistentArgs {
     /// nobody; who is here now is the room's presence, not its membership.
     #[arg(long = "inactive-after-days", default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3650))]
     pub inactive_after_days: u64,
-    /// A bot directory entry and its inputs (`<entry> key=value …`) to
-    /// install at the room's first start, approved by the room's root;
-    /// repeatable.
+    /// What to install at the room's first start, approved by the room's
+    /// root, with its inputs (`<source> key=value …`); repeatable. The source
+    /// is a bot directory entry, or a program file on this host, which the
+    /// room runs under the program's own name.
     #[arg(long = "bot", value_name = "SPEC")]
     pub bot_specs: Vec<String>,
     /// The Discord bot token, mounted from the operator's encrypted
@@ -428,6 +429,7 @@ pub(crate) fn idle_guests(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BotSpec {
+    /// The directory entry it is installed from, or the program file.
     pub entry: String,
     pub inputs: BTreeMap<String, String>,
 }
@@ -436,7 +438,7 @@ pub(crate) fn parse_bot_spec(text: &str) -> anyhow::Result<BotSpec> {
     let mut words = text.split_whitespace();
     let entry = words
         .next()
-        .context("a bot spec names a directory entry")?
+        .context("a bot spec names a directory entry or a program file")?
         .to_owned();
     let mut inputs = BTreeMap::new();
     for word in words {
