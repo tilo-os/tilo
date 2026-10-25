@@ -702,6 +702,11 @@ pub struct FeedbackReport {
     /// What happened to it since.
     #[model(readonly)]
     pub triage: Collection<Triage>,
+    /// Who answered it with which emoji (a +1 from someone who sees the
+    /// same): the framework's reactions, as on a message, each the
+    /// invoker's own.
+    #[model(readonly)]
+    pub reactions: ui::tilo_resource::Reactions,
 }
 
 /// One triage step of a feedback report.
@@ -1573,6 +1578,7 @@ impl Chat {
                 author: Atom(me),
                 ts,
                 triage: Collection::new(),
+                reactions: ui::tilo_resource::Reactions::new(),
             },
         );
         Ok(())

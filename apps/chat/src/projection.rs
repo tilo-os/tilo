@@ -127,26 +127,24 @@ impl Chat {
     }
 
     /// The feedback filed in `channel`, as the timeline shows it: a message
-    /// by whoever filed it, saying what they reported.
+    /// by whoever filed it, saying what they reported
+    /// ([`crate::feedback::message`]).
     fn feedback_rows(&self, channel: &str) -> Vec<Message> {
-        self.feedback
-            .iter()
-            .filter_map(|(id, report)| {
-                let submission = report.submission.as_ref()?;
-                (submission.destination.channel == channel).then(|| {
-                    message_row(
-                        &Id::from_raw(crate::feedback::message_id(id.as_str())),
-                        &crate::record::Message {
-                            channel: Id::from_raw(channel),
-                            author: report.author.clone(),
-                            ts: report.ts,
-                            text: submission.feedback.text.clone(),
-                            ..crate::record::Message::default()
-                        },
-                    )
-                })
-            })
+        self.feedback_messages()
+            .filter(|(_, message)| message.channel.as_str() == channel)
+            .map(|(id, message)| message_row(&id, &message))
             .collect()
+    }
+
+    /// Every filed report as the message its channel shows, under its
+    /// message id ([`crate::feedback::message_id`]).
+    pub fn feedback_messages(&self) -> impl Iterator<Item = (Id, crate::record::Message)> + '_ {
+        self.feedback.iter().filter_map(|(id, report)| {
+            Some((
+                Id::from_raw(crate::feedback::message_id(id.as_str())),
+                crate::feedback::message::message(report)?,
+            ))
+        })
     }
 
     /// The message `id` held in `messages`, in whichever channel it is, or

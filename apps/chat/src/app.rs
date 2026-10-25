@@ -1521,6 +1521,36 @@ impl ChatApp {
         self.canonical_dirty = true;
     }
 
+    /// React to `msg` with `emoji`, or take the reaction back: on a filed
+    /// report's message the edit is the report's own reactions field in the
+    /// chat record, which is where its message is read from; on any other
+    /// message it is [`Self::reaction_toggle_action`] on the message's part.
+    pub(crate) fn toggle_reaction(&self, doc: &mut ui::widget::Edits<'_>, msg: &str, emoji: &str) {
+        let report = crate::feedback::report_of_message(msg)
+            .filter(|report| self.reports.iter().any(|(id, _)| id.as_str() == *report));
+        let Some(report) = report else {
+            self.apply_part(doc, self.reaction_toggle_action(msg, emoji));
+            return;
+        };
+        let reacting = self.message(msg).is_some_and(|m| {
+            m.reactions
+                .iter()
+                .any(|r| r.emoji == emoji && r.includes(&self.me.id))
+        });
+        let reactions = crate::resource::Chat::paths()
+            .feedback
+            .item(&ui::tilo_resource::Id::from_raw(report))
+            .reactions;
+        self.apply_now(
+            doc,
+            if reacting {
+                reactions.unreact(emoji)
+            } else {
+                reactions.react(emoji)
+            },
+        );
+    }
+
     /// Build the reaction a click on `msg`/`emoji` should dispatch, deciding
     /// add-vs-remove from the currently-loaded state at authoring time. A
     /// toggle is a presentation decision; the result is the framework's
@@ -2976,8 +3006,10 @@ impl ChatApp {
             .feedback
             .iter()
             .filter_map(|(id, report)| {
-                let submission = report.submission.as_ref()?;
-                Some((id.to_string(), submission.feedback.text.clone()))
+                Some((
+                    id.to_string(),
+                    crate::feedback::message::message(report)?.text,
+                ))
             })
             .collect();
         // Drop the body views of messages no longer loaded.
