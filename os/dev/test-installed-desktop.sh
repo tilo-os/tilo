@@ -8,14 +8,12 @@
 # external client, and the admin's own ssh login runs the action checks. No
 # test-only minting or bypass enters the image.
 #
-# Usage: os/dev/test-installed-desktop.sh DISK_QCOW2 --live-update MIRROR IMAGE PROBE TEXT
-#                                         [--out DIR] [--display gl|2d] [--base-digest sha256:...]
+# Usage: os/dev/test-installed-desktop.sh DISK_QCOW2 [--out DIR] [--display gl|2d]
+#                                         [--base-digest sha256:...]
 #
 # DISK_QCOW2 is never booted or modified. --base-digest is the OS image the dev
-# image was built on, which tilo-vmd must report. --live-update names the image
-# the live update stages (os/tests/live-update-check.sh): IMAGE, a tag of the
-# dev image repository served by MIRROR (host:port/repository, as the guest
-# reaches it), the disk's image with the file PROBE holding TEXT added.
+# image was built on, which tilo-vmd must report. The live system update is
+# os-dev-gate's (tools/ci/publish/os-dev-gate.sh).
 set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,10 +24,8 @@ shift
 out="$PWD/installed-desktop-artifacts"
 display="${TILO_VM_DISPLAY:-gl}"
 base_digest=""
-live_update=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --live-update) live_update=("${2:?}" "${3:?}" "${4:?}" "${5:?}"); shift 5 ;;
     --out) out="${2:?--out needs a directory}"; shift 2 ;;
     --display) display="${2:?--display needs gl or 2d}"; shift 2 ;;
     --base-digest) base_digest="${2:?--base-digest needs a digest}"; shift 2 ;;
@@ -37,7 +33,6 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$display" in gl|2d) ;; *) echo '--display must be gl or 2d' >&2; exit 2 ;; esac
-[ "${#live_update[@]}" = 4 ] || { echo '--live-update MIRROR IMAGE PROBE TEXT is required' >&2; exit 2; }
 [ -f "$base" ] || { printf 'disk not found: %s\n' "$base" >&2; exit 1; }
 base="$(cd "$(dirname "$base")" && pwd)/$(basename "$base")"
 out="$(mkdir -p "$out" && cd "$out" && pwd)"
@@ -384,10 +379,6 @@ cat "$touch_log"
 # The image's apps are installed packages: Settings updates from a registry,
 # launches as the new version, and rolls back.
 RUNNER="$vm ssh" "$repo/os/tests/booted_app_update.sh"
-# The machine updates itself live: a newer image, staged as the update service
-# stages one, applies with `tilo-extension live:system` (the staged composefs
-# image mounted under bootc's digest, the kernel checking it) without a restart.
-"$vm" with-tests "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' \"\$TILO_GUEST_TESTS/live-update-check.sh\" '${live_update[0]}' '${live_update[1]}' '${live_update[2]}' '${live_update[3]}'"
 # Last, because it ends this session: signed in again with every frame stalled
 # 50-130 ms, as on a slow laptop, apps opened beside each other keep their
 # windows, are never configured larger than the display, and never exit.

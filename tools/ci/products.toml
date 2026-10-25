@@ -1319,20 +1319,43 @@ timeout_secs = 7200
 default = false
 
 [[matrix.check]]
+name = "os-dev-gate-{arch}"
+comment = """
+The dev channel's gate (tools/ci/publish/os-dev-gate.sh): os-dev-image-{arch} installed onto a
+disk boots under KVM to a greeter that takes input with boot-complete.target reached, then
+stages a newer image with bootc and applies it live with tilo-extension live:system. A device
+falls back by itself from an image that fails to boot, so this is all a dev device needs before
+it follows an image: that it boots, and takes the next update. The disk it installed is what
+publish-os-dev-{arch} publishes and os-acceptance-{arch} boots."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-dev-gate.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-gate/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-gate.sh", "os/dev/**", "os/tests/live-update-check.sh"]
+needs = ["os-dev-image-{arch}"]
+outputs = ["/target/publish/os-dev-gate/{arch}/**"]
+git = true
+requires = ["{node}", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 5400
+default = false
+
+[[matrix.check]]
 name = "os-acceptance-{arch}"
 comment = """
 The devices and desktop a person gets from os-image-{arch} and os-dev-image-{arch}, booted under
-KVM on throwaway overlays of the dev image's installed disk (tools/ci/publish/os-acceptance.sh):
+KVM on throwaway overlays of the disk os-dev-gate-{arch} installed (tools/ci/publish/os-acceptance.sh):
 a joined device signs in; nearby pairing from first-boot onboarding, a third device paired
 through one without the identity key, sibling unlock and, on x86_64, wake; device-admin reach
 through a relay; the installed desktop from the sign-in screen through first use, the apps,
-hot-plugged input and the lock screen to tilo-vmd, app updates and a live system update; the
-boot splash on a large panel. `t outputs os-acceptance-x86_64` gives every gate's
+hot-plugged input and the lock screen to tilo-vmd and app updates; the boot splash on a large
+panel. The stable channel's gate; on main it runs when t has room and tells the commit that
+broke it, and publishes nothing. `t outputs os-acceptance-x86_64` gives every gate's
 report and the guests' logs."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-acceptance/{arch}"
+run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev-gate/{arch} /target/publish/os-acceptance/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-acceptance.sh", "os/dev/**", "os/tests/**", "tools/atspi_external_client.py", "crates/session/shell/tests/native_atspi_smoke.sh", "apps/file-explorer/tests/atspi_smoke.sh", "scripts/vm-acceptance/**", "tools/perf/record.py"]
-needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-image-{arch}"]
+needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-gate-{arch}"]
 outputs = ["/target/publish/os-acceptance/{arch}/**"]
 git = true
 requires = ["{node}", "/dev/kvm", "disk-100g"]
@@ -1346,18 +1369,18 @@ default = false
 [[matrix.check]]
 name = "publish-os-dev-{arch}"
 comment = """
-Main's dev VM image and its gated disk, once os-acceptance-{arch} passed on them
+Main's dev VM image and its disk, the dev channel, once os-dev-gate-{arch} passed on them
 (tools/ci/publish/os-dev-publish.sh): registry.tilo.so/tilo/tilo-ci:main-<commit7>-{arch} (the
 OS image), registry.tilo.so/tilo/tilo-vm:main-<commit7>-ci (an index of the architectures
 published so far) and its disk in the tilo-vm-disk package, which `tilo-vm vm create` and `vm
 upgrade --from sha:<commit>` take; tilo-vm:latest and, with both architectures, tilo-vm:main-ci
-move forward to it. Main's head publishes it every night (and when dispatched: `t dispatch
-publish-os-dev-x86_64 --ref main`); a night whose image fails os-acceptance-{arch} publishes
-nothing."""
+move forward to it. It runs on main's newest head whenever t has room (and when dispatched:
+`t dispatch publish-os-dev-x86_64 --ref main`), so a dev device gets main's code as soon as
+it is built and gated, not a night later."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-run = "bash tools/ci/publish/os-dev-publish.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-acceptance/{arch}"
+run = "bash tools/ci/publish/os-dev-publish.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-dev-gate/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh"]
-needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-acceptance-{arch}"]
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-gate-{arch}"]
 git = true
 id_token = ["registry.tilo.so"]
 secrets = ["TILO_PACKAGES_TOKEN"]
@@ -1365,7 +1388,7 @@ requires = ["{node}", "disk-100g"]
 isolation = "vm"
 requirement = { cores = 2, memory = "4GiB" }
 timeout_secs = 3600
-on = ["schedule:30 1 * * *", "dispatch"]
+on = ["idle", "dispatch"]
 
 [[matrix]]
 family = "os"
@@ -1704,9 +1727,9 @@ family = "os"
 about = """
 Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
 firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
-since bootc takes a device tree only from one. Every night (and when dispatched: `t dispatch
-publish-os-board-lenovo-83ed --ref main`), main's head is built and, once os-board-<board>,
-os-board-size-<board> and os-acceptance-aarch64 (the dev image it is built on) pass, pushed as
+since bootc takes a device tree only from one. Whenever t has room (and when dispatched: `t dispatch
+publish-os-board-lenovo-83ed --ref main`), main's newest head is built and, once os-board-<board>,
+os-board-size-<board> and os-dev-gate-aarch64 (the dev image it is built on) pass, pushed as
 registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade --from
 sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
 follow on their own; its flashable disk, which os-board-<board> installs (with the Lenovo's audio
@@ -1753,12 +1776,12 @@ name = "publish-os-board-{board}"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-board-publish.sh {board} /target/publish/os-board/{board}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh"]
-needs = ["os-board-{board}", "os-board-size-{board}", "os-acceptance-aarch64"]
+needs = ["os-board-{board}", "os-board-size-{board}", "os-dev-gate-aarch64"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 requires = ["arch=any"]
-on = ["schedule:30 1 * * *", "dispatch"]
+on = ["idle", "dispatch"]
 
 [[matrix]]
 family = "extension-manifests"
