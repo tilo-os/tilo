@@ -67,9 +67,10 @@ service-agnostic: it learns nothing about Discord, and every change below applie
 every room's Chat, bridged or not.
 
 - **Appearance.** A bot allowed `Personas` may post under another name and avatar.
-  `post`, `share-resource` and `react` read `ActionCx::appearance()` and store it:
-  `Message.appearance: Json<Option<Appearance>>` and `Reacted.persona: Option<String>`
-  (new), so two Discord users' identical reactions count as two. The author is still
+  `post` and `share-resource` read `ActionCx::appearance()` and store it
+  (`Message.appearance`), and so does the framework's `react` field edit of a
+  message's `Reactions`: the reaction records the account (`discord/<id>`) and
+  the name it shows, so two Discord users' identical reactions count as two. The author is still
   the bot. Every message author is drawn through the shared `ui::author` helper, so a
   mirrored message shows the outside name and avatar with the `BOT` label and "via
   Discord Bridge (bot, added by …)" in its details.

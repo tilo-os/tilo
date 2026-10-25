@@ -226,7 +226,8 @@ pub struct DeleteOp {
 pub struct ReactOp {
     pub channel: String,
     pub message: String,
-    /// A unicode emoji.
+    /// A unicode emoji, or one of the guild's custom emoji as `name:id`,
+    /// as Discord's reaction routes name them.
     pub emoji: String,
 }
 
