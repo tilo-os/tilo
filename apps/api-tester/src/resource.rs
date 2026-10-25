@@ -243,10 +243,17 @@ impl Workspace {
     #[action(item = history)]
     pub fn open_sent(&mut self, cx: &mut ActionCx, sent: &Id) -> Result<(), Refusal> {
         let sent = self.history.get(sent).ok_or("no such request")?;
-        self.request = RequestRecord {
-            method: sent.method,
-            url: sent.url.0.clone(),
-            ..RequestRecord::named("New request")
+        self.request = match sent.replay_of() {
+            // The entry kept the request it sent: its headers, body and
+            // parameters come back with it.
+            Some(replay) => RequestRecord::of(&replay.to_request()),
+            // An entry recorded before history kept the request itself: its
+            // method and URL are all that is known.
+            None => RequestRecord {
+                method: sent.method,
+                url: sent.url.0.clone(),
+                ..RequestRecord::named("New request")
+            },
         };
         self.opened = Atom(cx.uuid().to_string());
         Ok(())
@@ -262,13 +269,15 @@ impl Workspace {
         #[param("The response status")] status: u16,
         #[param("The round-trip time in milliseconds")] duration_ms: u64,
     ) {
-        let sent = Sent::new(
-            HttpMethod::from_str(&method),
-            &url,
-            status,
-            duration_ms,
-            cx.now_ms(),
-        );
+        // The builder holds what went out — its headers, body and
+        // parameters — minus the credential, which the record never holds.
+        // The method and URL the caller reports are authoritative: they say
+        // what was actually sent, even if the builder moved on since.
+        let method = HttpMethod::from_str(&method);
+        let mut replay = crate::model::RequestSnapshot::of(&self.request_shown());
+        replay.method = method;
+        replay.url = url.clone();
+        let sent = Sent::new(method, &url, status, duration_ms, cx.now_ms(), Some(replay));
         self.history
             .insert(0, Id::from_raw(cx.uuid().to_string()), sent);
         while self.history.len() > HISTORY_LIMIT {

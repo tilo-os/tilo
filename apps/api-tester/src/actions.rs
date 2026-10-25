@@ -15,6 +15,8 @@ use ui::prelude::Effect;
 use ui::tilo_resource;
 
 pub const REQUEST_MENU_CHOICES: &[&str] = &["Save request…", "Rename request…", "Delete request…"];
+/// What [`ApiTesterEffect::CopyResponse`] can copy out of a response.
+pub const COPY_PARTS: &[&str] = &["body", "headers", "request"];
 pub const ENVIRONMENT_MENU_CHOICES: &[&str] =
     &["Rename environment…", "Add variable…", "Delete variable…"];
 
@@ -23,6 +25,8 @@ impl std::fmt::Debug for ApiTesterEffect {
         let name = match self {
             Self::ImportLegacy { .. } => "ImportLegacy",
             Self::Send => "Send",
+            Self::CancelSend => "CancelSend",
+            Self::CopyResponse { .. } => "CopyResponse",
             Self::SendSaved { .. } => "SendSaved",
             Self::SetCredential { .. } => "SetCredential",
             Self::PickEnvironment { .. } => "PickEnvironment",
@@ -45,13 +49,28 @@ pub enum ApiTesterEffect {
         snapshot: String,
     },
     /// Send request
-    #[effect(job, returns, untrusted)]
+    #[effect(job, returns, untrusted, cancellable)]
     Send,
     /// Send saved request
-    #[effect(job, returns, untrusted)]
+    #[effect(job, returns, untrusted, cancellable)]
     SendSaved {
         #[param("Id of the saved request")]
         request: String,
+    },
+    /// Cancel request
+    ///
+    /// Stops waiting for a server that has not answered. The send that was in
+    /// flight reports that it was cancelled.
+    #[effect(own_device)]
+    CancelSend,
+    /// Copy response
+    ///
+    /// Puts part of the response on this device's clipboard: the body as it
+    /// is shown, every header, or the request that produced it.
+    #[effect(own_device, idempotent)]
+    CopyResponse {
+        #[param("What to copy", choices = COPY_PARTS.iter().copied())]
+        part: String,
     },
     /// Set the request's credential
     #[effect(job)]
