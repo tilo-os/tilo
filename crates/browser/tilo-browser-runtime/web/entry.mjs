@@ -109,6 +109,16 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
     ...(about ? {about} : {}), ...(embedder ? {embedder} : {})};
 }
 
+/** Send problem reports from the home workspace to the channel its
+ * entry names. The desktop does not wait for it: the owner's admission is
+ * a round trip of its own, and the desktop takes reports up once it is in. */
+export function configureFeedback(peer, home) {
+  const channel = home?.feedback?.channel;
+  if (!peer?.room || typeof channel !== 'string' || typeof peer.configureFeedback !== 'function') return;
+  peer.configureFeedback({room: peer.room, provider: 'record:so.tilo.chat:', channel})
+    .catch(error => console.warn('feedback:', error?.message ?? error));
+}
+
 /** The embedding site's origin, when `value` is exactly an https origin. */
 function embedderOrigin(value) {
   if (typeof value !== 'string') return null;
@@ -250,6 +260,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     },
   });
   if (peer) deps.onAdmitted?.(peer);
+  configureFeedback(peer, entry.home);
   // The app in front (a home workspace's, or the link's) downloads once the
   // page is in, while the desktop mounts, not when the desktop first opens
   // it. Not before: admission is a run of small round trips to the host,

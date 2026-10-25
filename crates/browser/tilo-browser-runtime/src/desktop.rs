@@ -204,11 +204,67 @@ impl Standing {
     }
 }
 
+/// What a desktop installs a feedback startup with.
+pub(crate) struct LateFeedback {
+    author: String,
+    store: Rc<dyn DurableStore>,
+    models: ui::models::Models,
+}
+
+impl LateFeedback {
+    fn install(
+        &self,
+        shared: &Shared,
+        startup: tilo_desktop::feedback::transport::Startup,
+    ) -> Result<(), String> {
+        if startup.reporter().principal()
+            != &tilo_actions::remote::CallerPrincipal::Person(self.author.clone())
+        {
+            return Err("feedback reporter does not own this profile".into());
+        }
+        startup
+            .install(Rc::clone(&self.store), &mut shared.feedback.borrow_mut())
+            .map_err(|error| error.to_string())?;
+        // The model this page may use also looks over reports before they
+        // are sent.
+        if let Some(feedback) = shared.feedback.borrow().as_ref() {
+            feedback.services().set_models(self.models.clone());
+        }
+        Ok(())
+    }
+}
+
+impl Shared {
+    /// Install the feedback startup the page registered after the desktop
+    /// mounted; whether it did just now.
+    pub(crate) fn adopt_feedback(&self) -> bool {
+        let Some(peer) = self.late_feedback.borrow().as_ref().map(|(peer, _)| *peer) else {
+            return false;
+        };
+        let Some(startup) = crate::feedback_delivery::take_startup(peer) else {
+            return false;
+        };
+        let Some((_, late)) = self.late_feedback.borrow_mut().take() else {
+            return false;
+        };
+        match late.install(self, startup) {
+            Ok(()) => true,
+            Err(error) => {
+                web_sys::console::warn_1(&format!("feedback: {error}").into());
+                false
+            }
+        }
+    }
+}
+
 /// State the mount and the tile source share.
 #[derive(Clone, Default)]
 pub(crate) struct Shared {
     /// Trusted host custody, never configured from a launch URL or draft.
     pub feedback: Rc<RefCell<Option<tilo_desktop::feedback::PrivateFeedback>>>,
+    /// What installs feedback once the page holds a destination, when the
+    /// desktop mounted before it did ([`Shared::adopt_feedback`]).
+    late_feedback: Rc<RefCell<Option<(u32, LateFeedback)>>>,
     /// Every package's record owner opened so far, flushed with the mount.
     pub stores: Rc<RefCell<Vec<RecordStore>>>,
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
@@ -1538,15 +1594,18 @@ pub(crate) fn mount(
         shared.standing = Standing::unknown();
     }
     shared.linked = linked_accounts(&shared, &notify);
+    let late = LateFeedback {
+        author: inputs.author.clone(),
+        store: Rc::clone(&store),
+        models: inputs.models.clone(),
+    };
     if let Some(startup) = inputs.feedback.take() {
-        if startup.reporter().principal()
-            != &tilo_actions::remote::CallerPrincipal::Person(inputs.author.clone())
-        {
-            return Err("feedback reporter does not own this profile".into());
-        }
-        startup
-            .install(Rc::clone(&store), &mut shared.feedback.borrow_mut())
-            .map_err(|error| error.to_string())?;
+        late.install(&shared, startup)?;
+    } else if let Some(peer) = inputs.peer {
+        // The page's destination is still being admitted: the desktop does
+        // not wait for it, and takes it up once it is here.
+        crate::feedback_delivery::wake_on_startup(peer, Arc::clone(&notify));
+        *shared.late_feedback.borrow_mut() = Some((peer, late));
     }
     let tree = if let Some(stored) = load_stored(store.as_ref(), &key) {
         let (bound, unbound) = stored_records(&stored);
