@@ -35,6 +35,13 @@ pub trait PaneModel: 'static {
         None
     }
 
+    /// Whether a read the model already started will replace what the pane
+    /// shows meanwhile (a "Scanning…" note): a still capture waits for it,
+    /// a live window asks for no frames on its account.
+    fn pending_visual_work(&self) -> bool {
+        false
+    }
+
     /// Start following what the device reports, for a pane that shows the
     /// model: the watches, monitor or thread that tell it of changes run
     /// while a pane holds what this answers. Panes showing the model share
@@ -145,6 +152,14 @@ impl Widget for ModelPane {
 
     fn name(&self) -> &'static str {
         self.model.borrow().name()
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        self.model.borrow().pending_visual_work()
+            || self
+                .composed
+                .element()
+                .is_some_and(Widget::has_pending_visual_work)
     }
 
     fn needs_animation_frame(&self) -> bool {
