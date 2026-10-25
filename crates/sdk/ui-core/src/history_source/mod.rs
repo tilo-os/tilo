@@ -70,6 +70,7 @@ pub use narrative::{
 };
 pub use revert::{
     ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot, latest_run_by, plan_revert, revert_run,
+    revert_step,
 };
 pub use run_undo::{
     RunUndoReport, StepOutcome, StepState, refuse_run, undo_run, undo_step, unreachable_steps,

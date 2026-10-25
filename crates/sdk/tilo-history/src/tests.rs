@@ -326,3 +326,78 @@ fn an_element_a_set_gained_or_lost_is_named() {
         "Removed ops from Tags of Deploy script"
     );
 }
+
+#[test]
+fn a_step_the_app_has_no_message_for_says_so_and_reads_the_fallback() {
+    let moved = entry(edit("folder", Some("Inbox".into()), Some("Ops".into())));
+    let what = moved.what.as_ref().unwrap();
+    // The app's catalogue has the field, so it renders the sentence itself.
+    let snippets = Catalogue::new("en-US", &[SNIPPETS_EN]);
+    assert_eq!(
+        Reader::new("en-US").with_app(&snippets).did_by_app(
+            what,
+            "org.tilo.Snippets",
+            Some("Deploy script")
+        ),
+        ("Moved Deploy script to Ops".to_owned(), true)
+    );
+    // A catalogue with no message for it falls back, and says so, so an
+    // agent or a check can tell the framework's words from the app's.
+    let other = Catalogue::new("en-US", &["snippets-snippet-favorite = Starred"]);
+    assert_eq!(
+        Reader::new("en-US").with_app(&other).did_by_app(
+            what,
+            "org.tilo.Snippets",
+            Some("Deploy script")
+        ),
+        ("Changed Folder of Deploy script to Ops".to_owned(), false)
+    );
+    // Without an app catalogue at all nothing is the app's.
+    assert!(
+        !Reader::new("en-US")
+            .did_by_app(what, "org.tilo.Snippets", None)
+            .1
+    );
+}
+
+#[test]
+fn a_group_names_every_message_one_of_its_steps_asks_for() {
+    let star = edit("favorite", Some(false.into()), Some(true.into()));
+    let move_to = edit("folder", None, Some("Ops".into()));
+    let app = "org.tilo.Snippets";
+    assert_eq!(
+        message_keys(app, &star),
+        ["snippets-snippet-favorite".to_owned()]
+    );
+    // The same step three times renders through its one message.
+    assert_eq!(
+        message_keys(app, &Did::group([star.clone(), star.clone()])),
+        ["snippets-snippet-favorite".to_owned()]
+    );
+    // A mixed group renders one generic sentence: the distinct steps it
+    // names are what its catalogue must still carry for the group's own row.
+    let mixed = Did::group([star, move_to]);
+    let mut keys = message_keys(app, &mixed);
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "snippets-snippet-favorite".to_owned(),
+            "snippets-snippet-folder".to_owned()
+        ]
+    );
+    // A history step is the framework's to word, never the app's.
+    assert!(message_keys(app, &Did::history(HistoryOp::Undo, 1, None)).is_empty());
+}
+
+#[test]
+fn a_framework_message_a_catalogue_lacks_never_renders_as_its_id() {
+    // Every message the reader asks for by name is in the framework's own
+    // catalogue: `tilo-history/locales/en-US.ftl`. Read through a catalogue
+    // that holds none of them, an entry still reads as words.
+    let bare = Catalogue::new("en-US", &["unrelated = nothing to do with history"]);
+    let moved = entry(edit("folder", Some("Inbox".into()), Some("Ops".into())));
+    let sentence = Reader::new("en-US").with_app(&bare).sentence(&moved);
+    assert_eq!(sentence, "Changed Folder of Deploy script to Ops");
+    assert!(!sentence.contains("history-"), "{sentence}");
+}
