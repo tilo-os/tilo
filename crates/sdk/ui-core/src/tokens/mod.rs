@@ -21,7 +21,7 @@ pub use colors::{
 };
 pub use density::{Density, RowHeights};
 pub use elevation::{Elevation, Shadow};
-pub use layout::Layout;
+pub use layout::{Breakpoint, BreakpointTracker, Layout};
 pub use metrics::Metrics;
 pub use motion::{
     Durations, EffectiveMotion, Gesture, Motion, MotionSource, SpringParams, SpringPresets,
