@@ -74,8 +74,14 @@ impl Auth for CliAuth {
 
 #[derive(Deserialize)]
 struct Reported {
+    /// `wrong`: the entry was checked and refused. `locked-out`: the TPM
+    /// refused to check it.
+    #[serde(default)]
+    error: Option<String>,
     #[serde(default)]
     tries_left: Option<u32>,
+    /// The TPM's time to win back one try. It is a wait only when no try is
+    /// left.
     #[serde(default)]
     retry_in_s: Option<u64>,
 }
@@ -87,9 +93,11 @@ fn limit(line: &str) -> Option<Limit> {
         return None;
     }
     let reported: Reported = serde_json::from_str(line).ok()?;
+    let locked_out =
+        reported.error.as_deref() == Some("locked-out") || reported.tries_left == Some(0);
     Some(Limit {
         tries_left: reported.tries_left,
-        wait_seconds: reported.retry_in_s,
+        wait_seconds: locked_out.then_some(reported.retry_in_s).flatten(),
     })
 }
 
@@ -162,7 +170,7 @@ case "$1" in
     case "$(cat "$file")" in
       123456) exit 0 ;;
       no-tpm) echo 'no TPM here' >&2; exit 2 ;;
-      *) echo 'checking'; echo 'the TPM refused the entry' >&2; echo '{"error":"wrong","tries_left":7,"retry_in_s":0}' >&2; exit 1 ;;
+      *) echo 'checking'; echo 'the TPM refused the entry' >&2; echo '{"error":"wrong","tries_left":7,"retry_in_s":7200}' >&2; exit 1 ;;
     esac
     ;;
 esac
@@ -249,7 +257,7 @@ esac
                 limit,
                 Limit {
                     tries_left: Some(7),
-                    wait_seconds: Some(0)
+                    wait_seconds: None
                 }
             ),
             _ => panic!("a wrong PIN must read as wrong"),
@@ -270,8 +278,68 @@ esac
                 wait_seconds: Some(120)
             })
         );
+        // The time to win back a try is no wait while tries are left.
+        assert_eq!(
+            limit(r#"{"error":"wrong","tries_left":9,"retry_in_s":7200}"#),
+            Some(Limit {
+                tries_left: Some(9),
+                wait_seconds: None
+            })
+        );
         assert_eq!(limit("{}"), Some(Limit::default()));
         assert_eq!(limit("the TPM is in lockout"), None);
         assert_eq!(limit("{not json"), None);
+    }
+
+    /// Types the scripted entries, then leaves the field empty.
+    struct Typist {
+        entries: Vec<&'static str>,
+        notes: Vec<String>,
+    }
+
+    impl crate::flow::Screen for Typist {
+        fn pick(&mut self, _people: &[Person], _highlighted: usize) -> crate::flow::Pick {
+            crate::flow::Pick::Person(0)
+        }
+        fn ask(&mut self, prompt: &crate::flow::Prompt<'_>) -> crate::flow::Entry {
+            self.notes.push(prompt.note.text());
+            if self.entries.is_empty() {
+                return crate::flow::Entry::Empty;
+            }
+            let entry = self.entries.remove(0);
+            crate::flow::Entry::Secret(zeroize::Zeroizing::new(entry.to_owned()))
+        }
+        fn checking(&mut self, _person: &Person) {}
+        fn finish(&mut self, _unlocked: bool) {}
+    }
+
+    #[test]
+    fn a_repeated_wrong_entry_does_not_reach_tilo_auth_again() {
+        let _serial = crate::test_support::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let mut auth = stub(dir.path());
+        let mut screen = Typist {
+            entries: vec!["654321", "654321", "123456"],
+            notes: Vec::new(),
+        };
+        assert_eq!(
+            crate::flow::run(&mut auth, &mut screen),
+            crate::flow::Exit::Unlocked
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("calls")).unwrap(),
+            "boot-people --device /dev/vda3\n\
+             boot-unlock root 600 654321\n\
+             boot-unlock root 600 123456\n",
+            "the second 654321 cost no TPM try"
+        );
+        assert_eq!(
+            screen.notes,
+            [
+                "",
+                "Incorrect PIN. 7 tries left.",
+                "You already tried that PIN. Try another.",
+            ]
+        );
     }
 }
