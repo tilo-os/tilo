@@ -234,7 +234,7 @@ impl PlotPanel {
     /// taller than the maximum clamps and scrolls within its editor.
     pub fn fit(&mut self, rows: &[PlotFn], tr: &mut TextRenderer, theme: &Theme) {
         self.scale_for(theme);
-        self.formula_size = mathfield::formula_size(theme, tr);
+        self.formula_size = mathfield::formula_size(theme);
         self.sync_fields(rows);
         let (prefix_w, _) = tr.measure_style(self.words.prefix, None, &theme.text(TextRole::Body));
         self.prefix_w = f64::from(prefix_w);
@@ -242,17 +242,16 @@ impl PlotPanel {
             .icon(Icon::Plus)
             .intrinsic_width(tr, theme);
         let pad = f64::from(theme.tokens.spacing.s2);
-        let renderer = f64::from(tr.text_scale());
         self.heights.clear();
         for field in &mut self.fields {
             field.set_size(self.formula_size);
-            // The formula's boxes are laid out in its own size units while its
-            // glyphs are drawn through the renderer, which grows them by its
-            // text scale: the editor holds the grown glyphs.
+            // The formula's boxes are laid out at the theme's size, which
+            // already includes the text scale, and they are painted at
+            // exactly that size: the measured content is the drawn content.
             let content = if field.is_empty() {
                 0.0
             } else {
-                field.content_height(tr) * renderer.max(1.0)
+                field.content_height(tr)
             };
             self.heights.push(self.m.editor_height(content) + 2.0 * pad);
         }
@@ -696,10 +695,11 @@ mod tests {
         );
     }
 
-    /// A renderer that carries the text scale itself (the live desktop) grows
-    /// the drawn glyphs, so the editor holds them.
+    /// A renderer that carries the text scale itself (the live desktop) paints
+    /// the formula at the theme's size, which already includes that scale: the
+    /// editor holds the grown glyphs exactly, not a multiple of them.
     #[test]
-    fn a_scaled_renderer_gets_an_editor_that_holds_the_grown_glyphs() {
+    fn a_scaled_renderer_gets_an_editor_that_holds_exactly_the_grown_glyphs() {
         let theme = Theme::dark().with_text_scale(1.5);
         let mut tr = TextRenderer::new();
         tr.set_text_scale(1.5);
@@ -708,11 +708,19 @@ mod tests {
         panel.fit(&rows, &mut tr, &theme);
         panel.layout(Rect::new(0.0, 0.0, 2200.0, 900.0), rows.len());
         let edit = panel.field_rect(0).expect("editor");
-        let content = panel.fields[0].content_height(&mut tr) * 1.5;
+        let content = panel.fields[0].content_height(&mut tr);
         assert!(
             content <= edit.height() + 0.5,
             "the stacked formula must fit its editor in full: content {content} vs {}",
             edit.height()
+        );
+        // The formula is set at the theme's resolved size, so it grows with
+        // the reader's text scale instead of staying at the 1× size.
+        let one = Theme::dark();
+        assert!(
+            panel.formula_size > mathfield::formula_size(&one) * 1.4,
+            "a 1.5× text scale sets a larger formula: {}",
+            panel.formula_size
         );
     }
 }
