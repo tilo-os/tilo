@@ -76,7 +76,7 @@ pub use planner::{
     DirectPlanner, NoReads, Obligations, PlanContext, PlanRole, Planner, Reads, Role, Step,
     StepAction, TurnRetries,
 };
-pub use room_actions::{HostActions, RoomActions, RoomRecordsLink};
+pub use room_actions::{FeedbackReviewer, HostActions, RoomActions, RoomRecordsLink};
 pub use worker::ConfinedReplica;
 
 // Unit tests admit peer bytes through the Automerge isolate, whose workers

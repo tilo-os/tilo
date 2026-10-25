@@ -258,6 +258,8 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_DESCRIPTION` | unset: none | what the directory of public workspaces says the room is (at most 280 characters) |
 | `TILO_ROOMS_CHAT_CHANNELS` | unset: `general` | channels Chat starts with while it has none, comma-separated names of lowercase letters, digits and `-` |
 | `TILO_ROOMS_FEEDBACK_CHANNEL` | unset: none | the channel members report problems to, by name; kept in Chat on every start under the id `c_<name>` (`-` as `_`), which the web entry's `TILO_WEB_HOME_FEEDBACK` names |
+| `TILO_ROOMS_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` when that file exists, else unset: none | a file holding the Anthropic API key the room's moderation agent asks with, kept in the host's secret store. The same model looks over the reports members write in the feedback channel before they send them: their pages ask through the room, never holding the key, at most 12 reviews per person and 240 per room every 10 minutes, and the review names the model. Unset, the room has no moderation agent and reports are checked by rules alone unless the reporter's page has a model of its own |
+| `TILO_ROOMS_MODERATION_MODEL` | `claude-haiku-5-5` | the model that key asks, for moderation and report reviews |
 | `TILO_ROOMS_STRIPS` | unset: none | strips the shared desktop has, comma-separated names of up to 48 characters |
 | `TILO_ROOMS_RELAY_ORIGIN` | required | the relay's public origin, e.g. `https://rooms.example` |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the relay's plain listener the ingress forwards `/peer/` to |

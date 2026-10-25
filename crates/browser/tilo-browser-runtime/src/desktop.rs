@@ -128,6 +128,8 @@ pub(crate) struct Inputs {
     pub author: String,
     pub permissions: Rc<RefCell<PermissionContext>>,
     pub models: ui::models::Models,
+    /// What a report's review calls [`Self::models`].
+    pub model_name: String,
     pub provider_admin: ui::models::ProviderAdministration,
     /// The peer whose room this desktop shows, when it has one.
     pub peer: Option<u32>,
@@ -216,6 +218,7 @@ pub(crate) struct LateFeedback {
     author: String,
     store: Rc<dyn DurableStore>,
     models: ui::models::Models,
+    model_name: String,
 }
 
 impl LateFeedback {
@@ -233,9 +236,15 @@ impl LateFeedback {
             .install(Rc::clone(&self.store), &mut shared.feedback.borrow_mut())
             .map_err(|error| error.to_string())?;
         // The model this page may use also looks over reports before they
-        // are sent.
-        if let Some(feedback) = shared.feedback.borrow().as_ref() {
-            feedback.services().set_models(self.models.clone());
+        // are sent; without one, the model the room's host lends its
+        // reporters does, asked through the room.
+        let lent = if self.models.is_available() {
+            Some((self.models.clone(), self.model_name.clone()))
+        } else {
+            crate::feedback_review::owner_model(self.peer)
+        };
+        if let (Some(feedback), Some((models, name))) = (shared.feedback.borrow().as_ref(), lent) {
+            feedback.services().set_models(models, name);
         }
         Ok(())
     }
@@ -1781,6 +1790,7 @@ fn take_up_feedback(
         author: inputs.author.clone(),
         store: Rc::clone(store),
         models: inputs.models.clone(),
+        model_name: inputs.model_name.clone(),
     };
     match inputs.feedback.take() {
         Some(startup) => {
