@@ -3001,7 +3001,7 @@ pub use remount::Remount;
 pub(crate) mod replaced_tripwire;
 pub use layout::{
     AuthoredExtent, ExtentSizing, SkippedFrames, WidgetLayoutError, compute_widget_layout, insets,
-    insets_all, insets_xy, layout_clip, text_control_height, with_layout_clip,
+    insets_all, insets_xy, layout_clip, placing_again, text_control_height, with_layout_clip,
 };
 
 mod button;
