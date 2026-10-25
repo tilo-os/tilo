@@ -7267,10 +7267,16 @@ mod tests {
         assert!(failed["prepared_identity"]["public_key"].is_null());
         app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            let notice = visual_tests::control(preview, "installer.existing.failure")
-                .expect("actual asynchronous recovery failure notice")
+            // The failure is said in the passphrase prompt, under its field.
+            let prompt = visual_tests::control(preview, "installer.existing.password")
+                .expect("the passphrase prompt")
                 .accessibility()
                 .unwrap();
+            let notice = prompt
+                .children
+                .iter()
+                .find(|child| child.live.is_some())
+                .expect("actual asynchronous recovery failure notice");
             assert_eq!(
                 notice.name.as_deref(),
                 Some(t("installer-existing-failed").as_str())
@@ -7278,6 +7284,29 @@ mod tests {
             assert_eq!(notice.live, Some(ui::a11y::Politeness::Assertive));
         })
         .unwrap();
+        if let Some(directory) = std::env::var_os("TILO_UI_SCREENSHOT_DIR") {
+            let directory = std::path::PathBuf::from(directory).join("installer-journey");
+            std::fs::create_dir_all(&directory).unwrap();
+            for (tag, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+                for viewport in [(1280, 800), (390, 844)] {
+                    app.harness()
+                        .set_theme(theme.clone().with_reduce_motion(true));
+                    app.harness().resize(viewport).unwrap();
+                    // The narrow size stands for a phone, used by touch.
+                    app.harness()
+                        .set_interaction_environment(if viewport.0 < 600 {
+                            ui::InteractionEnvironment::TOUCH
+                        } else {
+                            ui::InteractionEnvironment::default()
+                        });
+                    app.settle();
+                    app.harness().render_png(&directory.join(format!(
+                        "existing-backup-refused-{tag}-{}x{}.png",
+                        viewport.0, viewport.1
+                    )));
+                }
+            }
+        }
         app.effect(&InstallerPreviewEffect::SetExistingIdentityPassword {
             value: "backup password for existing identity".into(),
         })

@@ -5084,6 +5084,30 @@ cost = "heavy"
 timeout_secs = 5400
 default = false
 
+# The imager's setup journey as its tests draw it, light and dark, wide and narrow, with the
+# production renderer: `t outputs imager-journey-screenshots` puts the pictures in
+# target/imager-journey-screenshots/ (installer-journey/ and current-review/), the evidence the
+# journey's visual tests write where TILO_UI_SCREENSHOT_DIR points.
+[[check]]
+name = "imager-journey-screenshots"
+run = """
+rm -rf /target/imager-journey-screenshots
+# None of the filesystem cache tests runs here: their cache may sit wherever.
+export TILO_IMAGER_TEST_CACHE_ROOT=$CARGO_TARGET_DIR/ci/imager-test-fs
+mkdir -p "$TILO_IMAGER_TEST_CACHE_ROOT" && chmod 700 "$TILO_IMAGER_TEST_CACHE_ROOT"
+TILO_UI_SCREENSHOT_DIR=/target/imager-journey-screenshots bash tools/ci/t-nextest.sh \\
+  cargo nextest run -p imager --lib --no-fail-fast \\
+  -E 'test(/setup::journey::(visual_tests|visual_review_tests|tests::existing_backup_recovery)/)' \\
+  || echo "imager-journey-screenshots: some tests failed; the pictures taken are kept"
+"""
+inputs = ["apps/imager/**", "crates/**", "vendor/**", "tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh", ".config/nextest.toml", ".config/nextest-filters.toml", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/imager-journey-screenshots/**"]
+requires = ["arch=any"]
+requirement = { cores = 4, memory = "16GiB" }
+cost = "heavy"
+timeout_secs = 3600
+default = false
+
 # `tilo-vm swap --builder remote` on t (dist/dev/t-builder.sh). The tilo-vm that packs the layer
 # is a check of its own per architecture, keyed by the packages it is built from (not by the
 # worktree), so a swap from a commit that doesn't touch tilo-vm takes the last build instead of
