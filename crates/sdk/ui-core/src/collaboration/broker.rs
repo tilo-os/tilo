@@ -3590,6 +3590,34 @@ impl CollaborationManager {
         manager
     }
 
+    /// [`Self::native_initial_named_fixture_for_test`] whose broker admits
+    /// the connection's own invocations against the surface it published;
+    /// the probe lists each invocation as it arrived and whether it was
+    /// offered then.
+    #[cfg(test)]
+    #[cfg(unix)]
+    pub(crate) fn native_initial_named_invocation_fixture_for_test(
+        route: RouteSpec,
+        history: Vec<u8>,
+    ) -> (
+        Self,
+        Box<dyn Fn() -> Vec<(tilo_actions::ActionAddress, bool)>>,
+    ) {
+        let (mut manager, invocations) =
+            tests::native_initial_invocation_fixture(&route.app_id, route.cluster_id, history);
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: route.app_id,
+            cluster_id: route.cluster_id,
+            record: route.record,
+            record_kind: None,
+            handle: None,
+        }));
+        manager
+            .await_primary_route()
+            .expect("actual named route acknowledgement");
+        (manager, invocations)
+    }
+
     /// A connected route whose document reads are not Required, as a
     /// standalone runtime admits it.
     #[cfg(test)]
@@ -7918,6 +7946,9 @@ mod tests {
         /// The connection's surface as its deltas built it, and each delta.
         surface_table: runtime_collab::SurfaceTable,
         surface_deltas: Vec<runtime_collab::SurfaceDelta>,
+        /// Each invocation of the connection's own action, in arrival order,
+        /// and whether its surface offered the action when it arrived.
+        own_invocations: Vec<(tilo_actions::ActionAddress, bool)>,
         /// Refuse this many action-surface publications, as a broker whose
         /// admission is momentarily unavailable does.
         refuse_action_publications: usize,
@@ -8470,6 +8501,58 @@ mod tests {
             captures.surface_deltas.push(delta);
             captures.action_publications.push((app_id, actions));
             Promise::ok(())
+        }
+
+        /// Admits an invocation of the connection's own action only when
+        /// the surface it published offers it, as the session action host
+        /// does: anything else is refused as unknown. Admitted ones are
+        /// accepted and never run.
+        fn remote_action(
+            self: Rc<Self>,
+            params: channel_handle::RemoteActionParams,
+            mut results: channel_handle::RemoteActionResults,
+        ) -> Promise<(), capnp::Error> {
+            use tilo_actions::remote::{
+                ActionHostError, InvocationReceipt, ReceiptStatus, RemoteActionFrame,
+                RemoteActionMessage,
+            };
+            let frame = match params
+                .get()
+                .and_then(|params| params.get_frame())
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| RemoteActionFrame::decode(bytes).map_err(|e| e.to_string()))
+            {
+                Ok(frame) => frame,
+                Err(error) => return Promise::err(capnp::Error::failed(error)),
+            };
+            let RemoteActionMessage::Invoke(request) = &frame.message else {
+                return Promise::err(capnp::Error::unimplemented(
+                    "the fixture answers invocations only".into(),
+                ));
+            };
+            let address = request.target.address.clone();
+            let mut captures = self.captures.lock().unwrap();
+            let offered = request.target.provider == tilo_actions::remote::OWN_PROVIDER
+                && captures.surface_table.actions().iter().any(|action| {
+                    action.resource == address.resource && action.action == address.action
+                });
+            captures.own_invocations.push((address, offered));
+            let answer = if offered {
+                RemoteActionMessage::Receipt(InvocationReceipt {
+                    invocation: request.invocation,
+                    status: ReceiptStatus::Accepted,
+                })
+            } else {
+                tilo_actions::remote::refuse(&frame.message, ActionHostError::UnknownAction)
+                    .expect("an invocation has a refusal")
+            };
+            match RemoteActionFrame::new(answer).encode() {
+                Ok(bytes) => {
+                    results.get().set_frame(&bytes);
+                    Promise::ok(())
+                }
+                Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
+            }
         }
 
         fn publish_action_directory(
@@ -11651,6 +11734,28 @@ mod tests {
         (
             CollaborationManager::from_sdk_fd_for_test(fd, app, room),
             Box::new(move || captures.lock().unwrap().joined.len()),
+        )
+    }
+
+    pub(super) fn native_initial_invocation_fixture(
+        app: &str,
+        room: Uuid,
+        history: Vec<u8>,
+    ) -> (
+        CollaborationManager,
+        Box<dyn Fn() -> Vec<(tilo_actions::ActionAddress, bool)>>,
+    ) {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                committed_history_fixture: Some(history),
+                ..Captures::default()
+            })),
+            ..FakeBroker::default()
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        (
+            CollaborationManager::from_sdk_fd_for_test(fd, app, room),
+            Box::new(move || captures.lock().unwrap().own_invocations.clone()),
         )
     }
 
