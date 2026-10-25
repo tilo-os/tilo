@@ -145,8 +145,14 @@ pub fn run_breaks(lines: &[ConversationLine]) -> Vec<bool> {
 /// One thing the list paints, in order.
 #[derive(Clone, Debug, PartialEq)]
 enum Row {
-    /// A day divider: a band with its label.
-    Divider { y0: f64, y1: f64, label: String },
+    /// A day divider: a band with its label, across the conversation column.
+    Divider {
+        y0: f64,
+        y1: f64,
+        x0: f64,
+        x1: f64,
+        label: String,
+    },
     /// A message: its bubble, and the people and time above and below it.
     Line {
         index: usize,
@@ -165,6 +171,15 @@ enum Row {
 }
 
 impl Row {
+    /// A message row's bubble and, on a run's first line, its author band.
+    #[cfg(test)]
+    fn line_geometry(&self) -> Option<(Rect, Option<Rect>)> {
+        match self {
+            Self::Line { bubble, author, .. } => Some((*bubble, *author)),
+            Self::Divider { .. } => None,
+        }
+    }
+
     fn y1(&self) -> f64 {
         match self {
             Self::Divider { y1, .. } | Self::Line { y1, .. } => *y1,
@@ -229,8 +244,15 @@ impl<'a> ListFace<'a> {
         Self { lines, clock }
     }
 
-    /// Measure every row at `width`, from `y0`.
-    fn layout(&self, text: &mut TextRenderer, theme: &Theme, width: f64, y0: f64) -> Layout {
+    /// Measure every row at `width`, from the origin `(x0, y0)`.
+    fn layout(
+        &self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        x0: f64,
+        width: f64,
+        y0: f64,
+    ) -> Layout {
         let spacing = &theme.tokens.spacing;
         let author_style = theme.text(TextRole::Caption);
         let caption_style = theme.text(TextRole::Caption).numeric();
@@ -241,7 +263,15 @@ impl<'a> ListFace<'a> {
         let gutter = f64::from(spacing.s2);
         let readable = f64::from(theme.tokens.metrics.readable_width);
         let floor = f64::from(theme.tokens.spacing.s16);
-        let column = (width - 2.0 * gutter).max(floor);
+        // The conversation column: the room the list leaves, but never wider
+        // than the readable measure, and centred in what is left over. Two
+        // bubbles that hug the edges of a wide window are two bubbles nobody
+        // reads as a conversation.
+        let room_left = x0 + gutter;
+        let room_right = x0 + width - gutter;
+        let column = (room_right - room_left).min(readable).max(floor);
+        let left = room_left + ((room_right - room_left) - column).max(0.0) / 2.0;
+        let right = left + column;
         let bubble_max = (column * BUBBLE_COLUMN_SHARE).min(readable).max(floor);
         let inner_max = (bubble_max - 2.0 * pad_x).max(floor);
         let author_line = f64::from(text.measure_style("Ag", None, &author_style).1);
@@ -258,6 +288,8 @@ impl<'a> ListFace<'a> {
                 rows.push(Row::Divider {
                     y0: y,
                     y1: y + height,
+                    x0: left,
+                    x1: right,
                     label: self.clock.day_label(day),
                 });
                 y += height;
@@ -267,7 +299,7 @@ impl<'a> ListFace<'a> {
             let author =
                 (starts_run && line.role == ConversationRole::Incoming && !line.author.is_empty())
                     .then(|| {
-                        let band = Rect::new(gutter, y, gutter + column, y + author_line);
+                        let band = Rect::new(left, y, right, y + author_line);
                         y += author_line + f64::from(spacing.s1);
                         band
                     });
@@ -277,11 +309,11 @@ impl<'a> ListFace<'a> {
             let used_w = f64::from(text_w).min(inner_max);
             let bubble_w = (used_w + 2.0 * pad_x).min(bubble_max);
             let bubble_h = f64::from(text_h) + 2.0 * pad_y;
-            let x0 = match line.role {
-                ConversationRole::Incoming => gutter,
-                ConversationRole::Outgoing => (gutter + column - bubble_w).max(gutter),
+            let bubble_x = match line.role {
+                ConversationRole::Incoming => left,
+                ConversationRole::Outgoing => (right - bubble_w).max(left),
             };
-            let bubble = Rect::new(x0, y, x0 + bubble_w, y + bubble_h);
+            let bubble = Rect::new(bubble_x, y, bubble_x + bubble_w, y + bubble_h);
             y = bubble.y1 + gap;
             let caption = Rect::new(bubble.x0, y, bubble.x1, y + caption_line);
             y = caption.y1;
@@ -303,33 +335,39 @@ impl<'a> ListFace<'a> {
         }
     }
 
+    /// The rows this list lays out in `rect`, for a test of the geometry.
+    #[cfg(test)]
+    fn layout_for_test(&self, text: &mut TextRenderer, theme: &Theme, rect: Rect) -> Layout {
+        self.layout(text, theme, rect.x0, rect.width(), rect.y0)
+    }
+
     /// The list's height at `width`.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
-        self.layout(text, theme, width, 0.0).height
+        self.layout(text, theme, 0.0, width, 0.0).height
     }
 
     /// Paint the list from `rect`'s top left, `rect`'s width wide.
     pub fn paint(&self, paint: &mut PaintCtx<'_>, rect: Rect) {
-        let layout = self.layout(paint.text, paint.theme, rect.width(), rect.y0);
-        self.paint_layout(paint, rect, &layout);
+        let layout = self.layout(paint.text, paint.theme, rect.x0, rect.width(), rect.y0);
+        self.paint_layout(paint, &layout);
     }
 
     /// Paint rows already measured by [`Self::layout`], so a caller that needs
     /// the geometry (a list storing its rows for its accessible nodes) lays
     /// out once.
-    fn paint_layout(&self, paint: &mut PaintCtx<'_>, rect: Rect, layout: &Layout) {
+    fn paint_layout(&self, paint: &mut PaintCtx<'_>, layout: &Layout) {
         let theme = paint.theme;
         let radius = f64::from(theme.tokens.radii.control);
-        let spacing = &theme.tokens.spacing;
         for row in &layout.rows {
             match row {
-                Row::Divider { y0, y1, label } => {
-                    let band = Rect::new(
-                        rect.x0 + f64::from(spacing.s2),
-                        *y0,
-                        rect.x1 - f64::from(spacing.s2),
-                        *y1,
-                    );
+                Row::Divider {
+                    y0,
+                    y1,
+                    x0,
+                    x1,
+                    label,
+                } => {
+                    let band = Rect::new(*x0, *y0, *x1, *y1);
                     DayDividerFace::new(label).paint(paint, band, band.x0, band.x1);
                 }
                 Row::Line {
@@ -461,7 +499,7 @@ impl ConversationList {
     #[must_use]
     pub fn line_rect(&self, text: &mut TextRenderer, theme: &Theme, index: usize) -> Option<Rect> {
         let face = ListFace::new(&self.lines, ConversationClock::local());
-        let layout = face.layout(text, theme, self.rect.width(), self.rect.y0);
+        let layout = face.layout(text, theme, self.rect.x0, self.rect.width(), self.rect.y0);
         layout.rows.iter().find_map(|row| match row {
             Row::Line {
                 index: at, bubble, ..
@@ -530,8 +568,14 @@ impl Widget for ConversationList {
         }
         let face = ListFace::new(&self.lines, ConversationClock::local());
         let mut paint = PaintCtx::new(scene, transform, text_renderer, theme);
-        let layout = face.layout(paint.text, theme, self.rect.width(), self.rect.y0);
-        face.paint_layout(&mut paint, self.rect, &layout);
+        let layout = face.layout(
+            paint.text,
+            theme,
+            self.rect.x0,
+            self.rect.width(),
+            self.rect.y0,
+        );
+        face.paint_layout(&mut paint, &layout);
         self.rows = layout.rows;
     }
 
@@ -577,5 +621,43 @@ impl Widget for ConversationList {
             list = list.with_name(self.name.clone());
         }
         Some(list.with_children(children))
+    }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    /// Every row a list lays out sits inside the list it was given: a bubble
+    /// that escapes its column is a bubble drawn over its neighbours.
+    #[test]
+    fn every_row_is_laid_out_inside_the_list_it_is_given() {
+        let mut text = crate::font_catalog::fixture_renderer();
+        let theme = Theme::dark();
+        let clock = ConversationClock::at(0, 1_782_828_300);
+        let lines = vec![
+            ConversationLine::incoming("a", 1_782_828_300_000, "Ada Rivera", "are you nearby?"),
+            ConversationLine::outgoing("b", 1_782_828_360_000, "on my way"),
+        ];
+        let face = ListFace::new(&lines, clock);
+        let rect = Rect::new(360.0, 100.0, 780.0, 500.0);
+        let layout = face.layout_for_test(&mut text, &theme, rect);
+        let mut checked = 0;
+        for row in &layout.rows {
+            if let Some((bubble, author)) = row.line_geometry() {
+                assert!(
+                    bubble.x0 >= rect.x0 && bubble.x1 <= rect.x1,
+                    "a bubble stays inside its list: {bubble:?} in {rect:?}"
+                );
+                if let Some(author) = author {
+                    assert!(
+                        author.x0 >= rect.x0 && author.x1 <= rect.x1,
+                        "an author line stays inside its list: {author:?} in {rect:?}"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 2);
     }
 }

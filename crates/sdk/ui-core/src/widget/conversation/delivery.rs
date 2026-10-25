@@ -97,10 +97,12 @@ impl DeliveryState {
         super::t(self.key())
     }
 
-    /// The glyph this state carries. Each step that means something different
-    /// looks different: a clock while it is on its way, a tick once a transport
-    /// has it, a filled circle-check once the other person's device has it, and
-    /// a warning where the answer is a refusal or silence.
+    /// The glyph this state carries: a clock while it is on its way, a tick
+    /// once a transport has it, a circle-check once the other person's device
+    /// has it — and a warning where the answer is a refusal or a silence. A
+    /// step within a stage (`Submitted` and `Sent`, `Delivered` and `Read`) is
+    /// told by its word; the glyph tells the stage, which is what a glance
+    /// reads.
     #[must_use]
     pub const fn icon(self) -> Icon {
         match self {

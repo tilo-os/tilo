@@ -170,7 +170,7 @@ impl ChatApp {
     }
 
     /// Show the saved copy's folder in the desktop's file manager.
-    pub(crate) fn reveal_saved_copy(&mut self) {
+    pub(crate) fn reveal_saved_copy(&self) {
         let Some(view) = &self.attachment_view else {
             return;
         };
@@ -224,7 +224,7 @@ impl ChatApp {
         );
         let mut paint = PaintCtx::new(scene, tf, tr, theme);
         // The picture itself, when there is one and it is readable here.
-        let readable = self.summary_allows(&summary);
+        let readable = Self::summary_allows(&summary);
         if readable && summary.kind.previews() {
             if let Some(image) = self.attachment_picture(&att) {
                 let target = full_size_rect(picture, image.width, image.height);
@@ -361,7 +361,7 @@ impl ChatApp {
     }
 
     /// Whether the summary says the bytes can be read here.
-    fn summary_allows(&self, summary: &AttachmentSummary<'_>) -> bool {
+    fn summary_allows(summary: &AttachmentSummary<'_>) -> bool {
         summary.availability == Availability::Ready
     }
 }
