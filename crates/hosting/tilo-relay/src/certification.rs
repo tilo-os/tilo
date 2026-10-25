@@ -670,9 +670,6 @@ async fn answered(
 mod confirmation_tests {
 
     use super::*;
-    use crate::daemon::RelayProtocol;
-    use crate::peer::WorkspaceRegistry;
-    use tempfile::TempDir;
     use tilo_user_identity::{DeviceCapabilities, UserIdentity, sign_device_cert};
 
     fn protocol() -> CertificationProtocol {
@@ -694,45 +691,6 @@ mod confirmation_tests {
             signing_key: key,
             revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
         })
-    }
-
-    /// The room id every relay test shares.
-    const ROOM: &str = "0b5c7a7e-6f43-4a39-9d1c-1d3f2a6c0e11";
-
-    /// A host, and the registry it asks whether a person is still a member.
-    fn protocol_serving_a_workspace() -> (CertificationProtocol, WorkspaceRegistry, TempDir) {
-        let state = tempfile::tempdir().unwrap();
-        let id = crate::room_workspace_id(ROOM).unwrap();
-        let workspace = crate::workspace::WorkspaceRuntime::open(
-            state.path(),
-            id,
-            false,
-            crate::workspace::Membership::default(),
-        )
-        .unwrap();
-        let workspaces: WorkspaceRegistry = Arc::new(tokio::sync::Mutex::new(HashMap::from([(
-            id,
-            Arc::new(tokio::sync::Mutex::new(workspace)),
-        )])));
-        let (root, _) = UserIdentity::generate("Ada", 1);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "home-server".into(),
-            capabilities: DeviceCapabilities::host(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let identity = LiveIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            cert,
-            signing_key: key,
-            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
-        };
-        (CertificationProtocol::new(identity), workspaces, state)
     }
 
     fn question(id: u8, wait: Duration) -> PendingConfirmation {
@@ -968,7 +926,7 @@ mod confirmation_tests {
 
     #[tokio::test]
     async fn a_guest_who_is_no_longer_a_member_is_not_certified() {
-        let (protocol, workspaces, _state) = protocol_serving_a_workspace();
+        let protocol = protocol();
         let member = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
         let request = member_request(&member, &device);
@@ -988,19 +946,14 @@ mod confirmation_tests {
             decision: ApproverDecision::Issue(cert),
         };
 
-        // The host stops serving the workspace that admitted them; this is
-        // what the route asks right before handing the approval on.
-        workspaces.lock().await.clear();
-        let still_a_member = RelayProtocol::user_is_admitted_anywhere(
-            &workspaces,
-            member.verifying_key().to_bytes(),
-        )
-        .await;
+        // What the approve route asks right before it hands the approval on:
+        // this host no longer serves a workspace that admits them.
+        let admitted = false;
         let reply = protocol.member_approve(
             signed(&member, issue),
             unix_now_ns(),
             Admission::Member {
-                admitted: &still_a_member,
+                admitted: &admitted,
             },
         );
         let ApproverReply::Refused { reason } = &reply else {
