@@ -107,6 +107,7 @@ impl Stage {
             avatar: (!avatar.is_zero_area()).then_some(avatar),
             colour: Some(COLOUR),
             quiet: None,
+            presented: true,
         }
     }
 }
