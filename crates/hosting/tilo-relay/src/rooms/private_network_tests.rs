@@ -821,3 +821,117 @@ async fn a_pages_session_carries_the_same_private_door() {
     drop(rooms);
     relay.shutdown().await;
 }
+
+/// A person names themself in the room: governance holds the name, so
+/// every person list shows it, not their device's label, and naming them
+/// what they are called writes nothing. The room's spectator person, whom
+/// every watching page is certified as, is a member yet nobody: it names
+/// nobody, holds no conversations and is on no one's list.
+#[tokio::test]
+async fn people_name_themselves_and_the_spectator_is_nobody() {
+    use tilo_relay_protocol::rooms::{RoomsReply, RoomsRequest};
+    let directory = tempfile::tempdir().unwrap();
+    let (governor_key, governor_cert) = tests::governor();
+    let relay = tests::view_read_relay(directory.path(), &governor_key, &governor_cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Who is who").await.unwrap();
+    let (alice_key, alice) = identity(82, None);
+    let (bob_key, bob) = identity(92, None);
+    let (watcher_key, watcher) = identity(112, None);
+    let now = SystemTime::now();
+    for (key, cert) in [
+        (&alice_key, &alice),
+        (&bob_key, &bob),
+        (&watcher_key, &watcher),
+    ] {
+        admit(&rooms, &created.room, &governor_key, key, cert, now).await;
+    }
+    relay
+        .admit_spectators(
+            created.workspace_id,
+            crate::room_access::Spectators {
+                root: watcher.user_public_key,
+                seats: 4,
+                public: true,
+            },
+        )
+        .await
+        .unwrap();
+    let name = |cert: &DeviceCert, name: &str| {
+        let (rooms, cert, room) = (rooms.clone(), cert.clone(), created.room.clone());
+        let name = name.to_owned();
+        async move {
+            rooms
+                .page_rooms(&cert, RoomsRequest::Name { room, name })
+                .await
+        }
+    };
+    assert_eq!(name(&alice, "Lucky Seal").await, RoomsReply::Named);
+    let summary = rooms.summary(&created.room).await.unwrap();
+    let named = summary
+        .members
+        .iter()
+        .find(|member| member.user_public_key == alice.user_public_key)
+        .unwrap();
+    assert_eq!(named.display_name.as_deref(), Some("Lucky Seal"));
+    assert_eq!(name(&alice, "Lucky Seal").await, RoomsReply::Named);
+    assert_eq!(
+        rooms.summary(&created.room).await.unwrap().generation,
+        summary.generation,
+        "the name they already go by writes nothing"
+    );
+
+    let door = PrivateProtocol::new(rooms.clone());
+    let ask = |cert: &DeviceCert, operation| {
+        let (door, cert, room) = (door.clone(), cert.clone(), created.room.clone());
+        async move {
+            door.serve(
+                &cert,
+                &cert.device_public_key,
+                &room,
+                operation,
+                std::future::ready(Ok(())),
+            )
+            .await
+        }
+    };
+    let PrivateReply::Contacts(contacts) = ask(&bob, PrivateOperation::Contacts).await else {
+        panic!("contacts");
+    };
+    let watcher_key_hex = hex::encode(watcher.user_public_key);
+    assert!(contacts.iter().any(|contact| contact.public_key
+        == hex::encode(alice.user_public_key)
+        && contact.display_name.as_deref() == Some("Lucky Seal")));
+    assert!(
+        !contacts
+            .iter()
+            .any(|contact| contact.public_key == watcher_key_hex),
+        "the spectator is nobody's contact"
+    );
+    assert!(matches!(
+        ask(
+            &bob,
+            PrivateOperation::Open {
+                peer: watcher_key_hex
+            }
+        )
+        .await,
+        PrivateReply::Refused
+    ));
+    assert!(matches!(
+        ask(&watcher, PrivateOperation::Contacts).await,
+        PrivateReply::Refused
+    ));
+    assert!(matches!(
+        name(&watcher, "Watching visitor").await,
+        RoomsReply::Refused(_)
+    ));
+    let (_, stranger) = identity(102, None);
+    assert!(matches!(
+        name(&stranger, "Someone").await,
+        RoomsReply::Refused(_)
+    ));
+    assert!(matches!(name(&bob, "\u{7}").await, RoomsReply::Refused(_)));
+    drop((rooms, door));
+    relay.shutdown().await;
+}
