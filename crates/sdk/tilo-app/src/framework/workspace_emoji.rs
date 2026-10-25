@@ -95,6 +95,12 @@ impl WindowEmoji {
                 tracing::warn!(%error, file = %file.name, "the chosen picture was not added as an emoji");
             }
         }
+        // Neither the chooser's answer nor the image tools' arrival wakes
+        // the window, and nothing else may change in it meanwhile: it asks
+        // for the next refresh itself until the pictures are in.
+        if !self.choosing.borrow().is_empty() || !self.waiting.borrow().is_empty() {
+            self.state.wake();
+        }
     }
 
     fn add_small(&self, name: &str, small: Small) -> Result<(), String> {
@@ -198,6 +204,7 @@ impl EmojiSource for WindowEmoji {
         .max_contents_bytes(MAX_CHOSEN_BYTES)
         .thread_name("workspace-emoji-choose");
         self.choosing.borrow_mut().push(request.send_contents());
+        self.state.wake();
     }
 }
 
