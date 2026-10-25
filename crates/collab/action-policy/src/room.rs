@@ -12,7 +12,13 @@ use crate::{
 };
 
 /// Everything that decides authority in one room.
+///
+/// The built-in roles' grants are the code's ([`roles::role_rules`]): a
+/// stored policy loads with them as defined now
+/// ([`Self::with_current_roles`]), so a room written before a role changed
+/// gets the role as it is. Grants given in the room stay as stored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredRoomPolicy")]
 pub struct RoomPolicy {
     pub room: String,
     /// The owner, by person id. Structural: holds everything and cannot be
@@ -28,6 +34,31 @@ pub struct RoomPolicy {
     pub joined: BTreeMap<String, u64>,
     /// Every grant in the room, role presets included.
     pub grants: Vec<Grant>,
+}
+
+/// A [`RoomPolicy`] as written, before its built-in roles are brought to
+/// their current definition.
+#[derive(Deserialize)]
+struct StoredRoomPolicy {
+    room: String,
+    owner: Option<String>,
+    members: BTreeMap<String, Role>,
+    #[serde(default)]
+    joined: BTreeMap<String, u64>,
+    grants: Vec<Grant>,
+}
+
+impl From<StoredRoomPolicy> for RoomPolicy {
+    fn from(stored: StoredRoomPolicy) -> Self {
+        Self {
+            room: stored.room,
+            owner: stored.owner,
+            members: stored.members,
+            joined: stored.joined,
+            grants: stored.grants,
+        }
+        .with_current_roles()
+    }
 }
 
 /// A change to a room's authority. Each is one governance action.
@@ -131,6 +162,9 @@ pub enum Refusal {
     AlreadyAMember(String),
     UnknownGrant(GrantId),
     DuplicateGrant(GrantId),
+    /// A built-in role's grant: the role's rules are the code's, so a room
+    /// neither revokes nor gives one; it adjusts a role with grants of its own.
+    BuiltInRole(GrantId),
 }
 
 impl std::fmt::Display for Refusal {
@@ -162,6 +196,7 @@ impl std::fmt::Display for Refusal {
             Self::AlreadyAMember(person) => write!(f, "{person} is already a member"),
             Self::UnknownGrant(id) => write!(f, "no grant {id}"),
             Self::DuplicateGrant(id) => write!(f, "grant {id} already exists"),
+            Self::BuiltInRole(id) => write!(f, "{id} is part of a built-in role"),
         }
     }
 }
@@ -205,6 +240,15 @@ impl RoomPolicy {
             joined: BTreeMap::new(),
             grants,
         }
+    }
+
+    /// The policy with each built-in role's grants as the code defines them
+    /// now ([`roles::current_role_grants`]). Whatever reads a stored policy
+    /// calls it, so stored copies of a role never decide.
+    #[must_use]
+    pub fn with_current_roles(mut self) -> Self {
+        self.grants = roles::current_role_grants(std::mem::take(&mut self.grants));
+        self
     }
 
     /// Move the policy to another room id: every grant on this room's nodes
@@ -675,6 +719,9 @@ impl RoomPolicy {
                 self.check_reach(actor_person, person, true)
             }
             Change::Grant(grant) => {
+                if roles::is_role_grant(grant) {
+                    return Err(Refusal::BuiltInRole(grant.id.clone()));
+                }
                 if grant.node.room_id() != Some(self.room.as_str()) {
                     return Err(Refusal::OutsideRoom(grant.node.clone()));
                 }
@@ -684,7 +731,10 @@ impl RoomPolicy {
                 Self::check_within(actor, grant, cx)
             }
             Change::Revoke(id) => {
-                if self.grants.iter().any(|grant| &grant.id == id) {
+                if let Some(grant) = self.grants.iter().find(|grant| &grant.id == id) {
+                    if roles::is_role_grant(grant) {
+                        return Err(Refusal::BuiltInRole(id.clone()));
+                    }
                     Ok(())
                 } else {
                     Err(Refusal::UnknownGrant(id.clone()))
