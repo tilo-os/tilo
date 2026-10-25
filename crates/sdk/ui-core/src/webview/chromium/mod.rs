@@ -2171,6 +2171,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             permissions,
             hosts,
             scriptable,
+            framed,
             token,
             commands,
         } => {
@@ -2178,7 +2179,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                 && token
                     .as_ref()
                     .is_none_or(|token| (32..=128).contains(&token.len()))
-                && [permissions, hosts, scriptable]
+                && [permissions, hosts, scriptable, framed]
                     .iter()
                     .all(|list| list.len() <= 512 && list.iter().all(|entry| entry.len() <= 2048))
                 && commands.as_ref().is_none_or(|commands| {
@@ -2655,11 +2656,13 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             permissions,
             hosts,
             scriptable,
+            framed,
             token,
             commands,
         } => {
             let mut command = json!({"op":"extension_access","id":id,
-                "permissions":permissions,"hosts":hosts,"scriptable":scriptable});
+                "permissions":permissions,"hosts":hosts,"scriptable":scriptable,
+                "framed":framed});
             if let Some(token) = token {
                 command["token"] = json!(token);
             }

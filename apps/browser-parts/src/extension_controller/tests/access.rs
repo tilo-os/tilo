@@ -106,6 +106,7 @@ fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
         permissions: vec!["tabs".into()],
         hosts: vec!["https://*/*".into()],
         scriptable: vec!["<all_urls>".into()],
+        framed: vec!["<all_urls>".into()],
         token: Some("a".repeat(48)),
         commands: Some(shortcuts.clone()),
         ..toolbar::Access::default()
@@ -135,6 +136,7 @@ fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
                 permissions: Vec::new(),
                 hosts: Vec::new(),
                 scriptable: Vec::new(),
+                framed: Vec::new(),
                 token: extensions::manager_token(&manager),
                 commands: None,
             },
@@ -143,6 +145,7 @@ fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
                 permissions: vec!["tabs".into()],
                 hosts: vec!["https://*/*".into()],
                 scriptable: vec!["<all_urls>".into()],
+                framed: vec!["<all_urls>".into()],
                 token: Some("a".repeat(48)),
                 commands: Some(shortcuts.clone()),
             }

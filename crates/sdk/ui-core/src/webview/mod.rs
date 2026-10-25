@@ -742,6 +742,8 @@ pub enum WebViewCommand {
         /// Where its declared content scripts run, which, as in Chrome, gives
         /// no access to the tab APIs.
         scriptable: Vec<String>,
+        /// Where they run in a page's frames too (`all_frames`).
+        framed: Vec<String>,
         /// What its service worker shows the engine to be known as its.
         token: Option<String>,
         /// Its keyboard shortcuts: the manifest's `commands` object, whose
