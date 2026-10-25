@@ -15,12 +15,19 @@
 //!
 //! Either way [`WindowSlots::sync_groups`] puts each tab's slots in its
 //! window group's bar and takes what the person did there.
+//!
+//! The desktop adds items of its own to a window's overflow menu ("Share to
+//! channel…", [`WindowSlots::set_host_items`]): they join the slots its app
+//! declared, and what the person chose of them comes back to the desktop
+//! ([`WindowSlots::take_host_actions`]), never to the app.
 
 use std::collections::HashMap;
 
 use crate::hosted_window::HostedWindow;
 use crate::widget::WindowGroup;
-use crate::window_toolbar::{ToolbarEvent, WindowOffer, WindowToolbar};
+use crate::window_toolbar::{
+    MAX_DECLARED_ACTIONS, ToolbarAction, ToolbarEvent, WindowOffer, WindowToolbar,
+};
 
 /// A desktop tab's id.
 pub type TabId = u64;
@@ -29,6 +36,10 @@ pub type TabId = u64;
 /// kept under: what the person does with them goes back on its window,
 /// never on a connection.
 const IN_PROCESS: u64 = u64::MAX;
+
+/// What the ids of the desktop's own menu items start with: an app's never
+/// do, so a choice of one reaches the desktop alone.
+pub const HOST_ACTION_PREFIX: &str = "tilo.desktop.";
 
 /// Every tab's declared slots and the connection of the app that declared
 /// them, and what goes back to the apps on the next pump.
@@ -48,6 +59,10 @@ pub struct WindowSlots {
     hosted_seen: HashMap<TabId, (HostedWindow, u64)>,
     /// What goes back to apps in the host's own process, by tab.
     hosted_outbox: Vec<(TabId, ToolbarEvent)>,
+    /// The desktop's own items in each tab's overflow menu.
+    host_items: HashMap<TabId, Vec<ToolbarAction>>,
+    /// The desktop's items the person chose, by tab, not taken yet.
+    host_actions: Vec<(TabId, String)>,
 }
 
 /// What [`WindowSlots::sync_hosted`] found.
@@ -136,9 +151,53 @@ impl WindowSlots {
         self.by_tab.get(&tab).map(|(_, toolbar)| toolbar)
     }
 
+    /// Put `items`, the desktop's own, in `tab`'s overflow menu, after its
+    /// app's. They show only in a window whose app declared slots: a bar
+    /// that had none keeps its title alone. Each id starts with
+    /// [`HOST_ACTION_PREFIX`].
+    pub fn set_host_items(&mut self, tab: TabId, items: Vec<ToolbarAction>) {
+        let items: Vec<ToolbarAction> = items
+            .into_iter()
+            .filter(|item| item.id.starts_with(HOST_ACTION_PREFIX))
+            .map(|item| ToolbarAction { menu: true, ..item })
+            .collect();
+        if items.is_empty() {
+            self.host_items.remove(&tab);
+        } else {
+            self.host_items.insert(tab, items);
+        }
+    }
+
+    /// The desktop's own items the person chose since the last call, by
+    /// tab, each by its id.
+    pub fn take_host_actions(&mut self) -> Vec<(TabId, String)> {
+        std::mem::take(&mut self.host_actions)
+    }
+
+    /// `tab`'s bar as it shows: its app's slots, its menu ending in the
+    /// desktop's items.
+    fn shown_toolbar(&self, tab: TabId) -> Option<WindowToolbar> {
+        let toolbar = self.toolbar(tab)?;
+        let Some(items) = self.host_items.get(&tab) else {
+            return Some(toolbar.clone());
+        };
+        let mut shown = toolbar.clone();
+        shown
+            .actions
+            .truncate(MAX_DECLARED_ACTIONS.saturating_sub(items.len()));
+        shown.actions.extend(items.iter().cloned());
+        Some(shown)
+    }
+
     /// Queue `event` for the app that declared `tab`'s slots or offered
     /// its window to the bar. Returns whether one did.
     pub fn route(&mut self, tab: TabId, event: ToolbarEvent) -> bool {
+        if let ToolbarEvent::Action { id } = &event
+            && id.starts_with(HOST_ACTION_PREFIX)
+        {
+            self.host_actions.push((tab, id.clone()));
+            return true;
+        }
         let connection = match &event {
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
@@ -175,6 +234,7 @@ impl WindowSlots {
     /// Tab `tab`, shown in the host's own process, is gone: its slots go.
     pub fn forget_hosted(&mut self, tab: TabId) {
         self.hosted_seen.remove(&tab);
+        self.host_items.remove(&tab);
         if self.by_tab.remove(&tab).is_some() {
             self.cleared.push(tab);
         }
@@ -190,7 +250,13 @@ impl WindowSlots {
         for group in groups {
             let ids: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
             for id in ids {
-                if let Some(toolbar) = self.toolbar(id) {
+                if self.host_items.contains_key(&id)
+                    && let Some(toolbar) = self.shown_toolbar(id)
+                {
+                    if group.tab_toolbar(id) != Some(&toolbar) {
+                        group.set_tab_toolbar(id, Some(toolbar));
+                    }
+                } else if let Some(toolbar) = self.toolbar(id) {
                     // Declarations are stored bounded, as the bar keeps
                     // them: an unchanged one is compared, not copied.
                     if group.tab_toolbar(id) != Some(toolbar) {

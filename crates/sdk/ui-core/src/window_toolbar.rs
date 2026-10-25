@@ -1166,6 +1166,13 @@ pub(crate) fn window() -> Option<crate::hosted_window::HostedWindow> {
     WINDOW.with(|current| current.borrow().clone())
 }
 
+/// The workspace of the window the app runs in, when its host put the
+/// window in one ([`crate::hosted_window::HostedWindow::set_workspace`]).
+#[must_use]
+pub fn workspace() -> Option<String> {
+    window().and_then(|window| window.workspace())
+}
+
 /// Which window this module's calls act on now: the one a host lent the app
 /// it is running, or `None` for the process's own window.
 pub(crate) fn current_window() -> Option<usize> {
