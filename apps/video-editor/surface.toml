@@ -228,6 +228,20 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "place-two-angles"
+kind = "undoable"
+params = [
+  { name = "at", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "unplace-two-angles"
+kind = "undoable"
+params = [
+  { name = "at", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
 id = "remove-marker"
 destructive = true
 kind = "undoable"
