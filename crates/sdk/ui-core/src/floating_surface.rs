@@ -187,7 +187,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 16;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 17;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 /// What a model may know about one change it is asked to describe: the
@@ -482,6 +482,30 @@ pub enum FloatingSurfaceClientMessage {
         request: u64,
         answer: crate::pick_wire::PickAnswer,
     },
+    /// The record this window shows, as its route names it (empty for the
+    /// app's own record of the workspace), and the kind of resource it
+    /// keeps: the desktop lists the window among those a person may share
+    /// ([`crate::window_share`]). Sent once per connection.
+    WindowRecord {
+        record: String,
+        kind: String,
+        instance: Option<u64>,
+    },
+    /// Where this window wants other apps' views of resources drawn, at most
+    /// [`crate::window_share::MAX_EMBEDS`] (`crate::window_share::declare`):
+    /// sent whenever they change. The shell answers with
+    /// [`FloatingSurfaceHostMessage::EmbedStates`]. Only the sharing app's
+    /// embeds are drawn.
+    Embeds {
+        embeds: Vec<crate::window_share::DeclaredEmbed>,
+        instance: Option<u64>,
+    },
+    /// The windows this app shares (`crate::window_share::publish_shared`),
+    /// sent whenever they change, so the desktop offers "Stop sharing" on
+    /// them. Only the sharing app's are taken.
+    SharedWindows {
+        shared: Vec<crate::window_share::SharedWindow>,
+    },
 }
 
 /// One control of an app's window as the shell names it when a person
@@ -655,6 +679,25 @@ pub enum FloatingSurfaceHostMessage {
         /// shells.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         corner_radius: Option<f32>,
+    },
+    /// This shell draws the views windows embed of other apps' resources
+    /// ([`FloatingSurfaceClientMessage::Embeds`]): sent when the app
+    /// connects, so the app draws no stand-in for them.
+    DrawsEmbeds,
+    /// How each embed of this app's window is coming along, every one the
+    /// shell draws: sent whenever one changes.
+    EmbedStates {
+        states: Vec<crate::window_share::KeyedEmbedState>,
+    },
+    /// The windows the person has open on a record, for the sharing app's
+    /// picker: sent to the sharing app alone, whenever they change.
+    OpenWindows {
+        windows: Vec<crate::window_share::OpenWindow>,
+    },
+    /// A window's menu asked the sharing app to share it, or to stop
+    /// sharing it.
+    WindowShareAsk {
+        ask: crate::window_share::Ask,
     },
 }
 

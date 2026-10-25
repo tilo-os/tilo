@@ -64,6 +64,7 @@ mod displays;
 mod emoji_layer;
 mod history;
 pub(crate) mod layers;
+mod live_shares;
 mod now_playing;
 mod overview_grid;
 mod palette_flow;
@@ -1075,6 +1076,9 @@ pub struct ShellOverlayHost {
     feedback_picker: crate::shell::feedback_pick::NativePicker,
     /// The slots Tilo apps declared for their windows' bars.
     window_toolbars: window_toolbars::WindowToolbars,
+    /// Windows shared live into a conversation: the menus offering it, the
+    /// sharing app's connections and the views windows embed.
+    live_shares: live_shares::NativeLiveShares,
     /// The tree revision the windows lent to apps the shell mounts were
     /// last matched against the tabs at ([`Self::sync_hosted_windows`]).
     hosted_windows_revision: Option<u64>,

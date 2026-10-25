@@ -1172,9 +1172,6 @@ follow-label = Following { $person }
 follow-stopped = Stopped following
 follow-stop = Stop
 
-# A window shared live into a conversation, from its own menu.
-window-share-to-channel = Share to channel…
-window-stop-sharing-in = Stop sharing in { $place }
 people-follows = Following { $person }
 people-follows-you = Following you
 people-follows-where = { $place }, following { $person }

@@ -10,36 +10,30 @@
 //!   desktop's own copy of the record, laid out at a window's size and drawn
 //!   scaled into the place the window gave it. It takes no input: opening
 //!   the resource is the embedding app's own action.
+//!
+//! The menus, the asks and when a view starts, retries and ends are every
+//! desktop's ([`ui::window_share::host`]); this desktop runs each view's app
+//! beside its windows, as a [`TileHost`] it lays out and draws itself.
 
 use std::collections::{HashMap, HashSet};
 
 use ui::kurbo::{Affine, Point, Rect, Vec2};
 use ui::taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
-use ui::time::{Duration, Instant};
+use ui::time::Instant;
 use ui::vello::Scene;
-use ui::widget::{TileContent, TileHost, Widget};
-use ui::window_share::{self, EmbedState, OpenWindow, ResourceView};
-use ui::window_toolbar::ToolbarAction;
+use ui::widget::{TileHost, Widget};
+use ui::window_share::host::{self, VIEW, Views};
+use ui::window_share::{self, Ask, OpenWindow, ResourceView};
 use ui::{TextRenderer, Theme};
 
 use super::DesktopSurface;
 use crate::navigation::Admitted;
 
-/// The size an embedded view is laid out at before it is scaled into its
-/// place: about a window's, so the app lays it out as its sharer sees it.
-const VIEW: (f64, f64) = (1000.0, 625.0);
-/// How soon a view that could not show yet (its record still on its way)
-/// is tried again.
-const RETRY: Duration = Duration::from_secs(2);
-
-const SHARE_ITEM: &str = "tilo.desktop.share-to-channel";
-const STOP_ITEM: &str = "tilo.desktop.stop-sharing";
-
 /// The views this desktop runs for the windows that embed them, and the
 /// windows its menus offer to share.
 #[derive(Default)]
 pub(super) struct LiveShares {
-    views: HashMap<ResourceView, View>,
+    views: Views<TileHost>,
     /// Where each view is drawn this frame, in the surface's coordinates:
     /// its place and what of it may show.
     placed: Vec<(ResourceView, Rect, Rect)>,
@@ -47,39 +41,6 @@ pub(super) struct LiveShares {
     offered: HashSet<u64>,
     /// The windows on a record, as last listed.
     windows: Vec<OpenWindow>,
-}
-
-/// One embedded view: its app, or why it cannot show.
-struct View {
-    host: Result<TileHost, String>,
-    tried: Instant,
-}
-
-impl View {
-    fn state(&self) -> EmbedState {
-        match &self.host {
-            Err(reason) => EmbedState::Unavailable(reason.clone()),
-            Ok(host) => match host.content() {
-                TileContent::App(_) => EmbedState::Showing,
-                TileContent::Notice { detail, .. } => EmbedState::Unavailable(detail.clone()),
-                _ => EmbedState::Loading,
-            },
-        }
-    }
-
-    fn settled(&self) -> bool {
-        matches!(self.state(), EmbedState::Showing)
-    }
-
-    /// When it is tried again, while it does not show.
-    fn retry_at(&self) -> Option<Instant> {
-        self.tried.checked_add(RETRY)
-    }
-}
-
-/// `rect` moved `dx` to the right.
-fn shifted(rect: Rect, dx: f64) -> Rect {
-    Rect::new(rect.x0 + dx, rect.y0, rect.x1 + dx, rect.y1)
 }
 
 impl DesktopSurface {
@@ -128,34 +89,12 @@ impl DesktopSurface {
                 .collect()
         };
         window_share::publish_windows(windows.clone());
-        let shared = window_share::shared();
-        let mut offered = HashSet::new();
-        for window in &windows {
-            let item = match shared
-                .iter()
-                .find(|share| share.app == window.app && share.record == window.record)
-            {
-                Some(share) => ToolbarAction::new(
-                    STOP_ITEM,
-                    "eye-off",
-                    crate::i18n::t_args(
-                        "window-stop-sharing-in",
-                        &[("place", (&share.place).into())],
-                    ),
-                ),
-                None => ToolbarAction::new(
-                    SHARE_ITEM,
-                    "screen-share",
-                    crate::i18n::t("window-share-to-channel"),
-                ),
-            };
-            self.window_slots.set_host_items(window.tab, vec![item]);
-            offered.insert(window.tab);
-        }
-        for gone in self.live_shares.offered.difference(&offered) {
-            self.window_slots.set_host_items(*gone, Vec::new());
-        }
-        self.live_shares.offered = offered;
+        host::offer(
+            &mut self.window_slots,
+            &windows,
+            &window_share::shared(),
+            &mut self.live_shares.offered,
+        );
         self.live_shares.windows = windows;
     }
 
@@ -163,33 +102,17 @@ impl DesktopSurface {
     /// anything was asked.
     pub(super) fn take_window_share_asks(&mut self) -> bool {
         let chosen = self.window_slots.take_host_actions();
-        let mut asked = false;
-        for (tab, item) in chosen {
-            let Some(window) = self
-                .live_shares
-                .windows
-                .iter()
-                .find(|window| window.tab == tab)
-            else {
-                continue;
-            };
-            if item == SHARE_ITEM {
-                window_share::ask_to_share(window.clone());
+        let asks = host::asks(chosen, &self.live_shares.windows, &window_share::shared());
+        let asked = !asks.is_empty();
+        for ask in asks {
+            if matches!(ask, Ask::Share(_)) {
                 // The sharing app asks where, in front.
                 self.shared
                     .borrow_mut()
                     .queue
                     .push(Admitted::Open(window_share::SHARING_APP.to_owned()));
-                asked = true;
-            } else if item == STOP_ITEM {
-                for share in window_share::shared()
-                    .into_iter()
-                    .filter(|share| share.app == window.app && share.record == window.record)
-                {
-                    window_share::ask_to_stop(share.message);
-                    asked = true;
-                }
             }
+            window_share::deliver_ask(ask);
         }
         asked
     }
@@ -205,7 +128,6 @@ impl DesktopSurface {
         if !self.tiles.draws_embeds() {
             return false;
         }
-        let now = ui::time::now();
         let mut placed = Vec::new();
         let mut asking = Vec::new();
         if let Some(row) = self.shown.and_then(|strip| self.rows.get_mut(&strip)) {
@@ -214,49 +136,35 @@ impl DesktopSurface {
                 let Some(content) = group.content_rect_for_tab(tab) else {
                     continue;
                 };
-                let Some(host) = group.host_for_tab_mut(tab) else {
+                let Some(tile) = group.host_for_tab_mut(tab) else {
                     continue;
                 };
-                let shift = host.content_shift();
-                let Some(window) = host.hosted_window().cloned() else {
+                let origin = Vec2::new(tile.content_shift(), 0.0);
+                let Some(window) = tile.hosted_window().cloned() else {
                     continue;
                 };
                 for embed in window.embeds() {
-                    let clip = shifted(embed.clip, shift).intersect(content);
-                    placed.push((embed.view.clone(), shifted(embed.rect, shift), clip));
+                    let (rect, clip) = host::placed(&embed, origin, content);
+                    placed.push((embed.view.clone(), rect, clip));
                     asking.push((window.clone(), embed.key, embed.view));
                 }
             }
         }
-        let mut changed = false;
-        let wanted: HashSet<&ResourceView> = placed.iter().map(|(view, ..)| view).collect();
-        let before = self.live_shares.views.len();
-        self.live_shares
-            .views
-            .retain(|view, _| wanted.contains(view));
-        changed |= self.live_shares.views.len() != before;
-        for view in wanted {
-            let retry = self.live_shares.views.get(view).is_none_or(|known| {
-                !known.settled() && known.retry_at().is_some_and(|at| now >= at)
-            });
-            if retry {
-                let host = self.tiles.embed(view);
-                self.live_shares
-                    .views
-                    .insert(view.clone(), View { host, tried: now });
-                changed = true;
-            }
-        }
+        let tiles = &mut self.tiles;
+        let followed = self.live_shares.views.follow(
+            placed.iter().map(|(view, ..)| view),
+            ui::time::now(),
+            |view| tiles.embed(view),
+        );
+        let mut changed = followed.changed;
         for (window, key, view) in asking {
-            if let Some(known) = self.live_shares.views.get(&view) {
-                window.set_embed_state(&key, known.state());
+            if let Some(state) = self.live_shares.views.state(&view) {
+                window.set_embed_state(&key, state);
             }
         }
-        for known in self.live_shares.views.values_mut() {
-            if let Ok(host) = &mut known.host {
-                host.sync(state, path);
-                changed |= host.update(state, path);
-            }
+        for (_, host) in self.live_shares.views.running_mut() {
+            host.sync(state, path);
+            changed |= host.update(state, path);
         }
         self.live_shares.placed = placed;
         changed
@@ -264,21 +172,15 @@ impl DesktopSurface {
 
     /// The soonest a view that could not show is tried again.
     pub(super) fn embed_retry_deadline(&self) -> Option<Instant> {
-        self.live_shares
-            .views
-            .values()
-            .filter(|view| !view.settled())
-            .filter_map(View::retry_at)
-            .min()
+        self.live_shares.views.retry_deadline()
     }
 
     /// Whether a running view is animating.
     pub(super) fn embeds_animate(&self) -> bool {
         self.live_shares
             .views
-            .values()
-            .filter_map(|view| view.host.as_ref().ok())
-            .any(Widget::needs_animation_frame)
+            .running()
+            .any(|(_, host)| host.needs_animation_frame())
     }
 
     /// What the running views wrote this frame goes to their records.
@@ -287,10 +189,8 @@ impl DesktopSurface {
         edits: &mut ui::widget::Edits<'_>,
         path: &ui::automerge::ObjId,
     ) {
-        for view in self.live_shares.views.values_mut() {
-            if let Ok(host) = &mut view.host {
-                host.settle(edits, path);
-            }
+        for (_, host) in self.live_shares.views.running_mut() {
+            host.settle(edits, path);
         }
     }
 
@@ -310,21 +210,12 @@ impl DesktopSurface {
             if clip.is_zero_area() || rect.is_zero_area() {
                 continue;
             }
-            let Some(Ok(host)) = self
-                .live_shares
-                .views
-                .get_mut(view)
-                .map(|view| view.host.as_mut())
-            else {
+            let Some(tile) = self.live_shares.views.get_mut(view) else {
                 continue;
             };
-            if !lay_out(host, theme, text) {
+            if !lay_out(tile, theme, text) {
                 continue;
             }
-            let scale = (rect.width() / VIEW.0).min(rect.height() / VIEW.1);
-            let place = transform
-                .pre_translate(Vec2::new(rect.x0, rect.y0))
-                .pre_scale(scale);
             scene.push_layer(
                 ui::vello::peniko::Fill::NonZero,
                 ui::vello::peniko::BlendMode::default(),
@@ -333,7 +224,13 @@ impl DesktopSurface {
                 clip,
             );
             let outer = presence.push_viewport(Rect::new(0.0, 0.0, VIEW.0, VIEW.1));
-            host.draw(scene, place, text, theme, presence);
+            tile.draw(
+                scene,
+                host::view_transform(transform, *rect),
+                text,
+                theme,
+                presence,
+            );
             presence.pop_viewport(outer);
             scene.pop_layer();
         }
