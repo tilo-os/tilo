@@ -482,6 +482,9 @@ pub struct NotesApp {
     /// The notes the notebook holds, and the notes a search hit or an agent's
     /// `open` asked to show, shared with the framework's opener.
     opened: Rc<std::cell::RefCell<Opened>>,
+    /// Who the participants are, by name, once hosted: whom the header's
+    /// reactions name, and whether anyone else shares the notebook.
+    people: Option<ui::framework::People>,
 }
 
 /// What the framework's opener and the window share: the notes there are,
@@ -756,6 +759,7 @@ impl NotesApp {
             presented: false,
             dispatcher: None,
             live: None,
+            people: None,
             active_tag_filter: None,
             route_history: ui::NavStack::new(initial_route),
             history_target: None,
@@ -1013,6 +1017,52 @@ impl NotesApp {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The reactions to the selected note, as its header shows them: every
+    /// reaction it has, and an add button while the person may react and
+    /// someone else shares the notebook (alone, nobody would see one).
+    fn selected_reactions(&self) -> Option<crate::main_panel::NoteReactions> {
+        let page = self.workspace.selected()?;
+        let notebook = self.live.as_ref()?.get();
+        let reactions = &notebook
+            .pages
+            .get(&crate::notebook::page_id(page))?
+            .reactions;
+        let dispatcher = self.dispatcher.as_ref()?;
+        let me = dispatcher.me();
+        let people = self.people.as_ref();
+        // Each reactor under the name the notebook's people know them by,
+        // for the pills' tooltips.
+        let groups: Vec<ui::tilo_resource::ReactionGroup> = reactions
+            .groups()
+            .into_iter()
+            .map(|mut group| {
+                for reactor in &mut group.reactors {
+                    if reactor.name.is_none()
+                        && let Some(people) = people
+                    {
+                        reactor.name = Some(people.name(&reactor.by));
+                    }
+                }
+                group
+            })
+            .collect();
+        let can_react = me.is_some()
+            && !dispatcher.is_past()
+            && dispatcher.may(&tilo_actions::ActionNeed::reactions());
+        let shared = people.is_some_and(|people| {
+            people.members().iter().any(|member| {
+                !member.is_self && member.kind == ui::presence::ParticipantKind::Person
+            })
+        });
+        let offered = can_react && (shared || !groups.is_empty());
+        (offered || !groups.is_empty()).then(|| crate::main_panel::NoteReactions {
+            page,
+            groups,
+            me: me.unwrap_or_default().to_owned(),
+            can_react: offered,
+        })
     }
 
     /// Present only the selected page's incoming-link row. The complete index
@@ -1625,6 +1675,11 @@ impl NotesApp {
     /// Wake the window through `wake` when the notebook's pictures are read.
     pub(crate) fn wake_asset_reads_through(&mut self, wake: ui::WakeHandle) {
         self.asset_reads.wake_through(wake);
+    }
+
+    /// Name the participants through `people` from now on.
+    pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
+        self.people = Some(people);
     }
 
     /// Attach the framework dispatcher when hosted as a surface.
@@ -2734,6 +2789,7 @@ impl Widget for NotesApp {
         self.drain_tag_open();
         self.drain_backlink_open();
         self.main.set_tags(self.selected_tag_chips());
+        self.main.set_reactions(self.selected_reactions());
         self.refresh_transclusion_previews();
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
