@@ -3,10 +3,11 @@
 //!
 //! libsecret clients (Chromium, 1Password, `secret-tool`, anything built on
 //! GNOME or KDE libraries) find the service where they always did. What
-//! differs is how it opens: the store is sealed under a key the machine's
-//! device identity releases, so it is available after any kind of login and
-//! never asks the person for a password of its own. See [`store`] for the
-//! locked and open states, [`app`] for how callers are attributed, and
+//! differs is how it opens: the store is sealed under a key the person's own
+//! key releases, so it is available after any kind of login and never asks
+//! the person for a password of its own, and the same person's store opens
+//! on their other machines instead of dying with this one. See [`store`] for
+//! the locked and open states, [`app`] for how callers are attributed, and
 //! [`migrate`] for taking over the items GNOME Keyring held before.
 
 pub mod app;
