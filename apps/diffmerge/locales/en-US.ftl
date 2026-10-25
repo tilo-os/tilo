@@ -69,6 +69,37 @@ merge-empty-title = No merge open
 merge-empty-message = A three-way merge starts from a common base and two edited versions of it. Load a sample to try one.
 error-title = Couldn’t open the files
 
+## Saving the merged result
+save-title = Save the merged result
+save-accept = Save
+save-saved = Saved to { $name }
+save-failed = Could not save: { $reason }
+save-cancelled = The merged result was not saved
+
+## Comparing folders
+folder-choose-left = Choose the left folder
+folder-choose-right = Choose the right folder
+folder-choose-accept = Choose
+folder-cancelled = Choosing folders was cancelled
+folder-failed = Could not compare the folders: { $reason }
+folder-summary = { $left } and { $right }: { $added ->
+    [one] 1 file only on the left
+   *[other] { $added } files only on the left
+}, { $removed ->
+    [one] 1 file only on the right
+   *[other] { $removed } files only on the right
+}, { $modified ->
+    [one] 1 changed file
+   *[other] { $modified } changed files
+}
+folder-truncated = Only the first part of the folders was compared
+folder-status-counts = { $added } added, { $removed } removed, { $modified } modified
+folder-meta-only-here = only here, { $size }
+folder-meta-only-other = only there, { $size }
+folder-meta-size = { $left } → { $right }
+folder-meta-contents = different contents
+source-absent = (no such file)
+
 ## Toolbar
 toolbar-diff = Diff
 toolbar-merge = 3-way merge
@@ -78,6 +109,14 @@ toolbar-next = Next change
 toolbar-open = Open files
 toolbar-sample = Load sample
 toolbar-sample-short = Sample
+toolbar-save = Save merged result
+toolbar-save-short = Save
+toolbar-saved = Saved — save again
+toolbar-saved-short = Saved
+toolbar-save-as = Save as…
+toolbar-folders = Folder list
+toolbar-compare-folders = Compare folders…
+toolbar-compare-folders-short = Folders
 
 ## History
 history-title = Merged result

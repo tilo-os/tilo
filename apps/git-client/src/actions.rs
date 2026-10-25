@@ -406,7 +406,7 @@ pub(crate) fn repository_rows(model: &RepoModel) -> Vec<LiveRow> {
         ),
         collection(
             "git_client.stashes",
-            "Stashes".to_owned(),
+            t("git-section-stashes"),
             &model.stashes,
             MAX_CONTEXT_STASHES,
             stash_resource,

@@ -309,7 +309,7 @@ impl SqliteEngine {
                 elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
                 rows_affected: Some(affected as i64),
                 is_select: false,
-                truncated: false,
+                truncation: None,
             });
         }
 
@@ -321,10 +321,10 @@ impl SqliteEngine {
         let mut retained_bytes = 0usize;
         let mut retained_cells = 0usize;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
-        let mut truncated = false;
+        let mut truncation: Option<crate::model::Truncation> = None;
         while let Some(row) = rows.next().map_err(|e| e.to_string())? {
             if rows_out.len() == MAX_QUERY_ROWS {
-                truncated = true;
+                truncation = Some(crate::model::Truncation::RowLimit);
                 break;
             }
             let mut cells = Vec::with_capacity(col_count);
@@ -333,7 +333,7 @@ impl SqliteEngine {
                 cells.push(value_ref_to_cell(v));
             }
             if !can_retain_result_row(retained_bytes, retained_cells, &cells) {
-                truncated = true;
+                truncation = Some(crate::model::Truncation::Payload);
                 break;
             }
             retained_bytes += row_retained_bytes(&cells);
@@ -347,7 +347,7 @@ impl SqliteEngine {
             rows_affected: None,
             is_select: true,
             rows: rows_out,
-            truncated,
+            truncation,
         })
     }
 
@@ -553,7 +553,7 @@ mod tests {
                  SELECT {columns} FROM n"
             ))
             .unwrap();
-            assert!(result.truncated);
+            assert_eq!(result.truncation, Some(crate::model::Truncation::Payload));
             assert!(result.rows.len() < 100);
             let retained: usize = result
                 .rows

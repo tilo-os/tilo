@@ -20,6 +20,7 @@ use ui::widget::{
 };
 
 use crate::connect_modal::{confirm_dialog, connect_dialog};
+use crate::i18n::{t, t_args};
 use crate::link::{Dialog, Intent, Link};
 use crate::model::QueryResult;
 use crate::query::query_pane;
@@ -37,7 +38,7 @@ impl Placeholder {
     /// "No table selected" and what to do about it.
     fn no_table(message: &str) -> Self {
         Self {
-            empty: EmptyState::new("No table selected").with_message(message),
+            empty: EmptyState::new(&t("db-no-table")).with_message(message),
         }
     }
 
@@ -45,12 +46,10 @@ impl Placeholder {
     fn first_run(link: &Link) -> Self {
         let link = link.clone();
         Self {
-            empty: EmptyState::new("No connections yet")
+            empty: EmptyState::new(&t("db-no-connections"))
                 .with_icon(Icon::HardDrive)
-                .with_message(
-                    "Add a PostgreSQL, MySQL or SQLite database to browse its tables and run queries.",
-                )
-                .with_action("New connection")
+                .with_message(&t("db-no-connections-hint"))
+                .with_action(&t("db-new-connection"))
                 .with_action_id("db.new-connection")
                 .on_view(move || link.ask(Intent::NewConnection)),
         }
@@ -134,7 +133,7 @@ fn caption_text(link: &Link) -> String {
         let total = model.data_total.max(0);
         let shown = i64::try_from(data.rows.len()).unwrap_or(i64::MAX);
         if shown == 0 {
-            return "No rows".to_owned();
+            return t("db-no-rows");
         }
         let from = i64::try_from(model.data_offset)
             .unwrap_or(0)
@@ -143,7 +142,14 @@ fn caption_text(link: &Link) -> String {
             .saturating_add(shown)
             .saturating_sub(1)
             .min(total.max(shown));
-        format!("Rows {from} to {to} of {}", total.max(shown))
+        t_args(
+            "db-rows-range",
+            &[
+                ("from", ui::i18n::ArgValue::from(from)),
+                ("to", ui::i18n::ArgValue::from(to)),
+                ("total", ui::i18n::ArgValue::from(total.max(shown))),
+            ],
+        )
     })
 }
 
@@ -161,14 +167,14 @@ impl PageButton {
             (
                 "db.data.next",
                 Icon::ChevronRight,
-                "Next rows",
+                &t("db-next-rows"),
                 Intent::NextPage,
             )
         } else {
             (
                 "db.data.previous",
                 Icon::ChevronLeft,
-                "Previous rows",
+                &t("db-previous-rows"),
                 Intent::PreviousPage,
             )
         };
@@ -232,7 +238,7 @@ fn data_header(link: &Link) -> Row {
 fn data_content(link: &Link, data: Option<Arc<QueryResult>>) -> Element {
     let has_rows = data.as_ref().is_some_and(|data| !data.columns.is_empty());
     if !has_rows {
-        return Box::new(Placeholder::no_table("Choose a table to see its rows."));
+        return Box::new(Placeholder::no_table(&t("db-choose-table-rows")));
     }
     let mut table = ResultsTable::new("db.data.table");
     table.bind(data);
@@ -374,11 +380,9 @@ impl Workspace {
             Part::Data => Box::new(DataPane::new(link)),
             Part::Structure => Box::new(StructureView::new(link)),
             Part::NoTable(MainTab::Data) => {
-                Box::new(Placeholder::no_table("Choose a table to see its rows."))
+                Box::new(Placeholder::no_table(&t("db-choose-table-rows")))
             }
-            Part::NoTable(_) => Box::new(Placeholder::no_table(
-                "Choose a table to see its structure.",
-            )),
+            Part::NoTable(_) => Box::new(Placeholder::no_table(&t("db-choose-table-structure"))),
             Part::Dialog(Dialog::Connect) => Box::new(connect_dialog(link)),
             Part::Dialog(Dialog::ConfirmRun) => Box::new(confirm_dialog(link)),
         }

@@ -8,6 +8,7 @@ use ui::TextRole;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::{Column, Decorator, Element, Scrollable, Section, Text, Widget};
 
+use crate::i18n::t;
 use crate::link::Link;
 use crate::model::TableInfo;
 
@@ -15,14 +16,14 @@ use crate::model::TableInfo;
 struct ColumnRow {
     name: String,
     declared: String,
-    nullable: &'static str,
-    key: &'static str,
+    nullable: String,
+    key: String,
     default: Option<String>,
 }
 
 #[derive(Clone)]
 struct KeyRow {
-    constraint: &'static str,
+    constraint: String,
     column: String,
     references: Option<String>,
 }
@@ -30,7 +31,7 @@ struct KeyRow {
 #[derive(Clone)]
 struct IndexRow {
     name: String,
-    unique: &'static str,
+    unique: String,
     columns: String,
 }
 
@@ -63,29 +64,39 @@ fn columns_table(info: &TableInfo) -> DataTable<ColumnRow> {
             name: column.name.clone(),
             declared: column.decl_type.clone(),
             nullable: if column.not_null || column.primary_key {
-                "No"
+                t("db-no")
             } else {
-                "Yes"
+                t("db-yes")
             },
-            key: if column.primary_key { "Primary" } else { "" },
+            key: if column.primary_key {
+                t("db-primary")
+            } else {
+                String::new()
+            },
             default: column.default.clone(),
         })
         .collect();
     table(
         "db.structure.columns",
         vec![
-            column("name", "Name", |row: &ColumnRow| row.name.clone()),
-            column("type", "Type", |row: &ColumnRow| row.declared.clone())
-                .with_kind(ui::text_render::TextKind::Identifier),
-            column("nullable", "Nullable", |row: &ColumnRow| {
+            column("name", &t("db-column-name"), |row: &ColumnRow| {
+                row.name.clone()
+            }),
+            column("type", &t("db-column-type"), |row: &ColumnRow| {
+                row.declared.clone()
+            })
+            .with_kind(ui::text_render::TextKind::Identifier),
+            column("nullable", &t("db-column-nullable"), |row: &ColumnRow| {
                 row.nullable.to_owned()
             }),
-            column("key", "Key", |row: &ColumnRow| row.key.to_owned()),
-            column("default", "Default", |row: &ColumnRow| {
-                row.default.clone().unwrap_or_else(|| "None".to_owned())
+            column("key", &t("db-column-key"), |row: &ColumnRow| {
+                row.key.to_owned()
+            }),
+            column("default", &t("db-column-default"), |row: &ColumnRow| {
+                row.default.clone().unwrap_or_else(|| t("db-none"))
             })
             .with_kind(ui::text_render::TextKind::Code)
-            .with_optional_text(|row: &ColumnRow| row.default.clone(), "None"),
+            .with_optional_text(|row: &ColumnRow| row.default.clone(), &t("db-none")),
         ],
         rows,
     )
@@ -96,13 +107,13 @@ fn keys_table(info: &TableInfo) -> Option<DataTable<KeyRow>> {
         .primary_keys()
         .into_iter()
         .map(|column| KeyRow {
-            constraint: "Primary key",
+            constraint: t("db-primary-key"),
             column: column.name.clone(),
             references: None,
         })
         .collect();
     rows.extend(info.foreign_keys.iter().map(|key| KeyRow {
-        constraint: "Foreign key",
+        constraint: t("db-foreign-key"),
         column: key.column.clone(),
         references: Some(format!("{}.{}", key.ref_table, key.ref_column)),
     }));
@@ -110,15 +121,17 @@ fn keys_table(info: &TableInfo) -> Option<DataTable<KeyRow>> {
         table(
             "db.structure.keys",
             vec![
-                column("constraint", "Constraint", |row: &KeyRow| {
-                    row.constraint.to_owned()
+                column("constraint", &t("db-column-constraint"), |row: &KeyRow| {
+                    row.constraint.clone()
                 }),
-                column("column", "Column", |row: &KeyRow| row.column.clone()),
-                column("references", "References", |row: &KeyRow| {
-                    row.references.clone().unwrap_or_else(|| "None".to_owned())
+                column("column", &t("db-column-column"), |row: &KeyRow| {
+                    row.column.clone()
+                }),
+                column("references", &t("db-column-references"), |row: &KeyRow| {
+                    row.references.clone().unwrap_or_else(|| t("db-none"))
                 })
                 .with_kind(ui::text_render::TextKind::Identifier)
-                .with_optional_text(|row: &KeyRow| row.references.clone(), "None"),
+                .with_optional_text(|row: &KeyRow| row.references.clone(), &t("db-none")),
             ],
             rows,
         )
@@ -131,7 +144,11 @@ fn indexes_table(info: &TableInfo) -> Option<DataTable<IndexRow>> {
         .iter()
         .map(|index| IndexRow {
             name: index.name.clone(),
-            unique: if index.unique { "Yes" } else { "No" },
+            unique: if index.unique {
+                t("db-yes")
+            } else {
+                t("db-no")
+            },
             columns: index.columns.join(", "),
         })
         .collect();
@@ -139,9 +156,15 @@ fn indexes_table(info: &TableInfo) -> Option<DataTable<IndexRow>> {
         table(
             "db.structure.indexes",
             vec![
-                column("name", "Index", |row: &IndexRow| row.name.clone()),
-                column("unique", "Unique", |row: &IndexRow| row.unique.to_owned()),
-                column("columns", "Columns", |row: &IndexRow| row.columns.clone()),
+                column("name", &t("db-column-index"), |row: &IndexRow| {
+                    row.name.clone()
+                }),
+                column("unique", &t("db-column-unique"), |row: &IndexRow| {
+                    row.unique.clone()
+                }),
+                column("columns", &t("db-column-columns"), |row: &IndexRow| {
+                    row.columns.clone()
+                }),
             ],
             rows,
         )
@@ -158,15 +181,18 @@ fn page(info: &TableInfo) -> Element {
                 .with_kind(ui::text_render::TextKind::Identifier),
         ))
         .push(Box::new(Section::titled(
-            "Columns",
+            &t("db-column-columns"),
             vec![Box::new(columns_table(info))],
         )));
     if let Some(keys) = keys_table(info) {
-        column = column.push(Box::new(Section::titled("Keys", vec![Box::new(keys)])));
+        column = column.push(Box::new(Section::titled(
+            &t("db-keys"),
+            vec![Box::new(keys)],
+        )));
     }
     if let Some(indexes) = indexes_table(info) {
         column = column.push(Box::new(Section::titled(
-            "Indexes",
+            &t("db-indexes"),
             vec![Box::new(indexes)],
         )));
     }

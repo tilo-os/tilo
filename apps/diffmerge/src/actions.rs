@@ -30,6 +30,45 @@ pub enum DiffmergeEffect {
         #[param("right file path")]
         right: Option<String>,
     },
+    /// Open one file against nothing
+    ///
+    /// A file only one folder of a comparison has: shown against an empty
+    /// side, which reads as the whole file being added or removed.
+    #[effect(attended, job, cancellable)]
+    OpenOne {
+        #[param("the file to show")]
+        path: String,
+        #[param("which side it takes (left or right)")]
+        side: String,
+    },
+    /// Save merged result
+    ///
+    /// Writes the merged result where the person last saved it, asking for a
+    /// place the first time; `path` names one instead. A merge that cannot
+    /// be handed back is a merge that has not been done, so this is the verb
+    /// the tool exists for.
+    #[effect(attended, job, cancellable)]
+    SaveMerged {
+        #[param("where to write the merged result (omit to use the last place, or choose one)")]
+        path: Option<String>,
+    },
+    /// Save merged result as…
+    ///
+    /// Always asks for a place, even when the merged result was saved before.
+    #[effect(attended, job, cancellable)]
+    SaveMergedAs,
+    /// Compare folders
+    ///
+    /// Lists the files that differ between two folders; each one opens as an
+    /// ordinary comparison. With no paths, both folders are chosen through
+    /// the host's chooser.
+    #[effect(attended, job, cancellable)]
+    CompareFolders {
+        #[param("left folder path (omit both paths to choose the folders)")]
+        left: Option<String>,
+        #[param("right folder path")]
+        right: Option<String>,
+    },
     /// Load sample
     #[effect(own_device)]
     LoadSample,
