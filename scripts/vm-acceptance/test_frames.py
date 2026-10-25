@@ -9,7 +9,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acceptance.checks.window import _judge, _judge_instant, judge_switch_lines  # noqa: E402
+from acceptance.checks.window import (  # noqa: E402
+    _judge,
+    _judge_instant,
+    _judge_keyboard_flight,
+    judge_switch_lines,
+)
 from acceptance.core import (Unobservable, _parse_trace, frame_stats, parse_switch_lines,  # noqa: E402
                              transition_stats)
 
@@ -192,6 +197,18 @@ class AnimationJudgeTest(unittest.TestCase):
         problems, _ = _judge_instant("overview_key_close", faded, W16_BUDGETS)
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("12 frames painted for a transition's frame run", problems[0])
+
+    def test_a_keyboard_toggle_flies_briefly_and_is_judged_on_its_first_frame(self):
+        # A key flies the windows for `fast` as spatial context: its transition frames
+        # are not counted against it, its first frame and its loop CPU are.
+        flight = run(8, "animation+transition")
+        self.assertEqual(_judge_keyboard_flight("overview_key_open", flight, W16_BUDGETS), ([], []))
+        slow = run(8, "animation+transition", input_us=80_000)
+        problems, _ = _judge_keyboard_flight("overview_key_open", slow, W16_BUDGETS)
+        self.assertIn("first frame 80.0 ms after the input", problems[0])
+        stalled = run(8, "animation+transition", cpu_us=75_000)
+        problems, _ = _judge_keyboard_flight("overview_key_close", stalled, W16_BUDGETS)
+        self.assertIn("CPU stall in the compositor loop", problems[0])
 
     def test_the_keyboard_toggle_is_judged_on_its_first_frame(self):
         slow = run(1, "revision", input_us=80_000)
