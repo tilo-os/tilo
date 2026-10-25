@@ -3,6 +3,7 @@
 import http.server
 import json
 import re
+import sys
 import threading
 import time
 import unittest
@@ -96,9 +97,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
             else FRAMED if path == '/framed' else WIDGET if path == '/widget' \
-            else FOREIGN if path == '/foreign' else CROSS if path == '/cross' \
+            else FOREIGN if path == '/foreign' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
+        # A frame of another origin is shown by the same server on another host
+        # name, so both documents are reachable and neither can read the other.
+        if path == '/cross':
+            body = CROSS.replace(b'PORT', str(self.server.server_port).encode())
         self.send_response(200)
         self.send_header('Content-Type', 'application/json' if path == '/data.json' else 'text/html')
         self.send_header('Content-Length', str(len(body)))
@@ -107,62 +112,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
-
-
-class FramedActions(unittest.TestCase):
-    """A page whose controls live in child frames, reached through the actions."""
-
-    setUpClass = PageActions.setUpClass
-    tearDownClass = PageActions.tearDownClass
-    setUp = PageActions.setUp
-    tearDown = PageActions.tearDown
-    page, ok, outline, main_world = PageActions.page, PageActions.ok, PageActions.outline, PageActions.main_world
-
-    def test_outline_lists_a_frame_and_its_own_lines_under_it(self):
-        self.h.navigate(self.url + '/framed')
-        outline = self.outline()
-        self.assertRegex(outline, r'- iframe "Payment frame" \[ref=(f1d\d+e\d+)\]')
-        # The frame's own lines follow the line naming it, indented below it.
-        lines = outline.splitlines()
-        at = next(i for i, line in enumerate(lines) if 'iframe "Payment frame"' in line)
-        below = lines[at + 1:at + 5]
-        self.assertTrue(any('textbox "IBAN"' in line for line in below), below)
-        self.assertTrue(any(line.startswith('      - ') for line in below), below)
-        self.assertRegex(outline, r'button "Save bank details" \[ref=f1d\d+e\d+\]')
-        # The frame's refs name the frame they were read in.
-        self.assertRegex(outline, r'textbox "IBAN" \[ref=f1d\d+e\d+\]')
-        # The page's own controls keep the refs they always had.
-        self.assertRegex(outline, r'heading "Bank details" level=1')
-
-    def test_actions_on_a_frame_ref_run_in_that_frame(self):
-        self.h.navigate(self.url + '/framed')
-        outline = self.outline()
-        self.ok('fill', element=self.ref_of(outline, 'textbox "IBAN"'), text='EX89370400440532013000')
-        self.ok('fill', element=self.ref_of(outline, 'textbox "Account holder"'), text='Maria Elena Fischer')
-        after = self.outline()
-        self.assertIn('value="EX89370400440532013000"', after)
-        self.assertIn('value="Maria Elena Fischer"', after)
-        # A trusted click reaches the frame's button, and what it did reaches
-        # the page: the page's own script ran from it.
-        self.ok('click', element=self.ref_of(after, 'button "Save bank details"'))
-        self.ok('settle', quiet_ms=300, timeout_ms=5000)
-        self.assertIn('text "saved"', self.outline())
-        # Reading a frame is still reading: page script cannot call the world.
-        self.assertEqual(self.main_world('typeof globalThis.__tiloPage'), 'undefined')
-
-    def test_each_frame_is_read_in_its_own_world(self):
-        self.h.navigate(self.url + '/cross'.replace('PORT', self.url.rsplit(':', 1)[1]))
-        outline = self.outline()
-        self.assertRegex(outline, r'- iframe "Same site" \[ref=f1d\d+e\d+\]')
-        self.assertRegex(outline, r'- iframe "Other site" \[ref=f2d\d+e\d+\]')
-        # A frame of another site is read exactly as one of this site's is.
-        self.assertRegex(outline, r'textbox "IBAN" \[ref=f2d\d+e\d+\]')
-        self.assertNotIn('f1d', outline.split('iframe "Other site"')[1], 'the two frames keep their own refs')
-        iban = self.ref_of(outline, 'textbox "IBAN"')
-        self.ok('fill', element=iban, text='EX89')
-        # The foreign frame's own world saw the text its own document holds.
-        self.assertIn('value="EX89"', self.outline().split('iframe "Other site"')[1])
-        self.assertNotIn('value="EX89"', self.outline().split('iframe "Other site"')[0])
 
 
 class PageActions(unittest.TestCase):
@@ -362,10 +311,73 @@ class PageActions(unittest.TestCase):
         self.assertEqual(entered['code'], 'cross_origin_submit', entered)
 
 
+class FramedActions(unittest.TestCase):
+    """A page whose controls live in child frames, reached through the actions."""
+
     def ref_of(self, outline, pattern):
         """A ref describing an element inside a child frame."""
         match = re.search(pattern + r'.*?\[ref=(f\d+d\d+e\d+)\]', outline)
         self.assertIsNotNone(match, f'{pattern!r} not in outline:\n{outline}')
         return match.group(1)
 
-    unittest.main(verbosity=2)
+    setUpClass = PageActions.setUpClass
+    tearDownClass = PageActions.tearDownClass
+    setUp = PageActions.setUp
+    tearDown = PageActions.tearDown
+    page, ok, outline, main_world = PageActions.page, PageActions.ok, PageActions.outline, PageActions.main_world
+
+    def test_outline_lists_a_frame_and_its_own_lines_under_it(self):
+        self.h.navigate(self.url + '/framed')
+        outline = self.outline()
+        self.assertRegex(outline, r'- iframe "Payment frame" \[ref=(f1d\d+e\d+)\]')
+        # The frame's own lines follow the line naming it, indented below it.
+        lines = outline.splitlines()
+        at = next(i for i, line in enumerate(lines) if 'iframe "Payment frame"' in line)
+        below = lines[at + 1:at + 5]
+        self.assertTrue(any('textbox "IBAN"' in line for line in below), below)
+        self.assertTrue(any(line.startswith('      - ') for line in below), below)
+        self.assertRegex(outline, r'button "Save bank details" \[ref=f1d\d+e\d+\]')
+        # The frame's refs name the frame they were read in.
+        self.assertRegex(outline, r'textbox "IBAN" \[ref=f1d\d+e\d+\]')
+        # The page's own controls keep the refs they always had.
+        self.assertRegex(outline, r'heading "Bank details" level=1')
+
+    def test_actions_on_a_frame_ref_run_in_that_frame(self):
+        self.h.navigate(self.url + '/framed')
+        outline = self.outline()
+        self.ok('fill', element=self.ref_of(outline, 'textbox "IBAN"'), text='EX89370400440532013000')
+        self.ok('fill', element=self.ref_of(outline, 'textbox "Account holder"'), text='Maria Elena Fischer')
+        after = self.outline()
+        self.assertIn('value="EX89370400440532013000"', after)
+        self.assertIn('value="Maria Elena Fischer"', after)
+        # A trusted click reaches the frame's button, and what it did reaches
+        # the page: the page's own script ran from it.
+        self.ok('click', element=self.ref_of(after, 'button "Save bank details"'))
+        self.ok('settle', quiet_ms=300, timeout_ms=5000)
+        self.assertIn('text "saved"', self.outline())
+        # Reading a frame is still reading: page script cannot call the world.
+        self.assertEqual(self.main_world('typeof globalThis.__tiloPage'), 'undefined')
+
+    def test_each_frame_is_read_in_its_own_world(self):
+        self.h.navigate(self.url + '/cross')
+        outline = self.outline()
+        self.assertRegex(outline, r'- iframe "Same site" \[ref=f1d\d+e\d+\]')
+        self.assertRegex(outline, r'- iframe "Other site" \[ref=f2d\d+e\d+\]')
+        # A frame of another site is read exactly as one of this site's is.
+        self.assertRegex(outline, r'textbox "IBAN" \[ref=f2d\d+e\d+\]')
+        self.assertNotIn('f1d', outline.split('iframe "Other site"')[1], 'the two frames keep their own refs')
+        iban = self.ref_of(outline, 'textbox "IBAN"')
+        self.ok('fill', element=iban, text='EX89')
+        # The foreign frame's own world saw the text its own document holds.
+        self.assertIn('value="EX89"', self.outline().split('iframe "Other site"')[1])
+        self.assertNotIn('value="EX89"', self.outline().split('iframe "Other site"')[0])
+
+
+if __name__ == '__main__':
+    # `native_regressions` reads the host path at its own import, so only the
+    # test selector is left here.
+    wanted = sys.argv[1:] or ['PageActions', 'FramedActions']
+    loader = unittest.TestLoader()
+    suite = unittest.TestSuite(loader.loadTestsFromNames(wanted, sys.modules[__name__]))
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    sys.exit(0 if result.wasSuccessful() else 1)
