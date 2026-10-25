@@ -379,6 +379,7 @@ impl ShellOverlayHost {
             }),
             // A native desktop is always its person's own, never a spectator's.
             seen: tilo_desktop::profile_card::Seen::Here,
+            control_hints: Some(self.control_hints_enabled()),
         }
     }
 
@@ -521,6 +522,10 @@ impl ShellOverlayHost {
             // The name the person gave when the card asked for it.
             ProfileChoice::Rename(name) => {
                 self.set_own_name(name);
+                return;
+            }
+            ProfileChoice::ControlHints(on) => {
+                self.set_control_hints_enabled(*on);
                 return;
             }
             ProfileChoice::Link(_) | ProfileChoice::Unlink(_) => {

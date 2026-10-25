@@ -161,6 +161,9 @@ struct Shared {
     /// The shown strip, the area it is drawn in and how far it is
     /// panned, as last laid out.
     shown_strip: Option<(StripId, Rect, f64)>,
+    /// Where the shown strip's controls are for control hints, as last
+    /// drawn.
+    hint_places: ui::widget::HintPlaces,
     /// Carets and selections of the focused window's editors, as last laid
     /// out ([`ui::presence::capability::subtree_presence`]).
     focused_presence: Vec<(PresenceKey, PresencePayload)>,
@@ -241,6 +244,12 @@ impl DesktopHandle {
     /// strip, however wide the surface or wherever it is panned to.
     pub fn shown_strip(&self) -> Option<(StripId, Rect, f64)> {
         self.shared.borrow().shown_strip
+    }
+
+    /// Where the shown strip's window bars and edges are for control hints,
+    /// in the surface's coordinates, as last drawn.
+    pub fn hint_places(&self) -> ui::widget::HintPlaces {
+        self.shared.borrow().hint_places.clone()
     }
 
     /// The caret or selection this desktop publishes as its presence, given
@@ -773,6 +782,7 @@ impl DesktopSurface {
             replaced: false,
             shown_tabs: Vec::new(),
             shown_strip: None,
+            hint_places: ui::widget::HintPlaces::default(),
             focused_presence: Vec::new(),
             rebuild: Vec::new(),
             search_request: None,
@@ -2513,9 +2523,11 @@ impl Widget for DesktopSurface {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some(row) = self.shown_row() {
+        let hint_places = self.shown_row().map(|row| {
             ui::widget::draw_child(row, scene, transform, text, theme, presence);
-        }
+            row.hint_places()
+        });
+        self.shared.borrow_mut().hint_places = hint_places.unwrap_or_default();
         self.draw_embeds(scene, transform, text, theme, presence);
         self.draw_overlays(scene, transform, text, theme, presence);
     }

@@ -121,6 +121,7 @@ pub mod animation;
 pub mod arriving;
 pub mod author;
 pub mod content_zoom;
+pub mod control_hints;
 pub mod motion;
 #[cfg(test)]
 extern crate self as tilo_ui;
