@@ -15,7 +15,7 @@
 //!   holds nothing, else it keeps a workspace of its own with what it holds;
 //! - a room held with no workspace gets one.
 
-use super::{BTreeSet, RoomId, Strip, StripId, Workspace, WorkspaceId, WorkspaceTree};
+use super::{BTreeSet, RoomId, Strip, Workspace, WorkspaceId, WorkspaceTree};
 
 /// What [`WorkspaceTree::bind_workspaces_to_rooms`] changed, for the log.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
