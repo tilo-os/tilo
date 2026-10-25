@@ -1523,3 +1523,6 @@ fn a_change_a_key_just_asked_for_lands_and_one_of_state_moves_nothing() {
         );
     });
 }
+
+#[path = "reactions_tests.rs"]
+mod reactions;

@@ -27,6 +27,11 @@ pub(crate) enum Slot {
     Notice(usize),
     /// The button whose menu holds the actions the row has no room for.
     Overflow,
+    /// Pill `n` of the window's reactions: the person's reaction with its
+    /// emoji, or taking it back.
+    Reaction(usize),
+    /// The add button after the reactions' pills: the emoji picker.
+    ReactionAdd,
 }
 
 /// Where each slot of one toolbar sits.
@@ -59,6 +64,11 @@ pub(crate) struct Slots {
     pub notice: Vec<Rect>,
     /// Which of the notice's buttons name themselves, not only their icon.
     pub notice_labelled: Vec<bool>,
+    /// The window's reactions' pills standing at the row's end, the first
+    /// of them (none: no reactions, or no room for any).
+    pub reactions: Vec<Rect>,
+    /// Their add button, after the pills (`Rect::ZERO`: none).
+    pub reaction_add: Rect,
 }
 
 /// What the row lays out beside the toolbar: the view switcher's size and
@@ -730,6 +740,13 @@ impl Slots {
                     .find_map(|(i, rect)| at(Slot::Notice(i), rect))
             })
             .or_else(|| at(Slot::Overflow, &self.overflow))
+            .or_else(|| {
+                self.reactions
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, rect)| at(Slot::Reaction(i), rect))
+            })
+            .or_else(|| at(Slot::ReactionAdd, &self.reaction_add))
             .or_else(|| at(Slot::Location, &self.location))
     }
 }

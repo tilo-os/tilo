@@ -22,6 +22,7 @@ impl ToolbarRow {
         if self.suggestions_open() {
             self.suggestions.paint(scene, transform, tr, theme);
         }
+        self.paint_picker(scene, transform, (tr, theme, presence));
     }
 
     pub(crate) fn paint(
@@ -104,6 +105,7 @@ impl ToolbarRow {
             ),
         );
         self.paint_leaving(scene, transform, (tr, theme, presence), incoming);
+        self.paint_reactions(scene, transform, (tr, theme));
     }
 
     /// Start moving the slots the app changed since the last paint, now
