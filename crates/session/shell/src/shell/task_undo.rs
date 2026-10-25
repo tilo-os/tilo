@@ -300,9 +300,8 @@ impl TaskUndos {
                     let (host, caller) = session.door();
                     undo_task_run(host.as_ref(), &caller, &task, &steps, UNDO_TIMEOUT)
                 })
-                .map(|undone| {
+                .inspect(|undone| {
                     tracing::info!(task, documents = undone.len(), "undid a task's run");
-                    undone
                 });
                 if let Ok(mut results) = results.lock() {
                     results.insert(invocation, Some(outcome));
@@ -358,11 +357,30 @@ mod tests {
         ];
         let tokens: Vec<String> = undo_targets(&providers, "room", &steps)
             .into_iter()
-            .map(|provider| provider.provider)
+            .map(|target| target.provider.provider)
             .collect();
         // The note it changed only; Files, whose record is named
         // differently, by its open document in this room; Sheets is not
         // running, so nothing of it is asked.
         assert_eq!(tokens, ["2", "3"]);
+    }
+
+    /// Each document the run changed is reported under the step it was
+    /// asked for, so the task view can say what came back and what did not.
+    #[test]
+    fn the_documents_undone_are_reported_by_their_steps() {
+        let providers = [
+            provider("1", "so.tilo.notes", "note-a"),
+            provider("2", "so.tilo.sheets", "budget"),
+        ];
+        let steps = [
+            ("so.tilo.notes".to_owned(), "note-a".to_owned()),
+            ("so.tilo.sheets".to_owned(), "budget".to_owned()),
+        ];
+        let reported: Vec<(String, String)> = undo_targets(&providers, "room", &steps)
+            .into_iter()
+            .map(|target| (target.outcome.app, target.outcome.record))
+            .collect();
+        assert_eq!(reported, steps);
     }
 }

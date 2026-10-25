@@ -2510,11 +2510,12 @@ mod resume_card_tests {
 #[cfg(test)]
 mod tasks_link_tests {
     use super::*;
+    use crate::activity::TaskRunDocument;
     use crate::activity::testing::TestTree as WorkspaceTree;
     #[derive(Default)]
     struct UndoHost {
         undos: RefCell<Vec<TaskRunUndo>>,
-        ended: RefCell<Option<Result<(), String>>>,
+        ended: RefCell<Option<Result<Vec<TaskRunDocument>, String>>>,
     }
     impl ActivityHost for UndoHost {
         fn local_user(&self) -> String {
@@ -2527,7 +2528,10 @@ mod tasks_link_tests {
             self.undos.borrow_mut().push(undo);
             Ok(())
         }
-        fn poll_task_run_undo(&self, _invocation: uuid::Uuid) -> Option<Result<(), String>> {
+        fn poll_task_run_undo(
+            &self,
+            _invocation: uuid::Uuid,
+        ) -> Option<Result<Vec<TaskRunDocument>, String>> {
             self.ended.borrow_mut().take()
         }
     }
@@ -2585,7 +2589,10 @@ mod tasks_link_tests {
         assert!(pane.undo_task_run("task:1"));
         assert_eq!(host.undos.borrow().len(), 1, "one undo at a time");
 
-        host.ended.replace(Some(Ok(())));
+        host.ended.replace(Some(Ok(vec![TaskRunDocument {
+            app: "so.tilo.notes".into(),
+            record: "file:/notes/release.note".into(),
+        }])));
         pane.refresh(&mut tree);
         assert!(pane.undo_pending.is_none());
         assert_eq!(
@@ -2593,6 +2600,113 @@ mod tasks_link_tests {
                 .as_ref()
                 .map(|(_, notice)| notice.clone()),
             Some(t("activity-undo-task-done"))
+        );
+        assert!(pane.unreverted.is_empty(), "every record came back");
+    }
+
+    /// Each record of the run can be undone on its own from the task view:
+    /// the host is asked for the task, in that one document only.
+    #[test]
+    fn one_record_of_a_run_is_undone_alone() {
+        let (mut tree, mut pane, host) = fixture();
+        let change = ui::history_source::entry_id_from_hash(&"ab".repeat(32));
+        let doc = tree.document_mut();
+        let key = ui::record_run_with_details(
+            doc,
+            "Review release notes",
+            Some("agent:scribe"),
+            Some("local"),
+            None,
+            None,
+            &[
+                ui::RunStep {
+                    app: "so.tilo.notes".into(),
+                    record: "file:/notes/release.note".into(),
+                    run: ui::ChangeRun::new(change, change),
+                    what: Vec::new(),
+                },
+                ui::RunStep {
+                    app: "so.tilo.sheets".into(),
+                    record: "file:/sheets/budget.tilo-sheet".into(),
+                    run: ui::ChangeRun::new(change, change),
+                    what: Vec::new(),
+                },
+            ],
+        )
+        .unwrap();
+        assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
+        doc.commit();
+        pane.refresh_records(&mut tree, &RecordStore::in_memory());
+
+        assert!(pane.undo_task_record(
+            "task:1",
+            "so.tilo.sheets",
+            "file:/sheets/budget.tilo-sheet"
+        ));
+        let undo = host.undos.borrow().last().cloned().unwrap();
+        assert_eq!(undo.task_id, "task:1");
+        assert_eq!(
+            undo.steps,
+            vec![(
+                "so.tilo.sheets".to_owned(),
+                "file:/sheets/budget.tilo-sheet".to_owned()
+            )],
+            "only the record the person picked is undone"
+        );
+    }
+
+    /// A record the host did not undo is named, not dropped: the task view
+    /// says what did not come back.
+    #[test]
+    fn a_record_undo_did_not_reach_is_reported() {
+        let (mut tree, mut pane, host) = fixture();
+        let change = ui::history_source::entry_id_from_hash(&"cd".repeat(32));
+        let doc = tree.document_mut();
+        let key = ui::record_run_with_details(
+            doc,
+            "Review release notes",
+            Some("agent:scribe"),
+            Some("local"),
+            None,
+            None,
+            &[
+                ui::RunStep {
+                    app: "so.tilo.notes".into(),
+                    record: "file:/notes/release.note".into(),
+                    run: ui::ChangeRun::new(change, change),
+                    what: Vec::new(),
+                },
+                ui::RunStep {
+                    app: "so.tilo.sheets".into(),
+                    record: "file:/sheets/budget.tilo-sheet".into(),
+                    run: ui::ChangeRun::new(change, change),
+                    what: Vec::new(),
+                },
+            ],
+        )
+        .unwrap();
+        assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
+        doc.commit();
+        pane.refresh_records(&mut tree, &RecordStore::in_memory());
+
+        assert!(pane.undo_task_run("task:1"));
+        // The host reached only the notes document.
+        host.ended.replace(Some(Ok(vec![TaskRunDocument {
+            app: "so.tilo.notes".into(),
+            record: "file:/notes/release.note".into(),
+        }])));
+        pane.poll_undo();
+        assert_eq!(
+            pane.agent_undo_notice
+                .as_ref()
+                .map(|(_, notice)| notice.clone()),
+            Some(t("activity-undo-task-partial-records"))
+        );
+        assert_eq!(pane.unreverted.len(), 1, "the sheets record is named");
+        assert!(
+            pane.unreverted[0].contains("so.tilo.sheets"),
+            "the record's app is said: {:?}",
+            pane.unreverted
         );
     }
 }
