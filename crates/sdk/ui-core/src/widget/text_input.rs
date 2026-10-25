@@ -1285,6 +1285,7 @@ impl TextInput {
             span.background.hash(&mut hash);
             span.baseline.hash(&mut hash);
             span.kind.hash(&mut hash);
+            span.workspace_emoji.hash(&mut hash);
         }
         hash.finish()
     }
@@ -2946,6 +2947,7 @@ impl TextInput {
                 self.paints_highlight()
                     .then_some(&paint as &dyn Fn(usize) -> Option<vello::peniko::Color>),
             );
+            self.tint_selected_emoji(scene, text_transform, theme, layout);
         }
 
         #[cfg(test)]
@@ -4325,6 +4327,24 @@ impl TextInput {
         self.core
             .selected_range()
             .map(|range| (range.start, range.end))
+    }
+
+    /// The selection over the pictures of the workspace emoji it covers,
+    /// which hide the band painted under the text. A composition shifts
+    /// the layout's bytes; it is typed with nothing selected.
+    fn tint_selected_emoji(
+        &self,
+        scene: &mut Scene,
+        text_transform: Affine,
+        theme: &Theme,
+        layout: &RichTextLayout,
+    ) {
+        if let Some((start, end)) = self.selection_range()
+            && !self.core.has_preedit()
+        {
+            let tint = theme.tokens.colors.intent.selection_tint;
+            layout.tint_selected_emoji(scene, text_transform, start..end, tint);
+        }
     }
 
     fn has_selection(&self) -> bool {
