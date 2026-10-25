@@ -19,6 +19,10 @@
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
+# The pinned fonts tilo-font-catalog's build script prepares, cached in the build directory: t
+# keeps that across a build lineage, so they are fetched once per lineage, not once per job.
+export TILO_FONT_ASSET_CACHE="${CARGO_TARGET_DIR:-$root/target}/font-artifacts"
+
 # The builder's Fedora RPM provides the real executable, not a mutable browser
 # cache in HOME (test-env gives each run a fresh HOME). Keep explicit overrides
 # and leave other platforms to their existing browser discovery.

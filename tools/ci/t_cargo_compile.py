@@ -36,6 +36,7 @@ the default build's would answer it before the tested build ran.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -174,6 +175,10 @@ def main(argv: list[str]) -> int:
     if not argv:
         print("usage: t_cargo_compile.py cargo <command> [ARGS]...", file=sys.stderr)
         return 2
+    # The pinned fonts tilo-font-catalog's build script prepares, cached in the build directory:
+    # t keeps that across a build lineage, so they are fetched once per lineage, not per job.
+    target = os.environ.get("CARGO_TARGET_DIR") or str(Path(__file__).resolve().parents[2] / "target")
+    os.environ["TILO_FONT_ASSET_CACHE"] = str(Path(target) / "font-artifacts")
     passes = wasm_passes(argv, wasm_set()) if len(argv) > 1 and argv[1] in COMPILE else []
     # Every pass runs, as `--keep-going` does: one failing still reports the others.
     codes = [subprocess.run(command, check=False).returncode for command in passes]
