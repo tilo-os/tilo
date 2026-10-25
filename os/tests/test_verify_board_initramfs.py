@@ -39,8 +39,17 @@ class VerifyBoardInitramfsTest(unittest.TestCase):
         self.kernel.mkdir(parents=True)
         # A tristate driver configured =y; the profile names it like a module.
         self.builtin = {"phy-qcom-qmp-pcie"}
-        (self.kernel / "modules.builtin").write_text(
-            "kernel/drivers/phy/qualcomm/phy-qcom-qmp-pcie.ko\n", encoding="utf-8")
+        self.builtin_paths = [
+            "kernel/drivers/phy/qualcomm/phy-qcom-qmp-pcie.ko",
+            # The i2c bus the Lenovo's internal keyboard and touchpad are on.
+            "kernel/drivers/i2c/i2c-core.ko",
+            "kernel/drivers/i2c/busses/i2c-qcom-geni.ko",
+            "kernel/drivers/i2c/i2c-hid/i2c-hid-of.ko",
+            "kernel/drivers/hid/hid-core.ko",
+            "kernel/drivers/input/evdev.ko",
+            "kernel/drivers/input/keyboard/atkbd.ko",
+        ]
+        (self.kernel / "modules.builtin").write_text("\n".join(self.builtin_paths) + "\n", encoding="utf-8")
         self.modules = {}
         for name in LENOVO["boot_modules"]:
             if name in self.builtin:
@@ -67,6 +76,29 @@ class VerifyBoardInitramfsTest(unittest.TestCase):
     def test_complete_lenovo_initramfs_passes(self):
         self.assertEqual(self.problems(), [])
 
+    def test_an_internal_i2c_keyboard_needs_its_drivers_built_in(self):
+        builtin = self.kernel / "modules.builtin"
+        self.assertEqual([line for line in self.builtin_paths if "i2c" in line], self.builtin_paths[1:4])
+        for driver in ("i2c-qcom-geni", "i2c-hid-of", "i2c-core", "hid-core", "evdev", "atkbd"):
+            with self.subTest(driver=driver):
+                kept = [line for line in self.builtin_paths if Path(line).stem != driver]
+                builtin.write_text("\n".join(kept) + "\n", encoding="utf-8")
+                self.assertEqual(self.problems(), [
+                    f"internal i2c keyboard: {verify.I2C_INPUT_BUILTIN[driver]} is not built into the kernel, "
+                    "so the initramfs has no driver to load at the unlock prompt"])
+
+    def test_a_keyboard_on_another_bus_asks_only_for_the_input_layer(self):
+        builtin = self.kernel / "modules.builtin"
+        builtin.write_text("kernel/drivers/hid/hid-core.ko\n"
+                           "kernel/drivers/input/evdev.ko\n"
+                           "kernel/drivers/input/keyboard/atkbd.ko\n", encoding="utf-8")
+        definition = {**LENOVO, "internal_keyboards": [LENOVO["internal_keyboards"][0] | {"bus": "usb"}]}
+        self.assertEqual(verify.builtin_input_bus(definition, verify.builtin_modules(self.kernel)), [])
+
+    def test_a_profile_without_an_internal_keyboard_asks_for_nothing(self):
+        definition = {key: value for key, value in LENOVO.items() if key != "internal_keyboards"}
+        self.assertEqual(verify.builtin_input_bus(definition, set()), [])
+
     def test_missing_wifi_firmware_or_regulatory_database_fails(self):
         for name in ("ath12k/WCN7850/hw2.0/board-2.bin.xz", "ath12k/WCN7850/hw2.0/amss.bin.xz",
                      "regulatory.db", "regulatory.db.p7s"):
@@ -86,8 +118,9 @@ class VerifyBoardInitramfsTest(unittest.TestCase):
 
     def test_driver_neither_built_in_nor_installed_fails(self):
         (self.kernel / "modules.builtin").write_text("", encoding="utf-8")
-        self.assertEqual(self.problems(), [
-            f"boot module phy-qcom-qmp-pcie is neither built into kernel {KVER} nor installed for it"])
+        [problem, *_] = self.problems()
+        self.assertEqual(problem,
+                         f"boot module phy-qcom-qmp-pcie is neither built into kernel {KVER} nor installed for it")
 
     def test_sibling_unlock_without_wifi_pieces_fails(self):
         for path in WIFI_UNLOCK:

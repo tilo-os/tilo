@@ -738,6 +738,32 @@ class LenovoTpmTest(unittest.TestCase):
         self.assertNotIn("0x81f10000", patch_text.lower())
 
 
+class LenovoInternalKeyboardTest(unittest.TestCase):
+    """The Yoga Slim 7x's keyboard is HID over an i2c bus, and the unlock
+    prompt runs before any module could be loaded, so every driver on that
+    path is built in. A module as dracut gets it in is not enough: no dracut
+    module installs one, so a modular driver means a prompt that takes no key."""
+
+    KERNEL = SCRIPT.parents[1] / "kernel"
+    DRIVERS = ("CONFIG_I2C", "CONFIG_I2C_QCOM_GENI", "CONFIG_I2C_HID_OF", "CONFIG_HID",
+               "CONFIG_INPUT_EVDEV", "CONFIG_INPUT_KEYBOARD")
+
+    def test_the_whole_input_path_is_built_in(self):
+        fragment = (self.KERNEL / "config-fragments/aarch64.config").read_text(encoding="utf-8")
+        for driver in self.DRIVERS:
+            with self.subTest(driver=driver):
+                self.assertIn(f"\n{driver}=y\n", fragment)
+
+    def test_the_initramfs_verifier_names_the_same_drivers(self):
+        spec = importlib.util.spec_from_file_location(
+            "verify_board_initramfs", SCRIPT.parents[1] / "scripts/verify-board-initramfs.py")
+        verify = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verify)
+        fragment = (self.KERNEL / "config-fragments/aarch64.config").read_text(encoding="utf-8")
+        for name, symbol in verify.I2C_INPUT_BUILTIN.items():
+            self.assertIn(f"\n{symbol}=y\n", fragment, name)
+
+
 class OrangePiWifiFirmwareTest(unittest.TestCase):
     """The Orange Pi profile carries its Wi-Fi driver and NVRAM into the
     initramfs, under the board-specific names brcmfmac asks for first, and
