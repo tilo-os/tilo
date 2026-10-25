@@ -16,8 +16,12 @@ pub const MAX_DATA_BYTES: usize = 256 * 1024;
 /// Bounds of a settle wait, milliseconds.
 pub const MIN_SETTLE_QUIET_MS: u32 = 50;
 pub const MAX_SETTLE_MS: u32 = 20_000;
-/// Largest viewport coordinate an `At` names, CSS pixels.
+/// Largest viewport coordinate a point may name, CSS pixels.
 const MAX_COORDINATE: f64 = 100_000.0;
+/// Upper bound on the points of one pointer path, and the steps of one
+/// drag, so a gesture is always a bounded amount of work for the engine.
+pub const MAX_PATH_POINTS: usize = 1024;
+pub const MAX_DRAG_STEPS: usize = 64;
 /// Upper bound on the text one fill may insert.
 pub const MAX_FILL_BYTES: usize = 64 * 1024;
 /// Upper bound on the options one select may choose.
@@ -35,6 +39,32 @@ pub enum PageRequest {
     Outline,
     /// A trusted pointer click at the element's visible centre.
     Click { element: String },
+    /// A trusted pointer move to the element's visible centre, or to the
+    /// viewport point (`x`, `y`) when no element is named: moving the pointer
+    /// alone, with no button, so the page's hover styles apply.
+    Hover {
+        element: Option<String>,
+        point: Option<(f64, f64)>,
+    },
+    /// A trusted press, move and release on the element's visible centre, or
+    /// on the viewport point when no element is named: the drag and drop
+    /// gesture of a person holding the pointer down and moving it.
+    Drag {
+        from: Option<String>,
+        from_point: Option<(f64, f64)>,
+        to: Option<String>,
+        to_point: Option<(f64, f64)>,
+        steps: u8,
+    },
+    /// A trusted contact path: press at the first point, move through the
+    /// rest and release at the last, for drawing on canvases and other
+    /// surfaces that read pointer contact. Points are viewport CSS pixels
+    /// when the element is named and are measured from its padding box,
+    /// otherwise from the viewport's top left.
+    Path {
+        element: Option<String>,
+        points: Vec<(f64, f64)>,
+    },
     /// Replace an editable element's contents with `text`. A password or
     /// card field is refused unless `secret` says the caller means it, and
     /// then the text is a secret the caller keeps out of logs.
@@ -82,6 +112,9 @@ impl PageRequest {
         match self {
             Self::Outline => "outline",
             Self::Click { .. } => "click",
+            Self::Hover { .. } => "hover",
+            Self::Drag { .. } => "drag",
+            Self::Path { .. } => "path",
             Self::Fill { .. } => "fill",
             Self::Select { .. } => "select",
             Self::Press { .. } => "press",
@@ -104,7 +137,14 @@ impl PageRequest {
             | Self::Settle { .. }
             | Self::Console { .. }
             | Self::Network { .. }
-            | Self::Reader { .. } => None,
+            | Self::Reader { .. }
+            | Self::Hover { element: None, .. }
+            | Self::Drag {
+                from: None,
+                to: None,
+                ..
+            }
+            | Self::Path { element: None, .. } => None,
             Self::Click { element }
             | Self::Fill { element, .. }
             | Self::Select { element, .. }
@@ -112,11 +152,32 @@ impl PageRequest {
                 element: Some(element),
                 ..
             }
-            | Self::Submit { element, .. } => Some(element),
+            | Self::Submit { element, .. }
+            | Self::Hover {
+                element: Some(element),
+                ..
+            }
+            | Self::Drag {
+                from: Some(element),
+                ..
+            }
+            | Self::Drag {
+                from: None,
+                to: Some(element),
+                ..
+            }
+            | Self::Path {
+                element: Some(element),
+                ..
+            } => Some(element),
         }
     }
 
     /// Whether every field is within the bounds an engine accepts.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match names every request's bounds, so none can be forgotten"
+    )]
     pub fn valid(&self) -> bool {
         if self
             .element()
@@ -125,6 +186,39 @@ impl PageRequest {
             return false;
         }
         match self {
+            Self::Hover { element, point } => match (element, point) {
+                (Some(_), None) | (None, Some(_)) => true,
+                _ => false,
+            },
+            Self::Drag {
+                from,
+                from_point,
+                to,
+                to_point,
+                steps,
+            } => {
+                let known = |element: &Option<String>, point: &Option<(f64, f64)>| {
+                    matches!((element, point), (Some(_), None) | (None, Some(_)))
+                };
+                known(from, from_point)
+                    && known(to, to_point)
+                    && from_point
+                        .iter()
+                        .chain(to_point)
+                        .all(|point| point_is_viewport(*point))
+                    && (1..=MAX_DRAG_STEPS).contains(&usize::from(*steps))
+            },
+            Self::Path { element, points } => {
+                let relative = element.is_some();
+                (2..=MAX_PATH_POINTS).contains(&points.len())
+                    && points.iter().all(|&point| {
+                        if relative {
+                            point.0.is_finite() && point.1.is_finite()
+                        } else {
+                            point_is_viewport(point)
+                        }
+                    })
+            },
             Self::Fill { text, .. } => text.len() <= MAX_FILL_BYTES,
             Self::Select { values, .. } => {
                 !values.is_empty()
@@ -153,6 +247,13 @@ impl PageRequest {
             | Self::Reader { .. } => true,
         }
     }
+}
+
+/// A finite point inside the viewport coordinate bounds.
+fn point_is_viewport((x, y): (f64, f64)) -> bool {
+    [x, y]
+        .iter()
+        .all(|v| v.is_finite() && (0.0..=MAX_COORDINATE).contains(v))
 }
 
 /// Element refs are `d<document>e<element>`: both parts are decimal, so a ref
@@ -299,6 +400,12 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
     if let Some(element) = request.element() {
         command["element"] = element.into();
     }
+    if let PageRequest::Drag {
+        to: Some(target), ..
+    } = request
+    {
+        command["to"] = target.as_str().into();
+    }
     match request {
         PageRequest::Fill { text, secret, .. } => {
             command["text"] = text.as_str().into();
@@ -330,6 +437,41 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
             command["since"] = (*since).into();
         }
         PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
+        PageRequest::Hover { element, point } => {
+            // An unnamed element hovers a viewport point instead.
+            if element.is_none() && let Some((x, y)) = point {
+                command["action"] = "at".into();
+                command["hover"] = true.into();
+                command["x"] = (*x).into();
+                command["y"] = (*y).into();
+            }
+        }
+        PageRequest::Drag {
+            from_point,
+            to_point,
+            steps,
+            ..
+        } => {
+            // A named element travels as its ref under `element`; the
+            // destination element under `to`; unnamed ends as points.
+            if let Some((x, y)) = from_point {
+                command["x"] = (*x).into();
+                command["y"] = (*y).into();
+            }
+            if let Some((x, y)) = to_point {
+                command["to_x"] = (*x).into();
+                command["to_y"] = (*y).into();
+            }
+            command["steps"] = (*steps).into();
+        }
+        PageRequest::Path { points, .. } => {
+            command["points"] = serde_json::Value::Array(
+                points
+                    .iter()
+                    .map(|&(x, y)| serde_json::json!([x, y]))
+                    .collect(),
+            );
+        }
         PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Changes => {}
     }
     command
@@ -525,6 +667,145 @@ mod tests {
                 assert!(!bad.valid(), "{bad:?}");
             }
             assert!(PageRequest::Changes.element().is_none());
+        }
+        // phase: pointer_gestures_are_bounded_and_name_their_two_ends
+        {
+            let hover = PageRequest::Hover {
+                element: Some("d1e4".into()),
+                point: None,
+            };
+            assert!(hover.valid());
+            assert_eq!(hover.element(), Some("d1e4"));
+            assert_eq!(
+                encode_request(20, &hover),
+                serde_json::json!({"op":"page","request_id":20,"action":"hover","element":"d1e4"})
+            );
+            // A point without an element hovers there instead of clicks.
+            let at = PageRequest::Hover {
+                element: None,
+                point: Some((30.0, 44.5)),
+            };
+            assert!(at.valid());
+            assert_eq!(
+                encode_request(21, &at),
+                serde_json::json!({"op":"page","request_id":21,"action":"at","hover":true,
+                    "x":30.0,"y":44.5})
+            );
+            for bad in [
+                PageRequest::Hover {
+                    element: None,
+                    point: None,
+                },
+                PageRequest::Hover {
+                    element: Some("#menu".into()),
+                    point: None,
+                },
+                PageRequest::Hover {
+                    element: Some("d1e4".into()),
+                    point: Some((1.0, 1.0)),
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+            let drag = PageRequest::Drag {
+                from: Some("d1e4".into()),
+                from_point: None,
+                to: Some("d1e6".into()),
+                to_point: None,
+                steps: 8,
+            };
+            assert!(drag.valid());
+            assert_eq!(
+                encode_request(22, &drag),
+                serde_json::json!({"op":"page","request_id":22,"action":"drag","element":"d1e4",
+                    "to":"d1e6","steps":8})
+            );
+            let by_point = PageRequest::Drag {
+                from: None,
+                from_point: Some((10.0, 20.0)),
+                to: None,
+                to_point: Some((70.0, 80.0)),
+                steps: 4,
+            };
+            assert!(by_point.valid());
+            assert_eq!(
+                encode_request(23, &by_point),
+                serde_json::json!({"op":"page","request_id":23,"action":"drag","x":10.0,"y":20.0,
+                    "to_x":70.0,"to_y":80.0,"steps":4})
+            );
+            for bad in [
+                PageRequest::Drag {
+                    from: None,
+                    from_point: None,
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 4,
+                },
+                PageRequest::Drag {
+                    from: Some("d1e4".into()),
+                    from_point: None,
+                    to: None,
+                    to_point: None,
+                    steps: 4,
+                },
+                PageRequest::Drag {
+                    from: Some("d1e4".into()),
+                    from_point: None,
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 0,
+                },
+                PageRequest::Drag {
+                    from: Some("d1e4".into()),
+                    from_point: None,
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 65,
+                },
+                PageRequest::Drag {
+                    from: None,
+                    from_point: Some((f64::INFINITY, 0.0)),
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 4,
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+            let path = PageRequest::Path {
+                element: Some("d1e9".into()),
+                points: vec![(1.0, 2.0), (3.5, 4.5), (60.0, 70.0)],
+            };
+            assert!(path.valid());
+            let wire = encode_request(24, &path);
+            assert_eq!(wire["points"], serde_json::json!([[1.0, 2.0], [3.5, 4.5], [60.0, 70.0]]));
+            assert_eq!(wire["element"], "d1e9");
+            let free = PageRequest::Path {
+                element: None,
+                points: vec![(1.0, 2.0), (3.0, 4.0)],
+            };
+            assert!(free.valid());
+            assert!(encode_request(25, &free).get("element").is_none());
+            for bad in [
+                PageRequest::Path {
+                    element: Some("d1e9".into()),
+                    points: vec![(1.0, 2.0)],
+                },
+                PageRequest::Path {
+                    element: Some("d1e9".into()),
+                    points: vec![(1.0, 2.0); MAX_PATH_POINTS + 1],
+                },
+                PageRequest::Path {
+                    element: None,
+                    points: vec![(-1.0, 2.0), (3.0, 4.0)],
+                },
+                PageRequest::Path {
+                    element: Some("d1e9".into()),
+                    points: vec![(f64::NAN, 2.0), (3.0, 4.0)],
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
         }
         // phase: findings_decode_as_data_within_their_bound
         {

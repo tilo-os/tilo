@@ -5258,6 +5258,41 @@ impl BrowserWidget {
                 },
                 &["element", "cross_origin"][..],
             ),
+            (
+                E::HoverPage {
+                    element: None,
+                    x: None,
+                    y: None,
+                },
+                &["element", "x", "y"][..],
+            ),
+            (
+                E::DragPage {
+                    from: None,
+                    from_x: None,
+                    from_y: None,
+                    to: None,
+                    to_x: None,
+                    to_y: None,
+                    steps: None,
+                },
+                &[
+                    "from",
+                    "from_x",
+                    "from_y",
+                    "to",
+                    "to_x",
+                    "to_y",
+                    "steps",
+                ][..],
+            ),
+            (
+                E::PointerPath {
+                    element: None,
+                    points: Vec::new(),
+                },
+                &["element", "points"][..],
+            ),
             (E::ReadPageChanges, &[][..]),
             (E::ReadPageElementAt { x: 0.0, y: 0.0 }, &["x", "y"][..]),
             (

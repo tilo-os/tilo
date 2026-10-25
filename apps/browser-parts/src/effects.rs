@@ -14,6 +14,8 @@ use ui::webview::{KeyModifiers, PageKey, PageRequest};
 /// How long a settle waits for the page to go quiet, and at most, by default.
 const PAGE_SETTLE_QUIET_MS: u32 = 500;
 const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
+/// Moves the pointer makes between a drag's two ends by default.
+const PAGE_DRAG_STEPS: u32 = 8;
 
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "browser.effect", device_only)]
@@ -247,6 +249,54 @@ pub enum BrowserEffect {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
     },
+    /// Move the pointer over a page element
+    ///
+    /// Applies the page's hover styles there, such as a menu that opens
+    /// when the pointer rests on its trigger, and answers with what the
+    /// pointer is over now and what changed in the outline.
+    #[effect(row, job, returns, programmatic, untrusted)]
+    HoverPage {
+        #[param("Element ref from the page outline, such as d1e5")]
+        element: Option<String>,
+        #[param("Viewport x in CSS pixels from the page's left edge, when no element is named")]
+        x: Option<f64>,
+        #[param("Viewport y in CSS pixels from the page's top edge, when no element is named")]
+        y: Option<f64>,
+    },
+    /// Drag a page element or point
+    ///
+    /// Presses the pointer, moves it and releases it, as a person dragging
+    /// does, so reordering lists and dropped targets receive the drag.
+    #[effect(row, job, returns, programmatic, untrusted)]
+    DragPage {
+        #[param("Element ref to pick up, such as d1e5")]
+        from: Option<String>,
+        #[param("Viewport x in CSS pixels to pick up from, when no element is named")]
+        from_x: Option<f64>,
+        #[param("Viewport y in CSS pixels to pick up from, when no element is named")]
+        from_y: Option<f64>,
+        #[param("Element ref to drop on, such as d1e7")]
+        to: Option<String>,
+        #[param("Viewport x in CSS pixels to drop at, when no element is named")]
+        to_x: Option<f64>,
+        #[param("Viewport y in CSS pixels to drop at, when no element is named")]
+        to_y: Option<f64>,
+        #[param("How many moves the pointer makes between the two ends (default 8, at most 64)")]
+        steps: Option<u32>,
+    },
+    /// Draw a pointer path on a page element
+    ///
+    /// Presses the pointer at the first point, moves it through the rest and
+    /// releases it at the last, as drawing a signature on a canvas does.
+    #[effect(row, job, returns, programmatic, untrusted)]
+    PointerPath {
+        #[param("Element ref to draw on, such as d1e5")]
+        element: Option<String>,
+        #[param(
+            "Points as [x, y] pairs, measured from the element's top left corner when an element is named, otherwise from the viewport's"
+        )]
+        points: Vec<[f64; 2]>,
+    },
     /// Fill page field
     ///
     /// A password or card field is refused: those take the secret fill.
@@ -420,6 +470,39 @@ impl BrowserEffect {
                 since: since.unwrap_or(0),
             }),
             Self::ClickPage { element } => page(PageRequest::Click { element }),
+            Self::HoverPage { element, x, y } => {
+                let element = element.filter(|element| !element.is_empty());
+                let point = x.zip(y);
+                page(match (element, point) {
+                    (None, Some(point)) => PageRequest::Hover {
+                        element: None,
+                        point: Some(point),
+                    },
+                    (element, _) => PageRequest::Hover { element, point: None },
+                })
+            }
+            Self::DragPage {
+                from,
+                from_x,
+                from_y,
+                to,
+                to_x,
+                to_y,
+                steps,
+            } => page(PageRequest::Drag {
+                from: from.filter(|element| !element.is_empty()),
+                from_point: from_x.zip(from_y),
+                to: to.filter(|element| !element.is_empty()),
+                to_point: to_x.zip(to_y),
+                steps: u8::try_from(steps.unwrap_or(PAGE_DRAG_STEPS)).unwrap_or(u8::MAX),
+            }),
+            Self::PointerPath { element, points } => page(PageRequest::Path {
+                element: element.filter(|element| !element.is_empty()),
+                points: points
+                    .into_iter()
+                    .map(|[x, y]| (x, y))
+                    .collect(),
+            }),
             Self::FillPage { element, text } => page(PageRequest::Fill {
                 element,
                 text,
