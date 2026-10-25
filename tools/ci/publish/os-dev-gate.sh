@@ -50,7 +50,7 @@ podman tag "$id" localhost/tilo-vm:ci
 export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=quickuser TILO_PASS=tilo
 if [[ $arch == aarch64 ]]; then export TILO_DEV_DIRECT_BUNDLE_DIR=$out/disk/direct-boot; fi
 TILO_IMAGE=localhost/tilo-vm:ci TILO_SKIP_BUILD=1 TILO_OUTPUT=$scratch/dev-disk TILO_RUN=$scratch/dev-disk-run \
-  TILO_DISK_SIZE=64G TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:main-${revision:0:7}-ci" \
+  TILO_DISK_SIZE=64G TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:$arch-ci" \
   bash os/dev/build-image.sh > "$out/install.log" 2>&1 \
   || { tail -n 80 "$out/install.log"; die 'the dev image does not install onto a disk'; }
 unset TILO_DEV_DIRECT_BUNDLE_DIR
