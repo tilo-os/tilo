@@ -30,6 +30,11 @@ const REOPEN_AFTER: Duration = Duration::from_secs(1);
 #[derive(Default)]
 pub(super) struct State {
     owner: Mutex<Option<NativeWorkspaceOwner>>,
+    /// Held for the whole of an open, by whichever caller runs it, so two
+    /// opens never both restore one. Never held by the frame loop, which
+    /// asks [`ShellNetwork::native_owner_status`]: a long open here must not
+    /// read as an open in progress to a caller that never waits for one.
+    opening: Mutex<()>,
     /// The open [`ShellNetwork::opened_native_owner`] runs off the frame loop.
     background: Arc<Mutex<Background>>,
     pub(super) attempts: Mutex<std::collections::HashMap<u64, enrollment_driver::Attempt>>,
@@ -83,14 +88,17 @@ impl ShellNetwork {
     /// and publishing its reopened generation, which can wait for the disk.
     /// The frame loop asks [`Self::native_owner_status`] instead.
     pub(crate) fn native_owner(&self) -> Result<NativeWorkspaceOwner, String> {
-        let tree = self.tree.clone();
-        let retained = self
+        // The open runs outside the retention lock: a frame-loop caller
+        // reads the owner's standing by trying that lock, and must not find
+        // it held for the seconds an open can take.
+        let _opening = self
             .native_enrollment
-            .owner
+            .opening
             .lock()
-            .map_err(|_| "native owner retention unavailable")?;
-        if let Some(owner) = retained.as_ref() {
-            return Ok(owner.clone());
+            .map_err(|_| "native owner opening unavailable")?;
+        let tree = self.tree.clone();
+        if let Some(owner) = self.retained_native_owner()? {
+            return Ok(owner);
         }
         // An owner the background open finished is this writer's: opening
         // again would only look it up.
@@ -104,7 +112,22 @@ impl ShellNetwork {
             Some(owner) => owner,
             None => crate::shell::native_workspace_owner::open(tree.clone())?,
         };
+        let retained = self
+            .native_enrollment
+            .owner
+            .lock()
+            .map_err(|_| "native owner retention unavailable")?;
         Ok(self.retain_native_owner(retained, &tree, owner))
+    }
+
+    /// The owner this network already holds, without opening one.
+    fn retained_native_owner(&self) -> Result<Option<NativeWorkspaceOwner>, String> {
+        Ok(self
+            .native_enrollment
+            .owner
+            .lock()
+            .map_err(|_| "native owner retention unavailable")?
+            .clone())
     }
 
     /// Who stewards each room's channels, as the native owner, once open,
@@ -154,15 +177,24 @@ impl ShellNetwork {
     pub(crate) fn native_owner_status(&self) -> NativeOwnerStatus {
         // The tree before the owner, in the order `native_owner` takes them.
         let tree = self.tree.clone();
-        // Held only by a caller opening the owner itself.
         let retained = match self.native_enrollment.owner.try_lock() {
             Ok(retained) => retained,
-            Err(std::sync::TryLockError::WouldBlock) => return NativeOwnerStatus::Opening,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                // Someone is storing an owner right now; it lands in a
+                // moment, as an open that just finished does.
+                return NativeOwnerStatus::Opening;
+            }
             Err(std::sync::TryLockError::Poisoned(_)) => return NativeOwnerStatus::Unavailable,
         };
         if let Some(owner) = retained.as_ref() {
             return NativeOwnerStatus::Open(owner.clone());
         }
+        // No owner retained: one is being opened if any caller holds the
+        // opening lock, whether the frame loop's own thread or a caller of
+        // `native_owner` that has not finished yet.
+        // Read and released at once: this never opens anything, and must
+        // not hold the lock an opener is waiting on.
+        let opening_in_progress = self.native_enrollment.opening.try_lock().is_err();
         let Ok(mut background) = self.native_enrollment.background.lock() else {
             return NativeOwnerStatus::Unavailable;
         };
@@ -175,7 +207,7 @@ impl ShellNetwork {
             return NativeOwnerStatus::Open(self.retain_native_owner(retained, &tree, owner));
         }
         drop(retained);
-        if background.running {
+        if background.running || opening_in_progress {
             return NativeOwnerStatus::Opening;
         }
         // Without a state file no open can succeed: say so now, rather than
