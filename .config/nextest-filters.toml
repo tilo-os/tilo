@@ -22,3 +22,12 @@ push_only = """
 (package(tilo-fs) and binary(collab_release_matrix)) or
 (package(tilo-rollback) and binary(mechanism))
 """
+
+# The imager's internal-cache tests drive the cache's real syscalls, and the
+# cache refuses any filesystem but ext4, XFS and Btrfs. A node's build
+# directory and TMPDIR may be on another one (ZFS, an overlay, tmpfs), so the
+# `imager-cache` micro-VM check runs them on its own ext4 scratch disk, and the
+# test runs leave them out.
+imager_cache = """
+package(imager) and test(/^setup::internal_cache::linux::tests::native::/)
+"""
