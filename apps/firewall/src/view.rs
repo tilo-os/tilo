@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use ui::LocalState;
 use ui::a11y::AccessNode;
-use ui::fact::{Fact, Measure};
+use ui::fact::{Measure, Measured};
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{Rhythm, TextRole};
@@ -435,7 +435,7 @@ fn stats(zone: &Zone) -> StatGroup {
     let (allow, deny) = zone.rule_counts();
     let now = ui::time::wall();
     let tile = |label: &str, value: usize, measure: &str| {
-        let fact = Fact::measured(
+        let fact = Measured::measured(
             Measure::new(measure),
             value.to_string(),
             "this configuration",
@@ -813,7 +813,7 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
         );
     };
     let now = ui::time::wall();
-    let dropped = Fact::measured(
+    let dropped = Measured::measured(
         Measure::new("Packets dropped"),
         report.total.to_string(),
         "system journal",

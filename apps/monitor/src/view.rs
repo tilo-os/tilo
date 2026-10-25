@@ -19,18 +19,18 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::charts::{BarGauge, Chart, ChartStyle, Series, nice_step};
-use ui::fact::{Fact, Measure};
+use ui::fact::{Measure, Measured};
 use ui::format::memory as format_bytes;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
-use ui::tokens::TextRole;
 use ui::widget::card::{CardGrid, CardWidth};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use ui::widget::primitives::{Fact, Facts};
 use ui::widget::{
     AppModel, Button, ButtonRole, Column, Element, EmptyState, FilterCount, Filterable, ModelPath,
-    Property, PropertyList, Row, Scrollable, Section, StatGroup, StatTile, TaffyTreeExt, Text,
-    Widget, layout_rect,
+    Property, PropertyList, Row, Scrollable, Section, StatGroup, StatTile, TaffyTreeExt, Widget,
+    layout_rect,
 };
 
 use crate::app::{SortKey, Tab};
@@ -312,7 +312,7 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
             }
             let now = ui::time::wall();
             let fact = match metrics.sampled_at {
-                Some(at) => Fact::measured(
+                Some(at) => Measured::measured(
                     Measure::new(stat.measure()),
                     "1 sample",
                     "this device",
@@ -321,7 +321,7 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
                         u64::from(metrics.sample_interval_ms.max(1)) * 2,
                     )),
                 ),
-                None => Fact::unknown(
+                None => Measured::unknown(
                     Measure::new(stat.measure()),
                     "the system information service has not answered",
                 ),
@@ -332,15 +332,11 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
                     .with_intrinsic_height()
                     .with_rhythm(ui::tokens::Rhythm::Tight)
                     .push(Box::new(tile))
-                    .push(Box::new(
-                        Text::new(&format!(
-                            "{} · {scale} · {}",
-                            metrics.history_period(),
-                            fact.caption(now)
-                        ))
-                        .with_role(TextRole::Caption)
-                        .dimmed(),
-                    )),
+                    .push(Box::new(Facts::new(vec![
+                        Fact::text(fact.caption(now)).priority(3),
+                        Fact::text(metrics.history_period()).priority(2),
+                        Fact::text(scale.clone()).priority(1),
+                    ]))),
             ) as Element
         })
         .collect();
@@ -1093,11 +1089,10 @@ fn processor_section(metrics: &Metrics, theme: &Theme) -> Section {
         "Processor",
         vec![
             Box::new(cpu_chart),
-            Box::new(
-                Text::new(&format!("{} · 0–100%", metrics.history_period()))
-                    .with_role(TextRole::Caption)
-                    .dimmed(),
-            ),
+            Box::new(Facts::new(vec![
+                Fact::text("0–100%").priority(2),
+                Fact::text(metrics.history_period()).priority(1),
+            ])),
             Box::new(CardGrid::new(cores).with_card_width(CardWidth::Compact)),
         ],
     )
@@ -1136,11 +1131,10 @@ fn memory_section(metrics: &Metrics, theme: &Theme) -> Section {
                 100.0,
                 "100%",
             )),
-            Box::new(
-                Text::new(&format!("{} · 0–100% of RAM", metrics.history_period()))
-                    .with_role(TextRole::Caption)
-                    .dimmed(),
-            ),
+            Box::new(Facts::new(vec![
+                Fact::text("0–100% of RAM").priority(2),
+                Fact::text(metrics.history_period()).priority(1),
+            ])),
         ],
     )
 }
@@ -1181,11 +1175,10 @@ fn throughput_section(
         title,
         vec![
             Box::new(history_chart(series, max, &fmt_rate(max))),
-            Box::new(
-                Text::new(&format!("{period} · 0–{}", fmt_rate(max)))
-                    .with_role(TextRole::Caption)
-                    .dimmed(),
-            ),
+            Box::new(Facts::new(vec![
+                Fact::text(format!("0–{}", fmt_rate(max))).priority(2),
+                Fact::text(period).priority(1),
+            ])),
         ],
     )
 }
