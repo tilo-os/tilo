@@ -154,6 +154,11 @@ fn wait_action(
     reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
 )]
 fn main() -> Result<()> {
+    // `Session` hosts its workspace room in process; the room host's Automerge
+    // isolation workers re-enter this binary.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        std::process::exit(i32::from(code));
+    }
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .try_init();
