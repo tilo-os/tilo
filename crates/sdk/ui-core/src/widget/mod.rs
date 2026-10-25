@@ -3274,6 +3274,10 @@ pub use color_picker::{ColorPicker, ColorPickerOutcome};
 pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker, SwatchPainter};
 pub mod popover;
 pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
+pub mod emoji_picker;
+pub use emoji_picker::{EmojiPicker, PickerEvent};
+pub mod reaction_strip;
+pub use reaction_strip::{ReactionStrip, ReactionStripWidget, ReactionToggle, StripHit};
 pub mod modal_dialog;
 pub use modal_dialog::{
     ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSheet, ModalSpec,
