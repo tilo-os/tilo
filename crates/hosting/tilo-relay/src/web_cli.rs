@@ -433,6 +433,10 @@ fn fetch_proxy_config() -> tilo_net::proxy::host::Config {
             in_flight: env_count("TILO_RELAY_FETCH_PROXY_IN_FLIGHT").unwrap_or(defaults.in_flight),
         },
         budgets,
+        // The host answers for its own files: a page's app reads the paths
+        // its person reads in the desktop session, as this machine's own
+        // files, never a site's.
+        peer: true,
         ..Config::default()
     }
 }

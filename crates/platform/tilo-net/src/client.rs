@@ -279,6 +279,11 @@ pub struct Request {
     pub timeout: Option<Duration>,
     /// Replaces the client's fetch-proxy choice for this request.
     pub proxy: Option<ProxyUse>,
+    /// The path on the machine that admitted this page's person, when this
+    /// is a peer request: the host reads it as the file it is on its own
+    /// disk ([`proxy::peer_route`]). `url` is then that path, `file:` and
+    /// all.
+    pub peer: bool,
 }
 
 impl Request {
@@ -304,6 +309,7 @@ impl Request {
             body: None,
             timeout: None,
             proxy: None,
+            peer: false,
         })
     }
 }
@@ -443,6 +449,23 @@ impl RequestBuilder {
     pub fn timeout(self, timeout: Duration) -> Self {
         self.map(|request| {
             request.timeout = Some(timeout);
+            Ok(())
+        })
+    }
+
+    /// Read `path` on the machine that admitted this page's person through
+    /// its host's fetch [`proxy`](crate::proxy): a page's Files app reads
+    /// the same disk the desktop session reads, as the file it is, without
+    /// first downloading it into the page's own storage.
+    ///
+    /// On the desktop there is no page and no host to ask: the call fails
+    /// with [`NetError::InvalidRequest`].
+    pub fn peer_file(self, path: impl AsRef<str>) -> Self {
+        self.map(|request| {
+            request.url = ::url::Url::parse(&format!("file://{}", path.as_ref()))
+                .map_err(|error| NetError::InvalidUrl(error.to_string()))?;
+            request.peer = true;
+            request.proxy = Some(ProxyUse::CrossOrigin);
             Ok(())
         })
     }
