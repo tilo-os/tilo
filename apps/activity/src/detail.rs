@@ -150,7 +150,7 @@ fn agent_run(provider: &Provider, range: &wire::Range, run: &wire::Run) -> Vec<E
         items.push(Box::new(Text::new(status).dimmed()));
     }
     for left in &run.unreverted {
-        items.push(Box::new(Text::new(left.clone()).dimmed()));
+        items.push(Box::new(Text::new(left).dimmed()));
     }
     let mut parts: Vec<Element> = vec![Box::new(Section::titled(tr("activity-agent-task"), items))];
     if !run.records.is_empty() {
@@ -175,14 +175,14 @@ fn agent_run(provider: &Provider, range: &wire::Range, run: &wire::Run) -> Vec<E
                     app_id: changed.app_id.clone(),
                     id: changed.id.clone(),
                 };
-                let (provider, action) = (provider.clone(), offer.action.clone());
+                let (provider, action) = (provider.clone(), offer.action);
                 Box::new(
                     Row::new()
                         .with_rhythm(ui::tokens::Rhythm::Related)
                         .push(Box::new(row))
                         .push(Box::new(
-                            Button::new(format!("activity-run-record-{index}-undo"), &offer.label)
-                                .on_view(move || provider.ask(&action, &query)),
+                            Button::new(&format!("activity-run-record-{index}-undo"), &offer.label)
+                                .on_view(move || provider.ask(action.action(), &query)),
                         )),
                 )
             })
