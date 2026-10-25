@@ -5,6 +5,10 @@ use crate::{
     Preview, Receipt, ReviewText, Submission, TextOrigin,
 };
 
+#[path = "composer_report.rs"]
+mod report;
+pub use report::{ModelCheck, PickedReport, ReportWords};
+
 /// What a report is about: the window the person opened Feedback from, as
 /// the desktop names it, and the control in it they pointed at, if they did.
 /// Only the app's public identity and the control's semantic identity become
@@ -129,6 +133,8 @@ pub struct Composer {
     reviewed: Option<(String, Consent, Preview)>,
     active: Option<String>,
     subject: Option<Subject>,
+    /// The report about picked parts of the screen, while there is one.
+    picked: Option<report::Picked>,
 }
 
 impl Composer {
@@ -158,6 +164,7 @@ impl Composer {
             reviewed: None,
             active,
             subject: None,
+            picked: None,
         })
     }
 
@@ -185,12 +192,7 @@ impl Composer {
     /// Refuses a queued report, invalid review or unavailable attachment.
     pub fn review(&mut self, text: &str, consent: Consent) -> Result<(), Error> {
         self.reviewed = None;
-        if self.active.is_some() {
-            if !matches!(self.state()?, Some(DeliveryState::Sent { .. })) {
-                return Err(Error::Conflict);
-            }
-            self.active = None;
-        }
+        self.settle_sent()?;
         if text.trim().is_empty() || text.len() > 8_000 {
             return Err(Error::Invalid("feedback"));
         }
@@ -215,6 +217,17 @@ impl Composer {
         Ok(())
     }
 
+    /// A new report may start once the last one arrived.
+    fn settle_sent(&mut self) -> Result<(), Error> {
+        if self.active.is_some() {
+            if !matches!(self.state()?, Some(DeliveryState::Sent { .. })) {
+                return Err(Error::Conflict);
+            }
+            self.active = None;
+        }
+        Ok(())
+    }
+
     pub fn preview(&self) -> Option<&Preview> {
         self.reviewed.as_ref().map(|(_, _, preview)| preview)
     }
@@ -223,6 +236,7 @@ impl Composer {
     /// An already queued immutable report keeps its existing retry identity.
     pub fn abandon_review(&mut self) {
         self.reviewed = None;
+        self.picked = None;
     }
 
     /// Hide a reviewed span without restoring the original text.

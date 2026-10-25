@@ -94,6 +94,7 @@ fn submission() -> Submission {
             text: "The book lost my position".into(),
             context: vec![],
             screenshot: None,
+            ..Default::default()
         },
     }
 }

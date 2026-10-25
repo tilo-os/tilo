@@ -955,6 +955,7 @@ fn a_commenter_files_feedback_and_a_viewer_cannot() {
                 text: "The page loses my position".into(),
                 context: Vec::new(),
                 screenshot: None,
+                ..Default::default()
             },
         }
     };
