@@ -1,26 +1,17 @@
-//! The one notice Files shows when something needs the person: a change
-//! they may want to take back, or a failure with a way on.
+//! What Files says when something needs the person: a change they may want
+//! to take back, or a failure with a way on.
 //!
-//! Everything else stays quiet. A change the listing already shows (a new
-//! folder, a rename, a copy put on the clipboard) says nothing; neutral
-//! news is the transient status bubble's. A notice is the window bar's
-//! ([`ui::window_toolbar::notify`]), with at most one action beside it
-//! there; it goes away by itself. A notice with an action stays for
-//! [`LIFETIME`]; one without leaves after the shared notice lifetime
-//! ([`ui::widget::toast::NOTICE_LIFETIME`]), as every such notice does. A
-//! transfer's progress stays until the transfer ends.
+//! It waits, and it does not expire. An outcome with a way on is an item in
+//! [`ui::attention`] — the app that asks, what it is about, and exactly one
+//! action — and one without is recorded in the ledger. Nothing here is said
+//! in a notice with a lifetime: a message that leaves after eight seconds
+//! teaches people not to read the ones that matter.
 
 use std::path::PathBuf;
 
-use ui::time::{Duration, Instant};
-use ui::widget::toast::ToastKind;
-use ui::window_toolbar::{ToolbarAction, ToolbarNotice};
-
-/// How long a notice with an action stays up.
-const LIFETIME: Duration = Duration::from_secs(8);
-
-/// The bar action id of a notice's button.
-pub(crate) const NOTICE_ACTION: &str = "files-notice-action";
+/// The verb prefix a waiting row's action carries: the app reads which
+/// action by what follows it.
+pub(crate) const NOTICE_VERB: &str = "files.notice";
 
 /// What a notice's button does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,50 +40,49 @@ impl NoticeAction {
         }
     }
 
-    fn icon(&self) -> &'static str {
-        match self {
-            Self::Undo => "undo-2",
-            Self::OpenWith(_) => "app-window",
-            Self::CancelTransfer => "x",
-            Self::ReceiveAgain(_) => "rotate-cw",
-            Self::OpenHistory(_) => "history",
-        }
+    /// The verb this action waits on: Files' own, so another app's row is
+    /// never mistaken for this one.
+    fn verb(&self) -> String {
+        let kind = match self {
+            Self::Undo => "undo",
+            Self::OpenWith(_) => "open-with",
+            Self::CancelTransfer => "cancel-transfer",
+            Self::ReceiveAgain(_) => "receive-again",
+            Self::OpenHistory(_) => "open-history",
+        };
+        format!("{NOTICE_VERB}.{kind}")
     }
+}
+
+/// Files, as the waiting stack and the ledger name it.
+fn owner() -> ui::attention::Owner {
+    ui::attention::Owner::new("so.tilo.files", "Files").with_icon(ui::icons::Icon::Folder)
 }
 
 #[derive(Clone, Debug)]
 struct Shown {
     title: String,
     body: String,
-    kind: ToastKind,
     action: Option<NoticeAction>,
-    /// When the notice went up.
-    since: Instant,
 }
 
-/// The notice currently up, if any, and what the window's bar says of it.
+/// What Files last said, and where it waits.
 #[derive(Debug, Default)]
 pub(crate) struct Notice {
     shown: Option<Shown>,
-    published: Option<ToolbarNotice>,
+    /// The row raised for it, and the action that row waits on: what the
+    /// person pressed is read back by the row's identity.
+    waiting: Option<(ui::attention::ItemId, NoticeAction)>,
+    /// What was already said, so one outcome is recorded once.
+    said: Option<String>,
 }
 
-/// A copy keeps the message but not the bar's notice: the original took it
-/// up and takes it down.
 impl Clone for Notice {
     fn clone(&self) -> Self {
         Self {
             shown: self.shown.clone(),
-            published: None,
-        }
-    }
-}
-
-/// A notice gone with its window leaves the window's bar with it.
-impl Drop for Notice {
-    fn drop(&mut self) {
-        if let Some(notice) = self.published.take() {
-            ui::window_toolbar::withdraw(&notice);
+            waiting: None,
+            said: self.said.clone(),
         }
     }
 }
@@ -104,15 +94,12 @@ impl Notice {
         &mut self,
         title: impl Into<String>,
         body: impl Into<String>,
-        kind: ToastKind,
         action: Option<NoticeAction>,
     ) {
         self.shown = Some(Shown {
             title: title.into(),
             body: body.into(),
-            kind,
             action,
-            since: ui::time::now(),
         });
     }
 
@@ -126,22 +113,7 @@ impl Notice {
             shown.body = body;
             return;
         }
-        self.show(
-            title,
-            body,
-            ToastKind::Info,
-            Some(NoticeAction::CancelTransfer),
-        );
-    }
-
-    /// How long the notice stays up: one that offers nothing to do leaves
-    /// as every such notice does.
-    fn lifetime(&self) -> Duration {
-        if self.action().is_some() {
-            LIFETIME
-        } else {
-            ui::widget::toast::NOTICE_LIFETIME
-        }
+        self.show(title, body, Some(NoticeAction::CancelTransfer));
     }
 
     /// Whether the notice is a transfer's progress.
@@ -150,6 +122,9 @@ impl Notice {
     }
 
     pub(crate) fn dismiss(&mut self) -> bool {
+        // What was said is said: if the same thing happens again after the
+        // person answered it, it is news again.
+        self.said = None;
         self.shown.take().is_some()
     }
 
@@ -173,61 +148,49 @@ impl Notice {
         self.action() == Some(&NoticeAction::Undo)
     }
 
-    /// Take the notice down once its lifetime is over; whether it did.
-    pub(crate) fn expire(&mut self, now: Instant) -> bool {
-        let over = self.shown.as_ref().is_some_and(|shown| {
-            shown.action != Some(NoticeAction::CancelTransfer)
-                && !ui::time::wall_frozen()
-                && now.saturating_duration_since(shown.since) > self.lifetime()
-        });
-        over && self.dismiss()
-    }
-
-    /// When the notice expires, for the widget's wake deadline.
-    pub(crate) fn deadline(&self) -> Option<Instant> {
-        if ui::time::wall_frozen() || self.shows_progress() {
-            return None;
-        }
-        self.shown
-            .as_ref()
-            .map(|shown| shown.since + self.lifetime())
-    }
-
-    /// The notice as the window's bar says it: its line, and its button.
-    fn as_toolbar_notice(&self) -> Option<ToolbarNotice> {
-        let shown = self.shown.as_ref()?;
-        let notice = ToolbarNotice::new(self.line()?, shown.kind);
-        Some(match &shown.action {
-            Some(action) => notice.action(ToolbarAction::new(
-                NOTICE_ACTION,
-                action.icon(),
-                action.label(),
-            )),
-            None => notice,
-        })
-    }
-
-    /// Keep the window's bar saying the notice while it is up, and take it
-    /// down once it has gone; call on every sync. A notice shown since from
-    /// elsewhere in the window stays.
+    /// Where the notice goes: a change to take back or a failure with a way
+    /// on waits for the person, and anything else is recorded. Call on every
+    /// sync; one outcome is said once.
     pub(crate) fn publish(&mut self) {
-        let want = self.as_toolbar_notice();
-        if self.published == want {
+        let Some(line) = self.line() else {
+            return;
+        };
+        if self.said.as_deref() == Some(line.as_str()) {
             return;
         }
-        if let Some(gone) = self.published.take() {
-            ui::window_toolbar::withdraw(&gone);
-        }
-        if let Some(notice) = want {
-            ui::window_toolbar::notify(Some(notice.clone()));
-            self.published = Some(notice);
+        self.said = Some(line.clone());
+        match self.action().cloned() {
+            Some(action) => {
+                let published = ui::attention::publish(
+                    ui::attention::Notice::needs(
+                        owner(),
+                        line,
+                        ui::attention::Action::new(action.verb(), action.label()),
+                    )
+                    .urgent(match action {
+                        NoticeAction::CancelTransfer => ui::attention::Urgency::Noted,
+                        _ => ui::attention::Urgency::Waiting,
+                    }),
+                );
+                if let ui::attention::Published::Waiting(item) = published {
+                    self.waiting = Some((item, action));
+                }
+            }
+            None => {
+                ui::attention::publish(ui::attention::Notice::did(owner(), line));
+            }
         }
     }
 
-    /// The notice's button was pressed in the bar: what it asked for, and
-    /// the notice is down.
-    pub(crate) fn press(&mut self) -> Option<NoticeAction> {
-        let action = self.action().cloned()?;
+    /// The row a person pressed, if it was this notice's: what it asked for,
+    /// and the notice is down.
+    pub(crate) fn pressed(&mut self, acted: &ui::attention::Acted) -> Option<NoticeAction> {
+        let (item, action) = self.waiting.as_ref()?;
+        if *item != acted.item || acted.action.verb != action.verb() {
+            return None;
+        }
+        let action = action.clone();
+        self.waiting = None;
         self.dismiss();
         Some(action)
     }
@@ -237,50 +200,63 @@ impl Notice {
 mod tests {
     use super::*;
 
+    /// A change to take back waits for the person, with one action, and
+    /// acting on that row takes it down. Nothing here has a lifetime.
     #[test]
-    fn a_notice_is_the_window_bars_with_its_button_and_a_press_takes_it_down() {
+    fn a_notice_waits_with_its_button_and_acting_takes_it_down() {
+        ui::attention::clear();
         let mut notice = Notice::default();
-        notice.show(
-            "Moved 2 items to Trash",
-            "",
-            ToastKind::Success,
-            Some(NoticeAction::Undo),
-        );
+        notice.show("Moved 2 items to Trash", "", Some(NoticeAction::Undo));
         notice.publish();
-        let shown = ui::window_toolbar::notice().expect("the bar says it");
-        assert_eq!(shown.text, "Moved 2 items to Trash");
-        assert_eq!(shown.kind, ToastKind::Success);
-        assert_eq!(
-            shown.actions.first().map(|action| action.id.clone()),
-            Some(NOTICE_ACTION.to_owned()),
-            "Undo is the bar's action while the notice shows"
-        );
+        let waiting = ui::attention::items();
+        assert_eq!(waiting.len(), 1, "the change waits");
+        assert_eq!(waiting[0].title(), "Moved 2 items to Trash");
+        assert_eq!(waiting[0].owner().name, "Files");
+        assert_eq!(waiting[0].action().label, t_undo());
         assert!(notice.offers_undo());
-        assert_eq!(notice.press(), Some(NoticeAction::Undo));
-        assert_eq!(notice.line(), None, "acting on a notice takes it down");
-        assert_eq!(notice.press(), None, "a second press asks for nothing");
-        notice.publish();
-        assert_eq!(ui::window_toolbar::notice(), None);
+        let acted = ui::attention::take(waiting[0].id()).expect("it waits on a verb");
+        assert_eq!(notice.pressed(&acted), Some(NoticeAction::Undo));
+        assert_eq!(notice.line(), None, "acting on it takes it down");
+        assert_eq!(
+            notice.pressed(&acted),
+            None,
+            "a second press asks for nothing"
+        );
+        assert!(ui::attention::items().is_empty());
     }
 
+    fn t_undo() -> String {
+        crate::i18n::t("files-notice-undo")
+    }
+
+    /// An outcome with nothing to do about it is recorded, not thrown at the
+    /// window: it does not expire, and it asks nobody.
     #[test]
-    fn a_notice_expires_after_its_lifetime() {
+    fn an_outcome_with_nothing_to_do_is_recorded() {
+        ui::attention::clear();
+        ui::attention::clear_ledger();
         let mut notice = Notice::default();
-        notice.show(
-            "Couldn’t open “a.pdf”",
-            "No app opens PDF files",
-            ToastKind::Error,
-            None,
+        notice.show("Couldn’t open “a.pdf”", "No app opens PDF files", None);
+        notice.publish();
+        assert!(ui::attention::items().is_empty(), "nothing to act on");
+        assert!(
+            ui::attention::entries()
+                .iter()
+                .any(|entry| entry.what().contains("Couldn’t open")),
+            "the ledger keeps it"
         );
-        let shown_at = ui::time::now();
-        assert!(!notice.expire(shown_at));
-        if !ui::time::wall_frozen() {
-            assert!(
-                notice.expire(
-                    shown_at + ui::widget::toast::NOTICE_LIFETIME + Duration::from_millis(1)
-                )
-            );
-            assert_eq!(notice.line(), None);
-        }
+    }
+
+    /// The same outcome is said once, however many frames pass.
+    #[test]
+    fn one_outcome_is_recorded_once() {
+        ui::attention::clear();
+        ui::attention::clear_ledger();
+        let mut notice = Notice::default();
+        notice.show("Copied 3 files", "", None);
+        notice.publish();
+        notice.publish();
+        notice.publish();
+        assert_eq!(ui::attention::entries().len(), 1);
     }
 }

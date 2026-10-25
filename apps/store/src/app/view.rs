@@ -231,7 +231,9 @@ impl StoreApp {
             }),
             label,
             binding: bindings::package(item, action),
-            enabled: unavailable.is_none() && (self.active_operation.is_none() || busy),
+            // One operation no longer freezes the Store: jobs are concurrent
+            // by construction, and each has its own row.
+            enabled: unavailable.is_none(),
             progress: busy.then(|| progress_label(action, &item.name)),
         }
     }
@@ -265,10 +267,31 @@ impl StoreApp {
             // its page says why.
             return self.row(item, None, meta);
         }
-        let primary = self
+        let primary: Element = self
             .primary(item)
             .control(ControlSize::Small, ButtonRole::Secondary);
-        self.row(item, Some(primary), meta)
+        // Removing five apps is five rows, not five pages: an installed app
+        // carries its own remove beside its one action (the system's own
+        // Uninstall, which asks first).
+        let controls: Element = if item.installed.is_installed() {
+            let remove = Button::icon_only(
+                &format!("store.remove.{}", item.id),
+                Icon::Trash2,
+                &ui::i18n!("store-action-remove"),
+            )
+            .control_size(ControlSize::Small)
+            .on_action(bindings::uninstall(item));
+            Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .push(Box::new(remove))
+                    .push(primary),
+            )
+        } else {
+            primary
+        };
+        self.row(item, Some(controls), meta)
     }
 
     /// The items `ids` name, in that order, skipping any no longer listed.
@@ -498,9 +521,22 @@ impl StoreApp {
             .iter()
             .map(|item| self.action_row(item, Some(device_meta(item))))
             .collect();
-        children.push(Box::new(Section::new(rows).with_header(
-            SectionHeader::heading(ui::i18n!("store-view-installed")).count(here.len()),
-        )));
+        let bytes: u64 = here
+            .iter()
+            .filter_map(|item| item.versions.first().map(|version| version.size_bytes))
+            .fold(0, u64::saturating_add);
+        let heading = if bytes > 0 {
+            ui::i18n!(
+                "store-installed-total",
+                "count" => here.len().to_string(),
+                "size" => format_size(bytes)
+            )
+        } else {
+            ui::i18n!("store-view-installed")
+        };
+        children.push(Box::new(
+            Section::new(rows).with_header(SectionHeader::heading(heading).count(here.len())),
+        ));
         self.page(theme, Measure::Catalogue, true, children)
     }
 
@@ -1590,6 +1626,14 @@ fn update_meta(item: &StoreItem) -> String {
 
 /// An installed app's row meta in On this device: whether it is kept.
 fn device_meta(item: &StoreItem) -> String {
+    // What it costs on this device is the question after "can I install
+    // it": the size stands where the row's value stands, and the state the
+    // source gives it when no size is known.
+    if let Some(bytes) = item.versions.first().map(|version| version.size_bytes)
+        && bytes > 0
+    {
+        return format_size(bytes);
+    }
     match (&item.source, &item.installed) {
         (
             StoreSource::Tilo { .. },
