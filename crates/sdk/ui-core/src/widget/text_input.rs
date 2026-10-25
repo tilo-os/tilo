@@ -40,7 +40,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::BlendMode;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, TouchPhase, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use zeroize::Zeroize;
 
@@ -70,6 +70,10 @@ use reveal::RevealToggle;
 
 #[path = "text_input_spelling.rs"]
 mod spelling;
+
+#[path = "text_input_touch.rs"]
+mod touch;
+use touch::TouchIntent;
 
 /// Outline a field whose content was refused (a wrong password) in the
 /// danger colour, over the field's own edge at the control radius.
@@ -342,6 +346,9 @@ pub struct TextInput {
     /// deliberately separate so a secondary finger cannot steal or complete
     /// an in-progress selection gesture.
     active_touch: Option<u64>,
+    /// Where that finger came down, in the window's pixels.
+    touch_origin: winit::dpi::PhysicalPosition<f64>,
+    touch_intent: TouchIntent,
     drag_unit: DragUnit,
     /// Anchor span snapped to `drag_unit` boundaries; the drag extends from
     /// whichever end is "opposite" the current pointer.
@@ -733,6 +740,8 @@ impl TextInput {
             typing: TypingRun::default(),
             is_dragging: false,
             active_touch: None,
+            touch_origin: winit::dpi::PhysicalPosition::new(0.0, 0.0),
+            touch_intent: TouchIntent::Undecided,
             drag_unit: DragUnit::Char,
             drag_anchor_span: (0, 0),
             drag_select: DragSelect::new(),
@@ -5881,6 +5890,7 @@ impl Widget for TextInput {
             ..
         } = event
             && self.is_focused
+            && self.active_touch.is_none()
             && self
                 .suggestion_chip
                 .is_some_and(|chip| chip.contains(self.last_mouse_pos))
@@ -5899,6 +5909,11 @@ impl Widget for TextInput {
                 self.dispatch_context_action(index);
             }
             *ctx.handled = true;
+            self.notify_user_change(false);
+            return;
+        }
+
+        if self.touch_takes_wheel(event, ctx) {
             self.notify_user_change(false);
             return;
         }
@@ -7134,17 +7149,8 @@ impl TextInput {
                 self.handle_left_press(modifiers, focus_target, node_id, handled);
             }
             ElementState::Released if self.is_dragging => {
-                self.is_dragging = false;
-                self.drag_select.release();
-                self.publish_primary_selection();
+                self.end_drag();
                 *handled = true;
-                // A click, not a drag, on a link of read-only text opens it.
-                if self.read_only && !self.has_selection() {
-                    let byte = self.resolve_position(self.last_mouse_pos).byte;
-                    if let Some(target) = self.link_at(byte) {
-                        crate::widget::open_external_url(&target);
-                    }
-                }
             }
             _ => {}
         }
@@ -7343,51 +7349,6 @@ impl TextInput {
         }
     }
 
-    fn handle_touch_event(
-        &mut self,
-        touch: &winit::event::Touch,
-        scale_factor: f64,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        handled: &mut bool,
-    ) {
-        let point = Point::new(
-            touch.location.x / scale_factor,
-            touch.location.y / scale_factor,
-        );
-        match touch.phase {
-            TouchPhase::Started if self.active_touch.is_none() && self.rect.contains(point) => {
-                self.active_touch = Some(touch.id);
-                self.last_mouse_pos = point;
-                self.is_hovered = true;
-                self.handle_left_press(Modifiers::default(), focus_target, node_id, handled);
-            }
-            TouchPhase::Moved if self.active_touch == Some(touch.id) => {
-                self.handle_cursor_moved(touch.location, scale_factor, handled);
-                // Movement that leaves the field can retain the same resolved
-                // cursor, but the owned gesture is consumed until release.
-                *handled = true;
-            }
-            TouchPhase::Ended if self.active_touch == Some(touch.id) => {
-                self.active_touch = None;
-                self.is_dragging = false;
-                self.is_hovered = self.rect.contains(point);
-                *handled = true;
-            }
-            TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
-                self.active_touch = None;
-                self.is_dragging = false;
-                *handled = true;
-            }
-            _ if self.active_touch.is_some() => {
-                // A secondary finger cannot leak to a control below while
-                // this field owns the selection gesture.
-                *handled = true;
-            }
-            _ => {}
-        }
-    }
-
     fn handle_keyboard_input(
         &mut self,
         logical_key: &Key,
@@ -7530,3 +7491,7 @@ mod tests;
 #[cfg(test)]
 #[path = "text_input_preparation_tests.rs"]
 mod preparation_tests;
+
+#[cfg(test)]
+#[path = "text_input_touch_tests.rs"]
+mod touch_tests;

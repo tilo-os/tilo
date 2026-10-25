@@ -496,7 +496,9 @@ pub struct TouchPointerEmulator {
 }
 
 impl TouchPointerEmulator {
-    const TAP_SLOP: f64 = 16.0;
+    /// How far, in the window's pixels, a finger travels before it is a
+    /// drag rather than a tap.
+    pub(crate) const TAP_SLOP: f64 = 16.0;
     pub const LONG_PRESS: crate::time::Duration = crate::time::Duration::from_millis(500);
     const CANCEL_POINT: winit::dpi::PhysicalPosition<f64> =
         winit::dpi::PhysicalPosition::new(-1.0, -1.0);
