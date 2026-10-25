@@ -179,6 +179,19 @@ fn pin_under_gutter(
     );
 }
 
+/// The reactions to the note the header shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteReactions {
+    pub page: PageId,
+    /// A pill per emoji, the emoji reacted with first first, each reactor
+    /// named.
+    pub groups: Vec<ui::tilo_resource::ReactionGroup>,
+    /// Who the person is: their own reactions are the chosen pills.
+    pub me: String,
+    /// The person may react here, and the add button shows.
+    pub can_react: bool,
+}
+
 /// Presentation data for a durable tag. Keeping its id beside the label means
 /// a tag button can invoke the same stable tag operation as the resource
 /// palette; it never relies on a display name that can change remotely.
@@ -729,6 +742,9 @@ impl MainPanel {
         if let Some(actions) = self.header.actions() {
             panel.header.attach(actions);
         }
+        if let Some(notebook) = self.notebook.clone() {
+            panel.header.set_notebook(notebook);
+        }
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
@@ -793,6 +809,7 @@ impl MainPanel {
         self.parent_path.clear();
         self.set_title_value("");
         self.header.set_tags(Vec::new());
+        self.header.set_reactions(None);
         self.header.set_backlinks(Vec::new());
         self.header.set_captions(Vec::new());
         self.metadata_height = 0.0;
@@ -830,6 +847,13 @@ impl MainPanel {
     /// an otherwise idle collaboration sync.
     pub fn set_tags(&mut self, tags: Vec<TagChip>) {
         if self.header.set_tags(tags) {
+            self.header_changed();
+        }
+    }
+
+    /// Show the reactions to the note (`None`: none, and no add button).
+    pub fn set_reactions(&mut self, reactions: Option<NoteReactions>) {
+        if self.header.set_reactions(reactions) {
             self.header_changed();
         }
     }
@@ -917,8 +941,9 @@ impl MainPanel {
         actions: ui::framework::Actions<crate::resource::Notebook>,
     ) {
         self.editor.source_mut().attach(&notebook);
-        self.notebook = Some(notebook);
         self.header.attach(actions);
+        self.header.set_notebook(notebook.clone());
+        self.notebook = Some(notebook);
     }
 
     fn fresh_editor(&self, page: Option<(PageId, ObjId)>) -> NotesEditor {
@@ -1513,6 +1538,12 @@ impl MainPanel {
             collect(header, &mut out);
         }
         out
+    }
+
+    /// Test hook: the reactions the header shows for the open note.
+    #[doc(hidden)]
+    pub fn reactions_for_test(&self) -> Option<&NoteReactions> {
+        self.header.reactions()
     }
 
     /// Test hook: where the document starts under the title and header.
