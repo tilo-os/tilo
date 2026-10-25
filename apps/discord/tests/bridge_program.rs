@@ -643,6 +643,7 @@ fn program() -> Shortcut {
                 },
             ),
         ],
+        step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
         triggers: triggers(),
