@@ -254,7 +254,7 @@ fn actors_are_named_with_the_person_they_act_for() {
             is_reader: false,
             task: None
         }),
-        "Claude · Agent, for ada"
+        "Claude · Software, for ada"
     );
     assert_eq!(
         reader.actor(&Who {
@@ -265,7 +265,7 @@ fn actors_are_named_with_the_person_they_act_for() {
             is_reader: false,
             task: None
         }),
-        "Claude · Agent"
+        "Claude · Software"
     );
     assert_eq!(
         reader.actor(&Who {
