@@ -53,6 +53,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = "runtime-dylib"
+# The runtime's manifest: the file each finding about its graph names.
+MANIFEST = "crates/runtime/runtime-dylib/Cargo.toml"
 TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
 # Crates the toolkit itself needs: if the resolved runtime lacks them, the
 # check is not looking at the runtime and must fail rather than pass.
@@ -424,11 +426,11 @@ def main() -> int:
         for target in TARGETS:
             found = violations(resolve(apps, features, target), apps, target, links)
             for message in found:
-                print(message, file=sys.stderr)
+                print(f"{MANIFEST}: {message}")
             failed = failed or bool(found)
             if not found:
                 print(f"{RUNTIME} ({target}): no OS internals, moved engines or app-linked C libraries, "
-                      "every crate used by an app")
+                      "every crate used by an app", file=sys.stderr)
     except RuntimeError as error:
         print(error, file=sys.stderr)
         return 1

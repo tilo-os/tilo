@@ -14,6 +14,7 @@ checked in that crate's catalogue, the one it is looked up in.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import check_app_portability as rust
@@ -209,7 +210,7 @@ def main() -> int:
     if errors:
         print("\n".join(errors))
         return 1
-    print("app copy OK (every resolved key is in each shipped catalogue)")
+    print("app copy OK (every resolved key is in each shipped catalogue)", file=sys.stderr)
     return 0
 
 

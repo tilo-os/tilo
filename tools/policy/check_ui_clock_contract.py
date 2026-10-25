@@ -117,9 +117,9 @@ def main() -> int:
     if violations:
         print("UI clock contract FAILED", file=sys.stderr)
         for violation in violations:
-            print(f"  {violation}", file=sys.stderr)
+            print(violation)
         return 1
-    print("UI clock contract OK (the toolkit and its host services read time through ui::time)")
+    print("UI clock contract OK (the toolkit and its host services read time through ui::time)", file=sys.stderr)
     return 0
 
 

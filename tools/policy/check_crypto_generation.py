@@ -115,17 +115,20 @@ def check(root: Path = ROOT) -> tuple[list[Violation], list[tuple[str, str, str]
 
 def main() -> int:
     violations, stale = check()
+    # An edge is the resolved graph's; a stale entry is this file's.
     for violation in violations:
-        print(f"  {violation}")
+        print(f"Cargo.lock: {violation}")
     for package, dependency, version in stale:
         print(
-            f"  {package} no longer depends on {dependency} {version.rstrip('.')}: "
+            f"tools/policy/check_crypto_generation.py: {package} no longer depends on {dependency} "
+            f"{version.rstrip('.')}: "
             "remove its SANCTIONED entry in tools/policy/check_crypto_generation.py"
         )
     if violations or stale:
-        print("Tilo's own crates use one RustCrypto generation (AGENTS.md, docs/policies.md).")
+        print("Tilo's own crates use one RustCrypto generation (AGENTS.md, docs/policies.md).",
+              file=sys.stderr)
         return 1
-    print("Tilo's own crates are on the current RustCrypto generation.")
+    print("Tilo's own crates are on the current RustCrypto generation.", file=sys.stderr)
     return 0
 
 

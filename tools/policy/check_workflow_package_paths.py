@@ -279,14 +279,13 @@ def main() -> int:
     failed = [(package, workflow, violations) for package, workflow, violations in results if violations]
     if failed:
         for package, workflow, violations in failed:
-            print(
-                f"{workflow}: workflow misses {package} dependency paths:",
-                file=sys.stderr,
-            )
-            print("\n".join(str(item) for item in violations), file=sys.stderr)
+            # A finding names the file that declares the paths block: t.toml for a t check.
+            path, _, check = str(workflow).partition("#")
+            for item in violations:
+                print(f"{path}: {check or 'workflow'} misses a {package} dependency path: {item}")
         return 1
     for package, workflow, _ in results:
-        print(f"{workflow}: every paths block tracks {package}'s dependency closure")
+        print(f"{workflow}: every paths block tracks {package}'s dependency closure", file=sys.stderr)
     return 0
 
 

@@ -127,9 +127,12 @@ def main() -> int:
     if violations:
         print("Settings write contract FAILED", file=sys.stderr)
         for violation in violations:
-            print(f"  {violation}", file=sys.stderr)
+            print(violation)
         return 1
-    print("Settings write contract OK (no string-literal settings sections outside settings-store)")
+    print(
+        "Settings write contract OK (no string-literal settings sections outside settings-store)",
+        file=sys.stderr,
+    )
     return 0
 
 

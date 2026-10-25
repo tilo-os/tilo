@@ -131,7 +131,7 @@ def main() -> int:
                 continue
             errors.extend(check_source(relative.as_posix(), text))
     for error in errors:
-        print(error, file=sys.stderr)
+        print(error)
     if errors:
         print(
             f"{len(errors)} typed confirmation(s) break the rule: undoable actions run at once "
