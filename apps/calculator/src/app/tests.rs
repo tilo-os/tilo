@@ -654,8 +654,13 @@ fn the_modes_units_and_panel_button_are_the_window_bars_and_no_row_is_drawn() {
 #[test]
 fn navigation_hint_shows_over_an_unnavigated_plot_only() {
     let mut app = wide(CalculatorApp::seeded()); // Graph 2D
+    assert!(
+        app.plot_pointer().trace.is_none(),
+        "a plot nobody points at traces nothing, even at the origin"
+    );
     let over_plot = app.g2.canvas.center();
     app.mouse = over_plot;
+    app.pointer_seen = true;
     let pointer = app.plot_pointer();
     assert!(pointer.hint.is_some(), "hint over a fresh plot");
     assert_eq!(
@@ -672,6 +677,7 @@ fn navigation_hint_shows_over_an_unnavigated_plot_only() {
     );
 
     app.mouse = over_plot;
+    app.pointer_seen = true;
     app.on_drag(Vec2::new(5.0, 0.0));
     assert!(
         app.plot_pointer().hint.is_none(),
@@ -682,6 +688,7 @@ fn navigation_hint_shows_over_an_unnavigated_plot_only() {
     app.set_mode(Mode::Graph3d);
     app.relayout();
     app.mouse = app.g3.canvas.center();
+    app.pointer_seen = true;
     let pointer = app.plot_pointer();
     assert!(pointer.hint.is_some(), "hint over a fresh surface plot");
     assert!(pointer.trace.is_none(), "only Graph 2D traces");
