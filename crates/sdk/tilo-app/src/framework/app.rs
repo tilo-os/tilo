@@ -1008,6 +1008,7 @@ fn create_component(
             file,
             handoff: context.take_handoff(),
             lent: super::scenario::Lent::new(context.take_lent()),
+            reveal: std::cell::RefCell::new(revealed(target)),
         })
         .opening_with(opener)
         .showing_file_history(
@@ -1037,6 +1038,20 @@ fn create_component(
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     }
     Ok(component)
+}
+
+/// The item a launch on a record asked to show: the resource its `open`
+/// names.
+fn revealed(target: &LaunchTarget) -> Option<String> {
+    match target {
+        LaunchTarget::Record {
+            reveal: Some(address),
+            ..
+        } if address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION => {
+            Some(address.resource.clone())
+        }
+        _ => None,
+    }
 }
 
 /// Join the content store the host lent a window to its record's route:

@@ -165,6 +165,7 @@ chat-share-window-button = Share
 chat-share-your-windows = Your windows
 chat-share-no-windows = Open the window you want to share, then come back here.
 chat-share-view-only = View only
+chat-share-already-edit = You can already edit this
 chat-share-can-edit = Can edit
 chat-share-live = Live
 chat-share-ended = No longer shared

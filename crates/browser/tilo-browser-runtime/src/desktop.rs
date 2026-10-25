@@ -456,6 +456,27 @@ impl Shared {
         self.wake();
     }
 
+    /// Whether `resource` is narrower than `app`'s record `record` (by
+    /// route): something a window on that record shows by invoking its
+    /// `open`, not the record itself.
+    pub fn narrower(app: &str, record: &str, resource: &str) -> bool {
+        application(app).is_some_and(|definition| {
+            !resource.is_empty()
+                && resource != record
+                && resource != definition.record_kind.as_str()
+        })
+    }
+
+    /// The tab showing `app`'s record `record`, by route.
+    pub fn tab_on(&self, app: &str, record: &str) -> Option<TabId> {
+        let kind = application(app)?.record_kind.clone();
+        self.records
+            .borrow()
+            .iter()
+            .find(|(_, checkout)| checkout.id.route() == record && checkout.kind == kind)
+            .map(|(tab, _)| *tab)
+    }
+
     /// Whether an application finished loading since the last call.
     pub fn take_arrived(&self) -> bool {
         self.arrived.replace(false)
@@ -1105,10 +1126,15 @@ impl Tiles {
             }
             Err(error) => return Err(error.to_string()),
         }
-        let target = LaunchTarget::Record {
-            checkout,
-            reveal: None,
-        };
+        // A view of something in the record (a note of the notebook)
+        // shows that, as a window opened on it would.
+        let reveal = Shared::narrower(&view.app, &view.record, &view.resource).then(|| {
+            tilo_actions::ActionAddress::new(
+                &view.resource,
+                tilo_actions::remote::APPLICATION_OPEN_ACTION,
+            )
+        });
+        let target = LaunchTarget::Record { checkout, reveal };
         let component = self.instantiate(
             definition,
             store,

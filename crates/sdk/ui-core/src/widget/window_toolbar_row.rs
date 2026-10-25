@@ -69,7 +69,9 @@ mod reactions;
 mod slot_change;
 mod strip;
 use layout::{LocationForms, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome};
-use location_label::{LocationLabel, edited_word};
+#[cfg(test)]
+use location_label::edited_word;
+use location_label::{LocationLabel, trailing_word};
 #[cfg(test)]
 pub(crate) use paint::location_shown;
 #[cfg(test)]
