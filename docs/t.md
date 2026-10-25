@@ -127,6 +127,9 @@ t claim <item>   t release <item>     # say you are fixing a failure, or stopped
 ```
 
 Fix your own failures on `main` forward. Claim someone else's before you work on it.
+Claude Code sessions in this repository see new `t inbox` notices as they arrive:
+`.claude/settings.json` runs `t inbox --hook claude` at session start, on each prompt and after
+each tool call.
 
 Agents use the same commands, or `t mcp` for MCP. Sessions are recognized by their session id
 (`CLAUDE_CODE_SESSION_ID`, `PI_SESSION_ID`, `CODEX_THREAD_ID`); `t session name <name>` names one.
