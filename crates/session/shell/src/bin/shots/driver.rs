@@ -936,6 +936,18 @@ impl ShellDriver {
     /// are already present, so their faces are backed by a capability
     /// rather than by hearsay), and two resources handed to named
     /// people.
+    /// The active workspace's room as a booted desktop holds it: placed on
+    /// this device's own host, which governs it, and entered through the
+    /// native owner, the driver acting as the person governing it. A room
+    /// no host holds offers no invitation, so its roster has no Invite.
+    fn place_active_room_here(&mut self) {
+        let handle = self.chrome_handle();
+        let tree = handle.borrow().tree_handle();
+        let room = shell::shell::test_support::host_active_room(&tree);
+        handle.borrow_mut().act_as(room.person.clone());
+        self.held.push(Box::new(room));
+    }
+
     fn seed_shared_room(&mut self) {
         use shell::shell::state::{Access, CapOverride, Scope, Subject};
         use tilo_action_policy::Role;
@@ -2891,6 +2903,7 @@ impl ShellDriver {
     /// one invited, and — the local user owning the room — the Invite / Join
     /// band and the Workspace activity footer row.
     fn scene_collaborators(&mut self) {
+        self.place_active_room_here();
         self.seed_shared_room();
         self.seed_agent_member_for_shots();
         self.seed_room_bots_for_shots();
