@@ -24,6 +24,10 @@ pub const MAX_FILL_BYTES: usize = 64 * 1024;
 pub const MAX_SELECT_VALUES: usize = 64;
 /// Upper bound on one option value or label.
 pub const MAX_SELECT_VALUE_BYTES: usize = 1024;
+/// Upper bound on the files one fill of a file input may choose.
+pub const MAX_FILE_PATHS: usize = 16;
+/// Upper bound on one chosen file's path.
+pub const MAX_FILE_PATH_BYTES: usize = 4096;
 const MAX_REF_BYTES: usize = 40;
 const MAX_MESSAGE_BYTES: usize = 1024;
 const MAX_CODE_BYTES: usize = 64;
@@ -48,6 +52,14 @@ pub enum PageRequest {
         element: String,
         values: Vec<String>,
     },
+    /// Choose the files of an `<input type=file>`, by absolute path.
+    ///
+    /// The caller has already checked each path is a regular file it may
+    /// read; the engine hands those files to the page as a person's own
+    /// picker would, dispatching `input` and `change`. A path that names no
+    /// readable regular file, or one the element's `accept` refuses, is
+    /// refused rather than silently dropped.
+    FillFiles { element: String, paths: Vec<String> },
     /// A trusted key press, after focusing `element` when one is named.
     Press {
         element: Option<String>,
@@ -84,6 +96,7 @@ impl PageRequest {
             Self::Click { .. } => "click",
             Self::Fill { .. } => "fill",
             Self::Select { .. } => "select",
+            Self::FillFiles { .. } => "fill_files",
             Self::Press { .. } => "press",
             Self::Submit { .. } => "submit",
             Self::Changes => "changes",
@@ -108,6 +121,7 @@ impl PageRequest {
             Self::Click { element }
             | Self::Fill { element, .. }
             | Self::Select { element, .. }
+            | Self::FillFiles { element, .. }
             | Self::Press {
                 element: Some(element),
                 ..
@@ -132,6 +146,13 @@ impl PageRequest {
                     && values
                         .iter()
                         .all(|value| value.len() <= MAX_SELECT_VALUE_BYTES)
+            }
+            Self::FillFiles { paths, .. } => {
+                !paths.is_empty()
+                    && paths.len() <= MAX_FILE_PATHS
+                    && paths
+                        .iter()
+                        .all(|path| path.len() <= MAX_FILE_PATH_BYTES && path.starts_with('/'))
             }
             Self::Press { key, .. } => PageKey::parse(&key.chord()).as_ref() == Some(key),
             Self::At { x, y } => [x, y]
@@ -330,6 +351,7 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
             command["secret"] = (*secret).into();
         }
         PageRequest::Select { values, .. } => command["values"] = values.clone().into(),
+        PageRequest::FillFiles { paths, .. } => command["paths"] = paths.clone().into(),
         PageRequest::Press { key, .. } => {
             command["key"] = key.key.as_str().into();
             command["ctrl"] = key.modifiers.ctrl.into();
@@ -489,6 +511,32 @@ mod tests {
                 }
                 .valid()
             );
+            // A chosen file is an absolute path, so a relative one never reaches
+            // the engine to resolve against the browser's own working folder.
+            assert!(
+                PageRequest::FillFiles {
+                    element: element.clone(),
+                    paths: vec!["/var/home/you/scan.pdf".into()],
+                }
+                .valid()
+            );
+            for paths in [
+                Vec::new(),
+                vec!["scan.pdf".into()],
+                vec!["./scan.pdf".into()],
+                vec![format!("/{}", "x".repeat(MAX_FILE_PATH_BYTES))],
+                (0..=MAX_FILE_PATHS)
+                    .map(|n| format!("/var/home/you/{n}.pdf"))
+                    .collect(),
+            ] {
+                assert!(
+                    !PageRequest::FillFiles {
+                        element: element.clone(),
+                        paths,
+                    }
+                    .valid()
+                );
+            }
         }
         // phase: wire_encoding_names_every_field
         {

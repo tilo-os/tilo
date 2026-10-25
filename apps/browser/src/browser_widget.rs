@@ -1880,6 +1880,35 @@ impl BrowserWidget {
         self.progress < 1.0 && !self.loading_stopped
     }
 
+    /// Choose files for a page upload.
+    ///
+    /// What an agent names here becomes files the page reads, so the rule is
+    /// the same one a person's file picker applies: every path must be
+    /// absolute, name a regular file this Browser may open, and the opened
+    /// descriptor is the only thing that decides. A relative path, a folder,
+    /// a missing file or one the sandbox refuses is an error naming that
+    /// path, never a silently dropped or guessed file. Inside the launcher's
+    /// sandbox the open itself is what Landlock and the mount namespace
+    /// answer; without one (a standalone development run) it answers the
+    /// host's own permission check. Nothing outside that rule is widened to
+    /// make an upload convenient.
+    fn checked_page_files(paths: &[String]) -> Result<Vec<String>, String> {
+        let mut checked = Vec::with_capacity(paths.len());
+        for path in paths {
+            let named = std::path::Path::new(path);
+            if !named.is_absolute() {
+                return Err(format!(
+                    "`{path}` is not an absolute path; a page file is named by its full path"
+                ));
+            }
+            let file = ui::portal::open_regular_file(named)
+                .map_err(|error| format!("{path} cannot be given to the page: {error}"))?;
+            drop(file);
+            checked.push(path.clone());
+        }
+        Ok(checked)
+    }
+
     /// Read and operate the page's content without its pixels: an outline
     /// whose interactive elements carry refs, and actions on those refs.
     fn start_page_operation(
@@ -1887,6 +1916,13 @@ impl BrowserWidget {
         invocation: ui::tilo_actions::InvocationId,
         request: PageRequest,
     ) -> Result<(), String> {
+        let request = match request {
+            PageRequest::FillFiles { element, paths } => PageRequest::FillFiles {
+                element,
+                paths: Self::checked_page_files(&paths)?,
+            },
+            other => other,
+        };
         if !request.valid() {
             return Err(format!(
                 "`{}` names no element of the page outline, or arguments the page cannot take",
@@ -5373,6 +5409,13 @@ impl BrowserWidget {
                 &["element", "values"][..],
             ),
             (
+                E::FillPageFiles {
+                    element: element.clone(),
+                    paths: Vec::new(),
+                },
+                &["element", "paths"][..],
+            ),
+            (
                 E::PressPage {
                     key: String::new(),
                     element: None,
@@ -7603,6 +7646,7 @@ mod tests {
                 "click-page",
                 "fill-page",
                 "select-page",
+                "fill-page-files",
                 "press-page",
                 "submit-page",
                 "fill-page-secret",
@@ -7807,6 +7851,61 @@ mod tests {
                 3,
                 "refused requests reached the page"
             );
+        }
+
+        // Phase `a_page_file_is_a_checked_absolute_regular_file`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/claim");
+            let folder =
+                std::env::temp_dir().join(format!("tilo-page-files-{}", std::process::id()));
+            std::fs::create_dir_all(&folder).unwrap();
+            let file = folder.join("proof of address.pdf");
+            std::fs::write(&file, b"%PDF-1.4").unwrap();
+            let shared = file.to_string_lossy().into_owned();
+            let fill = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "fill-page-files",
+                &serde_json::json!({"element": "d4e1", "paths": [shared.clone()]}),
+            )
+            .unwrap();
+            widget.sync(&doc, &root);
+            assert!(widget.poll_invocation(fill).is_some());
+            assert_eq!(
+                page_requests(&engine),
+                vec![PageRequest::FillFiles {
+                    element: "d4e1".into(),
+                    paths: vec![shared.clone()],
+                }],
+                "a checked file reaches the page as the path it was named by"
+            );
+            // What a person's picker could not have produced is refused here,
+            // naming the path, so the page never sees a guess.
+            for (paths, why) in [
+                (vec!["proof of address.pdf".to_string()], "relative"),
+                (vec![folder.to_string_lossy().into_owned()], "folder"),
+                (
+                    vec![folder.join("missing.pdf").to_string_lossy().into_owned()],
+                    "missing",
+                ),
+            ] {
+                let refused = start(
+                    &mut widget,
+                    &mut doc,
+                    &root,
+                    "fill-page-files",
+                    &serde_json::json!({"element": "d4e1", "paths": paths}),
+                )
+                .unwrap_err();
+                assert!(refused.contains(&paths[0]), "{why}: {refused}");
+            }
+            assert_eq!(
+                page_requests(&engine).len(),
+                1,
+                "a refused file reached the page"
+            );
+            std::fs::remove_dir_all(&folder).unwrap();
         }
 
         // Phase `agent_reads_and_consented_writes_reach_the_engine_typed`.
