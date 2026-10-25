@@ -268,15 +268,8 @@ mod files_clipboard_tests {
             let session = Self::start_session(profile, !prepare);
             let source_grants = {
                 let tree = session.workspace_tree();
-                let mut tree = tree.write();
-                let workspace = &mut tree.workspaces[0];
-                let grant = |path: &PathBuf| Capability::Filesystem {
-                    path: path.clone(),
-                    mode: FsMode::ReadWrite,
-                    scope: GRANT_SESSION,
-                };
-                let source_grants = workspace.grant_app(APP, &grant(&folders[0]));
-                workspace.grant_app(APP, &grant(&folders[1]));
+                let source_grants = grant_files_folder(&tree, &folders[0]);
+                grant_files_folder(&tree, &folders[1]);
                 source_grants
             };
             let collab = session.broker.capnp_socket().to_path_buf();
@@ -1506,17 +1499,7 @@ mod files_clipboard_tests {
             std::fs::read(fixture.folders[1].join("report")).unwrap(),
             b"original source"
         );
-        {
-            let tree = fixture.session.workspace_tree();
-            tree.write().workspaces[0].grant_app(
-                APP,
-                &Capability::Filesystem {
-                    path: fixture.folders[0].clone(),
-                    mode: FsMode::ReadWrite,
-                    scope: GRANT_SESSION,
-                },
-            );
-        }
+        grant_files_folder(&fixture.session.workspace_tree(), &fixture.folders[0]);
         fixture.succeeds(1, "undo");
         assert_eq!(
             std::fs::read(fixture.folders[0].join("report")).unwrap(),
@@ -1613,14 +1596,37 @@ mod files_clipboard_tests {
     }
 
     fn grant_native_trash(fixture: &Fixture) -> Vec<String> {
-        fixture.session.workspace_tree().write().workspaces[0].grant_app(
+        grant_files_folder(
+            &fixture.session.workspace_tree(),
+            &tilo_paths::data_dir().expect("isolated user data root"),
+        )
+    }
+
+    /// Let the Files windows read and write `folder` for this session, as
+    /// the person opening it in Files does: a session grant to Files that
+    /// this device remembers as the person's own consent, so the room's
+    /// next projection keeps it.
+    fn grant_files_folder(
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+        folder: &Path,
+    ) -> Vec<String> {
+        let mut tree = tree.write();
+        let tree = &mut *tree;
+        let workspace = &mut tree.desktop.workspaces[0];
+        let ids = workspace.grant_app(
             APP,
             &Capability::Filesystem {
-                path: tilo_paths::data_dir().expect("isolated user data root"),
+                path: folder.to_path_buf(),
                 mode: FsMode::ReadWrite,
                 scope: GRANT_SESSION,
             },
-        )
+        );
+        assert!(
+            tree.native_runtime
+                .remember_files_home_consent(workspace, &ids),
+            "this device remembers the person's Files consent"
+        );
+        ids
     }
 
     fn native_trash_pair(trash: &Path) -> PathBuf {
