@@ -34,13 +34,13 @@ constexpr uint8_t kFrameNoticeKind=5;
 class FrameMemory {
  public:
   // Maps the app's frame memory and closes `fd`. Null when `fd` is not a
-  // descriptor of exactly that much memory: the host then sends its frames
-  // down the pipe, as a host started without one does.
+  // descriptor of that much memory: the host then sends its frames down the
+  // pipe, as a host started without one does.
   static std::unique_ptr<FrameMemory> Map(int fd) {
     if(fd<=2) return nullptr;
     struct stat info{};
     void* base=MAP_FAILED;
-    if(fstat(fd,&info)==0 && static_cast<uint64_t>(info.st_size)==kFrameMemoryBytes)
+    if(fstat(fd,&info)==0 && SizedForFrames(static_cast<uint64_t>(info.st_size)))
       base=mmap(nullptr,kFrameMemoryBytes,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
     close(fd);
     if(base==MAP_FAILED) return nullptr;
@@ -77,6 +77,14 @@ class FrameMemory {
   char* Base() const { return base_; }
  private:
   explicit FrameMemory(char* base):base_(base) {}
+  // The app sizes the memory to kFrameMemoryBytes. macOS reports a shared
+  // memory object's size rounded up to its page, 16 KiB on Apple silicon,
+  // where the header page is 4 KiB: that rounding is the app's memory too.
+  static bool SizedForFrames(uint64_t size) {
+    const long page=sysconf(_SC_PAGESIZE);
+    const uint64_t rounding=page>0 ? static_cast<uint64_t>(page) : 1;
+    return size>=kFrameMemoryBytes && size-kFrameMemoryBytes<rounding;
+  }
   uint32_t* State(uint32_t slot) const { return reinterpret_cast<uint32_t*>(base_+kFrameSlotStates+4*size_t(slot)); }
   char* Pixels(uint32_t slot) const { return base_+kFrameMemoryHeader+size_t(slot)*kFrameSlotBytes; }
   char* base_;

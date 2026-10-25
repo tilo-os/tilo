@@ -31,10 +31,20 @@ fn shown(view: &dyn Widget) -> String {
     view.children()[0].children()[0].name().to_owned()
 }
 
-/// The height the view's inner subtree takes (the view itself fills what
-/// the frame gives it).
+/// The height the view's inner subtree takes.
 fn shown_height(view: &dyn Widget) -> f64 {
     view.children()[0].children()[0].get_rect().height()
+}
+
+/// The height of the box the view reserves: what every step stands in.
+fn reserved_height(view: &dyn Widget) -> f64 {
+    let mut reserved = None;
+    view.for_each_layout_child(&mut |child| {
+        if child.name() == "Reserve" {
+            reserved.get_or_insert(child.get_rect().height());
+        }
+    });
+    reserved.expect("the view reserves its box")
 }
 
 fn walk(widget: &dyn Widget, found: &mut Vec<(String, Option<String>)>) {
@@ -122,7 +132,7 @@ fn remote_data_shows_ground_then_a_skeleton_then_cross_fades_in_without_moving()
     );
     assert_eq!(view.step(t0), Step::Ground);
     assert_eq!(shown(&view), "Reserve");
-    let reserved = shown_height(&view);
+    let reserved = reserved_height(&view);
     assert!(
         (reserved - f64::from(height)).abs() < 0.5,
         "{reserved} reserved for {height}"
@@ -161,6 +171,10 @@ fn remote_data_shows_ground_then_a_skeleton_then_cross_fades_in_without_moving()
     frame_at(&mut frame, &mut view, settled);
     with_monotonic_time(settled, || assert!(!view.needs_animation_frame()));
     assert!((shown_height(&view) - reserved).abs() < 0.5);
+    assert!(
+        (reserved_height(&view) - reserved).abs() < 0.5,
+        "the box stands where it stood"
+    );
 }
 
 #[test]
@@ -354,7 +368,7 @@ fn a_placeholder_keeps_its_timing_however_often_its_view_is_built() {
         );
     });
     frame_at(&mut frame, view.as_mut(), skeleton);
-    let height = shown_height(view.as_ref());
+    let height = reserved_height(view.as_ref());
     assert!(
         (height - f64::from(content_height(&mut frame))).abs() < 0.5,
         "it reserves its shape's geometry"

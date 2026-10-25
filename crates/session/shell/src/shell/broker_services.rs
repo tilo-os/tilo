@@ -516,7 +516,7 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
     }
     /// The room's agents whose delegation the room's governance verified for
     /// exactly their device ([`super::state::WorkspaceTree::verified_agents`]).
-    fn history_agents(&self, room: &str) -> Vec<ui::history_source::RosterAgent> {
+    fn history_agents(&self, room: &str) -> Vec<collab_types::history::RosterAgent> {
         super::state::RoomId::parse(room)
             .map(|room| self.0.read().verified_agents(room))
             .unwrap_or_default()
@@ -1843,8 +1843,8 @@ impl ContinuationServices for NativeContinuations {
         message: Vec<u8>,
     ) -> Result<(), String> {
         if matches!(
-            ui::collaboration::handoff::HandoffReport::decode(&message),
-            Some(ui::collaboration::handoff::HandoffReport::OwnerSubscribe { .. })
+            collab_types::handoff::HandoffReport::decode(&message),
+            Some(collab_types::handoff::HandoffReport::OwnerSubscribe { .. })
         ) {
             super::personal_continuity_registry::global_registry()
                 .lock()
@@ -1856,11 +1856,11 @@ impl ContinuationServices for NativeContinuations {
                 );
             return Ok(());
         }
-        if let Some(ui::collaboration::handoff::HandoffReport::OwnerTakeover {
+        if let Some(collab_types::handoff::HandoffReport::OwnerTakeover {
             token,
             schema,
             metadata,
-        }) = ui::collaboration::handoff::HandoffReport::decode(&message)
+        }) = collab_types::handoff::HandoffReport::decode(&message)
         {
             use super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
             if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::AppContinuations)
@@ -2120,6 +2120,8 @@ pub fn native_services(
             Arc::new(NativeSpeakers(network))
                 as Arc<dyn tilo_action_broker::services::SpeakerServices>
         }),
+        #[cfg(target_os = "linux")]
+        drives: Some(Arc::new(NativeDrives)),
         wifi_continuity: network.clone().map(|network| {
             Arc::new(NativeWifiContinuity(network))
                 as Arc<dyn tilo_action_broker::services::WifiContinuityServices>
@@ -2222,6 +2224,17 @@ impl tilo_action_broker::services::SpeakerServices for NativeSpeakers {
         Some(Box::pin(crate::shell::speaker_settings::changed(
             &self.0, after,
         )))
+    }
+}
+/// The session's NTFS drives, which tell the certified Files route when
+/// the list it is given changes.
+#[cfg(target_os = "linux")]
+pub struct NativeDrives;
+
+#[cfg(target_os = "linux")]
+impl tilo_action_broker::services::DriveServices for NativeDrives {
+    fn changed(&self, after: u64) -> Option<tilo_action_broker::services::DriveChange> {
+        Some(Box::pin(crate::shell::drives::changed(after)))
     }
 }
 /// Wi-Fi credentials carried between the person's certified devices.

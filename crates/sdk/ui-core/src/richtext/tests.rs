@@ -565,7 +565,8 @@ fn layout(text: &str, width: f32) -> RichTextLayout {
 }
 
 /// Visual motion as a scan of every row of the document: the reference the
-/// paragraph-scoped search must agree with.
+/// paragraph-scoped search must agree with. At a row's edge it enters the
+/// row before or after in document order.
 fn visual_motion_full_scan(
     layout: &RichTextLayout,
     position: TextPosition,
@@ -576,25 +577,79 @@ fn visual_motion_full_scan(
     let rows: Vec<_> = layout
         .buffer
         .layout_runs()
-        .map(|run| layout.caret_stops(&run))
+        .map(|run| (run.rtl, layout.caret_stops(&run)))
         .collect();
-    let exact = rows.iter().find_map(|stops| {
-        let index = stops.iter().position(|(_, stop)| *stop == position)?;
-        Some((stops, index))
-    });
-    let found = exact.or_else(|| {
-        rows.iter().find_map(|stops| {
-            let index = stops
-                .iter()
-                .position(|(_, stop)| stop.byte == position.byte)?;
-            Some((stops, index))
+    let find = |matches: &dyn Fn(&TextPosition) -> bool| {
+        rows.iter().enumerate().find_map(|(row, (_, stops))| {
+            let index = stops.iter().position(|(_, stop)| matches(stop))?;
+            Some((row, index))
         })
-    });
-    found.map_or(position, |(stops, index)| {
-        stops
-            .get(RichTextLayout::visual_step(stops, index, right))
-            .map_or(position, |(_, stop)| *stop)
-    })
+    };
+    let Some((row, index)) =
+        find(&|stop| *stop == position).or_else(|| find(&|stop| stop.byte == position.byte))
+    else {
+        return position;
+    };
+    let (rtl, stops) = &rows[row];
+    let target = RichTextLayout::visual_step(stops, index, right);
+    if (stops[target].0 - stops[index].0).abs() > 0.5 {
+        return stops[target].1;
+    }
+    let next = if right == *rtl {
+        row.checked_sub(1)
+    } else {
+        row.checked_add(1)
+    };
+    next.and_then(|next| rows.get(next))
+        .and_then(|(_, next)| if right { next.first() } else { next.last() })
+        .map(|(_, stop)| *stop)
+        .filter(|stop| *stop != position)
+        .unwrap_or(stops[target].1)
+}
+
+#[test]
+fn arrow_keys_walk_across_soft_wraps_and_line_breaks_both_ways() {
+    // A wrapped row's last stop and the next row's first are two places on
+    // screen; an arrow key at either edge moves on to the other row instead
+    // of stopping there. A right-to-left paragraph reads its rows from the
+    // right edge, so Left walks it forward.
+    for (text, rtl) in [
+        ("alpha beta gamma delta\nepsilon zeta eta theta", false),
+        ("שלום עולם ספר בית מים\nאור ים", true),
+    ] {
+        let shaped = layout(text, 80.0);
+        assert!(
+            shaped.buffer.layout_runs().count() > 3,
+            "the fixture wraps: {text:?}"
+        );
+        for forward in [true, false] {
+            let right = forward != rtl;
+            let (start, end) = if forward {
+                (0, text.len())
+            } else {
+                (text.len(), 0)
+            };
+            let mut at = TextPosition::new(start);
+            let mut bytes = vec![start];
+            for _ in 0..4 * text.len() {
+                let next = shaped.visual_motion_position(at, right);
+                assert_eq!(
+                    next,
+                    visual_motion_full_scan(&shaped, at, right),
+                    "{text:?} from {at:?}, right {right}"
+                );
+                if next == at {
+                    break;
+                }
+                at = next;
+                bytes.push(at.byte);
+            }
+            assert_eq!(
+                at.byte, end,
+                "{text:?}, right {right}: the walk stopped at {at:?} after {bytes:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1475,5 +1530,66 @@ fn the_rows_within_a_view_of_a_long_text_are_found_without_walking_those_above()
             .map(|run| (run.line_i, run.line_top.to_bits()))
             .collect();
         assert_eq!(found, walked(top, bottom), "rows within {top}..{bottom}");
+    }
+}
+
+/// Caret geometry as a scan of every row of the document: the first exact
+/// stop, else the first stop of the byte.
+fn caret_geometry_full_scan(layout: &RichTextLayout, position: TextPosition) -> (f32, f32, f32) {
+    let mut fallback = None;
+    for run in layout.buffer.layout_runs() {
+        for (x, stop) in layout.caret_stops(&run) {
+            let geometry = (x, run.line_top, run.line_height);
+            if stop == position {
+                return geometry;
+            }
+            if stop.byte == position.byte && fallback.is_none() {
+                fallback = Some(geometry);
+            }
+        }
+    }
+    fallback.unwrap_or((0.0, 0.0, layout.line_height))
+}
+
+#[test]
+fn a_caret_at_a_huge_paragraphs_chunk_boundary_stands_and_moves_as_at_a_wrap() {
+    // A paragraph past the chunking threshold is shaped as several lines;
+    // the end of one chunk and the start of the next are the same source
+    // byte, two sides of a soft wrap. The caret there must still find the
+    // earlier chunk's end, or Left from it stops dead at the later start.
+    let text = (0..7000)
+        .map(|i| format!("word{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES);
+    let shaped = layout(&text, 400.0);
+    let chunks = shaped.buffer.lines.len();
+    assert!(chunks > 2, "shaped in chunks");
+    for line in 1..chunks {
+        let boundary = shaped.global_byte(Cursor::new(line, 0));
+        for byte in [boundary - 1, boundary, boundary + 1] {
+            for affinity in [TextAffinity::Before, TextAffinity::After] {
+                let position = TextPosition::with_affinity(byte, affinity);
+                assert_eq!(
+                    shaped.caret_geometry_at(position),
+                    caret_geometry_full_scan(&shaped, position),
+                    "caret at {position:?}, chunk {line}"
+                );
+                for right in [false, true] {
+                    assert_eq!(
+                        shaped.visual_motion_position(position, right),
+                        visual_motion_full_scan(&shaped, position, right),
+                        "{position:?}, right {right}, chunk {line}"
+                    );
+                }
+            }
+        }
+        // Left from the end of a chunk leaves the boundary.
+        let end = TextPosition::with_affinity(boundary, TextAffinity::Before);
+        assert!(
+            shaped.visual_motion_position(end, false).byte < boundary,
+            "Left from the end of chunk {}",
+            line - 1
+        );
     }
 }

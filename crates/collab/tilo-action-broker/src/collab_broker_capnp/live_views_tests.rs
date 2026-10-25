@@ -204,8 +204,7 @@ fn a_live_view_sends_each_new_result_until_cancelled() {
     assert!(matches!(moved, InvocationUpdate::Item { sequence: 3, .. }));
     assert!(counter.reads.load(Ordering::SeqCst) > reads);
 
-    state
-        .action_cancel(&person, &request.invocation)
+    crate::collab_broker_capnp::answered(state.action_cancel(&person, &request.invocation))
         .expect("the follower cancels it");
     observed(&state, &person, &request, |update| {
         matches!(update, InvocationUpdate::Cancelled { .. })

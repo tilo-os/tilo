@@ -1,7 +1,7 @@
 //! What this computer recorded of the times it went wrong: a desktop that
 //! stopped responding or stopped unexpectedly, a part of it that restarted,
-//! and the computer itself stopping (the kernel's record from before a
-//! reset).
+//! the computer itself stopping (the kernel's record from before a reset),
+//! and a fault the system's core went on from.
 //!
 //! The records are files the host keeps in the person's private crash
 //! directory; nothing here sends one anywhere. The host answers two steps
@@ -47,15 +47,20 @@ pub enum CrashKind {
     PartRestarted,
     /// The whole computer stopped and started again.
     ComputerStopped,
+    /// The system's core met a fault (an oops) and went on running: the
+    /// kernel kept its log, but the computer did not stop for it.
+    SystemFault,
 }
 
-/// Why the computer stopped, when its record says so.
+/// What the kernel's record says it met: why the computer stopped, or the
+/// fault it went on from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StopReason {
     /// The system met an error it could not recover from.
     Panic,
-    /// A fault in the system's core, which it went on from for a while.
+    /// A fault in the system's core, which it went on from
+    /// ([`CrashKind::SystemFault`]).
     Oops,
     /// The system restarted itself at once.
     Emergency,
@@ -71,7 +76,8 @@ pub struct CrashRecord {
     /// stopping, when it is not recorded, the start that found the record.
     pub at: i64,
     pub kind: CrashKind,
-    /// Why the computer stopped, when known.
+    /// What the kernel met, for the computer stopping or a fault of the
+    /// system's core, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<StopReason>,
     /// The version of the desktop that wrote the record.

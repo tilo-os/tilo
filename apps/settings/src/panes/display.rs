@@ -2468,11 +2468,12 @@ impl DisplayModel {
         self.changed = true;
         // The transaction's `message` is the compositor's diagnostic, in its
         // terms and in English: the inspection carries it, the page says the
-        // outcome in the person's words.
+        // outcome in the person's words. A refusal is said by its own card,
+        // with the way to try again: a notice too would say it twice.
         let notice = match transaction.state {
-            DisplayTransactionState::Confirmed => t("display-changes-kept"),
-            DisplayTransactionState::Reverted => t("display-changes-reverted"),
-            DisplayTransactionState::Rejected => t("display-rejected-caption"),
+            DisplayTransactionState::Confirmed => Some(t("display-changes-kept")),
+            DisplayTransactionState::Reverted => Some(t("display-changes-reverted")),
+            DisplayTransactionState::Rejected => None,
             _ => return,
         };
         self.output_config = self.host_state.as_ref().map_or_else(
@@ -2480,7 +2481,7 @@ impl DisplayModel {
             |state| state.committed.clone(),
         );
         self.pending_candidate = None;
-        self.notice = Some(notice);
+        self.notice = notice;
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {

@@ -23,15 +23,7 @@ const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
 pub struct OperationId(uuid::Uuid);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryId(uuid::Uuid);
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum RecoveryKind {
-    NeedsRevalidation,
-    KnownStaged,
-    UnknownNativeCommit,
-    PublishedSourceRetained,
-    /// A namespace-only capture retained in independently admitted root custody.
-    QuarantinedNative,
-}
+pub use tilo_fs_client::directory_types::RecoveryKind;
 #[derive(Clone, Debug)]
 pub struct RecoveryInfo {
     pub id: RecoveryId,

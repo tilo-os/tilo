@@ -244,6 +244,7 @@ impl CapnpBrokerState {
                 "action_evidence_unavailable: admission journal unavailable",
             ));
         }
+        let mut admitted = invocation_journal::Durable::settled();
         let key = if let Some(journal) = journal {
             let key = InvocationKey {
                 room: room.into(),
@@ -285,19 +286,21 @@ impl CapnpBrokerState {
             } else {
                 None
             };
-            if !journal
+            let (fresh, durable) = journal
                 .admit_with_evidence(key.clone(), intent, id, evidence)
-                .map_err(unavailable)?
-            {
+                .map_err(unavailable)?;
+            if !fresh {
                 return Err(ActionHostError::Refused {
                     reason: "invocation already admitted".into(),
                 });
             }
+            admitted = durable;
             Some(key)
         } else {
             None
         };
         drop(guard);
+        admitted.wait_blocking().map_err(unavailable)?;
         self.record_completion(
             id,
             owner.clone(),
@@ -531,15 +534,17 @@ impl CapnpBrokerState {
             return Err(unavailable("host invocation is no longer running"));
         }
         if let Some(key) = &admitted.key {
-            self.journal
+            let durable = self
+                .journal
                 .lock()
                 .map_err(|_| unavailable("invocation journal unavailable"))?
                 .as_mut()
                 .map_err(|error| unavailable(error.clone()))?
                 .as_mut()
                 .ok_or_else(|| unavailable("durable admission unavailable"))?
-                .update(key, update.clone(), uncertain)
+                .record_update(key, update.clone(), uncertain)
                 .map_err(unavailable)?;
+            durable.wait_blocking().map_err(unavailable)?;
         }
         self.record_completion(admitted.id, admitted.owner.clone(), update);
         Ok(())

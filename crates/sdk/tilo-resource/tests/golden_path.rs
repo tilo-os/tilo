@@ -449,7 +449,14 @@ fn documents_replay_converge_version_index_and_migrate() {
             .unwrap();
         let entries = Board::search(&board.state().unwrap());
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].text.contains("Quarterly review"));
+        // Found by its text, which is no preview of it.
+        assert!(
+            entries[0]
+                .fields
+                .iter()
+                .any(|(text, _)| text.contains("Quarterly review"))
+        );
+        assert!(entries[0].text.is_empty() && entries[0].preview.is_none());
     }
     // phase: a_record_reads_documents_written_by_an_older_schema
     {

@@ -270,11 +270,22 @@ async fn session_grants_persist_and_unshowable_requests_are_denied() {
         let (mut host, grants, ws) = host_with_portal(prompts.clone());
         let (_s, _c, proxy) = access_proxy(context(grants.clone(), prompts, ws)).await;
 
-        let call = spawn_access(proxy);
+        let call = spawn_access(proxy.clone());
         pump_until_prompt(&mut host).await;
         answer(&mut host, PromptChoice::Session);
         let (code, _) = await_response(&mut host, call).await;
         assert_eq!(code, 0);
+
+        // The app asks again in the same session: answered without a prompt.
+        let (code, _) = await_response(&mut host, spawn_access(proxy)).await;
+        assert_eq!(
+            code, 0,
+            "an app allowed for this session is not asked again"
+        );
+        assert!(
+            host.permission_prompt_mut_for_tests().is_none(),
+            "no prompt may appear for a question already answered for the session"
+        );
 
         assert_eq!(
             grants.lookup(&PortalCaller::new(ws, APP), CapabilityKind::Camera),

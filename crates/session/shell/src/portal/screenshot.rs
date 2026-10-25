@@ -1,9 +1,10 @@
 //! `org.freedesktop.impl.portal.Screenshot` backend.
-use super::desktop_services::ScreenshotTarget;
 #[cfg(target_os = "linux")]
 use super::desktop_services::{PortalResult, ScreenshotRequest};
+use super::desktop_services::{ScreenshotServiceHandle, ScreenshotTarget};
+use super::lifecycle::LifecycleEntry;
 #[cfg(target_os = "linux")]
-use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::lifecycle::{LifecycleResource, PortalLifecycle};
 use super::reply::{Ended, OrFail, Reply, Results, answer};
 #[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call, lockdown};
@@ -47,6 +48,23 @@ fn target(
         Ok(Some(target))
     }
 }
+/// What a closed or orphaned `Screenshot` request takes back: the selector
+/// it put on screen, so the person is not left choosing an area for an app
+/// that no longer wants it, and nothing chosen afterwards reaches that app.
+fn withdraw_screenshot(
+    service: ScreenshotServiceHandle,
+    request: String,
+) -> impl Fn(&LifecycleEntry) + Send + Sync + 'static {
+    move |_: &LifecycleEntry| service.cancel(&request)
+}
+/// What a closed or orphaned `PickColor` request takes back: its colour
+/// picker, leaving any screenshot selector of another request alone.
+fn withdraw_color_pick(
+    service: ScreenshotServiceHandle,
+    request: String,
+) -> impl Fn(&LifecycleEntry) + Send + Sync + 'static {
+    move |_: &LifecycleEntry| service.cancel_color(&request)
+}
 #[cfg(target_os = "linux")]
 fn color_value(color: (f64, f64, f64)) -> Option<OwnedValue> {
     OwnedValue::try_from(zbus::zvariant::Value::new(color)).ok()
@@ -81,9 +99,10 @@ impl ScreenshotBackend {
             let available = self.ctx.desktop_services.screenshot.available_targets();
             let target = target(&options, available).or_fail()?;
             let request_path = handle.to_string();
-            let service = self.ctx.desktop_services.screenshot.clone();
-            let cleanup_path = request_path.clone();
-            let cancel = move |_: &LifecycleEntry| service.cancel_color(&cleanup_path);
+            let cancel = withdraw_screenshot(
+                self.ctx.desktop_services.screenshot.clone(),
+                request_path.clone(),
+            );
             self.lifecycle
                 .with_request(
                     connection,
@@ -137,9 +156,10 @@ impl ScreenshotBackend {
                 .await
                 .or_fail()?;
             let request_path = handle.to_string();
-            let service = self.ctx.desktop_services.screenshot.clone();
-            let cleanup_path = request_path.clone();
-            let cancel = move |_: &LifecycleEntry| service.cancel(&cleanup_path);
+            let cancel = withdraw_color_pick(
+                self.ctx.desktop_services.screenshot.clone(),
+                request_path.clone(),
+            );
             self.lifecycle
                 .with_request(
                     connection,
@@ -182,7 +202,79 @@ impl ScreenshotBackend {
 }
 #[cfg(test)]
 mod tests {
+    use super::super::desktop_services::{PortalResult, ScreenshotRequest, ScreenshotService};
+    use super::super::lifecycle::{LifecycleResource, PortalLifecycle};
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Records which of the service's two withdrawals a closed request reached.
+    #[derive(Default)]
+    struct Withdrawals(Mutex<Vec<(&'static str, String)>>);
+    impl ScreenshotService for Withdrawals {
+        fn available_targets(&self) -> u32 {
+            1 | 2 | 4 | 8
+        }
+        fn screenshot(&self, _: &ScreenshotRequest) -> PortalResult<String> {
+            PortalResult::Cancelled
+        }
+        fn pick_color(&self, _: &str, _: &str) -> PortalResult<(f64, f64, f64)> {
+            PortalResult::Cancelled
+        }
+        fn cancel(&self, request_handle: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(("selector", request_handle.into()));
+        }
+        fn cancel_color(&self, request_handle: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(("colour picker", request_handle.into()));
+        }
+    }
+
+    #[test]
+    fn a_closed_request_withdraws_what_it_opened_and_nothing_else() {
+        let service = Arc::new(Withdrawals::default());
+        let handle = ScreenshotServiceHandle::new(service.clone());
+        let lifecycle = PortalLifecycle::new();
+        let entry = || LifecycleEntry {
+            owner: ":1.7".into(),
+            app_id: "org.example.Paint".into(),
+            resource: LifecycleResource::Prompt,
+        };
+        let shot = "/org/freedesktop/portal/desktop/request/1_7/shot";
+        let colour = "/org/freedesktop/portal/desktop/request/1_7/colour";
+        assert!(lifecycle.insert_request_with_cleanup(
+            shot,
+            entry(),
+            withdraw_screenshot(handle.clone(), shot.into())
+        ));
+        assert!(lifecycle.insert_request_with_cleanup(
+            colour,
+            entry(),
+            withdraw_color_pick(handle, colour.into())
+        ));
+
+        assert!(lifecycle.close_request(shot, ":1.7").is_some());
+        assert_eq!(
+            *service.0.lock().unwrap(),
+            [("selector", shot.to_owned())],
+            "closing a screenshot request must take its selector off the screen"
+        );
+        // The app quitting closes the rest.
+        assert_eq!(lifecycle.close_owner(":1.7").len(), 1);
+        assert_eq!(
+            *service.0.lock().unwrap(),
+            [
+                ("selector", shot.to_owned()),
+                ("colour picker", colour.to_owned())
+            ],
+            "a colour pick's request withdraws only its colour picker"
+        );
+    }
+
     #[test]
     fn target_requires_advertised_bit() {
         let mut o = HashMap::new();

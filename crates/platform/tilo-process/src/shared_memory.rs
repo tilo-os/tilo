@@ -263,7 +263,7 @@ mod imp {
             match self.0 {}
         }
 
-        pub const fn handed_over(&mut self) {
+        pub const fn handed_over(&self) {
             match self.0 {}
         }
     }

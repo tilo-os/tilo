@@ -29,6 +29,15 @@ struct Places<R: Resource> {
     /// holds what they did.
     applied: Vec<(tilo_actions::ParticipantId, R::Action)>,
     landed: Landings,
+    /// Applied here, not yet told: told once the state holds them.
+    applied_here: Vec<R::Action>,
+    /// The actions applied here the state holds, numbered, for the surfaces
+    /// that follow them ([`Live::follow_applied`]).
+    here: std::collections::VecDeque<(u64, R::Action)>,
+    next_here: u64,
+    /// How many surfaces follow the actions applied here: none, and they are
+    /// not kept.
+    following_here: usize,
 }
 
 impl<R: Resource> Default for Places<R> {
@@ -36,6 +45,10 @@ impl<R: Resource> Default for Places<R> {
         Self {
             applied: Vec::new(),
             landed: Landings::new(),
+            applied_here: Vec::new(),
+            here: std::collections::VecDeque::new(),
+            next_here: 0,
+            following_here: 0,
         }
     }
 }
@@ -84,6 +97,10 @@ impl Landings {
 
 /// How many landings a surface that missed some can still catch up on.
 const LANDINGS_KEPT: usize = 64;
+
+/// How many actions applied here a surface that missed some can still catch
+/// up on: more than one event's group applies at once.
+const APPLIED_KEPT: usize = 1024;
 
 /// What changed since bound controls last followed the state: `None` when
 /// nothing did.
@@ -140,10 +157,67 @@ impl<R: Resource> Live<R> {
         self.places.borrow_mut().applied.push((participant, action));
     }
 
+    /// Whether a surface follows the actions applied here
+    /// ([`Self::follow_applied`]): none does, and they are not noted.
+    pub(crate) fn follows_applied(&self) -> bool {
+        self.places.borrow().following_here > 0
+    }
+
+    /// A surface follows the actions applied here from now on, asking from
+    /// the number this answers ([`Self::applied_since`]).
+    pub(crate) fn follow_applied(&self) -> u64 {
+        let mut places = self.places.borrow_mut();
+        places.following_here = places.following_here.saturating_add(1);
+        places.next_here
+    }
+
+    /// A surface that followed the actions applied here stopped: when none
+    /// is left, none are kept.
+    pub(crate) fn unfollow_applied(&self) {
+        let mut places = self.places.borrow_mut();
+        places.following_here = places.following_here.saturating_sub(1);
+        if places.following_here == 0 {
+            places.applied_here.clear();
+            places.here.clear();
+        }
+    }
+
+    /// Note that `action` was applied here, through any door; surfaces that
+    /// follow it are told once the state holds it ([`Self::place_landings`]).
+    pub(crate) fn note_applied_here(&self, action: R::Action) {
+        self.places.borrow_mut().applied_here.push(action);
+    }
+
+    /// The actions applied here the state holds, numbered `from` on, and the
+    /// number to ask from next.
+    pub(crate) fn applied_since(&self, from: u64) -> (Vec<R::Action>, u64) {
+        let places = self.places.borrow();
+        let applied = places
+            .here
+            .iter()
+            .filter(|(number, _)| *number >= from)
+            .map(|(_, action)| action.clone())
+            .collect();
+        (applied, places.next_here)
+    }
+
     /// Place every participant whose action the state now holds, where
-    /// [`Resource::lands`] says it left them.
+    /// [`Resource::lands`] says it left them, and hold the actions applied
+    /// here for the surfaces that follow them.
     #[inline(never)]
     pub(crate) fn place_landings(&self) {
+        {
+            let mut places = self.places.borrow_mut();
+            let here = std::mem::take(&mut places.applied_here);
+            for action in here {
+                let number = places.next_here;
+                places.next_here = number.saturating_add(1);
+                places.here.push_back((number, action));
+                if places.here.len() > APPLIED_KEPT {
+                    places.here.pop_front();
+                }
+            }
+        }
         let applied = std::mem::take(&mut self.places.borrow_mut().applied);
         if applied.is_empty() {
             return;

@@ -69,7 +69,9 @@ reader copies the pixels out and marks the slot free; while both slots are
 being read the writer waits for one, still sending events. The app creates the
 memory, a memfd sealed against resizing on Linux and an unlinked POSIX shared
 memory object on macOS, and the host inherits it at spawn; a host without
-the flag, or given a descriptor of any other size, pipes its frames.
+the flag, or given a descriptor of any other size, pipes its frames. The size
+may be rounded up to the system's page, as macOS reports a shared memory
+object's on Apple silicon, whose 16 KiB page is larger than the header.
 
 JSON commands use `op`; events use `event`. Supported operations are navigate,
 back, forward, reload, stop, resize, focus, mouse_move, mouse_button, scroll,
@@ -250,8 +252,10 @@ no further, and a paste got only what the engine copied. The host bridges it
 takes the page's clipboard sends `page_clipboard` (exactly `op` and `tab`)
 for a tab; a tab of one that does not keeps the engine's own.
 
-- Each renderer runs `src/page_clipboard.js` in every web document and
-  extension page before the page's scripts. Chromium decides what may copy,
+- Each renderer runs `src/page_clipboard.js` in every web document,
+  extension page and document a page wrote into a frame (`about:blank`,
+  `about:srcdoc`, where rich editors keep the text they edit) before the
+  page's scripts. Chromium decides what may copy,
   as in Chrome: a copy or cut event fires only for a copy that may happen
   (and a script's own event copies nothing), and `writeText` and `write`
   resolve only once allowed. What the copy took (the selection with its
@@ -600,8 +604,9 @@ content scripts (with `sender.tab`) work without help.
   button over it (`activeTab`), which also lets it script the page until the
   page navigates. A click gives an extension without `activeTab` nothing.
   The Browser sends an extension's host permissions apart from the sites its
-  content scripts run on (`extension_access`, `hosts` and `scriptable`), and
-  no tab API counts the second: as in Chrome, content scripts on every page
+  content scripts run on (`extension_access`, `hosts` and `scriptable`, and
+  of those, where they run in frames too, `framed`), and
+  no tab API counts the content scripts' sites: as in Chrome, content scripts on every page
   let an extension see no tab's address, script no page and capture none.
 - `tabs.detectLanguage` answers the language the page declares, and
   `tabs.getZoom` the page's zoom. `tabs.onZoomChange` fires when a tab's
@@ -638,7 +643,9 @@ content scripts (with `sender.tab`) work without help.
   scripts for the page, the script waits up to one and a half seconds for
   Chromium to make it, as their first script runs: AdGuard injects its
   keep-alive on `tabs.onUpdated` as the page starts, before then, and it
-  needs their `chrome`. Where it has none, the host makes a world, in the
+  needs their `chrome`. A page that finished loading without it (open before
+  the extension came, or left out by `exclude_matches`) gets no wait. Where
+  it has none, the host makes a world, in the
   main frame and in each frame of the page's process it injects into
   (`allFrames` reaches those the extension may script: a host permission for
   the frame's address, or `activeTab` for the page's origin), that gets a
@@ -675,8 +682,10 @@ content scripts (with `sender.tab`) work without help.
   replied, and no receiver when none listens. It asks no frame its id, and
   of the frames other sites' processes render it attaches only to those the
   extension may have a world in: its own page, a page its content scripts
-  match (`scriptable`), or one the host met its world in before; another
-  site's frame without one costs no session. Chromium knows a frame and
+  match where they run in frames too (`framed`, their `all_frames`), or one
+  the host met its world in before; another site's frame without one, as
+  every frame is to scripts that run in the main frame alone, costs no
+  session. Chromium knows a frame and
   its document by ids the inspector does not show, so the host asks the
   extension's world
   in the frame (or its page there) over a port only the tab script answers
@@ -797,7 +806,9 @@ content scripts (with `sender.tab`) work without help.
   (`revoke-extension-access`): the Browser sends `extension_grants` without
   it, which holds at once, and the extension hears of what it lost
   (`onRemoved`). A question whose tab closes unanswered, its popup or the
-  window's page, is answered no, so the extension may ask again.
+  window's page, is answered no, so the extension may ask again, and the
+  windows' pages hear `extension_permission_closed` with its `request`, so
+  a window still showing it takes it away.
 - `downloads.download` goes through the Browser's own downloads
   (`src/capabilities.h`): Chromium cancels a download an extension starts
   on none of its windows' tabs, so the host starts it on the page the call

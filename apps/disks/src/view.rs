@@ -270,34 +270,47 @@ pub(crate) fn empty_state(unreadable: Option<&str>, intents: &Intents) -> Elemen
     )
 }
 
-/// The page while this machine's storage is being read: the detail page's
-/// own layout, with the drive's state saying so and the sections' contents
-/// standing in, so nothing moves when the drives arrive.
-pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>) -> Element {
+/// The page while this machine's storage is being read, since `since`: the
+/// detail page's own layout with the drive's state and the sections'
+/// contents standing in, so nothing moves when the drives arrive. A read
+/// inside its frame budget shows none of it: the window opens complete.
+pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>, since: ui::time::Instant) -> Element {
+    let local = || ui::arriving::Source::Local;
     let sections = ui::widget::Column::new()
         .with_intrinsic_height()
         .with_no_padding()
         .with_rhythm(Rhythm::Group)
         .push(Box::new(Section::titled(
             "Partition map",
-            vec![Box::new(PartitionMap::pending())],
+            vec![Box::new(PartitionMap::pending(since))],
         )))
         .push(Box::new(Section::titled(
             "Filesystems",
-            vec![ui::widget::ArrivingView::placeholder(
-                ui::arriving::Source::Local,
-                SkeletonShape::Row,
+            vec![ui::widget::ArrivingView::placeholder_since(
+                local(),
+                since,
+                // A filesystem's row: its icon, its label and a summary.
+                SkeletonShape::Row(
+                    ui::widget::RowShape::TITLE
+                        .led_by(ui::widget::RowLeadingShape::Mark)
+                        .with_secondary(1),
+                ),
             )],
         )))
         .push(Box::new(Section::titled(
             "Details",
-            vec![ui::widget::ArrivingView::placeholder(
-                ui::arriving::Source::Local,
+            vec![ui::widget::ArrivingView::placeholder_since(
+                local(),
+                since,
                 SkeletonShape::Text { lines: 4 },
             )],
         )));
     page(
-        Row::new().push(Box::new(Chip::new("Reading drives…"))),
+        Row::new().push(ui::widget::ArrivingView::placeholder_since(
+            local(),
+            since,
+            SkeletonShape::Chip,
+        )),
         Box::new(sections),
         offset,
     )

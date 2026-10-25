@@ -872,7 +872,7 @@ fn claim_editor(
                 room,
                 "so.tilo.code-editor".into(),
                 instance,
-                ui::collaboration::handoff::HandoffReport::OwnerTakeover {
+                collab_types::handoff::HandoffReport::OwnerTakeover {
                     token,
                     schema: metadata.schema_version,
                     metadata: metadata.bytes,
@@ -994,7 +994,7 @@ impl NativeEditorPair {
     fn send_view(
         &mut self,
         line: usize,
-    ) -> OwnerFixtureFuture<'_, Vec<ui::collaboration::owner_view::OwnerView>> {
+    ) -> OwnerFixtureFuture<'_, Vec<collab_types::handoff::OwnerView>> {
         Box::pin(async move {
             use ui::widget::Continuable;
             self.source
@@ -1097,7 +1097,7 @@ impl NativeEditorPair {
         })
     }
 
-    fn apply_target(&mut self, view: &ui::collaboration::owner_view::OwnerView, line: usize) {
+    fn apply_target(&mut self, view: &collab_types::handoff::OwnerView, line: usize) {
         use ui::widget::{Continuable, Widget};
         assert_eq!(view.room, self.room.to_string());
         assert_eq!(view.app, "so.tilo.code-editor");
@@ -1236,7 +1236,7 @@ async fn paired_native_editor_views_follow_the_persons_root_and_stop_when_routes
                 pair.room,
                 "so.tilo.code-editor".into(),
                 pair.tab,
-                ui::collaboration::handoff::HandoffReport::OwnerSubscribe { version: 1 }.encode(),
+                collab_types::handoff::HandoffReport::OwnerSubscribe { version: 1 }.encode(),
             )
             .unwrap();
     });

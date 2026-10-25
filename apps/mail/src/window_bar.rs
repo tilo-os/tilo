@@ -175,9 +175,11 @@ fn message_items(state: &MailState) -> Vec<BarItem> {
 
 /// The bar's actions: New message and the open message's (or the
 /// selection's) actions, then selecting several, writing to a contact and
-/// adding an account in the menu. Before any account, nothing: the empty
+/// adding an account in the menu. While a message is written (`composing`)
+/// Discard draft and Close take the place of New message and the open
+/// message's actions. Before any account, nothing but those: the empty
 /// window says what to do.
-pub(crate) fn bar_items(state: &MailState, first_run: bool) -> Vec<BarItem> {
+pub(crate) fn bar_items(state: &MailState, first_run: bool, composing: bool) -> Vec<BarItem> {
     let add_account = BarItem::new(
         "add-account",
         "user-plus",
@@ -186,19 +188,46 @@ pub(crate) fn bar_items(state: &MailState, first_run: bool) -> Vec<BarItem> {
     );
     // Before any account the empty window's own Add account is the one
     // place to start.
+    // The message being written: Discard draft, and Close, which keeps
+    // anything written in Drafts. Neither wears the window's own ✕.
+    let writing: Vec<BarItem> = if composing {
+        vec![
+            BarItem::new(
+                "discard-draft",
+                "trash-2",
+                "Discard draft",
+                Command::DiscardCompose,
+            ),
+            BarItem::new(
+                "close-message",
+                "minimize-2",
+                "Close and keep in Drafts",
+                Command::CloseCompose,
+            ),
+        ]
+    } else {
+        Vec::new()
+    };
     if first_run {
-        return Vec::new();
+        return writing;
     }
     if state.bulk_selecting {
-        return bulk_items(state);
+        return writing.into_iter().chain(bulk_items(state)).collect();
     }
-    let mut items = vec![BarItem::new(
-        "new-message",
-        "pencil",
-        "New message",
-        Command::Compose,
-    )];
-    items.extend(message_items(state));
+    // The message being written stands where the open message did: its
+    // actions take the place of New message and the open message's.
+    let mut items: Vec<BarItem> = if composing {
+        writing
+    } else {
+        let mut items = vec![BarItem::new(
+            "new-message",
+            "pencil",
+            "New message",
+            Command::Compose,
+        )];
+        items.extend(message_items(state));
+        items
+    };
     items.push(
         BarItem::new(
             "select-messages",
@@ -300,7 +329,7 @@ mod tests {
     #[test]
     fn the_bar_offers_new_message_and_the_open_messages_actions_and_the_selections() {
         let mut state = state();
-        let items = bar_items(&state, false);
+        let items = bar_items(&state, false, false);
         assert_eq!(names(&items, false), ["New message", "Reply", "Archive"]);
         let menu = names(&items, true);
         for name in [
@@ -325,15 +354,46 @@ mod tests {
         assert_eq!(star.action.on, starred);
 
         state.set_bulk_selecting(true);
-        let items = bar_items(&state, false);
+        let items = bar_items(&state, false, false);
         assert_eq!(names(&items, false), ["Done", "Archive", "Move to Trash"]);
         assert!(names(&items, true).contains(&"Select all"));
         assert_eq!(location(&state, None), "Select messages");
         assert_eq!(location(&state, Some("New message")), "New message");
 
         assert!(
-            bar_items(&state, true).is_empty(),
+            bar_items(&state, true, false).is_empty(),
             "before any account the empty window's Add account is the one"
         );
+    }
+
+    #[test]
+    fn while_a_message_is_written_the_bar_closes_it() {
+        let state = state();
+        let items = bar_items(&state, false, true);
+        assert_eq!(
+            names(&items, false),
+            ["Discard draft", "Close and keep in Drafts"]
+        );
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| !item.action.menu)
+                .map(|item| &item.command)
+                .collect::<Vec<_>>(),
+            [&Command::DiscardCompose, &Command::CloseCompose]
+        );
+        assert!(
+            items.iter().all(|item| item.action.icon != "x"),
+            "nothing the message offers wears the window's own close"
+        );
+        assert_eq!(
+            items.first().map(|item| item.action.icon.as_str()),
+            Some("trash-2")
+        );
+        assert!(
+            names(&items, true).contains(&"Select messages"),
+            "the menu stays"
+        );
+        assert_eq!(location(&state, Some("New message")), "New message");
     }
 }

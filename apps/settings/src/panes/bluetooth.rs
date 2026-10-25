@@ -381,10 +381,25 @@ pub trait BluetoothControl: Send + Sync {
     /// Returns the backend's error message if `BlueZ` fails to remove the
     /// device's pairing and keys.
     fn forget(&self, path: &str) -> Result<(), String>;
+    /// Follow the adapter: `changed` is called, on another thread, each time
+    /// `BlueZ` reports a change the page shows, for as long as the answer
+    /// is held. `None` when nothing can be followed.
+    fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
 }
 
 pub struct RealBluetooth;
 impl BluetoothControl for RealBluetooth {
+    fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        match os_actions::bluez::follow_changes(changed) {
+            Ok(follow) => Some(Box::new(follow)),
+            Err(error) => {
+                tracing::warn!(target: "tilo::settings", %error, "Bluetooth's changes are not followed");
+                None
+            }
+        }
+    }
     fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
         crate::device_read::off_ui_thread();
         os_actions::bluez::devices()
@@ -657,6 +672,10 @@ pub struct BluetoothModel {
     /// When the adapter was last read, so discovery's finds are read in
     /// as they come.
     last_read: ui::time::Instant,
+    /// What follows `BlueZ` while a pane shows the model.
+    following: std::rc::Weak<crate::watch::Counted>,
+    /// `BlueZ`'s change count when the model last read the adapter for it.
+    changes_seen: u64,
     changed: bool,
 }
 
@@ -694,6 +713,8 @@ impl BluetoothModel {
             pairing: None,
             details: DisclosureGroup::new(),
             last_read: ui::time::now(),
+            following: std::rc::Weak::new(),
+            changes_seen: 0,
             changed: false,
         };
         // A failure is kept on the model and shown in place of the adapter.
@@ -729,6 +750,26 @@ impl BluetoothModel {
             self.reread_again = false;
             self.read_again();
         }
+    }
+
+    /// Read the adapter again once `BlueZ` reported a change the page
+    /// shows: headphones that connect by themselves, a device paired or
+    /// forgotten from quick settings, the radio switched elsewhere. Reads
+    /// coalesce: one runs at a time, and one more follows it if changes
+    /// came meanwhile.
+    fn read_reported_changes(&mut self) {
+        let Some(changes) = self.reported_changes() else {
+            return;
+        };
+        if changes != self.changes_seen {
+            self.changes_seen = changes;
+            self.read_again();
+        }
+    }
+
+    /// `BlueZ`'s change count, while it is followed.
+    fn reported_changes(&self) -> Option<u64> {
+        self.following.upgrade()?.changes()
     }
 
     /// Take in the read [`Self::reread`] made, once it has landed.
@@ -1083,6 +1124,7 @@ impl PaneModel for BluetoothModel {
 
     fn poll(&mut self) -> bool {
         self.follow_adapter();
+        self.read_reported_changes();
         if self.scanning && ui::time::now() >= self.last_read + DISCOVERY_READ_INTERVAL {
             self.last_read = ui::time::now();
             self.read_again();
@@ -1097,6 +1139,20 @@ impl PaneModel for BluetoothModel {
     fn next_wake(&self) -> Option<ui::time::Instant> {
         self.scanning
             .then(|| self.last_read + DISCOVERY_READ_INTERVAL)
+    }
+
+    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        if let Some(held) = self.following.upgrade() {
+            return Some(held);
+        }
+        // Nothing was followed while no pane showed the model: the adapter
+        // is read again once.
+        self.changes_seen = u64::MAX;
+        let control = Arc::clone(&self.control);
+        let following = crate::watch::shared(&mut self.following, move || {
+            crate::watch::Counted::start(|changed| control.follow(changed))
+        });
+        Some(following)
     }
 }
 
@@ -1697,5 +1753,123 @@ mod tests {
         cx.radios().set(Present::NONE);
         assert_eq!(area.statuses().len(), RADIO.len());
         assert!(!area.is_open(), "the adapter was not read");
+    }
+
+    /// An adapter whose devices the test changes, as `BlueZ` would report
+    /// them, counting its reads, and telling the model of each change while
+    /// it is followed.
+    #[derive(Default)]
+    struct Followed {
+        devices: Mutex<Vec<DeviceInfo>>,
+        reads: std::sync::atomic::AtomicUsize,
+        follower: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    }
+
+    impl BluetoothControl for Followed {
+        fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(self.devices.lock().unwrap().clone())
+        }
+        fn powered(&self) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn scanning(&self) -> Result<bool, String> {
+            Ok(false)
+        }
+        fn set_powered(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn start_scan(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop_scan(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn pair(&self, _: &str) -> Result<PairOutcome, String> {
+            Ok(PairOutcome::PairedAndConnected)
+        }
+        fn cancel_pairing(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn connect(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn disconnect(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_trusted(&self, _: &str, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_alias(&self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn forget(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+            *self.follower.lock().unwrap() = Some(Arc::from(changed));
+            Some(Box::new(()))
+        }
+    }
+
+    /// Headphones that connect or disconnect by themselves while the page
+    /// is open show without a refresh or discovery: the change `BlueZ`
+    /// reports reads the adapter again. Showing the page reads what changed
+    /// while nothing followed; once no pane shows the model, nothing is
+    /// read.
+    #[test]
+    fn a_device_connecting_by_itself_shows_while_the_page_is_open() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let control = Arc::new(Followed::default());
+        control.devices.lock().unwrap().push(dev());
+        let read = read_adapter_of(control.as_ref());
+        let mut model = BluetoothModel::with_read(cx, Arc::clone(&control) as _, read);
+        assert!(!model.devices[0].connected);
+        let adapter_reads = || control.reads.load(std::sync::atomic::Ordering::Relaxed);
+        // Poll as the window does until the page shows the headphones
+        // `connected`; whether a poll asked the page to show something new.
+        let poll_until = |model: &mut BluetoothModel, connected: bool| {
+            let deadline = tilo_test_env::hang_deadline();
+            let mut recomposed = false;
+            while model.devices[0].connected != connected {
+                recomposed |= model.poll();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the adapter was never read again"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            recomposed
+        };
+
+        // Connected while no pane showed the model.
+        control.devices.lock().unwrap()[0].connected = true;
+        let following = PaneModel::follow(&mut model).expect("a shown pane follows BlueZ");
+        let changed = control
+            .follower
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("BlueZ is followed while the pane shows it");
+        assert!(poll_until(&mut model, true), "the page shows it");
+        assert_eq!(
+            adapter_reads(),
+            2,
+            "showing the page reads the adapter once"
+        );
+
+        // Disconnected by itself while the page is open.
+        control.devices.lock().unwrap()[0].connected = false;
+        changed();
+        assert!(poll_until(&mut model, false), "the page shows the change");
+        assert_eq!(adapter_reads(), 3, "one change, one read");
+
+        drop(following);
+        changed();
+        model.poll();
+        assert!(model.reread.is_finished(), "a closed page reads nothing");
+        assert_eq!(adapter_reads(), 3);
     }
 }

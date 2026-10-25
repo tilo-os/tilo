@@ -212,7 +212,8 @@ impl App {
             None
         } else {
             match &event {
-                WindowEvent::Touch(_) => Some(app.input.interaction.with_touch_modality()),
+                // The window's touch emulation switches to touch once the
+                // gesture has landed, so a touch hits what the person saw.
                 WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
                 | WindowEvent::MouseWheel { .. } => {

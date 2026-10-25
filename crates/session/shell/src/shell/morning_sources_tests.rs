@@ -86,8 +86,12 @@ impl ActionHost for Host {
     fn observe(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<InvocationState> {
         None
     }
-    fn cancel(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Result<(), ActionHostError> {
-        Err(ActionHostError::UnknownInvocation)
+    fn cancel(
+        &self,
+        _: &Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
     }
 }
 fn row() -> CatalogueRow {

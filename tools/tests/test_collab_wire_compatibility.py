@@ -26,6 +26,7 @@ class CollabWireCompatibility(unittest.TestCase):
             ("nearbyTransferChanged", 62),
             ("browserServiceSessionCommand", 63),
             ("speakerChanged", 68),
+            ("drivesChanged", 69),
         ):
             self.assertRegex(schema, rf"\b{method}\s+@{ordinal}\b")
         self.assertNotIn("retiredSurfaceBrowserOrdinalCollision", schema)

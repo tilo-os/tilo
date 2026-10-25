@@ -632,8 +632,10 @@ pub enum Unproven {
 /// the section is unchanged.
 ///
 /// When the parts nested inside some part differ between the frames (a menu
-/// that opened inside an overlay drew a part of its own), the outermost
-/// parts are compared instead, each as a whole.
+/// that opened inside an overlay drew a part of its own), the parts down to
+/// the deepest nesting both frames still have alike are compared instead,
+/// each part at that depth as a whole: a window's menu damages its window,
+/// a window a lane draws again damages that lane.
 pub fn damage(
     previous: &Scene,
     previous_parts: &SectionParts,
@@ -641,17 +643,19 @@ pub fn damage(
     current_parts: &SectionParts,
 ) -> Result<Vec<Rect>, Unproven> {
     let (old_events, new_events) = (&previous_parts.events, &current_parts.events);
-    match compare(previous, old_events, current, new_events, false) {
-        Err(Unproven::Structure) => compare(
+    let mut proven = compare(previous, old_events, current, new_events, false);
+    let mut depth = nesting(old_events).max(nesting(new_events));
+    while matches!(proven, Err(Unproven::Structure)) && depth > 1 {
+        depth = depth.saturating_sub(1);
+        proven = compare(
             previous,
-            &outermost(old_events)?,
+            &to_depth(old_events, depth)?,
             current,
-            &outermost(new_events)?,
+            &to_depth(new_events, depth)?,
             false,
-        ),
-        proven => proven,
+        );
     }
-    .map(|(rects, _)| rects)
+    proven.map(|(rects, _)| rects)
 }
 
 /// [`damage`] for a host that presents the section over the pixels of the
@@ -674,7 +678,7 @@ pub fn damage_with_copies(
 ) -> Result<SectionDamage, Unproven> {
     let (old_events, new_events) = (&previous_parts.events, &current_parts.events);
     let (rects, copied) = match compare(previous, old_events, current, new_events, true) {
-        // Compared by their outermost parts, nested hints say nothing.
+        // Compared as wholes at a shallower depth, hints say nothing.
         Err(Unproven::Structure) => (
             damage(previous, previous_parts, current, current_parts)?,
             Vec::new(),
@@ -927,29 +931,63 @@ fn part_ends(events: &[Event]) -> Result<Vec<PartEnd<'_>>, Unproven> {
     }
 }
 
-/// The boundaries of the outermost parts only: each compares as a whole,
-/// whatever parts it draws inside.
-fn outermost(events: &[Event]) -> Result<Vec<Event>, Unproven> {
-    let mut depth = 0_usize;
-    let mut outer = Vec::new();
+/// How deep the parts of a section nest: 1 when none is inside another, 0
+/// with no parts.
+fn nesting(events: &[Event]) -> usize {
+    let (mut depth, mut deepest) = (0_usize, 0_usize);
     for event in events {
         match event.boundary {
             Boundary::Begin(_) => {
-                if depth == 0 {
-                    outer.push(event.clone());
+                depth = depth.saturating_add(1);
+                deepest = deepest.max(depth);
+            }
+            Boundary::End(_) | Boundary::EndHinted(_) => depth = depth.saturating_sub(1),
+        }
+    }
+    deepest
+}
+
+/// The boundaries of the parts nested at most `max` deep (1: the outermost
+/// parts only): each part at that depth compares as a whole, whatever parts
+/// it draws inside. Below the outermost depth a kept hinted part keeps no
+/// hint: a hint says what changed in content drawn alike, and parts inside
+/// it may have come or gone, so a change in it belongs to the bounded part
+/// around it. An outermost hinted part has no bounded part around it and
+/// keeps its hint, as the outermost comparison always has.
+fn to_depth(events: &[Event], max: usize) -> Result<Vec<Event>, Unproven> {
+    let mut depth = 0_usize;
+    let mut kept = Vec::new();
+    for event in events {
+        match event.boundary {
+            Boundary::Begin(_) => {
+                if depth < max {
+                    kept.push(event.clone());
                 }
                 depth = depth.saturating_add(1);
             }
-            Boundary::End(_) | Boundary::EndHinted(_) => {
+            Boundary::End(_) => {
                 depth = depth.checked_sub(1).ok_or(Unproven::Corrupt)?;
-                if depth == 0 {
-                    outer.push(event.clone());
+                if depth < max {
+                    kept.push(event.clone());
+                }
+            }
+            Boundary::EndHinted(_) => {
+                depth = depth.checked_sub(1).ok_or(Unproven::Corrupt)?;
+                if depth < max {
+                    kept.push(if depth == 0 {
+                        event.clone()
+                    } else {
+                        Event {
+                            boundary: Boundary::EndHinted(None),
+                            marks: event.marks,
+                        }
+                    });
                 }
             }
         }
     }
     if depth == 0 {
-        Ok(outer)
+        Ok(kept)
     } else {
         Err(Unproven::Corrupt)
     }

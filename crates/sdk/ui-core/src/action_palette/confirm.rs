@@ -397,7 +397,7 @@ impl ActionPalette {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let window = presence.viewport.get().unwrap_or(self.rect);
+        let window = self.sheet_window(presence);
         let focused = |index: usize| {
             self.controls
                 .children()

@@ -19,8 +19,12 @@ fn motion() -> Option<EffectiveMotion> {
 }
 
 fn step(rows: &ArrivingRows<u32>, key: u32, now: Instant) -> Option<Step> {
-    rows.face(&key, SkeletonShape::Row, now)
-        .map(|face| face.step())
+    rows.face(
+        &key,
+        SkeletonShape::Row(crate::widget::RowShape::TITLE),
+        now,
+    )
+    .map(|face| face.step())
 }
 
 #[test]

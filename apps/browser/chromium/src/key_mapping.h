@@ -99,10 +99,13 @@ inline KeyMapping MapKey(const std::string& key, const std::string& code) {
 }
 
 // The Latin letter a shortcut names: the key's own when it is one, else the
-// US letter on the key pressed (Command+С on a Russian layout copies).
+// US letter on the key pressed (Command+С on a Russian layout copies). A key
+// whose text is on a US key names that key, whatever its place: Command+;
+// on Dvorak, typed on the US Z key, is not Command+Z.
 inline char ShortcutLetter(const std::string& key, const std::string& code) {
-  if (key.size()==1 && std::isalpha(static_cast<unsigned char>(key[0])))
-    return static_cast<char>(std::tolower(static_cast<unsigned char>(key[0])));
+  if (key.size()==1)
+    return std::isalpha(static_cast<unsigned char>(key[0]))
+      ? static_cast<char>(std::tolower(static_cast<unsigned char>(key[0]))) : 0;
   const char at = UsCharacterAt(code);
   return at>='a' && at<='z' ? at : 0;
 }

@@ -1922,12 +1922,14 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   // The system clipboard's text, for whichever tab asked (page_clipboard.h).
   if(op=="clipboard_contents") {ClipboardAnswer(d->GetInt("request_id"),d->GetType("text")==VTYPE_STRING?std::optional<std::string>(d->GetString("text").ToString()):std::nullopt);return;}
   if(op=="extension_access") {
-    std::set<std::string> permissions;std::vector<std::string> hosts,scriptable;
+    std::set<std::string> permissions;std::vector<std::string> hosts,scriptable,framed;
     auto list=d->GetList("permissions");for(size_t i=0;i<list->GetSize();++i)permissions.insert(list->GetString(i));
     list=d->GetList("hosts");for(size_t i=0;i<list->GetSize();++i)hosts.push_back(list->GetString(i));
     // Where its content scripts run, apart from its host permissions.
     list=d->GetList("scriptable");for(size_t i=0;list && i<list->GetSize();++i)scriptable.push_back(list->GetString(i));
-    if(extension_tabs)extension_tabs->SetAccess(d->GetString("id"),std::move(permissions),std::move(hosts),std::move(scriptable),d->HasKey("token")?d->GetString("token").ToString():std::string(),
+    // Those of them that run in a page's frames too (all_frames).
+    list=d->GetList("framed");for(size_t i=0;list && i<list->GetSize();++i)framed.push_back(list->GetString(i));
+    if(extension_tabs)extension_tabs->SetAccess(d->GetString("id"),std::move(permissions),std::move(hosts),std::move(scriptable),std::move(framed),d->HasKey("token")?d->GetString("token").ToString():std::string(),
       d->GetType("commands")==VTYPE_DICTIONARY?d->GetDictionary("commands"):nullptr);
     return;
   }
@@ -2407,7 +2409,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     const bool token=!d->HasKey("token") || (type("token",VTYPE_STRING) && d->GetString("token").length()>=32 && d->GetString("token").length()<=128);
     // Its keyboard shortcuts, as its manifest declares them (extension_commands.h).
     const bool commands=!d->HasKey("commands") || type("commands",VTYPE_DICTIONARY);
-    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && strings("permissions") && strings("hosts") && (!d->HasKey("scriptable") || strings("scriptable")) && token && commands;
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && strings("permissions") && strings("hosts") && (!d->HasKey("scriptable") || strings("scriptable")) && (!d->HasKey("framed") || strings("framed")) && token && commands;
   }
   if(op=="document_size") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);

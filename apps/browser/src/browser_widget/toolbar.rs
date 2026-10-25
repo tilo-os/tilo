@@ -226,6 +226,7 @@ impl BrowserWidget {
             "browser.page",
             if loading { "stop" } else { "reload" },
         );
+        // window-bar: fallback, the bar's location is the address while it hosts the window
         let address = TextInput::from_state(&self.address)
             .with_kind(TextInputKind::Url)
             .with_id(URL_INPUT_ID)

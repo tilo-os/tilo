@@ -23,7 +23,9 @@ use vello::kurbo::{Affine, Rect};
 use super::{Hit, LibraryDestination, PhotosApp, SelectionHit};
 use crate::strings::{tr, tr_count, tr_with};
 
-use ui::widget::{NavFeed, NavItem, NavSection, NavShell, SidebarDrawer, WindowBarLink};
+use ui::widget::{
+    NavFeed, NavItem, NavSection, NavShell, SidebarDrawer, WINDOW_BACK, WindowBarLink,
+};
 
 /// What a sidebar row opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,7 +112,8 @@ pub(super) struct Chrome {
     /// The shell's own buttons in the window's bar; none outside a shell.
     pub bar: Option<WindowBarLink>,
     /// The trailing panel the album and details editors open in: docked
-    /// beside a wide timeline, a floating drawer over a narrow one.
+    /// beside a wide timeline, a sheet up from a narrow one's foot, with the
+    /// timeline above it still live to choose photographs in.
     pub inspector: SidebarDrawer,
     pub title: String,
     pub status_left: String,
@@ -131,6 +134,7 @@ impl Chrome {
                 // width (the shell's sidebar is outside this window's
                 // content); narrower, it floats.
                 .content_min_width(f64::from(base.content_min_width))
+                .sheet_when_narrow()
                 .closed(),
             title: String::new(),
             status_left: String::new(),
@@ -326,11 +330,13 @@ impl PhotosApp {
                 return self.selection_commands();
             }
             LibraryDestination::Timeline => self.timeline_commands(&mut commands),
+            // While an album is being made, New album is the editor open.
+            LibraryDestination::Albums if self.album_editor => {}
             LibraryDestination::Albums => {
                 commands.push(Command::icon(
                     Hit::NewAlbum,
                     tr("photos-new-album"),
-                    Icon::FolderPlus,
+                    Icon::GalleryVerticalEnd,
                 ));
             }
             // With no located photos there is no map to list or zoom; the
@@ -403,11 +409,11 @@ impl PhotosApp {
                 tr("photos-edit-album"),
                 Icon::Pencil,
             ));
-        } else {
+        } else if !self.album_editor {
             commands.push(Command::icon(
                 Hit::NewAlbum,
                 tr("photos-new-album"),
-                Icon::FolderPlus,
+                Icon::GalleryVerticalEnd,
             ));
         }
     }
@@ -572,6 +578,23 @@ impl PhotosApp {
             },
             ..ToolbarLocation::default()
         });
+        // An editor's sheet is Back's first step ([`Self::sheet_back`]).
+        if self.editor_sheet_shown()
+            && !self.header_back_visible()
+            && !toolbar
+                .leading
+                .iter()
+                .any(|action| action.id == WINDOW_BACK)
+        {
+            toolbar.leading.push(
+                ToolbarAction::new(
+                    WINDOW_BACK,
+                    "arrow-left",
+                    ui::i18n::I18nManager::lookup_plain("window-toolbar-back"),
+                )
+                .navigating(),
+            );
+        }
         if self.header_back_visible() {
             toolbar.leading.push(
                 ToolbarAction::new(
@@ -596,6 +619,18 @@ impl PhotosApp {
         toolbar
     }
 
+    /// Whether `event` is one of the bar's Backs: the shell's, the one an
+    /// editor's sheet adds, or the way back to the library.
+    fn is_back(event: &ToolbarEvent) -> bool {
+        match event {
+            ToolbarEvent::Back => true,
+            ToolbarEvent::Action { id } => {
+                id == WINDOW_BACK || *id == format!("{:?}", Hit::Library)
+            }
+            _ => false,
+        }
+    }
+
     /// Declare the window bar's slots.
     pub(super) fn declare_window_toolbar(&self) {
         ui::window_toolbar::declare(Some(self.window_bar()));
@@ -605,6 +640,9 @@ impl PhotosApp {
     /// the path assistive technology's activation takes too.
     pub(super) fn apply_window_toolbar(&mut self) {
         for event in ui::window_toolbar::take_events() {
+            if Self::is_back(&event) && self.sheet_back() {
+                continue;
+            }
             if self
                 .chrome
                 .bar
@@ -713,7 +751,7 @@ impl PhotosApp {
 
     /// Hand the shell's sidebar the library's destinations; the albums
     /// nest under Albums, each by its cover.
-    fn show_places(&self) {
+    pub(super) fn show_places(&self) {
         let entries = self.nav_entries();
         let selected = entries
             .iter()
@@ -820,7 +858,14 @@ impl PhotosApp {
             panel.x1 - inset,
             (footer.y0 - inset).max(header.y1 + inset),
         );
-        ui::widget::toolbar::paint_band(scene, transform, &local, header);
+        ui::widget::paint_rule(
+            scene,
+            transform,
+            &local,
+            header,
+            ui::widget::RuleEdge::Bottom,
+            Some(theme.region(ui::surface::Region::Inspector)),
+        );
         let mut ctx = PaintCtx::new(scene, transform, text, &local);
         let style = local.text(ui::TextRole::Heading);
         let shown =
@@ -917,6 +962,28 @@ impl PhotosApp {
         self.timeline_scroll_y = 0.0;
     }
 
+    /// What the open inspector is titled: the editor it holds.
+    pub(super) fn inspector_title(&self) -> Option<String> {
+        if !self.library_mode {
+            return None;
+        }
+        if self.album_editor {
+            return Some(if self.album_editor_creating {
+                tr("photos-new-album")
+            } else {
+                tr("photos-edit-album")
+            });
+        }
+        self.metadata_editor.then(|| {
+            let count = self.metadata_editor_ids.len();
+            if count == 1 {
+                tr("photos-photo-details")
+            } else {
+                tr_count("photos-edit-count", count)
+            }
+        })
+    }
+
     /// Whether the chrome took the event: what lands on a floating
     /// inspector is the editor's.
     pub(super) fn handle_chrome_event(&self, ctx: &ui::widget::EventCtx<'_>) -> bool {
@@ -933,6 +1000,12 @@ impl PhotosApp {
     /// shell's, the toolbar the window bar's.
     pub(super) fn chrome_semantics(&self) -> Vec<AccessNode> {
         let mut nodes = Vec::new();
+        if let Some(sheet) = self
+            .inspector_title()
+            .and_then(|title| self.chrome.inspector.sheet_accessibility(&title))
+        {
+            nodes.push(sheet);
+        }
         if self.has_status() {
             nodes.push(
                 AccessNode::new(Role::StaticText)

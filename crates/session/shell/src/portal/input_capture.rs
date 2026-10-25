@@ -534,20 +534,27 @@ impl InputCaptureBackend {
                 app_id: app_id.clone(),
                 resource: LifecycleResource::Prompt,
             };
+            // Closing the request takes its consent sheet back, so a person
+            // answering late cannot start capture for a request that is gone.
+            let prompts = self.ctx.prompts.clone();
+            let withdrawn = request.clone();
             self.lifecycle
                 .with_request(
                     &self.connection,
                     &request,
                     entry,
-                    |_: &LifecycleEntry| {},
+                    move |_: &LifecycleEntry| {
+                        prompts.cancel_request(&withdrawn);
+                    },
                     async {
-                        let allowed = flow::resolve(
+                        let allowed = flow::resolve_for_request(
                             &self.ctx,
                             auth.caller.clone(),
                             CapabilityKind::InputCapture,
                             Capability::RemoteDesktop {
                                 scope: Expiry::AfterUse,
                             },
+                            request.clone(),
                         )
                         .await
                         .is_allowed();

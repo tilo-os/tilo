@@ -435,6 +435,14 @@ pub struct Answer {
     /// another person or agent sends, after which the request is planned
     /// again with what arrived.
     pub wait: Option<Wait>,
+    /// What the request asks for, one deliverable each, in order: the
+    /// checklist a host that offers it keeps for the task. Empty for none.
+    pub obligations: Vec<String>,
+    /// Beside each of `actions`, the obligation it fulfils, numbered from 1.
+    /// Empty when no step names one.
+    pub serves: Vec<Option<usize>>,
+    /// Obligations the model will not do, by number, each with why.
+    pub set_aside: Vec<(usize, String)>,
 }
 
 /// The `plan` tool's optional `reply` property, as the model is told it.
@@ -1594,6 +1602,7 @@ fn read_plan_as(
             .map(|t| t.chars().take(240).collect()),
         reply,
         wait,
+        ..Answer::default()
     })
 }
 

@@ -138,6 +138,9 @@ struct DeferredBuild {
     /// Pipelines the device compiles asynchronously
     /// ([`WgpuEngine::start_deferred_pipelines_async`]), polled by renders.
     compiling: Vec<(ShaderId, CompilingShader)>,
+    /// The device those compile on, once started: the next is started when
+    /// the one before it is installed.
+    compile_on: Option<Device>,
     started: bool,
     /// Pipelines a dispatch needed before any builder had them.
     built_inline: u64,
@@ -1947,33 +1950,58 @@ impl WgpuEngine {
         (self.deferred.pending.len(), self.deferred.built_inline)
     }
 
-    /// Start compiling every deferred pipeline through the device's
+    /// Start compiling the deferred pipelines through the device's
     /// asynchronous pipeline creation, without waiting for any (Tilo patch):
     /// the WebGPU counterpart of [`Self::start_deferred_pipelines`]' threads.
-    /// Renders install each once it is compiled. Once only.
+    /// One at a time: each is started once the one before it is installed
+    /// ([`Self::receive_deferred`]). A browser compiles every page's
+    /// pipelines on the same GPU-process threads and does not cancel those
+    /// of a page that closed, so all of them at once kept a busy machine's
+    /// other pages from drawing long after this one had gone. Once only.
     pub(crate) fn start_deferred_pipelines_async(&mut self, device: &Device) {
         if self.deferred.started {
             return;
         }
         self.deferred.started = true;
+        self.deferred.compile_on = Some(device.clone());
+        self.start_next_deferred_async();
+    }
+
+    /// Start compiling the next deferred pipeline when none is compiling:
+    /// what a full frame on the default path dispatches first, then the
+    /// longest source.
+    fn start_next_deferred_async(&mut self) {
+        if !self.deferred.compiling.is_empty() {
+            return;
+        }
+        let Some(device) = self.deferred.compile_on.as_ref() else {
+            return;
+        };
         let pending = &self.deferred.pending;
-        let pipeline_cache = self.pipeline_cache.as_ref();
-        self.deferred.compiling = self
+        let spare = &self.deferred.spare;
+        let Some(spec) = self
             .deferred
             .specs
             .iter()
             .filter(|spec| pending.contains(&spec.shader_id.0))
-            .map(|spec| {
-                let compiling: CompilingShader = Box::pin(Self::start_compute_pipeline(
-                    device,
-                    spec.label,
-                    spec.wgsl.clone(),
-                    spec.entries.clone(),
-                    pipeline_cache,
-                ));
-                (spec.shader_id, compiling)
+            .min_by_key(|spec| {
+                (
+                    spare.contains(&spec.shader_id.0),
+                    std::cmp::Reverse(spec.wgsl.len()),
+                )
             })
-            .collect();
+        else {
+            self.deferred.compile_on = None;
+            return;
+        };
+        let compiling: CompilingShader = Box::pin(Self::start_compute_pipeline(
+            device,
+            spec.label,
+            spec.wgsl.clone(),
+            spec.entries.clone(),
+            self.pipeline_cache.as_ref(),
+        ));
+        self.deferred.compiling.push((spec.shader_id, compiling));
     }
 
     fn install_deferred(&mut self, id: ShaderId, shader: WgpuShader) {
@@ -2003,6 +2031,7 @@ impl WgpuEngine {
                 self.install_deferred(id, shader);
             }
         }
+        self.start_next_deferred_async();
         #[cfg(not(target_arch = "wasm32"))]
         while let Some(built) = self.deferred.built.as_ref() {
             match built.try_recv() {

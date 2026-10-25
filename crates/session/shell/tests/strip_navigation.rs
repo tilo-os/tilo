@@ -723,29 +723,39 @@ fn window_actions_run_the_operations_their_chords_run() {
 }
 
 /// A window action tells its caller whether anything changed: a move past
-/// the edge, a second maximize or a second restore says nothing changed
-/// rather than reporting a move that did not happen.
+/// the edge, a second maximize, a second restore or a resize past the limit
+/// says nothing changed, and why, rather than reporting a move that did not
+/// happen or a reason that is not the one.
 #[test]
 fn window_actions_say_when_nothing_changed() {
     use shell::shell::search::action_api::ActionError;
     let (mut h, upper, _lower, _resident, groups) = two_strip_harness();
     let none = serde_json::json!({});
-    let unchanged = |outcome: Result<(), ActionError>, what: &str| {
-        assert!(
-            matches!(&outcome, Err(ActionError::Explained(_))),
-            "{what}: {outcome:?}"
+    let unchanged = |outcome: Result<(), ActionError>, why: &str, what: &str| {
+        assert_eq!(
+            outcome,
+            Err(ActionError::Explained(shell::shell::i18n::t(why))),
+            "{what}"
         );
     };
     assert_eq!(plane(&h).2, Some(groups[0]), "the leftmost group has focus");
     let before = plane(&h);
     unchanged(
         invoke_answered(&mut h, "group.move-left", &none),
+        "search-action-window-unchanged-edge",
         "the leftmost group moves no further left",
     );
     assert_eq!(plane(&h), before);
     unchanged(
         invoke_answered(&mut h, "group.move-to-strip-previous", &none),
+        "search-action-window-unchanged-edge",
         "there is no strip above the top one",
+    );
+    assert_eq!(plane(&h), before);
+    unchanged(
+        invoke_answered(&mut h, "tab.move-to-group-previous", &none),
+        "search-action-tab-unchanged-edge",
+        "no window left of the leftmost one takes its tab",
     );
     assert_eq!(plane(&h), before);
 
@@ -766,6 +776,7 @@ fn window_actions_say_when_nothing_changed() {
     assert!(upper_maximized(&mut h));
     unchanged(
         invoke_answered(&mut h, "group.maximize", &none),
+        "search-action-window-unchanged-maximized",
         "group.maximize maximizes, it does not toggle",
     );
     assert!(
@@ -776,7 +787,20 @@ fn window_actions_say_when_nothing_changed() {
     assert!(!upper_maximized(&mut h));
     unchanged(
         invoke_answered(&mut h, "group.restore", &none),
+        "search-action-window-unchanged-restored",
         "restoring a normal group changes nothing",
+    );
+
+    // Narrower step by step until the window is as narrow as it goes: that
+    // last step says so.
+    let narrowest = (0..100)
+        .map(|_| invoke_answered(&mut h, "group.narrower", &none))
+        .find(Result::is_err)
+        .expect("a window stops getting narrower");
+    unchanged(
+        narrowest,
+        "search-action-window-unchanged-narrowest",
+        "a window at its narrowest gets no narrower",
     );
 }
 

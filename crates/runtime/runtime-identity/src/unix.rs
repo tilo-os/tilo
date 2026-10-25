@@ -1,41 +1,11 @@
-//! `runtime-identity` — user-identity loader for Tilo apps.
-//!
-//! The launcher hands applications a connected signing-broker descriptor via
-//! `TILO_IDENTITY_BROKER_FD`. Apps can inspect public metadata and request a
-//! signature, but private shares stay in the host session. `TILO_USER_IDENTITY`
-//! remains a compatibility path for non-sandboxed development only.
-//!
-//! The on-disk file is the JSON emitted by
-//! `tilo_identity_ceremony::IdentityRecord::to_json_bytes`. This crate keeps
-//! a minimal local copy of the schema (`ondisk::IdentityRecord`) rather than
-//! depending on the ceremony crate. Both sides
-//! bump the version tag together on a breaking schema change.
-//!
-//! In 1-of-1 (single-device) mode this crate signs locally via
-//! ed25519-dalek; the loader refuses (not just warns about) a record whose
-//! `secret_bytes` does not derive its own recorded `group_public_key`. In
-//! threshold mode (`t > 1`) signing needs a multi-device FROST round-trip
-//! this SDK crate does not drive — [`SigningIdentity::sign`] returns
-//! [`NotAvailable::ConnectionFailed`] and apps needing it should reach for
-//! `threshold-identity` directly.
-//!
-//! ```ignore
-//! let identity = runtime_identity::load()?;
-//! let sig = identity.sign_for("document.save", b"hello")?;
-//! let pk = identity.signing_public_key();
-//! let cert = identity.device_certificate();
-//! ```
-//!
-//! Missing env var / missing file / bad JSON all surface as
-//! [`NotAvailable`] — never a panic.
-
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 use std::os::fd::BorrowedFd;
+#[cfg(test)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -76,8 +46,8 @@ pub use secure_store::{
 };
 
 use crate::{
-    BrokerSigningIdentity, IDENTITY_SERVICE, IdentityMetadata, NotAvailable,
-    collaboration_join_signing_bytes,
+    BrokerSigningIdentity, IDENTITY_SERVICE, IdentityMetadata, IdentitySummary, KeyProtection,
+    NotAvailable, collaboration_join_signing_bytes,
 };
 #[cfg(test)]
 use crate::{
@@ -139,81 +109,12 @@ pub fn secret_service_unavailable_error() -> io::Error {
 /// Legacy unsandboxed-development path. The Tilo launcher uses
 /// [`broker::BROKER_ENV_VAR`] and never sets this for packaged apps.
 pub const IDENTITY_ENV_VAR: &str = "TILO_USER_IDENTITY";
-/// How a record's private share is protected on this device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum KeyProtection {
-    /// Stored in the desktop's freedesktop Secret Service collection.
-    SecretService,
-    /// Stored as a mode-0600 host file, reachable only by the signing broker.
-    BrokerFile,
-    /// An externally supplied provider has sealed this record.
-    HardwareBacked,
-    /// Legacy schema; migration has not completed yet.
-    LegacyPlaintext,
-    /// No share of the identity's key is on this device: a device joined to
-    /// the identity acts through its root-signed device certificate.
-    DeviceCertificate,
-    /// Metadata names a backend this session cannot safely resolve.
-    Unavailable,
-}
-
-impl KeyProtection {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::SecretService => "Secret Service + app-scoped signing broker",
-            Self::BrokerFile => "Private session file + app-scoped signing broker",
-            Self::HardwareBacked => "Hardware-backed + app-scoped signing broker",
-            Self::LegacyPlaintext => "Migration required",
-            Self::DeviceCertificate => {
-                "No identity key here; this device signs with its certificate"
-            }
-            Self::Unavailable => "Protection provider unavailable",
-        }
-    }
-}
-
 /// Opaque locator stored in public identity metadata. It never contains key
 /// bytes or a host filesystem path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretReference {
     pub backend: String,
     pub locator: String,
-}
-
-/// Non-secret information Settings may show for an identity record. The
-/// private signing share is absent and `Debug` is safe. It is what the
-/// host's identity actions answer, with the public key in hex.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentitySummary {
-    pub id: String,
-    pub display_name: String,
-    #[serde(with = "public_key_hex")]
-    pub public_key: [u8; 32],
-    pub threshold: u16,
-    pub total_shares: u16,
-    pub active: bool,
-    pub protection: KeyProtection,
-}
-
-/// A 32-byte public key as 64 lowercase hex characters.
-mod public_key_hex {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub(super) fn serialize<S: Serializer>(
-        key: &[u8; 32],
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&hex::encode(key))
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<[u8; 32], D::Error> {
-        let text = String::deserialize(deserializer)?;
-        let mut key = [0; 32];
-        hex::decode_to_slice(text, &mut key).map_err(serde::de::Error::custom)?;
-        Ok(key)
-    }
 }
 
 const ACTIVE_FILE: &str = "active";
@@ -1139,7 +1040,7 @@ enum SigningSource {
     /// Restored device-local FROST share. It stays inside the host and is
     /// usable only by the trusted quorum coordinator, never exported to apps.
     LocalThreshold(Mutex<ThresholdIdentity>),
-    Broker(Mutex<std::os::unix::net::UnixStream>),
+    Broker(Arc<BrokerSigningIdentity>),
     ActionBroker(Arc<BrokerSigningIdentity>),
 }
 
@@ -1325,7 +1226,7 @@ impl SigningIdentity {
                     "threshold signature is awaiting approval from another enrolled device",
                 )))
             }
-            SigningSource::Broker(stream) => broker::sign(stream, message),
+            SigningSource::Broker(stream) => stream.sign(message),
             SigningSource::ActionBroker(stream) => stream.sign_for("generic", message),
         }
     }
@@ -1580,9 +1481,15 @@ pub fn load_bound_metadata() -> Result<IdentityMetadata, NotAvailable> {
 }
 
 fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvailable> {
-    let identity = shared_service_connection(fd)?;
+    // SAFETY: the launcher retains the validated inherited service descriptor.
+    let identity =
+        tilo_identity_client::inherited::connect_service(unsafe { BorrowedFd::borrow_raw(fd) })?;
+    Ok(from_broker(identity))
+}
+
+fn from_broker(identity: Arc<BrokerSigningIdentity>) -> SigningIdentity {
     let metadata = identity.metadata();
-    Ok(SigningIdentity {
+    SigningIdentity {
         profile_photo: metadata.profile_photo().cloned(),
         display_name: metadata.display_name().to_owned(),
         avatar_color: metadata.avatar_color(),
@@ -1594,42 +1501,7 @@ fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvail
         share_index: metadata.share_index(),
         single_device: metadata.is_single_device(),
         source: SigningSource::ActionBroker(identity),
-    })
-}
-
-type IdentityConnections =
-    Mutex<std::collections::HashMap<std::os::fd::RawFd, Weak<BrokerSigningIdentity>>>;
-
-fn shared_service_connection(
-    fd: std::os::fd::RawFd,
-) -> Result<Arc<BrokerSigningIdentity>, NotAvailable> {
-    static CONNECTIONS: OnceLock<IdentityConnections> = OnceLock::new();
-    let mut connections = CONNECTIONS
-        .get_or_init(Mutex::default)
-        .lock()
-        .map_err(|_| {
-            NotAvailable::ConnectionFailed(io::Error::other(
-                "identity connection registry poisoned",
-            ))
-        })?;
-    connections.retain(|_, connection| connection.strong_count() > 0);
-    if let Some(connection) = connections.get(&fd).and_then(Weak::upgrade) {
-        return Ok(connection);
     }
-    // SAFETY: fcntl operates on the validated inherited descriptor only.
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFD);
-        if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) < 0 {
-            return Err(NotAvailable::ConnectionFailed(io::Error::last_os_error()));
-        }
-    }
-    // SAFETY: borrow only long enough to duplicate the launcher-owned handle.
-    let owned = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?;
-    let identity = Arc::new(BrokerSigningIdentity::from_connected_io(UnixStream::from(
-        owned,
-    ))?);
-    connections.insert(fd, Arc::downgrade(&identity));
-    Ok(identity)
 }
 
 /// Same as [`load`] but reads from a caller-specified path — for tests, or

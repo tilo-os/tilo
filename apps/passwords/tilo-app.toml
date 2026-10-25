@@ -41,7 +41,7 @@ mode = "off"
 secrets = "via-host"
 
 [sandbox.services]
-tilo-fs = "optional@9"
+tilo-fs = "optional@10"
 # The window's bar shows the app's toolbar (ui::window_toolbar).
 shell-ui = "optional@15"
 

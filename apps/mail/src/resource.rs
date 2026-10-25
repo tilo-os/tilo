@@ -645,11 +645,13 @@ pub(crate) fn started_body(text: &str, html: Option<String>) -> Vec<u8> {
 }
 
 /// `text` as HTML: each line a paragraph, a line starting with `> `
-/// quoted, nothing in it taken as markup. A bare `>` is a quoted blank
-/// line, as a reply quotes the original's paragraph breaks: it stays a
-/// quoted line rather than showing as a `>` of its own.
+/// quoted, nothing in it taken as markup. A blank line only separates
+/// paragraphs, which stand apart already: no empty paragraph of its own. A
+/// bare `>` is a quoted blank line, as a reply quotes the original's
+/// paragraph breaks: it stays a quoted line rather than a `>` of its own.
 fn quoted_html(text: &str) -> String {
     text.split('\n')
+        .filter(|line| !line.trim().is_empty())
         .map(|line| {
             let quoted = if line == ">" {
                 Some("")
@@ -2229,6 +2231,29 @@ mod tests {
             assert!(shown.contains("from an agent"), "the composer shows it");
             assert!(app.undo());
             assert_eq!(body(&app), [""]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::MailShell::scenarios() {
+            let mut app = TestApp::<super::MailShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
         }
     }
 }

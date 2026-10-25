@@ -182,12 +182,17 @@ class TTomlTests(unittest.TestCase):
         root = Path("/w")
         packages = {name: {"manifest_path": f"/w/{path}/Cargo.toml"} for name, path in
                     (("ui", "crates/ui"), ("ui-fuzz", "crates/ui/fuzz"), ("other", "crates/other"))}
-        self.assertTrue(t_toml.covered("crates/ui/assets/fonts/**", packages, {"ui"}, root))
-        self.assertTrue(t_toml.covered("crates/ui/src/a_tests.rs", packages, {"ui"}, root))
-        self.assertFalse(t_toml.covered("crates/ui/fuzz/x.rs", packages, {"ui"}, root))
-        self.assertFalse(t_toml.covered("crates/ui/**", packages, {"ui"}, root))
-        self.assertFalse(t_toml.covered("crates/other/x.rs", packages, {"ui"}, root))
-        self.assertFalse(t_toml.covered("tools/x.py", packages, {"ui"}, root))
+        dirs = {Path(package["manifest_path"]).resolve().parent: name
+                for name, package in packages.items()}
+        for path, expected in (("crates/ui/assets/fonts/**", True),
+                               ("crates/ui/src/a_tests.rs", True),
+                               ("crates/ui/fuzz/x.rs", False),
+                               ("crates/ui/**", False),
+                               ("crates/other/x.rs", False),
+                               ("tools/x.py", False)):
+            with self.subTest(path=path):
+                self.assertEqual(t_toml.covered(path, packages, {"ui"}, root), expected)
+                self.assertEqual(t_toml.covered(path, packages, {"ui"}, root, dirs), expected)
 
     def test_cargo_families_require_the_fewest_cores_they_pass_with(self):
         # t never gives a job fewer cores than its requirement and widens it from its profile

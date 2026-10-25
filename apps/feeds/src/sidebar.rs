@@ -15,6 +15,7 @@ use vello::kurbo::Point;
 
 use crate::app::{Core, Request, Requests, Shared};
 use crate::model::{FeedKind, Filter, Id, TagKey};
+use crate::search::feed_icon;
 
 /// The sidebar item id of a place.
 pub(crate) fn nav_id(filter: &Filter) -> String {
@@ -67,14 +68,6 @@ impl Counted for NavItem {
 const FEEDS_SECTION: &str = "feeds";
 /// Its heading's action, which opens the New folder dialog.
 const NEW_FOLDER: &str = "new-folder";
-
-fn feed_icon(kind: FeedKind) -> Icon {
-    match kind {
-        // A Gemini capsule is a page of gemtext.
-        FeedKind::Gemini => Icon::FileText,
-        _ => Icon::Rss,
-    }
-}
 
 impl Core {
     pub(crate) fn nav_sections(&self) -> Vec<NavSection> {

@@ -3,9 +3,10 @@
 //! The bar shows the page as the window's location; on the catalogue, its
 //! four parts as the view switcher (Discover, Updates, On this device, Bots)
 //! and its actions: review a package file, the Flatpak remotes and trust,
-//! and repairing the runtime while it needs it. Back is the shell's slot,
-//! and search the bar's own, which narrows the catalogue through the
-//! window's filter field. Each slot runs the same published action a
+//! and repairing the runtime while it needs it; on the repositories,
+//! refreshing them. Back is the shell's slot, and search the bar's own,
+//! which searches the catalogue in place (the Store is its
+//! [`ui::widget::Queryable`]). Each slot runs the same published action a
 //! button bound to it ran, through the window's controls.
 
 use ui::tilo_actions::ControlInvocation;
@@ -22,6 +23,7 @@ const REVIEW_PACKAGE: &str = "review-package";
 const REMOTES: &str = "remotes";
 const TRUST: &str = "trust";
 const REPAIR_RUNTIME: &str = "repair-runtime";
+const REFRESH_REMOTES: &str = "refresh-remotes";
 /// A view's slot id: `view:` and its name in [`VIEWS`].
 const VIEW_PREFIX: &str = "view:";
 
@@ -45,6 +47,16 @@ impl StoreApp {
             },
             ..ToolbarLocation::default()
         });
+        if self.remotes_open && !self.runtime_visible() {
+            ui::widget::NavShell::push_window_actions(
+                &mut base,
+                vec![ToolbarAction::new(
+                    REFRESH_REMOTES,
+                    "refresh",
+                    ui::i18n!("store-remote-refresh"),
+                )],
+            );
+        }
         if !self.shows_catalogue() {
             return base;
         }
@@ -78,10 +90,12 @@ impl StoreApp {
                 .collect(),
             chosen: format!("{VIEW_PREFIX}{chosen}"),
         });
+        // Opening a package file and managing where apps come from are
+        // occasional: they stand named in the More menu, not as bare icons.
         let mut actions = vec![
-            ToolbarAction::new(REVIEW_PACKAGE, "upload", ui::i18n!("store-package-review")),
-            ToolbarAction::new(REMOTES, "globe", ui::i18n!("store-remotes-title")),
-            ToolbarAction::new(TRUST, "shield", ui::i18n!("store-trust-title")),
+            ToolbarAction::new(REVIEW_PACKAGE, "box", ui::i18n!("store-package-review")).in_menu(),
+            ToolbarAction::new(REMOTES, "cloud", ui::i18n!("store-remotes-title")).in_menu(),
+            ToolbarAction::new(TRUST, "shield", ui::i18n!("store-trust-title")).in_menu(),
         ];
         if self.runtime_recovery.is_some() {
             actions.insert(
@@ -141,6 +155,7 @@ impl StoreApp {
             REMOTES => StoreEffect::ShowRemotes,
             TRUST => StoreEffect::ShowTrust,
             REPAIR_RUNTIME => StoreEffect::ShowRuntime,
+            REFRESH_REMOTES => StoreEffect::RefreshRemotes,
             _ => return None,
         };
         bindings::effect(&effect)?.invoke(()).ok()

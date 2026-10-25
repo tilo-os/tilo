@@ -62,7 +62,10 @@ sweep once a topic's caches are empty or membership shuffle without an active
 neighbor. A returning neighbor rearms the shuffle once. With relays, a net
 report that keeps finding the same addresses waits longer before the next, up
 to five minutes, and paths may keep alive less often than every 5 s, which
-tilo-fs uses for its held connections. Network changes still arrive through
+tilo-fs uses for its held connections. `iroh-gossip` also lets the shell share
+its connections (`Builder::connections`, `Gossip::connection`): a person's
+devices carry their fabric on bidirectional streams of the gossip connection
+they already have rather than open a second one. Network changes still arrive through
 netlink at once, and `netwatch` has the kernel drop the address-lifetime refreshes
 a router sends every few seconds (a BPF filter on its netlink socket) instead of
 waking the process to ignore them. Its monitor also re-reads the interfaces
@@ -669,9 +672,14 @@ pending and what a render had to build itself.
 
 `Renderer::new_async_deferring(device, options, deferral)` is the same for
 `new_async`, which the browser uses: it awaits only the pipelines `deferral`
-does not defer. `start_deferred_pipelines_async` then starts every deferred
-pipeline through `create_compute_pipeline_async` without waiting. Renders poll
-those compiles before encoding and install the finished ones. A render can't
+does not defer. `start_deferred_pipelines_async` then compiles the deferred
+pipelines through `create_compute_pipeline_async`, one at a time and without
+waiting: each poll that finds one installed starts the next (default-path ones
+first, then the largest). A browser compiles every page's pipelines on the
+same GPU-process threads and does not cancel those of a closed page, so
+starting all of them at once kept other pages on a busy machine from drawing.
+Renders and `deferred_pipelines()` poll those compiles and install the
+finished ones. A render can't
 wait for a promise, so a deferred pipeline it dispatches whose compile is not
 in yet is created synchronously, and the GPU process compiles it before the
 dispatch. This works on every target; native windows keep the threads.

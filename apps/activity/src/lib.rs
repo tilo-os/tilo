@@ -31,7 +31,7 @@ mod replay;
 mod sample;
 mod whats_new;
 
-use std::time::{Duration, SystemTime};
+use ui::time::{Duration, SystemTime};
 
 use ui::framework::RecordEnv;
 use ui::i18n::I18nManager;
@@ -187,24 +187,7 @@ pub(crate) fn ago(at_ms: i64) -> String {
                 .checked_add(Duration::from_millis(ms))
                 .unwrap_or(SystemTime::UNIX_EPOCH)
         });
-    ui::format_relative_time(at, SystemTime::now())
-}
-
-/// Why a read shows nothing: still reading, refused, or failed.
-pub(crate) fn unanswered<T>(answer: &Answer<T>, id: &str) -> Option<Element> {
-    let state = match answer {
-        Answer::Ready(_) => return None,
-        Answer::Loading => {
-            EmptyState::new(tr("activity-reading")).with_icon(ui::icons::Icon::Clock)
-        }
-        Answer::Denied(why) => EmptyState::new(tr("activity-denied"))
-            .with_message(why.clone())
-            .with_icon(ui::icons::Icon::Lock),
-        Answer::Failed(why) => EmptyState::new(tr("activity-unreadable"))
-            .with_message(why.clone())
-            .with_icon(ui::icons::Icon::CircleAlert),
-    };
-    Some(Box::new(state.with_id(id)))
+    ui::format_relative_time(at, ui::time::wall())
 }
 
 /// A page of the window: its content in a readable column that scrolls.
@@ -274,8 +257,8 @@ impl ResourceApp for App {
         let provider = Provider::of(cx);
         let focus = provider.follow::<Option<wire::Focus>>(wire::FOCUS, None::<&()>);
         let shown = nav;
-        cx.switch(&focus.answer(), move |cx, answer| {
-            if let Answer::Ready(Some(focus)) = answer {
+        cx.switch(&focus.answer().state(), move |cx, answer| {
+            if let Arrival::Ready(Some(focus)) = answer {
                 show_focus(cx, &shown, focus);
             }
             let nav = shown.clone();
@@ -379,3 +362,26 @@ fn window(cx: &ViewCx<Filter>, nav: &Nav) -> Element {
 }
 
 ui::dev_reload_entry!(App);
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::App::scenarios() {
+            let mut app = TestApp::<super::App>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

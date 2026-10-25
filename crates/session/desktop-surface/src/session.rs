@@ -12,6 +12,13 @@
 //! opens the apps when it next takes [`Openings::open`]. Until then the ask
 //! stays pending, so a window shows its open as in progress, then done or
 //! refused, exactly as with a broker.
+//!
+//! The session also serves the workspace's activity, as a native session's
+//! broker does ([`activity`]).
+
+mod activity;
+
+pub use activity::{ActivityAsk, ActivityReads, ActivityRequests};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,7 +27,8 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHost, ActionHostError, Caller,
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus, pending, workspace_provider_room,
+    InvokeRequest, Pending, ReceiptStatus, pending, workspace_activity as wire,
+    workspace_provider_room,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -47,12 +55,14 @@ type Asked = Arc<std::sync::Mutex<Vec<Opening>>>;
 pub struct DesktopSession {
     room: String,
     asked: Asked,
+    activity: Arc<activity::Door>,
     woken: Arc<AtomicBool>,
 }
 
 /// The desktop's end of its [`DesktopSession`].
 pub struct Openings {
     asked: Asked,
+    activity: ActivityRequests,
 }
 
 /// The session for the workspace `room`, and the desktop's end of it.
@@ -61,13 +71,18 @@ pub struct Openings {
 #[must_use]
 pub fn serve(room: impl Into<String>, woken: Arc<AtomicBool>) -> (Arc<DesktopSession>, Openings) {
     let asked = Asked::default();
+    let activity = activity::Door::new(Arc::clone(&woken));
     (
         Arc::new(DesktopSession {
             room: room.into(),
             asked: Arc::clone(&asked),
+            activity: Arc::clone(&activity),
             woken,
         }),
-        Openings { asked },
+        Openings {
+            asked,
+            activity: activity.requests(),
+        },
     )
 }
 
@@ -127,6 +142,13 @@ impl ActionHost for DesktopSession {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if request.target.provider == wire::PROVIDER {
+            // As the broker: a workspace's activity is its members' to read.
+            if caller.room().is_none() {
+                return Pending::ready(Err(ActionHostError::UnknownAction));
+            }
+            return self.activity.invoke(caller, request);
+        }
         let app = match self.app_to_open(caller, &request) {
             Ok(app) => app.to_owned(),
             Err(error) => return Pending::ready(Err(error)),
@@ -141,19 +163,33 @@ impl ActionHost for DesktopSession {
         receipt
     }
 
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        // Every open is answered whole at admission.
-        None
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        // Every open is answered whole at admission; what stays open is a
+        // view of the activity.
+        self.activity.observe(caller, id)
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
-        Err(ActionHostError::Refused {
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        self.activity.next_change(caller, id)
+    }
+
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+        if self.activity.serves(id) {
+            return Pending::ready(self.activity.cancel(caller, id));
+        }
+        Pending::ready(Err(ActionHostError::Refused {
             reason: "Opening an app can't be cancelled".into(),
-        })
+        }))
     }
 }
 
 impl Openings {
+    /// The desktop's end of the activity the session serves.
+    #[must_use]
+    pub fn activity(&self) -> ActivityRequests {
+        self.activity.clone()
+    }
+
     /// Open every app the windows asked for since this was last taken, as
     /// launches of the desktop `handle` (navigation `generation`), each one
     /// `may_open` admits. Whether anything was asked, so the host lays out

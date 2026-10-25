@@ -5,11 +5,11 @@ pub use crate::collab_core::{
 };
 pub use crate::route::CrdtRoute;
 use collab_types::{ArtifactId, ChannelState};
+use runtime_collab::event::CollabEvent;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use ui::collaboration::CollabEvent;
 /// Callback an in-process fanout subscriber registers to receive
 /// delivered events. Aliased because the raw `Box<dyn Fn(...)>` shape
 /// recurs across [`RoomSubscription`], [`FanoutState::subscribe_rooms`]
@@ -387,7 +387,7 @@ impl SessionFollowDispatcher {
         room: &str,
         app: &str,
         instance: u64,
-        request: ui::collaboration::handoff::HandoffRequest,
+        request: collab_types::handoff::HandoffRequest,
     ) {
         self.fanout.fanout_to_route(
             &CollabEvent::Handoff { request },
@@ -849,10 +849,13 @@ impl AppActionBroker {
             .unwrap_or_default()
     }
 
-    /// Request cooperative cancellation for an owned invocation.
+    /// Request cooperative cancellation for an owned invocation, answered
+    /// once the request is durable. Blocks the calling thread for that
+    /// write, so never call it on the broker's loop.
     pub fn cancel(&self, id: u64, actor: &str) -> Result<(), String> {
         self.state
-            .while_live(|state| state.request_cancellation(id, actor))
+            .while_live(|state| state.request_cancellation(id, actor))?
+            .wait_blocking()
     }
 
     pub fn can_cancel(&self, id: u64, actor: &str) -> bool {

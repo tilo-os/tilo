@@ -9,7 +9,7 @@
 //!
 //! Below the facts, the problems this computer recorded: the desktop
 //! stopping or stopping responding, a part of it restarting, the computer
-//! itself stopping. The host keeps the records in the person's private crash
+//! itself stopping, a fault the system's core went on from. The host keeps the records in the person's private crash
 //! directory and answers them through its `tilo.crash-records` actions, the
 //! door an agent or a script uses too; About lists what each says happened
 //! and reads one record's text only when its page opens. Nothing leaves the
@@ -523,6 +523,7 @@ fn kind_label(kind: CrashKind) -> String {
         CrashKind::Crashed => "settings-about-problem-crashed",
         CrashKind::PartRestarted => "settings-about-problem-part-restarted",
         CrashKind::ComputerStopped => "settings-about-problem-computer-stopped",
+        CrashKind::SystemFault => "settings-about-problem-system-fault",
     })
 }
 

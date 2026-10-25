@@ -481,13 +481,16 @@ mod tests {
             std::thread::scope(|scope| {
                 scope
                     .spawn(|| {
-                        invoke.reply.complete(state.invoke_eager(
-                            &invoke.caller,
-                            invoke.own_peer,
-                            invoke.launch.as_ref(),
-                            Some(&invoke.origin),
-                            &invoke.request,
-                        ));
+                        super::super::action_host::answer_with(
+                            state.invoke_eager(
+                                &invoke.caller,
+                                invoke.own_peer,
+                                invoke.launch.as_ref(),
+                                Some(&invoke.origin),
+                                &invoke.request,
+                            ),
+                            invoke.reply,
+                        );
                     })
                     .join()
                     .unwrap();

@@ -283,7 +283,12 @@ impl PolicyWorker {
         for event in self.devices.observe(&graph) {
             env.device_sound(event);
         }
+        // Both readings must have seen the graph: after a reading that did
+        // not (`PipeWire` restarting, or `pw-dump` failing once), every
+        // device would look as if it had just arrived, and a connected
+        // headset the person had moved away from would take the sound.
         if let Some(previous) = self.last_graph.as_ref()
+            && enumerated(previous)
             && enumerated(&graph)
         {
             let delta = AudioGraph::diff(previous, &graph);
@@ -1076,6 +1081,30 @@ mod tests {
         assert!(env.defaults.is_empty(), "the baseline switches nothing");
         worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
         assert_eq!(env.defaults, [7], "sound moves to the headset");
+        assert_eq!(env.pauses, 0);
+    }
+
+    #[test]
+    fn a_reading_that_saw_no_graph_is_not_the_base_for_an_arrival() {
+        // The person chose the speakers while the headset stayed plugged in.
+        let mut chosen = laptop(true);
+        for sink in &mut chosen.sinks {
+            sink.id = if sink.name.contains("Headset") { 7 } else { 1 };
+            sink.is_default = sink.id == 1;
+        }
+        // `PipeWire` restarts: one reading sees nothing, the next sees the
+        // same devices again.
+        let mut env = FakeEnv::new([chosen.clone(), AudioGraph::default(), chosen]);
+        let mut worker = PolicyWorker::start(&mut env);
+        for _ in 0..3 {
+            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+        }
+        assert_eq!(env.enumerations, 3);
+        assert!(
+            env.defaults.is_empty(),
+            "the headset was there all along and must not take the sound: {:?}",
+            env.defaults
+        );
         assert_eq!(env.pauses, 0);
     }
 

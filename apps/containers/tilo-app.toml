@@ -60,9 +60,9 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@9"
-tilo-fs = "optional@9"
-tools = "optional@9"
+collab = "optional@10"
+tilo-fs = "optional@10"
+tools = "optional@10"
 
 [entrypoint]
 bin             = "bin/containers"

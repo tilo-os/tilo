@@ -675,7 +675,7 @@ fn bad_colour(name: &str) -> Refusal {
 }
 
 /// The colour as `#rrggbb` (with alpha when not opaque).
-fn colour_hex(colour: [f64; 4]) -> String {
+pub(crate) fn colour_hex(colour: [f64; 4]) -> String {
     let byte = |v: f64| {
         let scaled = (v.clamp(0.0, 1.0) * 255.0).round();
         // In 0..=255 after the clamp.

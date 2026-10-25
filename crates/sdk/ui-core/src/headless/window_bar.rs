@@ -1776,6 +1776,119 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
+    /// The colour of the frame's pixel at logical `(x, y)`.
+    fn pixel(harness: &FrameHarness, x: u32, y: u32) -> [u8; 4] {
+        let rgba = harness.render_rgba();
+        let at = usize::try_from((y * harness.viewport.0 + x) * 4).unwrap_or(usize::MAX);
+        rgba.get(at..at + 4)
+            .and_then(|px| <[u8; 4]>::try_from(px).ok())
+            .unwrap_or_default()
+    }
+
+    /// At compact width an app's palette stands under the window's bar,
+    /// across the window less its insets, and the bar keeps its controls:
+    /// they still take their presses. The window under the bar dims behind
+    /// the palette while it is open and not after, and a press on that
+    /// scrim closes it, as Escape does.
+    #[test]
+    fn a_compact_palette_keeps_the_window_bar_clear_over_a_scrim() {
+        let _hosted = HostedReset;
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let mut harness = FrameHarness::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Column::new()),
+            (420, 800),
+            theme,
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        harness.present_in_window_bar();
+        crate::window_toolbar::declare(Some(crate::window_toolbar::WindowToolbar {
+            actions: vec![crate::window_toolbar::ToolbarAction::new(
+                "new",
+                "plus",
+                "New event",
+            )],
+            ..crate::window_toolbar::WindowToolbar::default()
+        }));
+        harness.relayout();
+        let (w, h) = harness.viewport;
+        // Sampled in the inset beside where the card stands: always scrim.
+        let ground = pixel(&harness, 2, h - 40);
+
+        harness.open_caller_search("").expect("the palette opens");
+        harness.relayout();
+        let palette = harness
+            .caller_palette
+            .palette
+            .as_ref()
+            .expect("the palette is open");
+        let card = harness.window_rect(palette.rect());
+        let bar = Rect::new(0.0, 0.0, f64::from(w), harness.frame_top());
+        assert!(bar.height() > 0.0);
+        assert!(
+            card.y0 >= bar.y1,
+            "the card {card:?} stands under the bar {bar:?}"
+        );
+        assert!(
+            (card.width() - (f64::from(w) - 2.0 * inset)).abs() < 0.5,
+            "the card takes the window's width less its insets: {card:?}"
+        );
+        let scrim = palette.scrim_rect().expect("a scrim behind the palette");
+        assert!(
+            (harness.window_rect(scrim).y0 - bar.y1).abs() < 1e-9,
+            "the scrim dims the window under the bar, not the bar"
+        );
+        let dimmed = pixel(&harness, 2, h - 40);
+        assert!(
+            dimmed[..3].iter().map(|c| u32::from(*c)).sum::<u32>()
+                < ground[..3].iter().map(|c| u32::from(*c)).sum::<u32>(),
+            "the window behind the palette is dimmed: {ground:?} then {dimmed:?}"
+        );
+
+        let mut window_bar = harness.painted_window_bar(f64::from(w));
+        let (_, _, _, actions) = window_bar.toolbar_rects();
+        let at = actions
+            .first()
+            .expect("the action stands in the bar")
+            .center();
+        let row = window_bar.toolbar_row_mut();
+        assert!(row.press(at) && row.release(at), "the bar takes its press");
+        assert!(
+            window_bar
+                .take_toolbar_events()
+                .iter()
+                .any(|(_, event)| matches!(
+                    event,
+                    crate::window_toolbar::ToolbarEvent::Action { id } if id == "new"
+                )),
+            "the bar's control runs while the palette is open"
+        );
+
+        // In the inset beside the card: the scrim, wherever the card ends.
+        // Delivered as the platform delivers it, through the host's input
+        // policy, where the palette takes the window's pointer.
+        let scale = harness.input_scale;
+        harness.send_host_event(&crate::synthetic_input::cursor_moved(
+            2.0 * scale,
+            (f64::from(h) - 40.0) * scale,
+        ));
+        harness.send_host_event(&crate::synthetic_input::mouse_press());
+        harness.send_host_event(&crate::synthetic_input::mouse_release());
+        assert!(
+            harness.caller_palette.palette.is_none(),
+            "a press on the scrim closes the palette"
+        );
+        harness.relayout();
+        assert_eq!(
+            pixel(&harness, 2, h - 40),
+            ground,
+            "and the scrim is gone with it"
+        );
+        crate::window_toolbar::declare(None);
+    }
+
     struct HostedReset;
 
     impl Drop for HostedReset {

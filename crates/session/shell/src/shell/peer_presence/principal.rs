@@ -33,6 +33,21 @@ pub fn resolve_presence_principal(labels: &PeerLabels, peer: u64) -> PresencePri
     }
 }
 
+/// The role session `peer` holds in `ws`: the room's role for the person
+/// the room vouches for at that session (`principals`, from
+/// [`crate::shell::state::WorkspaceTree::room_session_principals`]), and
+/// none for a session it vouches for nobody at. A role is authority, so it
+/// is never asked of a name: a session's name may be one its person chose,
+/// and anyone can choose the owner's.
+#[must_use]
+pub fn certified_role(
+    ws: &crate::shell::state::Workspace,
+    principals: &std::collections::BTreeMap<u64, crate::shell::state::UserId>,
+    peer: u64,
+) -> Option<crate::shell::state::CapRole> {
+    ws.role_of(principals.get(&peer)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

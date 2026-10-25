@@ -45,7 +45,7 @@ fn receipt_barriers(rig: &Rig) -> invocation_journal::Barriers {
         .unwrap()
         .as_ref()
         .unwrap()
-        .barriers
+        .barriers()
 }
 
 fn assert_receipt_substitution_refused(

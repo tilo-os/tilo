@@ -1,0 +1,34 @@
+[package]
+name = "tilo-identity-client"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "Descriptor-bound identity broker client and public protocol types."
+
+[dependencies]
+runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
+serde.workspace = true
+hex.workspace = true
+tokio = { workspace = true, features = ["io-util", "time"] }
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+serde_json.workspace = true
+rustix = { workspace = true, features = ["process"] }
+zeroize.workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+postcard = { workspace = true, features = ["alloc"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "test-util", "time"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+serial_test.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

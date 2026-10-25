@@ -7,12 +7,14 @@ use tilo_actions::door::ActionAddress;
 use tilo_browser_peer::DocumentRoute;
 
 use super::running::{FollowUp, produced, step_brief};
-use crate::planner::Step;
+use crate::planner::{Obligations, Step};
 
 /// Appends one JSON line per plan to `TILO_AGENT_PLAN_LOG`, when set: the
 /// task, what was planned (its text, or the rest of it, with the follow-up
 /// turn it is), and the steps or why there are none, so a task that ended
-/// early can be traced to its plan.
+/// early can be traced to its plan. With them, the obligations the plan
+/// declared (each step's in `steps_for`) and the checklist it was shown,
+/// each item open, done or set aside.
 pub(super) fn record_plan(
     agent: &str,
     task: &str,
@@ -20,11 +22,16 @@ pub(super) fn record_plan(
     (continues, turn): (bool, Option<FollowUp>),
     by_model: bool,
     steps: &Result<Vec<Step>, String>,
+    (declared, shown): (&Obligations, Option<serde_json::Value>),
 ) {
-    use std::io::Write as _;
     let Some(path) = std::env::var_os("TILO_AGENT_PLAN_LOG") else {
         return;
     };
+    let serves: Option<Vec<Option<usize>>> = steps
+        .as_ref()
+        .ok()
+        .filter(|steps| steps.iter().any(|step| step.serves.is_some()))
+        .map(|steps| steps.iter().map(|step| step.serves).collect());
     let line = serde_json::json!({
         "at_unix_ms": tilo_clock::unix_now_ms(),
         "agent": agent,
@@ -35,14 +42,49 @@ pub(super) fn record_plan(
         "text": text.chars().take(4_000).collect::<String>(),
         "steps": steps.as_ref().ok().map(|steps| steps.iter().map(step_brief).collect::<Vec<_>>()),
         "error": steps.as_ref().err(),
+        "obligations": (!declared.items.is_empty()).then_some(&declared.items),
+        "steps_for": serves,
+        "set_aside": (!declared.set_aside.is_empty()).then_some(&declared.set_aside),
+        "checklist": shown,
     });
+    append_line(&path, &line, "a plan");
+}
+
+/// Appends to `TILO_AGENT_PLAN_LOG`, when set, the end of a task that kept
+/// a checklist: its outcome and each obligation as it ended.
+pub(super) fn record_ended(
+    agent: &str,
+    task: &str,
+    outcome: &Result<String, String>,
+    checklist: &serde_json::Value,
+) {
+    let Some(path) = std::env::var_os("TILO_AGENT_PLAN_LOG") else {
+        return;
+    };
+    let line = serde_json::json!({
+        "at_unix_ms": tilo_clock::unix_now_ms(),
+        "agent": agent,
+        "task": task,
+        "ended": match outcome {
+            Ok(done) => done,
+            Err(error) => error,
+        },
+        "ok": outcome.is_ok(),
+        "checklist": checklist,
+    });
+    append_line(&path, &line, "a task's end");
+}
+
+/// One write per line, as the usage log does: agents append at once.
+fn append_line(path: &std::ffi::OsStr, line: &serde_json::Value, what: &str) {
+    use std::io::Write as _;
     let written = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
     if let Err(error) = written {
-        tracing::warn!(%error, "cannot record a plan");
+        tracing::warn!(%error, "cannot record {what}");
     }
 }
 

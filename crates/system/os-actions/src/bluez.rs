@@ -66,6 +66,54 @@ where
     crate::block_on(async { f.await.map_err(|e| tilo_bluez::error_text(&e)) })
 }
 
+/// Following `BlueZ` for [`follow_changes`]; it stops when this is dropped.
+#[derive(Debug)]
+pub struct BluetoothFollow {
+    task: tilo_rt::JoinHandle<()>,
+}
+
+impl Drop for BluetoothFollow {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Call `on_change` on the app runtime each time `BlueZ` reports a change a
+/// Bluetooth page shows ([`BluezClient::watch_changes`]): headphones that
+/// connect by themselves, a device paired from quick settings. It listens
+/// on a connection of its own, so following never waits for, or holds up,
+/// the shared client's calls. Nothing polls.
+///
+/// # Errors
+///
+/// When the app runtime cannot start. A system bus that cannot be reached
+/// is logged and followed no further.
+pub fn follow_changes(
+    on_change: impl Fn() + Send + Sync + 'static,
+) -> Result<BluetoothFollow, String> {
+    // Not generic past here: the runtime holds the follower, its D-Bus
+    // connection and its tasks once, rather than every app calling it.
+    follow_changes_boxed(Box::new(on_change))
+}
+
+fn follow_changes_boxed(on_change: Box<dyn Fn() + Send + Sync>) -> Result<BluetoothFollow, String> {
+    let runtime = tilo_rt::try_app().map_err(|error| error.to_string())?;
+    let task = runtime.spawn(async move {
+        let watched = async { BluezClient::connect().await?.watch_changes().await }.await;
+        let mut changes = match watched {
+            Ok(changes) => changes,
+            Err(error) => {
+                tracing::warn!(%error, "could not follow Bluetooth's changes");
+                return;
+            }
+        };
+        while changes.changed().await.is_some() {
+            on_change();
+        }
+    });
+    Ok(BluetoothFollow { task })
+}
+
 const BLUETOOTH_CLASS: &str = "/sys/class/bluetooth";
 
 /// Whether this machine has a Bluetooth controller. Desktops without a

@@ -82,7 +82,7 @@ impl WordProcessorWidget {
             }
             return;
         }
-        let new = (self.scroll_y - dy).clamp(0.0, self.max_scroll);
+        let new = (self.scroll_y - dy).clamp(self.scroll_floor(), self.max_scroll);
         // Exact-change check (not "close enough"): any scroll delta, however
         // tiny, should mark the frame dirty, so bit-compare rather than use a
         // tolerance that could mask a real change.
@@ -383,15 +383,6 @@ impl WordProcessorWidget {
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
-        // Find bar (when open): dispatch clicks on its fields + controls.
-        // The recovery banner (when shown) sits above the find bar, so the
-        // find band starts below it.
-        if self.find.is_open() && self.find_band.contains(self.pointer) {
-            let _ = state;
-            self.lifecycle.dirty = true;
-            *handled = true;
-            return true;
-        }
         // Ruler band (when on): grab a marker to drag, else a click in the
         // page span adds a tab stop on the current paragraph.
         if self.view.ruler_visible && self.ruler.rect().contains(self.pointer) {
@@ -933,7 +924,7 @@ impl WordProcessorWidget {
         key: &Key,
         modifiers: Modifiers,
     ) -> bool {
-        if !self.lifecycle.focused || self.editing_field.is_some() || self.find.is_open() {
+        if !self.lifecycle.focused || self.editing_field.is_some() {
             return false;
         }
         let Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) = key else {
@@ -1092,16 +1083,6 @@ impl WordProcessorWidget {
         // Ctrl+O opens a document in place of the current one.
         if s.eq_ignore_ascii_case("o") {
             self.invoke_effect(&WordProcessorEffect::OpenDocument { path: None });
-            *handled = true;
-            return;
-        }
-        if s.eq_ignore_ascii_case("f") {
-            if self.find.is_open() {
-                self.close_find();
-            } else {
-                self.open_find(state);
-            }
-            self.lifecycle.dirty = true;
             *handled = true;
             return;
         }
@@ -1294,59 +1275,6 @@ impl WordProcessorWidget {
             return;
         }
 
-        // Find/replace embeds the shared TextInput rather than maintaining a
-        // second text editor. Feed it raw events first so IME, selection and
-        // clipboard shortcuts retain the toolkit's exact behavior. Ctrl+F is
-        // deliberately left for the editor-level toggle below.
-        let over_find = self.find.is_open()
-            && match event {
-                WindowEvent::MouseInput { .. } => self.find_band.contains(self.pointer),
-                _ => false,
-            };
-        // The bar takes typing while the editor has focus, the pointer over
-        // its band, and hover; the wheel and gestures stay the page's.
-        let for_find = match event {
-            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => self.lifecycle.focused,
-            WindowEvent::CursorMoved { .. } => true,
-            WindowEvent::MouseInput { .. } => over_find || self.lifecycle.focused,
-            _ => false,
-        };
-        if self.find.is_open() && for_find {
-            let mut find_handled = false;
-            self.find.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    handled: &mut find_handled,
-                    ..ctx.reborrow(ctx.path, ctx.node_id)
-                },
-            );
-            self.drive_find(&mut ctx.state);
-            if over_find
-                && matches!(
-                    event,
-                    WindowEvent::MouseInput {
-                        state: ElementState::Pressed,
-                        ..
-                    }
-                )
-            {
-                self.lifecycle.focused = true;
-                self.find.set_host_focused(true);
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            if !self.find.is_open() {
-                self.lifecycle.dirty = true;
-            }
-            if find_handled || over_find {
-                self.lifecycle.dirty = true;
-                *ctx.handled = true;
-                // Cursor movement still feeds the editor below so its shared
-                // pointer coordinate remains current for subsequent clicks.
-                if !matches!(event, WindowEvent::CursorMoved { .. }) {
-                    return;
-                }
-            }
-        }
         match event {
             // Drag-and-drop a file onto the window inserts it as an image at the
             // drop point (see `handle_dropped_file`).
@@ -1381,8 +1309,9 @@ impl WordProcessorWidget {
                             // Keep the document row beneath the gesture steady.
                             // Horizontal alignment remains the centered-page convention.
                             let pointer_y = self.pointer.y - self.zoom.anchor().y;
-                            self.scroll_y =
-                                (self.scroll_y + pointer_y / before - pointer_y / after).max(0.0);
+                            self.scroll_y = (self.scroll_y + pointer_y / before
+                                - pointer_y / after)
+                                .max(self.scroll_floor());
                         }
                     }
                 }

@@ -368,12 +368,18 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
     {
         let mut app = hosted_sample();
         let id = sample_id(5);
-        app.invoke_confirmed(Remote::DELETE_CONNECTION.with(
-            crate::resource::remote::DeleteConnection {
+        let password = || ui::storage::secrets(RemoteShell::ID).item(SSH_PASSWORD, &id.to_string());
+        password().put_blocking(b"hunter2").unwrap();
+        let delete = || {
+            Remote::DELETE_CONNECTION.with(crate::resource::remote::DeleteConnection {
                 connection: Remote::item(id),
-            },
-        ))
-        .unwrap();
+            })
+        };
+        assert!(
+            app.invoke(delete()).is_err(),
+            "Undo cannot bring the password back, so deleting asks first"
+        );
+        app.invoke_confirmed(delete()).unwrap();
         app.settle();
         assert!(
             app.state()
@@ -384,6 +390,10 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
         assert!(
             find_node(&mut app, &format!("remote.connection:{id}")).is_none(),
             "a deleted connection leaves no row behind"
+        );
+        assert!(
+            password().get_blocking().unwrap().is_none(),
+            "a connection deleted through any door takes this device's password with it"
         );
     }
 
@@ -733,19 +743,158 @@ fn a_tilo_stream_gap_asks_the_target_for_a_keyframe() {
     };
     assert!(frame(&mut app, 0, &IDR).is_empty());
     assert!(frame(&mut app, 1, &DELTA).is_empty());
-    let mut asked = frame(&mut app, 3, &DELTA);
-    let mut seq = 3;
-    let deadline = tilo_test_env::hang_deadline();
-    while asked.is_empty() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        seq += 1;
-        asked = frame(&mut app, seq, &DELTA);
-    }
-    assert_eq!(asked.len(), 1, "one request for the gap");
-    assert!(
-        (3..=seq).contains(&asked[0]),
-        "the request names a unit after the gap: {asked:?}"
+    // The decoder may still be starting up on its first unit (a real one
+    // waits for its first picture): the gap is noticed as unit 3 arrives,
+    // not once the worker reaches it.
+    assert_eq!(
+        frame(&mut app, 3, &DELTA),
+        [3],
+        "one request for the gap, naming the unit after it"
     );
+    assert!(
+        frame(&mut app, 5, &IDR).is_empty(),
+        "the keyframe starts the chain again"
+    );
+    assert!(
+        frame(&mut app, 6, &DELTA).is_empty(),
+        "and the deltas after it continue it"
+    );
+}
+
+/// A demo app with a connected Tilo session showing a stream.
+fn connected_tilo_session() -> RemoteApp {
+    let mut app = demo();
+    let target = SecretKey::generate().public();
+    let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
+    app.workspace.get_mut(id).unwrap().host = Atom(target.to_string());
+    app.open_session(id);
+    let session_id = match app.session.borrow().live.as_ref() {
+        Some(LiveSession::Tilo(session)) => session.id,
+        _ => panic!("Tilo session"),
+    };
+    app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
+        session_id,
+        event: runtime_collab::WorkspaceControlEvent::StreamStarted {
+            surface: 4,
+            width: 1280,
+            height: 720,
+        },
+    });
+    let _ = app.take_collab_requests();
+    app
+}
+
+/// The keys `app` sent its Tilo session since last asked, as evdev keycode
+/// and whether it went down.
+fn sent_keys(app: &mut RemoteApp) -> Vec<(u32, bool)> {
+    app.take_collab_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            ui::collaboration::CollabRequest::WorkspaceControlInput {
+                event:
+                    runtime_collab::WorkspaceControlInput::Key {
+                        keycode, pressed, ..
+                    },
+                ..
+            } => Some((keycode, pressed)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A key event for the physical key `code`.
+fn key_at(code: winit::keyboard::KeyCode, state: ElementState) -> KeyEvent {
+    let mut event = ui::synthetic_input::key_event(Key::Named(NamedKey::Control), None, state);
+    event.physical_key = PhysicalKey::Code(code);
+    event
+}
+
+/// A key held on the remote machine when the session pane loses the
+/// keyboard (a click elsewhere, another window) is released there: its
+/// release goes to whatever has the keyboard now, and the remote side would
+/// hold the key, repeating it, until the person pressed it again.
+#[test]
+fn a_key_held_when_the_pane_loses_the_keyboard_is_released_on_the_remote_machine() {
+    let mut app = connected_tilo_session();
+    let keys = sent_keys;
+    let key = key_at;
+    let mut pane = SessionPane::new(Rc::clone(&app.session));
+    let ctrl = winit::keyboard::KeyCode::ControlLeft;
+    let pressed = ElementState::Pressed;
+    assert!(pane.handle_key(&key(ctrl, pressed), ModifiersState::empty()));
+    assert_eq!(keys(&mut app), [(29, true)], "Ctrl goes down there");
+
+    pane.set_focus(false);
+    assert_eq!(
+        keys(&mut app),
+        [(29, false)],
+        "and comes up when the pane lets go"
+    );
+    pane.set_focus(false);
+    assert!(keys(&mut app).is_empty(), "once");
+
+    pane.set_focus(true);
+    assert!(pane.handle_key(&key(ctrl, pressed), ModifiersState::empty()));
+    assert!(pane.handle_key(&key(ctrl, ElementState::Released), ModifiersState::empty()));
+    assert_eq!(keys(&mut app), [(29, true), (29, false)]);
+    pane.set_focus(false);
+    assert!(
+        keys(&mut app).is_empty(),
+        "a key released already is not released again"
+    );
+}
+
+/// The window takes some keys before the session pane sees them: Ctrl+K
+/// opens the action palette, which then keeps every key release, Ctrl's
+/// among them, from the window behind it. A key the pane pressed on the
+/// remote machine is still released there when it comes up; otherwise Ctrl
+/// stays held on the remote side and the next letters typed there arrive as
+/// Ctrl chords (Ctrl+W closing a tab, Ctrl+Q quitting).
+#[test]
+fn a_key_whose_release_the_window_takes_is_still_released_on_the_remote_machine() {
+    use winit::keyboard::KeyCode;
+    let mut app = connected_tilo_session();
+    let pane = SessionPane::new(Rc::clone(&app.session));
+    let released = |code| ui::widget::PhysicalInput::Key {
+        key: PhysicalKey::Code(code),
+        state: ElementState::Released,
+    };
+    assert!(pane.handle_key(
+        &key_at(KeyCode::ControlLeft, ElementState::Pressed),
+        ModifiersState::empty()
+    ));
+    assert_eq!(sent_keys(&mut app), [(29, true)], "Ctrl goes down there");
+
+    // The palette took the release; the window still observed it.
+    Widget::observe_physical_input(&mut app, released(KeyCode::ControlLeft));
+    assert_eq!(
+        sent_keys(&mut app),
+        [(29, false)],
+        "Ctrl comes up there with the key"
+    );
+    pane.handle_key(
+        &key_at(KeyCode::ControlLeft, ElementState::Released),
+        ModifiersState::empty(),
+    );
+    assert!(
+        sent_keys(&mut app).is_empty(),
+        "a release that reaches the pane after all is not sent twice"
+    );
+    Widget::observe_physical_input(&mut app, released(KeyCode::ShiftLeft));
+    assert!(
+        sent_keys(&mut app).is_empty(),
+        "a key the pane never pressed there is not released there"
+    );
+
+    // A dialog over the window or History holding it: the window observes
+    // the keyboard as lost.
+    assert!(pane.handle_key(
+        &key_at(KeyCode::ShiftLeft, ElementState::Pressed),
+        ModifiersState::empty()
+    ));
+    assert_eq!(sent_keys(&mut app), [(42, true)]);
+    Widget::observe_physical_input(&mut app, ui::widget::PhysicalInput::Focused(false));
+    assert_eq!(sent_keys(&mut app), [(42, false)]);
 }
 
 #[test]
@@ -843,18 +992,54 @@ fn keys_map_to_the_remote_machine() {
         ),
         Some(vec![3])
     );
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::Escape)), Some(0xff1b));
+    assert_eq!(vnc_keysym(&Key::Character("a".into())), Some(0x61));
+    // Ctrl+C is the Control key held, then C: both reach a VNC desktop.
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::Control)), Some(0xffe3));
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::Shift)), Some(0xffe1));
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::Alt)), Some(0xffe9));
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::Home)), Some(0xff50));
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::PageDown)), Some(0xff56));
+    assert_eq!(vnc_keysym(&Key::Named(NamedKey::F5)), Some(0xffc2));
+    assert_eq!(vnc_keysym(&Key::Character("é".into())), Some(0xe9));
     assert_eq!(
-        vnc_keysym(&Key::Named(NamedKey::Escape), None),
-        Some(0xff1b)
-    );
-    assert_eq!(
-        vnc_keysym(&Key::Character("a".into()), Some("a")),
-        Some(0x61)
+        vnc_keysym(&Key::Character("ł".into())),
+        Some(0x0100_0142),
+        "past Latin-1 a character is its Unicode keysym"
     );
     assert_eq!(
         ui::evdev::from_key_code(winit::keyboard::KeyCode::KeyA),
         Some(30)
     );
+}
+
+/// The wheel scrolls a VNC desktop: a wheel click up is a click of button 4,
+/// down of button 5, sideways 6 and 7; a trackpad's pixels add up to whole
+/// clicks, and a fling sends a bounded burst.
+#[test]
+fn the_wheel_scrolls_a_vnc_desktop() {
+    let mut pending = (0.0, 0.0);
+    let line = |x, y| MouseScrollDelta::LineDelta(x, y);
+    let pixels = |x, y| MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(x, y));
+    let notch = f64::from(ui::tokens::metrics::Metrics::BASE.wheel_line);
+    let mut clicks =
+        |delta: &MouseScrollDelta, scale: f64| vnc_wheel_clicks(&mut pending, delta, scale, notch);
+    assert_eq!(clicks(&line(0.0, 1.0), 1.0), [0x08]);
+    assert_eq!(clicks(&line(0.0, -2.0), 1.0), [0x10, 0x10]);
+    assert_eq!(clicks(&line(1.0, 0.0), 1.0), [0x20]);
+    assert_eq!(clicks(&line(-1.0, 0.0), 1.0), [0x40]);
+    // At scale 2, a click is two notches of physical pixels.
+    let most_of_a_click = -0.6 * notch * 2.0;
+    assert!(
+        clicks(&pixels(0.0, most_of_a_click), 2.0).is_empty(),
+        "under a click at this scale"
+    );
+    assert_eq!(
+        clicks(&pixels(0.0, most_of_a_click), 2.0),
+        [0x10],
+        "the two together make one"
+    );
+    assert_eq!(clicks(&line(0.0, 500.0), 1.0).len(), VNC_WHEEL_BURST);
 }
 
 #[test]

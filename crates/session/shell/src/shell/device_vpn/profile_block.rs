@@ -324,33 +324,14 @@ impl Follow {
         held
     }
 
-    /// Look up the servers of each profile with its switch on that starts
-    /// connecting (the network is open then), and of each that must block
-    /// and has none yet.
+    /// Look up the servers of the profiles [`Self::to_look_up`] names.
     async fn look_up_servers(
         &mut self,
         switches: &BTreeMap<String, Switch>,
         active: &BTreeMap<String, Activity>,
         blocking: Option<&Blocking>,
     ) {
-        let starting = active.iter().filter(|(profile, activity)| {
-            switches.contains_key(*profile)
-                && **activity == Activity::Activating
-                && self.activities.get(*profile) != Some(&Activity::Activating)
-        });
-        let mut wanted: Vec<String> = starting.map(|(profile, _)| profile.clone()).collect();
-        if let Some(blocking) = blocking {
-            wanted.extend(
-                blocking
-                    .profiles
-                    .iter()
-                    .filter(|profile| !self.servers.contains_key(*profile))
-                    .cloned(),
-            );
-        }
-        wanted.sort_unstable();
-        wanted.dedup();
-        for profile in wanted {
+        for profile in self.to_look_up(switches, active, blocking) {
             let found = servers_of(&profile).await;
             if !found.is_empty() {
                 self.servers.insert(profile, found);
@@ -358,6 +339,41 @@ impl Follow {
         }
         self.servers
             .retain(|profile, _| switches.contains_key(profile));
+    }
+
+    /// The profiles whose servers to look up now, each once, in order: each
+    /// with its switch on that starts connecting (the network is open
+    /// then); each set to connect and connected without servers yet (its
+    /// switch turned on while it was up), so a drop blocks at once with
+    /// its servers let through rather than looking them up first while
+    /// traffic leaves outside the tunnel; and each that must block and has
+    /// none yet.
+    fn to_look_up(
+        &self,
+        switches: &BTreeMap<String, Switch>,
+        active: &BTreeMap<String, Activity>,
+        blocking: Option<&Blocking>,
+    ) -> Vec<String> {
+        let starting = active.iter().filter(|(profile, activity)| {
+            switches.contains_key(*profile)
+                && **activity == Activity::Activating
+                && self.activities.get(*profile) != Some(&Activity::Activating)
+        });
+        let mut wanted: Vec<String> = starting.map(|(profile, _)| profile.clone()).collect();
+        let unknown = |profile: &&String| !self.servers.contains_key(*profile);
+        wanted.extend(
+            self.intent
+                .wanted()
+                .filter(|profile| active.get(*profile) == Some(&Activity::Activated))
+                .filter(unknown)
+                .cloned(),
+        );
+        if let Some(blocking) = blocking {
+            wanted.extend(blocking.profiles.iter().filter(unknown).cloned());
+        }
+        wanted.sort_unstable();
+        wanted.dedup();
+        wanted
     }
 
     /// Have the helper hold `block` (or nothing); whether it does.
@@ -559,6 +575,58 @@ mod tests {
                 connecting: BTreeMap::new(),
                 release_seen: Some(5),
             }
+        );
+    }
+
+    /// A profile whose kill switch is turned on while it is connected has
+    /// its servers looked up while connected, not when it drops: the block
+    /// then goes up at once, letting its servers through, instead of
+    /// waiting on a lookup while traffic leaves outside the tunnel. Once
+    /// known, they are not looked up again.
+    #[test]
+    fn a_profile_switched_on_while_connected_has_its_servers_looked_up_before_it_drops() {
+        let mut follow = Follow::new(ProfileIntent::default());
+        let connected = BTreeMap::from([("work".to_owned(), Activity::Activated)]);
+        let blocking = follow.intent.decide(&switches(), &connected, &[]);
+        assert_eq!(blocking, None, "connected: nothing blocks");
+        assert_eq!(
+            follow.to_look_up(&switches(), &connected, blocking.as_ref()),
+            ["work"],
+            "looked up while the tunnel is up"
+        );
+        follow
+            .servers
+            .insert("work".into(), vec!["198.51.100.7".parse().unwrap()]);
+        assert!(
+            follow
+                .to_look_up(&switches(), &connected, blocking.as_ref())
+                .is_empty(),
+            "known servers are not looked up again"
+        );
+        let dropped = follow.intent.decide(&switches(), &BTreeMap::new(), &[]);
+        assert!(dropped.is_some(), "dropped: it blocks");
+        assert!(
+            follow
+                .to_look_up(&switches(), &BTreeMap::new(), dropped.as_ref())
+                .is_empty(),
+            "the drop blocks at once, without a lookup first"
+        );
+    }
+
+    /// A connected profile without its kill switch, or not set to connect,
+    /// is never looked up.
+    #[test]
+    fn only_profiles_set_to_connect_are_looked_up() {
+        let follow = Follow::new(ProfileIntent::default());
+        let connected = BTreeMap::from([("work".to_owned(), Activity::Activated)]);
+        assert!(
+            follow
+                .to_look_up(&BTreeMap::new(), &connected, None)
+                .is_empty()
+        );
+        assert!(
+            follow.to_look_up(&switches(), &connected, None).is_empty(),
+            "not yet decided as set to connect"
         );
     }
 

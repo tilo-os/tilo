@@ -432,7 +432,7 @@ pub(crate) fn connection_form(
         form = form.with_actions(Actions::new(
             Button::new("remote.form.delete", "Delete connection")
                 .role(ButtonRole::Destructive)
-                .on_click(queue(requests, Action::RequestDelete(id))),
+                .on_view(queue(requests, Action::RequestDelete(id))),
         ));
     }
     Box::new(FormPage::untitled(form))

@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::model::{Book, LibraryEntry};
+use ui::arriving::{Arrival, Arriving, Source};
 
 /// What a segment starts with, and the version of its layout.
 const MAGIC: &[u8; 4] = b"TBX1";
@@ -522,25 +523,28 @@ impl<T> Read<T> {
 /// A book being fetched for a hit opened in it while its text was elsewhere.
 struct Fetch {
     entry: LibraryEntry,
-    /// When it was last found on its way: where its card's loading bar
-    /// starts.
-    since: ui::time::Instant,
-    /// Where it stands, as last read.
-    standing: Standing,
+    /// Its text, as a read ([`ui::arriving`]): on its way from the devices
+    /// that could hand it over since it was last found on its way (where
+    /// its card's loading bar starts), or why it cannot come now. It
+    /// follows those devices as they come and go.
+    text: Arriving<(), BookUnreachable>,
     /// Whether a read of it is under way.
     reading: bool,
 }
 
-/// Where the text of a book being fetched stands while it is not here. It
-/// follows the devices that could hand it over as they come and go.
+/// Why the text of a book being fetched cannot come now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Standing {
-    /// On its way from a connected device.
-    Fetching,
+pub(crate) enum BookUnreachable {
     /// No device that could hand it over is connected right now.
     Waiting,
     /// Every connected device that could hold it said it does not.
     Unavailable,
+}
+
+/// Where a book's text comes from while it is not here: the workspace's
+/// other devices, which no one names here.
+fn elsewhere() -> Source {
+    Source::peer("")
 }
 
 /// The library's index as this device holds it: segments built here,
@@ -774,8 +778,7 @@ impl LibraryIndex {
         }
         self.fetching = Some(Fetch {
             entry: entry.clone(),
-            since: ui::time::now(),
-            standing: Standing::Fetching,
+            text: Arriving::pending(elsewhere()),
             reading: false,
         });
         self.read_book();
@@ -818,15 +821,15 @@ impl LibraryIndex {
     pub(crate) fn arriving(&self, book: &str) -> Option<ui::time::Instant> {
         self.fetching
             .as_ref()
-            .filter(|fetch| fetch.entry.id == book && fetch.standing == Standing::Fetching)
-            .map(|fetch| fetch.since)
+            .filter(|fetch| fetch.entry.id == book && fetch.text.with(Arrival::is_pending))
+            .map(|fetch| fetch.text.began())
     }
 
     /// The book being fetched, and where its text stands.
-    pub(crate) fn fetching(&self) -> Option<(&str, Standing)> {
+    pub(crate) fn fetching(&self) -> Option<(&str, Arrival<(), BookUnreachable>)> {
         self.fetching
             .as_ref()
-            .map(|fetch| (fetch.entry.id.as_str(), fetch.standing))
+            .map(|fetch| (fetch.entry.id.as_str(), fetch.text.get()))
     }
 
     /// What the fetch of a book came to since asked: its id and the book,
@@ -837,9 +840,9 @@ impl LibraryIndex {
         let (id, read) = self.fetched.try_iter().last()?;
         let fetch = self.fetching.as_mut().filter(|fetch| fetch.entry.id == id);
         let standing = match read {
-            Read::OnItsWay => Standing::Fetching,
-            Read::Waiting => Standing::Waiting,
-            Read::Unavailable => Standing::Unavailable,
+            Read::OnItsWay => Arrival::Pending { from: elsewhere() },
+            Read::Waiting => Arrival::Failed(BookUnreachable::Waiting),
+            Read::Unavailable => Arrival::Failed(BookUnreachable::Unavailable),
             Read::Here(_) | Read::Unreadable => {
                 if fetch.is_some() {
                     self.fetching = None;
@@ -849,10 +852,11 @@ impl LibraryIndex {
         };
         if let Some(fetch) = fetch {
             fetch.reading = false;
-            if standing == Standing::Fetching && fetch.standing != Standing::Fetching {
-                fetch.since = ui::time::now();
+            // Found on its way again after it could not come, it is asked
+            // anew: its bar starts over.
+            if fetch.text.with(|now| *now != standing) {
+                fetch.text.stand(standing);
             }
-            fetch.standing = standing;
         }
         None
     }

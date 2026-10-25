@@ -99,7 +99,6 @@ mod tests {
         "chat-conversation-read-only",
         "chat-agent-author",
         "chat-thread-title",
-        "chat-thread-back",
         "chat-thread-close",
         "chat-thread-replies",
     ];

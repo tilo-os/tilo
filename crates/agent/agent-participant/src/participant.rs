@@ -43,8 +43,10 @@ pub mod actions;
 mod authors;
 mod bound;
 mod context;
+mod facts;
 mod introduce;
 mod logs;
+mod obligations;
 mod parts;
 mod planning;
 mod records;
@@ -56,7 +58,7 @@ mod waits;
 pub(crate) use unopened::{SharedDesktop, desktop_route};
 
 use context::picture_head;
-use logs::{record_action, record_plan};
+use logs::{record_action, record_ended, record_plan};
 use running::{
     FollowUp, NEW_DOCUMENT_NOTE, Running, imports, named_without_documents, produced,
     unknown_action,
@@ -254,6 +256,9 @@ pub struct AgentParticipant {
     /// The records this agent's own steps changed, in any task: a document
     /// it wrote in is its own, whoever else wrote there too.
     own_wrote: BTreeSet<DocumentRoute>,
+    /// The exports whose answers stated the facts of what they exported,
+    /// oldest first: what a later task's check compares the record with.
+    exported: Vec<facts::Exported>,
     /// The host admitted the room; everything it replayed has arrived.
     ready: bool,
     /// When the room last delivered a record the agent had not seen, since
@@ -404,6 +409,7 @@ impl AgentParticipant {
             task_made: Vec::new(),
             others_wrote: BTreeSet::new(),
             own_wrote: BTreeSet::new(),
+            exported: Vec::new(),
             ready: false,
             settling: None,
             finishing: None,
@@ -725,9 +731,12 @@ impl AgentParticipant {
             return false;
         };
         running.plan_more(self.checks_work);
+        if running.steps.is_empty() {
+            running.remind_open();
+        }
         let Some(step) = running.steps.pop_front() else {
             let (id, done) = (running.id.clone(), running.done());
-            self.running = None;
+            self.end_running(&Ok(done.clone()));
             self.finish_task(id, Ok(done));
             self.publish_presence();
             return false;
@@ -838,6 +847,9 @@ impl AgentParticipant {
         self.control.record_step(id, record);
         match outcome {
             Ok(output) => {
+                if let Some(output) = &output {
+                    self.note_export(id, step, output);
+                }
                 let Some(running) = self.running.as_mut() else {
                     return false;
                 };
@@ -852,8 +864,9 @@ impl AgentParticipant {
                 if self.repair(step, &error) {
                     return false;
                 }
-                self.running = None;
-                self.finish_task(id.to_owned(), Err(error));
+                let failed = Err(error);
+                self.end_running(&failed);
+                self.finish_task(id.to_owned(), failed);
                 false
             }
         }
@@ -961,7 +974,7 @@ impl AgentParticipant {
                     && (running.waits.replan
                         || matches!(
                             running.follow_ups.turn,
-                            Some(FollowUp::Checking | FollowUp::AfterReads)
+                            Some(FollowUp::Checking | FollowUp::AfterReads | FollowUp::Obligations)
                         ))
             });
         if let Some(steps) = written_steps(text, &context) {
@@ -974,6 +987,7 @@ impl AgentParticipant {
                 rendered: Vec::new(),
                 ready_at: Instant::now(),
                 by_model: false,
+                obligations: crate::planner::Obligations::default(),
             });
             return;
         }
@@ -990,6 +1004,7 @@ impl AgentParticipant {
                 rendered: Vec::new(),
                 ready_at: Instant::now(),
                 by_model: false,
+                obligations: crate::planner::Obligations::default(),
             });
         }
     }
@@ -1026,6 +1041,7 @@ impl AgentParticipant {
     /// it; a rest that finds nothing left to do after steps ran is the task
     /// done, not failed.
     fn apply_plan(&mut self, planned: planning::Planned) {
+        self.record_plan(&planned);
         let planning::Planned {
             task,
             text,
@@ -1035,20 +1051,8 @@ impl AgentParticipant {
             rendered,
             ready_at,
             by_model,
+            obligations,
         } = planned;
-        let turn = self
-            .running
-            .as_ref()
-            .filter(|running| running.id == task && continues)
-            .and_then(|running| running.follow_ups.turn);
-        record_plan(
-            crate::control::agent_id(&self.identity.delegation),
-            &task,
-            &text,
-            (continues, turn),
-            by_model,
-            &steps,
-        );
         if !self.control.is_running(&task) {
             return;
         }
@@ -1061,6 +1065,7 @@ impl AgentParticipant {
                 let mut running = Running::new(task, text, steps, read);
                 running.made = std::mem::take(&mut self.task_made);
                 running.by_model = by_model;
+                running.checklist.adopt(obligations, false);
                 running.looked_at(rendered);
                 self.running = Some(running);
                 self.plan_ready_at = Some(ready_at);
@@ -1069,6 +1074,7 @@ impl AgentParticipant {
                 if let Some(running) = self.running.as_mut().filter(|_| running_it) {
                     running.made.append(&mut self.task_made);
                     running.by_model |= by_model;
+                    running.adopt_obligations(obligations);
                     for (app, seen) in read {
                         running.observe(app, seen);
                     }
@@ -1118,17 +1124,51 @@ impl AgentParticipant {
                 {
                     return;
                 }
-                let finished = if running_it {
-                    self.running
-                        .take()
-                        .filter(|running| continues && running.done_despite(&error))
-                        .map(|running| running.done())
+                // A task done but for its open obligations is planned for
+                // them before it finishes, as one whose steps ran out is.
+                let done = continues
+                    && running_it
+                    && self
+                        .running
+                        .as_ref()
+                        .is_some_and(|running| running.done_despite(&error));
+                if done && self.running.as_mut().is_some_and(Running::remind_open) {
+                    return;
+                }
+                let finished = if done {
+                    self.running.as_ref().map(Running::done)
                 } else {
                     None
                 };
-                self.finish_task(task, finished.ok_or(error));
+                let outcome = finished.ok_or(error);
+                if running_it {
+                    self.end_running(&outcome);
+                }
+                self.finish_task(task, outcome);
             }
         }
+    }
+
+    /// Log `planned` (`TILO_AGENT_PLAN_LOG`), with the follow-up turn it
+    /// answers and the checklist it was shown.
+    fn record_plan(&self, planned: &planning::Planned) {
+        let continued = self
+            .running
+            .as_ref()
+            .filter(|running| running.id == planned.task && planned.continues);
+        let turn = continued.and_then(|running| running.follow_ups.turn);
+        let shown = continued
+            .filter(|running| !running.checklist.is_empty())
+            .map(|running| running.checklist.logged());
+        record_plan(
+            crate::control::agent_id(&self.identity.delegation),
+            &planned.task,
+            &planned.text,
+            (planned.continues, turn),
+            planned.by_model,
+            &planned.steps,
+            (&planned.obligations, shown),
+        );
     }
 
     /// Plan the rest of the running task again after `step` failed with
@@ -1173,8 +1213,24 @@ impl AgentParticipant {
                 }
             )),
             carries: None,
+            serves: None,
         });
         true
+    }
+
+    /// Drop the running task, which ended with `outcome`, logging its
+    /// checklist when it kept one.
+    fn end_running(&mut self, outcome: &Result<String, String>) {
+        if let Some(running) = self.running.take()
+            && !running.checklist.is_empty()
+        {
+            record_ended(
+                crate::control::agent_id(&self.identity.delegation),
+                &running.id,
+                outcome,
+                &running.checklist.logged(),
+            );
+        }
     }
 
     /// End task `id` with `outcome` once the host has acknowledged the

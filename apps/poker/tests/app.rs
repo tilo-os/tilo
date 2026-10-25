@@ -262,7 +262,7 @@ fn opening_the_table_seats_nobody_until_they_take_a_seat() {
 }
 
 /// A seat is chosen from the table everyone sees: until the room's table
-/// has arrived, "Take a seat" waits.
+/// has arrived, the window shows it arriving and offers no seat.
 #[test]
 fn taking_a_seat_waits_for_the_table_to_arrive() {
     let told = |state| {
@@ -274,7 +274,15 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
     };
     ui::room_sync::set(told(ui::room_sync::RoomSyncState::Connecting));
     let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
-    assert!(!take_a_seat_enabled(&mut app), "the table is on its way");
+    let harness = app.harness();
+    assert!(
+        harness.a11y_node_named("Loading").is_some(),
+        "the table is on its way"
+    );
+    assert!(
+        harness.a11y_node_named("Take a seat").is_none(),
+        "no seat is offered at a table that has not arrived"
+    );
 
     ui::room_sync::set(told(ui::room_sync::RoomSyncState::Synced));
     let _ = app.harness().poll_frame();

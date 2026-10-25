@@ -1,4 +1,5 @@
-//! The page desktop's workspace history, for the surface's Activity pane.
+//! The page desktop's workspace history, which its session serves the
+//! Activity app.
 //!
 //! The desktop's own history is a desktop log
 //! (`tilo_desktop_surface::history_log`): in a certified room the room's
@@ -7,10 +8,11 @@
 //! windows show carry their own histories, read from detached copies of
 //! the open documents.
 //!
-//! The pane's own code is linked in, unless the `deferred-activity` feature
-//! leaves it to the bundling crate: the browser desktop hands over a loader
-//! ([`defer_activity_pane`]) that fetches it as its own module the first
-//! time someone opens Activity, so the start module does not carry it.
+//! The activity model's code is linked in, unless the `deferred-activity`
+//! feature leaves it to the bundling crate: the browser desktop hands over
+//! a loader ([`defer_activity_pane`]) that fetches it as its own module the
+//! first time someone opens Activity, so the start module does not carry
+//! it.
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
@@ -30,14 +32,14 @@ use tilo_desktop_surface::{ActivityPaneCode, OpenActivity};
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::record::RecordCheckout;
 
-/// Fetches the Activity pane's code; `None` when it could not.
+/// Fetches the activity model's code; `None` when it could not.
 pub type LoadActivity = fn() -> Pin<Box<dyn Future<Output = Option<OpenActivity>>>>;
 
-/// Where the page has the Activity pane's code.
+/// Where the page has the activity model's code.
 #[derive(Clone, Copy)]
 enum PaneCode {
     Ready(OpenActivity),
-    /// Fetched when the pane first opens.
+    /// Fetched when the model first opens.
     Deferred(LoadActivity),
     Loading,
     /// The last fetch failed: that request is dismissed, the next one
@@ -47,7 +49,7 @@ enum PaneCode {
 
 thread_local! {
     static PANE_CODE: RefCell<PaneCode> = RefCell::new(linked_pane());
-    /// The desktops that asked for the pane while its code loads.
+    /// The desktops that asked for the model while its code loads.
     static WAITING: RefCell<Vec<crate::desktop::Shared>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -66,7 +68,7 @@ fn linked_pane() -> PaneCode {
     PaneCode::Deferred(missing)
 }
 
-/// Fetch the Activity pane's code with `load` the first time it opens,
+/// Fetch the activity model's code with `load` the first time it opens,
 /// instead of linking it in (the `deferred-activity` feature).
 pub fn defer_activity_pane(load: LoadActivity) {
     PANE_CODE.with_borrow_mut(|code| *code = PaneCode::Deferred(load));
@@ -83,7 +85,7 @@ fn wait_for_pane(desktop: &crate::desktop::Shared) {
     });
 }
 
-/// The pane's code for `desktop`, which is woken for its update pass once
+/// The model's code for `desktop`, which is woken for its update pass once
 /// code still loading has arrived (or failed to).
 fn activity_pane(desktop: &crate::desktop::Shared) -> ActivityPaneCode {
     let code = PANE_CODE.with_borrow(|code| *code);
@@ -115,7 +117,7 @@ fn activity_pane(desktop: &crate::desktop::Shared) -> ActivityPaneCode {
     }
 }
 
-/// What the pane may ask of the page: who is looking, what they have seen,
+/// What the model may ask of the page: who is looking, what they have seen,
 /// application names.
 struct PageActivityHost {
     author: String,
@@ -184,6 +186,24 @@ pub(crate) struct PageHistory {
 /// The name and colour presence shows for a person, by the principal they
 /// write as.
 pub(crate) type PersonOf = Rc<dyn Fn(&str) -> Option<crate::desktop::PersonIdentity>>;
+
+/// How History names each author: as presence shows them, here now, else
+/// as they were when last seen; this page's own person as the top bar does,
+/// never by the key they write as.
+pub(crate) fn person_of(
+    here: &tilo_desktop::here::Here,
+    people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
+    own: String,
+) -> PersonOf {
+    let here = Rc::clone(here);
+    let people = Rc::clone(people);
+    Rc::new(move |user: &str| {
+        let here = here.borrow();
+        here.person(user)
+            .or_else(|| people.borrow().get(user).cloned())
+            .or_else(|| (user == own).then(|| crate::shell::own_identity(&here)))
+    })
+}
 
 impl PageHistory {
     pub fn new(

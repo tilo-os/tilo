@@ -1165,6 +1165,7 @@ impl ExtensionController {
                     permissions: Vec::new(),
                     hosts: Vec::new(),
                     scriptable: Vec::new(),
+                    framed: Vec::new(),
                     token: Some(token),
                     commands: None,
                 });
@@ -1197,6 +1198,7 @@ impl ExtensionController {
                     permissions: access.permissions.clone(),
                     hosts: access.hosts.clone(),
                     scriptable: access.scriptable.clone(),
+                    framed: access.framed.clone(),
                     token: access.token.clone(),
                     commands: access.commands.clone(),
                 });

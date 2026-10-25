@@ -581,16 +581,16 @@ pub struct TerminalWidget {
     scrollbar: Scrollbar,
 
     conventions: ui::PlatformConventions,
-    /// Local find-in-scrollback state: the matches the find scope that hosts
-    /// this terminal asked for ([`Findable`]), painted over their cells. It
+    /// Local find-in-scrollback state: the matches the window bar's search
+    /// asked for ([`Findable`]), painted over their cells. It
     /// is intentionally not mirrored into the CRDT or resource tree: a find
     /// term and its matching output can be sensitive, while the shared
     /// terminal transcript already has its own carefully bounded
     /// collaboration contract.
     find_matches: Vec<FindMatch>,
     find_current: usize,
-    /// The context menu's Find entry was chosen: the hosting find scope
-    /// opens its bar ([`Self::take_find_request`]).
+    /// The context menu's Find entry was chosen: the hosting view opens the
+    /// window bar's search ([`Self::take_find_request`]).
     find_request: bool,
     /// Bumped whenever a sync brings fresh output, so an open find bar finds
     /// again and its counter follows ([`Findable::content_revision`]).
@@ -1447,20 +1447,30 @@ impl TerminalWidget {
     }
 
     /// Whether the context menu's Find entry was chosen since the last call.
-    /// The find scope that hosts this terminal opens its bar; the terminal
-    /// itself holds no bar. Nothing here publishes a query, a match or a
+    /// The view that hosts this terminal opens the window bar's search; the
+    /// terminal itself holds no bar. Nothing here publishes a query, a match or a
     /// command to collaborators or agents: scrollback may contain
     /// credentials, and find is only a viewport aid.
     pub fn take_find_request(&mut self) -> bool {
         std::mem::take(&mut self.find_request)
     }
 
-    /// Match `query` against the retained scrollback. Matches are literal;
-    /// the bar's options choose whether case and whole words count.
+    /// The platform's keyboard conventions this terminal follows.
+    pub(crate) fn conventions(&self) -> ui::PlatformConventions {
+        self.conventions
+    }
+
+    /// Match `query` against the retained scrollback: literally, or as a
+    /// regular expression; the bar's options choose whether case and whole
+    /// words count.
     fn scan_find_matches(&mut self, query: &str, options: FindOptions) {
         self.find_matches.clear();
         let query: Vec<char> = query.chars().take(MAX_FIND_QUERY_CHARS).collect();
         if query.is_empty() {
+            return;
+        }
+        if options.mode == ui::widget::FindMode::Regex {
+            self.scan_find_pattern(&query.iter().collect::<String>(), options);
             return;
         }
         let same = |a: char, b: char| {
@@ -1498,6 +1508,60 @@ impl TerminalWidget {
                     at += query.len();
                 } else {
                     at += 1;
+                }
+            }
+        }
+        self.find_current = self
+            .find_current
+            .min(self.find_matches.len().saturating_sub(1));
+    }
+
+    /// Match the regular expression `pattern` against the retained
+    /// scrollback. A pattern that does not compile, or matches only empty
+    /// spans, finds nothing.
+    fn scan_find_pattern(&mut self, pattern: &str, options: FindOptions) {
+        let Ok(pattern) = regex::RegexBuilder::new(pattern)
+            .case_insensitive(!options.match_case)
+            .build()
+        else {
+            return;
+        };
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        'rows: for (row, line) in self.grid.iter().enumerate() {
+            // Cell column at each byte where a character starts, so wide
+            // glyphs line up.
+            let mut column = 0usize;
+            let mut columns = std::collections::BTreeMap::new();
+            for (at, c) in line.char_indices() {
+                columns.insert(at, column);
+                column += c.width().unwrap_or(1);
+            }
+            columns.insert(line.len(), column);
+            for hit in pattern.find_iter(line) {
+                if hit.is_empty() {
+                    continue;
+                }
+                let bounded = !options.whole_word
+                    || (line
+                        .get(..hit.start())
+                        .and_then(|head| head.chars().next_back())
+                        .is_none_or(|c| !word(c))
+                        && line
+                            .get(hit.end()..)
+                            .and_then(|tail| tail.chars().next())
+                            .is_none_or(|c| !word(c)));
+                if !bounded {
+                    continue;
+                }
+                let start_col = columns.get(&hit.start()).copied().unwrap_or(0);
+                let end_col = columns.get(&hit.end()).copied().unwrap_or(start_col);
+                self.find_matches.push(FindMatch {
+                    row,
+                    start_col,
+                    end_col,
+                });
+                if self.find_matches.len() == MAX_FIND_MATCHES {
+                    break 'rows;
                 }
             }
         }
@@ -2811,6 +2875,9 @@ impl TerminalWidget {
     /// Stage screenshot scenario `name`: the output its process printed,
     /// parsed as PTY output, and the view state shown over it.
     pub(crate) fn stage_scenario(&mut self, name: &str) {
+        // The staged output is an open session's: a capture has no process
+        // behind it, but only the ended scenario shows the session closed.
+        self.session_disconnected.store(false, Ordering::Release);
         if let Some((target, environments)) = crate::scenarios::target(name) {
             self.show_target(target, environments);
             self.set_relays(crate::scenarios::relays(name));
@@ -2869,6 +2936,10 @@ impl Findable for TerminalWidget {
     fn clear_find(&mut self) {
         self.find_matches.clear();
         self.find_current = 0;
+    }
+
+    fn supports_regex(&self) -> bool {
+        true
     }
 
     fn content_revision(&self) -> u64 {

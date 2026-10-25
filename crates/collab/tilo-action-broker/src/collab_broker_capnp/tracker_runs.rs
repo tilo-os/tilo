@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use super::native_task_confirmation::NativeGate;
-use super::{CapnpBrokerState, InvocationJob, PendingTaskRun, PublishedAction, TaskRunEnvelope};
+use super::{CapnpBrokerState, PendingTaskRun, PublishedAction, StagedJob, TaskRunEnvelope};
 use crate::services::{
     NativeTaskActionRequirement, NativeTaskBinding, TrackerAnswer, TrackerRun, TrackerRuns,
 };
@@ -354,8 +354,8 @@ impl CapnpBrokerState {
         run: &PendingTaskRun,
         binding: &NativeTaskBinding,
         requirement: &NativeTaskActionRequirement,
-        action: &mut dyn FnMut() -> Result<InvocationJob, String>,
-    ) -> Result<InvocationJob, String> {
+        action: &mut dyn FnMut() -> Result<StagedJob, String>,
+    ) -> Result<StagedJob, String> {
         let current = self.tracker_run_of(run)?;
         if current.applied_revision() != binding.revision
             || current.latest_revision() != binding.revision

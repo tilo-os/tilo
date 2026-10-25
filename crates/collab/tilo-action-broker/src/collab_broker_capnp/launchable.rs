@@ -1144,7 +1144,7 @@ mod tests {
             .acting_for("owner");
         invoke(&state, &agent, "5", "new-window", None).expect("the agent acts");
         assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
-        let Ok(ui::collaboration::CollabEvent::RemotePresenceUpdate {
+        let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
             user_id,
             key,
             payload: ui::collaboration::PresencePayload::Interaction(interaction),
@@ -1172,7 +1172,7 @@ mod tests {
             .running_shortcut("morning");
         invoke(&state, &shortcut, "5", "new-window", None).expect("the step runs");
         assert_eq!(app.try_recv().expect("delivered").actor, "owner");
-        let Ok(ui::collaboration::CollabEvent::RemotePresenceUpdate {
+        let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
             payload: ui::collaboration::PresencePayload::Interaction(interaction),
             ..
         }) = heard.try_recv()
@@ -1227,7 +1227,7 @@ mod tests {
             .expect("the host records the invoker");
         assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
         assert_eq!(invoker.on_behalf_of.as_deref(), Some("owner"));
-        let Ok(ui::collaboration::CollabEvent::RemotePresenceUpdate {
+        let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
             payload: ui::collaboration::PresencePayload::Interaction(interaction),
             ..
         }) = heard.try_recv()
@@ -1253,7 +1253,8 @@ mod tests {
     #[tokio::test]
     async fn retiring_a_delegated_run_preserves_its_running_actions_view() {
         use super::super::ExecutionStatus;
-        use ui::collaboration::{CollabEvent, PresencePayload};
+        use collab_types::presence::PresencePayload;
+        use runtime_collab::event::CollabEvent;
         let (state, room, fanout) = broker_with_fanout(&workspace());
         state.surfaces.lock().unwrap().insert(5, surface(5, &room));
         let mut app = state.capture_invocations_for_test(5);

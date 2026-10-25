@@ -54,7 +54,14 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
     }
     assert!(host.observe(&owner, &accepted.invocation).is_none());
     assert!(host.next_change(&owner, &accepted.invocation).is_none());
-    assert!(host.cancel(&owner, &accepted.invocation).is_err());
+    assert!(
+        host.cancel(&owner, &accepted.invocation)
+            .wait_timeout(std::time::Duration::from_secs(30))
+            .ok()
+            .flatten()
+            .expect("the host answers")
+            .is_err()
+    );
     let client = BlobClient::connect_session(&profile.join(BLOB_SOCKET)).unwrap();
     let scope = client.scope(session.room(), "so.tilo.photos").unwrap();
     assert_eq!(

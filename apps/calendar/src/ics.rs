@@ -1788,6 +1788,32 @@ mod tests {
         );
     }
 
+    /// Havana keeps US Eastern offsets and moves its clocks on the same
+    /// days, two hours earlier; a customised zone with US Eastern rules is
+    /// New York, which moves them at the instants the rules give.
+    #[test]
+    fn a_customised_zone_is_the_one_changing_clocks_at_its_instants() {
+        let eastern = "BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone\r\n\
+             BEGIN:STANDARD\r\nDTSTART:16010101T020000\r\nTZOFFSETFROM:-0400\r\n\
+             TZOFFSETTO:-0500\r\nRRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=11\r\n\
+             END:STANDARD\r\nBEGIN:DAYLIGHT\r\nDTSTART:16010101T020000\r\n\
+             TZOFFSETFROM:-0500\r\nTZOFFSETTO:-0400\r\n\
+             RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=2SU;BYMONTH=3\r\nEND:DAYLIGHT\r\n\
+             END:VTIMEZONE\r\n";
+        assert_eq!(
+            imported_at(&outlook_invite(
+                eastern,
+                "Customized Time Zone",
+                "20260710T090000",
+                "20260710T100000"
+            )),
+            (
+                "America/New_York".to_string(),
+                "2026-07-10T13:00:00+00:00".to_string()
+            )
+        );
+    }
+
     /// A zone nothing places keeps the event at its time as written, and
     /// the import names the zone.
     #[test]

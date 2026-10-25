@@ -45,15 +45,19 @@ impl Firewall {
         self.enabled = true;
     }
 
-    /// Stop firewall. Undo starts it again but cannot take back what
-    /// reached the machine while it was open, so this is asked first.
+    /// Stop firewall.
+    ///
+    /// Undo starts it again but cannot take back what reached the machine
+    /// while it was open, so this is asked first.
     #[action(destructive, irreversible)]
     pub fn stop(&mut self) {
         self.enabled = false;
     }
 
-    /// Enter panic mode: drop all traffic in and out. Undo lifts it but
-    /// cannot restore the connections it cut, so this is asked first.
+    /// Enter panic mode: drop all traffic in and out.
+    ///
+    /// Undo lifts it but cannot restore the connections it cut, so this is
+    /// asked first.
     #[action(destructive, irreversible)]
     pub fn enter_panic_mode(&mut self) {
         self.panic_mode = true;
@@ -556,6 +560,41 @@ mod tests {
         assert!(reapplied, "the edit reached this device's firewall");
     }
 
+    /// The palette row and the confirmation's title name the switch by the
+    /// first line of its doc alone; why it asks first stays in the
+    /// description, never runs on into the name.
+    #[test]
+    fn the_traffic_cutting_switches_are_named_by_what_they_do() {
+        let published = ui::tilo_resource::publish::<Firewall>(
+            "firewall.config",
+            "Firewall",
+            &Firewall::default(),
+        );
+        let spec = |id: &str| {
+            published
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("{id} is published"))
+        };
+        for (id, label) in [
+            ("stop", "Stop firewall"),
+            (
+                "enter-panic-mode",
+                "Enter panic mode: drop all traffic in and out",
+            ),
+        ] {
+            let spec = spec(id);
+            assert_eq!(spec.label, label, "{id}");
+            assert!(
+                spec.description
+                    .as_deref()
+                    .is_some_and(|text| text.contains("asked first")),
+                "{id}: why it asks stays in the description"
+            );
+        }
+    }
+
     /// Every screenshot is the sample ruleset staged through actions, with
     /// the view state its scenario names; the service error shows no
     /// configuration at all.
@@ -753,5 +792,28 @@ mod tests {
             last.as_deref(),
             Some("Deleted a rule from the “public” zone")
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::FirewallShell::scenarios() {
+            let mut app = TestApp::<super::FirewallShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

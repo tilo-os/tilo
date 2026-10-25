@@ -159,8 +159,7 @@ impl PreparedRenderer {
 #[path = "render_retry.rs"]
 pub(crate) mod retry;
 
-#[path = "render_bump_recovery.rs"]
-mod bump_recovery;
+use crate::render_bump_recovery as bump_recovery;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameOutcome {

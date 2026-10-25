@@ -107,15 +107,23 @@ grep -Fq 'ARG CHROMIUM_RUNTIME_VERSION=' "$repo/os/Containerfile" \
   && ok 'OS image builds compile the browser engine runtime themselves' \
   || bad 'an OS image build still takes a separately compiled browser engine'
 
-# Both kernels are built natively and published together; the pin moves both at once, only
-# after each is verified (signature and provenance) as the OS build verifies it.
+# Both kernels are built (natively, or the aarch64 one cross-compiled on x86_64 FROM the x86_64
+# buildroot) and published together; provenance names the buildroot and the machine each was
+# built on; the pin moves both at once, only after each is verified (signature and provenance)
+# as the OS build verifies it.
 kernel_pin="$(sed -n '/^  pin)$/,/^    ;;$/p' "$kernel_script")"
 kernel_pins="$(sed -n '/^  pins)$/,/^    ;;$/p' "$kernel_script")"
+kernel_provenance="$(sed -n '/^  provenance)$/,/^    ;;$/p' "$kernel_script")"
 if t_has image-kernel-{arch} requires 'arch={arch}' \
   && t_has image-kernel-{arch} matrix 'arch=['"'"'x86_64'"'"', '"'"'aarch64'"'"']' \
-  && grep -Fq '[[ $(uname -m) == "$arch" ]] || die "the $arch kernel is built natively' "$kernel_script" \
+  && grep -Fq 'x86_64:x86_64 | aarch64:aarch64 | x86_64:aarch64) ;;' "$kernel_script" \
+  && grep -Fq '*) die "the $arch kernel is built natively or on x86_64, not on $host" ;;' "$kernel_script" \
   && grep -Fq 'x86_64) platform=linux/amd64 key=KERNEL_BUILDROOT_X86_64_REF ;;' "$kernel_script" \
   && grep -Fq 'aarch64) platform=linux/arm64 key=KERNEL_BUILDROOT_AARCH64_REF ;;' "$kernel_script" \
+  && grep -Fq 'printf '"'"'%s\n'"'"' "$buildroot" > "$out/buildroot"' "$kernel_script" \
+  && grep -Fq 'printf '"'"'%s\n'"'"' "$host" > "$out/build-architecture"' "$kernel_script" \
+  && grep -Fq '[[ $buildroot == "${!key}" ]]' <<<"$kernel_provenance" \
+  && grep -Fq '\"buildArchitecture\": \"$built_on\"' <<<"$kernel_provenance" \
   && t_has sign-kernel needs image-kernel-x86_64 && t_has sign-kernel needs image-kernel-aarch64 \
   && t_has sign-kernel needs provenance-kernel \
   && t_has publish-kernel needs sign-kernel \
@@ -132,8 +140,13 @@ else
 fi
 
 # The kernel and its Secure Boot probe inputs come from one build stage with the same build
-# arguments, so they share the compilation and cannot diverge; the build has explicit bounds.
-if [ "$(grep -Fc '"${args[@]}"' "$kernel_script")" -eq 2 ] \
+# arguments, so they share the compilation and cannot diverge (as does the compiler cache's
+# compile: the native image, the cross build's repository and the cache take the same ones; only
+# the cross build's repackaging for the kernel's platform, which compiles nothing, does not); the
+# build has explicit bounds.
+if [ "$(grep -Fc '"${args[@]}"' "$kernel_script")" -eq 4 ] \
+  && [ "$(grep -c '^ *b build ' "$kernel_script")" -eq 5 ] \
+  && grep -Fq -- '--target publish-cross \' "$kernel_script" \
   && grep -Fq -- '--build-arg "KERNEL_BUILD_JOBS=$(nproc)"' "$kernel_script" \
   && grep -Fq -- '--target secureboot-probe-inputs' "$kernel_script" \
   && grep -q '^memory=' <<<"$(tcheck image-kernel-{arch} requirement)" \
@@ -180,7 +193,7 @@ else
 fi
 
 kernel_containerfile="$repo/os/kernel/Containerfile"
-kernel_build="$(sed -n '/^  build)$/,/^    ;;$/p' "$kernel_script")"
+kernel_build="$(sed -n '/^  build | compile-cache)$/,$p' "$kernel_script")"
 verify_line="$(grep -nF 'cosign verify --key keys/cosign.pub "$buildroot"' <<<"$kernel_build" | head -1 | cut -d: -f1)"
 first_build_line="$(grep -nF 'b build ' <<<"$kernel_build" | head -1 | cut -d: -f1)"
 if grep -Fq '. os/kernel-buildroot-snapshot.env' <<<"$kernel_build" \
@@ -232,7 +245,7 @@ if t_has pin-kernel on main && [ "$(tcheck pin-kernel on)" = main ] \
    && grep -Fq 'if [[ $built_from != "$(inputs_digest)" ]]; then' <<<"$kernel_pin" \
    && grep -Fq 'built_from=$(sed -n '"'"'s/^INPUTS_SHA256=//p'"'"' <<<"$T_POINTER_KERNEL")' <<<"$kernel_pin" \
    && grep -Fq 'printf '"'"'%s\n'"'"' "${lines[@]}" "INPUTS_SHA256=$(inputs_digest)" > "$dir/pins.env"' <<<"$kernel_pins" \
-   && grep -Fq 'kernel-build-support.sh stage-modules "$(uname -m)"' "$repo/os/kernel/Containerfile" \
+   && grep -Fq 'kernel-build-support.sh stage-modules "$TARGET_ARCH"' "$repo/os/kernel/Containerfile" \
    && grep -Fq 'sh "$self" stage-boot "$arch" "$ksrc" "$stage" "$kver"' "$repo/os/kernel/build-support.sh" \
    && grep -Fq 'certs/system_certificates.S|*/certs/system_certificates.S|' "$repo/os/kernel/cc-wrapper.sh" \
    && grep -Fq 'python3 /work/check-signing-identity.py "$ksrc/vmlinux"' "$repo/os/kernel/build-support.sh" \

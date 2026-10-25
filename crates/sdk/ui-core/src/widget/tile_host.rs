@@ -2150,6 +2150,8 @@ impl Widget for TileHost {
         &mut self,
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        // A wake or a bound callback runs the app here, in its window.
+        let _running = self.running();
         if let TileContent::App(live) = &mut self.content {
             live.visit_components(request)
         } else {
@@ -2184,6 +2186,7 @@ impl Widget for TileHost {
         &mut self,
         request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
     ) -> Result<(), tilo_actions::DoorError> {
+        let _running = self.running();
         let owner = self.history_owner();
         let separate = self.has_separate_document_owner();
         let interactive = self.history.as_ref().is_none_or(|h| h.live_interactive());

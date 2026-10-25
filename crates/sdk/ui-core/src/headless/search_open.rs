@@ -32,6 +32,16 @@ impl FrameHarness {
             self.text.font_system.locale().to_owned(),
         ));
         palette.load_open_resources(&resources);
+        // The app's own actions, as the window host's palette lists them
+        // (`App::open_action_palette`): search leads with what the app does.
+        palette.load_bound_resources(
+            crate::bound_dispatch::discover_bound_resources(
+                self.root.as_ref(),
+                &self.state.doc,
+                None,
+            )
+            .unwrap_or_default(),
+        );
         palette.set_providers(providers);
         palette.open();
         palette.set_scope(request.resource_scope().cloned());

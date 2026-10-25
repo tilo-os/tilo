@@ -46,7 +46,7 @@ pub use agent::{
     MAX_DEVICE_PATH_BYTES, MAX_PIN_CODE_BYTES, MAX_SERVICE_UUID_BYTES, PairingAgent,
     PairingReplySender,
 };
-pub use client::{BluezClient, DISCOVERY_WINDOW, PairOutcome, error_text};
+pub use client::{BluezChanges, BluezClient, DISCOVERY_WINDOW, PairOutcome, error_text};
 pub use model::{
     AdapterInfo, DeviceInfo, PairingPrompt, PairingReply, PairingRequest, adapter_from_interfaces,
     address_from_path, device_from_interfaces, path_for_address, reply_answers, sort_devices,

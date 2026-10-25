@@ -714,11 +714,13 @@ def compiled_reads(reader: suites.CargoReader) -> set[str]:
     return found
 
 
-def covered(path: str, packages: dict[str, dict], reach: set[str], root: Path) -> bool:
+def covered(path: str, packages: dict[str, dict], reach: set[str], root: Path,
+            dirs: dict[Path, str] | None = None) -> bool:
     """Whether t already counts `path` (a file, or a directory's `/**`) as a file of a package in
     `reach`: t gives a file to the deepest package directory it lies in."""
     target = (root / path.removesuffix("/**")).resolve()
-    dirs = {Path(p["manifest_path"]).resolve().parent: name for name, p in packages.items()}
+    if dirs is None:
+        dirs = {Path(p["manifest_path"]).resolve().parent: name for name, p in packages.items()}
     if path.endswith("/**") and any(target in d.parents for d in dirs):
         return False
     owners = [d for d in dirs if d == target or d in target.parents]
@@ -741,7 +743,8 @@ def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict
         if reader.package in reach:
             reads |= {glob(path) for path in reader.inputs} if reader.package in tested else compiled_reads(reader)
     if spec.get("drop_covered"):
-        reads = {path for path in reads if not covered(path, packages, reach, root)}
+        dirs = {Path(p["manifest_path"]).resolve().parent: name for name, p in packages.items()}
+        reads = {path for path in reads if not covered(path, packages, reach, root, dirs)}
     inputs = list(dict.fromkeys([*spec["inputs"], *sorted(reads - set(spec["inputs"]))]))
     return "\n".join([
         f"cargo_packages = {array(spec.get('cargo_packages', sorted(names)))}",

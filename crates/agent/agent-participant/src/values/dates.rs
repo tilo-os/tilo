@@ -123,12 +123,12 @@ fn zone_offset(zone: &str) -> Option<i64> {
         .checked_mul(sign)
 }
 
-/// `October 14, 2026`, `Oct 14, 2026` or `14 October 2026`, as
-/// [`written`] writes dates.
-fn written_date(text: &str) -> Option<NaiveDate> {
+/// `October 14, 2026`, `Oct 14, 2026`, `14 October 2026` or `14th of
+/// October 2026`, as [`written`] writes dates and people do.
+pub(crate) fn written_date(text: &str) -> Option<NaiveDate> {
     let words: Vec<&str> = text
         .split(|c: char| c.is_whitespace() || c == ',')
-        .filter(|word| !word.is_empty())
+        .filter(|word| !word.is_empty() && !word.eq_ignore_ascii_case("of"))
         .collect();
     let [first, second, year] = words.as_slice() else {
         return None;
@@ -139,10 +139,92 @@ fn written_date(text: &str) -> Option<NaiveDate> {
     if year.len() != 4 {
         return None;
     }
-    from_parts(year.parse().ok()?, month, day.parse().ok()?)
+    from_parts(year.parse().ok()?, month, day_number(day)?)
 }
 
-fn month_number(word: &str) -> Option<i64> {
+/// A day of the month as written: `14`, `14th`, `1st`.
+pub(crate) fn day_number(word: &str) -> Option<i64> {
+    let lower = word.to_ascii_lowercase();
+    let digits = ["st", "nd", "rd", "th"]
+        .iter()
+        .find_map(|suffix| lower.strip_suffix(suffix))
+        .unwrap_or(&lower);
+    if digits.is_empty() || digits.len() > 2 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// A date written as numbers in an order its text may not settle:
+/// `03/04/2026`, `14.10.2026`, `10-14-2026`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Numeric {
+    /// Only one reading is a date.
+    Settled(NaiveDate),
+    /// Day first and month first are both dates, and differ.
+    Either {
+        day_first: NaiveDate,
+        month_first: NaiveDate,
+    },
+}
+
+impl Numeric {
+    /// The date when `day_first` (else month first) is how the text
+    /// writes its dates.
+    pub(crate) const fn read(self, day_first: bool) -> NaiveDate {
+        match self {
+            Self::Settled(day) => day,
+            Self::Either {
+                day_first: day,
+                month_first: month,
+            } => {
+                if day_first {
+                    day
+                } else {
+                    month
+                }
+            }
+        }
+    }
+}
+
+/// `text`, all of it, as a date of two numbers and a four-digit year
+/// joined by `/`, `.` or `-`, and the separator: `None` when it is not
+/// one, or neither order is a date.
+pub(crate) fn numeric_date(text: &str) -> Option<(Numeric, char)> {
+    let separator = text.chars().find(|c| matches!(c, '/' | '.' | '-'))?;
+    let mut parts = text.split(separator);
+    let (first, second, year) = (parts.next()?, parts.next()?, parts.next()?);
+    let short =
+        |part: &str| (1..=2).contains(&part.len()) && part.chars().all(|c| c.is_ascii_digit());
+    if parts.next().is_some()
+        || !short(first)
+        || !short(second)
+        || year.len() != 4
+        || !year.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let (first, second, year): (i64, i64, i64) = (
+        first.parse().ok()?,
+        second.parse().ok()?,
+        year.parse().ok()?,
+    );
+    let day_first = from_parts(year, second, first);
+    let month_first = from_parts(year, first, second);
+    let numeric = match (day_first, month_first) {
+        (Some(day), Some(month)) if day == month => Numeric::Settled(day),
+        (Some(day), Some(month)) => Numeric::Either {
+            day_first: day,
+            month_first: month,
+        },
+        (Some(day), None) | (None, Some(day)) => Numeric::Settled(day),
+        (None, None) => return None,
+    };
+    Some((numeric, separator))
+}
+
+pub(crate) fn month_number(word: &str) -> Option<i64> {
     let word = word.trim_end_matches('.').to_ascii_lowercase();
     if word.len() < 3 {
         return None;
@@ -170,6 +252,17 @@ pub(crate) fn add_days(from: NaiveDate, count: i64) -> Option<NaiveDate> {
         from.checked_sub_days(days)
     } else {
         from.checked_add_days(days)
+    }
+}
+
+/// `count` calendar months after `from`, or before it when negative, as a
+/// spreadsheet's EDATE moves: a day the month lacks is its last day.
+pub(crate) fn add_months(from: NaiveDate, count: i64) -> Option<NaiveDate> {
+    let months = chrono::Months::new(u32::try_from(count.unsigned_abs()).ok()?);
+    if count < 0 {
+        from.checked_sub_months(months)
+    } else {
+        from.checked_add_months(months)
     }
 }
 

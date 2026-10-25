@@ -366,7 +366,7 @@ mod tests {
         drop(key);
         let expiry = cert.issued_at_ns.saturating_add(60_000_000_000);
         cert.expires_at_ns = Some(expiry);
-        let root = runtime_identity::load_from_path(fixture.profile.record_path.clone())
+        let root = runtime_identity_host::load_from_path(fixture.profile.record_path.clone())
             .expect("file-backed test identity");
         cert.signature = root
             .sign(&tilo_user_identity::device_cert_signing_digest(&cert).expect("digest"))

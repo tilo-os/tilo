@@ -89,6 +89,7 @@ impl FileExplorerWidget {
             let (path_widget, actions_widget, toolbar) =
                 crate::toolbar::FileToolbar::new(self.cmds.clone());
             self.toolbar = toolbar;
+            // window-bar: fallback, the bar holds the folder's actions while it hosts the window
             self.nav
                 .set_content_header("", vec![Box::new(actions_widget)]);
             // window-bar: fallback, the bar shows the path while it hosts the window

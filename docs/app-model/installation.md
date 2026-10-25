@@ -260,10 +260,12 @@ idempotently, the next time `tilo-install` or the app host runs.
 Size-pressure eviction goes least recently used first, by the later of
 `last_used` (written when the app opens) and the modification time of the
 tree's launch lease under `leases/`, which the launcher sets again when the
-app closes; an app kept open for weeks counts as used the day it closed.
-It never evicts a pinned app, an app a running sandbox has mounted, an app
-a launch holds, or an app the change it follows just installed or updated:
-a store whose kept apps alone exceed the cap stays over it.
+app closes, on the tree the app's row names then too when an update
+replaced the one it ran on; an app kept open for weeks counts as used the
+day it closed. It never evicts a pinned app, an app a running sandbox has
+mounted, an app a launch holds (including one still running a build an
+update replaced), or an app the change it follows just installed or
+updated: a store whose kept apps alone exceed the cap stays over it.
 
 ## `install`
 
