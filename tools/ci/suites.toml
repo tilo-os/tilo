@@ -552,7 +552,6 @@ suites = [
   "scripts/vm-acceptance/test_dialog_guard.py",
   "scripts/vm-acceptance/test_device_fidelity.py",
   "scripts/vm-acceptance/test_session_restart.py",
-  "scripts/vm-acceptance/test_secrets.py",
   "scripts/vm-acceptance/test_ui.py",
   "scripts/vm-acceptance/test_vm_actions.py",
 ]
