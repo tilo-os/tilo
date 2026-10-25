@@ -52,6 +52,7 @@ mod publisher;
 mod revocations;
 #[cfg(any(feature = "agents", feature = "web"))]
 pub(crate) mod sealed_records;
+mod shares;
 #[cfg(feature = "web")]
 mod spectator_keys;
 #[cfg(feature = "agents")]
