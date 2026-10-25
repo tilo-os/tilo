@@ -1500,12 +1500,16 @@ To test a nested Tilo compositor:
 WAYLAND_DISPLAY=wayland-1 ./target/debug/shell --backend winit &   # inner → wayland-2
 ```
 
-Measured here on a debug build: ~7 s from exec to the inner compositor serving
-its own socket, and both stayed interactive afterwards. Dev and test builds keep
-application code unoptimised, but optimise Vello's encoding, geometry, layout
-and wgpu's command-processing crates. Assertions, overflow checks, GPU validation
-and line-table backtraces stay enabled: using `cargo build` should not require
-turning debugging off to interact with the desktop.
+Dev and test builds keep application and toolkit code unoptimised. The compositor
+uses `opt-level = 1` for the UI traversal and serialization monomorphised inside
+it, with full debugger information, debug assertions and overflow checks. Renderer,
+geometry and GPU command-processing dependencies are optimised separately; GPU
+validation stays enabled. Release profiles are unchanged.
+
+Some compositor locals can be optimised out. For exact stepping, build with
+`cargo build --config 'profile.dev.package.shell.opt-level=0' --locked -p shell --bin shell`.
+Measure event processing as well as rendering: a fast GPU submission cannot
+compensate for unnecessary work before input.
 
 To compare lock-screen typing without locking your desktop, use the same GPU,
 output size and simulated refresh for both binaries:
@@ -1525,7 +1529,11 @@ completion waits; none is a measurement of a physical panel's photon latency.
 The benchmark cycles typing and backspace below the field's dot cap so every
 sample visibly changes the image, and reports raster pixels and dense frames.
 Password-only edits should repaint the bounded password part, not the full
-output. The first lock frame, either lock edge, display changes and unproven
+output. Verification and refusal feedback have a separately bounded status row:
+the answer cross-fades in place, a refusal gives one brief nudge, and reduced
+motion suppresses that movement. The field and row keep their geometry, and no
+animation ticks after the answer rests. The first lock frame, either lock edge,
+display changes and unproven
 scene differences remain full-frame boundaries. The nested backend retains its
 own render target and checks the same predecessor relation before sparse work;
 it never relies on a swapchain image retaining pixels.

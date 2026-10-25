@@ -844,6 +844,21 @@ opt-level = 3
 [profile.test.package.taffy]
 opt-level = 3
 
+# The compositor monomorphises UI traversal and search/serialization code that
+# dependency-only optimisation cannot speed up. Keep it lightly optimised with
+# full debugger information, assertions and overflow checks. Application and
+# toolkit code remain unoptimised; this is not the release profile.
+[profile.dev.package.shell]
+opt-level = 1
+debug = 2
+debug-assertions = true
+overflow-checks = true
+[profile.test.package.shell]
+opt-level = 1
+debug = 2
+debug-assertions = true
+overflow-checks = true
+
 # Optimise the CRDT dependencies in development and test builds; their generic
 # data structures are otherwise disproportionately slow in workspace tests.
 [profile.dev.package.tilo-automerge-fork]
