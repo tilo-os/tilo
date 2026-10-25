@@ -80,7 +80,7 @@ class CollabWireCompatibility(unittest.TestCase):
                     for path in (root / "schema.capnp", binding):
                         original = path.read_text()
                         path.write_text(original + " changed")
-                        with contextlib.redirect_stderr(io.StringIO()):
+                        with contextlib.redirect_stdout(io.StringIO()):
                             self.assertEqual(policy.check(), 1)
                         path.write_text(original)
 

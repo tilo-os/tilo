@@ -173,7 +173,7 @@ def violations(root: Path = ROOT) -> list[str]:
                 if dependency in FORBIDDEN and dependency not in allowed:
                     shown = dependency if key == dependency else f"{key} (package {dependency})"
                     errors.append(
-                        f"{member}/Cargo.toml [{table_name}] depends on {shown}; "
+                        f"{member}/Cargo.toml: [{table_name}] depends on {shown}; "
                         "seal through tilo-seal instead"
                     )
     return errors
@@ -182,10 +182,10 @@ def violations(root: Path = ROOT) -> list[str]:
 def main() -> int:
     errors = violations()
     for error in errors:
-        print(error, file=sys.stderr)
+        print(error)
     if errors:
         return 1
-    print("raw AEAD/KEM/KDF crates are only used by tilo-seal")
+    print("raw AEAD/KEM/KDF crates are only used by tilo-seal", file=sys.stderr)
     return 0
 
 

@@ -108,11 +108,11 @@ def check(root: Path = ROOT) -> list[Violation]:
 def main() -> int:
     found = check()
     if found:
-        print("Setup-specific references in tracked files:")
+        print("Setup-specific references in tracked files:", file=sys.stderr)
         for violation in found:
-            print(f"  {violation}")
+            print(violation)
         return 1
-    print("No setup-specific references in tracked files.")
+    print("No setup-specific references in tracked files.", file=sys.stderr)
     return 0
 
 

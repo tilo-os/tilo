@@ -84,9 +84,12 @@ def main() -> int:
     if violations:
         print("Transient notices FAILED", file=sys.stderr)
         for violation in violations:
-            print(f"  {violation}", file=sys.stderr)
+            print(violation)
         return 1
-    print("Transient notices OK (windows say them in their bar; only the shell paints cards)")
+    print(
+        "Transient notices OK (windows say them in their bar; only the shell paints cards)",
+        file=sys.stderr,
+    )
     return 0
 
 

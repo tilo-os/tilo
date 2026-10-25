@@ -132,7 +132,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print("source file size OK")
+    print("source file size OK", file=sys.stderr)
     return 0
 
 

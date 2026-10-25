@@ -170,7 +170,10 @@ def main(argv: list[str]) -> int:
         for finding in findings:
             print(finding)
         return 0
-    print("Animations are composed from ui::motion (crates/sdk/ui-core/src/motion/):")
+    print(
+        "Animations are composed from ui::motion (crates/sdk/ui-core/src/motion/):",
+        file=sys.stderr,
+    )
     for finding in findings:
         print(finding)
     return 1

@@ -90,7 +90,7 @@ def check(root: Path = ROOT) -> list[str]:
         for match in PRESET.finditer(text):
             line = text.count("\n", 0, match.start()) + 1
             found.append(
-                f"{key}:{line} binds iroh's `presets::N0`, which signs this "
+                f"{key}:{line}: binds iroh's `presets::N0`, which signs this "
                 "device in to number 0's directory whatever the endpoint is "
                 "doing; take `tilo_endpoint_reachability::collaborating()` (or "
                 "`Watchonly`) instead, or add the file to EXEMPT in "
@@ -98,7 +98,7 @@ def check(root: Path = ROOT) -> list[str]:
             )
     for key in EXEMPT:
         if not (root / key).is_file():
-            found.append(f"{key} is exempt in {Path(__file__).name} but no longer exists")
+            found.append(f"{key}: exempt in {Path(__file__).name} but no longer exists")
     return found
 
 
