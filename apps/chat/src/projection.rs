@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::tilo_resource::{Id, Identified, Resource};
 
-use crate::model::{AgentStep, AgentWork, Category, Channel, EditRecord, Message, Reaction, User};
+use crate::model::{AgentStep, AgentWork, Category, Channel, EditRecord, Message, User};
 use crate::record::Chat;
 
 /// The published id of the item `id` of the record's `field`
@@ -190,24 +190,7 @@ impl Chat {
 /// `message` as the timeline draws it.
 #[must_use]
 pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
-    let mut by_emoji: std::collections::BTreeMap<&str, Vec<String>> =
-        std::collections::BTreeMap::new();
-    for reacted in message.reactions.iter() {
-        by_emoji
-            .entry(reacted.emoji.as_str())
-            .or_default()
-            .push(reacted.user.clone());
-    }
-    let reactions: Vec<Reaction> = by_emoji
-        .into_iter()
-        .map(|(emoji, mut users)| {
-            users.sort();
-            Reaction {
-                emoji: emoji.to_owned(),
-                users,
-            }
-        })
-        .collect();
+    let reactions = message.reactions.groups();
     Message {
         id: id.to_string(),
         channel: message.channel.to_string(),

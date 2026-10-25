@@ -279,7 +279,7 @@ fields = [
   { path = "messages.*.edited", type = "bool", readonly = true },
   { path = "messages.*.history", type = "Vec<Revision>", readonly = true },
   { path = "messages.*.parent", type = "Option<Id>", readonly = true },
-  { path = "messages.*.reactions", type = "ui::tilo_resource::Set<Reacted>", readonly = true },
+  { path = "messages.*.reactions", type = "ui::tilo_resource::Reactions", readonly = true },
   { path = "messages.*.mentions", type = "Vec<crate::mention::Mention>", readonly = true },
   { path = "messages.*.reference", type = "Option<tilo_reference::ResourceRef>", readonly = true, stored = "record" },
   { path = "messages.*.reference.kind", type = "String" },
@@ -404,22 +404,6 @@ kind = "undoable"
 params = [
   { name = "message", required = true, schema = { type = "string" } },
   { name = "pinned", required = true, schema = { type = "boolean" } },
-]
-
-[[resources.verbs]]
-id = "react"
-kind = "undoable"
-params = [
-  { name = "message", required = true, schema = { type = "string" } },
-  { name = "emoji", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "unreact"
-kind = "undoable"
-params = [
-  { name = "message", required = true, schema = { type = "string" } },
-  { name = "emoji", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]

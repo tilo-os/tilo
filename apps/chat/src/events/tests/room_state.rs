@@ -278,7 +278,7 @@ fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
                 .unwrap()
                 .reactions
                 .iter()
-                .any(|r| r.emoji == "🔥" && r.reacted_by(model::ME))
+                .any(|r| r.emoji == "🔥" && r.includes(model::ME))
         };
         assert!(!reacted(&app), "m_me1 starts without my 🔥");
         // Open the add-reaction picker on the message, then pick an emoji.
@@ -366,9 +366,11 @@ fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
                 .expect("the semantic control dispatches through the door"),
         )
         .unwrap();
+        assert_eq!(action["action"], ui::tilo_resource::FIELD_EDIT, "{action}");
         assert!(
-            action["action"] == "react" || action["action"] == "unreact",
-            "{action}"
+            ["react", "unreact"].contains(&action["args"]["op"].as_str().unwrap_or_default())
+                && action["args"]["path"][2]["field"] == "reactions",
+            "a reaction is the field edit of the message's reactions: {action}"
         );
     }
 }

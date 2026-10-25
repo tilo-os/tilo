@@ -19,14 +19,13 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use tilo_document::ClipBlock;
 use ui::framework::Chained;
-use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, Refusal};
+use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, Refusal, Segment};
 
 use crate::model::ChannelKind;
 use crate::parts::{self, ChatPart};
 use crate::record::{
     AttachmentUpdate, Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting,
-    ProviderStream, Reacted, Revision, SharedReference, Step, Transition, Work, WorkUpdate,
-    reply_id,
+    ProviderStream, Revision, SharedReference, Step, Transition, Work, WorkUpdate, reply_id,
 };
 
 fn author(cx: &ActionCx) -> Result<String, Refusal> {
@@ -447,44 +446,6 @@ impl ChatPart {
         Ok(())
     }
 
-    /// React.
-    ///
-    /// Your reaction with an emoji.
-    #[action(item = messages)]
-    pub fn react(&mut self, cx: &mut ActionCx, message: &Id, emoji: String) -> Result<(), Refusal> {
-        let me = author(cx)?;
-        let emoji = emoji.trim().to_owned();
-        if emoji.is_empty() || emoji.len() > 64 {
-            return Err(Refusal::new("a reaction is one emoji"));
-        }
-        let row = self
-            .messages
-            .get_mut(message)
-            .ok_or_else(|| Refusal::new("there is no such message"))?;
-        row.reactions.insert(Reacted { emoji, user: me });
-        Ok(())
-    }
-
-    /// Take back a reaction.
-    #[action(item = messages)]
-    pub fn unreact(
-        &mut self,
-        cx: &mut ActionCx,
-        message: &Id,
-        emoji: String,
-    ) -> Result<(), Refusal> {
-        let me = author(cx)?;
-        let row = self
-            .messages
-            .get_mut(message)
-            .ok_or_else(|| Refusal::new("there is no such message"))?;
-        row.reactions.remove(&Reacted {
-            emoji: emoji.trim().to_owned(),
-            user: me,
-        });
-        Ok(())
-    }
-
     /// Record agent work.
     ///
     /// An agent's account of what it is doing with the message that
@@ -764,9 +725,14 @@ impl ChatPart {
         match action {
             ChatPartAction::DeleteMessage(chat_part::DeleteMessage { message })
             | ChatPartAction::RemoveMessage(chat_part::RemoveMessage { message })
-            | ChatPartAction::Pin(chat_part::Pin { message, .. })
-            | ChatPartAction::React(chat_part::React { message, .. })
-            | ChatPartAction::Unreact(chat_part::Unreact { message, .. }) => Some(message.clone()),
+            | ChatPartAction::Pin(chat_part::Pin { message, .. }) => Some(message.clone()),
+            // A field edit of one message (a reaction) names it in its path.
+            ChatPartAction::FieldEdit(edit) => match edit.path() {
+                [Segment::Field(field), Segment::Item(message), ..] if field == "messages" => {
+                    Some(message.clone())
+                }
+                _ => None,
+            },
             _ => None,
         }
     }
