@@ -482,6 +482,26 @@ impl FakeDiscord {
         id
     }
 
+    /// A message posted through `webhook` as `name` at `at_ms`, before
+    /// anyone connected, as a bridge posts: in the channel's history like
+    /// [`Self::post_written`]'s.
+    pub fn post_written_through(
+        &self,
+        webhook: &str,
+        channel: &str,
+        name: &str,
+        content: &str,
+        at_ms: u64,
+    ) -> String {
+        let id = self.post_written(channel, &User::new(webhook, name), content, at_ms);
+        let mut state = self.shared.lock();
+        if let Some(message) = state.messages.iter_mut().find(|m| m["id"] == id.as_str()) {
+            message["webhook_id"] = json!(webhook);
+            message["author"]["bot"] = json!(true);
+        }
+        id
+    }
+
     fn post_message(
         &self,
         channel: &str,
