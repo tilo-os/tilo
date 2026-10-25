@@ -3755,6 +3755,11 @@ impl PaneModel for NetworkModel {
         let device = self.follow_device();
         Some(Rc::new((device, self.follow_device_vpn())))
     }
+
+    // The scan's networks replace "Scanning…" when it lands.
+    fn pending_visual_work(&self) -> bool {
+        self.scan_in_flight
+    }
 }
 
 impl NetworkModel {
