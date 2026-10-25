@@ -969,6 +969,12 @@ impl RoomActivityPane {
         self.comparison.is_some()
     }
 
+    /// The comparison Compare materialised for the selected changes: both
+    /// sides as full snapshots, and the patches between them.
+    pub fn comparison(&self) -> Option<&HistoryComparison> {
+        self.comparison.as_ref()
+    }
+
     /// Checkpoints whose causal heads or historical projection were unavailable.
     pub fn replay_unavailable_checkpoints(&self) -> usize {
         self.replay_unavailable
