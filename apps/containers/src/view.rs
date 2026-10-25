@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::num::u32_of_usize;
 
-use ui::fact::{Fact, Measure};
+use ui::fact::{Measure, Measured};
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{SpacingStep, TextRole};
@@ -626,14 +626,14 @@ fn logs(c: &Container) -> Element {
     }
     let now = ui::time::wall();
     let fact = match as_of(c.logs_fetched_unix_ms) {
-        Some(at) => Fact::measured(
+        Some(at) => Measured::measured(
             Measure::new("Log lines"),
             c.logs.len().to_string(),
             "Podman logs",
             at,
             Some(ui::time::Duration::from_secs(60)),
         ),
-        None => Fact::unknown(
+        None => Measured::unknown(
             Measure::new("Log lines"),
             "this is a sample, not a reading from Podman",
         ),
@@ -723,14 +723,14 @@ fn stats(c: &Container) -> Element {
     ];
     let now = ui::time::wall();
     let fact = match as_of(s.fetched_unix_ms) {
-        Some(at) => Fact::measured(
+        Some(at) => Measured::measured(
             Measure::new("Container usage"),
             "1 sample",
             "Podman stats",
             at,
             Some(ui::time::Duration::from_secs(5)),
         ),
-        None => Fact::unknown(Measure::new("Container usage"), "Podman returned no sample"),
+        None => Measured::unknown(Measure::new("Container usage"), "Podman returned no sample"),
     };
     stack(vec![
         Section::titled(
