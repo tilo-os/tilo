@@ -307,6 +307,7 @@ class Run:
         self.recovery: str | None = None
         self.baseline: dict = {}
         self.items: dict[str, dict] = {}
+        self.avcs: dict[str, list[str]] = {}
         self.facts: dict = {"variant": variant, "cycle": self.cycle.name}
         self.shell: Shell | None = None
 
@@ -688,11 +689,44 @@ cryptsetup close e2e-target
             except Failed as error:
                 text = f"not collected: {error}"
             self.save(f"signin-{label}-{name}.txt", text)
+            if name == "avc":
+                self.avcs[label] = parse_avcs(text)
         try:
             state = console.state(self.cycle.console, 10)
         except Exception as reason:  # no greeter or installer answers once a session runs
             state = {"unreachable": str(reason)}
         self.save(f"signin-{label}-console.json", state)
+
+    def lockout_custody(self, wait: float = 0) -> dict:
+        """Where the TPM's dictionary-attack reset authorisation is held. The TPM reports
+        lockoutAuthSet once tilo-rollback-harden (a timer-started oneshot) has set it and left
+        it in its root-only file; at the admin's sign-in tilo-authd wraps it into lockout.json
+        under the user key, and the file goes once a recovery-key wrapping exists too. Only
+        the wrapping kinds are read, never an envelope."""
+        deadline = time.monotonic() + wait
+        while True:
+            _, status = self.guest("/usr/libexec/tilo/tilo-rollback tpm-status --json", 60, True)
+            try:
+                reported = json.loads(status[status.index("{"):])
+            except ValueError:
+                reported = {}
+            if reported.get("reset_auth_set") or time.monotonic() >= deadline:
+                break
+            time.sleep(10)
+        _, harden_file = self.guest("stat -c '%U:%a' /var/lib/tilo/rollback/lockout-auth 2>/dev/null "
+                                    "|| echo absent", 30, True)
+        _, stored = self.guest("cat /var/lib/tilo/auth/lockout.json 2>/dev/null || true", 30, True)
+        try:
+            wrappings = json.loads(stored[stored.index("{"):]).get("wrappings", []) if "{" in stored else []
+        except ValueError:
+            wrappings = ["unreadable"]
+        _, harden = self.guest("systemctl show -p ActiveState -p Result tilo-rollback-harden.service "
+                               "--value | tr '\\n' ' '", 30, True)
+        return {"reset_auth_set": reported.get("reset_auth_set"),
+                "pin_is_defensible": reported.get("pin_is_defensible"),
+                "harden_file": harden_file.strip(),
+                "lockout_json_wrappings": [w.get("by") if isinstance(w, dict) else w for w in wrappings],
+                "harden_unit": harden.strip()}
 
     def uid(self) -> int:
         code, text = self.guest(f"id -u {self.user}")
@@ -807,10 +841,12 @@ cryptsetup close e2e-target
         self.save("first-boot-sessions.txt", sessions)
         path, text = self.cycle.screen()
         self.cycle.keep_screen("first-boot-after-unlock", path, text)
+        custody = self.lockout_custody(wait=240)
+        hardened = custody["reset_auth_set"] is True and custody["harden_file"] == "root:600"
         evidence = {"disk_prompts_answered": typed, "user_session": session,
                     "greeter_prompts": prompts, "disk_prompt_again": again,
-                    "firstboot_autologin_marker": pending.strip()}
-        if typed == 1 and session and not prompts and not again:
+                    "firstboot_autologin_marker": pending.strip(), "lockout_custody": custody}
+        if typed == 1 and session and not prompts and not again and hardened:
             self.item("1", "passed", "one disk prompt at first boot, then the session started "
                       "without the greeter asking", **evidence)
         else:
@@ -823,6 +859,8 @@ cryptsetup close e2e-target
                 why.append(f"the greeter asked {len(prompts)} times")
             if again:
                 why.append("the disk prompt came back")
+            if not hardened:
+                why.append(f"the TPM reset authorisation was not set by harden: {custody}")
             self.item("1", "failed", "; ".join(why), **evidence)
         self.power_off(label)
 
@@ -898,7 +936,8 @@ cryptsetup close e2e-target
         volume_key_left = [k for k in keys if "tilo-auth:volume-key" in k]
         _, authd = self.guest("journalctl -b --no-pager -o cat -t tilo-authd -u tilo-authd | tail -n 60", quiet=True)
         self.save("tilo-authd-migration.txt", authd)
-        evidence = {"disk_prompts_answered": typed, "session": session, "record": summary,
+        custody = self.lockout_custody()
+        evidence = {"lockout_custody": custody, "disk_prompts_answered": typed, "session": session, "record": summary,
                     "tilo_signin_tokens": [{k: t.get(k) for k in ("keyslots", "uid", "name")}
                                            for t in tokens],
                     "shadow_locked": locked, "pre_existing_keyslots_unchanged": unchanged,
@@ -922,6 +961,8 @@ cryptsetup close e2e-target
                 reopen["disk_secret"] is not None and reopen["disk_secret"] == self.baseline.get("disk_secret_slot"),
             "the recovery key still opens its slot":
                 self.recovery is None or reopen.get("recovery_key") == self.baseline.get("recovery_slot"),
+            "the TPM reset authorisation is set": custody["reset_auth_set"] is True,
+            "lockout.json wraps it under the person's user key": "user" in custody["lockout_json_wrappings"],
         }
         evidence["checks"] = checks
         if self.recovery is None:
@@ -1211,6 +1252,9 @@ cryptsetup close e2e-target
             "the recovery key still opens its slot": self.recovery is None
             or opened.get("recovery_key") == self.baseline.get("recovery_slot"),
             "no tilo-auth:volume-key left in the kernel keyring": not evidence["volume_key_left_in_keyring"],
+            "the TPM reset authorisation is set": evidence["lockout_custody"]["reset_auth_set"] is True,
+            "lockout.json wraps it under the person's user key":
+                "user" in evidence["lockout_custody"]["lockout_json_wrappings"],
         }
         evidence["checks"] = checks
         failed = [name for name, ok in checks.items() if not ok]
@@ -1302,15 +1346,20 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
                 "facts": {r.variant: r.facts for r in runs},
                 "screenshots": sorted(str(p.relative_to(out)) for p in out.rglob("*.png")),
                 "withheld": [str(p.relative_to(out)) for p in withheld]}
-    (out / "report.json").write_text(SECRETS.redact(json.dumps(document, indent=2, sort_keys=True,
-                                                               default=str)) + "\n")
     lines = ["# One-password sign-in, end to end", ""]
     for key in sorted(items):
         entry = items[key]
         lines.append(f"- **{key}. {names[key]}**: {entry['status'].upper()} - {entry['summary']}")
+    avcs = {f"{r.variant}/{label}": found for r in runs for label, found in r.avcs.items()}
+    document["avc_denials"] = avcs
+    new = sorted({d for found in avcs.values() for d in found if not known_avc(d)})
+    lines += ["", "AVC denials during boot and sign-in, beyond those already filed:",
+              *([f"- {d}" for d in new] or ["- none"])]
     lines += ["", "Screenshots:", *[f"- {p}" for p in document["screenshots"]]]
     if withheld:
         lines += ["", "Withheld (held a secret, emptied):", *[f"- {p}" for p in document["withheld"]]]
+    (out / "report.json").write_text(SECRETS.redact(json.dumps(document, indent=2, sort_keys=True,
+                                                               default=str)) + "\n")
     text = SECRETS.redact("\n".join(lines) + "\n")
     (out / "report.md").write_text(text)
     print(text)
@@ -1318,6 +1367,27 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
     if bad:
         print_evidence(out, document)
     return 1 if bad or withheld else 0
+
+
+AVC = re.compile(r"avc:\s+denied\s+\{\s*([^}]+?)\s*\}.*?comm=\"?([^\"\s]*)\"?.*?"
+                 r"scontext=[^:\s]+:[^:\s]+:([^:\s]+)\S*\s+tcontext=[^:\s]+:[^:\s]+:([^:\s]+)\S*"
+                 r"\s+tclass=(\S+)")
+# Denials already filed elsewhere: logind's getattr on the unlabeled /boot.
+KNOWN_AVCS = [("getattr", "systemd_logind_t", "unlabeled_t", "dir")]
+
+
+def parse_avcs(text: str) -> list[str]:
+    """Each distinct denial as `perms comm scontext->tcontext:tclass`."""
+    found = set()
+    for match in AVC.finditer(text):
+        perms, comm, source, target, tclass = match.groups()
+        found.add(f"{{ {perms} }} {comm} {source}->{target}:{tclass}")
+    return sorted(found)
+
+
+def known_avc(denial: str) -> bool:
+    return any(perm in denial and f"{source}->{target}:{tclass}" in denial
+               for perm, source, target, tclass in KNOWN_AVCS)
 
 
 JOURNAL_LINES = re.compile(r"greetd|greeter|tilo|pam_|systemd-logind|session|autologin|cryptsetup|"
