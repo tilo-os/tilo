@@ -236,7 +236,7 @@ impl SidebarDrawer {
     /// and floats over it below that. The column then pans out of view
     /// rather than becoming a phone width to make room for the panel.
     #[must_use]
-    pub fn content_is_column(mut self, min_width: f64) -> Self {
+    pub fn content_is_column(self, min_width: f64) -> Self {
         self.content_min_width(min_width)
     }
     /// The narrowest the docked panel shrinks to beside the content before
