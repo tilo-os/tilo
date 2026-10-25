@@ -10,13 +10,13 @@
 
 use ui::TextRole;
 use ui::i18n::ArgValue;
-use ui::motion::{Appear, Presence, SpringSpec, input_source};
+use ui::motion::{Appear, Direction, ListChange, MotionValue, Presence, input_source};
 use ui::num::f32_of_f64;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
-use ui::tokens::EffectiveMotion;
+use ui::tokens::{EffectiveMotion, MotionSource};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Shape, Stroke};
 use vello::peniko::{Color, Fill};
@@ -62,45 +62,6 @@ pub enum PickerOutcome {
     Cancelled,
 }
 
-/// A rectangle gliding to where it is asked to be on a critically damped
-/// spring, so the highlight slides between parts rather than jumping.
-#[derive(Clone, Copy, Debug)]
-struct Glide {
-    from: Rect,
-    to: Rect,
-    since: Instant,
-}
-
-impl Glide {
-    const SPRING: f64 = 30.0;
-
-    fn at(&self, now: Instant) -> Rect {
-        let t = now.saturating_duration_since(self.since).as_secs_f64();
-        let (left, _) = SpringSpec::critical(Self::SPRING).state(1.0, 0.0, t);
-        let mix = |a: f64, b: f64| b + (a - b) * left;
-        Rect::new(
-            mix(self.from.x0, self.to.x0),
-            mix(self.from.y0, self.to.y0),
-            mix(self.from.x1, self.to.x1),
-            mix(self.from.y1, self.to.y1),
-        )
-    }
-
-    fn settled(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.since).as_secs_f64() > 0.4
-    }
-
-    fn toward(&mut self, to: Rect, now: Instant) {
-        if self.to != to {
-            *self = Self {
-                from: self.at(now),
-                to,
-                since: now,
-            };
-        }
-    }
-}
-
 struct Session {
     /// How far the screen is dimmed: it comes as a modal's scrim does, on
     /// [`Appear`], so a shortcut dims it at once and a click fades it in.
@@ -109,7 +70,10 @@ struct Session {
     /// one lit.
     chain: Vec<PickTarget>,
     level: usize,
-    glide: Option<Glide>,
+    /// Where the highlight is drawn: it lands on the first part lit and on
+    /// a part a key lights, and glides on [`ListChange::MOVE`], as a
+    /// selection does, to a part the pointer lights, so the eye follows it.
+    glide: Option<MotionValue<Rect>>,
     selected: Vec<PickTarget>,
     press: Option<Point>,
     drag: Option<Rect>,
@@ -205,7 +169,7 @@ impl FeedbackPicker {
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
         self.session
             .as_ref()
-            .is_some_and(|s| s.dim.is_moving(now) || s.glide.is_some_and(|g| !g.settled(now)))
+            .is_some_and(|s| s.dim.is_moving(now) || s.glide.is_some_and(|g| g.is_moving(now)))
     }
 
     /// Light up what is under `point`.
@@ -230,11 +194,12 @@ impl FeedbackPicker {
             session.level = chain.len().saturating_sub(1);
             session.chain = chain;
         }
-        relight(session, now);
+        relight(session, self.motion, MotionSource::Pointer, now);
     }
 
-    /// Widen to the part around what is lit (`out`) or narrow back in.
-    pub fn widen(&mut self, out: bool, now: Instant) {
+    /// Widen to the part around what is lit (`out`) or narrow back in, as
+    /// `source` asked: a key lands the highlight, the wheel glides it.
+    pub fn widen(&mut self, out: bool, source: MotionSource, now: Instant) {
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -246,7 +211,7 @@ impl FeedbackPicker {
                 .saturating_add(1)
                 .min(session.chain.len().saturating_sub(1))
         };
-        relight(session, now);
+        relight(session, self.motion, source, now);
     }
 
     /// The person pressed or released the primary button at `point`.
@@ -300,8 +265,10 @@ impl FeedbackPicker {
                 }
                 self.done();
             }
-            Key::Named(NamedKey::ArrowUp) => self.widen(true, now),
-            Key::Named(NamedKey::ArrowDown) => self.widen(false, now),
+            Key::Named(NamedKey::ArrowUp) => self.widen(true, MotionSource::Keyboard, now),
+            Key::Named(NamedKey::ArrowDown) => {
+                self.widen(false, MotionSource::Keyboard, now);
+            }
             _ => {}
         }
         true
@@ -347,7 +314,7 @@ impl FeedbackPicker {
                     MouseScrollDelta::PixelDelta(p) => p.y,
                 };
                 if dy.abs() > f64::EPSILON {
-                    self.widen(dy > 0.0, now);
+                    self.widen(dy > 0.0, MotionSource::Pointer, now);
                 }
             }
             WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
@@ -374,7 +341,7 @@ impl FeedbackPicker {
         };
         let colors = &theme.tokens.colors;
         let fade = session.dim.progress(now);
-        let lit = session.glide.map(|g| g.at(now));
+        let lit = session.glide.map(|g| g.get(now));
         // The screen dims, except over what is picked and what is lit.
         let mut holes: Vec<Rect> = session.selected.iter().map(|s| s.rect).collect();
         holes.extend(lit);
@@ -432,19 +399,20 @@ impl FeedbackPicker {
     }
 }
 
-fn relight(session: &mut Session, now: Instant) {
+/// Send the highlight to what is lit, as `source` asked.
+fn relight(session: &mut Session, motion: EffectiveMotion, source: MotionSource, now: Instant) {
     let Some(rect) = session.lit().map(|t| t.rect) else {
         return;
     };
     match session.glide.as_mut() {
-        Some(glide) => glide.toward(rect, now),
-        None => {
-            session.glide = Some(Glide {
-                from: rect,
-                to: rect,
-                since: now,
-            });
+        Some(glide) => {
+            glide.set(
+                rect,
+                ListChange::MOVE.timing(Direction::Enter, motion, source),
+                now,
+            );
         }
+        None => session.glide = Some(MotionValue::new(rect)),
     }
 }
 
