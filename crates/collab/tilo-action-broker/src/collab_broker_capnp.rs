@@ -8491,6 +8491,27 @@ impl collab_service::Server for CapnpCollabService {
                     )));
                 }
             }
+            // An app the person opens, launched or restored into a tab, is
+            // let author the room as its person may let it: asked where
+            // every opening of an app joins. The join goes on meanwhile:
+            // the app asks for the room's keys again until the grant is in.
+            if matches!(participant_kind, "" | "person")
+                && verified_identity.agent_id.is_none()
+                && let Some(certificate) = verified_identity.certificate.clone()
+            {
+                let state = Arc::clone(&state);
+                let route = route.clone();
+                tokio::task::spawn_local(async move {
+                    if let Err(error) = state.admit_opening_app(&route, &certificate).await {
+                        tracing::warn!(
+                            room = %route.cluster_id,
+                            app = %route.app_id,
+                            %error,
+                            "an opening app was not let author its room"
+                        );
+                    }
+                });
+            }
             tracing::info!(
                 target: "tilo_collab_probe",
                 channel = %channel_id,

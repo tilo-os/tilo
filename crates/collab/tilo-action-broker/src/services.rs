@@ -258,6 +258,22 @@ pub trait WorkspaceMemberships: Send + Sync {
         }
     }
 
+    /// Whether an app opening `room` as `certificate`'s person first has
+    /// the room let `app` author there: the room does not let it yet, and
+    /// that person may grant it. Every opening of an app asks this, the
+    /// launch of one and the join of a tab the session restored alike, and
+    /// grants through [`WorkspaceMembershipCommand::GrantAppAuthorship`].
+    ///
+    /// [`WorkspaceMembershipCommand::GrantAppAuthorship`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship
+    fn app_opens_by_granting(
+        &self,
+        _room: &str,
+        _app: &str,
+        _certificate: &tilo_user_identity::DeviceCert,
+    ) -> bool {
+        false
+    }
+
     /// Whether `room` is held here but governed by the node that stewards
     /// it, where the one membership change this device asks is the
     /// authorship an app opening there needs, committed by that host.

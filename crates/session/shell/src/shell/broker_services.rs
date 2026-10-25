@@ -335,6 +335,28 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         tilo_owner_commit::OwnerCommitService::requires_room(self, room)
     }
 
+    /// The one app-access decision every opening of an app takes
+    /// ([`super::launcher::native_app_open_access`]): the room does not let
+    /// `app` author there yet, and `certificate`'s person may grant it.
+    fn app_opens_by_granting(
+        &self,
+        room: &str,
+        app: &str,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> bool {
+        let Some(room) = super::state::RoomId::parse(room) else {
+            return false;
+        };
+        if certificate.capabilities.can_act_as_host || !self.tree.read().holds_room(room) {
+            return false;
+        }
+        self.opened_owner("native membership owner unavailable")
+            .and_then(|owner| {
+                super::launcher::native_app_open_access(&owner, room, certificate, app)
+            })
+            .is_ok_and(|access| access == super::launcher::NativeAppOpenAccess::Delegate)
+    }
+
     /// A room its node stewards: this owner forwards an opening app's
     /// authorship to that host ([`grant_authorship_at_host`]).
     fn grants_authorship_at_host(&self, room: &str) -> bool {
