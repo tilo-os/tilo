@@ -17,6 +17,7 @@ ARG BASE_REF
 #   perl perl-generators rsync python3 python3-devel python3-rpm-macros
 #   gzip xz zstd cpio git which findutils          SRPM and Kbuild hooks
 #   createrepo_c                     the published kernel repository metadata
+#   ccache                           the kernel build's compiler cache
 #   gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 #                                    x86_64 only: the aarch64 kernel cross-compiles on
 #                                    the x86 builders (tools/ci/publish/kernel.sh). Fedora
@@ -39,7 +40,7 @@ RUN test -n "$BASE_REF" \
       elfutils-libelf-devel elfutils-devel dwarves \
       perl perl-generators rsync \
       python3 python3-devel python3-rpm-macros \
-      gzip xz zstd cpio git which findutils createrepo_c $cross \
+      gzip xz zstd cpio git which findutils createrepo_c ccache $cross \
  && install -d -m 0755 /usr/lib/tilo /usr/src/tilo-kernel \
  && if [ -n "$cross" ]; then \
       test "$(aarch64-linux-gnu-gcc -dumpfullversion)" = "$(gcc -dumpfullversion)" \

@@ -66,7 +66,7 @@ def run_script(step: str, env: dict[str, str], files: dict[str, str] | None = No
 class KernelPublicationTests(unittest.TestCase):
     """t's image-kernel-<arch> (tools/ci/publish/kernel.sh build) compiles the kernel t signs.
 
-    It compiles through one compiler cache only: the sccache directory image-kernel-cache-<arch>
+    It compiles through one compiler cache only: the ccache directory image-kernel-cache-<arch>
     (kernel.sh compile-cache) filled from empty, handed over as that check's output. In a trusted
     run t serves both only from trusted runs, so nothing an untrusted build wrote reaches a signed
     kernel, and no remote cache, credential or other job's writes reach either.
@@ -106,9 +106,8 @@ class KernelPublicationTests(unittest.TestCase):
         with self.subTest(phase='no remote cache or credential reaches a kernel build'):
             for path in ("tools/ci/publish/kernel.sh", "os/kernel/Containerfile", "os/kernel/build-support.sh"):
                 text = (ROOT / path).read_text()
-                for forbidden in ("--secret", "ACTIONS_CACHE_URL", "ACTIONS_RUNTIME_TOKEN", "SCCACHE_AWS",
-                                  "SCCACHE_BUCKET", "SCCACHE_GHA", "SCCACHE_REDIS", "SCCACHE_WEBDAV",
-                                  "SCCACHE_MEMCACHED", "SCCACHE_GCS", "SCCACHE_AZURE", "aws_access_key_id",
+                for forbidden in ("--secret", "ACTIONS_CACHE_URL", "ACTIONS_RUNTIME_TOKEN", "SCCACHE_",
+                                  "CCACHE_REMOTE", "remote_storage", "aws_access_key_id",
                                   "compiler_cache_env.sh", "--cache-from"):
                     self.assertNotIn(forbidden, text, path)
         with self.subTest(phase='both share one compile stage and its arguments'):
@@ -190,10 +189,9 @@ class ContainerfileTests(unittest.TestCase):
         self.assertIn("local) export TILO_KERNEL_COMPILER_CACHE=/work/compiler-cache ;;", text)
         self.assertIn('*) echo "TILO_COMPILER_CACHE must be off or local" >&2; exit 1 ;;', text)
         helper = (ROOT / "os/kernel/build-support.sh").read_text()
-        # sccache's only storage is the directory it was given.
-        self.assertIn('export SCCACHE_DIR="$cache"', helper)
-        self.assertEqual(sorted(set(re.findall(r"SCCACHE_[A-Z_]+", helper))),
-                         ["SCCACHE_CACHE_SIZE", "SCCACHE_DIR", "SCCACHE_DIRECT", "SCCACHE_IDLE_TIMEOUT"])
+        # ccache's only storage is the directory it was given.
+        self.assertIn('export CCACHE_DIR="$cache" CCACHE_MAXSIZE=0 TILO_KERNEL_CC_LAUNCHER=ccache', helper)
+        self.assertEqual(sorted(set(re.findall(r"CCACHE_[A-Z_]+", helper))), ["CCACHE_DIR", "CCACHE_MAXSIZE"])
         # The OS image compiles outside any image build, in os/image/compile.sh.
         compile_sh = (ROOT / "os/image/compile.sh").read_text()
         off = compile_sh.split("if [[ $TILO_COMPILER_CACHE == off ]]; then", 1)[1].split("elif", 1)[0]

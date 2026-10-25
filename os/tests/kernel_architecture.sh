@@ -112,7 +112,7 @@ printf 'ok    kernel images and DTBs staged by architecture; missing artifacts f
 # and CROSS_COMPILE, the compiler cache wraps the cross compiler (and the builder's own for host
 # programs), and a builder without the cross toolchain, or another pairing, fails before make.
 mkdir -p "$tmp/cross/bin" "$tmp/cross/tree" "$tmp/cross/extmod" "$tmp/cross/cache"
-export CROSS_LOG="$tmp/cross/make.log" SCCACHE_LOG_FILE="$tmp/cross/sccache.log"
+export CROSS_LOG="$tmp/cross/make.log" CCACHE_LOG_FILE="$tmp/cross/ccache.log"
 cat > "$tmp/cross/bin/uname" <<'EOF'
 #!/bin/sh
 [ "$1" = -m ] && { echo "${FAKE_HOST:-x86_64}"; exit 0; }
@@ -123,9 +123,9 @@ cat > "$tmp/cross/bin/make" <<'EOF'
 printf 'ARCH=%s CROSS_COMPILE=%s %s\n' "${ARCH:-}" "${CROSS_COMPILE:-}" "$*" >> "$CROSS_LOG"
 case "$*" in *kernelrelease*) echo 6.test ;; esac
 EOF
-cat > "$tmp/cross/bin/sccache" <<'EOF'
+cat > "$tmp/cross/bin/ccache" <<'EOF'
 #!/bin/sh
-printf '%s SCCACHE_DIR=%s\n' "$*" "${SCCACHE_DIR:-}" >> "$SCCACHE_LOG_FILE"
+printf '%s CCACHE_DIR=%s CCACHE_MAXSIZE=%s\n' "$*" "${CCACHE_DIR:-}" "${CCACHE_MAXSIZE:-}" >> "$CCACHE_LOG_FILE"
 EOF
 printf '#!/bin/sh\n' > "$tmp/cross/bin/aarch64-linux-gnu-gcc"
 chmod +x "$tmp/cross/bin/"*
@@ -141,11 +141,24 @@ PATH="$cross_path" TILO_KERNEL_COMPILER_CACHE="$tmp/cross/cache" \
     sh "$helper" compile aarch64 "$tmp/cross/tree" 2 "$tmp/cross/extmod" > /dev/null
 grep -Fq 'CC=sh /work/kernel-cc-wrapper.sh aarch64-linux-gnu-gcc HOSTCC=sh /work/kernel-cc-wrapper.sh gcc all' "$CROSS_LOG" \
     || fail "the compiler cache does not wrap the cross compiler: $(cat "$CROSS_LOG")"
-grep -Fxq -- "--start-server SCCACHE_DIR=$tmp/cross/cache" "$SCCACHE_LOG_FILE" || fail 'sccache did not start on the cache directory'
-grep -Fxq -- "--stop-server SCCACHE_DIR=$tmp/cross/cache" "$SCCACHE_LOG_FILE" || fail 'sccache was left running'
+grep -Fxq -- "--zero-stats CCACHE_DIR=$tmp/cross/cache CCACHE_MAXSIZE=0" "$CCACHE_LOG_FILE" \
+    || fail 'ccache was not pointed at the cache directory, unbounded'
+grep -Fxq -- "--show-stats --verbose CCACHE_DIR=$tmp/cross/cache CCACHE_MAXSIZE=0" "$CCACHE_LOG_FILE" \
+    || fail 'the build did not report what the cache served'
 reject env PATH="$cross_path" TILO_KERNEL_COMPILER_CACHE="$tmp/cross/absent" \
     sh "$helper" compile aarch64 "$tmp/cross/tree" 2 "$tmp/cross/extmod"
 grep -Fq 'no writable compiler cache directory' "$tmp/rejected.log" || fail 'a missing cache directory did not fail'
+# A buildroot from before ccache joined it compiles without the cache. Only the fakes and sh
+# are on PATH, so no ccache of the machine running this stands in.
+mv "$tmp/cross/bin/ccache" "$tmp/cross/ccache.away"
+mkdir -p "$tmp/cross/shell"
+ln -s "$(command -v sh)" "$tmp/cross/shell/sh"
+: > "$CROSS_LOG"
+PATH="$tmp/cross/bin:$tmp/cross/shell" TILO_KERNEL_COMPILER_CACHE="$tmp/cross/cache" \
+    "$tmp/cross/shell/sh" "$helper" compile aarch64 "$tmp/cross/tree" 2 "$tmp/cross/extmod" > /dev/null 2> "$tmp/cross/err"
+grep -Fq 'has no ccache; compiling without the compiler cache' "$tmp/cross/err" || fail 'no ccache was not reported'
+if grep -Fq 'kernel-cc-wrapper' "$CROSS_LOG"; then fail 'a build without ccache wrapped the compiler'; fi
+mv "$tmp/cross/ccache.away" "$tmp/cross/bin/ccache"
 : > "$CROSS_LOG"
 PATH="$cross_path" FAKE_HOST=aarch64 sh "$helper" compile aarch64 "$tmp/cross/tree" 2 "$tmp/cross/extmod" > /dev/null
 if grep -Fv 'ARCH= CROSS_COMPILE= ' "$CROSS_LOG" | grep -q .; then fail 'a native build set cross settings'; fi

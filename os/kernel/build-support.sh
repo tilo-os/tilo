@@ -387,22 +387,26 @@ case "$command" in
         cross_environment
         cd "$ksrc"
         # A compiler cache directory (TILO_KERNEL_COMPILER_CACHE, the release
-        # build's): sccache keeps every object there, keyed by the compiler,
-        # its flags and the preprocessed source, and serves the ones it holds.
+        # build's): ccache keeps every object there and serves the ones it
+        # holds, found by the compiler, its flags and the source and headers it
+        # reads (or, when a header such as the configuration changed, the
+        # preprocessed source). ccache rather than sccache: sccache's server
+        # reads its local cache one entry at a time, so a build of hits ran no
+        # faster than one that compiled everything.
         cache=${TILO_KERNEL_COMPILER_CACHE:-}
+        if [ -n "$cache" ] && ! command -v ccache >/dev/null; then
+            # A buildroot from before ccache joined it.
+            echo "this kernel buildroot has no ccache; compiling without the compiler cache" >&2
+            cache=
+        fi
         if [ -n "$cache" ]; then
             [ -d "$cache" ] && [ -w "$cache" ] || { echo "no writable compiler cache directory at $cache" >&2; exit 1; }
-            command -v sccache >/dev/null || { echo "a compiler cache was given, but no sccache" >&2; exit 1; }
             # The directory is the build's alone, so no size limit evicts what
-            # it was given; the preprocessor mode (no direct mode) keys an object
-            # by exactly what the compiler reads.
-            export SCCACHE_DIR="$cache" SCCACHE_CACHE_SIZE=1T SCCACHE_DIRECT=false \
-                SCCACHE_IDLE_TIMEOUT=0 TILO_KERNEL_CC_LAUNCHER=sccache
-            # A server outliving a failed build would hold the build step open.
-            trap 'sccache --stop-server >/dev/null 2>&1 || true' EXIT
-            sccache --start-server
+            # it was given.
+            export CCACHE_DIR="$cache" CCACHE_MAXSIZE=0 TILO_KERNEL_CC_LAUNCHER=ccache
+            ccache --zero-stats >/dev/null
         fi
-        # An optional compiler launcher (sccache) wraps the target and host
+        # An optional compiler launcher (ccache) wraps the target and host
         # compiler for both the tree and the out-of-tree module. Bypass it
         # for system_certificates.S, whose .incbin input changes with each
         # ephemeral signing key and is not reliably part of a cache key.
@@ -415,7 +419,7 @@ case "$command" in
             make -C "$ksrc" M="$extmod" -j"$jobs" modules
         fi
         if [ -n "$cache" ]; then
-            sccache --show-stats >&2
+            ccache --show-stats --verbose >&2
         fi
         make -s kernelrelease
         ;;
