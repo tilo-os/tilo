@@ -770,6 +770,18 @@ impl BrowserShell {
                     .fold(0.0, f64::max),
             },
         );
+        if let Some((name, reason)) = self.pinned.take_failed_send() {
+            let title = tilo_desktop_surface::i18n::t_args(
+                "people-overlay-message-failed",
+                &[("name", name.into()), ("reason", reason.into())],
+            );
+            self.chrome
+                .notifications
+                .post(tilo_desktop_surface::notifications::Notification::new(
+                    &title, "",
+                ));
+            (self.chrome.wake)();
+        }
     }
 
     /// The pinned roster's and following's share of `event`: what lands on
@@ -815,9 +827,10 @@ impl BrowserShell {
         match hit {
             PeopleHit::ToggleFollow(id) => self.pinned.toggle_follow(&id),
             PeopleHit::Unpin => self.pinned.pin(false),
-            // The page has no direct messages: the box says so instead of
-            // offering to send, and the edge was kept as it moved.
-            PeopleHit::Send { .. } | PeopleHit::Moved(_) => {}
+            // As Chat sends one: to the room's governor, privately.
+            PeopleHit::Send { to, text } => self.pinned.send(&to, &text),
+            // The edge was kept as it moved.
+            PeopleHit::Moved(_) => {}
             PeopleHit::SetStatus(words) => {
                 self.chrome.here.borrow_mut().set_own_words(Some(words));
             }

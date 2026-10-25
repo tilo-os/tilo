@@ -67,6 +67,7 @@ tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-prot
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 hex.workspace = true
+uuid.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 tokio = { workspace = true, features = ["sync"] }
 
