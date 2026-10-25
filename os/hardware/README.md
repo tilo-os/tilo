@@ -80,6 +80,32 @@ a firmware whose mssecapp refuses the TPM costs nothing at boot. Boards whose
 TPM driver is a module (an I2C or SPI TPM) still need the wait, so it stays on
 everywhere else.
 
+### Every board says what it keeps
+
+A hang leaves nothing behind unless the board was set up to record it, so each
+schema-2 definition carries a `crash_record` naming three things:
+
+- `storage` - where the kernel's record of a panic goes. `ramoops` is a region
+  the board's device tree reserves, `block` a reserved region on a block
+  device (pstore/blk), `efi-variable` firmware variables (which wear, and are
+  the last resort), and `none` a board that keeps no record. Only a
+  device-tree board can claim `ramoops` or `block`, because it is the device
+  tree that reserves the memory.
+- `watchdog` - what resets a machine that stops responding: `hardware` for a
+  watchdog built into the SoC, `module` for a driver the board installs (which
+  must then be in `boot_modules`, so it reaches the initramfs), and `none`.
+- `lockup` - what panics first when a CPU stops: `buddy` for ARM64's detector,
+  `nmi` for the perf detector x86 uses, and `none` for a board whose stuck CPU
+  only logs.
+
+The declaration is held to the board's own kernel arguments: a board may name
+a watchdog or a detector only when its command line sets one, and a board that
+says it resets nothing or panics from nothing may not carry the arguments that
+would. `hardware_profile.py` and its Rust mirror enforce this at image build,
+so a board cannot claim a watchdog it never feeds or a detector it never
+enables. A board that keeps no record says so rather than leaving it out.
+Schema-1 definitions predate the field and are still accepted unchanged.
+
 ### Lenovo 83ED crash evidence
 
 The 83ED has reset itself with nothing in the journal: journald writes to disk

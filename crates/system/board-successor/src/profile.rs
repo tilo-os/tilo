@@ -33,13 +33,51 @@ const FIELDS: [&str; 5] = [
     "devicetree",
     "firmware",
 ];
-const OPTIONAL_V2: [&str; 6] = [
+const OPTIONAL_V2: [&str; 7] = [
     "boot_modules",
     "always_on",
     "kernel_args",
     "wifi_wake_on_wlan",
     "internal_keyboards",
     "firmware_exclude",
+    "crash_record",
+];
+/// Where the kernel keeps a record of a panic, what resets a hung machine,
+/// and which detector panics first. Every definition declares all three.
+const CRASH_RECORD_FIELDS: [&str; 3] = ["storage", "watchdog", "lockup"];
+const CRASH_BACKENDS: [&str; 4] = ["ramoops", "efi-variable", "block", "none"];
+const CRASH_WATCHDOGS: [&str; 3] = ["hardware", "module", "none"];
+const CRASH_LOCKUP: [&str; 3] = ["buddy", "nmi", "none"];
+/// Kernel arguments that make the watchdog reset a machine nobody feeds.
+const CRASH_WATCHDOG_ARGS: [&str; 3] =
+    ["systemd.watchdog_sec=", "sbsa_gwdt.action=1", "nowayout=1"];
+/// The argument that makes a stuck CPU panic rather than only log, per detector.
+const CRASH_LOCKUP_ARGS: [(&str, &[&str]); 2] = [
+    (
+        "buddy",
+        &[
+            "nmi_watchdog=panic",
+            "nmi_watchdog=1",
+            "softlockup_panic=1",
+            "hardlockup_panic=1",
+        ],
+    ),
+    (
+        "nmi",
+        &[
+            "nmi_watchdog=panic",
+            "softlockup_panic=1",
+            "hardlockup_panic=1",
+        ],
+    ),
+];
+/// Every argument any detector panics from, so a board that declares its stuck
+/// CPU only logs is refused when its own command line makes one panic.
+const CRASH_PANIC_ARGS: [&str; 4] = [
+    "nmi_watchdog=panic",
+    "nmi_watchdog=1",
+    "softlockup_panic=1",
+    "hardlockup_panic=1",
 ];
 const PROFILE_FIELDS: [&str; 6] = [
     "schema_version",
@@ -452,7 +490,95 @@ pub fn validate_definition(data: Value) -> Result<Map<String, Value>> {
         seen_args.len() == kernel_args.len(),
         "hardware definition kernel arguments must be unique",
     )?;
+    validate_crash_record(&data, &seen_args, schema_number == Some(2))?;
     Ok(data)
+}
+
+/// `validate_crash_record`: the board says where its crash record goes, what
+/// resets it and what panics first, and its kernel arguments agree.
+fn validate_crash_record(
+    data: &Map<String, Value>,
+    kernel_args: &BTreeSet<&str>,
+    required: bool,
+) -> Result<()> {
+    if !required {
+        // Schema 1 predates the record and is still accepted as-is; a board
+        // that moves to schema 2 states it.
+        return Ok(());
+    }
+    let record = match data.get("crash_record") {
+        Some(Value::Object(record)) if record.len() <= 16 => record,
+        _ => {
+            return Err(Error::value(
+                "hardware definition crash record must name a storage backend, a watchdog and a lockup detector",
+            ));
+        }
+    };
+    let present = keys(record);
+    require(
+        present.iter().all(|key| CRASH_RECORD_FIELDS.contains(key))
+            && CRASH_RECORD_FIELDS.iter().all(|key| present.contains(key)),
+        "hardware definition crash record has missing or unknown fields",
+    )?;
+    let text = |key: &str| record.get(key).and_then(Value::as_str).unwrap_or_default();
+    let storage = text("storage");
+    let watchdog = text("watchdog");
+    let lockup = text("lockup");
+    require(
+        CRASH_BACKENDS.contains(&storage),
+        "hardware definition crash record storage must name a supported backend",
+    )?;
+    require(
+        CRASH_WATCHDOGS.contains(&watchdog),
+        "hardware definition crash record watchdog must name a supported watchdog",
+    )?;
+    require(
+        CRASH_LOCKUP.contains(&lockup),
+        "hardware definition crash record lockup must name a supported detector",
+    )?;
+    // ramoops and pstore/blk are memory the board's own device tree reserves.
+    require(
+        !(matches!(storage, "ramoops" | "block")
+            && data.get("devicetree").unwrap_or(&Value::Null).is_null()),
+        "hardware definition crash record storage requires a device-tree board",
+    )?;
+    let feeds_watchdog = kernel_args.iter().any(|arg| {
+        CRASH_WATCHDOG_ARGS
+            .iter()
+            .any(|prefix| arg.starts_with(prefix))
+    });
+    require(
+        (watchdog != "none") == feeds_watchdog,
+        "hardware definition crash record watchdog must name the watchdog its arguments feed",
+    )?;
+    // A board whose detector only reports must not panic from a stuck CPU.
+    let panic_args: &[&str] = if lockup == "none" {
+        CRASH_PANIC_ARGS.as_slice()
+    } else {
+        CRASH_LOCKUP_ARGS
+            .iter()
+            .find(|(name, _)| *name == lockup)
+            .map_or(&[], |(_, args)| args)
+    };
+    let panics = panic_args.iter().any(|arg| kernel_args.contains(arg));
+    require(
+        (lockup != "none") == panics,
+        "hardware definition crash record lockup must name the detector its arguments panic from",
+    )?;
+    // The watchdog driver has to reach the initramfs to be fed from boot.
+    let modular_watchdog = optional_list(
+        data,
+        "boot_modules",
+        64,
+        "hardware definition boot modules must be a bounded name list",
+    )?
+    .iter()
+    .filter_map(Value::as_str)
+    .any(|name| name.ends_with("_wdt"));
+    require(
+        watchdog != "module" || modular_watchdog,
+        "hardware definition crash record watchdog module must be a boot module",
+    )
 }
 
 /// The firmware mapping, system firmware and removable firmware packages of

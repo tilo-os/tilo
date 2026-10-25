@@ -298,6 +298,27 @@ fn definition_mutations_are_refused() {
             json!([{"name": "kb", "bus": "i2c", "vendor": "048d",
                                         "product": "8987", "devicetree_compatible": "lenovo,yoga"}]),
         ),
+        (
+            "crash_record",
+            json!({"storage": "ramoops", "watchdog": "hardware"}),
+        ),
+        (
+            "crash_record",
+            json!({"storage": "flash", "watchdog": "hardware", "lockup": "buddy"}),
+        ),
+        (
+            "crash_record",
+            json!({"storage": "ramoops", "watchdog": "none", "lockup": "buddy"}),
+        ),
+        (
+            "crash_record",
+            json!({"storage": "ramoops", "watchdog": "hardware", "lockup": "none"}),
+        ),
+        (
+            "crash_record",
+            json!({"storage": "ramoops", "watchdog": "hardware", "lockup": "buddy",
+                   "pstore_path": "/sys/fs/pstore"}),
+        ),
         ("unknown", json!(1)),
     ];
     for (key, value) in mutations {
@@ -323,6 +344,65 @@ fn definition_mutations_are_refused() {
     assert!(
         validate_definition(schema1).is_err(),
         "schema 1 has no optional fields"
+    );
+}
+
+#[test]
+fn every_board_declares_a_crash_record_its_kernel_arguments_keep() {
+    let lenovo = shipped("lenovo-83ed");
+    let record = &lenovo["crash_record"];
+    assert_eq!(record["storage"], json!("ramoops"));
+    assert_eq!(record["watchdog"], json!("hardware"));
+    assert_eq!(record["lockup"], json!("buddy"));
+    // The Orange Pi 3B's command line reserves no memory for a record, feeds
+    // no watchdog and panics from no detector, and its definition says so
+    // rather than leaving it out.
+    let orangepi = shipped("orangepi-3b-v2-1");
+    assert_eq!(orangepi["crash_record"]["storage"], json!("none"));
+    assert_eq!(orangepi["crash_record"]["watchdog"], json!("none"));
+    assert_eq!(orangepi["crash_record"]["lockup"], json!("none"));
+    // A board without a device tree cannot claim reserved memory.
+    let mut ramoops = json!({"schema_version": 2, "id": "board", "architecture": "x86_64",
+                            "devicetree": null, "firmware": {}, "system_firmware": [],
+                            "kernel_args": ["nowayout=1"],
+                            "crash_record": {"storage": "ramoops", "watchdog": "hardware",
+                                            "lockup": "none"}});
+    assert!(
+        validate_definition(ramoops.clone()).is_err(),
+        "ramoops needs a device tree"
+    );
+    // UEFI machines keep the record in firmware variables instead.
+    ramoops["crash_record"]["storage"] = json!("efi-variable");
+    assert!(validate_definition(ramoops.clone()).is_ok());
+    // A watchdog driver has to reach the initramfs to be fed from boot.
+    ramoops["crash_record"]["watchdog"] = json!("module");
+    assert!(
+        validate_definition(ramoops.clone()).is_err(),
+        "no watchdog module"
+    );
+    ramoops["boot_modules"] = json!(["dw_wdt"]);
+    assert!(validate_definition(ramoops.clone()).is_ok());
+    // Claiming a watchdog requires the argument that feeds it.
+    ramoops["kernel_args"] = json!([]);
+    assert!(
+        validate_definition(ramoops.clone()).is_err(),
+        "unfed watchdog"
+    );
+    ramoops["crash_record"]["watchdog"] = json!("none");
+    assert!(validate_definition(ramoops.clone()).is_ok());
+    // A board whose detector only reports cannot claim it panics.
+    ramoops["crash_record"]["lockup"] = json!("nmi");
+    assert!(
+        validate_definition(ramoops.clone()).is_err(),
+        "no panicking detector"
+    );
+    ramoops["kernel_args"] = json!(["softlockup_panic=1"]);
+    assert!(validate_definition(ramoops.clone()).is_ok());
+    // Nor may it leave out a detector its command line already panics from.
+    ramoops["crash_record"]["lockup"] = json!("none");
+    assert!(
+        validate_definition(ramoops).is_err(),
+        "a panicking command line"
     );
 }
 
