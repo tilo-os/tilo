@@ -33,6 +33,19 @@ executable stand-alone; the higher-level flow is described below.
   KMS presentation, through `tilo-vm`); see
   [reference hardware](../../docs/benchmarks/reference-hardware.md).
 
+- `drm_hardware_checks.py --device yoga --slot device --commit C
+  --image-digest D --out DIR` — the DRM presentation checks that need a real
+  GPU: an output scanned out through atomic page flips and never demoted, no
+  lost-flip line, frames paced to the vblank and presented within one
+  interval, and a scanned-out client's buffers released within one interval.
+  Each reads the compositor's own session log and fails when the line is
+  missing, never skips; what needs a person at the panel (tearing, a flash on
+  the frame an overlay appears, a VT switch) is printed as such and never
+  reported as passed. Writes one `drm.presentation-checks` record per run and
+  the log it read; see
+  [compositor](../../docs/architecture/compositor.md), "Verifying on
+  hardware".
+
 - `browser_qualification.mjs BUNDLE_DIR --out REPORT --renderer R` — the
   browser runtime's qualification: a release desktop bundle in headless Chrome
   at FHD, fresh-context rounds of load, first opens, window activation, the
