@@ -477,6 +477,14 @@ interface ChannelHandle {
   # answered; a host that cannot say when its drives change answers
   # unimplemented.
   drivesChanged @69 (after :UInt64) -> (change :UInt64);
+  # Resolves once the person's apps the tools service lists to Files (each
+  # app's id, name and kind) may have changed since `after`: 0 at first,
+  # then the `change` the previous call returned. It carries no app; the
+  # endpoint asks the tools service for the list again. An endpoint keeps one
+  # call pending instead of asking on a timer. Only the certified Files route
+  # is answered; a host that cannot say when its apps change answers
+  # unimplemented.
+  applicationsChanged @70 (after :UInt64) -> (change :UInt64);
 
   # Private website session custody for the certified Browser Read route.
   # Identity, person and source are derived by the broker, never caller claims.

@@ -1971,6 +1971,7 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
         CollabEvent::NearbyTransferChanged => "NearbyTransferChanged",
         CollabEvent::SpeakersChanged => "SpeakersChanged",
         CollabEvent::DrivesChanged => "DrivesChanged",
+        CollabEvent::ApplicationsChanged => "ApplicationsChanged",
         CollabEvent::Realtime(event) => {
             serialized_bytes(event, &mut meter);
             "Realtime"

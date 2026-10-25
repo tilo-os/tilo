@@ -9711,6 +9711,7 @@ impl Collaborative for FileExplorerWidget {
         self.selected_open.event(event);
         self.poll_selected_open();
         self.drives.event(event);
+        self.applications.event(event);
         let changed = self.handle_shortcut_event(event);
         let nearby_changed = self.handle_nearby_event(event);
         if changed || nearby_changed {
