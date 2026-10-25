@@ -491,13 +491,12 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         // A click confirms: the page asks its question before it answers.
-        engine.push_event(WebViewEvent::JsDialog {
-            id: 3,
-            kind: JsDialogKind::Confirm,
-            message: "Are you sure?".into(),
-            default_prompt: String::new(),
-            origin: "https://shop.test".into(),
-        });
+        // The engine says the request met a dialog first; the dialog itself
+        // reaches the tab just after.
+        engine.push_page_reply(Err(PageFailure::new(
+            "dialog_open",
+            "The page is waiting on its confirm dialog",
+        )));
         let click = start(
             &mut widget,
             &mut doc,
@@ -507,14 +506,34 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         )
         .unwrap();
         widget.apply_engine_events();
-        let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+        engine.push_event(WebViewEvent::JsDialog {
+            id: 3,
+            kind: JsDialogKind::Confirm,
+            message: "Are you sure?".into(),
+            default_prompt: String::new(),
+            origin: "https://shop.test".into(),
+        });
+        widget.apply_engine_events();
+        // The click did happen: it succeeds, and carries the dialog the page
+        // opened, so the agent reads the question without another read.
+        let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
             widget.poll_invocation(click)
         else {
-            panic!("the request in flight when a dialog opened is failed at once");
+            panic!("the action whose input opened a dialog succeeds");
         };
-        assert_eq!(error.code, "browser.page.dialog_open");
-        assert!(error.message.contains("Are you sure?"), "{}", error.message);
-        assert!(error.message.contains("answer-page-dialog"));
+        let value = output.value.unwrap();
+        let message = value["message"].as_str().unwrap();
+        assert!(message.contains("Clicked element d1e4"), "{message}");
+        assert!(message.contains("opened a confirm dialog"), "{message}");
+        assert!(
+            message.contains("alert") || message.contains("confirm"),
+            "{message}"
+        );
+        assert!(message.contains("Are you sure?"), "{message}");
+        assert!(message.contains("answer-page-dialog"), "{message}");
+        assert_eq!(value["dialog"]["kind"], "confirm", "{value}");
+        assert_eq!(value["dialog"]["message"], "Are you sure?", "{value}");
+        assert_eq!(value["provenance"], "web-content", "{value}");
         assert_eq!(widget.page_dialog.as_ref().unwrap().id, 3);
 
         // Reads answer at once, with the dialog above the page's last outline.
@@ -567,16 +586,32 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         )
         .unwrap_err();
         assert!(refused.contains("confirm dialog"), "{refused}");
+        assert!(refused.contains("Are you sure?"), "{refused}");
         assert!(refused.contains("answer-page-dialog"), "{refused}");
         assert_eq!(page_requests(&engine).len(), before);
 
-        // Answering it releases the page.
-        widget
-            .perform_browser_operation(BrowserOperation::AnswerPageDialog {
-                accept: false,
-                text: None,
-            })
+        // Answering it releases the page, and its answer says what happened
+        // next rather than leaving the caller to guess. The answer is done,
+        // not pending: it settles with the action.
+        let action = page_action(&mut widget, &mut doc, "answer-page-dialog");
+        let encoded = action
+            .build_json(serde_json::json!({"accept": false}).as_object().unwrap())
             .unwrap();
+        let done = widget
+            .admit(
+                ui::tilo_actions::InvocationId::new(),
+                effect_operation(&encoded.payload),
+            )
+            .unwrap();
+        let ui::framework::Effected::Done(output) = done else {
+            panic!("answering a dialog settles at once");
+        };
+        let Some(serde_json::Value::String(answered)) = output.value else {
+            panic!("the answer says what happened next, not nothing");
+        };
+        assert!(answered.contains("confirm"), "{answered}");
+        assert!(answered.contains("Cancel"), "{answered}");
+        assert!(answered.contains("read-page"), "{answered}");
         assert!(widget.page_dialog.is_none());
         assert!(
             engine
@@ -598,6 +633,39 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             )
             .is_ok(),
             "the page takes work again"
+        );
+    }
+
+    // Phase `a_request_blocked_by_an_open_dialog_fails_naming_it`.
+    {
+        let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+        // The page is still loading, so the click cannot reach it yet; the
+        // dialog it opened earlier is already there.
+        engine.push_event(WebViewEvent::JsDialog {
+            id: 4,
+            kind: JsDialogKind::Alert,
+            message: "Draft saved.".into(),
+            default_prompt: String::new(),
+            origin: "https://shop.test".into(),
+        });
+        widget.apply_engine_events();
+        widget.set_loading_progress(0.4);
+        let before = page_requests(&engine).len();
+        let refused = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "click-page",
+            &serde_json::json!({"element": "d1e4"}),
+        )
+        .unwrap_err();
+        assert!(refused.contains("alert dialog"), "{refused}");
+        assert!(refused.contains("Draft saved."), "{refused}");
+        assert!(refused.contains("answer-page-dialog"), "{refused}");
+        assert_eq!(
+            page_requests(&engine).len(),
+            before,
+            "nothing reached the page"
         );
     }
 

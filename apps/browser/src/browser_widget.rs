@@ -54,11 +54,13 @@ use crate::library::Bookmarks;
 use crate::omnibox;
 use crate::resource::{Browser, bookmark_resource_id, browser};
 use crate::settings::{Settings, SettingsActionBindings, SettingsPane, SettingsPresentation};
+use dialog::PageDialog;
 use ui::lock::MutexRecover as _;
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::Resource as _;
 
 mod continuity;
+mod dialog;
 mod library;
 pub(crate) mod personal;
 mod toolbar;
@@ -99,45 +101,13 @@ struct PageOperation {
     /// loaded, after the tab heard so: an answer that says "loading" then
     /// completes at once instead of waiting for a load that already happened.
     settled_while_sent: Option<SettledLoad>,
-}
-
-/// A JavaScript dialog the page is waiting on: `alert`, `confirm`, `prompt`
-/// or the question a page asks before it is left.
-#[derive(Clone, Debug, PartialEq)]
-struct PageDialog {
-    id: u32,
-    kind: JsDialogKind,
-    message: String,
-    default_prompt: String,
-    origin: String,
-}
-
-impl PageDialog {
-    /// The dialog as one outline line, so a reader sees what they must answer.
-    fn line(&self) -> String {
-        let mut text = format!(
-            "- dialog {} {}",
-            self.kind.label(),
-            quote_page(&self.message)
-        );
-        if self.kind == JsDialogKind::Prompt && !self.default_prompt.is_empty() {
-            text.push_str(&format!(" default {}", quote_page(&self.default_prompt)));
-        }
-        if !self.origin.is_empty() {
-            text.push_str(&format!(" from {}", self.origin));
-        }
-        text
-    }
-
-    /// What a page action refused because of it says.
-    fn blocked(&self) -> String {
-        format!(
-            "The page is waiting on a {} dialog: {}. Answer it with answer-page-dialog \
-             before doing anything else to the page.",
-            self.kind.label(),
-            self.message
-        )
-    }
+    /// What the request did, repeated in an answer a dialog it opened cut
+    /// short.
+    act: String,
+    /// The engine answered `dialog_open` before the dialog itself reached
+    /// the tab: the action did what it said, and its answer is the dialog's,
+    /// written once the dialog arrives.
+    opened_a_dialog: bool,
 }
 
 /// A page string as one outline token, with its quotes and newlines made
@@ -2059,26 +2029,28 @@ impl BrowserWidget {
         self.structure_dirty = true;
         // A request the engine was still working on is answered now, naming
         // the dialog, rather than left to its timeout.
-        let Some(operation) = self
-            .page_operation
-            .take_if(|operation| matches!(operation.phase, PagePhase::Sent))
-        else {
+        // An operation the engine answered `dialog_open` is the one the
+        // dialog interrupted; one it never started (a queued request) fails
+        // in `drive_page_operation`.
+        let Some(operation) = self.page_operation.take_if(|operation| {
+            matches!(operation.phase, PagePhase::Sent) && operation.opened_a_dialog
+        }) else {
             return;
         };
-        let message = self
-            .page_dialog
-            .as_ref()
-            .map_or_else(String::new, PageDialog::blocked);
+        let Some(dialog) = self.page_dialog.clone() else {
+            return;
+        };
         self.reader_request = None;
-        self.page_operation_result = Some(ui::tilo_actions::InvocationUpdate::Failed {
-            invocation: operation.invocation,
-            error: ui::tilo_actions::ActionFailure {
-                retryable: false,
-                code: "browser.page.dialog_open".into(),
-                message,
-                details: None,
-            },
-        });
+        // The action did what it said: the page only asks its question
+        // before it goes on. Its answer carries the dialog, so the agent can
+        // act on what it says without another read.
+        self.page_operation_result = Some(dialog.opened_output(
+            operation.invocation,
+            &operation.act,
+            &self.current_uri,
+            &self.title,
+            self.page_outline.as_deref(),
+        ));
     }
 
     /// Answer the open dialog: `accept` is its OK button, `text` a prompt's
@@ -2096,16 +2068,18 @@ impl BrowserWidget {
         self.engine.send(WebViewCommand::JsDialogDecision {
             id: dialog.id,
             accept,
-            text: answer,
+            text: answer.clone(),
         });
         self.structure_dirty = true;
+        let text = answer;
         Ok(format!(
-            "Answered the page's {} dialog: {}.",
+            "Answered the page's {} dialog{}. The page goes on from here: read-page shows what it \
+             says now, or answer-page-dialog again if it asks another question.",
             dialog.kind.label(),
             match (dialog.kind, accept) {
-                (JsDialogKind::BeforeUnload, true) => "leave the page",
-                (_, true) => "OK",
-                (_, false) => "Cancel",
+                (JsDialogKind::BeforeUnload, true) => ": leave the page".to_string(),
+                (_, true) => format!(": OK{}", dialog.answered_with(true, &text)),
+                (_, false) => format!(": Cancel{}", dialog.answered_with(false, &text)),
             }
         ))
     }
@@ -2207,6 +2181,7 @@ impl BrowserWidget {
             return Err("another page action is already running in this tab".into());
         }
         let request_id = self.next_page_request();
+        let act = request.described();
         let now = std::time::Instant::now();
         self.page_operation = Some(PageOperation {
             invocation,
@@ -2217,6 +2192,8 @@ impl BrowserWidget {
             },
             deadline: now + PAGE_OPERATION_TIMEOUT,
             settled_while_sent: None,
+            act,
+            opened_a_dialog: false,
         });
         self.drive_page_operation();
         Ok(())
@@ -2288,6 +2265,19 @@ impl BrowserWidget {
     }
 
     fn accept_page_result(&mut self, request_id: u32, result: Result<PageReply, PageFailure>) {
+        // The engine answers `dialog_open` as soon as the dialog opens, ahead
+        // of the event carrying it: the operation stays open for the dialog,
+        // which answers it, naming what the page asks.
+        if let Err(failure) = &result
+            && failure.code == "dialog_open"
+            && let Some(operation) = self.page_operation.as_mut()
+            && operation.request_id == request_id
+            && matches!(operation.phase, PagePhase::Sent)
+        {
+            operation.opened_a_dialog = true;
+            operation.deadline = std::time::Instant::now() + PAGE_OPERATION_TIMEOUT;
+            return;
+        }
         let Some(operation) = self.page_operation.take_if(|operation| {
             operation.request_id == request_id && matches!(operation.phase, PagePhase::Sent)
         }) else {
@@ -6074,12 +6064,13 @@ impl BrowserWidget {
                 BrowserOperation::OpenInNewTab { .. } => {
                     local_output("Asked the desktop for a new Browser tab beside this one.")
                 }
-                BrowserOperation::AnswerPageDialog { .. } => self
-                    .page_dialog_answer
-                    .take()
-                    .map_or_else(ui::tilo_actions::ActionOutput::default, local_output),
+                BrowserOperation::AnswerPageDialog { .. } => {
+                    // Text: the answer is written when the dialog is answered.
+                    ui::tilo_actions::ActionOutput::default()
+                }
                 _ => ui::tilo_actions::ActionOutput::default(),
             };
+            let was = operation.clone();
             self.perform_browser_operation(operation)?;
             let output = if is_history_pause_toggle {
                 local_output(if self.history_paused() {
@@ -6087,6 +6078,10 @@ impl BrowserWidget {
                 } else {
                     "History resumed in this window."
                 })
+            } else if let BrowserOperation::AnswerPageDialog { .. } = &was {
+                self.page_dialog_answer
+                    .take()
+                    .map_or_else(ui::tilo_actions::ActionOutput::default, local_output)
             } else {
                 output
             };

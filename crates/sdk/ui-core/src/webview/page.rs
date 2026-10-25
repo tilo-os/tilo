@@ -95,6 +95,25 @@ impl PageRequest {
         }
     }
 
+    /// What the request does, in the words an answer opened by a dialog it
+    /// opened repeats: `Clicked button "Save draft"`, `Typed into the page`.
+    pub fn described(&self) -> String {
+        match self {
+            Self::Click { element } => format!("Clicked element {element}"),
+            Self::Fill { element, .. } => format!("Filled element {element}"),
+            Self::Select { element, values } => {
+                format!("Chose {} on element {element}", values.join(", "))
+            }
+            Self::Press { element: None, key } => format!("Pressed {}", key.chord()),
+            Self::Press {
+                element: Some(element),
+                key,
+            } => format!("Pressed {} on element {element}", key.chord()),
+            Self::Submit { element, .. } => format!("Submitted form {element}"),
+            other => format!("Ran {}", other.action()),
+        }
+    }
+
     pub fn element(&self) -> Option<&str> {
         match self {
             Self::Outline
