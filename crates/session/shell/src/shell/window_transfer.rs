@@ -693,12 +693,22 @@ fn plan(
     if source_ws.id == target {
         return Err(MoveTabError::SameWorkspace);
     }
-    // Every room is governed by its host: a window moves between rooms
-    // only through their hosts.
-    if hosted.is_none() {
+    // A room whose records are documents its owner commits is governed: a
+    // window leaves or enters it only through that owner. A room whose
+    // records are sealed channels its apps open themselves keeps them in
+    // this device's app profiles, so a window moves through those, as it
+    // does in this person's own room still being placed on its host. A room
+    // still being joined is taken as governed, so nothing leaves or enters
+    // it unchecked meanwhile.
+    let governed = |room: RoomId| {
+        tree.commits_native_documents(room)
+            || tree.is_joining(room)
+            || hosted.is_some_and(|hosted| hosted.hosts(room))
+    };
+    let source_hosted = governed(source_ws.room());
+    if (source_hosted || governed(destination_ws.room())) && hosted.is_none() {
         return Err(MoveTabError::HostedWorkspace);
     }
-    let source_hosted = true;
     // The person carrying the window must be allowed to open this app in
     // the destination; the destination's own authority governs it there.
     if destination_ws.owner().is_some() {
@@ -715,7 +725,7 @@ fn plan(
         workspace: workspace.id,
         room: workspace.room(),
         name: workspace.name.clone(),
-        hosted: true,
+        hosted: governed(workspace.room()),
     };
     let source = side(source_ws);
     let inputs = data_home.and_then(|home| {
