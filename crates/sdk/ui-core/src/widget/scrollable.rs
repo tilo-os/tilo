@@ -695,8 +695,12 @@ impl Scrollable {
         self.bar_dirty = true;
     }
     /// Glide on at `vx`, `vy` (logical pixels per second, in content
-    /// space); zero stops a glide.
+    /// space); zero stops a glide. Only along the axes this view scrolls:
+    /// a flick that wavers sideways in a list that scrolls up and down
+    /// glides up or down alone.
     pub fn fling(&mut self, vx: f32, vy: f32) {
+        let vx = if self.axis_has_horizontal() { vx } else { 0.0 };
+        let vy = if self.axis_has_vertical() { vy } else { 0.0 };
         self.glide.set_device_scale(self.device_scale);
         self.glide.fling(f64::from(vx), f64::from(vy));
     }
@@ -715,12 +719,18 @@ impl Scrollable {
         self.glided(dx, dy);
     }
 
-    /// Move by a glide's step; content that cannot move further stops it.
+    /// Move by a glide's step; an axis the content cannot move further
+    /// along stops, and the other glides on. Each axis is judged alone: in
+    /// a short frame one axis's step can round to nothing while the
+    /// other's moves a pixel, and that is no end.
     fn glided(&mut self, dx: f64, dy: f64) {
         let before = (self.offset_x, self.offset_y);
         self.move_by(f32_of_f64(dx), f32_of_f64(dy));
-        if (self.offset_x, self.offset_y) == before && (dx != 0.0 || dy != 0.0) {
-            self.glide.stop();
+        if dx != 0.0 && self.offset_x.to_bits() == before.0.to_bits() {
+            self.glide.stop_x();
+        }
+        if dy != 0.0 && self.offset_y.to_bits() == before.1.to_bits() {
+            self.glide.stop_y();
         }
     }
 

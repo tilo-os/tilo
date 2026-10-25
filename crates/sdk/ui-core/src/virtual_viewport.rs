@@ -462,6 +462,16 @@ impl ScrollGlide {
         self.y.stop();
     }
 
+    /// Stop the glide across, and along it is left as it is.
+    pub fn stop_x(&mut self) {
+        self.x.stop();
+    }
+
+    /// Stop the glide up or down, and across it is left as it is.
+    pub fn stop_y(&mut self) {
+        self.y.stop();
+    }
+
     /// How many device pixels one logical pixel is on the display drawn to.
     pub fn set_device_scale(&mut self, device_per_unit: f64) {
         self.x.set_device_scale(device_per_unit);
