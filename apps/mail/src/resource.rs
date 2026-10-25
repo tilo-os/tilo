@@ -1435,6 +1435,9 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
             if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
                 self.follow_person_accounts(accounts);
             }
+            if let Some(copies) = cx.person::<crate::copies::MailCopies>() {
+                self.share_copies(copies);
+            }
         }
         let outbox = self.server_outbox();
         let shared = std::rc::Rc::clone(&self.shared);
