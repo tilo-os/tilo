@@ -47,6 +47,8 @@ pub trait PinnedRoster {
     ) -> Option<PeopleHit>;
     /// `Some` when the key was the overlay's, with what it asks for.
     fn key(&mut self, key: &Key, modifiers: ModifiersState) -> Option<Option<PeopleHit>>;
+    /// The message box's message went: it empties.
+    fn sent(&mut self);
 }
 
 impl PinnedRoster for PeopleOverlay {
@@ -105,6 +107,10 @@ impl PinnedRoster for PeopleOverlay {
 
     fn key(&mut self, key: &Key, modifiers: ModifiersState) -> Option<Option<PeopleHit>> {
         PeopleOverlay::key(self, key, modifiers)
+    }
+
+    fn sent(&mut self) {
+        PeopleOverlay::sent(self);
     }
 }
 

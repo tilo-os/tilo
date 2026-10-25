@@ -17280,6 +17280,7 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tokio",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

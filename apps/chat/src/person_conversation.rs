@@ -1,4 +1,4 @@
-//! Native person-only conversations. Bodies and drafts never enter the room record.
+//! Person-only conversations. Bodies and drafts never enter the room record.
 
 use crate::app::{ChatApp, Focus};
 use crate::composer::ConversationKey;
@@ -11,6 +11,20 @@ impl Drop for ChatApp {
     }
 }
 
+/// A conversation being opened, by its peer, until the room answers.
+pub(crate) type Opening = (
+    String,
+    ui::person_chat::Pending<ui::person_chat::Conversation>,
+);
+
+/// A message on its way, kept until the room accepts or refuses it.
+pub(crate) struct Sending {
+    peer: String,
+    key: ConversationKey,
+    revision: Option<u64>,
+    reply: ui::person_chat::Pending<ui::person_chat::Conversation>,
+}
+
 impl ChatApp {
     pub(crate) fn close_person_conversation(&mut self) {
         if let Some(peer) = self.direct_person.take()
@@ -19,6 +33,7 @@ impl ChatApp {
             ui::person_chat::close_current(&peer, token);
         }
         self.person_subscription = None;
+        self.person_sending = None;
         self.person_messages.clear();
         self.person_body_views.clear();
         self.person_error = None;
@@ -64,10 +79,31 @@ impl ChatApp {
             .set_placeholder(&crate::i18n::t("chat-person-chat-placeholder"));
     }
 
+    /// Open the conversation with `public_key`. The view moves to it once
+    /// the room has it open: at once from the native host, a moment later
+    /// in a page, which never waits for the room on the UI thread.
     pub(crate) fn open_person_conversation(&mut self, public_key: &str) -> Result<(), String> {
         self.person_contacts = ui::person_chat::contacts();
         self.require_person_contact(public_key)?;
-        let conversation = ui::person_chat::open(public_key)?;
+        let opening = ui::person_chat::open(public_key);
+        if let Some(answer) = opening.take() {
+            return self.opened_person_conversation(public_key, answer);
+        }
+        if let Some(replaced) = self
+            .person_opening
+            .replace((public_key.to_owned(), opening))
+        {
+            self.person_abandoned.push(replaced);
+        }
+        Ok(())
+    }
+
+    fn opened_person_conversation(
+        &mut self,
+        public_key: &str,
+        answer: Result<ui::person_chat::Conversation, String>,
+    ) -> Result<(), String> {
+        let conversation = answer?;
         if conversation.peer != public_key {
             return Err(crate::i18n::t("chat-person-chat-unavailable"));
         }
@@ -90,7 +126,38 @@ impl ChatApp {
         Ok(())
     }
 
+    /// Take up what the room answered an open or a send since the last sync.
+    fn settle_person_replies(&mut self) {
+        self.person_abandoned
+            .retain(|(peer, opening)| match opening.take() {
+                Some(Ok(_)) => {
+                    ui::person_chat::close(peer);
+                    false
+                }
+                Some(Err(_)) => false,
+                None => true,
+            });
+        if let Some((peer, opening)) = self.person_opening.take() {
+            match opening.take() {
+                Some(answer) => {
+                    if let Err(error) = self.opened_person_conversation(&peer, answer) {
+                        self.person_error = Some(error);
+                        self.request_relayout();
+                    }
+                }
+                None => self.person_opening = Some((peer, opening)),
+            }
+        }
+        if let Some(sending) = self.person_sending.take() {
+            match sending.reply.take() {
+                Some(answer) => self.sent_person_message(&sending, answer),
+                None => self.person_sending = Some(sending),
+            }
+        }
+    }
+
     pub(crate) fn refresh_person_conversation(&mut self) {
+        self.settle_person_replies();
         // Native contacts hydrate after the first mounted frame. Keep the
         // semantic rows current even before any conversation is selected.
         let contacts = ui::person_chat::contacts();
@@ -116,17 +183,46 @@ impl ChatApp {
             self.person_error = Some(crate::i18n::t("chat-person-chat-unavailable"));
             return;
         }
-        if let Err(error) = self.read_person_conversation(&public_key) {
-            self.person_messages.clear();
-            self.person_body_views.clear();
-            self.person_error = Some(error);
+        match ui::person_chat::snapshot(&public_key) {
+            Ok(conversation) if conversation.peer == public_key => {
+                if conversation.messages.len() != self.person_messages.len() {
+                    self.request_relayout();
+                }
+                self.person_messages = conversation.messages;
+                self.person_error = None;
+            }
+            Ok(_) => {
+                self.person_messages.clear();
+                self.person_body_views.clear();
+                self.person_error = Some(crate::i18n::t("chat-person-chat-unavailable"));
+            }
+            Err(error) => {
+                self.person_messages.clear();
+                self.person_body_views.clear();
+                self.person_error = Some(error);
+            }
         }
     }
 
-    pub(crate) fn read_person_conversation(&mut self, public_key: &str) -> EffectAnswer {
+    /// An explicit read of the conversation with `public_key`, answered
+    /// once the room has (an invocation's read is checked against its
+    /// original custody there).
+    pub(crate) fn read_person_conversation(
+        &mut self,
+        public_key: &str,
+    ) -> Result<ui::person_chat::Pending<ui::person_chat::Conversation>, String> {
         self.person_contacts = ui::person_chat::contacts();
         self.require_person_contact(public_key)?;
-        let conversation = ui::person_chat::read(public_key)?;
+        Ok(ui::person_chat::read(public_key))
+    }
+
+    /// What a read answered, as the effect's value.
+    pub(crate) fn read_person_answer(
+        &mut self,
+        public_key: &str,
+        answer: Result<ui::person_chat::Conversation, String>,
+    ) -> EffectAnswer {
+        let conversation = answer?;
         if conversation.peer != public_key {
             return Err(crate::i18n::t("chat-person-chat-unavailable"));
         }
@@ -143,13 +239,27 @@ impl ChatApp {
         Ok(Effected::value(value))
     }
 
-    pub(crate) fn send_person_message(&mut self, public_key: &str, text: &str) -> EffectAnswer {
+    /// Send `text` to `public_key`; the reply says when the room accepted it.
+    pub(crate) fn send_person_message(
+        &mut self,
+        public_key: &str,
+        text: &str,
+    ) -> Result<ui::person_chat::Pending<ui::person_chat::Conversation>, String> {
         self.person_contacts = ui::person_chat::contacts();
         self.require_person_contact(public_key)?;
         if text.trim().is_empty() {
             return Err(crate::i18n::t("chat-person-chat-empty"));
         }
-        let conversation = ui::person_chat::send(public_key, text)?;
+        Ok(ui::person_chat::send(public_key, text))
+    }
+
+    /// What the room answered a message to `public_key`, as the effect's value.
+    pub(crate) fn sent_person_answer(
+        &mut self,
+        public_key: &str,
+        answer: Result<ui::person_chat::Conversation, String>,
+    ) -> EffectAnswer {
+        let conversation = answer?;
         if conversation.peer != public_key {
             return Err(crate::i18n::t("chat-person-chat-unavailable"));
         }
@@ -164,11 +274,13 @@ impl ChatApp {
         ))
     }
 
+    /// Send what the composer holds to the open conversation. Its draft
+    /// clears once the room accepted the message, not before.
     pub(crate) fn send_person_focused(&mut self) -> bool {
         let Some(public_key) = self.direct_person.clone() else {
             return false;
         };
-        if !self.main_composer_can_edit() {
+        if !self.main_composer_can_edit() || self.person_sending.is_some() {
             return false;
         }
         let text = self.composer_main.private_plain().unwrap_or_default();
@@ -177,22 +289,44 @@ impl ChatApp {
         }
         let key = Self::person_conversation_key(&public_key);
         let revision = self.composer_main.conversation_revision(&key);
-        match self.send_person_message(&public_key, &text) {
+        let reply = match self.send_person_message(&public_key, &text) {
+            Ok(reply) => reply,
+            Err(error) => {
+                self.person_error = Some(error);
+                return false;
+            }
+        };
+        let sending = Sending {
+            peer: public_key,
+            key,
+            revision,
+            reply,
+        };
+        match sending.reply.take() {
+            Some(answer) => self.sent_person_message(&sending, answer),
+            None => self.person_sending = Some(sending),
+        }
+        true
+    }
+
+    fn sent_person_message(
+        &mut self,
+        sending: &Sending,
+        answer: Result<ui::person_chat::Conversation, String>,
+    ) {
+        match self.sent_person_answer(&sending.peer, answer) {
             Ok(_) => {
-                if let Some(revision) = revision
+                if let Some(revision) = sending.revision
                     && self
                         .composer_main
-                        .clear_conversation_revision(&key, revision)
+                        .clear_conversation_revision(&sending.key, revision)
                 {
                     self.draft_main.clear();
                 }
-                true
             }
-            Err(error) => {
-                self.person_error = Some(error);
-                false
-            }
+            Err(error) => self.person_error = Some(error),
         }
+        self.request_relayout();
     }
 
     pub(crate) fn person_conversation_rows() -> Vec<LiveRow> {
