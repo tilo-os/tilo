@@ -342,6 +342,7 @@ mod tests {
                 ActionParam::optional("note", ParamType::Text, "Why"),
             ],
             steps: Vec::new(),
+            step_timeout_secs: None,
             output: Some(Binding::Input("file".into())),
             grant: Vec::new(),
             triggers: Vec::new(),
