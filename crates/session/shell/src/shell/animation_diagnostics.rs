@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-pub(crate) const HOST_SOURCE_NAMES: [&str; 30] = [
+pub(crate) const HOST_SOURCE_NAMES: [&str; 31] = [
     "root-transition",
     "quick-settings",
     "workspace-settings",
@@ -39,6 +39,7 @@ pub(crate) const HOST_SOURCE_NAMES: [&str; 30] = [
     "display-confirm",
     "feedback-picker",
     "control-hints",
+    "onboarding",
 ];
 
 #[allow(
@@ -89,7 +90,8 @@ pub(crate) const CONTENT_BIT: u32 = 1 << 8;
 
 pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
     if inputs.onboarding {
-        return u32::from(inputs.onboarding_animating) | (u32::from(inputs.capture_studio) << 1);
+        return (u32::from(inputs.capture_studio) << 6)
+            | (u32::from(inputs.onboarding_animating) << 30);
     }
     u32::from(inputs.root_transition)
         | (u32::from(inputs.quick_settings) << 1)
@@ -249,7 +251,10 @@ mod tests {
             control_hints: false,
         };
         assert_eq!(host_bits(&inputs(false, false)), 0);
-        assert_eq!(host_bits(&inputs(true, false)), 1);
+        assert_eq!(
+            host_labels(host_bits(&inputs(true, false))).collect::<Vec<_>>(),
+            ["onboarding"],
+        );
         // Setup owns the screen: the desktop's sources beneath it are hidden.
         assert_eq!(host_bits(&inputs(false, true)), 0);
     }
