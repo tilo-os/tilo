@@ -1,4 +1,4 @@
-!<picture>
+<picture>
 
   <source media="(prefers-color-scheme: dark)" srcset="docs/brand/banner-dark.svg">
   <img src="docs/brand/banner-light.svg" alt="Tilo — a desktop for doing things together." width="1200">
