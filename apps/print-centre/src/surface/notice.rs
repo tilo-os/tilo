@@ -1,21 +1,43 @@
-//! How an operation went, said in the window bar's notice
-//! ([`ui::window_toolbar`]): a printer added, a document sent, a page
-//! scanned or saved. A success only informs. A failure carries Try again,
-//! which asks for the very work that failed once more: the same effect on
-//! the same printer or document, the same document on the same printer with
-//! the same settings, the same scanner, the same page.
+//! How an operation went, said to the system rather than to this window: an
+//! outcome that needs nobody (a printer added, a document sent, a page
+//! scanned or saved) is recorded in the ledger, and one that needs a person
+//! (a failure) waits in Needs you with **Try again**, which asks for the very
+//! work that failed once more: the same effect on the same printer or
+//! document, the same document on the same printer with the same settings,
+//! the same scanner, the same page.
+//!
+//! Nothing here shows a notice of its own: a window says what is running
+//! through [`ui::jobs`], and what happened through
+//! [`ui::attention::publish`].
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ui::widget::toast::ToastKind;
-use ui::window_toolbar::{ToolbarAction, ToolbarNotice};
-
-use super::{PrintCentre, UiCommand};
+use super::{PrintCentre, UiCommand, display_name};
 use crate::resource::PrintCentreEffect;
 
-/// The bar action id of a failure's "Try again".
-pub(super) const TRY_AGAIN_ACTION: &str = "print-centre.notice.try-again";
+/// The verb a failure's "Try again" carries.
+pub(super) const TRY_AGAIN_ACTION: &str = "print-centre.retry";
+/// The verb a failure that asking again would not change carries: open the
+/// page it happened on.
+pub(super) const SHOW_ACTION: &str = "print-centre.show";
+/// One test at a time: the waiting stack and the ledger are the process's,
+/// so two print-centre tests running at once would see each other's rows.
+#[cfg(test)]
+pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
+    use ui::lock::MutexRecover as _;
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock_recover()
+}
+
+/// The app, as the system names it when it asks for attention.
+pub(super) const OWNER_APP: &str = "so.tilo.print-centre";
+pub(super) const OWNER_NAME: &str = "Print centre";
+
+/// Print centre, as the ledger and the waiting stack name it.
+pub(super) fn owner() -> ui::attention::Owner {
+    ui::attention::Owner::new(OWNER_APP, OWNER_NAME).with_icon(ui::icons::Icon::Printer)
+}
 
 /// What happened, as the bar says it.
 #[derive(Clone)]
@@ -53,22 +75,19 @@ impl OperationNotice {
         }
     }
 
-    fn bar_notice(&self) -> ToolbarNotice {
-        let kind = if self.success {
-            ToastKind::Success
-        } else {
-            ToastKind::Error
-        };
-        let notice = ToolbarNotice::new(self.text.clone(), kind);
-        if self.retry.is_some() {
-            notice.action(ToolbarAction::new(
-                TRY_AGAIN_ACTION,
-                "rotate-cw",
-                "Try again",
-            ))
-        } else {
-            notice
+    /// The notice this outcome is to the system: a record of what happened
+    /// when nobody needs to act, an item waiting for a person when somebody
+    /// does.
+    fn notice(&self) -> ui::attention::Notice {
+        if self.success {
+            return ui::attention::Notice::did(owner(), self.text.clone());
         }
+        let action = match &self.retry {
+            Some(_) => ui::attention::Action::new(TRY_AGAIN_ACTION, "Try again"),
+            None => ui::attention::Action::new(SHOW_ACTION, "Open the queue"),
+        };
+        ui::attention::Notice::needs(owner(), self.text.clone(), action)
+            .urgent(ui::attention::Urgency::Waiting)
     }
 }
 
@@ -92,6 +111,35 @@ pub(super) enum Retry {
     Recognize { page: Arc<[u8]> },
     /// Saving the same page, or every scanned page as one document.
     Save { document: bool, page: Arc<[u8]> },
+}
+
+/// The job a piece of CUPS work is: what is happening, in the person's
+/// words, and about what.
+pub(super) fn job_for(work: &Work) -> ui::jobs::Running {
+    let (title, subject) = match work {
+        Work::AddPrinter { name, .. } => ("Adding a printer", display_name(name)),
+        Work::SetDefault(name) => ("Changing the default printer", display_name(name)),
+        Work::SetEnabled(name, true) => ("Resuming the printer", display_name(name)),
+        Work::SetEnabled(name, false) => ("Pausing the printer", display_name(name)),
+        Work::Cancel(id) => ("Cancelling a document", id.clone()),
+        Work::RetryJob(id) => ("Retrying a document", id.clone()),
+        Work::Print { printer, path, .. } => (
+            "Sending a document to the printer",
+            format!(
+                "{} on {}",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Document"),
+                display_name(printer)
+            ),
+        ),
+    };
+    ui::jobs::start(
+        ui::jobs::Spec::new(title)
+            .subject(ui::jobs::Subject::new(owner(), subject))
+            .unit(ui::jobs::Unit::Steps)
+            .phase("Talking to the printer"),
+    )
 }
 
 /// What a printer or document operation asks of CUPS.
@@ -131,28 +179,45 @@ impl Work {
 }
 
 impl PrintCentre {
-    /// Say `notice` in the bar, replacing whatever was said.
+    /// Tell the system how `notice` went: recorded when nobody needs to act,
+    /// waiting for the person when somebody does — and what that row's Try
+    /// again asks for.
     pub(super) fn tell(&mut self, notice: OperationNotice) {
-        self.notice.show(notice);
-    }
-
-    /// Keep the bar's notice saying how the last operation went while it
-    /// lasts; call on every sync.
-    pub(super) fn publish_notice(&mut self) {
-        self.notice.expire();
-        self.notice.publish(OperationNotice::bar_notice);
-    }
-
-    /// Ask again for the work whose failure is up, when its Try again was
-    /// pressed. Returns whether it was.
-    pub(super) fn take_try_again(&mut self) -> bool {
-        let Some(retry) = self.notice.get().and_then(|notice| notice.retry.clone()) else {
-            return false;
-        };
-        if !ui::window_toolbar::take_notice_press(TRY_AGAIN_ACTION) {
-            return false;
+        let retry = notice.retry.clone();
+        if let ui::attention::Published::Waiting(item) = ui::attention::publish(notice.notice())
+            && let Some(retry) = retry
+        {
+            self.pending_retries.insert(item, retry);
         }
-        self.notice.dismiss();
+    }
+
+    /// Carry out what the person pressed in Needs you: Try again asks for
+    /// the work that failed once more, and anything else opens the queue.
+    /// Returns whether anything was asked of the printer.
+    pub(super) fn take_attention(&mut self) -> bool {
+        let mut asked = false;
+        for press in self.needs.take() {
+            let Some(acted) = ui::attention::apply(press) else {
+                continue;
+            };
+            match acted.action.verb.as_str() {
+                TRY_AGAIN_ACTION => {
+                    if let Some(retry) = self.pending_retries.remove(&acted.item) {
+                        asked |= self.retry(retry);
+                    }
+                }
+                _ => {
+                    self.open_queue();
+                    asked = true;
+                }
+            }
+        }
+        asked
+    }
+
+    /// Ask again for the work that failed as `retry` says. Returns whether
+    /// anything was asked.
+    pub(super) fn retry(&mut self, retry: Retry) -> bool {
         let door = self.door();
         let command = match retry {
             Retry::Effect(effect) => {

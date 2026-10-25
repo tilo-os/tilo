@@ -940,3 +940,40 @@ conversation-draft = Draft
 conversation-draft-preview = Draft: {$text}
 conversation-unread = Unread message
 conversation-day-earlier = {$date}
+# Jobs: what is running. A job's row says what it is doing and how far.
+jobs-starting = Wird gestartet
+jobs-phase-of = { $phase }: { $done } von { $total }
+jobs-phase-seen = { $phase }: { $seen }
+jobs-percent = { $percent } %
+jobs-bar-of = { $done } von { $total }
+jobs-failed = Nicht fertig geworden: { $reason }
+jobs-stopped = Angehalten
+jobs-stop = Anhalten
+jobs-stopping = Wird angehalten
+jobs-show-me = Zeigen
+jobs-read = Gelesen
+jobs-more = Noch { $count }
+jobs-running-heading = Läuft
+jobs-finished-heading = Beendet
+jobs-none = Es läuft nichts
+jobs-none-message = Alles, was länger dauert, steht währenddessen da und sagt, wie es geendet hat.
+
+jobs-files-one = { $count } Datei
+jobs-files = { $count } Dateien
+jobs-items-one = { $count } Element
+jobs-items = { $count } Elemente
+jobs-steps-one = { $count } Schritt
+jobs-steps = { $count } Schritte
+
+# Needs you: what wants a person.
+attention-blocking = Jetzt
+attention-waiting = Wartet
+attention-noted = Gut zu wissen
+attention-none = Nichts braucht dich
+attention-none-message = Was auf deine Entscheidung wartet, wartet weiter.
+attention-because = { $about }, { $because }
+attention-defer = Für später beiseitelegen
+attention-deferred-one = { $count } beiseitegelegt
+attention-deferred = { $count } beiseitegelegt
+attention-pill-one = { $count } wartet
+attention-pill = { $count } warten

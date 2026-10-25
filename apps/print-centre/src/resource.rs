@@ -141,6 +141,9 @@ pub enum PrintCentreEffect {
     /// Run printer diagnostics.
     #[effect(view)]
     RunDiagnostics,
+    /// Open what wants a person.
+    #[effect(view)]
+    OpenNeeds,
     /// Print a document.
     ///
     /// Asks for the document, then shows its preview and printing options.
