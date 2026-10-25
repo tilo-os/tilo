@@ -18,6 +18,7 @@ use ui::widget::{
 };
 use winit::event::WindowEvent;
 
+use crate::i18n::t;
 use crate::link::{Intent, Link};
 use crate::model::QueryResult;
 use crate::record::Workspace as Record;
@@ -41,7 +42,7 @@ impl EditorPane {
         let mut editor = CodeEditor::local()
             .with_language(Language::Sql)
             .with_tab_width(2)
-            .with_placeholder("Write a SQL query")
+            .with_placeholder(&t("db-sql-placeholder"))
             .with_id("sql-editor");
         // The client opens ready to type a query.
         editor.set_focused(true);
@@ -125,8 +126,8 @@ impl StarterQueries {
         let state = ui::LocalState::new(String::new());
         let menu = Dropdown::from_state(names.clone(), &state)
             .with_id("db.query.snippets")
-            .with_accessible_name("Starter queries")
-            .with_placeholder("Starter queries")
+            .with_accessible_name(&t("db-starter-queries"))
+            .with_placeholder(&t("db-starter-queries"))
             .on_change(move |name| {
                 if let Some(index) = names.iter().position(|candidate| candidate == name) {
                     pick_link.ask(Intent::LoadSnippet(index));
@@ -185,7 +186,7 @@ fn toolbar(link: &Link) -> Row {
 /// What the strip above the result says.
 fn strip_text(link: &Link) -> String {
     link.read(|model| match &model.status {
-        RunStatus::Idle => "Ready".to_owned(),
+        RunStatus::Idle => t("db-ready"),
         RunStatus::Busy(message) | RunStatus::Ok(message) => message.clone(),
         RunStatus::Error(_) => model
             .query
@@ -205,17 +206,30 @@ fn results_content(link: &Link, result: Option<Arc<QueryResult>>) -> Element {
         .as_ref()
         .is_some_and(|result| !result.columns.is_empty());
     let body: Element = if has_columns {
-        let mut table = ResultsTable::new("db.query.results");
-        table.bind(result);
-        Box::new(table)
+        let mut table = ResultsTable::new("db.query.results").reporting_to(link);
+        table.bind(result.clone());
+        // A cut result says so, and says what to do about it, above the grid
+        // rather than through a "+" nobody can read.
+        let cut = result.as_ref().and_then(|result| result.cut_note());
+        match cut {
+            Some(note) => Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .push(Box::new(CaptionLine::under_divider(
+                        Text::new(&note).with_role(TextRole::Body).dimmed(),
+                    )))
+                    .push(Box::new(table)),
+            ),
+            None => Box::new(table),
+        }
     } else {
         let message = match &result {
-            Some(result) if result.is_select => "The query returned no columns.",
-            Some(_) => "The statement ran.",
-            None => "",
+            Some(result) if result.is_select => t("db-query-no-columns"),
+            Some(_) => t("db-statement-ran"),
+            None => String::new(),
         };
         Box::new(CaptionLine::under_divider(
-            Text::new(message).with_role(TextRole::Body).dimmed(),
+            Text::new(&message).with_role(TextRole::Body).dimmed(),
         ))
     };
     Box::new(
