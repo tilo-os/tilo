@@ -8,12 +8,13 @@
 //     The event-loop proxy is captured via `run_with_setup` so the
 //     background auth worker can pump prompts/results back into the UI.
 //   * `--shots <PATH> [--scenario <name>] [--direction split|poster]
-//     [--displays WxH+WxH]` plus
+//     [--displays WxH+WxH] [--input touch]` plus
 //     the standard capture options (`--viewport`, `--text-scale`, `--theme`,
 //     …, see `ui::launch::LaunchArgs`) — render one login-card state
 //     into a PNG at `<PATH>` and exit. No window, no event loop. Headless
 //     snapshot for CI / visual inspection (identical output to the live
-//     binary). `--scenario` names one of `SCENARIOS` and defaults to `form`.
+//     binary). `--scenario` names one of `SCENARIOS` and defaults to `form`;
+//     `--input touch` renders the card as a finger uses it.
 
 use std::sync::{Arc, OnceLock};
 
@@ -35,7 +36,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _detached = ui::wake::WakeScope::enter_detached();
     tracing_subscriber::fmt::init();
 
-    let args = ui::launch::LaunchArgs::from_env(&["--direction", "--displays"])?;
+    let args = ui::launch::LaunchArgs::from_env(&["--direction", "--displays", "--input"])?;
     if let Some(out) = &args.shots {
         let scenario = match args.scenario.as_deref() {
             None => AuthScenario::Form,
@@ -72,6 +73,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             viewport,
             ui::launch::shot_theme(&args),
         );
+        match args.value("--input") {
+            Some("touch") => frame.set_interaction_environment(ui::InteractionEnvironment::TOUCH),
+            Some("pointer") | None => {}
+            Some(other) => return Err(format!("unknown --input {other}: touch or pointer").into()),
+        }
         frame.settle_for_capture(ui::launch::CAPTURE_SETTLE_BOUND);
         frame.render_png(out);
         println!("tilo-greeter: wrote shot to {}", out.display());

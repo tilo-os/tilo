@@ -9,6 +9,7 @@ use winit::event::WindowEvent;
 
 use super::{AppModel, Element, EventCtx, ModelPath, Widget, layout_rect};
 use crate::i18n::I18nManager;
+use crate::interaction::InteractionEnvironment;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -28,6 +29,9 @@ pub struct Composed {
     stale: bool,
     /// The language the composition was built in ([`I18nManager::revision`]).
     language: u64,
+    /// The host's input capabilities, as last told: each composition built
+    /// afresh starts with them, not with a mouse's defaults.
+    environment: Option<InteractionEnvironment>,
 }
 
 impl Composed {
@@ -43,9 +47,11 @@ impl Composed {
         self.invalidated = false;
         self.stale = false;
         self.language = I18nManager::revision();
-        self.element
-            .insert(element)
-            .build_layout(taffy, theme, node_map)
+        let element = self.element.insert(element);
+        if let Some(environment) = self.environment {
+            element.set_interaction_environment(environment);
+        }
+        element.build_layout(taffy, theme, node_map)
     }
 
     /// Lay out the composition kept from the last layout, or what `build`
@@ -72,7 +78,21 @@ impl Composed {
         self.invalidated = false;
         self.stale = false;
         self.language = I18nManager::revision();
-        self.element.insert(element).as_mut()
+        let element = self.element.insert(element).as_mut();
+        if let Some(environment) = self.environment {
+            element.set_interaction_environment(environment);
+        }
+        element
+    }
+
+    /// The host's input capabilities changed: the composition takes them,
+    /// and so does every one built after it. An owner forwards
+    /// [`Widget::set_interaction_environment`] here.
+    pub fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
+        self.environment = Some(environment);
+        if let Some(element) = &mut self.element {
+            element.set_interaction_environment(environment);
+        }
     }
 
     /// Take the composition out, for an owner that keeps it across layouts
@@ -313,5 +333,56 @@ mod tests {
             !composed.take_structure_dirty(),
             "the rebuild it asked for happened"
         );
+    }
+
+    /// Records the input capabilities it is told.
+    struct Probe(std::rc::Rc<std::cell::Cell<Option<InteractionEnvironment>>>);
+
+    impl Widget for Probe {
+        fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            _node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.new_leaf(taffy::Style::default()).unwrap()
+        }
+        fn name(&self) -> &'static str {
+            "Probe"
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            Vec::new()
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            Vec::new()
+        }
+        fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
+            self.0.set(Some(environment));
+        }
+    }
+
+    #[test]
+    fn a_composition_built_afresh_keeps_the_input_in_use() {
+        let mut composed = Composed::default();
+        let first = std::rc::Rc::default();
+        composed.replace(Box::new(Probe(std::rc::Rc::clone(&first))));
+        assert_eq!(first.get(), None, "nothing told yet, nothing passed on");
+        composed.set_interaction_environment(InteractionEnvironment::TOUCH);
+        assert_eq!(first.get(), Some(InteractionEnvironment::TOUCH));
+
+        let rebuilt = std::rc::Rc::default();
+        composed.replace(Box::new(Probe(std::rc::Rc::clone(&rebuilt))));
+        assert_eq!(rebuilt.get(), Some(InteractionEnvironment::TOUCH));
+
+        let laid_out = std::rc::Rc::default();
+        let mut taffy = TaffyTree::new();
+        composed.build_layout(
+            Box::new(Probe(std::rc::Rc::clone(&laid_out))),
+            &mut taffy,
+            &Theme::light(),
+            &mut HashMap::new(),
+        );
+        assert_eq!(laid_out.get(), Some(InteractionEnvironment::TOUCH));
     }
 }
