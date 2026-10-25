@@ -145,6 +145,19 @@ pub struct Who<'a> {
     /// Whether the person the actor acted for is the reader.
     pub for_reader: bool,
     pub is_reader: bool,
+    /// The task the action was taken in, as its id and the label it carried
+    /// at the time. There are no separate agents: everything an agent does
+    /// it does as a task, so an actor that is not the reader is named by the
+    /// task it worked for its person.
+    pub task: Option<&'a Task<'a>>,
+}
+
+/// The task an action is attributed to ([`Who::task`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Task<'a> {
+    pub id: &'a str,
+    /// The task's name at the time of the change; empty when nothing named it.
+    pub label: &'a str,
 }
 
 /// The Fluent message prefix of an app id: its last segment in kebab case
@@ -300,7 +313,11 @@ impl<'a> Reader<'a> {
     }
 
     /// Who did it, as one line and as presence names them: "You",
-    /// "Claude · Agent, for Quinten", "Morning · Shortcut".
+    /// "Quinten via task 'Prepare Q3 financials'", "Morning · Shortcut".
+    ///
+    /// Anyone but the reader acted as a task, so the task names them: the
+    /// person under whose authority it was done, or the Shortcut that ran.
+    /// Without a named task, the actor as it is recorded.
     pub fn actor(&self, who: &Who<'_>) -> String {
         let mut args = FluentArgs::new();
         args.set("actor", who.actor.to_owned());
@@ -315,6 +332,14 @@ impl<'a> Reader<'a> {
         }
         if who.actor.trim().is_empty() {
             return self.framework_message("history-actor-unknown", &args);
+        }
+        if let Some(task) = who.task
+            && !task.label.trim().is_empty()
+        {
+            let mut args = FluentArgs::new();
+            args.set("person", who.actor.to_owned());
+            args.set("task", task.label.to_owned());
+            return self.framework_message("history-actor-via-task", &args);
         }
         let named = match who.kind {
             ActorKind::Agent => self.framework_message("history-actor-agent", &args),

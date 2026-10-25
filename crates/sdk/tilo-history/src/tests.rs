@@ -191,6 +191,54 @@ fn groups_and_history_steps_read_as_sentences() {
 }
 
 #[test]
+fn a_task_names_the_person_who_acted_through_it() {
+    let reader = Reader::new("en-US");
+    let task = Task {
+        id: "11111111-1111-4111-8111-111111111111",
+        label: "Prepare Q3 financials",
+    };
+    // An agent working a task is named by the person under whose authority
+    // the task ran, through the task.
+    assert_eq!(
+        reader.actor(&Who {
+            actor: "Quinten",
+            kind: ActorKind::Agent,
+            for_person: Some("Quinten"),
+            for_reader: false,
+            is_reader: false,
+            task: Some(&task),
+        }),
+        "Quinten via task ‘Prepare Q3 financials’"
+    );
+    assert_eq!(
+        Reader::new("de-DE").actor(&Who {
+            actor: "Quinten",
+            kind: ActorKind::Agent,
+            for_person: Some("Quinten"),
+            for_reader: false,
+            is_reader: false,
+            task: Some(&task),
+        }),
+        "Quinten über Aufgabe „Prepare Q3 financials“"
+    );
+    // A task nobody named leaves the actor as it is recorded.
+    assert_eq!(
+        reader.actor(&Who {
+            actor: "Quinten",
+            kind: ActorKind::Person,
+            for_person: None,
+            for_reader: false,
+            is_reader: false,
+            task: Some(&Task {
+                id: &task.id,
+                label: " ",
+            }),
+        }),
+        "Quinten"
+    );
+}
+
+#[test]
 fn actors_are_named_with_the_person_they_act_for() {
     let reader = Reader::new("en-US");
     let agent = ActionInvoker::actor("agent:claude")
@@ -203,7 +251,8 @@ fn actors_are_named_with_the_person_they_act_for() {
             kind: agent.kind,
             for_person: Some("Quinten"),
             for_reader: false,
-            is_reader: false
+            is_reader: false,
+            task: None
         }),
         "Claude · Agent, for Quinten"
     );
@@ -213,7 +262,8 @@ fn actors_are_named_with_the_person_they_act_for() {
             kind: ActorKind::Agent,
             for_person: None,
             for_reader: false,
-            is_reader: false
+            is_reader: false,
+            task: None
         }),
         "Claude · Agent"
     );
@@ -223,7 +273,8 @@ fn actors_are_named_with_the_person_they_act_for() {
             kind: ActorKind::Person,
             for_person: None,
             for_reader: false,
-            is_reader: true
+            is_reader: true,
+            task: None
         }),
         "You"
     );
@@ -233,7 +284,8 @@ fn actors_are_named_with_the_person_they_act_for() {
             kind: ActorKind::Shortcut,
             for_person: Some("Quinten"),
             for_reader: false,
-            is_reader: false
+            is_reader: false,
+            task: None
         }),
         "Morgens · Kurzbefehl, für Quinten"
     );
@@ -243,7 +295,8 @@ fn actors_are_named_with_the_person_they_act_for() {
             kind: ActorKind::Bot,
             for_person: Some("Ada"),
             for_reader: false,
-            is_reader: false
+            is_reader: false,
+            task: None
         }),
         "Discord Bridge · Bot, for Ada"
     );
