@@ -72,6 +72,56 @@ impl<P: Resource> Shared<P> {
 }
 
 impl<P: Resource> WorkspaceRecord<P> {
+    /// The record `P` that `owner` keeps in the room `records` opens,
+    /// created with the resource's genesis where nothing holds it yet and
+    /// brought to its version: what an app window holds
+    /// ([`RecordEnv::workspace`](super::RecordEnv::workspace)), and what a
+    /// host that is no app window (the session's workspace settings) opens
+    /// the same way. Changes are attributed to `app` (its id and title) and,
+    /// where the host knows the room's grants as `permissions`, decided by
+    /// them first; `wake` is woken when another replica's change arrives.
+    pub fn open(
+        records: &WorkspaceRecords,
+        owner: &'static str,
+        app: (&'static str, &'static str),
+        permissions: Option<LivePermissions>,
+        wake: Option<WakeHandle>,
+    ) -> Option<Self> {
+        let record = records
+            .open_record(owner, P::KIND, &|doc| {
+                P::initialize(doc).map_err(|error| error.to_string())
+            })
+            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "workspace record unavailable"))
+            .ok()?;
+        if record.read(tilo_resource::evolution::stored_version)? < P::VERSION
+            && let Err(error) = record.edit(false, |doc| {
+                tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
+            })
+        {
+            tracing::warn!(kind = P::KIND, %error, "workspace record not migrated");
+        }
+        let reader = record
+            .read(tilo_resource::Reader::<P>::read)?
+            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "workspace record unreadable"))
+            .ok()?;
+        if let Some(wake) = wake {
+            record.wake_on_arrival(wake);
+        }
+        let live = Live::new(reader);
+        Some(Self {
+            shared: Rc::new(Shared::<P> {
+                record,
+                owner,
+                app_id: app.0,
+                app_title: app.1,
+                me: records.author().0.clone(),
+                permissions,
+                state: LocalState::new(live.get()),
+                live,
+            }),
+        })
+    }
+
     /// The current state.
     pub fn get(&self) -> Rc<P::State> {
         self.shared.refresh();
@@ -231,39 +281,14 @@ impl WorkspaceState {
         if owner == self.app_id {
             super::controls::opened_in_room::<P>();
         }
-        let record = self
-            .records
-            .open_record(owner, P::KIND, &|doc| {
-                P::initialize(doc).map_err(|error| error.to_string())
-            })
-            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "workspace record unavailable"))
-            .ok()?;
-        if record.read(tilo_resource::evolution::stored_version)? < P::VERSION
-            && let Err(error) = record.edit(false, |doc| {
-                tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
-            })
-        {
-            tracing::warn!(kind = P::KIND, %error, "workspace record not migrated");
-        }
-        let reader = record
-            .read(tilo_resource::Reader::<P>::read)?
-            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "workspace record unreadable"))
-            .ok()?;
-        if let Some(wake) = &self.wake {
-            record.wake_on_arrival(wake.clone());
-        }
-        self.owners.borrow_mut().push(record.history_owner());
-        let live = Live::new(reader);
-        let shared = Rc::new(Shared::<P> {
-            record,
+        let WorkspaceRecord { shared } = WorkspaceRecord::<P>::open(
+            &self.records,
             owner,
-            app_id: self.app_id,
-            app_title: self.app_title,
-            me: self.records.author().0.clone(),
-            permissions: self.permissions.clone(),
-            state: LocalState::new(live.get()),
-            live,
-        });
+            (self.app_id, self.app_title),
+            self.permissions.clone(),
+            self.wake.clone(),
+        )?;
+        self.owners.borrow_mut().push(shared.record.history_owner());
         let weak = Rc::downgrade(&shared);
         self.refreshers.borrow_mut().push(Box::new(move || {
             weak.upgrade().is_some_and(|shared| shared.refresh())
