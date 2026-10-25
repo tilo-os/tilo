@@ -1177,3 +1177,53 @@ fn identifiers_in_a_label_are_set_apart_with_no_kind_declared() {
     assert_eq!(line[12..15], url[..]);
     assert_ne!(line[12..15], prose[..3]);
 }
+
+#[test]
+fn clipped_rich_text_draws_ink_that_overhangs_from_rows_far_outside_the_clip() {
+    let mut renderer = renderer();
+    // Leading a tenth of the size: each row's accents rise and descenders
+    // hang several rows past its band, farther than any fixed number of
+    // rows around the clip.
+    let style = named_style("Noto Sans").with_line_height(0.1);
+    let text = "Ågypq ÅÉgjy\n".repeat(60);
+    let layout = RichTextLayout::shape_styled(
+        &mut renderer.font_system,
+        &[RichSpan::new(&text)],
+        &style,
+        Some(400.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    let bands: Vec<(f32, f32)> = layout
+        .buffer
+        .layout_runs()
+        .map(|run| (run.line_top, run.line_top + run.line_height))
+        .collect();
+    assert!(bands.len() >= 60, "one row per line: {bands:?}");
+    let transform = Affine::translate((6.0, 30.0));
+    let clip = Rect::new(
+        0.0,
+        f64::from(bands[20].0) + 30.0,
+        420.0,
+        f64::from(bands[40].0) + 30.0,
+    );
+    let mut reference = Scene::new();
+    reference.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+    renderer.draw_rich(&mut reference, &layout, transform, Color::WHITE);
+    reference.pop_layer();
+    let mut candidate = Scene::new();
+    candidate.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+    renderer.draw_rich_in_clip(&mut candidate, &layout, transform, Color::WHITE, clip);
+    candidate.pop_layer();
+    assert!(
+        candidate.encoding().resources.glyphs.len() < reference.encoding().resources.glyphs.len(),
+        "rows whose ink stays clear of the clip are left out"
+    );
+    let mut gpu = crate::offscreen::OffscreenRenderer::try_new_for_pixel_test(420, 240, true)
+        .expect("pixel test renderer");
+    assert!(
+        gpu.render(&candidate, Color::BLACK) == gpu.render(&reference, Color::BLACK),
+        "every pixel of ink the clip shows is drawn, from whichever row it hangs"
+    );
+}
