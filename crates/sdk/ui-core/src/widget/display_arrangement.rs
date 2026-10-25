@@ -2111,6 +2111,10 @@ mod tests {
         let mapping = canvas.mapping();
         let monitor = mapping.to_canvas(displays()[1].placement);
         assert!(!canvas.needs_animation_frame(), "idle costs nothing");
+        // One frame's instant from the press to the drop: the settle starts
+        // at the drop's instant, and reading it a moment later, as a loaded
+        // test machine does, would find it already on its way.
+        let _frame = crate::motion::pin_frame();
         assert!(canvas.press(monitor.center()));
         // Let go overlapping the panel: it rests clear of it.
         let over = mapping.to_canvas(displays()[0].placement).center();
