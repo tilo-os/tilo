@@ -17,7 +17,9 @@ use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 use tilo_sort::CompactSort as _;
 
 use crate::app::AppKind;
-use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId, counter_of, peer_salt_of};
+use crate::ids::{
+    GroupId, RESERVED_SALT, RoomId, StripId, TabId, WorkspaceId, counter_of, peer_salt_of,
+};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
@@ -1339,8 +1341,10 @@ pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reader {
     /// A peer that publishes into the room under this salt: entries carrying
-    /// it are its own, never overwritten or dropped by the document. Salt `0`
-    /// has no id space, so an owner under it merges nothing.
+    /// it are its own, never overwritten or dropped by the document, and so
+    /// are entries in no namespace (salt `0`) or the reserved one, which no
+    /// member publishes.
+    /// Salt `0` has no id space, so an owner under it merges nothing.
     Owner(u16),
     /// A read-only viewer owns no topology namespace (not even salt `0`):
     /// the document is the whole truth about the room's windows.
@@ -1371,7 +1375,15 @@ pub fn merge_room_contents(
         Reader::Owner(salt) => Some(salt),
         Reader::Viewer => None,
     };
-    let is_local = |id: u64| local_salt == Some(peer_salt_of(id));
+    // Only an id in another device's namespace is another member's, for the
+    // document to bring and take away. One in no namespace (salt `0`,
+    // minted before this device had a salt) or in the reserved one (a
+    // Lounge strip version 3 derived) is no member's to publish, since the
+    // projection writes only its owner's salt; it is held here alone, and a
+    // document that lacks it never says it is gone.
+    let is_local = |id: u64| {
+        local_salt.is_some_and(|salt| [0, RESERVED_SALT, salt].contains(&peer_salt_of(id)))
+    };
 
     let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room() == room) else {
         return false;
@@ -2037,6 +2049,48 @@ mod tests {
             strips.iter().any(|s| s.id == StripId(compose_id(B, 1))),
             "B's own strip stays"
         );
+    }
+
+    /// Windows restored from before this device had an id salt carry no
+    /// namespace, and a used version 3 Lounge the reserved one; no member
+    /// publishes either: a room document that does not show them leaves them
+    /// where they are, so the workspace never reads as empty while they are
+    /// open.
+    #[test]
+    fn windows_no_member_publishes_stay_when_the_room_does_not_show_them() {
+        for unowned in [0, RESERVED_SALT] {
+            unowned_windows_stay(unowned);
+        }
+    }
+
+    fn unowned_windows_stay(unowned: u16) {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        let room = RoomId::new();
+        let mut restored = Strip::new(StripId(compose_id(unowned, 1)), "Main");
+        restored
+            .window_groups
+            .push(canvas_group(unowned, 4, "Notes"));
+        let mut b = room_desktop(room, 1, vec![restored.clone()]);
+        let mut other = Strip::new(StripId(compose_id(A, 1)), "Theirs");
+        other.window_groups.push(canvas_group(A, 10, "Sketch"));
+        let mut doc = AutoCommit::new();
+        project_owned_contents(&mut doc, &[other], A, None, EmptyStrips::Skip).expect("projected");
+
+        for document in [AutoCommit::new(), doc] {
+            merge_room_contents(&mut b, room, contents_of(&document), Reader::Owner(B));
+            let workspace = &b.workspaces[0];
+            assert!(workspace.has_windows(), "the restored window stays");
+            assert!(
+                workspace.strips.iter().any(|strip| strip.id == restored.id
+                    && strip.window_groups.iter().any(|group| group
+                        .tabs
+                        .iter()
+                        .any(|tab| tab.id == compose_id(unowned, 4)))),
+                "the restored Notes tab under salt {unowned:#x} stays in its strip: {:?}",
+                workspace.strips
+            );
+        }
     }
 
     #[test]
