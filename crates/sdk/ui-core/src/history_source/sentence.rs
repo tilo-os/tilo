@@ -46,6 +46,25 @@ pub fn step_summary(entry: &ActionContext) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// What one step did, said without anything it carried: an action by its
+/// published label ("Post a message"), never through an app's message,
+/// which may quote an argument (the words of the message posted). What
+/// someone is doing is told to everyone here, and their words are not.
+/// `None` when the entry says neither what it did nor why.
+pub fn step_title(entry: &ActionContext) -> Option<String> {
+    let Some(tilo_actions::Did::Verb(verb)) = &entry.what else {
+        return step_summary(entry);
+    };
+    let mut bare = entry.clone();
+    let mut verb = verb.clone();
+    verb.args.clear();
+    bare.what = Some(tilo_actions::Did::Verb(verb));
+    bare.resource = None;
+    bare.item = None;
+    let reader = Reader::new(&I18nManager::current_locale()).with_labels(&ThreadLabels);
+    Some(reader.sentence(&bare))
+}
+
 thread_local! {
     /// The labels of the actions this thread's app publishes, by action id:
     /// each with the kind of the resource that publishes it.
@@ -140,5 +159,31 @@ impl tilo_history::Labels for ThreadLabels {
                 .map(|(_, label)| label.clone())
                 .filter(|label| !label.trim().is_empty())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_actions::{ActionContext, ActionKey, ActionResource, Did, Scalar};
+
+    #[test]
+    fn a_step_title_names_the_action_and_never_what_it_carried() {
+        let posted = ActionContext {
+            resource: Some(ActionResource {
+                id: "chat.messages".into(),
+                kind: "chat.messages".into(),
+                label: "Messages".into(),
+            }),
+            what: Some(Did::verb(
+                ActionKey::new("org.tilo.Chat", "chat.messages", "post"),
+                Scalar::from_json(&serde_json::json!("the words they wrote"))
+                    .map(|text| ("text".to_owned(), text)),
+            )),
+            ..ActionContext::default()
+        };
+        let title = super::step_title(&posted).unwrap_or_default();
+        assert!(title.contains("Post"), "{title}");
+        assert!(!title.contains("words they wrote"), "{title}");
+        assert!(!title.contains("Messages"), "{title}");
     }
 }

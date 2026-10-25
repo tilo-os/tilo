@@ -8,9 +8,14 @@
 //! answers the pointer over it.
 //!
 //! Each row is a face, a name and what the person is doing: their own
-//! words first, else what a model wrote from what they did, marked as
-//! such, else where they are. Agents carry their tag and are listed after
-//! the people.
+//! words first, else an automatic description of what they did (a
+//! model's, or the host's plain reading), marked as such, with where they
+//! are after it; else only where they are. Agents carry their tag and are
+//! listed after the people.
+//!
+//! The person's own row leads the list ([`own_status`]): their face beside
+//! a field with what they say they are doing, which they change right
+//! there.
 //!
 //! Resting the pointer on a row (about a quarter second, so passing over
 //! the list opens nothing) opens a peek beside the panel ([`peek`]): a
@@ -25,6 +30,7 @@
 
 mod composer;
 mod dock;
+mod own_status;
 mod peek;
 #[cfg(test)]
 mod tests;
@@ -140,6 +146,11 @@ pub struct PeopleOverlayModel<'a> {
     /// Why a direct message cannot be sent from here, when it cannot; the
     /// message box says so instead of offering to send.
     pub messaging_unavailable: Option<&'a str>,
+    /// This person, as everyone here reads them (their status their own
+    /// words, or what is said of them automatically): their row leads the
+    /// list, with a field to say what they are doing. `None` lists only
+    /// the others.
+    pub own: Option<&'a RosterRow>,
 }
 
 /// What a pointer press or a key on the overlay means to the host.
@@ -154,6 +165,8 @@ pub enum PeopleHit {
     /// The panel was dragged to another edge; keep it where the desk
     /// widgets keep theirs.
     Moved(DockEdge),
+    /// Say this in your own words as what you are doing; empty clears it.
+    SetStatus(String),
 }
 
 /// One painted row.
@@ -177,6 +190,10 @@ pub struct PeopleOverlay {
     hover: Option<(String, Instant)>,
     peek: peek::Peek,
     composer: composer::Composer,
+    /// The person's own row: where it is, and the field saying what they
+    /// are doing.
+    own_row: Rect,
+    own_status: own_status::OwnStatus,
     /// When the pointer left the row, peek and message box.
     left_at: Option<Instant>,
     cursor: Option<Point>,
@@ -203,6 +220,44 @@ impl Default for PeopleOverlay {
     fn default() -> Self {
         Self::new(DockEdge::Right)
     }
+}
+
+/// What a row says under a person's name: what they are doing, where they
+/// are when that adds something, and whether software wrote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowLine {
+    /// A call they are in, their own words, else an automatic description;
+    /// else only where they are.
+    pub doing: String,
+    /// Where they are, under what they are doing: only with a description
+    /// that does not already say it.
+    pub place: Option<String>,
+    /// Software wrote `doing` (a model's line or the host's reading), which
+    /// the row marks so it never passes for their own words.
+    pub automatic: bool,
+}
+
+/// The line under a person's name as a row shows it.
+#[must_use]
+pub fn row_line(row: &RosterRow) -> Option<RowLine> {
+    let automatic = crate::collaborators::says_automatically(row);
+    let (doing, _) = doing(row)?;
+    let describes = row.call.is_some()
+        || row
+            .status
+            .as_ref()
+            .is_some_and(|status| !status.text.trim().is_empty());
+    let place = row
+        .activity
+        .as_deref()
+        .map(str::trim)
+        .filter(|place| describes && !place.is_empty() && *place != doing)
+        .map(str::to_owned);
+    Some(RowLine {
+        doing,
+        place,
+        automatic,
+    })
 }
 
 /// The line under a person's name: a call they are in, else their own
@@ -245,6 +300,8 @@ impl PeopleOverlay {
             hover: None,
             peek: peek::Peek::default(),
             composer: composer::Composer::default(),
+            own_row: Rect::ZERO,
+            own_status: own_status::OwnStatus::default(),
             left_at: None,
             cursor: None,
             shown: ui::motion::Presence::closed(),
@@ -301,10 +358,11 @@ impl PeopleOverlay {
         self.peek.person()
     }
 
-    /// Whether the message box holds the keyboard.
+    /// Whether the message box or the field of what this person is doing
+    /// holds the keyboard.
     #[must_use]
     pub fn composing(&self) -> bool {
-        self.composer.is_focused()
+        self.composer.is_focused() || self.own_status.is_focused()
     }
 
     /// Whether `point` is on the overlay, its peek or its message box.
@@ -344,6 +402,7 @@ impl PeopleOverlay {
             self.dock.settles_at(),
             self.peek.settles_at(),
             self.composer.next_wake_deadline(),
+            self.own_status.next_wake_deadline(),
         ]
         .into_iter()
         .flatten()
@@ -380,6 +439,12 @@ impl PeopleOverlay {
             return;
         }
         self.settle_hover(model, now);
+        let said = model
+            .own
+            .and_then(|own| own.status.as_ref())
+            .filter(|status| status.source == LineSource::Written)
+            .map_or("", |status| status.text.as_str());
+        self.own_status.sync(said);
         self.layout(text, theme, model, now);
         let arrive = self.shown.progress(now);
         let pose = ui::motion::Appear::pose(
@@ -496,13 +561,26 @@ impl PeopleOverlay {
         let control = f64::from(metrics.bar_control_height);
         let heading_h = f64::from(metrics.row_single) * 0.75;
         let row_h = Self::row_height(text, theme);
+        let placed_h = Self::placed_row_height(text, theme);
+        let height_of = |index: usize| {
+            let placed = model
+                .rows
+                .get(index)
+                .and_then(row_line)
+                .is_some_and(|line| line.place.is_some());
+            if placed { placed_h } else { row_h }
+        };
         let (people, agents) = groups(model.rows);
-        let mut body_h = row_h * ui::num::f64_of_usize(people.len());
+        let own_h = Self::own_height(theme, row_h);
+        let mut body_h: f64 = people.iter().map(|&index| height_of(index)).sum();
         if !agents.is_empty() {
-            body_h += heading_h + row_h * ui::num::f64_of_usize(agents.len());
+            body_h += heading_h + agents.iter().map(|&index| height_of(index)).sum::<f64>();
         }
         if people.is_empty() && agents.is_empty() {
             body_h = row_h;
+        }
+        if model.own.is_some() {
+            body_h += own_h;
         }
         let face = FloatingPanelFace::new().header(control).body_empty(false);
         let margin = crate::desk_edges::MARGIN;
@@ -529,11 +607,19 @@ impl PeopleOverlay {
         self.rows.clear();
         self.headings.clear();
         let mut y = parts.body.y0;
+        self.own_row = if model.own.is_some() {
+            let own = Rect::new(parts.body.x0 - bleed, y, parts.body.x1 + bleed, y + own_h);
+            y += own_h;
+            own
+        } else {
+            Rect::ZERO
+        };
         let place_rows = |rows: &[usize], this: &mut Self, y: &mut f64| {
             for &index in rows {
                 let Some(row) = model.rows.get(index) else {
                     continue;
                 };
+                let row_h = height_of(index);
                 if *y + row_h > parts.body.y1 + 0.5 {
                     break;
                 }
@@ -567,6 +653,12 @@ impl PeopleOverlay {
         }
     }
 
+    /// The person's own row: their face beside the field, with room above
+    /// and below it.
+    fn own_height(theme: &Theme, row_h: f64) -> f64 {
+        (own_status::height(theme) + 2.0 * f64::from(theme.tokens.spacing.s2)).max(row_h)
+    }
+
     fn row_height(text: &mut TextRenderer, theme: &Theme) -> f64 {
         ListRowFace::new("Ag")
             .secondary("Ag")
@@ -574,8 +666,17 @@ impl PeopleOverlay {
             .height(text, theme)
     }
 
+    /// A row that says what someone is doing and, under it, where they are.
+    fn placed_row_height(text: &mut TextRenderer, theme: &Theme) -> f64 {
+        ListRowFace::new("Ag")
+            .subtitle("Ag")
+            .secondary("Ag")
+            .leading_column(FACE)
+            .height(text, theme)
+    }
+
     fn paint_panel(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
@@ -602,11 +703,15 @@ impl PeopleOverlay {
                 &style,
             );
         }
+        if let Some(own) = model.own {
+            self.paint_own(scene, transform, text, theme, own);
+        }
         if self.rows.is_empty() {
             let empty = t("people-panel-empty");
             let style = theme.text(ui::TextRole::Caption);
             let (w, h) = text.measure_style(&empty, None, &style);
-            let body = Rect::new(self.panel.x0, self.header.y1, self.panel.x1, self.panel.y1);
+            let top = self.header.y1.max(self.own_row.y1);
+            let body = Rect::new(self.panel.x0, top, self.panel.x1, self.panel.y1);
             text.draw_style(
                 scene,
                 &empty,
@@ -708,6 +813,44 @@ impl PeopleOverlay {
         );
     }
 
+    /// The person's own row: their face, and the field saying what they
+    /// are doing.
+    fn paint_own(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        own: &RosterRow,
+    ) {
+        let bleed = ui::chrome::row_bleed(theme);
+        let inner = self.own_row.inset((-bleed, 0.0));
+        let face_rect = Rect::new(inner.x0, inner.y0, inner.x0 + FACE, inner.y1);
+        let mut face = ui::presence::Face::new(&own.label, &own.id, own.color);
+        face.dimmed = own.availability.dims();
+        ui::presence::FaceStack {
+            side: FACE - 6.0,
+            overlap: 0.0,
+            max: 1,
+        }
+        .paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+            (face_rect.center().x + FACE / 2.0, face_rect.center().y),
+            (&[face], 0),
+            ui::widget::SurfaceLevel::Floating.color(theme),
+        );
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let field_h = own_status::height(theme);
+        let field = Rect::new(
+            face_rect.x1 + gap,
+            inner.center().y - field_h / 2.0,
+            inner.x1,
+            inner.center().y + field_h / 2.0,
+        );
+        self.own_status
+            .draw(scene, transform, text, theme, field, self.cursor);
+    }
+
     fn paint_row(
         &self,
         scene: &mut Scene,
@@ -720,7 +863,7 @@ impl PeopleOverlay {
     ) {
         let hovered = self.cursor.is_some_and(|p| place.rect.contains(p));
         let peeked = self.peek.person() == Some(row.id.as_str());
-        let line = doing(row);
+        let line = row_line(row);
         let paint_face = |ctx: &mut ui::paint::PaintCtx<'_>, rect: Rect| {
             let mut face = ui::presence::Face::new(&row.label, &row.id, row.color);
             face.is_agent = row.is_agent;
@@ -759,11 +902,16 @@ impl PeopleOverlay {
         if row.is_agent {
             face = face.tags(&tags);
         }
-        if let Some((doing, source)) = &line {
-            face = face.secondary(doing);
-            // A model's words about someone are marked as a model's: never
+        if let Some(line) = &line {
+            face = match &line.place {
+                // Where they are stays a quieter line of its own under
+                // what they are doing.
+                Some(place) => face.subtitle(&line.doing).secondary(place),
+                None => face.secondary(&line.doing),
+            };
+            // Software's words about someone are marked as such: never
             // shown as if they had said them.
-            if *source == LineSource::Generated {
+            if line.automatic {
                 face = face.mark(Icon::Sparkles);
             }
         }
@@ -813,6 +961,17 @@ impl PeopleOverlay {
         self.targets.begin_frame();
         self.targets
             .target("unpin", self.unpin, t("people-overlay-unpin"));
+        if self.own_row.area() > 0.0 {
+            self.targets.target(
+                "own-status",
+                self.own_status.field,
+                t("people-overlay-own-status"),
+            );
+            if let Some(clear) = self.own_status.clear_rect() {
+                self.targets
+                    .target("own-clear", clear, t("people-overlay-own-status-clear"));
+            }
+        }
         for place in &self.rows {
             let label = self
                 .shown_rows
@@ -848,7 +1007,7 @@ impl PeopleOverlay {
     /// Text an input method committed while the message box holds the
     /// keyboard.
     pub fn commit_text(&mut self, text: &str) -> bool {
-        self.composer.commit_text(text)
+        self.own_status.commit_text(text) || self.composer.commit_text(text)
     }
 
     /// A key while the message box holds the keyboard. Escape closes the
@@ -858,6 +1017,13 @@ impl PeopleOverlay {
         key: &Key,
         mods: winit::keyboard::ModifiersState,
     ) -> Option<Option<PeopleHit>> {
+        if self.own_status.is_focused() {
+            return match self.own_status.key(key, mods) {
+                own_status::Keyed::Ignored => None,
+                own_status::Keyed::Consumed | own_status::Keyed::Cancel => Some(None),
+                own_status::Keyed::Save(words) => Some(Some(PeopleHit::SetStatus(words))),
+            };
+        }
         if !self.composer.is_focused() {
             return None;
         }
@@ -969,6 +1135,21 @@ impl PeopleOverlay {
     /// panel it may start a drag; anywhere else it lets go of the message
     /// box (and with it the peek, unless the pointer is on it).
     fn press(&mut self, point: Point, handled: &mut bool) -> Option<PeopleHit> {
+        if self.own_row.area() > 0.0 && self.own_status.field_contains(point) {
+            self.composer.blur();
+            self.own_status.focus();
+            *handled = true;
+            return None;
+        }
+        // Anywhere else lets go of the field, putting back what was said.
+        if self.own_status.is_focused()
+            && !self
+                .own_status
+                .clear_rect()
+                .is_some_and(|clear| clear.contains(point))
+        {
+            self.own_status.cancel();
+        }
         if self.composer.field_contains(point) {
             self.composer.focus();
             *handled = true;
@@ -976,6 +1157,7 @@ impl PeopleOverlay {
         }
         if self.panel.contains(point) {
             let on_control = self.unpin.contains(point)
+                || self.own_row.contains(point)
                 || self.rows.iter().any(|row| row.follow.contains(point));
             if !on_control {
                 self.dock.press(point);
@@ -1029,6 +1211,15 @@ impl PeopleOverlay {
         for id in activated {
             if id == "unpin" {
                 return Some(PeopleHit::Unpin);
+            }
+            if id == "own-clear" {
+                self.own_status.cleared();
+                return Some(PeopleHit::SetStatus(String::new()));
+            }
+            if id == "own-status" {
+                self.composer.blur();
+                self.own_status.focus();
+                continue;
             }
             if let Some(person) = id.strip_prefix("follow:") {
                 return Some(PeopleHit::ToggleFollow(person.to_owned()));
