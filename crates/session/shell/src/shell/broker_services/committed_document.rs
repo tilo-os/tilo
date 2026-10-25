@@ -93,8 +93,11 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         Ok(committed)
     }
     fn requires_room(&self, room: &str) -> bool {
+        // Every held room's app records are native documents, whether this
+        // device commits them or the room's host does: a sealed room's records
+        // are the ones a cold app has to read through the host.
         super::super::state::RoomId::parse(room)
-            .is_some_and(|room| self.tree.read().commits_native_documents(room))
+            .is_some_and(|room| self.tree.read().holds_room(room))
     }
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
         context.revalidate()?;
