@@ -5,7 +5,7 @@
 # already formatted for display; `$count` selects the plural form.
 
 ## Health, as the status bubble reports it
-backups-health-ok = All backups healthy
+backups-health-ok = No failed backups
 backups-health-attention = { $count ->
     [one] One backup needs attention
    *[other] { $snapshots } backups need attention

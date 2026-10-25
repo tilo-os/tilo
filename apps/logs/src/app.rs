@@ -390,6 +390,7 @@ impl LogsApp {
             bridge.placeholder = self.placeholder();
             bridge.has_entries = !self.entries.is_empty();
             bridge.total = self.entries.len();
+            bridge.follow = self.live_tail;
         }
         self.show_inspector(selected);
         self.layout_dirty = true;

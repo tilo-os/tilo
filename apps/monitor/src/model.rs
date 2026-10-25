@@ -69,6 +69,11 @@ pub struct Metrics {
     pub disk_write: f32,
     pub uptime_secs: u64,
     pub load_avg: [f32; 3],
+    /// When this reading was taken. `None` before the first sample.
+    pub sampled_at: Option<ui::time::SystemTime>,
+    /// The cadence the histories were collected at, in milliseconds; `0`
+    /// when the cadence is not known.
+    pub sample_interval_ms: u32,
 
     // Rolling histories (newest at the back).
     pub cpu_hist: RollingSeries,
@@ -83,6 +88,16 @@ impl Metrics {
     /// Whether these are a reading of the machine at all: one with no core
     /// and no memory is the empty value before (or without) a reading, and
     /// showing it would present "unavailable" as a measured zero.
+    /// The span the histories cover, in the person's words: `last 2 min`.
+    pub fn history_period(&self) -> String {
+        let secs = (HISTORY as u64).saturating_mul(u64::from(self.sample_interval_ms)) / 1000;
+        if secs < 60 {
+            format!("last {secs} s")
+        } else {
+            format!("last {} min", secs / 60)
+        }
+    }
+
     pub fn measured(&self) -> bool {
         !self.cores.is_empty() || self.mem_total > 0
     }
@@ -222,6 +237,8 @@ impl MonitorModel {
             disk_write: disk_write_hist.last(),
             uptime_secs: 5 * 3600 + 42 * 60 + 17,
             load_avg: [1.84, 1.42, 1.09],
+            sampled_at: Some(ui::time::wall()),
+            sample_interval_ms: 1_000,
             cpu_hist,
             mem_hist,
             net_rx_hist,
@@ -284,6 +301,8 @@ impl MonitorModel {
             disk_write: 0.0,
             uptime_secs: 0,
             load_avg: [0.0; 3],
+            sampled_at: None,
+            sample_interval_ms: 1_500,
             cpu_hist: z(),
             mem_hist: z(),
             net_rx_hist: z(),
