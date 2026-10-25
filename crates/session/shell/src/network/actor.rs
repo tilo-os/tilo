@@ -1789,9 +1789,22 @@ impl ActorState {
                     })
                     .collect();
                 self.action_broker = Some((queue, host, rooms));
-                // Reconnect existing state-only subscriptions once. There is
-                // never a competing same-device private subscriber.
-                self.host_sessions.clear();
+                // The sessions already up take the broker's private channel
+                // as they are: a session does not depend on the broker, so
+                // none is ended and dialled again for it.
+                let live: Vec<_> = self
+                    .host_sessions
+                    .iter()
+                    .map(|(&(ws, peer), runtime)| (ws, peer, runtime.session.clone()))
+                    .collect();
+                for (ws, peer, session) in live {
+                    let actions = self.serve_actions(ws, peer, &session);
+                    if let Some(runtime) = self.host_sessions.get_mut(&(ws, peer))
+                        && let Some(previous) = std::mem::replace(&mut runtime.actions, actions)
+                    {
+                        previous.abort();
+                    }
+                }
             }
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
                 self.handle_join_workspace(ws, on_event);
@@ -2085,14 +2098,7 @@ impl ActorState {
                     if self.native_routes.contains(ws) {
                         continue;
                     }
-                    routes.schedule(
-                        ws,
-                        addr.clone(),
-                        expectation.clone(),
-                        self.action_broker
-                            .as_ref()
-                            .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
-                    );
+                    routes.schedule(ws, addr.clone(), expectation.clone());
                 }
             }
             Some(NetCmd::DisconnectHost { id }) => self.teardown_host(id, true),
@@ -2955,14 +2961,7 @@ impl ActorState {
                 content_discovery_tasks: &mut self.content_discovery_tasks,
             };
             for (addr, expectation) in self.hosts.values().cloned() {
-                routes.schedule(
-                    ws,
-                    addr.clone(),
-                    expectation,
-                    self.action_broker
-                        .as_ref()
-                        .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
-                );
+                routes.schedule(ws, addr.clone(), expectation);
             }
         }
     }
@@ -3655,42 +3654,7 @@ impl ActorState {
                         native_scope: None,
                         local: false,
                         governor: None,
-                        actions: self
-                            .action_broker
-                            .as_ref()
-                            .and_then(|(queue, host, rooms)| {
-                                // State-only/pinned compatibility and relay-role
-                                // certificates never advertise an effect endpoint.
-                                if self
-                                    .hosts
-                                    .get(&peer)
-                                    .and_then(|(_, expected)| expected.as_ref())
-                                    .is_none()
-                                    || self.host_identity.as_ref().is_none_or(|identity| {
-                                        identity.material_for(ws).0.capabilities.can_act_as_host
-                                    })
-                                {
-                                    return None;
-                                }
-                                let room = *rooms.get(&ws)?;
-                                let (queue, host, session, tx) = (
-                                    queue.clone(),
-                                    *host,
-                                    session.clone(),
-                                    self.internal_tx.clone(),
-                                );
-                                Some(tokio::spawn(async move {
-                                    let generation = Arc::downgrade(&session);
-                                    let _ = queue.serve(session, room, host).await;
-                                    let _ = tx
-                                        .send(InternalEvent::ActionClosed {
-                                            ws,
-                                            peer,
-                                            session: generation,
-                                        })
-                                        .await;
-                                }))
-                            }),
+                        actions: self.serve_actions(ws, peer, &session),
                         session,
                         pump,
                     },
@@ -3700,6 +3664,51 @@ impl ActorState {
                 tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
             }
         }
+    }
+
+    /// Serve the attached action broker's private channel for `ws` on the
+    /// session with the workspace host `peer`, when the room is one of the
+    /// broker's and the host is an enrolled home peer. A state-only or
+    /// pinned host, a room's own native session and a certificate that can
+    /// act as host never carry it.
+    fn serve_actions(
+        &self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        session: &Arc<RelayCoeditSession>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let (queue, host, rooms) = self.action_broker.as_ref()?;
+        if self.native_routes.contains(ws)
+            || self
+                .hosts
+                .get(&peer)
+                .and_then(|(_, expected)| expected.as_ref())
+                .is_none()
+            || self
+                .host_identity
+                .as_ref()
+                .is_none_or(|identity| identity.material_for(ws).0.capabilities.can_act_as_host)
+        {
+            return None;
+        }
+        let room = *rooms.get(&ws)?;
+        let (queue, host, session, tx) = (
+            queue.clone(),
+            *host,
+            session.clone(),
+            self.internal_tx.clone(),
+        );
+        Some(tokio::spawn(async move {
+            let generation = Arc::downgrade(&session);
+            let _ = queue.serve(session, room, host).await;
+            let _ = tx
+                .send(InternalEvent::ActionClosed {
+                    ws,
+                    peer,
+                    session: generation,
+                })
+                .await;
+        }))
     }
 
     /// The host `host` of `ws` reports another member device joined
@@ -4118,14 +4127,7 @@ impl ActorState {
                     continue;
                 }
                 for (addr, expectation) in self.hosts.values().cloned() {
-                    routes.schedule(
-                        ws,
-                        addr,
-                        expectation,
-                        self.action_broker
-                            .as_ref()
-                            .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
-                    );
+                    routes.schedule(ws, addr, expectation);
                 }
             }
         }
@@ -5089,7 +5091,6 @@ impl HostRouteScheduler<'_> {
         ws: WorkspaceId,
         addr: EndpointAddr,
         expectation: Option<HomePeerExpectation>,
-        action_v2: bool,
     ) {
         let (endpoint, identity, internal_tx, sessions) = (
             self.endpoint,
@@ -5161,7 +5162,10 @@ impl HostRouteScheduler<'_> {
         let endpoint = endpoint.clone();
         let identity = identity.clone();
         let (device_cert, revocation_entries) = identity.material_for(ws);
-        let action_v2 = action_v2 && !device_cert.capabilities.can_act_as_host;
+        // A member's device signs the private actions it sends, whether or
+        // not the action broker is attached yet: the broker takes the
+        // session as it is when it attaches.
+        let action_v2 = !device_cert.capabilities.can_act_as_host;
         let mut revocations = RevocationList::new();
         for entry in revocation_entries {
             if revocations.insert(entry).is_err() {
