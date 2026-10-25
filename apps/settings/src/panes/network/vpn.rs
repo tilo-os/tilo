@@ -415,6 +415,9 @@ pub(crate) struct VpnState {
     pub(super) errors: HashMap<String, String>,
     /// VPNs whose settings are being read.
     reading: HashSet<String>,
+    /// VPNs changed while their settings were being read: that read may
+    /// predate the change, so they are read again once it lands.
+    stale: HashSet<String>,
     /// VPNs being brought up or down.
     changing: HashSet<String>,
     wireguard: WireguardForm,
@@ -602,11 +605,24 @@ impl NetworkModel {
         );
     }
 
+    /// Read `uuid`'s settings as the device holds them after a change; a
+    /// read already under way may predate it, so it is read again after.
+    fn reread_vpn(&mut self, uuid: &str) {
+        if self.vpn.reading.contains(uuid) {
+            self.vpn.stale.insert(uuid.to_owned());
+        } else {
+            self.read_vpn(uuid);
+        }
+    }
+
     /// Take in `uuid`'s settings.
     pub(super) fn adopt_vpn_settings(&mut self, uuid: &str, settings: VpnProfileSettings) {
         self.vpn.reading.remove(uuid);
         self.vpn.errors.remove(uuid);
         self.vpn.settings.insert(uuid.to_owned(), settings);
+        if self.vpn.stale.remove(uuid) {
+            self.read_vpn(uuid);
+        }
         self.changed = true;
     }
 
@@ -1203,17 +1219,20 @@ impl NetworkModel {
             }
             (NetworkChange::VpnProfile { uuid, name, .. }, result) => match result {
                 Ok(()) => {
-                    // What `NetworkManager` made of it is read again.
-                    self.vpn.settings.remove(uuid);
-                    self.read_vpn(uuid);
+                    // What `NetworkManager` made of it is read again. The
+                    // settings shown already hold the change, so they stay
+                    // offered meanwhile: a second change can follow at once,
+                    // and the page does not empty and refill.
+                    self.reread_vpn(uuid);
                     Ok(t_args(
                         "net-notice-policy-ok",
                         &[("name", name.as_str().into())],
                     ))
                 }
                 Err(error) => {
+                    // What is shown holds a change the device refused.
                     self.vpn.settings.remove(uuid);
-                    self.read_vpn(uuid);
+                    self.reread_vpn(uuid);
                     Err(t_args("net-notice-policy-err", &[("error", error.into())]))
                 }
             },
