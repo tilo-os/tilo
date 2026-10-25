@@ -138,11 +138,17 @@ pub(super) fn sheet(
             &FeedbackEffect::Review,
         )))
         .push(cx.switch(&shown, |part, shown| outgoing(part, shown.as_ref())))
-        .push(Box::new(
-            Text::from_state(&presentation.status, Clone::clone)
-                .with_id("feedback-status")
-                .with_live(crate::a11y::Politeness::Polite),
-        ));
+        // The report says what to do next itself; the status line only
+        // speaks once there is progress or a problem to report.
+        .push(Box::new(ui_core::widget::When::from_state(
+            &presentation.status,
+            |status| status != "feedback-review-first",
+            Box::new(
+                Text::from_state(&presentation.status, Clone::clone)
+                    .with_id("feedback-status")
+                    .with_live(crate::a11y::Politeness::Polite),
+            ),
+        )));
     Box::new(sheet)
 }
 

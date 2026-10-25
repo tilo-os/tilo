@@ -34,6 +34,12 @@ const DRAG_SLOP: f64 = 4.0;
 /// How far a highlight stands off the part it outlines.
 const OUTSET: f64 = 3.0;
 const RADIUS: f64 = 6.0;
+/// How much of the theme's modal scrim the picker dims with: enough that
+/// the lit part stands out even when it is most of the screen.
+const DIM_SHARE: f32 = 0.75;
+/// The hint's distance from the top, when it moves out of the way: below
+/// the desktop's top bar.
+const HINT_TOP: f64 = 64.0;
 
 /// One part of the screen the picker can light up and pick.
 #[derive(Clone, Debug, PartialEq)]
@@ -376,7 +382,7 @@ impl FeedbackPicker {
         let dim = colors
             .surfaces
             .scrim
-            .multiply_alpha(colors.surfaces.scrim_strength * 0.45 * f32_of_f64(fade));
+            .multiply_alpha(colors.surfaces.scrim_strength * DIM_SHARE * f32_of_f64(fade));
         scene.fill(Fill::EvenOdd, transform, dim, None, &dimmed(bounds, &holes));
         let ink = colors.intent.accent_ink;
         for (index, picked) in session.selected.iter().enumerate() {
@@ -422,6 +428,7 @@ impl FeedbackPicker {
             theme,
             bounds,
             session.selected.len(),
+            &holes,
         );
     }
 }
@@ -544,6 +551,7 @@ fn hint(
     theme: &Theme,
     bounds: Rect,
     picked: usize,
+    avoid: &[Rect],
 ) -> Option<(Rect, Rect)> {
     let colors = &theme.tokens.colors;
     let style = theme.text(TextRole::Label);
@@ -579,8 +587,19 @@ fn hint(
     let pill_h = button_h + 12.0;
     let pill_w = (w + 2.0 * pad + buttons_w).min(bounds.width() - 16.0);
     let x0 = bounds.center().x - pill_w / 2.0;
-    let y0 = bounds.y1 - pill_h - 28.0;
-    let pill = Rect::new(x0, y0, x0 + pill_w, y0 + pill_h);
+    // Low on the screen, unless that covers what is lit or picked: then
+    // high, so the hint never hides the part it talks about.
+    let low = Rect::new(x0, bounds.y1 - pill_h - 28.0, x0 + pill_w, bounds.y1 - 28.0);
+    let pill = if avoid
+        .iter()
+        .any(|part| part.intersect(low.inflate(0.0, 12.0)).area() > 0.0)
+    {
+        let y0 = bounds.y0 + HINT_TOP;
+        Rect::new(x0, y0, x0 + pill_w, y0 + pill_h)
+    } else {
+        low
+    };
+    let x0 = pill.x0;
     ui::surface::shadow(
         scene,
         transform,
