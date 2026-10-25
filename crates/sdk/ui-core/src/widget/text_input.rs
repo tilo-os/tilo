@@ -5769,7 +5769,7 @@ impl Widget for TextInput {
             self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
             #[cfg(test)]
             let _probe = crate::profiling::frame_probe::span("text.note");
-            self.note_shown(transform, theme);
+            self.note_shown(transform, theme, text_renderer);
             return;
         }
         self.multiline_shaped = false;
