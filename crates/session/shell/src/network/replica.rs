@@ -28,7 +28,6 @@ use std::time::{Duration, Instant};
 
 use crate::network::hub::TopicSubscriber;
 use crate::network::protocol::NeighbourMsg;
-#[cfg(test)]
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::WorkspaceTreeHandle;
 use crate::shell::state::{PeerOrigin, RoomId};
@@ -47,6 +46,9 @@ pub struct WorkspaceTreeReplica {
     pub id: u64,
     pub tree: WorkspaceTreeHandle,
     pub pending_outgoing: Arc<Mutex<Vec<NeighbourMsg>>>,
+    /// Only successfully validated, committed document heads; pending ops or
+    /// missing dependencies always bypass this exact-state cache.
+    sync_heads: Mutex<std::collections::HashMap<RoomId, Vec<automerge::ChangeHash>>>,
     /// Transport identity this replica's messages arrive under — only
     /// meaningful when driven through a [`Hub`]; live wiring calls
     /// [`Self::handle_from`] with the authenticated `PeerId` directly instead.
@@ -84,6 +86,7 @@ impl WorkspaceTreeReplica {
             id,
             tree,
             pending_outgoing: Arc::new(Mutex::new(Vec::new())),
+            sync_heads: Mutex::default(),
             origin: PeerOrigin::hub(id),
             participants: std::collections::HashMap::new(),
             participants_epoch: Arc::default(),
@@ -141,23 +144,20 @@ impl WorkspaceTreeReplica {
     /// several rooms into one undifferentiated document.
     pub fn request_sync(&self) {
         let rooms = self.tree.read().rooms();
+        let active: std::collections::HashSet<_> = rooms.iter().copied().collect();
+        self.sync_heads
+            .lock_recover()
+            .retain(|room, _| active.contains(room));
         self.request_sync_of(&rooms);
     }
 
     /// [`Self::request_sync`] for `rooms` alone.
     pub fn request_sync_of(&self, rooms: &[RoomId]) {
-        let mut tree = self.tree.write();
         let mut msgs = Vec::with_capacity(rooms.len());
         for &room in rooms {
-            if tree.requires_native_owner(room) {
-                tracing::debug!(
-                    target: "shell::network::replica",
-                    %room,
-                    "not requesting room replication: the room's native owner replicates it"
-                );
+            let Some(heads) = self.requested_room_heads(room) else {
                 continue;
-            }
-            let heads = tree.room_heads(room);
+            };
             // Structurally infallible (`ChangeHash` has no enum/float to fail on);
             // `unwrap_or_default()`'s `vec![]` fallback reads as "send everything in
             // this room" — wasteful, not corrupting, and can't widen past the room it names.
@@ -179,7 +179,6 @@ impl WorkspaceTreeReplica {
                 )),
             });
         }
-        drop(tree);
         self.pending_outgoing.lock_recover().extend(msgs);
     }
 
@@ -350,6 +349,13 @@ impl WorkspaceTreeReplica {
         }
     }
 }
+
+mod sync_heads;
+
+#[cfg(test)]
+mod cache_tests;
+#[cfg(test)]
+mod request_tests;
 
 #[cfg(test)]
 mod tests {

@@ -2579,18 +2579,32 @@ impl WorkspaceTree {
     /// for a room this machine is not in.
     pub fn room_heads(&mut self, room: RoomId) -> Vec<ChangeHash> {
         match self.room_docs.get_mut(&room) {
-            Some(doc)
-                if tilo_peer_state::room::media::validate_transition(
-                    None,
-                    doc,
-                    tilo_peer_state::room::media::TransitionMode::Restore,
-                )
-                .is_ok() =>
-            {
-                doc.get_heads()
-            }
+            Some(doc) if Self::room_heads_policy_valid(doc) => doc.get_heads(),
             _ => Vec::new(),
         }
+    }
+
+    fn room_heads_policy_valid(doc: &AutoCommit) -> bool {
+        tilo_peer_state::room::media::validate_transition(
+            None,
+            doc,
+            tilo_peer_state::room::media::TransitionMode::Restore,
+        )
+        .is_ok()
+    }
+
+    /// Checked heads without committing or copying the live document. Only
+    /// a still-open transaction needs an owned copy to obtain its future heads.
+    pub(crate) fn snapshot_room_heads(doc: &AutoCommit) -> Option<Vec<ChangeHash>> {
+        use automerge::transaction::Transactable as _;
+        if !Self::room_heads_policy_valid(doc) {
+            return None;
+        }
+        Some(if doc.pending_ops() == 0 {
+            doc.committed_heads()
+        } else {
+            doc.clone().get_heads()
+        })
     }
 
     /// Changes to `room` since `since`, as opaque blobs to ship to a
