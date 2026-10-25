@@ -251,3 +251,15 @@ fn a_caption_says_what_the_part_is_in_the_apps_words() {
         "A list item in Tilo"
     );
 }
+
+#[test]
+fn a_part_of_an_app_with_no_known_name_is_captioned_alone_never_by_its_id() {
+    assert_eq!(
+        PickTarget::caption("", "ListItem", None, None),
+        "A list item"
+    );
+    assert_eq!(
+        PickTarget::caption(" ", "Row", Some("Message"), None),
+        "Message"
+    );
+}

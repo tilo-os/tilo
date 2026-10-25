@@ -136,7 +136,7 @@ fn a_picked_report_reads_out_its_picks_notes_actions_and_timings() {
         [
             "1. The \u{201C}Save\u{201D} button in Files",
             "\u{201C}Nothing happens when \u{2039}name\u{203A} clicks it\u{201D}",
-            "2. A row in so.tilo.files",
+            "2. A row",
             "Modified",
             "\u{2039}personal\u{203A}",
             "Just before: open on files.folder, Save the file (refused)",
@@ -153,6 +153,17 @@ fn a_picked_report_reads_out_its_picks_notes_actions_and_timings() {
             .unwrap()
             .submission,
         submission
+    );
+}
+
+#[test]
+fn a_pick_from_an_app_with_no_known_name_is_the_part_alone_never_the_apps_id() {
+    let (doc, submission) = picked(false);
+    let text = rows(&doc, &submission)[0].text.clone();
+    assert!(text.lines().any(|line| line == "2. A row"), "{text}");
+    assert!(
+        !text.contains("so.tilo.files"),
+        "the id only routes: {text}"
     );
 }
 
