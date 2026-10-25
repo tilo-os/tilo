@@ -223,16 +223,18 @@ journeys, the splash) gates stable releases and runs on main when t has room, wi
 back the dev channel. The OS image goes to `registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>`, a
 development-only repository that production policy (`os/etc/containers/policy.json`)
 rejects, which `tools/policy/check_dev_image_contract.py` keeps so. Dev images are never
-signed with the OS release authority.
+signed with the OS release authority: `sign-dev-os-<arch>` signs each with the development key
+(`keys/cosign-dev.pub`, main only), which `publish-os-dev-<arch>` attaches.
 
 `os/dev/publish-dev-disk.sh` then writes, for one architecture:
 
-- `registry.tilo.so/tilo/tilo-vm:<tag>-<arch>`: the dev image child.
+- `registry.tilo.so/tilo/tilo-vm:<tag>-<arch>`: the dev image child, signed, pushed by
+  `tools/ci/publish/os-dev-publish.sh`, which moves `tilo-vm:<arch>-ci`, the architecture's dev
+  channel, forward to it. Installed disks follow that tag.
 - `registry.tilo.so/tilo/tilo-vm:<tag>`: an OCI index of every child of `<tag>`
   published so far. It is rebuilt from the child tags, and each lane repeats
   that until a fresh read agrees, so it grows from one architecture to both
-  without either lane waiting. The installed disk updates from this tag.
-  `latest` follows the newest revision's index, only forward, for `main` and
+  without either lane waiting. `latest` follows the newest revision's index, only forward, for `main` and
   release-tag runs.
 - `tilo-vm-disk/<tag>/tilo-vm-<tag>-<arch>.<format>` in the generic package
   registry, each with a `.sha256` sidecar. qcow2 uses zstd-compressed clusters,
@@ -244,8 +246,7 @@ signed with the OS release authority.
   architecture is published once its file exists, and a lane whose file exists
   has nothing left to do.
 
-`<tag>` is `main-<sha7>-ci`; `tilo-vm:main-ci` follows the newest whose index
-holds both architectures.
+`<tag>` is `main-<sha7>-ci`.
 
 To fetch a disk, use a Forgejo token with package read access:
 
