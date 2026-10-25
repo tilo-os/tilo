@@ -526,9 +526,10 @@ impl Desktop {
     fn open_requested_apps(&self) -> bool {
         self.ask_room_of_nodes();
         let permissions = self.permissions.borrow();
-        self.openings.open(&self.handle, &self.generation, |app| {
-            crate::desktop::may_open(&permissions, app)
-        })
+        self.openings
+            .open(&self.handle, &self.generation, |app, existing| {
+                crate::desktop::may_open(&permissions, app, existing)
+            })
     }
 
     /// Tell this person, in a banner that retires to the notification
