@@ -3661,7 +3661,7 @@ fn export_failures_are_accessible_and_wrap() {
             .export_blocker()
             .expect("the missing footage is what stands in the way");
         assert!(
-            blocker.contains("Drone_Coastline"),
+            blocker.contains("Drone_Coastline") && !blocker.contains("—"),
             "the blocker names the source: {blocker}"
         );
         assert!(

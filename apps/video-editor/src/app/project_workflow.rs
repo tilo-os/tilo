@@ -576,7 +576,7 @@ impl VideoEditorApp {
         };
         let it = if names.len() == 1 { "it" } else { "them" };
         Some(format!(
-            "This cut {refers} {} — bring {it} onto this device first.",
+            "This cut {refers} {}. Bring {it} onto this device first.",
             names.join(", "),
         ))
     }
