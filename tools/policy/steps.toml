@@ -388,6 +388,13 @@ inputs = ["Cargo.lock"]
 pre_push = true
 
 [[step]]
+name = "iroh-presets"
+label = "No durable endpoint signs itself in to number 0's directory"
+run = "python3 tools/policy/check_iroh_presets.py"
+inputs = ["crates/**/*.rs", "tools/policy/check_iroh_presets.py"]
+pre_push = true
+
+[[step]]
 name = "setup-neutral"
 label = "No setup-specific references"
 run = "python3 tools/policy/check_setup_neutral.py"
