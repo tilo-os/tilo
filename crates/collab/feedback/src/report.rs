@@ -121,6 +121,12 @@ pub struct Pick {
     pub path: String,
     /// The semantic role, as assistive technology reads it.
     pub role: String,
+    /// What kind of thing it is in the app's own words ("Message"), where
+    /// the role says too little.
+    pub kind: Option<String>,
+    /// What the person saw it called while picking ("Message in Chat"),
+    /// in their language: the review's heading for it. Never sent.
+    pub caption: String,
     /// The accessible name of the picked node.
     pub label: Option<PickedText>,
     /// The kind of record the window shows (`chat.workspace`).
@@ -212,6 +218,10 @@ pub struct Interaction {
     pub action: String,
     /// The kind of resource it acted on.
     pub resource: String,
+    /// The action's label as the app words it ("Post a message"), in the
+    /// reporter's language, for readers whose apps do not publish it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub outcome: Outcome,
 }
 
@@ -360,6 +370,9 @@ pub struct ReviewedSelection {
     pub build: Option<String>,
     pub path: String,
     pub role: String,
+    /// What kind of thing it is in the app's own words ("Message").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -382,6 +395,7 @@ impl ReviewedSelection {
             || !short(&self.app_name, 128)
             || !short(&self.path, 1_024)
             || !short(&self.role, 64)
+            || self.kind.as_deref().is_some_and(|kind| !short(kind, 64))
             || self.build.as_deref().is_some_and(|build| !short(build, 64))
             || self
                 .record
@@ -784,6 +798,7 @@ impl ReportDraft {
                 build: pick.build.clone(),
                 path: masked_path(&pick.path, pick),
                 role: pick.role.clone(),
+                kind: pick.kind.clone(),
                 record: pick.record.clone(),
                 label: None,
                 texts: Vec::new(),
@@ -935,7 +950,8 @@ impl ReviewedFeedback {
         }
         for interaction in &self.interactions {
             if [&interaction.app, &interaction.action, &interaction.resource]
-                .iter()
+                .into_iter()
+                .chain(&interaction.label)
                 .any(|value| value.len() > 160 || value.chars().any(char::is_control))
             {
                 return Err(Error::Invalid("interaction"));

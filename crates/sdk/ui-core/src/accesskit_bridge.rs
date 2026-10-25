@@ -1087,6 +1087,9 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     if let Some(desc) = &access.description {
         ak.set_description(desc.clone());
     }
+    if let Some(kind) = &access.role_description {
+        ak.set_role_description(kind.clone());
+    }
     // This must be part of the platform tree, not only the built-in reader's
     // narration pass.  `accesskit_unix` turns these into AT-SPI live-region
     // attributes/events, which is what Orca and braille clients observe when

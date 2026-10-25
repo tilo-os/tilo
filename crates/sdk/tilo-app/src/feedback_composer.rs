@@ -1007,6 +1007,8 @@ mod tests {
             build: Some("abc123".into()),
             path: "Chat[0]/Row[1]".into(),
             role: "ListItem".into(),
+            kind: None,
+            caption: "A message in Chat".into(),
             label: None,
             record: None,
             area: Area {
@@ -1055,7 +1057,7 @@ mod tests {
         frame.relayout();
         let sheet = frame.inspection_json().expect("inspection");
         assert!(sheet.contains("Report a problem"), "the report sheet shows");
-        assert!(sheet.contains("1. Chat \u{b7} List item"), "{sheet}");
+        assert!(sheet.contains("1. A message in Chat"), "{sheet}");
         describe(&mut frame, "The row is cut off").expect("summary");
         call(&mut frame, "review", &json!({})).expect("review");
         frame.relayout();

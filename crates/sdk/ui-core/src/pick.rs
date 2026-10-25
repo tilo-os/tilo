@@ -32,6 +32,9 @@ pub struct PickTarget {
     pub name: Option<String>,
     /// Whether that name is the app's own fixed, localized copy.
     pub interface: bool,
+    /// What kind of thing it is in the app's own words ("Message"), where
+    /// its role says too little.
+    pub kind: Option<String>,
     /// Where it is, in the window's logical coordinates.
     pub rect: Rect,
 }
@@ -74,6 +77,8 @@ pub struct PickCapture {
     /// The node's role; `None` for a widget that names no semantics of
     /// its own.
     pub role: Option<Role>,
+    /// What kind of thing it is in the app's own words.
+    pub kind: Option<String>,
     pub label: Option<PickedText>,
     pub texts: Vec<PickedText>,
 }
@@ -102,6 +107,7 @@ fn target(path: String, node: &AccessNode, rect: Rect) -> PickTarget {
         role: node.role,
         name: node.name.clone().filter(|name| !name.trim().is_empty()),
         interface: node.interface_name,
+        kind: node.role_description.clone(),
         rect,
     }
 }
@@ -378,6 +384,7 @@ pub fn capture(root: &dyn Widget, path: &str) -> Option<PickCapture> {
             node = node.children.get(index)?.clone();
         }
         capture.role = Some(node.role);
+        capture.kind.clone_from(&node.role_description);
         capture.label = label(&node, node.bounds.map(crate::a11y::AccessBounds::to_rect));
         read_synthetic(&node, &mut capture.texts);
     } else {
@@ -386,6 +393,7 @@ pub fn capture(root: &dyn Widget, path: &str) -> Option<PickCapture> {
                 .bounds
                 .map_or_else(|| widget.get_rect(), crate::a11y::AccessBounds::to_rect);
             capture.role = Some(node.role);
+            capture.kind.clone_from(&node.role_description);
             capture.label = label(node, Some(rect));
             if let Some(value) = value(node, Some(rect)) {
                 capture.texts.push(value);
@@ -552,23 +560,54 @@ fn sensitive_node(node: &AccessNode, rect: Option<Rect>, whole: Rect, areas: &mu
         .map(crate::a11y::AccessBounds::to_rect)
         .or(rect)
         .unwrap_or(whole);
-    let content = (node
+    let named = node
         .name
         .as_deref()
-        .is_some_and(|name| !name.trim().is_empty())
-        && !node.interface_name)
-        || node
-            .value
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty())
+        .filter(|name| !name.trim().is_empty() && !node.interface_name);
+    let drawn_here = node
+        .value
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
         || node.state.protected
         || node.role == Role::Image;
-    if content {
+    // A node whose content name its parts spell out where each is drawn
+    // (a message row naming its author and text) is masked part by part,
+    // so the picture keeps the row's shape; otherwise the whole node.
+    if drawn_here || named.is_some_and(|name| !spelled_by_parts(node, name)) {
         areas.push(rect);
     }
     for child in &node.children {
         sensitive_node(child, None, rect, areas);
     }
+}
+
+/// Whether every word of `name` is in the text of a part of `node` that
+/// says where it is drawn: those parts are masked on their own.
+fn spelled_by_parts(node: &AccessNode, name: &str) -> bool {
+    fn words(text: &str) -> impl Iterator<Item = String> + '_ {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+    }
+    fn gather(node: &AccessNode, found: &mut std::collections::HashSet<String>) {
+        for child in &node.children {
+            if child.state.hidden {
+                continue;
+            }
+            // Only parts masked themselves count: content, not the app's
+            // own copy, which stays visible.
+            if child.bounds.is_some() {
+                let name = child.name.as_ref().filter(|_| !child.interface_name);
+                for text in [name, child.value.as_ref()].into_iter().flatten() {
+                    found.extend(words(text));
+                }
+            }
+            gather(child, found);
+        }
+    }
+    let mut found = std::collections::HashSet::new();
+    gather(node, &mut found);
+    !found.is_empty() && words(name).all(|word| found.contains(&word))
 }
 
 fn sensitive_widget(widget: &dyn Widget, whole: Rect, areas: &mut Vec<Rect>, depth: usize) {
@@ -598,6 +637,9 @@ pub struct RecentInvocation {
     pub instance: u64,
     pub resource: String,
     pub action: String,
+    /// The action's label as the app words it in the person's language
+    /// ("Post a message"), when the app published one.
+    pub label: Option<String>,
     pub done: bool,
 }
 
@@ -616,6 +658,10 @@ pub(crate) fn note_invocation(address: &crate::bound_dispatch::BoundActionAddres
         instance: address.instance_id,
         resource: address.address.resource.clone(),
         action: address.address.action.clone(),
+        label: crate::history_source::sentence::action_label(
+            &address.address.resource,
+            &address.address.action,
+        ),
         done,
     };
     RECENT.with_borrow_mut(|recent| {
