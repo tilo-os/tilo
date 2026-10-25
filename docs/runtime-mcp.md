@@ -224,7 +224,8 @@ under the running ones.
 `tilo_find`
 narrows to one app by the name `tilo_ls` lists (`notes`) or its id
 (`so.tilo.notes`), and an app that is neither running nor installed is an
-error naming the apps there are. It searches apps by name, then resources, then actions named as searched, then
+error naming the apps there are, or saying the installed apps could not be
+read when they could not. It searches apps by name, then resources, then actions named as searched, then
 actions described so; it does not search files. It asks every running app at
 once, and an app that does not answer is named as not searched rather than
 failing the search; a search that no app answered fails and says so. Listings

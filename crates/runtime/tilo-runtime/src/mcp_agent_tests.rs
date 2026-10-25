@@ -1244,6 +1244,39 @@ fn a_search_narrows_to_an_app_by_name_or_id_and_names_the_apps_when_none_is() {
     });
 }
 
+/// A search narrowed to an app that is not running, while the installed
+/// apps cannot be read, says why the agent cannot know whether it is
+/// installed: it is never told there is no such app. A running app named
+/// still searches.
+#[test]
+fn a_search_narrowed_to_an_app_says_when_the_installed_apps_could_not_be_read() {
+    run(async {
+        let query = |app: &str| json!({"query": "append paragraph", "app": app});
+        let stopped = Notes::new(false).installed(Installed::Unreadable);
+        let (text, failed) = tool(&agent(&stopped), "tilo_find", query("notes")).await;
+        assert!(failed, "{text}");
+        assert_eq!(
+            text,
+            "no running app is named notes, and the installed apps could not be read: remote actions are unavailable: this session's workspaces cannot be read"
+        );
+        let running = Notes::new(true).installed(Installed::Unreadable);
+        let (text, failed) = tool(&agent(&running), "tilo_find", query(APP)).await;
+        assert!(!failed, "{text}");
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("notes/Todo/body#append-paragraph(text)")),
+            "{text}"
+        );
+        let (text, failed) = tool(&agent(&running), "tilo_find", query("sheets")).await;
+        assert!(
+            failed
+                && text.starts_with("no running app is named sheets")
+                && text.contains("installed apps could not be read"),
+            "{text}"
+        );
+    });
+}
+
 /// A name searched whole is found even where its longest word fills more
 /// pages than a search reads: "paragraph" names both bodies' append and
 /// insert, and the second page is gone by the time it is asked for.
