@@ -4860,6 +4860,7 @@ impl Widget for GroupRow {
             self.record_shift_anim(now);
         }
         self.sync_handle_neighbours();
+        self.recheck_edge_hover();
     }
 
     fn draw(
@@ -10009,6 +10010,42 @@ mod tests {
 
     fn widths(frame: &[Rect]) -> Vec<f64> {
         frame.iter().map(|r| r.width()).collect()
+    }
+
+    /// The pointer shape every host shows ([`crate::widget::cursor`]): a
+    /// window edge, outer ones a little past the window too, says it
+    /// resizes, and a drag keeps saying so wherever the pointer goes.
+    #[test]
+    fn a_window_edge_shows_the_resize_cursor_through_the_shared_rule() {
+        use crate::widget::cursor::in_tree;
+        use winit::window::CursorIcon;
+        let (mut row, taffy, root) = edge_strip(None, None);
+        let r = rects(&row);
+        let y = r[0].center().y;
+        let seam = Point::new(r[0].x1 - 2.0, y);
+        assert_eq!(in_tree(&row, seam), Some(CursorIcon::EwResize));
+        let outer = Point::new(r[2].x1 + crate::widget::RESIZE_HANDLE_PX - 1.0, y);
+        assert_eq!(
+            in_tree(&row, outer),
+            Some(CursorIcon::EwResize),
+            "an outer edge reaches out over the empty canvas"
+        );
+        let body = Point::new(r[1].center().x, y);
+        assert_ne!(in_tree(&row, body), Some(CursorIcon::EwResize));
+        let _ = edge_event(&mut row, &taffy, root, false, &move_to(seam));
+        assert!(edge_event(
+            &mut row,
+            &taffy,
+            root,
+            false,
+            &button(ElementState::Pressed)
+        ));
+        let _ = edge_event(&mut row, &taffy, root, false, &move_to(body));
+        assert_eq!(
+            in_tree(&row, body),
+            Some(CursorIcon::EwResize),
+            "the drag holds the resize cursor off the edge it began on"
+        );
     }
 
     #[test]

@@ -46,8 +46,10 @@ no appearance to get wrong.
 - **Focus ring:** keyboard focus only (`ui::focus_visible`), on every
   focusable control. A pointer press never shows it. A text field's focus is
   its caret.
-- **Window edge resize grip:** neutral ink at rest, primary ink while
-  dragging; never the accent.
+- **Window edge resize:** the resize cursor first; resting on an edge for
+  a moment lights the window's outline along that whole edge in secondary
+  ink, primary ink while dragging, with the window's size in a chip beside
+  it that fades once let go. Nothing marks an edge at rest; never the accent.
 - **Slider and progress:** the value is the accent as a mark
   (`intent.value_fill`) on a lift of the ground, never the text colour. A
   value is not an on state.
