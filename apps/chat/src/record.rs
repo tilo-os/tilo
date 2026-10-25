@@ -508,6 +508,59 @@ pub struct Message {
     /// posting an outside person's line); the author stays the bot.
     #[model(readonly)]
     pub appearance: Option<ShownAs>,
+    /// The window it shares live, when it was written by sharing one: the
+    /// resource is `reference`, in the record `source_provider` names.
+    #[model(readonly)]
+    pub share: Option<WindowShare>,
+}
+
+/// A window shared live into a channel: everyone who reads the channel sees
+/// the resource as it is now, drawn by its own app from their own copy of
+/// its record, and opens it with the access the sharer gave.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowShare {
+    /// What the people who open it may do there.
+    pub access: ShareAccess,
+    /// Whether the sharer still has the window open: the embed says it is
+    /// live while they do.
+    pub open: bool,
+    /// The sharer stopped sharing it: the message keeps saying what was
+    /// shared, and no longer shows or opens it.
+    pub ended: bool,
+}
+
+/// What the people a window is shared with may do when they open it.
+#[derive(
+    Model,
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    ui::tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareAccess {
+    /// Look at it: the window opens read-only.
+    #[default]
+    View,
+    /// Work on it with the sharer.
+    Edit,
+}
+
+impl ShareAccess {
+    /// Its name in an action's argument and in the record.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::View => "view",
+            Self::Edit => "edit",
+        }
+    }
 }
 
 /// The name and avatar a bot showed for a message instead of its own, as the
@@ -584,6 +637,7 @@ impl Default for Message {
             pinned: false,
             work: None,
             appearance: None,
+            share: None,
         }
     }
 }
@@ -1034,6 +1088,7 @@ pub(crate) struct Posting {
     pub reference: Option<tilo_reference::ResourceRef>,
     pub source_provider: Option<String>,
     pub appearance: Option<tilo_actions::Appearance>,
+    pub share: Option<WindowShare>,
     /// Who the text refers to, as the chat record resolved it where the
     /// message was written.
     pub mentions: Vec<crate::mention::Mention>,
