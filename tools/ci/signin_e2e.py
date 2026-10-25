@@ -324,6 +324,11 @@ class Run:
     # -- the installer ------------------------------------------------------------------------
 
     def install(self) -> None:
+        """Install through the installer's unattended entry point: a private recipe applied
+        through the same published actions and privileged backend (tilo-install,
+        tilo-disk-encrypt) as the wizard, with the one-time recovery key written to a private
+        file the test shell reads. The recipe's protection secret is the disk passphrase; in
+        the one-secret variant it is the account password."""
         c = self.cycle
         c.vm("init-cycle")
         # The medium is unsigned: its installer admits the target only with the VM proof port.
@@ -333,86 +338,93 @@ class Run:
             console.poll(c.console, lambda s: s.get("app") == "installer", 900, 5)
         except TimeoutError as error:
             raise Failed("the live installer never answered on its console") from error
-        last, repeats = "", 0
-        while True:
-            state = console.state(c.console, 30)
-            step = state.get("step", "unknown")
-            repeats = repeats + 1 if step == last else 0
-            if repeats > 3:
-                raise Failed(f"the installer stays on {step}: {state.get('status')}")
-            last = step
-            say(f"installer: {step}")
-            if step in ("keyboard", "network", "media"):
-                c.invoke("installer", "next@installer")
-            elif step == "accounts":
-                c.invoke("installer", "skip-offline@installer.accounts")
-            elif step == "disk":
-                c.invoke("installer", "set-method@installer.storage", {"method": "erase"})
-                disks = [d for d in (state.get("storage") or {}).get("disks", [])
-                         if not d.get("installer_medium") and not d.get("read_only")]
-                if len(disks) != 1:
-                    raise Failed(f"expected one target disk, the installer lists {disks}")
-                c.invoke("installer", f"select@installer.disk:{disks[0]['device']}")
-                c.invoke("installer", "next@installer")
-            elif step == "account":
-                self.facts["installer_secret_policy"] = (state.get("account") or {}).get("secret_policy")
-                c.invoke("installer", "set-identity@installer.account",
-                         {"username": self.user, "full_name": self.full_name})
-                if self.disk:
-                    c.invoke("installer", "set-disk-passphrase@installer.account",
-                             {"passphrase": self.disk, "confirmation": self.disk})
-                c.invoke("installer", "set-passphrase@installer.account",
-                         {"passphrase": self.account, "confirmation": self.account})
-                c.invoke("installer", "next@installer")
-            elif step == "options":
-                c.invoke("installer", "set-hostname@installer.options", {"hostname": "signin-e2e"})
-                c.invoke("installer", "next@installer")
-            elif step == "review":
-                c.invoke("installer", "set-recovery-promise@installer.review", {"acknowledged": True})
-                target = (console.state(c.console, 30).get("storage") or {}).get("confirmation_target")
-                if not target:
-                    raise Failed("the installer names no confirmation target")
-                c.invoke("installer", "begin@installer.review", {"confirmation_phrase": target})
-            elif step == "install":
-                break
-            else:
-                raise Failed(f"the installer is on a step this check does not know: {step}")
-        started = time.monotonic()
-        seen: list = []
-
-        def finished(state: dict) -> bool:
-            install = state.get("install") or {}
-            for stage in (install.get("stages") or [])[len(seen):]:
-                seen.append(stage)
-                say(f"install stage after {time.monotonic() - started:.0f}s: {SECRETS.redact(str(stage))}")
-            return install.get("state") in ("done", "failed")
-
+        sh = self.live_shell()
         try:
-            final = console.poll(c.console, finished, 3600, 10)
-        except TimeoutError as error:
+            self.run_unattended(sh)
+            self.prepare_target(sh)
+        finally:
             try:
-                tail = (console.state(c.console, 30).get("install") or {}).get("log_tail", [])[-8:]
-            except Exception as reason:  # the console itself may be the thing that stopped
-                tail = [f"no installer state: {reason}"]
-            raise Failed("the install did not finish within an hour; its last lines: "
-                         + " | ".join(map(str, tail))) from error
-        self.save("installer-final-state.json", final)
-        if final["install"]["state"] != "done":
-            raise Failed("the install failed: " + " | ".join(final["install"].get("log_tail", [])[-5:]))
-        self.facts["install_seconds"] = round(time.monotonic() - started)
-        if not (final.get("recovery_key") or {}).get("available"):
-            raise Failed("the install finished without a recovery key")
-        c.invoke("installer", "copy@installer.recovery")
-        c.invoke("installer", "confirm-saved@installer.recovery", {"saved": True})
-        self.prepare_target_from_live()
-        try:
-            c.invoke("installer", "power-off@installer.power")
-        except (console.Unreachable, console.Refused):
-            pass
+                sh.run("systemctl --no-block poweroff", 30, quiet=True)
+            except Failed:
+                pass
+            sh.close()
         if not c.wait_stopped(180):
-            raise Failed("the installer's power-off did not stop the VM")
+            say("the live installer did not power off; stopping the VM")
+            c.stop()
         (self.out / "serial-installer-withheld.log").write_text(
             "withheld: the live installer's serial may carry the one-time recovery key\n")
+
+    def run_unattended(self, sh: Shell) -> None:
+        c = self.cycle
+        # The wizard holds the console port; the unattended run serves the same actions there.
+        sh.run("systemctl stop greetd", 120)
+        code, text = sh.run("lsblk --json --bytes --nodeps --paths "
+                            "-o NAME,SIZE,PTTYPE,PTUUID,LOG-SEC,MAJ:MIN,WWN,SERIAL /dev/vdb", quiet=True)
+        if code:
+            raise Failed(f"lsblk could not describe the target disk: {text.strip()[-300:]}")
+        device = json.loads(text[text.index("{"):])["blockdevices"][0]
+        recipe = {
+            "schema": 1,
+            "account": {"username": self.user, "full_name": self.full_name,
+                        "password": self.account},
+            "disk": {"device": device["name"], "method": "erase", "size_bytes": int(device["size"]),
+                     "major_minor": device["maj:min"], "wwn": device.get("wwn") or "",
+                     "serial": device.get("serial") or "",
+                     "partition_table": device.get("pttype") or "",
+                     "partition_table_uuid": device.get("ptuuid") or "",
+                     "logical_sector_size": int(device["log-sec"])},
+            "protection": {"kind": "passphrase", "secret": self.disk or self.account},
+            "data_source": "none",
+            "acknowledge_recovery_key": True,
+            "preferences": {"hostname": "signin-e2e"},
+            "finish": "stay",
+        }
+        self.facts["target_disk"] = recipe["disk"]
+        # The recipe travels on the shell's input, never in argv, and only into a 0600 file.
+        body = json.dumps(recipe)
+        code, text = sh.run("rm -rf /run/e2e && install -d -m 0700 /run/e2e && umask 077 && "
+                            "cat > /run/e2e/recipe.json <<'E2E_RECIPE_END'\n" + body + "\nE2E_RECIPE_END",
+                            quiet=True)
+        if code:
+            raise Failed(f"the recipe could not be written: {SECRETS.redact(text.strip())[-300:]}")
+        sh.run("setsid -f sh -c '/usr/libexec/tilo/tilo-installer --unattended-file /run/e2e/recipe.json "
+               "--unattended-recovery-file /run/e2e/recovery >/run/e2e/unattended.log 2>&1; "
+               "echo $? >/run/e2e/rc' </dev/null >/dev/null 2>&1", 30)
+        started = time.monotonic()
+        seen: list = []
+        while True:
+            try:
+                state = console.state(c.console, 10)
+                install = state.get("install") or {}
+                for stage in (install.get("stages") or [])[len(seen):]:
+                    seen.append(stage)
+                    say(f"install stage after {time.monotonic() - started:.0f}s: "
+                        f"{SECRETS.redact(str(stage))}")
+            except Exception:  # noqa: BLE001 - the stage log is best effort; the rc file decides
+                pass
+            _, rc = sh.run("cat /run/e2e/rc 2>/dev/null || true", 30, quiet=True)
+            if rc.strip():
+                break
+            _, log = sh.run("tail -n 5 /run/e2e/unattended.log 2>/dev/null", 30, quiet=True)
+            if "Unattended installation stopped" in log:
+                break
+            if time.monotonic() - started > 3600:
+                raise Failed("the install did not finish within an hour; its last lines: "
+                             + SECRETS.redact(log.strip())[-600:])
+            time.sleep(20)
+        _, log = sh.run("tail -n 40 /run/e2e/unattended.log; rm -f /run/e2e/recipe.json", 30, quiet=True)
+        self.save("unattended.log", log)
+        self.facts["install_seconds"] = round(time.monotonic() - started)
+        if rc.strip() != "0" or "Unattended installation finished" not in log:
+            raise Failed(f"the unattended install failed (exit {rc.strip() or 'none'}): "
+                         + SECRETS.redact(log.strip())[-800:])
+        code, text = sh.run("cat /run/e2e/recovery && shred -u /run/e2e/recovery", 30, quiet=True)
+        found = RECOVERY_SHAPE.search(text)
+        if code or not found:
+            raise Failed("the unattended install wrote no recovery key in the expected form "
+                         f"({len(text.strip())} characters)")
+        self.recovery = SECRETS.add(found.group(0))
+        say("read the recovery key from the unattended install's private file")
 
     def live_shell(self) -> Shell:
         """The live installer's tty2 recovery tools: option 5 is a root shell. Its first command
@@ -432,89 +444,22 @@ class Run:
         c.keys("ctrl-alt-f1")
         return Shell(c.shell_socket, 120)
 
-    def prepare_target_from_live(self) -> None:
-        sh = self.live_shell()
-        try:
-            code, dev = sh.run(f"lsblk -lnpo NAME,PARTTYPE /dev/vdb | awk 'tolower($2)==\"{TILO_ROOT_TYPE}\" {{print $1}}'")
-            dev = dev.strip()
-            if code or not dev.startswith("/dev/"):
-                raise Failed(f"no Tilo root partition on the target: {dev}")
-            self.facts["target_root_partition"] = dev
-            self.recovery = self.read_recovery_key(sh)
-            self.baseline = self.keyslot_view(sh, dev)
-            self.save("keyslots-after-install.json", self.baseline)
-            unlock = self.disk or self.account
-            opened = self.slot_opened_by(sh, dev, unlock)
-            self.baseline["disk_secret_slot"] = opened
-            if self.recovery:
-                self.baseline["recovery_slot"] = self.slot_opened_by(sh, dev, self.recovery)
-            say(f"after install: keyslots {sorted(self.baseline['keyslots'])}, the disk secret opens "
-                f"{opened}, the recovery key opens {self.baseline.get('recovery_slot')}")
-            self.inject_test_shell(sh, dev, unlock)
-        finally:
-            sh.close()
-
-    def read_recovery_key(self, sh: Shell) -> str | None:
-        """The key the installer copied to its clipboard, read back through wl-paste as the
-        installer's user, else read off the screen. Kept in memory only and redacted from
-        everything this run writes; what the attempts saw is logged without it."""
-        script = r"""
-err=$(mktemp)
-for dir in /run/user/*; do
-  for sock in "$dir"/wayland-[0-9]*; do
-    case "$sock" in *.lock) continue ;; esac
-    [ -S "$sock" ] || continue
-    owner=$(stat -c %U "$dir")
-    printf 'E2E-SOCKET %s %s\n' "$sock" "$owner"
-    printf 'E2E-TYPES '
-    runuser -u "$owner" -- env XDG_RUNTIME_DIR="$dir" WAYLAND_DISPLAY="${sock##*/}" \
-      timeout -k 2 10 wl-paste --list-types 2>>"$err" | tr '\n' ' '
-    printf '\nE2E-PASTE-BEGIN\n'
-    runuser -u "$owner" -- env XDG_RUNTIME_DIR="$dir" WAYLAND_DISPLAY="${sock##*/}" \
-      timeout -k 2 10 wl-paste -n 2>>"$err"
-    printf '\nE2E-PASTE-END %d\n' "$?"
-  done
-done
-printf 'E2E-STDERR\n'; cat "$err"; rm -f "$err"
-"""
-        for attempt in range(3):
-            _, text = sh.run(script, 90, quiet=True)
-            found = RECOVERY_SHAPE.search(text)
-            if found:
-                say("read the recovery key from the installer's clipboard")
-                return SECRETS.add(found.group(0))
-            pasted = re.findall(r"E2E-PASTE-BEGIN\n(.*?)\nE2E-PASTE-END (\d+)", text, re.S)
-            seen = [line for line in text.splitlines()
-                    if line.startswith(("E2E-SOCKET", "E2E-TYPES"))]
-            stderr = text.split("E2E-STDERR", 1)[-1].strip()[-600:]
-            say(f"clipboard attempt {attempt + 1}: {seen or 'no wayland socket'}; pasted "
-                f"{[(len(body), int(code)) for body, code in pasted]} bytes/exit; wl-paste said: "
-                f"{SECRETS.redact(stderr) or 'nothing'}")
-            time.sleep(3)
-        say("the installer's clipboard held no recovery key; reading it from the screen")
-        return self.read_recovery_key_from_screen()
-
-    def read_recovery_key_from_screen(self) -> str | None:
-        path, _ = self.cycle.screen("private-recovery")
-        if not path:
-            return None
-        big = path.with_name("private-recovery-big.png")
-        try:
-            subprocess.run(["magick", str(path), "-colorspace", "Gray", "-resize", "300%",
-                            "-sharpen", "0x1", str(big)], check=True, capture_output=True)
-            for source in (big, path):
-                for extra in (["-c", "tessedit_char_whitelist=cbdefghijklnrtuv-"], []):
-                    ocr = subprocess.run(["tesseract", str(source), "stdout", "--psm", "11", *extra],
-                                         capture_output=True, text=True)
-                    found = RECOVERY_SHAPE.search(ocr.stdout.replace(" ", ""))
-                    if found:
-                        say("read the recovery key from the screen")
-                        return SECRETS.add(found.group(0))
-            say("no recovery key could be read from the screen")
-            return None
-        finally:
-            path.unlink(missing_ok=True)
-            big.unlink(missing_ok=True)
+    def prepare_target(self, sh: Shell) -> None:
+        code, dev = sh.run(f"lsblk -lnpo NAME,PARTTYPE /dev/vdb | awk 'tolower($2)==\"{TILO_ROOT_TYPE}\" {{print $1}}'")
+        dev = dev.strip()
+        if code or not dev.startswith("/dev/"):
+            raise Failed(f"no Tilo root partition on the target: {dev}")
+        self.facts["target_root_partition"] = dev
+        self.baseline = self.keyslot_view(sh, dev)
+        self.save("keyslots-after-install.json", self.baseline)
+        unlock = self.disk or self.account
+        opened = self.slot_opened_by(sh, dev, unlock)
+        self.baseline["disk_secret_slot"] = opened
+        if self.recovery:
+            self.baseline["recovery_slot"] = self.slot_opened_by(sh, dev, self.recovery)
+        say(f"after install: keyslots {sorted(self.baseline['keyslots'])}, the disk secret opens "
+            f"{opened}, the recovery key opens {self.baseline.get('recovery_slot')}")
+        self.inject_test_shell(sh, dev, unlock)
 
     def keyslot_view(self, sh: Shell, dev: str) -> dict:
         """The LUKS2 header's keyslots and tokens, and a hash of each keyslot's key material."""
