@@ -24,11 +24,15 @@ class AgentLog final : public CefDevToolsMessageObserver {
   AgentLog(CefRefPtr<CefBrowser> browser,Emit emit):browser_(browser),emit_(std::move(emit)) {}
   void Attach() { registration_=browser_->GetHost()->AddDevToolsMessageObserver(this); }
   void Detach() { registration_=nullptr;browser_=nullptr; }
-  // An agent is about to operate the tab: start recording.
+  // An agent is about to operate the tab: start recording. A page that was
+  // already loaded is not fetched again, so its documents and frames are
+  // backfilled from the frame tree: without them an agent cannot even name the
+  // frame it needs to operate.
   void Activate() {
     if(active_ || !browser_) return;
     active_=true;
     auto host=browser_->GetHost();
+    host->ExecuteDevToolsMethod(0,"Page.getFrameTree",nullptr);
     host->ExecuteDevToolsMethod(0,"Runtime.enable",nullptr);
     host->ExecuteDevToolsMethod(0,"Log.enable",nullptr);
     auto network=CefDictionaryValue::Create();
@@ -70,6 +74,7 @@ class AgentLog final : public CefDevToolsMessageObserver {
     auto parsed=CefParseJSON(std::string(static_cast<const char*>(params),size),JSON_PARSER_RFC);
     auto p=parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr;
     if(!p) return;
+    if(name=="Page.frameNavigated") { Frame(p);return; }
     if(name=="Runtime.consoleAPICalled") Console(p);
     else if(name=="Runtime.exceptionThrown") Exception(p);
     else if(name=="Log.entryAdded") LogEntry(p);
@@ -103,6 +108,20 @@ class AgentLog final : public CefDevToolsMessageObserver {
   void Push(std::deque<std::pair<uint64_t,CefRefPtr<CefDictionaryValue>>>& to,size_t& dropped,CefRefPtr<CefDictionaryValue> e) {
     to.emplace_back(++seq_,e);
     while(to.size()>kMaxEntries) { to.pop_front();++dropped; }
+  }
+  // A document the page holds bytes for: its address, and its type as the
+  // network log spells it, so frames read as documents beside top-level ones.
+  void Frame(CefRefPtr<CefDictionaryValue> p) {
+    auto frame=p->GetDictionary("frame");if(!frame) return;
+    const auto url=Str(frame,"url");
+    if(url.empty() || url.rfind("http",0)!=0) return;
+    // The same address is one document however many frames hold it.
+    for(const auto& [seq,entry]:network_)
+      if(Str(entry,"type")=="Document" && Str(entry,"url")==url) return;
+    auto e=CefDictionaryValue::Create();
+    e->SetString("method","GET");e->SetString("url",Cut(url,kMaxUrl));
+    e->SetString("type","Document");e->SetString("state","done");
+    Push(network_,network_dropped_,e);
   }
   void Console(CefRefPtr<CefDictionaryValue> p) {
     std::string text;

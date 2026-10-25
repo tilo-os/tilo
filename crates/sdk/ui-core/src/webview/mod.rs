@@ -29,7 +29,7 @@ pub use service_sessions::{ServiceSessionReply, ServiceSessionRequest};
 pub mod page;
 pub mod paint;
 pub mod text_input;
-pub use page::{PageFailure, PageKey, PageReply, PageRequest};
+pub use page::{FrameId, PageFailure, PageKey, PageReply, PageRequest};
 pub mod profile;
 pub mod test_engine;
 

@@ -1,8 +1,10 @@
 // Page reading and operation for browser actions. The browser process
-// evaluates this in an isolated world of the main frame: it shares the page's
-// DOM, but the page's own scripts can neither see nor call it. Refs are
+// evaluates this in an isolated world of one frame, the main frame unless the
+// caller named a frame from the outline: it shares that document's DOM, but
+// the page's own scripts can neither see nor call it. Refs are
 // `d<document>e<element>`; the document number is the world's, so a ref never
-// resolves in a later document.
+// resolves in a later document, and a ref only ever resolves in the frame it
+// was read from.
 globalThis.__tiloPage ||= (() => {
   const execNativeHistory = Document.prototype.execCommand;
   const queryNativeHistory = Document.prototype.queryCommandEnabled;
@@ -35,8 +37,9 @@ globalThis.__tiloPage ||= (() => {
 
   const ids = new WeakMap(), refs = new Map();
   let next = 0, doc = 0;
-  // The outline this tab's agent last saw, for `changes`.
-  let lastLines = null;
+  // The outlines this tab's agent last saw, per frame id ('' for the main
+  // document), for `changes`.
+  const lastLinesByFrame = new Map();
   const MAX_DIFF_CELLS = 4000000, MAX_SETTLE_POLL_MS = 50;
 
   const clean = (text, limit) => {
@@ -68,6 +71,21 @@ globalThis.__tiloPage ||= (() => {
   function prune() {
     if (refs.size < 20000) return;
     for (const [id, ref] of refs) if (!ref.deref()?.isConnected) refs.delete(id);
+  }
+
+  // Frame 1 is the first frame of this document, numbered in document order
+  // and kept with the frame element for as long as the document is; a frame of
+  // a frame is addressed `1.2`.
+  const frameNumbers = new Map(), framesByNumber = new Map();
+  function frameNumber(element) {
+    if (frameNumbers.size >= 4096) { frameNumbers.clear(); framesByNumber.clear(); }
+    for (const [number, frame] of framesByNumber) {
+      if (frame.deref?.() === element) return number;
+    }
+    const number = ++next;
+    frameNumbers.set(element, number);
+    framesByNumber.set(number, new WeakRef(element));
+    return number;
   }
 
   const type = element => (element.getAttribute('type') || 'text').toLowerCase();
@@ -189,18 +207,46 @@ globalThis.__tiloPage ||= (() => {
     return label ? `${kind} ${quote(label)}` : kind;
   }
 
+  // How the caller addresses this frame's document: the dotted ids its
+  // ancestors' outlines printed, '' for the main document itself.
+  let frameAddress = '';
+  const frameId = () => (window.frameElement ? frameAddress : '');
+
+  // Where a frame this document lists sits in it now, in this document's
+  // coordinates with its scrolling: a point read in the frame's own document
+  // moves by this to become a point in this one.
+  function frameOffset(number) {
+    if (!/^\d+$/.test(number || '')) throw failure('invalid_request', 'A frame of this document is named by its number');
+    const frame = framesByNumber.get(Number(number));
+    const element = frame?.deref?.();
+    if (!element || !element.isConnected)
+      throw failure('no_frame', `Frame ${number} has left the page; read the page again`);
+    const rect = element.localName === 'frame'
+      ? {x: Number(element.getAttribute('x')) || 0, y: Number(element.getAttribute('y')) || 0}
+      : element.getBoundingClientRect();
+    return {ok: true, message: `Frame ${number}`, x: rect.x + scrollX, y: rect.y + scrollY};
+  }
+
+  // A point in a frame's own document means nothing in the page: the caller
+  // reads points in the main document, where clicking happens.
+  function atInFrame() {
+    return failure('invalid_request', `Read the element at a point in the page itself, not in frame ${frameId()}`);
+  }
+
   function outline() {
-    const {lines} = outlineLines();
-    lastLines = lines;
-    return {ok: true, message: `Read ${lines.length} lines`, outline: lines.join('\n')};
+    const {lines, frames: listed} = outlineLines();
+    setLastLines(lines);
+    const frame = frameId();
+    return {ok: true, message: frame ? `Read ${lines.length} lines in frame ${frame}` : `Read ${lines.length} lines`,
+      outline: lines.join('\n'), data: {frames: listed}};
   }
 
   // Lines added and removed since the last read, by longest common
   // subsequence; refs are stable within a document, so an unchanged element
   // keeps its line.
   function changes() {
-    const before = lastLines, {lines} = outlineLines();
-    lastLines = lines;
+    const before = getLastLines(), {lines} = outlineLines();
+    setLastLines(lines);
     if (!before)
       return {ok: true, message: `First read: ${lines.length} lines`, outline: lines.join('\n')};
     if (before.length * lines.length > MAX_DIFF_CELLS)
@@ -276,6 +322,20 @@ globalThis.__tiloPage ||= (() => {
       throw failure('cross_origin_submit', `This form sends its data to ${target}, another site than ${location.origin}; submit it with cross_origin to allow that`);
   }
 
+  // Where each frame this document lists sits in it, so the browser process can
+  // turn a point in a frame's document into a point in the page.
+  function frames() {
+    const out = [];
+    for (const [number, frame] of framesByNumber) {
+      const element = frame.deref?.();
+      if (!element || !element.isConnected) continue;
+      const x = element.localName === 'frame' ? Number(element.getAttribute('x')) || 0 : element.getBoundingClientRect().x + scrollX;
+      const y = element.localName === 'frame' ? Number(element.getAttribute('y')) || 0 : element.getBoundingClientRect().y + scrollY;
+      out.push({number: String(number), x, y});
+    }
+    return out;
+  }
+
   function outlineLines() {
     const lines = [];
     let chars = 0, visited = 0, truncated = false, pending = '', pendingDepth = 0;
@@ -327,10 +387,24 @@ globalThis.__tiloPage ||= (() => {
            (pointer && !context.pointer))) kind = 'clickable';
       // A bound label's words are its control's name; listing them again is noise.
       const inner = {inside: context.inside || (tag === 'label' && !!element.control), pointer, visible};
-      if (kind === 'img' || kind === 'iframe') {
+      if (kind === 'img') {
         flush();
-        const label = kind === 'img' ? name(element, kind) : clean(element.title || element.name || element.src, MAX_NAME);
+        const label = name(element, kind);
         emit(depth, label ? `${kind} ${quote(label)}` : kind);
+        return;
+      }
+      if (kind === 'iframe') {
+        flush();
+        // A frame is its own document: the line names the id an action takes to
+        // run there, and the address, so the caller knows what it would reach.
+        const label = clean(element.title || element.name, MAX_NAME);
+        const id = frameNumber(element);
+        const parts = [kind];
+        if (label) parts.push(quote(label));
+        parts.push(`[frame=${id}]`);
+        const src = element.src ? `src=${quote(clean(element.src, 300))}` : '';
+        if (src) parts.push(src);
+        emit(depth, parts.join(' '));
         return;
       }
       if (INTERACTIVE.has(kind) || kind === 'heading') {
@@ -376,7 +450,7 @@ globalThis.__tiloPage ||= (() => {
     flush();
     prune();
     if (truncated) lines.push('- text "… outline truncated; act on what is listed or scroll and read again"');
-    return {lines, truncated};
+    return {lines, truncated, frames: frames()};
   }
 
   function clip(rect) {
@@ -938,12 +1012,14 @@ globalThis.__tiloPage ||= (() => {
     run(command) {
       try {
         if (!doc) doc = command.doc;
+        frameAddress = typeof command.frame === 'string' ? command.frame : '';
         switch (command.action) {
           case 'prepare_text_input': case 'start_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input': case 'undo_text_input': case 'redo_text_input':
             return guardedTextInput(command);
           case 'outline': return outline();
           case 'changes': return changes();
-          case 'at': return at(command.x, command.y);
+          case 'at': return frameId() ? atInFrame() : at(command.x, command.y);
+          case 'frame_offset': return frameOffset(command.frame);
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': return locate(command.element, command.cross_origin);
           case 'fill': return fill(command.element, command.text, command.secret);

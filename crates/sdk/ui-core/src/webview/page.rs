@@ -6,6 +6,11 @@
 //! [`PageRequest::Outline`] printed. A ref names one element of one document,
 //! so a ref from a page the tab has since left is refused rather than
 //! resolved against whatever now sits at the same position.
+//!
+//! A page inside a frame is addressed by the frame id its parent's outline
+//! printed (`[frame=1]`, `[frame=1.2]` for a frame of a frame): a request with
+//! that id runs in the frame's own document, and its refs and outline describe
+//! that document alone.
 
 use super::KeyModifiers;
 
@@ -25,16 +30,23 @@ pub const MAX_SELECT_VALUES: usize = 64;
 /// Upper bound on one option value or label.
 pub const MAX_SELECT_VALUE_BYTES: usize = 1024;
 const MAX_REF_BYTES: usize = 40;
+/// A frame id is a dotted path of small decimal numbers, such as `1` or `1.2`.
+const MAX_FRAME_BYTES: usize = 16;
+const MAX_FRAME_DEPTH: usize = 8;
 const MAX_MESSAGE_BYTES: usize = 1024;
 const MAX_CODE_BYTES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PageRequest {
     /// A compact accessibility outline of the document. Interactive elements
-    /// carry the refs every other request addresses.
-    Outline,
+    /// carry the refs every other request addresses, and a frame carries the
+    /// id that addresses its own document.
+    Outline { frame: Option<FrameId> },
     /// A trusted pointer click at the element's visible centre.
-    Click { element: String },
+    Click {
+        element: String,
+        frame: Option<FrameId>,
+    },
     /// Replace an editable element's contents with `text`. A password or
     /// card field is refused unless `secret` says the caller means it, and
     /// then the text is a secret the caller keeps out of logs.
@@ -42,31 +54,46 @@ pub enum PageRequest {
         element: String,
         text: String,
         secret: bool,
+        frame: Option<FrameId>,
     },
     /// Choose `<select>` options by value or visible label.
     Select {
         element: String,
         values: Vec<String>,
+        frame: Option<FrameId>,
     },
     /// A trusted key press, after focusing `element` when one is named.
     Press {
         element: Option<String>,
         key: PageKey,
+        frame: Option<FrameId>,
     },
     /// Submit the element's form through the page's own validation. A form
     /// that sends its data to another site than the page's is refused unless
     /// `cross_origin` says the caller means it.
-    Submit { element: String, cross_origin: bool },
+    Submit {
+        element: String,
+        cross_origin: bool,
+        frame: Option<FrameId>,
+    },
     /// What changed in the outline since this tab's last read or changes:
     /// lines added (`+`) and removed (`-`), or the whole outline when the
     /// document is new.
-    Changes,
+    Changes { frame: Option<FrameId> },
     /// The element a click at viewport point (`x`, `y`) in CSS pixels would
     /// hit, and the nearest interactive element holding it.
-    At { x: f64, y: f64 },
+    At {
+        x: f64,
+        y: f64,
+        frame: Option<FrameId>,
+    },
     /// Wait until the document has stopped changing for `quiet_ms` and has
     /// loaded, or `timeout_ms` passed.
-    Settle { quiet_ms: u32, timeout_ms: u32 },
+    Settle {
+        quiet_ms: u32,
+        timeout_ms: u32,
+        frame: Option<FrameId>,
+    },
     /// Console messages and uncaught errors after sequence number `since`.
     Console { since: u64 },
     /// Network requests after sequence number `since`: method, URL, type,
@@ -80,13 +107,13 @@ pub enum PageRequest {
 impl PageRequest {
     pub const fn action(&self) -> &'static str {
         match self {
-            Self::Outline => "outline",
+            Self::Outline { .. } => "outline",
             Self::Click { .. } => "click",
             Self::Fill { .. } => "fill",
             Self::Select { .. } => "select",
             Self::Press { .. } => "press",
             Self::Submit { .. } => "submit",
-            Self::Changes => "changes",
+            Self::Changes { .. } => "changes",
             Self::At { .. } => "at",
             Self::Settle { .. } => "settle",
             Self::Console { .. } => "console",
@@ -97,15 +124,15 @@ impl PageRequest {
 
     pub fn element(&self) -> Option<&str> {
         match self {
-            Self::Outline
+            Self::Outline { .. }
             | Self::Press { element: None, .. }
-            | Self::Changes
+            | Self::Changes { .. }
             | Self::At { .. }
             | Self::Settle { .. }
             | Self::Console { .. }
             | Self::Network { .. }
             | Self::Reader { .. } => None,
-            Self::Click { element }
+            Self::Click { element, .. }
             | Self::Fill { element, .. }
             | Self::Select { element, .. }
             | Self::Press {
@@ -113,6 +140,77 @@ impl PageRequest {
                 ..
             }
             | Self::Submit { element, .. } => Some(element),
+        }
+    }
+
+    /// The frame's document this request runs in, or the main document's.
+    pub fn frame(&self) -> Option<&FrameId> {
+        match self {
+            Self::Outline { frame }
+            | Self::Click { frame, .. }
+            | Self::Fill { frame, .. }
+            | Self::Select { frame, .. }
+            | Self::Press { frame, .. }
+            | Self::Submit { frame, .. }
+            | Self::Changes { frame }
+            | Self::At { frame, .. }
+            | Self::Settle { frame, .. } => frame.as_ref(),
+            Self::Console { .. } | Self::Network { .. } | Self::Reader { .. } => None,
+        }
+    }
+
+    /// The same request run in the main document again.
+    pub fn main_frame(self) -> Self {
+        match self {
+            Self::Outline { .. } => Self::Outline { frame: None },
+            Self::Click { element, .. } => Self::Click {
+                element,
+                frame: None,
+            },
+            Self::Fill {
+                element,
+                text,
+                secret,
+                ..
+            } => Self::Fill {
+                element,
+                text,
+                secret,
+                frame: None,
+            },
+            Self::Select {
+                element, values, ..
+            } => Self::Select {
+                element,
+                values,
+                frame: None,
+            },
+            Self::Press { element, key, .. } => Self::Press {
+                element,
+                key,
+                frame: None,
+            },
+            Self::Submit {
+                element,
+                cross_origin,
+                ..
+            } => Self::Submit {
+                element,
+                cross_origin,
+                frame: None,
+            },
+            Self::Changes { .. } => Self::Changes { frame: None },
+            Self::At { x, y, .. } => Self::At { x, y, frame: None },
+            Self::Settle {
+                quiet_ms,
+                timeout_ms,
+                ..
+            } => Self::Settle {
+                quiet_ms,
+                timeout_ms,
+                frame: None,
+            },
+            other => other,
         }
     }
 
@@ -134,24 +232,66 @@ impl PageRequest {
                         .all(|value| value.len() <= MAX_SELECT_VALUE_BYTES)
             }
             Self::Press { key, .. } => PageKey::parse(&key.chord()).as_ref() == Some(key),
-            Self::At { x, y } => [x, y]
+            Self::At { x, y, .. } => [x, y]
                 .iter()
                 .all(|v| v.is_finite() && (0.0..=MAX_COORDINATE).contains(*v)),
             Self::Settle {
                 quiet_ms,
                 timeout_ms,
+                ..
             } => {
                 (MIN_SETTLE_QUIET_MS..=MAX_SETTLE_MS).contains(quiet_ms)
                     && (*quiet_ms..=MAX_SETTLE_MS).contains(timeout_ms)
             }
-            Self::Outline
+            Self::Outline { .. }
             | Self::Click { .. }
             | Self::Submit { .. }
-            | Self::Changes
+            | Self::Changes { .. }
             | Self::Console { .. }
             | Self::Network { .. }
             | Self::Reader { .. } => true,
         }
+    }
+}
+
+/// A frame's place in the page: the id its parent's outline printed, a dot
+/// between the numbers of nested frames (`2`, then `2.1`), at most eight deep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameId(String);
+
+impl FrameId {
+    /// Reads a frame id the outline printed, refusing anything else so an id
+    /// can never smuggle selector or script syntax to the engine.
+    pub fn parse(value: &str) -> Option<Self> {
+        let parts: Vec<&str> = value.split('.').collect();
+        let digit = |part: &str| {
+            !part.is_empty()
+                && part.len() <= 3
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && !part.starts_with('0')
+        };
+        (value.len() <= MAX_FRAME_BYTES
+            && !parts.is_empty()
+            && parts.len() <= MAX_FRAME_DEPTH
+            && parts.iter().all(|part| digit(part)))
+        .then(|| Self(value.to_string()))
+    }
+
+    /// A frame id no outline printed, standing in for one the caller wrote
+    /// wrongly: it fails the request rather than being read as the main
+    /// document.
+    pub fn malformed() -> Self {
+        Self(String::new())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for FrameId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -299,6 +439,9 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
     if let Some(element) = request.element() {
         command["element"] = element.into();
     }
+    if let Some(frame) = request.frame() {
+        command["frame"] = frame.as_str().into();
+    }
     match request {
         PageRequest::Fill { text, secret, .. } => {
             command["text"] = text.as_str().into();
@@ -315,13 +458,14 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
         PageRequest::Submit { cross_origin, .. } => {
             command["cross_origin"] = (*cross_origin).into()
         }
-        PageRequest::At { x, y } => {
+        PageRequest::At { x, y, .. } => {
             command["x"] = (*x).into();
             command["y"] = (*y).into();
         }
         PageRequest::Settle {
             quiet_ms,
             timeout_ms,
+            ..
         } => {
             command["quiet_ms"] = (*quiet_ms).into();
             command["timeout_ms"] = (*timeout_ms).into();
@@ -330,7 +474,7 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
             command["since"] = (*since).into();
         }
         PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
-        PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Changes => {}
+        PageRequest::Outline { .. } | PageRequest::Click { .. } | PageRequest::Changes { .. } => {}
     }
     command
 }

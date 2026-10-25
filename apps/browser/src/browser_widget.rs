@@ -1977,6 +1977,12 @@ impl BrowserWidget {
         request: PageRequest,
     ) -> Result<(), String> {
         if !request.valid() {
+            if request.frame().is_some() && !request.clone().main_frame().valid() {
+                return Err(format!(
+                    "`{}` was given a frame id the page outline never printed",
+                    request.action()
+                ));
+            }
             return Err(format!(
                 "`{}` names no element of the page outline, or arguments the page cannot take",
                 request.action()
@@ -5216,56 +5222,70 @@ impl BrowserWidget {
         });
         let element = String::new();
         for (spec, asking) in [
-            (E::ReadPage, &[][..]),
+            (E::ReadPage { frame: None }, &["frame"][..]),
             (
                 E::ClickPage {
                     element: element.clone(),
+                    frame: None,
                 },
-                &["element"][..],
+                &["element", "frame"][..],
             ),
             (
                 E::FillPage {
                     element: element.clone(),
                     text: String::new(),
+                    frame: None,
                 },
-                &["element", "text"][..],
+                &["element", "text", "frame"][..],
             ),
             (
                 E::SelectPage {
                     element: element.clone(),
                     values: Vec::new(),
+                    frame: None,
                 },
-                &["element", "values"][..],
+                &["element", "values", "frame"][..],
             ),
             (
                 E::PressPage {
                     key: String::new(),
                     element: None,
+                    frame: None,
                 },
-                &["key", "element"][..],
+                &["key", "element", "frame"][..],
             ),
             (
                 E::FillPageSecret {
                     element: element.clone(),
                     text: String::new(),
+                    frame: None,
                 },
-                &["element", "text"][..],
+                &["element", "text", "frame"][..],
             ),
             (
                 E::SubmitPage {
                     element,
                     cross_origin: None,
+                    frame: None,
                 },
-                &["element", "cross_origin"][..],
+                &["element", "cross_origin", "frame"][..],
             ),
-            (E::ReadPageChanges, &[][..]),
-            (E::ReadPageElementAt { x: 0.0, y: 0.0 }, &["x", "y"][..]),
+            (E::ReadPageChanges { frame: None }, &["frame"][..]),
+            (
+                E::ReadPageElementAt {
+                    x: 0.0,
+                    y: 0.0,
+                    frame: None,
+                },
+                &["x", "y", "frame"][..],
+            ),
             (
                 E::WaitPageSettled {
                     quiet_ms: None,
                     timeout_ms: None,
+                    frame: None,
                 },
-                &["quiet_ms", "timeout_ms"][..],
+                &["quiet_ms", "timeout_ms", "frame"][..],
             ),
             (E::ReadPageConsole { since: None }, &["since"][..]),
             (E::ReadPageNetwork { since: None }, &["since"][..]),
@@ -7499,7 +7519,10 @@ mod tests {
                 &serde_json::json!({}),
             )
             .unwrap();
-            assert_eq!(page_requests(&engine), vec![PageRequest::Outline]);
+            assert_eq!(
+                page_requests(&engine),
+                vec![PageRequest::Outline { frame: None }]
+            );
             widget.sync(&doc, &root);
             let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
                 widget.poll_invocation(invocation)
@@ -7580,7 +7603,10 @@ mod tests {
             assert!(widget.poll_invocation(invocation).is_none());
             engine.send(WebViewCommand::Reload);
             widget.sync(&doc, &root);
-            assert_eq!(page_requests(&engine), vec![PageRequest::Outline]);
+            assert_eq!(
+                page_requests(&engine),
+                vec![PageRequest::Outline { frame: None }]
+            );
             widget.sync(&doc, &root);
             assert!(matches!(
                 widget.poll_invocation(invocation),
@@ -7628,14 +7654,17 @@ mod tests {
                         element: "d3e7".into(),
                         text: String::new(),
                         secret: false,
+                        frame: None,
                     },
                     PageRequest::Select {
                         element: "d3e8".into(),
                         values: vec!["NL".into(), "Belgium".into()],
+                        frame: None,
                     },
                     PageRequest::Press {
                         element: None,
                         key: PageKey::parse("Shift+Tab").unwrap(),
+                        frame: None,
                     },
                 ]
             );
@@ -7702,15 +7731,21 @@ mod tests {
             assert_eq!(
                 page_requests(&engine),
                 vec![
-                    PageRequest::Changes,
-                    PageRequest::At { x: 12.5, y: 40.0 },
+                    PageRequest::Changes { frame: None },
+                    PageRequest::At {
+                        x: 12.5,
+                        y: 40.0,
+                        frame: None,
+                    },
                     PageRequest::Settle {
                         quiet_ms: 500,
                         timeout_ms: 10_000,
+                        frame: None,
                     },
                     PageRequest::Settle {
                         quiet_ms: 200,
                         timeout_ms: 3000,
+                        frame: None,
                     },
                     PageRequest::Console { since: 4 },
                     PageRequest::Network { since: 0 },
@@ -7718,14 +7753,17 @@ mod tests {
                         element: "d1e3".into(),
                         text: "hunter2".into(),
                         secret: true,
+                        frame: None,
                     },
                     PageRequest::Submit {
                         element: "d1e9".into(),
                         cross_origin: false,
+                        frame: None,
                     },
                     PageRequest::Submit {
                         element: "d1e9".into(),
                         cross_origin: true,
+                        frame: None,
                     },
                 ],
                 "a form leaves for another site only when the caller says so"
