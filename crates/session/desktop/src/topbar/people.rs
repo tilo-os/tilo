@@ -29,6 +29,15 @@ impl TopBarChrome {
         self.invite_rect
     }
 
+    /// Where the face of the person with roster id `id` was last drawn.
+    #[must_use]
+    pub fn face_rect(&self, id: &str) -> Option<Rect> {
+        self.collaborator_ids
+            .iter()
+            .position(|shown| shown == id)
+            .and_then(|index| self.face_rects.get(index).copied())
+    }
+
     /// The person whose face is under `point`, by roster id.
     pub(super) fn face_at(&self, point: Point) -> Option<String> {
         // Faces overlap left over right: the later one is on top.

@@ -84,6 +84,9 @@ pub(crate) enum HostRequest {
     /// Have the room's host run an action of a room record for the person
     /// (`peer.actions`), and answer it with `desktop_room_action_answer`.
     RoomAction(crate::desktop::RoomActionRequest),
+    /// Open Chat's direct conversation with this person (root key, hex),
+    /// through Chat's own action, as following a link to it does.
+    Message(String),
 }
 
 /// The page's host action that lets the person choose their name; the
@@ -91,6 +94,8 @@ pub(crate) enum HostRequest {
 const RENAME_ACTION: &str = "set-name";
 /// The avatar menu's "Report a problem…", which the page answers itself.
 const REPORT_PROBLEM: &str = "report-problem";
+/// Chat, which holds person-to-person conversations.
+const CHAT_APP: &str = "so.tilo.chat";
 
 /// Workspace menu keys: a workspace of this page's desktop, by id, and one
 /// of the person's others the page opens, by its host action.
@@ -283,8 +288,15 @@ impl PageChrome {
     /// This page's person as everyone here sees them: their name (numbered
     /// when someone else here shares it) and colour.
     fn own_chip(&self) -> tilo_desktop::chrome::OwnChip {
-        let (name, rgb) = own_identity(&self.here.borrow());
-        tilo_desktop::chrome::OwnChip { name, rgb }
+        let here = self.here.borrow();
+        let (name, rgb) = own_identity(&here);
+        // Their root key, which wears the picture they chose.
+        let identity = here.own_user().unwrap_or_default().to_owned();
+        tilo_desktop::chrome::OwnChip {
+            name,
+            rgb,
+            identity,
+        }
     }
 }
 
@@ -528,6 +540,9 @@ pub(crate) struct BrowserShell {
     requests: HostRequests,
     workspace_menu: WorkspaceMenu,
     profile: ProfileCard,
+    /// Whose card the profile card shows, by roster id; `None` for the
+    /// person's own.
+    profile_of: Option<String>,
     /// The People popover the bar's avatars open.
     people: CollaboratorsOverlay,
     people_open: bool,
@@ -637,6 +652,7 @@ impl BrowserShell {
             requests,
             workspace_menu: WorkspaceMenu::new(),
             profile: ProfileCard::new(),
+            profile_of: None,
             people: CollaboratorsOverlay::default(),
             people_open: false,
             pinned: people::PagePeople::new(),
@@ -1088,14 +1104,19 @@ impl BrowserShell {
                 self.invite();
             }
             ChromeIntent::ShowPerson(id) => {
-                // Who is here, open at them: a second press on the same
-                // face closes it, as the list's own toggle does.
-                let again = self.people_open && self.expanded.as_deref() == Some(id.as_str());
-                self.close_bar_popovers_except(BarPopover::People);
-                self.people_open = !again && !self.tilo_menu.is_open();
-                self.expanded = self.people_open.then_some(id);
-                if !self.people_open {
-                    self.people.clear();
+                // Their card, under their face: a second press closes it.
+                let again =
+                    self.profile.is_open() && self.profile_of.as_deref() == Some(id.as_str());
+                self.close_bar_popovers_except(BarPopover::Profile);
+                self.profile.close();
+                let _ = self.profile.take_choice();
+                if !again && let Some(model) = self.person_model(&id) {
+                    let anchor = self
+                        .bar
+                        .face_rect(&id)
+                        .unwrap_or_else(|| self.bar.collaborators_rect());
+                    self.profile.toggle(&model, anchor, self.rect);
+                    self.profile_of = Some(id);
                 }
             }
             ChromeIntent::ToggleWorkspaceMenu => {
@@ -1120,6 +1141,11 @@ impl BrowserShell {
                     // is asked of the room's host; the card shows it once
                     // answered.
                     self.chrome.shared.linked.refresh();
+                }
+                if self.profile_of.take().is_some() {
+                    // Someone else's card gives way to the person's own.
+                    self.profile.close();
+                    let _ = self.profile.take_choice();
                 }
                 let model = self.profile_model();
                 self.profile
@@ -1253,6 +1279,43 @@ impl BrowserShell {
         }
     }
 
+    /// The card of the person here with roster id `id`: who they are, what
+    /// they are doing (their own words, or marked automatic), their id that
+    /// stays theirs, and following them or writing to them in Chat.
+    fn person_model(&self, id: &str) -> Option<ProfileModel> {
+        let tree = self.handle.read(Clone::clone);
+        let people = self.chrome.people(&tree);
+        let person = people.iter().find(|person| person.id == id)?;
+        let (rows, _) = self.chrome.roster_rows(&people, &Theme::dark());
+        let row = rows.iter().find(|row| row.id == id)?;
+        let key = self
+            .chrome
+            .here
+            .borrow()
+            .user_of(id)
+            .map(str::to_owned)
+            .or_else(|| person.user.clone());
+        // Chat holds person-only conversations with people it lists; one
+        // without a known person (a guest before the host's line) has none.
+        let can_message =
+            !person.agent && key.is_some() && crate::desktop::known_application(CHAT_APP).is_some();
+        Some(ProfileModel {
+            name: row.label.clone(),
+            identity: person.id.clone(),
+            colour: Some(row.color),
+            key,
+            other: Some(tilo_desktop::profile_card::OtherPerson {
+                id: id.to_owned(),
+                status: row.status.clone(),
+                place: row.activity.clone(),
+                following: self.pinned.followed() == Some(id),
+                can_follow: row.followable && !person.agent,
+                can_message,
+            }),
+            ..ProfileModel::default()
+        })
+    }
+
     /// Who the profile card is about, and what the page offers about them.
     fn profile_model(&self) -> ProfileModel {
         let offered = self.handle.host_actions();
@@ -1335,6 +1398,7 @@ impl BrowserShell {
                 tilo_desktop::profile_card::Seen::Here
             },
             control_hints: Some(self.hints.enabled()),
+            key: self.chrome.here.borrow().own_user().map(str::to_owned),
             // Status, colour and what people see are the desktop's to keep;
             // a page shows the person as their host names them.
             ..ProfileModel::default()
@@ -1360,6 +1424,12 @@ impl BrowserShell {
                 self.chrome.here.borrow_mut().set_own_words(Some(words));
                 return;
             }
+            ProfileChoice::Follow(id) => {
+                self.pinned.toggle_follow(&id);
+                (self.chrome.wake)();
+                return;
+            }
+            ProfileChoice::Message(key) => HostRequest::Message(key),
             ProfileChoice::Availability(_)
             | ProfileChoice::Colour(_)
             | ProfileChoice::Visibility(_) => return,

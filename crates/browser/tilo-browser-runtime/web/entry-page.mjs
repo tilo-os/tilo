@@ -25,6 +25,7 @@ import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspac
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
+import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {countryName, deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {qrSvg} from './qr.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -665,6 +666,8 @@ export async function startEntryPage({mode}) {
   /** Workspaces on the person's machines (`workspace-actions.mjs`), once the page is open. */
   let workspaceActions = null;
   let displayName;
+  /** The picture the person chose (a `data:` URL), once their profile is read. */
+  let ownPhoto = null;
   /** The workspace this page is getting into, by name, once it knows it. */
   let workspaceName = query.get('workspace') || null;
   /** The room the link names and the entry it is served under, once read (`deps.onScope`). */
@@ -899,8 +902,20 @@ export async function startEntryPage({mode}) {
         return choice ? openWorkspace({choice, page, status}) : undefined;
       };
     }
+    // The person's own picture, as their profile keeps it.
+    const photos = {
+      current: () => ownPhoto,
+      choose: async () => {
+        const file = await pickImageFile();
+        return file ? squarePhoto(file) : null;
+      },
+      show: url => {
+        ownPhoto = url;
+        if (page.peer?.userPublicKey) void page.mount?.setPersonPhoto?.(page.peer.userPublicKey, url);
+      },
+    };
     const attachIdentity = () => keepIdentity({peer: page.peer, mount: hostActions?.('identity') ?? page.mount, home: page.entry?.home,
-      name: () => displayName, runtime, link: page.link, naming: {
+      name: () => displayName, runtime, link: page.link, photos, naming: {
         ask: (current, save) => askName(current, save),
         set: chosen => {
           displayName = chooseDisplayName(page.peer.userPublicKey, chosen);
@@ -909,7 +924,10 @@ export async function startEntryPage({mode}) {
         },
       }});
     identityActions = attachIdentity();
-    void followProfile(page, name => { displayName = name; });
+    void followProfile(page, name => { displayName = name; }, kept => {
+      ownPhoto = typeof kept.photo === 'string' ? kept.photo : null;
+      identityActions?.pictured?.();
+    });
     // A drawn name someone else here already goes by is drawn again; a
     // name the person chose stays theirs. A page with no host to join has
     // no peer and nobody to share a name with.
@@ -1413,13 +1431,13 @@ async function setUpFromLink(secret, setUp) {
  * The name the person this page joined as chose on any of their devices,
  * from the profile their hosts keep; one chosen only here goes to them.
  */
-async function followProfile(page, onName) {
+async function followProfile(page, onName, onKept = () => {}) {
   const userPublicKey = page.peer?.userPublicKey;
   if (!userPublicKey || !page.peer.setDisplayName) return;
   const origins = [page.peer.origin, ...membershipOrigins(userPublicKey),
     ...listedWorkspaces({home: page.entry?.home}).map(workspace => workspace.host.origin)].filter(Boolean);
   try {
-    await syncProfile({userPublicKey, origins, identity: currentIdentity(), chosen: chosenDisplayName(userPublicKey),
+    await syncProfile({userPublicKey, origins, identity: currentIdentity(), chosen: chosenDisplayName(userPublicKey), onKept,
       apply: name => {
         const kept = chooseDisplayName(userPublicKey, name);
         page.peer.setDisplayName(kept);
@@ -1472,7 +1490,7 @@ async function showVisitState({entered, retryAfter, because = null, workspace, w
  * browser holds them (`browserIdentity`): shown in the desktop, offered once
  * the person has done enough in the room to be worth keeping, at a pause.
  */
-function keepIdentity({peer, mount, home, name, runtime, link, naming}) {
+function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) {
   const identity = currentIdentity();
   if (!identity?.keepWithPasskey || !mount?.setHostActions) return null;
   // A device paired to a person whose root is elsewhere has nothing to keep.
@@ -1480,6 +1498,7 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming}) {
   const mac = /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? '');
   const actions = createIdentityActions({
     identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: peer?.setDisplayName ? naming : null,
+    photos: peer?.setDisplayName ? photos : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
     pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk,

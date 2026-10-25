@@ -1185,6 +1185,7 @@ struct JsHerePerson {
     sources: Vec<String>,
     generated: bool,
     updated_ms: u64,
+    profile_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -2191,6 +2192,7 @@ impl WasmPeer {
                 sources: person.sources.iter().map(hex::encode).collect(),
                 generated: person.generated,
                 updated_ms: person.updated_ms,
+                profile_ms: person.profile_ms,
             })
             .collect();
         serde_json::to_string(&people).map_err(js_error)

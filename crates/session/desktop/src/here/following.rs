@@ -84,6 +84,7 @@ mod tests {
     fn person(id: &str) -> Person {
         Person {
             id: id.into(),
+            user: None,
             label: id.to_uppercase(),
             rgb: (1, 2, 3),
             agent: false,
