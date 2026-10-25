@@ -216,11 +216,21 @@ async fn two_people_see_each_others_camera_decoded_and_their_own_on_their_device
     assert_eq!(ana.wanted_pictures(), [(Source::Camera, Layer::Mid)]);
     assert_eq!(ben.wanted_pictures(), [(Source::Camera, Layer::Low)]);
 
-    // Ana's own picture, for her own tile, starts at a keyframe.
+    // Ana's own picture, for her own tile, starts at a keyframe. A test
+    // starved past the preview's queue sees the gap the queue reports, as
+    // the tile's decoder does, and the keyframe it then waits for.
     let own = tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        let mut dropped = false;
         loop {
-            let (objects, _) = ana_camera.preview().take();
-            if let Some(first) = objects.into_iter().next() {
+            let (objects, gap) = ana_camera.preview().take();
+            dropped |= gap;
+            let mut objects = objects.into_iter();
+            let first = if dropped {
+                objects.find(|object| object.keyframe)
+            } else {
+                objects.next()
+            };
+            if let Some(first) = first {
                 return first;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
