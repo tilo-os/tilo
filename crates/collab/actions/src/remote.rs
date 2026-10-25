@@ -42,6 +42,7 @@ mod catalogue;
 mod content_put;
 pub mod crash_records;
 pub mod feedback;
+mod nodes;
 pub mod own_device;
 mod pending;
 mod wait;
@@ -54,6 +55,9 @@ pub use catalogue::{
 };
 pub use content_put::{
     CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_OPEN_CONTENT_PUTS,
+};
+pub use nodes::{
+    NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
@@ -743,34 +747,6 @@ pub const APPLICATION_OPEN_ACTION: &str = "open";
 
 /// Action id that closes a running application's windows in a workspace.
 pub const APPLICATION_CLOSE_ACTION: &str = "close";
-
-/// Resource prefix of a workspace's actions on one node of its published
-/// tree (a record, an item of it): the rest is the node's text form
-/// (`room:…/app:…/kind:…/resource:…/item:…`). See [`node_target`].
-pub const NODE_RESOURCE_PREFIX: &str = "node:";
-
-/// Share a node with the workspace's members: grant them, on that node
-/// only, what argument `access` names (`view` or `edit`), as much as the
-/// person sharing holds there, under the share's id (argument `share`).
-pub const SHARE_NODE_ACTION: &str = "share";
-
-/// Take back what the share named by argument `share` granted.
-pub const UNSHARE_NODE_ACTION: &str = "unshare";
-
-/// Whether the caller may change the node: output `{"undoable": bool}`,
-/// as the workspace decides their writes there.
-pub const NODE_PERMITS_ACTION: &str = "permits";
-
-/// The target of `action` (one of [`SHARE_NODE_ACTION`],
-/// [`UNSHARE_NODE_ACTION`], [`NODE_PERMITS_ACTION`]) on `node`, the text
-/// form of a node of workspace `room`'s tree.
-#[must_use]
-pub fn node_target(room: &str, node: &str, action: &str) -> RemoteActionTarget {
-    RemoteActionTarget {
-        provider: workspace_provider(room),
-        address: ActionAddress::new(format!("{NODE_RESOURCE_PREFIX}{node}"), action),
-    }
-}
 
 /// The provider token for the actions workspace `room` itself offers.
 #[must_use]
