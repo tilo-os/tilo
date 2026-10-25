@@ -6,9 +6,11 @@
 //! a public workspace starts at "That I'm here", a private one at "Where I
 //! am". Until the host says whether a workspace with a host is public, it
 //! is treated as public: nothing of where you are leaves before that is
-//! known. The choice is handed to the network
-//! ([`super::ShellOverlayHost::set_presence_visibility_bridge`]), which is
-//! where every pointer, caret and live frame is held back.
+//! known. The network holds every pointer, caret and live frame to the same
+//! rule ([`crate::shell::network::presence_visibility`]), from the
+//! person's choices, which the desktop hands it
+//! ([`super::ShellOverlayHost::set_presence_visibility_bridge`]), and the
+//! same answers of each room's host; here the choice is shown and made.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -23,7 +25,8 @@ pub(crate) type DesktopPresenceBridge =
 /// Waves at a person here (a roster id) on the room's live presence, as a
 /// browser tab waves; returns whether it went out.
 pub(crate) type WaveBridge = std::rc::Rc<dyn Fn(RoomId, &str) -> bool>;
-/// Tells the network what the people in a room may see of this person.
+/// Tells the network what the person chose the people in a room see of
+/// them.
 pub(crate) type VisibilityBridge = std::rc::Rc<dyn Fn(RoomId, ui::PresenceVisibility)>;
 
 /// One wave at the same person a minute, as in a browser tab.
@@ -118,17 +121,14 @@ pub(crate) fn visibility_of(
     site: Option<&crate::shell::network::SiteRoom>,
     publication: Option<&PublicationState>,
 ) -> ui::PresenceVisibility {
-    if let Some(chosen) = chosen {
-        return chosen;
-    }
     let public = match (site, publication) {
-        (Some(site), _) => site.community || site.public,
-        (None, Some(PublicationState::Known(publication))) => publication.public,
+        (Some(site), _) => Some(site.community || site.public),
+        (None, Some(PublicationState::Known(publication))) => Some(publication.public),
         // No host lists it, or someone else runs it privately.
-        (None, Some(PublicationState::Unavailable(_))) => false,
-        (None, Some(PublicationState::Asking) | None) => true,
+        (None, Some(PublicationState::Unavailable(_))) => Some(false),
+        (None, Some(PublicationState::Asking) | None) => None,
     };
-    ui::PresenceVisibility::default_for(public)
+    crate::shell::network::presence_visibility::visibility_of(chosen, public)
 }
 
 impl super::ShellOverlayHost {
@@ -143,9 +143,10 @@ impl super::ShellOverlayHost {
         self.self_presence.published = None;
     }
 
-    /// Install where what people see of this person is enforced.
+    /// Install where what people see of this person is enforced, and hand
+    /// it the person's choices.
     pub fn set_presence_visibility_bridge(&mut self, bridge: VisibilityBridge) {
-        for (room, visibility) in &self.self_presence.pushed {
+        for (room, visibility) in &self.self_presence.visibility {
             bridge(*room, *visibility);
         }
         self.self_presence.visibility_bridge = Some(bridge);
@@ -199,6 +200,9 @@ impl super::ShellOverlayHost {
     /// Choose what the people in the workspace of `room` see.
     pub(crate) fn set_presence_visibility(&mut self, room: RoomId, choice: ui::PresenceVisibility) {
         self.self_presence.visibility.insert(room, choice);
+        if let Some(bridge) = self.self_presence.visibility_bridge.clone() {
+            bridge(room, choice);
+        }
         self.persist_collaboration_preferences();
         self.sync_self_presence();
     }
@@ -375,9 +379,9 @@ impl super::ShellOverlayHost {
         sent
     }
 
-    /// Work out what every room's people may see and tell the network the
-    /// ones that changed; ask the host of each room not known yet whether
-    /// it is public.
+    /// Work out what every room's people may see, as the network does from
+    /// the same choices and answers; ask the host of each room not known yet
+    /// whether it is public.
     fn push_visibilities(&mut self, rooms: &[RoomId]) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -422,10 +426,6 @@ impl super::ShellOverlayHost {
                     self.self_presence.published = None;
                 }
                 self.self_presence.told_absent.remove(room);
-                if let Some(bridge) = self.self_presence.visibility_bridge.clone() {
-                    bridge(*room, visibility);
-                    sent = true;
-                }
                 // Back from showing nothing: say so in that room at once,
                 // whether or not it is on screen, so its people list this
                 // person again (they were told this person is not here).
