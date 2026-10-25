@@ -1285,7 +1285,7 @@ components with their dev features, compiled by os-compile-dev-{arch}) on os-ima
 an OCI layout of its layers over the OS image's."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
-inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "Cargo.lock", "rust-toolchain.toml", ".containerignore", "tools/ci/os/oci_layers.py"]
+inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "keys/cosign-dev.pub", "Cargo.lock", "rust-toolchain.toml", ".containerignore", "tools/ci/os/oci_layers.py"]
 needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}"]
 outputs = ["/target/publish/os-dev/{arch}/**"]
 git = true
@@ -1369,17 +1369,50 @@ default = false
 [[matrix.check]]
 name = "sign-dev-os-{arch}"
 comment = """
-The development key in KMS (keys/cosign-dev.pub) signs os-dev-image-{arch}'s digest, from main
-only, as registry.tilo.so/tilo/tilo-vm: what devices on the dev channel require of an image
-(os/etc/containers/policy.json). No registry token; publish-os-dev-{arch} attaches it."""
+The development key in KMS (keys/cosign-dev.pub) signs os-dev-image-{arch}'s digest, in t's
+trusted runs of main, as registry.tilo.so/tilo/tilo-vm: what a dev image's
+policy requires of an image (os/scripts/finalize-dev-image.py). No registry token;
+publish-os-dev-{arch} attaches it."""
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-vm /target/publish/os-dev/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
-needs = ["os-dev-image-{arch}", "os-dev-gate-{arch}", "signing-tools"]
+needs = ["os-dev-image-{arch}", "signing-tools"]
 outputs = ["/target/publish/os-dev/{arch}/payload.json", "/target/publish/os-dev/{arch}/signature", "/target/publish/os-dev/{arch}/dry-run.pub"]
 id_token = ["tilo-dev-signing"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
 requires = ["arch=any"]
+
+[[matrix.check]]
+name = "sign-ref-os-{arch}"
+comment = """
+The development key in KMS signs os-dev-image-{arch}'s digest for a branch's own repository,
+registry.tilo.so/tilo/tilo-vm-ref (tools/ci/publish/os-ref.sh), in t's trusted runs of branches,
+for publish-os-ref-{arch} to attach. No registry token."""
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-ref.sh sign {arch} /target/publish/os-dev/{arch} /target/publish/os-ref/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-dev-image-{arch}", "signing-tools"]
+outputs = ["/target/publish/os-ref/{arch}/**"]
+id_token = ["tilo-dev-signing"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
+requires = ["arch=any"]
+
+[[matrix.check]]
+name = "publish-os-ref-{arch}"
+comment = """
+A branch's own dev image (tools/ci/publish/os-ref.sh), when dispatched: `t dispatch
+publish-os-ref-{arch} --ref BRANCH --publish` publishes os-dev-image-{arch} of the branch's head, signed
+with the development key, as registry.tilo.so/tilo/tilo-vm-ref:ref-<branch>-<commit7>-{arch},
+which `tilo device vm upgrade --ref BRANCH` pins on one device until its channel moves on. The
+branches' repository is not one devices follow channels from. No gate beyond the build: the
+device falls back by itself from an image that does not boot."""
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-ref.sh publish {arch} /target/publish/os-dev/{arch} /target/publish/os-ref/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-dev-image-{arch}", "sign-ref-os-{arch}", "signing-tools"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch"]
 
 [[matrix.check]]
 name = "publish-os-dev-{arch}"
@@ -1751,7 +1784,7 @@ registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade 
 sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
 follow on their own; its flashable disk, which os-board-<board> installs (with the Lenovo's audio
 stack checked inside the image first), replaces tilo-vm-disk-latest/aarch64-<board> in the
-generic packages (docs/development/hardware.md)."""
+generic packages (docs/development/devices.md)."""
 each = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]
 
 [[matrix.check]]
@@ -1791,16 +1824,48 @@ default = false
 [[matrix.check]]
 name = "sign-dev-os-board-{board}"
 comment = """
-The development key in KMS (keys/cosign-dev.pub) signs os-board-{board}'s digest, from main
-only, as registry.tilo.so/tilo/tilo-vm, for publish-os-board-{board} to attach."""
+The development key in KMS (keys/cosign-dev.pub) signs os-board-{board}'s digest, in t's trusted
+runs of main, as registry.tilo.so/tilo/tilo-vm, for publish-os-board-{board} to attach."""
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-vm /target/publish/os-board/{board}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
-needs = ["os-board-{board}", "os-board-size-{board}", "os-dev-gate-aarch64", "signing-tools"]
+needs = ["os-board-{board}", "signing-tools"]
 outputs = ["/target/publish/os-board/{board}/payload.json", "/target/publish/os-board/{board}/signature", "/target/publish/os-board/{board}/dry-run.pub"]
 id_token = ["tilo-dev-signing"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
 requires = ["arch=any"]
+
+[[matrix.check]]
+name = "sign-ref-os-{board}"
+comment = """
+The development key in KMS signs os-board-{board}'s digest for a branch's own repository,
+registry.tilo.so/tilo/tilo-vm-ref (tools/ci/publish/os-ref.sh), in t's trusted runs of branches,
+for publish-os-ref-{board} to attach. No registry token."""
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-ref.sh sign {board} /target/publish/os-board/{board} /target/publish/os-ref/{board}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-board-{board}", "signing-tools"]
+outputs = ["/target/publish/os-ref/{board}/**"]
+id_token = ["tilo-dev-signing"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
+requires = ["arch=any"]
+
+[[matrix.check]]
+name = "publish-os-ref-{board}"
+comment = """
+A branch's own board image (tools/ci/publish/os-ref.sh), when dispatched: `t dispatch
+publish-os-ref-{board} --ref BRANCH --publish` publishes os-board-{board} of the branch's head, signed
+with the development key, as registry.tilo.so/tilo/tilo-vm-ref:ref-<branch>-<commit7>-{board},
+which `tilo device vm upgrade --ref BRANCH` pins on one device until its channel moves on. The
+branches' repository is not one devices follow channels from. No gate beyond the build: the
+device falls back by itself from an image that does not boot."""
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-ref.sh publish {board} /target/publish/os-board/{board} /target/publish/os-ref/{board}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-board-{board}", "sign-ref-os-{board}", "signing-tools"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch"]
 
 [[matrix.check]]
 name = "publish-os-board-{board}"
