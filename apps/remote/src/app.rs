@@ -464,22 +464,32 @@ impl SessionCore {
     /// Release on the remote machine every key this pane still holds there:
     /// the pane lost the keyboard, and the release will not reach it.
     fn release_held_keys(&mut self) {
-        let held = std::mem::take(&mut self.held_keys);
-        if held.is_empty() {
-            return;
+        for (_, key) in std::mem::take(&mut self.held_keys) {
+            self.send_release(key);
         }
+    }
+
+    /// Release on the remote machine the key this pane pressed there as
+    /// `physical`, if it still holds it: the key came up, whether or not its
+    /// release reaches the pane.
+    fn release_key(&mut self, physical: PhysicalKey) {
+        if let Some(at) = self.held_keys.iter().position(|(key, _)| *key == physical) {
+            let (_, key) = self.held_keys.remove(at);
+            self.send_release(key);
+        }
+    }
+
+    /// Send the release of `key`, as its press sent it: a keysym to a VNC
+    /// desktop, an evdev keycode to a Tilo session.
+    fn send_release(&mut self, key: u32) {
         if let Some(s) = self.vnc_session() {
-            for (_, key) in held {
-                let _ = s.send_input(VncInput::Key { down: false, key });
-            }
+            let _ = s.send_input(VncInput::Key { down: false, key });
         } else {
-            for (_, keycode) in held {
-                self.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
-                    keycode,
-                    pressed: false,
-                    modifiers: 0,
-                });
-            }
+            self.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
+                keycode: key,
+                pressed: false,
+                modifiers: 0,
+            });
         }
     }
 
@@ -2165,6 +2175,23 @@ impl Widget for RemoteApp {
             .min()
     }
 
+    // Seen ahead of the framework's shortcuts, the action palette and a
+    // dialog, which keep keys from the session pane: a key the pane pressed
+    // on the remote machine is released there when it comes up, even when
+    // its release goes to the palette, so Ctrl+K leaves no Ctrl held there.
+    fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {
+        match input {
+            ui::widget::PhysicalInput::Key {
+                key,
+                state: ElementState::Released,
+            } => self.session.borrow_mut().release_key(key),
+            ui::widget::PhysicalInput::Focused(false) => {
+                self.session.borrow_mut().release_held_keys();
+            }
+            _ => {}
+        }
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // A confirmation is modal: nothing reaches the window behind it.
         if let Some(dialog) = self.dialog.as_mut() {
@@ -2837,12 +2864,17 @@ impl SessionPane {
             if let PhysicalKey::Code(code) = event.physical_key
                 && let Some(keycode) = ui::evdev::from_key_code(code)
             {
-                core.track_key(event.physical_key, pressed.then_some(keycode));
-                core.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
-                    keycode,
-                    pressed,
-                    modifiers: 0,
-                });
+                // A release goes only for a key still held there: one the
+                // window took on its way here was released already.
+                if let Some(keycode) =
+                    core.track_key(event.physical_key, pressed.then_some(keycode))
+                {
+                    core.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
+                        keycode,
+                        pressed,
+                        modifiers: 0,
+                    });
+                }
                 return true;
             }
             return false;
@@ -3033,8 +3065,6 @@ fn ssh_key_bytes(key: &Key, text: Option<&str>, mods: ModifiersState) -> Option<
     }
 }
 
-/// Map a key press to an X11 keysym for VNC `KeyEvent`s (ASCII + a few
-/// named keys — enough for basic remote typing).
 /// The most wheel clicks one wheel event sends a VNC desktop, so a fling
 /// cannot fill the session's bounded input queue.
 const VNC_WHEEL_BURST: usize = 10;
@@ -3081,6 +3111,8 @@ fn vnc_wheel_clicks(
     clicks
 }
 
+/// The X11 keysym a VNC `KeyEvent` sends for a logical key: a character,
+/// or a named key from editing, navigation, the modifiers and F1 to F12.
 fn vnc_keysym(key: &Key) -> Option<u32> {
     let named = match key {
         Key::Named(named) => named,

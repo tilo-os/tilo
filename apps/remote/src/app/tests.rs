@@ -761,12 +761,8 @@ fn a_tilo_stream_gap_asks_the_target_for_a_keyframe() {
     );
 }
 
-/// A key held on the remote machine when the session pane loses the
-/// keyboard (a click elsewhere, another window) is released there: its
-/// release goes to whatever has the keyboard now, and the remote side would
-/// hold the key, repeating it, until the person pressed it again.
-#[test]
-fn a_key_held_when_the_pane_loses_the_keyboard_is_released_on_the_remote_machine() {
+/// A demo app with a connected Tilo session showing a stream.
+fn connected_tilo_session() -> RemoteApp {
     let mut app = demo();
     let target = SecretKey::generate().public();
     let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
@@ -785,26 +781,43 @@ fn a_key_held_when_the_pane_loses_the_keyboard_is_released_on_the_remote_machine
         },
     });
     let _ = app.take_collab_requests();
-    let keys = |app: &mut RemoteApp| {
-        app.take_collab_requests()
-            .into_iter()
-            .filter_map(|request| match request {
-                ui::collaboration::CollabRequest::WorkspaceControlInput {
-                    event:
-                        runtime_collab::WorkspaceControlInput::Key {
-                            keycode, pressed, ..
-                        },
-                    ..
-                } => Some((keycode, pressed)),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
-    let key = |code, state| {
-        let mut event = ui::synthetic_input::key_event(Key::Named(NamedKey::Control), None, state);
-        event.physical_key = PhysicalKey::Code(code);
-        event
-    };
+    app
+}
+
+/// The keys `app` sent its Tilo session since last asked, as evdev keycode
+/// and whether it went down.
+fn sent_keys(app: &mut RemoteApp) -> Vec<(u32, bool)> {
+    app.take_collab_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            ui::collaboration::CollabRequest::WorkspaceControlInput {
+                event:
+                    runtime_collab::WorkspaceControlInput::Key {
+                        keycode, pressed, ..
+                    },
+                ..
+            } => Some((keycode, pressed)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A key event for the physical key `code`.
+fn key_at(code: winit::keyboard::KeyCode, state: ElementState) -> KeyEvent {
+    let mut event = ui::synthetic_input::key_event(Key::Named(NamedKey::Control), None, state);
+    event.physical_key = PhysicalKey::Code(code);
+    event
+}
+
+/// A key held on the remote machine when the session pane loses the
+/// keyboard (a click elsewhere, another window) is released there: its
+/// release goes to whatever has the keyboard now, and the remote side would
+/// hold the key, repeating it, until the person pressed it again.
+#[test]
+fn a_key_held_when_the_pane_loses_the_keyboard_is_released_on_the_remote_machine() {
+    let mut app = connected_tilo_session();
+    let keys = sent_keys;
+    let key = key_at;
     let mut pane = SessionPane::new(Rc::clone(&app.session));
     let ctrl = winit::keyboard::KeyCode::ControlLeft;
     let pressed = ElementState::Pressed;
@@ -829,6 +842,59 @@ fn a_key_held_when_the_pane_loses_the_keyboard_is_released_on_the_remote_machine
         keys(&mut app).is_empty(),
         "a key released already is not released again"
     );
+}
+
+/// The window takes some keys before the session pane sees them: Ctrl+K
+/// opens the action palette, which then keeps every key release, Ctrl's
+/// among them, from the window behind it. A key the pane pressed on the
+/// remote machine is still released there when it comes up; otherwise Ctrl
+/// stays held on the remote side and the next letters typed there arrive as
+/// Ctrl chords (Ctrl+W closing a tab, Ctrl+Q quitting).
+#[test]
+fn a_key_whose_release_the_window_takes_is_still_released_on_the_remote_machine() {
+    use winit::keyboard::KeyCode;
+    let mut app = connected_tilo_session();
+    let pane = SessionPane::new(Rc::clone(&app.session));
+    let released = |code| ui::widget::PhysicalInput::Key {
+        key: PhysicalKey::Code(code),
+        state: ElementState::Released,
+    };
+    assert!(pane.handle_key(
+        &key_at(KeyCode::ControlLeft, ElementState::Pressed),
+        ModifiersState::empty()
+    ));
+    assert_eq!(sent_keys(&mut app), [(29, true)], "Ctrl goes down there");
+
+    // The palette took the release; the window still observed it.
+    Widget::observe_physical_input(&mut app, released(KeyCode::ControlLeft));
+    assert_eq!(
+        sent_keys(&mut app),
+        [(29, false)],
+        "Ctrl comes up there with the key"
+    );
+    pane.handle_key(
+        &key_at(KeyCode::ControlLeft, ElementState::Released),
+        ModifiersState::empty(),
+    );
+    assert!(
+        sent_keys(&mut app).is_empty(),
+        "a release that reaches the pane after all is not sent twice"
+    );
+    Widget::observe_physical_input(&mut app, released(KeyCode::ShiftLeft));
+    assert!(
+        sent_keys(&mut app).is_empty(),
+        "a key the pane never pressed there is not released there"
+    );
+
+    // A dialog over the window or History holding it: the window observes
+    // the keyboard as lost.
+    assert!(pane.handle_key(
+        &key_at(KeyCode::ShiftLeft, ElementState::Pressed),
+        ModifiersState::empty()
+    ));
+    assert_eq!(sent_keys(&mut app), [(42, true)]);
+    Widget::observe_physical_input(&mut app, ui::widget::PhysicalInput::Focused(false));
+    assert_eq!(sent_keys(&mut app), [(42, false)]);
 }
 
 #[test]
