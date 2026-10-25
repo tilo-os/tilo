@@ -3719,6 +3719,38 @@ fn keyboard_encoding_sends_expected_sequences() {
             false,
         );
         assert_eq!(drain_writes(&rx), b"\x1b[Z", "Shift+Tab = CSI Z (back-tab)");
+        // The desktop's tab chords pass through to it: no bytes for the
+        // shell, so the app hands them on and the window's tabs step.
+        for (key, shift) in [
+            (Key::Named(NamedKey::Tab), false),
+            (Key::Named(NamedKey::Tab), true),
+            (Key::Character("T".into()), true),
+        ] {
+            send_key_mods(&mut w, &mut doc, key.clone(), true, shift, false);
+            assert!(
+                drain_writes(&rx).is_empty(),
+                "{key:?} with Ctrl (Shift {shift}) is the desktop's, not the shell's"
+            );
+        }
+        // Ctrl+T and Ctrl+W stay the shell's line-editing control bytes.
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Character("t".into()),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(drain_writes(&rx), [0x14], "Ctrl+T = ^T");
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Character("w".into()),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(drain_writes(&rx), [0x17], "Ctrl+W = ^W");
     }
 
     // Case `alt_letter_sends_meta_escape_but_altgr_symbols_pass_through`.

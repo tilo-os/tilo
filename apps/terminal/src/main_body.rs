@@ -4005,6 +4005,27 @@ impl TerminalWidget {
         {
             return;
         }
+        // Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+Shift+T are the desktop's tab
+        // chords wherever an app leaves them: the next or previous tab of
+        // this window, the last closed tab. A terminal has no bytes of its
+        // own for them (Ctrl+Tab would send the Tab that Tab sends,
+        // Ctrl+Shift+T the ^T of Ctrl+T), so they go unhandled to the
+        // desktop through `ui::shell_tabs`. Ctrl+T and Ctrl+W stay the
+        // shell's ^T and ^W.
+        if matches!(
+            ui::shell_tabs::chord_request(
+                logical_key,
+                ui::platform::PlatformConventions::default().command_modifier_down(mods),
+                mods.shift_key(),
+                mods.alt_key() || (mods.control_key() && mods.super_key()),
+            ),
+            Some(
+                ui::shell_tabs::TabRequest::CycleTab { .. }
+                    | ui::shell_tabs::TabRequest::ReopenClosed
+            )
+        ) {
+            return;
+        }
         if self.take_no_runtime_offer(logical_key, mods) {
             *handled = true;
             return;
