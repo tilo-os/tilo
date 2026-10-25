@@ -1,5 +1,6 @@
 //! Owner governance admission consumes an exact existing confirmation, not a
 //! replacement approval, and never turns that approval into delegated custody.
+use super::super::ActionDirectoryRoot;
 use super::*;
 use crate::services::{HostServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices};
 use crate::test_support::{Grants as _, KindSet, Workspace, WorkspaceId, WorkspaceTree};
