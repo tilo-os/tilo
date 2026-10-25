@@ -36,8 +36,8 @@ use ui::theme::Theme;
 use ui::tilo_actions::{ActionBinding, ControlInvocation, Resource};
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{
-    MediaElementInfo, NavigationCommand, NavigationDirection, PageFailure, PageReply, PageRequest,
-    SharedEngine, WebViewCommand, WebViewEvent,
+    FrameId, MediaElementInfo, NavigationCommand, NavigationDirection, PageFailure, PageReply,
+    PageRequest, SharedEngine, WebViewCommand, WebViewEvent,
 };
 use ui::widget::{
     AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
@@ -1977,7 +1977,7 @@ impl BrowserWidget {
         request: PageRequest,
     ) -> Result<(), String> {
         if !request.valid() {
-            if request.frame().is_some() && !request.clone().main_frame().valid() {
+            if !request.frame_valid() {
                 return Err(format!(
                     "`{}` was given a frame id the page outline never printed",
                     request.action()
@@ -7718,6 +7718,12 @@ mod tests {
                     "submit-page",
                     serde_json::json!({"element": "d1e9", "cross_origin": true}),
                 ),
+                ("read-page", serde_json::json!({"frame": "1"})),
+                (
+                    "fill-page",
+                    serde_json::json!({"element": "d2e4", "text": "42 Linden Street",
+                        "frame": "1.2"}),
+                ),
             ] {
                 let invocation = start(&mut widget, &mut doc, &root, id, &args).unwrap();
                 widget.sync(&doc, &root);
@@ -7765,9 +7771,29 @@ mod tests {
                         cross_origin: true,
                         frame: None,
                     },
+                    PageRequest::Outline {
+                        frame: Some(FrameId::parse("1").unwrap()),
+                    },
+                    PageRequest::Fill {
+                        element: "d2e4".into(),
+                        text: "42 Linden Street".into(),
+                        secret: false,
+                        frame: Some(FrameId::parse("1.2").unwrap()),
+                    },
                 ],
                 "a form leaves for another site only when the caller says so"
             );
+            // A frame id the outline never printed is refused at the door
+            // rather than run against the main document.
+            let refused = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "read-page",
+                &serde_json::json!({"frame": "#fr"}),
+            )
+            .unwrap_err();
+            assert!(refused.contains("frame"), "{refused}");
             for value in &answers {
                 assert_eq!(value["provenance"], "web-content", "{value}");
             }

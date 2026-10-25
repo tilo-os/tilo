@@ -214,11 +214,27 @@ impl PageRequest {
         }
     }
 
+    /// Whether this request names a frame the page outline could have
+    /// printed. A caller that makes one up is refused, never silently run
+    /// against the main document instead.
+    pub fn frame_valid(&self) -> bool {
+        self.frame()
+            .is_none_or(|frame| FrameId::parse(frame.as_str()) == Some(frame.clone()))
+    }
+
     /// Whether every field is within the bounds an engine accepts.
     pub fn valid(&self) -> bool {
         if self
             .element()
             .is_some_and(|element| !is_element_ref(element))
+        {
+            return false;
+        }
+        // Structured so that `FrameId::malformed` fails here rather than
+        // running the request in the main document instead.
+        if self
+            .frame()
+            .is_some_and(|frame| FrameId::parse(frame.as_str()) != Some(frame.clone()))
         {
             return false;
         }
@@ -566,12 +582,13 @@ mod tests {
         // phase: invalid_requests_are_refused_before_the_engine
         {
             let element = "d1e2".to_string();
-            assert!(PageRequest::Outline.valid());
+            assert!(PageRequest::Outline { frame: None }.valid());
             assert!(
                 PageRequest::Fill {
                     element: element.clone(),
                     text: "hello".into(),
                     secret: false,
+                    frame: None,
                 }
                 .valid()
             );
@@ -580,19 +597,22 @@ mod tests {
                     element: element.clone(),
                     text: "x".repeat(MAX_FILL_BYTES + 1),
                     secret: false,
+                    frame: None,
                 }
                 .valid()
             );
             assert!(
                 !PageRequest::Select {
                     element: element.clone(),
-                    values: Vec::new()
+                    values: Vec::new(),
+                    frame: None,
                 }
                 .valid()
             );
             assert!(
                 !PageRequest::Click {
-                    element: "#submit".into()
+                    element: "#submit".into(),
+                    frame: None,
                 }
                 .valid()
             );
@@ -604,6 +624,7 @@ mod tests {
                 &PageRequest::Press {
                     element: Some("d1e2".into()),
                     key: PageKey::parse("Shift+Enter").unwrap(),
+                    frame: None,
                 },
             );
             assert_eq!(
@@ -616,13 +637,57 @@ mod tests {
                 &PageRequest::Select {
                     element: "d1e3".into(),
                     values: vec!["NL".into()],
+                    frame: None,
                 },
             );
             assert_eq!(command["values"], serde_json::json!(["NL"]));
         }
+        // phase: a_frame_is_named_only_as_the_outline_prints_it
+        {
+            for good in ["1", "2", "12", "1.2", "3.10.4"] {
+                assert_eq!(FrameId::parse(good).unwrap().as_str(), good);
+            }
+            for bad in [
+                "", "0", "01", ".", "1.", ".1", "1..2", "a", "1e2", " 1", "1 ", "1234",
+            ] {
+                assert!(FrameId::parse(bad).is_none(), "{bad:?}");
+            }
+            let deep = (1..=9).map(|n| n.to_string()).collect::<Vec<_>>().join(".");
+            assert!(FrameId::parse(&deep).is_none());
+            let frame = FrameId::parse("1.2").unwrap();
+            let in_frame = PageRequest::Click {
+                element: "d4e9".into(),
+                frame: Some(frame.clone()),
+            };
+            assert!(in_frame.valid());
+            assert_eq!(in_frame.frame(), Some(&frame));
+            assert_eq!(in_frame.clone().main_frame().frame(), None);
+            assert_eq!(
+                encode_request(13, &in_frame)["frame"],
+                serde_json::json!("1.2")
+            );
+            assert_eq!(
+                encode_request(13, &PageRequest::Outline { frame: None })["frame"],
+                serde_json::Value::Null
+            );
+            // A frame id the caller made up never reaches the engine as the
+            // main document.
+            let invented = PageRequest::Outline {
+                frame: Some(FrameId::malformed()),
+            };
+            assert!(!invented.valid());
+            assert!(invented.main_frame().valid());
+        }
         // phase: agent_requests_name_their_arguments_and_bounds
         {
-            let at = encode_request(9, &PageRequest::At { x: 12.5, y: 40.0 });
+            let at = encode_request(
+                9,
+                &PageRequest::At {
+                    x: 12.5,
+                    y: 40.0,
+                    frame: None,
+                },
+            );
             assert_eq!(
                 at,
                 serde_json::json!({"op":"page","request_id":9,"action":"at","x":12.5,"y":40.0})
@@ -630,6 +695,7 @@ mod tests {
             let settle = PageRequest::Settle {
                 quiet_ms: 500,
                 timeout_ms: 10_000,
+                frame: None,
             };
             assert!(settle.valid());
             assert_eq!(encode_request(10, &settle)["timeout_ms"], 10_000);
@@ -643,32 +709,41 @@ mod tests {
                     &PageRequest::Submit {
                         element: "d1e2".into(),
                         cross_origin: true,
+                        frame: None,
                     }
                 )["cross_origin"],
                 true
             );
             for bad in [
-                PageRequest::At { x: -1.0, y: 0.0 },
+                PageRequest::At {
+                    x: -1.0,
+                    y: 0.0,
+                    frame: None,
+                },
                 PageRequest::At {
                     x: f64::NAN,
                     y: 0.0,
+                    frame: None,
                 },
                 PageRequest::Settle {
                     quiet_ms: 10,
                     timeout_ms: 1000,
+                    frame: None,
                 },
                 PageRequest::Settle {
                     quiet_ms: 500,
                     timeout_ms: 100,
+                    frame: None,
                 },
                 PageRequest::Settle {
                     quiet_ms: 500,
                     timeout_ms: MAX_SETTLE_MS + 1,
+                    frame: None,
                 },
             ] {
                 assert!(!bad.valid(), "{bad:?}");
             }
-            assert!(PageRequest::Changes.element().is_none());
+            assert!(PageRequest::Changes { frame: None }.element().is_none());
         }
         // phase: findings_decode_as_data_within_their_bound
         {
