@@ -71,6 +71,9 @@ pub(crate) struct ResourceRoot {
     /// The window's save status over the view: the record's durability and
     /// the app's own saves, silent unless a save stalls or fails.
     save: super::saves::SaveIndicator,
+    /// The reactions to the record, in the window's bar, where the record
+    /// takes them.
+    reactions: super::reactions::ReactionsIndicator,
     /// The participant's permissions, re-checked every sync so a role change
     /// while the app runs takes effect at once. `None` for a read-only view
     /// of a past version.
@@ -549,6 +552,7 @@ impl ResourceRoot {
             dispatch,
             saved,
             save: super::saves::SaveIndicator::new(saves),
+            reactions: super::reactions::ReactionsIndicator::default(),
             permissions: None,
             write: None,
             stages,
@@ -634,6 +638,21 @@ impl ResourceRoot {
         self.permissions = permissions;
         self.write = Some(write);
         self
+    }
+
+    /// Show the record's reactions in the window's bar, and run those
+    /// pressed there ([`super::reactions`]). Nothing while the record does
+    /// not read as the resource: its last state is not what it holds.
+    fn sync_reactions(&mut self) {
+        let state = self.typed.state();
+        let readable = self.unreadable.is_none();
+        self.reactions.sync(&super::reactions::ReactionsInput {
+            table: self.resource.record_table.filter(|_| readable),
+            state: state.as_ref(),
+            dispatch: &self.dispatch,
+            people: &self.run.people,
+            private: self.run.private,
+        });
     }
 
     /// Apply a permission change made while the app runs: dispatchers stop
@@ -2062,6 +2081,7 @@ impl RootModel for ResourceRoot {
         *self.binding_head.borrow_mut() = Some(head);
         // The save status says itself in the window's bar.
         self.save.sync(ui_core::time::now());
+        self.sync_reactions();
     }
 
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
