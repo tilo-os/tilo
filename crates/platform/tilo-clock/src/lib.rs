@@ -338,6 +338,38 @@ pub fn wall_frozen() -> bool {
     frozen_ms() != 0
 }
 
+/// Whether this device's clock is synchronised with a time source, when the
+/// platform can say: `Some(true)` synchronised, `Some(false)` known not to be,
+/// `None` when nothing here knows. A device whose clock is minutes out produces
+/// codes nothing accepts, and the machine is the only place that can tell.
+///
+/// It answers for the platform, not for a feature: every surface that shows
+/// time-sensitive data asks the same question.
+#[must_use]
+pub fn is_synchronised() -> Option<bool> {
+    #[cfg(all(target_os = "linux", not(target_family = "wasm")))]
+    {
+        // systemd answers for the session's clock; without it (a container, a
+        // non-systemd session) nothing knows, which is not the same as "no".
+        let output = std::process::Command::new("timedatectl")
+            .args(["show", "-p", "NTPSynchronized", "--value"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        match String::from_utf8_lossy(&output.stdout).trim() {
+            "yes" => Some(true),
+            "no" => Some(false),
+            _ => None,
+        }
+    }
+    #[cfg(not(all(target_os = "linux", not(target_family = "wasm"))))]
+    {
+        None
+    }
+}
+
 /// The IANA name of the local time zone, when the system names one: `$TZ`
 /// (without a leading `:`), else the zone `/etc/localtime` links to below
 /// `zoneinfo/`. `None` where the system names none, and on the web; local
