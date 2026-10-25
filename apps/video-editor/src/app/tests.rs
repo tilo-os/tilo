@@ -3644,6 +3644,72 @@ fn export_failures_are_accessible_and_wrap() {
             "the failure node has a semantic key rather than a child position"
         );
     }
+    // Case `footage_that_is_not_here_withdraws_export_before_the_chooser`:
+    // A cut whose clips point at footage this device has not read cannot be
+    // exported — the render would stop before its first frame, naming the
+    // source. Export used to ask for an output file first and then refuse, so
+    // the offer and the outcome disagreed and the person was told to save a
+    // file that could never be written. Now the dialog names the source it is
+    // waiting for, the button is withdrawn, and no chooser opens.
+    {
+        // The sample cut's footage stands in for bytes this device never read,
+        // which is exactly the state a source is in before it hydrates.
+        let (mut app, _doc) = app_sized(1280.0, 800.0);
+        app.presentation.export_open = true;
+        render(&mut app);
+        let blocker = app
+            .export_blocker()
+            .expect("the missing footage is what stands in the way");
+        assert!(
+            blocker.contains("Drone_Coastline"),
+            "the blocker names the source: {blocker}"
+        );
+        assert!(
+            !blocker.contains("stand-in") && !blocker.contains("export"),
+            "and says it in the person's words, never the encoder's: {blocker}"
+        );
+        assert!(
+            !app.export_is_offered(),
+            "Export is withdrawn while a clip's footage is not here",
+        );
+        let offered = app.export_actions();
+        assert!(
+            offered.iter().any(|a| a.label == "Export" && !a.enabled),
+            "the card still paints Export, disabled: {offered:?}",
+        );
+        // Pressing it (or its keyboard twin) does nothing but say why: no
+        // destination chooser, no render, and the reason on the status line.
+        let l = app.with_dialog_layout(super::VideoEditorApp::export_layout);
+        app.press_export(l.confirm.center());
+        assert!(
+            app.export_dest_rx.is_none(),
+            "a blocked Export never asks where to save",
+        );
+        assert!(!app.export_running(), "and starts no render");
+        app.export_status = ExportStatus::Idle;
+        app.request_export();
+        assert!(
+            app.export_dest_rx.is_none(),
+            "the request path refuses the same offer the card withdraws",
+        );
+        match &app.export_status {
+            ExportStatus::Failed { reason } => assert_eq!(reason, &blocker),
+            other => panic!("a blocked export states its reason, got {other:?}"),
+        }
+        app.export_status = ExportStatus::Idle;
+        let tree = app
+            .accessibility()
+            .expect("the editor describes its contents");
+        let said = a11y_find(&tree, "Why export cannot run");
+        assert_eq!(said.len(), 1, "a reader is told why Export is withdrawn");
+        assert_eq!(said[0].value.as_deref(), Some(blocker.as_str()));
+        let button = a11y_find(&tree, "Start export");
+        assert_eq!(button.len(), 1);
+        assert!(
+            button[0].state.disabled,
+            "and the button a reader reaches is the disabled one",
+        );
+    }
     // Case `a_long_export_failure_wraps_above_the_footer_and_buttons`.
     {
         let (mut app, _doc) = app_sized(1280.0, 800.0);
@@ -5689,24 +5755,39 @@ fn export_dialog_layout_availability_and_shortcuts() {
         // The event path lays the dialog out with the theme of the last
         // frame, so paint one first.
         render(&mut app);
-        let mut tr = TextRenderer::new();
-        let l = app.export_layout(&mut tr, &Theme::dark());
+        // Two things refuse a render — no encoder on this box, and footage this
+        // device has not read — and the offer has to answer to both, so a
+        // project whose clips are all present is what makes the two comparable.
+        assert_eq!(
+            !app.export_is_offered(),
+            app.export_blocker().is_some(),
+            "the offer must track the reason the dialog states",
+        );
+        app.project = Project::new("Empty");
         assert_eq!(
             app.export_is_offered(),
             crate::export::unavailable_reason().is_none(),
-            "the offer must track what the export module says it can do",
+            "with nothing to read, only the box's encoders stand in the way",
         );
+        let (mut app, _doc) = app_sized(1280.0, 800.0);
+        app.presentation.export_open = true;
+        render(&mut app);
+        let l = app.with_dialog_layout(super::VideoEditorApp::export_layout);
         if !app.export_is_offered() {
-            // Pressing it must do nothing at all — no job, no status change.
+            // Pressing it must do nothing at all — no job, no output file
+            // chosen. The status may take the reason, and only that.
+            let before = app.export_status.clone();
             app.press_export(l.confirm.center());
             assert!(
-                matches!(app.export_status, ExportStatus::Idle),
-                "a refused Export must not move the status",
+                app.export_dest_rx.is_none() && !app.export_running(),
+                "a refused Export must not start a job",
             );
-            assert!(
-                !app.export_running(),
-                "a refused Export must not start a job"
-            );
+            match &app.export_status {
+                ExportStatus::Failed { reason } => {
+                    assert_eq!(Some(reason.clone()), app.export_blocker());
+                }
+                other => assert_eq!(other, &before, "a refused Export must not move the status"),
+            }
         }
     }
     // Case `the_export_modal_dims_the_editor_rather_than_deleting_it`:
