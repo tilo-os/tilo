@@ -596,6 +596,7 @@ suites = [
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/desktop_chrome_bench_test.py",
   "scripts/perf/device_latency_bench_test.py",
+  "scripts/perf/drm_hardware_checks_test.py",
   "scripts/perf/device_notes_latency_test.py",
   "scripts/perf/device_notes_trace_test.py",
   "scripts/perf/collect_code_editor_native_test.py",
