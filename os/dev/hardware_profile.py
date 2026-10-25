@@ -36,7 +36,7 @@ FIRMWARE_PACKAGE_TREES = {
     "nxpwireless-firmware": ("nxp",),
     "tiwilink-firmware": ("ti-connectivity",),
 }
-INTERNAL_KEYBOARD_FIELDS = {"name", "bus", "vendor", "product", "devicetree_compatible", "dmi"}
+INTERNAL_KEYBOARD_FIELDS = {"name", "bus", "vendor", "product", "devicetree_compatible"}
 # The kernel keeps its record of a panic in memory the firmware does not clear
 # on reset. Which memory that is depends on how the board is described:
 #   ramoops       a reserved-memory region the board's device tree declares;
@@ -366,7 +366,9 @@ def validate_definition(data):
     for argument in kernel_args:
         # One unquoted token each: the argument is sealed into the UKI command
         # line verbatim, so whitespace or quotes would split or merge arguments.
-        if not isinstance(argument, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})?", argument):
+        # A value may carry a further `=`, as the kernel's own sub-option
+        # syntax does ("video=<connector>:<option>=<value>").
+        if not isinstance(argument, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})*", argument):
             raise ValueError("hardware definition kernel argument is invalid")
     if len(set(kernel_args)) != len(kernel_args):
         raise ValueError("hardware definition kernel arguments must be unique")
@@ -393,7 +395,7 @@ def validate_internal_keyboards(data):
     for keyboard in keyboards:
         if not isinstance(keyboard, dict) or set(keyboard) != INTERNAL_KEYBOARD_FIELDS:
             raise ValueError("hardware definition internal keyboard has missing or unknown fields")
-        if not all(isinstance(value, str) for value in keyboard.values()):
+        if not all(isinstance(value, str) for value in keyboard.values() if value is not None):
             raise ValueError("hardware definition internal keyboard fields must be strings")
         if keyboard["bus"] not in ("i2c", "spi"):
             # USB and Bluetooth keyboards are external to libinput, PS/2
@@ -403,12 +405,18 @@ def validate_internal_keyboards(data):
             raise ValueError("hardware definition internal keyboard ids must be four uppercase hex digits")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 :._()-]{0,79}", keyboard["name"]):
             raise ValueError("hardware definition internal keyboard name is invalid")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*,[a-z0-9][a-z0-9._-]*", keyboard["devicetree_compatible"]):
+        # A device-tree board confines the quirk by its compatible; a
+        # firmware-described one has no compatible and is confined by the
+        # definition's DMI identity instead. Requiring exactly the one that
+        # matches the board keeps a quirk from naming an identity that cannot
+        # both apply and be true of the machine it runs on.
+        compatible = keyboard["devicetree_compatible"]
+        if data["devicetree"] is None:
+            if compatible is not None:
+                raise ValueError("hardware definition internal keyboard on a DMI board has no device-tree compatible")
+        elif not isinstance(compatible, str) or not re.fullmatch(
+                r"[a-z0-9][a-z0-9._-]*,[a-z0-9][a-z0-9._-]*", compatible):
             raise ValueError("hardware definition internal keyboard device-tree compatible is invalid")
-        if keyboard["dmi"] != data.get("dmi", {}):
-            # The quirk is written from the keyboard entry alone, so the board
-            # identity it carries is the board's own, never another model's.
-            raise ValueError("hardware definition internal keyboard DMI differs from the board's")
         identity = (keyboard["bus"], keyboard["vendor"], keyboard["product"])
         if identity in seen:
             raise ValueError("hardware definition internal keyboards must be unique")
