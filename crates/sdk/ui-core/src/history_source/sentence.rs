@@ -14,6 +14,10 @@ impl Messages for ThreadCatalogue {
     fn format(&self, key: &str, args: &FluentArgs<'_>) -> Option<String> {
         I18nManager::has_message(key).then(|| I18nManager::lookup(key, Some(args)))
     }
+
+    fn has(&self, key: &str) -> bool {
+        I18nManager::has_message(key)
+    }
 }
 
 /// Run `read` with a reader in this thread's locale and catalogues.
