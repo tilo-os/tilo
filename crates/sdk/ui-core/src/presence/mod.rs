@@ -14,7 +14,7 @@ mod key;
 mod labels;
 mod layer;
 mod placed;
-mod render;
+pub(crate) mod render;
 pub use caret_tag::{CaretTag, LabeledCaret, hide_names_beside_caret_tags, tag_gap, tags_crowd};
 pub use chat::{
     CURSOR_CHAT_LINGER, CURSOR_CHAT_MAX_CHARS, ChatBubble, CursorChats, POINTER_NAME_LINGER,

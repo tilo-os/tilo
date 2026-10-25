@@ -18,6 +18,7 @@ mod app_chooser;
 mod ask_agent;
 mod axis_navigation;
 mod bar_popovers;
+mod control_hints;
 mod cursor_chat;
 mod feedback_pick;
 mod feedback_point;
@@ -513,6 +514,10 @@ pub struct ShellOverlayHost {
     /// The strip ribbon (grown into the strip switcher on intent) and the
     /// strip rail; see [`strip_switcher`].
     strip_navigator: tilo_desktop::strip_navigator::StripNavigator,
+    /// The desktop's control hints, and what the last frame showed them;
+    /// see [`control_hints`].
+    control_hints: tilo_desktop::control_hints::ControlHints,
+    control_hints_frame: tilo_desktop::control_hints::HintFrame,
     /// Chrome revision the switcher's model was built from.
     strip_switcher_revision: Option<u64>,
     /// Displays the compositor is painting across, pushed by `FrameBuilder`

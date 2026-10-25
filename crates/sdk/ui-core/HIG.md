@@ -1410,6 +1410,7 @@ says how (no curve, duration, spring constant or eased ratio of its own):
 | `Ambient` | chrome that comes back on its own (leaves at once, arrives slowly unless asked) |
 | `Feedback` | press and hover tints: on at once, off over `fast` |
 | `Attention` | a refusal's shake, a single pulse; a tint under reduced motion |
+| `Beckon` | a control hint (`ui::control_hints`): arrives with the library's one deliberate overshoot and a glow pulse, loops its gesture picture while it shows, and when the gesture is done checks, folds to a dot and drifts to the person's avatar. The overshoot and the loop are the exception to "nothing bounces" and "nothing moves at idle": a hint exists to be noticed, shows once, and goes on its own. Reduced motion: a fade in, the picture at its resting frame, the check held briefly |
 
 They all run on `MotionValue`, a damped spring solved in closed form: exact
 at any frame rate, interruptible (a new target continues from the drawn
