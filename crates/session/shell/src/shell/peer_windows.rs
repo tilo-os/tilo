@@ -97,10 +97,11 @@ pub fn show_install_under_way_for_shots(
         tilo_desktop_model::commands::OpenIntent::Launch,
         None,
     );
+    let id = tree.mint_id();
     let tab = crate::shell::tab_binding::place_tab(
         tree,
         crate::shell::state::Tab {
-            id: crate::shell::state::next_id(),
+            id,
             title: label.to_owned(),
             tile: TileContent::PeerWindow {
                 app_id: app_id.to_owned(),
@@ -2004,7 +2005,7 @@ mod tests {
         other.strips = vec![strip];
         let other_id = other.id;
         tree.desktop.workspaces.push(other);
-        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
+        tree.set_peer_salt(crate::shell::state::peer_salt_of(tab_id));
 
         assert_eq!(
             opened_here(&tree, SETTINGS),

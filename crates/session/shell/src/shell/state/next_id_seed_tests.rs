@@ -1,21 +1,8 @@
 //! [`WorkspaceTree::seed_next_id_from_self`] must advance the
 //! counter past a loaded tree's highest id. The counter is
-//! process-wide, so tests observe `>= max+1`, not an exact value.
+//! process-wide, so tests observe `>= max+1`, not an exact value. The salt
+//! is the tree's: each tree mints in its own namespace.
 use super::*;
-
-/// Restores the process-wide peer salt at scope-exit, unconditionally
-/// (RAII), so a test that flips it doesn't leak into others.
-struct SaltGuard(u16);
-impl SaltGuard {
-    fn new() -> Self {
-        Self(NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed))
-    }
-}
-impl Drop for SaltGuard {
-    fn drop(&mut self) {
-        NEXT_ID_PEER_SALT.store(self.0, AtomicOrdering::Relaxed);
-    }
-}
 
 #[test]
 #[serial_test::serial(next_id_statics)]
@@ -27,8 +14,6 @@ fn next_ids_are_seeded_above_use_and_partitioned_by_peer_salt() {
     // Phase `next_id_is_seeded_above_every_used_id`.
     {
         {
-            let _guard = SaltGuard::new();
-            NEXT_ID_PEER_SALT.store(0, AtomicOrdering::Relaxed);
             let mut tree = WorkspaceTree::default();
             tree.desktop
                 .workspaces
@@ -41,7 +26,7 @@ fn next_ids_are_seeded_above_use_and_partitioned_by_peer_salt() {
 
             // Mint a fresh id — it must be strictly greater than every
             // persisted id, including the gap-jumping `50`.
-            let allocated = next_id();
+            let allocated = tree.mint_id();
             assert!(
                 allocated > 50,
                 "after seeding, next_id() must skip past every persisted \
@@ -55,8 +40,6 @@ fn next_ids_are_seeded_above_use_and_partitioned_by_peer_salt() {
         // minted under the local salt — a remote peer's ids live in a
         // disjoint range and must not drag it forward.
         {
-            let _guard = SaltGuard::new();
-            NEXT_ID_PEER_SALT.store(0x1111, AtomicOrdering::Relaxed);
             NEXT_ID.store(1, AtomicOrdering::Relaxed);
 
             // A tree containing one id under the local salt (counter=5)
@@ -64,6 +47,7 @@ fn next_ids_are_seeded_above_use_and_partitioned_by_peer_salt() {
             let local_id_raw = ((0x1111u64) << PEER_ID_SALT_SHIFT) | 5;
             let remote_id_raw = ((0x2222u64) << PEER_ID_SALT_SHIFT) | 0x3E8;
             let mut tree = WorkspaceTree::default();
+            tree.set_peer_salt(0x1111);
             tree.desktop
                 .workspaces
                 .push(Workspace::new(WorkspaceId::from(local_id_raw), "Local"));
@@ -92,13 +76,11 @@ fn next_ids_are_seeded_above_use_and_partitioned_by_peer_salt() {
         // A salt of `0` reproduces the exact id shape every fixture that
         // expects `WorkspaceId(1)` to round-trip depends on.
         {
-            let _guard = SaltGuard::new();
-            // Reset both the salt and the counter so a parallel test that
-            // bumped them doesn't leak.
-            NEXT_ID_PEER_SALT.store(0, AtomicOrdering::Relaxed);
+            // Reset the counter so a parallel test that bumped it doesn't
+            // leak.
             NEXT_ID.store(1, AtomicOrdering::Relaxed);
 
-            let id = next_id();
+            let id = WorkspaceTree::default().mint_id();
             assert_eq!(
                 id, 1,
                 "salt-0 default must mint the bare counter; got 0x{id:016x}"
@@ -111,20 +93,19 @@ fn next_ids_are_seeded_above_use_and_partitioned_by_peer_salt() {
         // After `set_peer_salt(0xABCD)`, the top 16 bits of every minted
         // id must equal `0xABCD` — sanity check on the bit-packing.
         {
-            let _guard = SaltGuard::new();
             let mut tree = WorkspaceTree::default();
             tree.set_peer_salt(0xABCD);
 
             // Reset the counter so the assertion below sees a small value
             // it can compare cleanly.
             NEXT_ID.store(1, AtomicOrdering::Relaxed);
-            let id = next_id();
+            let id = tree.mint_id();
 
             assert_eq!(
                 peer_salt_of(id),
                 0xABCD,
                 "set_peer_salt(0xABCD) must stamp 0xABCD into the high 16 \
-                 bits of next_id(); got id=0x{:016x} (salt=0x{:04x})",
+                 bits of the ids the tree mints; got id=0x{:016x} (salt=0x{:04x})",
                 id,
                 peer_salt_of(id)
             );
@@ -139,26 +120,23 @@ fn next_ids_are_seeded_above_use_and_partitioned_by_peer_salt() {
         // They share a base doc before appending, so only the minted id
         // differs between the two `append` calls.
         {
-            let _guard = SaltGuard::new();
-
-            NEXT_ID_PEER_SALT.store(0x1111, AtomicOrdering::Relaxed);
             NEXT_ID.store(1, AtomicOrdering::Relaxed);
             let mut tree_a = WorkspaceTree::default();
+            tree_a.set_peer_salt(0x1111);
             tree_a.seed_doc_from_cache();
             let base_changes = tree_a.export_changes_since(&[]);
             let mut tree_b = WorkspaceTree::default();
+            tree_b.set_peer_salt(0x2222);
             tree_b.apply_changes(&base_changes).expect("seed B from A");
             // Snapshot the heads after the base sync so the post-fork
             // export only ships the *incremental* appends.
             let base_heads = tree_a.current_heads();
 
-            NEXT_ID_PEER_SALT.store(0x2222, AtomicOrdering::Relaxed);
             NEXT_ID.store(1, AtomicOrdering::Relaxed);
             let id_b = tree_b.create_hosted_workspace("PeerB").0;
 
             // Peer A appends concurrently under its own salt. Without the
             // salt, both peers would mint id `1` here and collide.
-            NEXT_ID_PEER_SALT.store(0x1111, AtomicOrdering::Relaxed);
             NEXT_ID.store(1, AtomicOrdering::Relaxed);
             let id_a = tree_a.create_hosted_workspace("PeerA").0;
 
@@ -201,6 +179,60 @@ fn next_ids_are_seeded_above_use_and_partitioned_by_peer_salt() {
                         .collect::<Vec<_>>()
                 );
             }
+        }
+    }
+}
+
+/// Two trees in one process — two simulated devices — each mint in their
+/// own namespace, interleaved, with nothing process-wide set: every id a
+/// tree makes, its first workspace's strip included, carries that tree's
+/// salt, and no id is made twice.
+#[test]
+#[serial_test::serial(next_id_statics)]
+fn two_trees_in_one_process_mint_in_their_own_namespaces() {
+    const ADA: u16 = 0x0A0A;
+    const GRACE: u16 = 0x0C0C;
+    let mut ada = WorkspaceTree::default();
+    ada.set_peer_salt(ADA);
+    let mut grace = WorkspaceTree::default();
+    grace.set_peer_salt(GRACE);
+
+    let mut minted = std::collections::HashSet::new();
+    for _ in 0..4 {
+        for (tree, salt) in [(&ada, ADA), (&grace, GRACE)] {
+            let ids = [
+                tree.mint_id(),
+                tree.mint_strip_id().raw(),
+                tree.mint_workspace_id().raw(),
+                tree.ids().mint_id(),
+            ];
+            for id in ids {
+                assert_eq!(
+                    peer_salt_of(id),
+                    salt,
+                    "{id:#018x} is minted by its own tree"
+                );
+                assert!(minted.insert(id), "{id:#018x} is minted once");
+            }
+        }
+    }
+
+    let (ada_home, _) = ada.create_hosted_workspace("Ada's");
+    let (grace_home, _) = grace.create_hosted_workspace("Grace's");
+    for (tree, home, salt) in [(&ada, ada_home, ADA), (&grace, grace_home, GRACE)] {
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == home)
+            .expect("the workspace is made");
+        assert!(!workspace.strips.is_empty(), "a new workspace has a strip");
+        for strip in &workspace.strips {
+            assert_eq!(
+                peer_salt_of(strip.id.raw()),
+                salt,
+                "a new workspace's strip is in its device's namespace"
+            );
         }
     }
 }

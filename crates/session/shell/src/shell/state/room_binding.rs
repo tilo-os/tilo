@@ -15,9 +15,7 @@
 //!   holds nothing, else it keeps a workspace of its own with what it holds;
 //! - a room held with no workspace gets one.
 
-use super::{
-    BTreeSet, FreshId as _, RoomId, Strip, StripId, Workspace, WorkspaceId, WorkspaceTree,
-};
+use super::{BTreeSet, RoomId, Strip, StripId, Workspace, WorkspaceId, WorkspaceTree};
 
 /// What [`WorkspaceTree::bind_workspaces_to_rooms`] changed, for the log.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -98,7 +96,7 @@ impl WorkspaceTree {
             };
             let mut workspace =
                 Workspace::in_room(id, room, crate::shell::i18n::t("workspace-joined-name"));
-            let strip = StripId::new();
+            let strip = self.mint_strip_id();
             workspace.strips = vec![Strip {
                 id: strip,
                 name: "Main".into(),
@@ -185,7 +183,7 @@ impl WorkspaceTree {
             kept.ownership_transfer_cancellations =
                 std::mem::take(&mut left.ownership_transfer_cancellations);
             kept.shared_surfaces = std::mem::take(&mut left.shared_surfaces);
-            let strip = StripId::new();
+            let strip = self.mint_strip_id();
             kept.strips = vec![Strip {
                 id: strip,
                 name: "Main".into(),
