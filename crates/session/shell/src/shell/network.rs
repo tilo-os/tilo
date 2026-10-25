@@ -2815,7 +2815,15 @@ impl ShellNetwork {
         {
             return false;
         }
-        self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
+        self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
+                    ws,
+                    msg,
+                })
+                .is_ok()
     }
 
     /// Publish live legacy-app traffic on an explicit authenticated room
@@ -2837,6 +2845,7 @@ impl ShellNetwork {
             && self
                 .cmd_tx
                 .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: workspace_topic,
                     msg,
                 })
@@ -4440,7 +4449,15 @@ impl ShellNetwork {
             requester: self.local_peer_id_hash(),
         };
         let ws = room_topic_id(room);
-        let _ = self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok();
+        let _ = self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
+                    ws,
+                    msg,
+                })
+                .is_ok();
     }
 
     /// Publish a `NeighbourMsg::ScrollbackResponse` for an artifact
@@ -4463,6 +4480,7 @@ impl ShellNetwork {
             && self
                 .cmd_tx
                 .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: workspace_topic,
                     msg,
                 })
@@ -9190,6 +9208,7 @@ mod tests {
                 if let NetCmd::Publish {
                     ws,
                     msg: NeighbourMsg::SyncResp { room, changes },
+                    ..
                 } = cmd
                 {
                     pushes.push((ws, room, changes));
@@ -10871,7 +10890,7 @@ mod tests {
         assert!(
             answered.iter().any(|command| matches!(
                 command,
-                NetCmd::Publish { ws, msg: NeighbourMsg::SyncReq { room, .. } }
+                NetCmd::Publish { ws, msg: NeighbourMsg::SyncReq { room, .. }, .. }
                     if *ws == room_topic_id(research) && *room == research.to_string()
             )),
             "the board asks the new workspace's room for its content at once"
@@ -13387,7 +13406,7 @@ mod tests {
                 .try_recv()
                 .expect("accepting an invite must ask the room for a catch-up");
             match cmd {
-                NetCmd::Publish { ws, msg } => {
+                NetCmd::Publish { ws, msg, .. } => {
                     assert_eq!(ws, room_topic_id(host_room));
                     match msg {
                         NeighbourMsg::SyncReq {
@@ -15681,7 +15700,7 @@ mod tests {
         assert!(net.publish_channel_governance(message));
         let Some((ws, msg)) =
             std::iter::from_fn(|| cmd_rx.try_recv().ok()).find_map(|command| match command {
-                NetCmd::Publish { ws, msg } => Some((ws, msg)),
+                NetCmd::Publish { ws, msg, .. } => Some((ws, msg)),
                 _ => None,
             })
         else {
@@ -15967,7 +15986,7 @@ mod tests {
                 .try_recv()
                 .expect("publish_presence must enqueue a NetCmd");
             match cmd {
-                NetCmd::Publish { ws, msg } => {
+                NetCmd::Publish { ws, msg, .. } => {
                     assert_eq!(ws, expected_topic);
                     match msg {
                         NeighbourMsg::PresenceMoved {
@@ -16070,7 +16089,7 @@ mod tests {
                 .try_recv()
                 .expect("publish_document must enqueue a NetCmd");
             match cmd {
-                NetCmd::Publish { ws, msg } => {
+                NetCmd::Publish { ws, msg, .. } => {
                     assert_eq!(ws, expected_topic);
                     match msg {
                         NeighbourMsg::AppDocument {
@@ -16139,7 +16158,7 @@ mod tests {
                 .try_recv()
                 .expect("publish_scrollback_request must enqueue a NetCmd");
             match cmd {
-                NetCmd::Publish { ws, msg } => {
+                NetCmd::Publish { ws, msg, .. } => {
                     assert_eq!(ws, expected_topic);
                     match msg {
                         NeighbourMsg::ScrollbackRequest {
