@@ -62,9 +62,10 @@ journey still need manual validation before release.
 A bridge mirrors a room's Chat to an outside service. It is built from the bot
 framework ([bots.md](bots.md)): a connector app holds the service's credentials and
 socket, and a bot program maps Chat's changes to the connector's verbs and back. The
-Discord bridge ([discord-bridge.md](discord-bridge.md)) is the first. Chat stays
-service-agnostic: it learns nothing about Discord, and every change below applies to
-every room's Chat, bridged or not.
+Discord bridge ([discord-bridge.md](discord-bridge.md)) is the first, and the
+Slack bridge ([slack-bridge.md](slack-bridge.md)) is built the same way against
+another service. Chat stays service-agnostic: it learns nothing about either
+service, and every change below applies to every room's Chat, bridged or not.
 
 - **Appearance.** A bot allowed `Personas` may post under another name and avatar.
   `post` and `share-resource` read `ActionCx::appearance()` and store it
