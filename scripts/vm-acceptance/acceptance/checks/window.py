@@ -692,6 +692,18 @@ def _judge_instant(name, st, b) -> tuple[list[str], list[str]]:
     return problems + p, unseen + u
 
 
+def _judge_keyboard_flight(name, st, b) -> tuple[list[str], list[str]]:
+    """(problems, unobservable) for a keyboard overview toggle. The overview opens
+    and closes at once and input acts on its new state at once, while the windows fly
+    for at most the `fast` duration as spatial context (the shell's
+    `a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once` pins
+    that). So the key is judged on its first frame and the loop's CPU, not on how many
+    frames its short flight painted."""
+    if not st["settled"]:
+        return [], [f"{name}: the compositor kept asking for frames for {TRANSITION_TIMEOUT_S} s"]
+    return _judge_cpu_and_input(name, st, b, True)
+
+
 def _judge(name, st, b, hardware, software=False, timed_input=True) -> tuple[list[str], list[str]]:
     """(problems, unobservable) for one transition. `timed_input` is false for a
     transition started through an action, which carries no input to time from."""
@@ -749,7 +761,7 @@ def judge_switch_lines(switches: list[dict], expected: int, b: dict, hardware: b
 
 
 @check("W16", AREA, "Animations are paced: the overview's transition paints many frames with no "
-                    "stalls; the keyboard overview and workspace switches arrive at once",
+                    "stalls; the keyboard overview acts at once and workspace switches arrive at once",
        needs=("workspaces",))
 def animations(ctx, res):
     # The compositor's side is judged everywhere: frames painted per transition, their
@@ -790,8 +802,12 @@ def animations(ctx, res):
         p, u = _judge(name, res.metrics[name], b, hardware, software, False)
         problems += p
         unseen += u
+    for name in ("overview_key_open", "overview_key_close"):
+        p, u = _judge_keyboard_flight(name, res.metrics[name], b)
+        problems += p
+        unseen += u
     # A workspace switch swaps the desktop in one frame; nothing of it moves after.
-    for name in ("overview_key_open", "overview_key_close", "workspace_switch", "workspace_back"):
+    for name in ("workspace_switch", "workspace_back"):
         p, u = _judge_instant(name, res.metrics[name], b)
         problems += p
         unseen += u
