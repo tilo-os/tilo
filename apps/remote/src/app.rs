@@ -2285,6 +2285,18 @@ impl Widget for RemoteApp {
         self.layout_dirty || self.body().is_layout_dirty()
     }
 
+    // Rebuilding the views (the connections or the screen changed, full
+    // screen swapped the body) replaces this widget's children. Say so, or
+    // the host re-places the old tree and the change shows only once
+    // something else asks for a rebuild: a collaborator's deletion left
+    // its row on screen.
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = self.layout_dirty;
+        self.children_mut()
+            .into_iter()
+            .fold(own, |dirty, child| child.take_structure_dirty() || dirty)
+    }
+
     fn layout_needs_measure(&self) -> bool {
         self.layout_dirty || self.body().layout_needs_measure()
     }
