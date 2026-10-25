@@ -401,7 +401,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
 #if defined(OS_MAC)
-    Event("file_dialog");return ShowHostFileDialog(mode,title,extensions,callback);
+    Event("file_dialog");
+    // An agent's page action cannot drive a native panel, so while it is
+    // driving the chooser is held for fill-page-files instead. A person's
+    // own click keeps the platform panel.
+    if(page_automation_ && page_automation_->HoldFileDialog(callback)) return true;
+    return ShowHostFileDialog(mode,title,extensions,callback);
 #else
     return false;
 #endif
@@ -2313,7 +2318,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="page") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
     const auto action=d->GetString("action").ToString();
-    if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="press" && action!="submit" &&
+    if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="fill_files" && action!="press" && action!="submit" &&
        action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" && action!="reader")return false;
     const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
       action=="console" || action=="network" || action=="reader";
@@ -2330,6 +2335,18 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
       if(!type("values",VTYPE_LIST))return false;auto values=d->GetList("values");
       if(!values->GetSize() || values->GetSize()>64)return false;
       for(size_t i=0;i<values->GetSize();++i)if(values->GetType(i)!=VTYPE_STRING || values->GetString(i).length()>1024)return false;
+    }
+    if(action=="fill_files") {
+      if(!type("paths",VTYPE_LIST))return false;auto paths=d->GetList("paths");
+      if(!paths->GetSize() || paths->GetSize()>16)return false;
+      for(size_t i=0;i<paths->GetSize();++i) {
+        if(paths->GetType(i)!=VTYPE_STRING)return false;
+        const auto path=paths->GetString(i).ToString();
+        // The app checks that each path is a readable regular file; the
+        // engine only insists it is absolute, so no relative path is ever
+        // resolved against the browser's own working folder.
+        if(path.empty() || path.size()>4096 || path.front()!='/')return false;
+      }
     }
     if(action=="press") {
       if(!type("key",VTYPE_STRING) || d->GetString("key").empty() || d->GetString("key").length()>16)return false;
