@@ -725,9 +725,10 @@ pub(crate) const VALUES_NOTE: &str = " Any argument may quote a value a document
     days_inclusive(start, end, …) totalling ranges with both ends counted, \
     days_within(from, to, start, end, …) counting only their days inside a window), with \
     references such as Sheet1!B2 as operands and an optional format after | ($, %, 0.00, \
-    long): the host fills it in when the step runs. A date or number argument may also be \
-    written as arithmetic in words (10 business days after 2026-10-14, 289 - 50, 4 x 38.50, \
-    sum of 120, 80 and 45): the host computes it. Never work numbers or dates out yourself; \
+    long): the host fills it in when the step runs. A value that is only a date or amount \
+    calculation, with ISO dates (10 business days after 2026-10-14, 2026-10-14 + 3 weeks, \
+    289 - 50, 4 x 38.50, sum of 120, 80 and 45, 15% of 200), is computed by the host in any \
+    argument, cell or field; inside text use {{= … }}. Never work numbers or dates out yourself; \
     a date a document writes is noted after it as the host reads it (03/04/1988 \
     [1988-04-03]): use that. To quote one item of a \
     list, say which in [ ] after the pointer and the host picks it: \

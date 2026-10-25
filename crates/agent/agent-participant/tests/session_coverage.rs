@@ -1448,6 +1448,82 @@ async fn a_step_takes_arithmetic_written_in_words() {
     host.relay.shutdown().await;
 }
 
+/// A row's cells written by header are values nothing types: one that is
+/// only arithmetic (`10 business days after 2026-10-14`, `289 - 50`) is
+/// computed before the workbook takes it, so the sheet holds a real date
+/// and a number rather than the words; text around the arithmetic keeps
+/// it text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_untyped_value_that_is_only_arithmetic_is_computed() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let sheets = agent.open(SHEETS, None).unwrap();
+    let step = |action: &str, arguments: serde_json::Value| {
+        serde_json::json!({"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+            "action": action, "arguments": arguments})
+    };
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            step(
+                "set-cells",
+                serde_json::json!({"sheet": FIRST_SHEET, "start": "A1",
+                    "rows": [["Claim", "Pay by", "Payout", "Note"], ["C-1"]]})
+            ),
+            step(
+                "upsert-item",
+                serde_json::json!({"sheet": FIRST_SHEET, "match": {"Claim": "C-1"},
+                    "value": {"Pay by": "10 business days after 2026-10-14",
+                        "Payout": "289 - 50", "Note": "Call 319 - 75 today"}})
+            ),
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    let read = tilo_actions::door::ActionAddress::new("sheets.workbook", "read-cells");
+    let cells = agent
+        .invoke(
+            &sheets,
+            &read,
+            serde_json::json!({"sheet": FIRST_SHEET, "range": "B2:D2"})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap()
+        .and_then(|output| output.value)
+        .unwrap();
+    assert_eq!(
+        cells["rows"],
+        serde_json::json!([["2026-10-28", 239.0, "Call 319 - 75 today"]]),
+        "{cells}"
+    );
+    assert_eq!(
+        cells["formats"]["B2"], "date",
+        "the sheet holds a date, not text: {cells}"
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
 const MESSAGES: &str = "so.tilo.messages";
 
 /// A step quotes one message among several alike by a rule (the newest from

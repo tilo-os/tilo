@@ -11,9 +11,10 @@ use crate::values::{self, ViewRef};
 
 impl AgentParticipant {
     /// `arguments` of `step`, about to run at `address` on the record at
-    /// `route`, with every value they quote or compute filled in: `{{…}}`,
-    /// then arithmetic written in words where a parameter takes a date or
-    /// a number (`10 business days after 2026-10-14`, `289 - 50`). The
+    /// `route`, with every value they quote or compute filled in: a value
+    /// nothing types that is only arithmetic, `{{…}}`, then arithmetic
+    /// written in words where a parameter takes a date or a number (`10
+    /// business days after 2026-10-14`, `289 - 50`). The
     /// notes the host wrote beside dates and amounts in a read's answer
     /// ([`values::annotate_json`]) come out of what a step copied from it.
     ///
@@ -39,6 +40,9 @@ impl AgentParticipant {
             .find(|descriptor| descriptor.address == *address)
             .map(|descriptor| descriptor.params)
             .unwrap_or_default();
+        // Before `{{…}}` is filled in, so that what a document holds
+        // (`10 - 12`, a range) is copied as it is, not worked out.
+        values::fill_untyped(&mut arguments, &params);
         if quoting {
             let mut reads = StepReads {
                 participant: self,
