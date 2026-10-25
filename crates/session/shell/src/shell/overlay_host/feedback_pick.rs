@@ -67,7 +67,9 @@ impl ShellOverlayHost {
                     surface: hit.surface_id,
                     rect: hit.rect,
                     origin: Point::new(x, y),
-                    name: self.app_label(&app),
+                    // The app's display name, or none: a report never
+                    // names an app by its id, which only routes.
+                    name: crate::shell::launcher::display_name_for_app_id(&app).unwrap_or_default(),
                     record: self
                         .selection_requests
                         .window_of(&app)
