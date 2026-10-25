@@ -1792,8 +1792,15 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "file_chooser_result" => {
             valid_id(value)
                 && value["ok"].is_boolean()
-                && value["count"].as_u64().is_some_and(|count| count <= 4096)
-                && text("message")
+                && value["count"]
+                    .as_u64()
+                    .is_some_and(|count| count <= MAX_FILE_CHOOSER_PATHS as u64)
+                // A refusal says why; an answer names the files the page took,
+                // so a person can be told what its field holds.
+                && value["message"].as_str().is_some_and(|message| {
+                    message.len() <= 4096
+                        && (value["ok"].as_bool() != Some(true) || !message.is_empty())
+                })
         }
         "download_prompt" => valid_id(value) && text("url") && text("name"),
         "download" => {

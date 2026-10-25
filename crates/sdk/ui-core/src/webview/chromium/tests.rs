@@ -1503,6 +1503,27 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                 message: "This chooser takes .pdf".into(),
             })
         );
+        // An answer says which files the page took; without it the page
+        // stops loading, because the event is refused as malformed.
+        let taken = json!({"event":"file_chooser_result","tab":2,"id":4,"ok":true,
+            "count":1,"message":"The page has scan.pdf"});
+        assert!(validate_event(&taken).is_ok());
+        assert!(
+            validate_event(
+                &json!({"event":"file_chooser_result","tab":2,"id":4,"ok":true,
+                "count":1})
+            )
+            .is_err(),
+            "an answer names the files it took"
+        );
+        assert!(
+            validate_event(
+                &json!({"event":"file_chooser_result","tab":2,"id":4,"ok":true,
+                "count":1,"message":""})
+            )
+            .is_err(),
+            "an accepted answer says something"
+        );
         // A chooser that names neither what it takes nor which one it is, and
         // an answer that does not say how many files it took, never surface.
         assert!(

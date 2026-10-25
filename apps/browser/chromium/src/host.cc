@@ -860,8 +860,18 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     std::vector<CefString> chosen;for(const auto& path:paths) chosen.emplace_back(path);
     if(chosen.empty()) callback->Cancel();else callback->Continue(chosen);
     answered_choosers_.insert(id);
+    // The answer names the files the page took, so a person is told what its
+    // field holds rather than that something happened.
+    std::string names;
+    for(const auto& path:paths) {
+      if(!names.empty()) names+=", ";
+      const auto slash=path.rfind('/');
+      names+=slash==std::string::npos?path:path.substr(slash+1);
+    }
     auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("ok",true);
-    fields->SetInt("count",static_cast<int>(chosen.size()));Event("file_chooser_result",fields);
+    fields->SetInt("count",static_cast<int>(chosen.size()));
+    fields->SetString("message",chosen.empty()?"The page's file chooser is closed, and the page has no new file":"The page takes "+names);
+    Event("file_chooser_result",fields);
   }
   // Every refusal here keeps the chooser open, so the agent can answer it again.
   static std::string ValidateChooserPaths(CefListValue& list,bool folder,const std::vector<std::string>& extensions,bool multiple,std::vector<std::string>& out) {
@@ -876,6 +886,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     answered_choosers_.insert(file_chooser_.id);
     callback->Cancel();
     auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("ok",true);fields->SetInt("count",0);
+    fields->SetString("message","The page's file chooser is closed, and the page has no new file");
     Event("file_chooser_result",fields);
   }
   void PageKey(CefRefPtr<CefDictionaryValue> key) {
