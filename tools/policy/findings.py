@@ -16,7 +16,11 @@ cohesive` are the same finding when a ceiling moves, and a second finding about 
 `apps/b.rs (2)`, so one more of what main has is a finding main doesn't have. A line naming no
 file of the tree keeps the step's own words with the numbers in them blanked. A summary line
 that says how many a step found (`source file size: 3 problem(s); …`) is not a finding of its
-own: it counts the ones above it, and makes every step that grows a problem look new.
+own: it counts the ones above it, and makes every step that grows a problem look new. Nor is a
+heading that names no file and introduces the lines below it (`Animations are composed from
+ui::motion (crates/sdk/ui-core/src/motion/):`): it says the rule the findings under it break, and
+a step that prints one would otherwise be red on main for its heading alone, a finding no fix of
+any file can remove while another is left.
 
 That is what keeps a step already red on main honest: a file added past its ceiling is the
 branch's finding even while main is red for other files, and main's findings for those files
@@ -77,6 +81,14 @@ def summary(text: str) -> re.Match[str] | None:
     return SUMMARY.match(text)
 
 
+def heading(text: str) -> bool:
+    """Whether a line introduces the findings below it (`rustls is the only TLS stack; OpenSSL is
+    not allowed (docs/policies.md):`) rather than naming one: it ends in a colon and names no file
+    of the tree."""
+    text = text.rstrip()
+    return text.endswith(":") and not PATH.findall(spaced(text))
+
+
 def worded(line: str) -> str:
     """The finding a line of a step's output reports in the step's own words, or "" for a blank
     one; its numbers blanked (see the module)."""
@@ -107,15 +119,15 @@ def finding(line: str) -> str:
 
 def findings(output: str) -> list[tuple[str, str, str]]:
     """Each finding of `output` with its own words and the line it came from, keyed for t: about a
-    file when the step named one, else as the step words it; a summary line only when the step
-    named no file, since it counts findings that are already reported."""
+    file when the step named one, else as the step words it; a summary or heading line only when
+    the step named nothing else, since it counts or introduces findings already reported."""
     about: dict[str, list[str]] = {}
     summaries: list[tuple[str, str]] = []
     for line in output.splitlines():
         name = worded(line)
         if not name:
             continue
-        if summary(line):
+        if summary(line) or heading(line):
             summaries.append((name, line.rstrip()))
             continue
         about.setdefault(finding(line), []).append(line.rstrip())
