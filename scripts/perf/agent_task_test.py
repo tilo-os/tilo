@@ -23,11 +23,12 @@ import agent_task
 
 NOTES = "so.tilo.notes"
 
-# The door's stand-in. Its options come as JSON in AGENT_TASK_FAKE; the
-# admission is a file the control socket's stand-in writes; the notebook is
-# written to `state.json` when stdin closes.
+# The door's stand-in. Its options come as JSON in AGENT_TASK_FAKE; it and
+# the control socket's stand-in hand the prompt and the admission to each
+# other through two FIFOs, so neither waits on the other's start-up time; the
+# notebook is written to `state.json` when stdin closes.
 FAKE_DOOR = r'''
-import json, os, sys, time
+import json, os, sys
 options = json.loads(os.environ["AGENT_TASK_FAKE"])
 shared = options["shared"]
 notes = {}            # title -> {"body": [...], "finds": n}
@@ -98,8 +99,7 @@ for line in sys.stdin:
     method, ident = message.get("method"), message.get("id")
     if method == "initialize":
         open(os.path.join(shared, "asked"), "w").close()
-        while not os.path.exists(os.path.join(shared, "admitted")):
-            time.sleep(0.01)
+        open(os.path.join(shared, "admitted")).read()
         send({"jsonrpc": "2.0", "id": ident, "result": {
             "protocolVersion": message["params"]["protocolVersion"],
             "serverInfo": {"name": "fake-door"}, "capabilities": {"tools": {}}}})
@@ -124,6 +124,11 @@ class FakeControl:
         self.workspaces = [{"id": 1, "name": "Home", "room": "room-person", "strips": []}]
         self.active = 1
         self.notes_open = False
+        # The person is asked once the door connected: until then a listing
+        # of their prompts waits for it, as long as its start-up takes.
+        self.asked = False
+        os.mkfifo(os.path.join(shared, "asked"))
+        os.mkfifo(os.path.join(shared, "admitted"))
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(self.path)
         self.server.listen(8)
@@ -156,10 +161,12 @@ class FakeControl:
     def answer(self, payload):
         self.requests.append(payload)
         op = payload["op"]
-        asked = self.ask and os.path.exists(os.path.join(self.shared, "asked"))
         if op == "actions_enumerate" and payload.get("query") == "permission-prompts":
+            if self.ask and not self.asked:
+                open(os.path.join(self.shared, "asked")).read()
+                self.asked = True
             rows = [{"provider": "permission-prompts", "id": f"{d}@p1"}
-                    for d in ("allow-once", "deny")] if asked else []
+                    for d in ("allow-once", "deny")] if self.asked else []
             return {"answer": {"actions": rows}}
         if op == "actions_enumerate":
             rows = [{"provider": "app-actions", "application": NOTES, "room": "room-scratch",
