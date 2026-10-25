@@ -304,3 +304,107 @@ chat-feedback-hidden = { $kind ->
     [credential] ‹credential›
    *[personal] ‹personal›
 }
+
+## The conversation's own controls and labels
+chat-surface = Chat
+chat-surface-detail = Channels in the current Tilo workspace
+chat-messages = Messages
+chat-add-channel = Add channel
+chat-create-menu = Create channel or category
+chat-composer = Message composer
+chat-send-message = Send message
+chat-undo = Undo
+chat-retry = Retry
+chat-close = Close
+# A message that did not reach the room; $reason says why.
+chat-not-sent = Not sent: { $reason }
+chat-message-deleted = Message deleted
+chat-message-edited = Edited
+# Beside a pinned message's time.
+chat-message-pinned-marker = Pinned
+chat-empty-title = No messages yet
+chat-empty-title-read-only = Nothing has been said here yet
+chat-jump-latest = Jump to latest
+chat-jump-latest-message = Jump to latest message
+chat-right-flap = Show people or thread
+chat-typing-one = { $name } is typing…
+chat-typing-two = { $first } and { $second } are typing…
+chat-typing-several = Several people are typing…
+
+## Pinned messages
+chat-pins = Pinned messages
+chat-pinned-message = Pinned message
+chat-pins-empty = Nothing pinned yet
+chat-pins-empty-detail = Pin a message from its menu to keep it here for everyone.
+
+## Threads
+chat-thread-open = Open message thread
+chat-thread-composer = Thread reply composer
+chat-thread-reply-placeholder = Reply in thread
+chat-thread-last-reply = Last reply { $time }
+
+## Editing a message
+chat-edit-field = Edit message
+chat-edit-save = Save message edit
+chat-edit-cancel = Cancel message edit
+chat-edit-save-button = Save
+chat-edit-cancel-button = Cancel
+chat-edit-history-show = Show edit history
+chat-edit-history = Edit history
+chat-edit-history-current = Current, { $time }
+chat-edit-history-earlier = Earlier, { $time }
+
+## Sharing a file
+chat-attach = Share a file
+chat-attach-device = Upload from this device
+chat-attach-device-detail = Files, pictures and videos up to 32 MiB
+chat-attach-workspace = From the workspace
+chat-attach-more = { $count } more in the workspace
+chat-attach-pick = Attach { $name }
+chat-attach-picker-title = Share files
+chat-attach-picker-accept = Share
+
+## Calls
+chat-call-start-or-open = Start or open call
+chat-call-active = Active call
+# A call whose channel has no name to show.
+chat-call-untitled = Call
+chat-call-expand = Expand
+chat-call-expand-restore = Expand or restore call
+chat-call-participants-show = Show call participants
+chat-call-camera-off-caption = Camera off
+chat-call-camera-starting = Your camera is starting
+chat-call-no-video = No video
+chat-call-audio-stream = Audio stream
+chat-call-screen-mine = You're sharing your screen
+chat-call-screen-mine-detail = Everyone in the call sees your screen
+chat-call-screen-mine-chip = Your screen
+chat-call-screen-theirs = { $name } is sharing their screen
+chat-call-screen-theirs-chip = { $name }'s screen
+chat-call-screen-waiting = Waiting for the first frame
+
+## A channel's, category's or message's menu
+chat-menu-rename = Rename
+chat-menu-rename-channel = Rename channel
+chat-menu-rename-category = Rename category
+chat-menu-edit-channel = Edit channel
+chat-menu-delete = Delete
+chat-menu-delete-channel = Delete channel
+chat-menu-delete-category = Delete category
+chat-menu-move-up = Move up
+chat-menu-move-down = Move down
+chat-menu-new-channel = New channel
+chat-menu-new-voice-channel = New voice channel
+chat-menu-new-category = New category
+chat-menu-collapse-category = Collapse category
+chat-menu-expand-category = Expand category
+chat-menu-archive-channel = Archive channel
+chat-menu-reply-in-thread = Reply in thread
+chat-menu-edit-message = Edit message
+chat-menu-pin-message = Pin message
+chat-menu-unpin-message = Unpin message
+chat-menu-delete-message = Delete message
+chat-menu-report-message = Report message
+chat-menu-report-sender = Report sender
+chat-menu-ban = Ban from the room
+chat-menu-volume = Volume

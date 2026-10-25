@@ -89,7 +89,7 @@ impl ChatApp {
         if self.direct_person.is_none() && self.has_other_collaborator() {
             let pins = self.pins_open && self.right_flap_open() && self.thread_open.is_none();
             actions.push((
-                ToolbarAction::new("pins", "pin", "Pinned messages").on(pins),
+                ToolbarAction::new("pins", "pin", crate::i18n::t("chat-pins")).on(pins),
                 Hit::TogglePins,
             ));
             let people = self.right_flap_open() && self.thread_open.is_none() && !self.pins_open;
@@ -113,7 +113,7 @@ impl ChatApp {
         }
         if self.keeps_layout() && self.direct_person.is_none() {
             actions.push((
-                ToolbarAction::new("create", "plus", "Create channel or category").in_menu(),
+                ToolbarAction::new("create", "plus", crate::i18n::t("chat-create-menu")).in_menu(),
                 Hit::AddCategory,
             ));
         }

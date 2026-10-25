@@ -1854,9 +1854,12 @@ impl ChatApp {
         self.attach_open = false;
         let limit = usize::try_from(crate::record::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
         self.device_pick = Some(
-            ui::portal::PickRequest::open_multiple("Share files", "Share")
-                .max_contents_bytes(limit)
-                .send_contents(),
+            ui::portal::PickRequest::open_multiple(
+                &crate::i18n::t("chat-attach-picker-title"),
+                &crate::i18n::t("chat-attach-picker-accept"),
+            )
+            .max_contents_bytes(limit)
+            .send_contents(),
         );
     }
 

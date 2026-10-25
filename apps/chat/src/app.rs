@@ -194,30 +194,30 @@ pub(crate) enum MenuAction {
 }
 
 impl MenuAction {
-    pub fn label(self) -> &'static str {
-        match self {
-            MenuAction::Rename => "Rename",
-            MenuAction::EditChannel => "Edit channel",
-            MenuAction::Delete => "Delete",
-            MenuAction::MoveUp => "Move up",
-            MenuAction::MoveDown => "Move down",
-            MenuAction::NewChannelHere => "New channel",
-            MenuAction::NewVoiceChannelHere => "New voice channel",
-            MenuAction::NewCategory => "New category",
-            MenuAction::ToggleCollapse => "Collapse category",
-            MenuAction::Archive => "Archive channel",
-            MenuAction::AddReaction => "Add reaction",
-            MenuAction::ReplyInThread => "Reply in thread",
-            MenuAction::EditMessage => "Edit message",
-            MenuAction::PinMessage => "Pin message",
-            MenuAction::DeleteMessage => "Delete message",
-            MenuAction::ReportMessage => "Report message",
-            MenuAction::ReportAuthor => "Report sender",
-            MenuAction::BanAuthor => "Ban from the room",
-            MenuAction::StopSharing => "Stop sharing",
-            MenuAction::Silence => "Mute for me",
-            MenuAction::Volume(_) => "Volume",
-        }
+    pub fn label(self) -> String {
+        crate::i18n::t(match self {
+            MenuAction::Rename => "chat-menu-rename",
+            MenuAction::EditChannel => "chat-menu-edit-channel",
+            MenuAction::Delete => "chat-menu-delete",
+            MenuAction::MoveUp => "chat-menu-move-up",
+            MenuAction::MoveDown => "chat-menu-move-down",
+            MenuAction::NewChannelHere => "chat-menu-new-channel",
+            MenuAction::NewVoiceChannelHere => "chat-menu-new-voice-channel",
+            MenuAction::NewCategory => "chat-menu-new-category",
+            MenuAction::ToggleCollapse => "chat-menu-collapse-category",
+            MenuAction::Archive => "chat-menu-archive-channel",
+            MenuAction::AddReaction => "chat-emoji-add-reaction",
+            MenuAction::ReplyInThread => "chat-menu-reply-in-thread",
+            MenuAction::EditMessage => "chat-menu-edit-message",
+            MenuAction::PinMessage => "chat-menu-pin-message",
+            MenuAction::DeleteMessage => "chat-menu-delete-message",
+            MenuAction::ReportMessage => "chat-menu-report-message",
+            MenuAction::ReportAuthor => "chat-menu-report-sender",
+            MenuAction::BanAuthor => "chat-menu-ban",
+            MenuAction::StopSharing => "chat-share-stop",
+            MenuAction::Silence => "chat-call-silence",
+            MenuAction::Volume(_) => "chat-menu-volume",
+        })
     }
     pub fn is_destructive(self) -> bool {
         matches!(
@@ -899,6 +899,9 @@ pub struct ChatApp {
     /// their size in device pixels. What the call is asked to deliver, each
     /// at the layer that fits its tile.
     pub(crate) picture_tiles: std::cell::RefCell<Vec<PictureTile>>,
+    /// Where each message shown last frame drew its own texts, by message
+    /// id: what its accessible row's children are read and picked by.
+    pub(crate) painted_messages: HashMap<Id, PaintedMessage>,
     /// A video call was started: the camera turns on once the call is live.
     pub(crate) camera_on_live: bool,
 
@@ -1165,6 +1168,7 @@ impl ChatApp {
             remote_screens: HashMap::new(),
             call_pictures: ui::call_pictures::CallPictures::new(),
             picture_tiles: std::cell::RefCell::new(Vec::new()),
+            painted_messages: HashMap::new(),
             camera_on_live: false,
             media_error: None,
             canonical_dirty: true,
@@ -2151,6 +2155,9 @@ impl ChatApp {
                 if let Some(rect) = self.message_rect(&message.id) {
                     node = node.with_bounds(rect);
                 }
+                if let Some(parts) = self.painted_messages.get(&message.id) {
+                    node = node.with_children(parts.access_children(&message.id));
+                }
                 if let Some(work) = &message.work {
                     node.with_description(crate::render_chat::agent_work_accessible_description(
                         work,
@@ -2161,7 +2168,8 @@ impl ChatApp {
             })
             .collect();
         AccessNode::new(Role::List)
-            .with_name("Messages")
+            .with_name(crate::i18n::t("chat-messages"))
+            .with_interface_name(true)
             .with_children(conversation)
             .with_hashed_key("message-list")
     }
@@ -3098,7 +3106,8 @@ impl ChatApp {
         } else {
             self.composer_thread.value()
         };
-        self.composer_thread.set_placeholder("Reply in thread");
+        self.composer_thread
+            .set_placeholder(&crate::i18n::t("chat-thread-reply-placeholder"));
         self.composer_thread
             .set_local_author(Some(self.me.id.clone()));
         self.composer_main
@@ -3589,13 +3598,13 @@ impl ChatApp {
             MenuAction::Volume(percent) => {
                 crate::i18n::t_args("chat-call-volume", &[("percent", percent.into())])
             }
-            MenuAction::ToggleCollapse if collapsed => "Expand category".to_owned(),
-            MenuAction::PinMessage if pinned => "Unpin message".to_owned(),
-            MenuAction::Delete if channel => "Delete channel".to_owned(),
-            MenuAction::Delete => "Delete category".to_owned(),
-            MenuAction::Rename if channel => "Rename channel".to_owned(),
-            MenuAction::Rename => "Rename category".to_owned(),
-            other => other.label().to_owned(),
+            MenuAction::ToggleCollapse if collapsed => crate::i18n::t("chat-menu-expand-category"),
+            MenuAction::PinMessage if pinned => crate::i18n::t("chat-menu-unpin-message"),
+            MenuAction::Delete if channel => crate::i18n::t("chat-menu-delete-channel"),
+            MenuAction::Delete => crate::i18n::t("chat-menu-delete-category"),
+            MenuAction::Rename if channel => crate::i18n::t("chat-menu-rename-channel"),
+            MenuAction::Rename => crate::i18n::t("chat-menu-rename-category"),
+            other => other.label(),
         };
         ContextMenu::labelled(target, anchor, items, self.menu_bounds(), label, checked)
     }
@@ -3733,41 +3742,38 @@ impl ChatApp {
         clippy::too_many_lines,
         reason = "one exhaustive semantic mapping keeps pointer, keyboard and assistive labels from drifting into separate inventories"
     )]
-    pub(crate) fn semantic_hits_from(
-        &self,
-        hits: &[(Rect, Hit)],
-    ) -> Vec<(Rect, Hit, String, ui::a11y::Role, bool)> {
+    pub(crate) fn semantic_hits_from(&self, hits: &[(Rect, Hit)]) -> Vec<SemanticHit> {
         use ui::a11y::Role;
 
         hits.iter()
             .filter_map(|(rect, hit)| {
+                let copy = ControlName::copy;
+                let content = ControlName::content;
                 let (name, role, selected) = match hit {
                     Hit::AgentWindow => (
-                        if self.conversation_surface {
-                            crate::i18n::t("chat-agent-return")
+                        copy(if self.conversation_surface {
+                            "chat-agent-return"
                         } else {
-                            crate::i18n::t("chat-agent-float")
-                        },
+                            "chat-agent-float"
+                        }),
                         Role::Button,
                         false,
                     ),
-                    Hit::FocusEdit => ("Edit message".into(), Role::MultilineTextInput, false),
-                    Hit::FocusMain => ("Message composer".into(), Role::MultilineTextInput, false),
+                    Hit::FocusEdit => (copy("chat-edit-field"), Role::MultilineTextInput, false),
+                    Hit::FocusMain => (copy("chat-composer"), Role::MultilineTextInput, false),
                     Hit::FocusThread => (
-                        "Thread reply composer".into(),
+                        copy("chat-thread-composer"),
                         Role::MultilineTextInput,
                         false,
                     ),
-                    Hit::HostModel(command) => (
-                        crate::i18n::t(&format!("chat-model-{command}")),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::Send => ("Send message".into(), Role::Button, false),
-                    Hit::UndoDelete => ("Undo".into(), Role::Button, false),
-                    Hit::JumpToLatest => ("Jump to latest message".into(), Role::Button, false),
+                    Hit::HostModel(command) => {
+                        (copy(&format!("chat-model-{command}")), Role::Button, false)
+                    }
+                    Hit::Send => (copy("chat-send-message"), Role::Button, false),
+                    Hit::UndoDelete => (copy("chat-undo"), Role::Button, false),
+                    Hit::JumpToLatest => (copy("chat-jump-latest-message"), Role::Button, false),
                     Hit::ThreadScroll(end) => (
-                        crate::i18n::t(if *end {
+                        copy(if *end {
                             "chat-thread-end"
                         } else {
                             "chat-thread-start"
@@ -3776,7 +3782,7 @@ impl ChatApp {
                         false,
                     ),
                     Hit::AgentReasoning(id) => (
-                        crate::i18n::t(if self.expanded_reasoning.contains(id) {
+                        copy(if self.expanded_reasoning.contains(id) {
                             "chat-agent-hide-reasoning"
                         } else {
                             "chat-agent-show-reasoning"
@@ -3784,44 +3790,50 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
-                    Hit::ComposerEmoji(_) => {
-                        (crate::i18n::t("chat-emoji-insert"), Role::Button, false)
-                    }
-                    Hit::Attach => ("Share a file".into(), Role::Button, false),
-                    Hit::AttachDevice => ("Upload from this device".into(), Role::Button, false),
+                    Hit::ComposerEmoji(_) => (copy("chat-emoji-insert"), Role::Button, false),
+                    Hit::Attach => (copy("chat-attach"), Role::Button, false),
+                    Hit::AttachDevice => (copy("chat-attach-device"), Role::Button, false),
                     Hit::AttachPick(path) => (
-                        format!(
-                            "Attach {}",
-                            std::path::Path::new(path)
-                                .file_name()
-                                .and_then(std::ffi::OsStr::to_str)
-                                .unwrap_or(path)
-                        ),
+                        content(crate::i18n::t_args(
+                            "chat-attach-pick",
+                            &[(
+                                "name",
+                                std::path::Path::new(path)
+                                    .file_name()
+                                    .and_then(std::ffi::OsStr::to_str)
+                                    .unwrap_or(path)
+                                    .to_owned()
+                                    .into(),
+                            )],
+                        )),
                         Role::Button,
                         false,
                     ),
-                    Hit::StartCall => ("Start or open call".into(), Role::Button, false),
-                    Hit::StopSharingLiveContext => {
-                        (crate::i18n::t("chat-context-stop"), Role::Button, false)
-                    }
+                    Hit::StartCall => (copy("chat-call-start-or-open"), Role::Button, false),
+                    Hit::StopSharingLiveContext => (copy("chat-context-stop"), Role::Button, false),
                     Hit::CopyResourceLink(message) => (
-                        self.resource_navigation.label(message, true),
+                        ControlName {
+                            text: self.resource_navigation.label(message, true),
+                            interface: self.resource_navigation.label_is_copy(message),
+                        },
                         Role::Button,
                         false,
                     ),
                     Hit::OpenResource(message) => (
-                        self.resource_navigation.open_label(
-                            message,
-                            &self
-                                .message(message)
-                                .and_then(|m| m.reference.as_ref().map(|r| r.label.clone()))
-                                .unwrap_or_default(),
+                        content(
+                            self.resource_navigation.open_label(
+                                message,
+                                &self
+                                    .message(message)
+                                    .and_then(|m| m.reference.as_ref().map(|r| r.label.clone()))
+                                    .unwrap_or_default(),
+                            ),
                         ),
                         Role::Button,
                         false,
                     ),
                     Hit::OpenShare(message) => (
-                        self.message(message).map_or_else(String::new, |m| {
+                        content(self.message(message).map_or_else(String::new, |m| {
                             crate::i18n::t_args(
                                 "chat-share-open",
                                 &[
@@ -3836,16 +3848,17 @@ impl ChatApp {
                                     ("name", self.user_name(&m.author).into()),
                                 ],
                             )
-                        }),
+                        })),
                         Role::Button,
                         false,
                     ),
-                    Hit::StopShare(_) => (crate::i18n::t("chat-share-stop"), Role::Button, false),
-                    Hit::ShareWindowPanel => {
-                        (crate::i18n::t("chat-share-window"), Role::Button, false)
-                    }
+                    Hit::StopShare(_) => (copy("chat-share-stop"), Role::Button, false),
+                    Hit::ShareWindowPanel => (copy("chat-share-window"), Role::Button, false),
                     Hit::ShareAccess(access) => (
-                        crate::live_share::access_label(*access),
+                        ControlName {
+                            text: crate::live_share::access_label(*access),
+                            interface: true,
+                        },
                         Role::ToggleButton,
                         self.live_shares
                             .panel
@@ -3853,40 +3866,36 @@ impl ChatApp {
                             .is_some_and(|panel| panel.access == *access),
                     ),
                     Hit::SharePick(tab) => (
-                        ui::window_share::windows()
-                            .into_iter()
-                            .find(|window| window.tab == *tab)
-                            .map_or_else(String::new, |window| {
-                                crate::i18n::t_args(
-                                    "chat-share-pick",
-                                    &[("title", window.title.into())],
-                                )
-                            }),
+                        content(
+                            ui::window_share::windows()
+                                .into_iter()
+                                .find(|window| window.tab == *tab)
+                                .map_or_else(String::new, |window| {
+                                    crate::i18n::t_args(
+                                        "chat-share-pick",
+                                        &[("title", window.title.into())],
+                                    )
+                                }),
+                        ),
                         Role::ToggleButton,
                         self.live_shares
                             .panel
                             .as_ref()
                             .is_some_and(|panel| panel.chosen == Some(*tab)),
                     ),
-                    Hit::ShareChosen => (
-                        crate::i18n::t("chat-share-window-button"),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::ToggleRightFlap => ("Show people or thread".into(), Role::Button, false),
-                    Hit::TogglePins => {
-                        ("Pinned messages".into(), Role::ToggleButton, self.pins_open)
-                    }
+                    Hit::ShareChosen => (copy("chat-share-window-button"), Role::Button, false),
+                    Hit::ToggleRightFlap => (copy("chat-right-flap"), Role::Button, false),
+                    Hit::TogglePins => (copy("chat-pins"), Role::ToggleButton, self.pins_open),
                     Hit::RevealMessage(message) => (
                         self.message(message).map_or_else(
-                            || "Pinned message".to_owned(),
-                            |m| format!("{}: {}", self.user_name(&m.author), m.text),
+                            || copy("chat-pinned-message"),
+                            |m| content(format!("{}: {}", self.user_name(&m.author), m.text)),
                         ),
                         Role::Button,
                         false,
                     ),
-                    Hit::OpenThread(_) => ("Open message thread".into(), Role::Button, false),
-                    Hit::CloseThread => (crate::i18n::t("chat-thread-close"), Role::Button, false),
+                    Hit::OpenThread(_) => (copy("chat-thread-open"), Role::Button, false),
+                    Hit::CloseThread => (copy("chat-thread-close"), Role::Button, false),
                     Hit::Reaction { msg, emoji } => {
                         let mine = self
                             .message(msg)
@@ -3898,18 +3907,16 @@ impl ChatApp {
                             })
                             .is_some_and(|reaction| reaction.includes(&self.me.id));
                         (
-                            ui::widget::reaction_strip::pill_name(emoji, mine),
+                            content(ui::widget::reaction_strip::pill_name(emoji, mine)),
                             Role::ToggleButton,
                             mine,
                         )
                     }
-                    Hit::AddReaction { .. } => (
-                        crate::i18n::t("chat-emoji-add-reaction"),
-                        Role::Button,
-                        false,
-                    ),
+                    Hit::AddReaction { .. } => {
+                        (copy("chat-emoji-add-reaction"), Role::Button, false)
+                    }
                     Hit::EmojiChoice(emoji) => (
-                        crate::i18n::t_args(
+                        content(crate::i18n::t_args(
                             "chat-emoji-choose",
                             &[(
                                 "name",
@@ -3918,62 +3925,73 @@ impl ChatApp {
                                     .map_or(emoji.as_str(), |found| found.name())
                                     .into(),
                             )],
-                        ),
+                        )),
                         Role::Button,
                         false,
                     ),
                     Hit::EmojiGroup(group) => (
+                        // A group's label is the emoji catalogue's own fixed
+                        // copy in the desktop's language.
                         crate::i18n::emoji_catalogue()
                             .groups()
                             .get(*group)
                             .map_or_else(
-                                || crate::i18n::t("chat-emoji-group"),
-                                |group| group.label().to_owned(),
+                                || copy("chat-emoji-group"),
+                                |group| ControlName {
+                                    text: group.label().to_owned(),
+                                    interface: true,
+                                },
                             ),
                         Role::Tab,
                         *group == self.emoji_picker.group(),
                     ),
-                    Hit::EmojiAddCustom => (crate::i18n::t("chat-emoji-add"), Role::Button, false),
-                    Hit::FocusEmojiSearch => {
-                        (crate::i18n::t("chat-emoji-search"), Role::TextInput, false)
+                    Hit::EmojiAddCustom => (copy("chat-emoji-add"), Role::Button, false),
+                    Hit::FocusEmojiSearch => (copy("chat-emoji-search"), Role::TextInput, false),
+                    Hit::EditHistory { .. } => {
+                        (copy("chat-edit-history-show"), Role::Button, false)
                     }
-                    Hit::EditHistory { .. } => ("Show edit history".into(), Role::Button, false),
-                    Hit::EditSave => ("Save message edit".into(), Role::Button, false),
-                    Hit::EditCancel => ("Cancel message edit".into(), Role::Button, false),
+                    Hit::EditSave => (copy("chat-edit-save"), Role::Button, false),
+                    Hit::EditCancel => (copy("chat-edit-cancel"), Role::Button, false),
                     Hit::CallMute => (
-                        if self.microphone_missing() {
-                            crate::i18n::t("chat-call-no-microphone")
+                        copy(if self.microphone_missing() {
+                            "chat-call-no-microphone"
                         } else {
-                            "Mute microphone".into()
-                        },
+                            "chat-call-mute-action"
+                        }),
                         Role::ToggleButton,
                         self.call.muted,
                     ),
                     Hit::CallDeafen => (
-                        crate::i18n::t("chat-call-deafen"),
+                        copy("chat-call-deafen"),
                         Role::ToggleButton,
                         self.call.deafened,
                     ),
-                    Hit::CallCamera => ("Camera".into(), Role::ToggleButton, !self.call.audio_only),
-                    Hit::CallScreen => {
-                        ("Share screen".into(), Role::ToggleButton, self.call.sharing)
-                    }
+                    Hit::CallCamera => (
+                        copy("chat-call-camera-on"),
+                        Role::ToggleButton,
+                        !self.call.audio_only,
+                    ),
+                    Hit::CallScreen => (
+                        copy("chat-call-share-screen"),
+                        Role::ToggleButton,
+                        self.call.sharing,
+                    ),
                     Hit::CallParticipantsToggle => (
-                        "Show call participants".into(),
+                        copy("chat-call-participants-show"),
                         Role::ToggleButton,
                         self.call.participants_expanded,
                     ),
                     Hit::CallExpand => (
-                        "Expand or restore call".into(),
+                        copy("chat-call-expand-restore"),
                         Role::Button,
                         self.call.expanded,
                     ),
-                    Hit::CallLeave => ("Leave call".into(), Role::Button, false),
+                    Hit::CallLeave => (copy("chat-call-leave-action"), Role::Button, false),
                     Hit::CallParticipant(id) => (
-                        crate::i18n::t_args(
+                        content(crate::i18n::t_args(
                             "chat-call-participant",
                             &[("name", self.call_name(id).into())],
-                        ),
+                        )),
                         Role::Button,
                         false,
                     ),
@@ -4003,7 +4021,7 @@ impl ChatApp {
             .collect()
     }
 
-    pub(crate) fn semantic_hits(&self) -> Vec<(Rect, Hit, String, ui::a11y::Role, bool)> {
+    pub(crate) fn semantic_hits(&self) -> Vec<SemanticHit> {
         Self::deduplicate_semantic_hits(self.semantic_hits_from(&self.hits))
     }
 
@@ -4043,7 +4061,7 @@ impl ChatApp {
             .into_iter()
             .next()
         {
-            return Some((*rect, label));
+            return Some((*rect, label.text));
         }
         // Do not let the broad title region lend its text to a labelled
         // control layered above it (for example the Call button).
@@ -4061,15 +4079,120 @@ impl ChatApp {
     /// A semantic target names an operation, not a particular paint pass. A
     /// message can appear in both timeline and thread briefly; exporting one
     /// retained node keeps that operation's target unambiguous.
-    fn deduplicate_semantic_hits(
-        hits: Vec<(Rect, Hit, String, ui::a11y::Role, bool)>,
-    ) -> Vec<(Rect, Hit, String, ui::a11y::Role, bool)> {
+    fn deduplicate_semantic_hits(hits: Vec<SemanticHit>) -> Vec<SemanticHit> {
         let mut targets = std::collections::HashSet::new();
         hits.into_iter()
             .filter(|(_, hit, ..)| targets.insert(hit.semantic_id()))
             .collect()
     }
 }
+
+/// Where a shown message drew its own texts: the avatar, the author's name
+/// and the time of a message that starts a group, and each laid-out line of
+/// its body. All of it is the person's or the message's, none Chat's copy.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PaintedMessage {
+    pub(crate) avatar: Option<Rect>,
+    pub(crate) author: Option<(Rect, String)>,
+    pub(crate) time: Option<(Rect, String)>,
+    pub(crate) lines: Vec<(Rect, String)>,
+}
+
+impl PaintedMessage {
+    /// What of it shows inside `area`, each part cut to it.
+    pub(crate) fn clipped(self, area: Rect) -> Self {
+        let cut = |rect: Rect| {
+            let cut = rect.intersect(area);
+            (cut.width() > 0.0 && cut.height() > 0.0).then_some(cut)
+        };
+        let cut_text = |(rect, text): (Rect, String)| cut(rect).map(|rect| (rect, text));
+        Self {
+            avatar: self.avatar.and_then(cut),
+            author: self.author.and_then(cut_text),
+            time: self.time.and_then(cut_text),
+            lines: self.lines.into_iter().filter_map(cut_text).collect(),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.avatar.is_none()
+            && self.author.is_none()
+            && self.time.is_none()
+            && self.lines.is_empty()
+    }
+
+    /// The row's children: the avatar as an image, then the name, the time
+    /// and each body line as text, each with the rect it was drawn in.
+    pub(crate) fn access_children(&self, id: &str) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+        let name = self.author.as_ref().map(|(_, name)| name.as_str());
+        let mut children = Vec::new();
+        if let Some(rect) = self.avatar {
+            let mut avatar = AccessNode::new(Role::Image)
+                .with_bounds(rect)
+                .with_hashed_key((id, "avatar"));
+            if let Some(name) = name {
+                avatar = avatar.with_name(name);
+            }
+            children.push(avatar);
+        }
+        let texts = self
+            .author
+            .iter()
+            .map(|part| (part, "author"))
+            .chain(self.time.iter().map(|part| (part, "time")));
+        for ((rect, text), part) in texts {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(text.as_str())
+                    .with_bounds(*rect)
+                    .with_hashed_key((id, part)),
+            );
+        }
+        for (index, (rect, text)) in self.lines.iter().enumerate() {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(text.as_str())
+                    .with_bounds(*rect)
+                    .with_hashed_key((id, "line", index)),
+            );
+        }
+        children
+    }
+}
+
+/// A painted control's spoken name, and whether it is Chat's own fixed copy:
+/// a catalogue message with nothing of a person or a resource in it. A
+/// feedback report shows such names as they are and hides the rest until
+/// the reporter shows them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ControlName {
+    pub(crate) text: String,
+    pub(crate) interface: bool,
+}
+
+impl ControlName {
+    /// The catalogue message `key`, the same for everyone.
+    pub(crate) fn copy(key: &str) -> Self {
+        Self {
+            text: crate::i18n::t(key),
+            interface: true,
+        }
+    }
+
+    /// A name that carries someone's words, a person, a file or a resource.
+    pub(crate) fn content(text: String) -> Self {
+        Self {
+            text,
+            interface: false,
+        }
+    }
+}
+
+/// One painted control in the inventory pointer, keyboard and assistive
+/// technology share: where it is, what it does, its name, its role and
+/// whether it is selected or checked.
+pub(crate) type SemanticHit = (Rect, Hit, ControlName, ui::a11y::Role, bool);
 
 /// Compute an absolute rect from window-relative fractions.
 pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
@@ -4550,8 +4673,10 @@ impl Widget for ChatApp {
         self.reconcile_speaking(theme);
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
-        // The picture tiles this frame draws note themselves again.
+        // The picture tiles this frame draws note themselves again, and so
+        // do the messages it shows.
         self.picture_tiles.borrow_mut().clear();
+        self.painted_messages.clear();
         // Every region is drawn as a part of its own, compared with the
         // last frame's: what Chat reports as damage is the regions whose
         // drawing changed.
@@ -4817,7 +4942,8 @@ impl Widget for ChatApp {
                     state = state.checked(selected);
                 }
                 let mut node = AccessNode::new(role)
-                    .with_name(name)
+                    .with_name(name.text)
+                    .with_interface_name(name.interface)
                     .with_state(state)
                     .with_bounds(rect)
                     .with_key(index as u64)
@@ -4900,8 +5026,9 @@ impl Widget for ChatApp {
         Some(
             AccessNode::new(Role::Group)
                 .with_semantic_key("chat-surface")
-                .with_name("Chat")
-                .with_description("Channels in the current Tilo workspace")
+                .with_name(crate::i18n::t("chat-surface"))
+                .with_interface_name(true)
+                .with_description(crate::i18n::t("chat-surface-detail"))
                 .with_children(children),
         )
     }
