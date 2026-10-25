@@ -192,12 +192,13 @@ fn state_file_fixture_is_current_and_round_trips_unchanged() {
         assert_eq!(canonical(&rewritten), canonical(&fixture));
     }
 
-    // Phase `a_file_from_when_workspaces_kept_tasks_loads_without_them`.
+    // Phase `a_file_from_when_workspaces_kept_tasks_loads_and_keeps_them`:
+    // the tree no longer reads a workspace's tasks, but a stored field it
+    // does not read is kept exactly as it was, so saving loses nothing.
     {
-        let fixture = canonical(
+        let mut old = canonical(
             &std::fs::read_to_string(fixture_path()).expect("read the state.json fixture"),
         );
-        let mut old = fixture.clone();
         old["workspaces"][0]["tasks"] = serde_json::json!([{
             "id": "task-1",
             "title": "Review",
@@ -210,7 +211,7 @@ fn state_file_fixture_is_current_and_round_trips_unchanged() {
             "updated_at": 20,
             "audit": []
         }]);
-        let tree: WorkspaceTree = serde_json::from_value(old).expect("an older file loads");
-        assert_eq!(serde_json::to_value(&tree).expect("serialize"), fixture);
+        let tree: WorkspaceTree = serde_json::from_value(old.clone()).expect("an older file loads");
+        assert_eq!(serde_json::to_value(&tree).expect("serialize"), old);
     }
 }
