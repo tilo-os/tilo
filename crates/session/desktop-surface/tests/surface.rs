@@ -2393,7 +2393,7 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
         1,
         "not yet opened"
     );
-    assert!(openings.open(&handle, "g", |_| Ok(())));
+    assert!(openings.open(&handle, "g", |_, _| Ok(())));
     driver.idle();
     driver.relayout();
     let snapshot = handle.snapshot("g", vec![]);
@@ -2410,7 +2410,7 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
     driver
         .invoke_published("camera.capture", "open-writer", &serde_json::Map::new())
         .expect("the session takes the open");
-    openings.open(&handle, "g", |_| {
+    openings.open(&handle, "g", |_, _| {
         Err(ui::tilo_actions::remote::ActionHostError::NotPermitted)
     });
     driver.idle();
@@ -2636,13 +2636,13 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     let refused = session.invoke(&caller, open("elsewhere"));
     drop(refused);
     assert!(
-        !openings.open(&handle, "g", |_| Ok(())),
+        !openings.open(&handle, "g", |_, _| Ok(())),
         "nothing asked of here"
     );
 
     for _ in 0..2 {
         drop(session.invoke(&caller, open("room")));
-        assert!(openings.open(&handle, "g", |app| {
+        assert!(openings.open(&handle, "g", |app, _| {
             assert_eq!(app, "so.tilo.notes", "admitted as its app");
             Ok(())
         }));
