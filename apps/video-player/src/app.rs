@@ -422,6 +422,10 @@ pub struct PlayerApp {
     /// Where the shared library's edits and the player's own controls go:
     /// the framework's door, handed over when the surface is attached.
     dispatcher: Option<Dispatcher<PlayerResource>>,
+    /// The shared library's verbs bound to what the player shows, published
+    /// for the view that hosts it: the view reads it, so it does not hold
+    /// the player.
+    playhead: Option<crate::resource::Playhead>,
     /// The shared library as last presented.
     shared_library: crate::shared::Library,
     /// What the window is built for: only a live one starts a decoder
@@ -856,6 +860,7 @@ impl PlayerApp {
             shot_loading: false,
             pending_pip: None,
             dispatcher: None,
+            playhead: None,
             shared_library: crate::shared::Library::default(),
             mode,
             capture_awaits: CaptureAwaits::Nothing,
@@ -1079,6 +1084,22 @@ impl PlayerApp {
             Some("fullscreen") => self.player.toggle_fullscreen(),
             _ => {}
         }
+    }
+
+    /// Publish what the playhead is on into `playhead`, which the view that
+    /// hosts this player reads.
+    pub(crate) fn share_playhead(&mut self, playhead: &crate::resource::Playhead) {
+        self.playhead = Some(playhead.clone());
+        self.publish_playhead();
+    }
+
+    /// Tell the view what the playhead is on now. Nothing happens before the
+    /// view hands over where to say it.
+    fn publish_playhead(&self) {
+        let Some(playhead) = &self.playhead else {
+            return;
+        };
+        *playhead.borrow_mut() = self.playhead_declarations();
     }
 
     /// Show the shared library the document holds.
@@ -2549,6 +2570,7 @@ impl Widget for PlayerApp {
         self.drain_player_settings();
         self.maybe_loop_current_media();
         self.poll_open_frame();
+        self.publish_playhead();
     }
 
     fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
