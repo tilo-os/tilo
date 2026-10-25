@@ -13,7 +13,8 @@ use ui_core::LocalState;
 use ui_core::arriving::Arriving;
 use ui_core::i18n::LabelKey;
 use ui_core::record::RecordSaveStatus;
-use ui_core::widget::ArrivingView;
+use ui_core::room_sync::RoomUnreachable;
+use ui_core::widget::{ArrivingView, SkeletonShape};
 use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
 
 use super::controls::{ActionControl, Actions};
@@ -29,6 +30,29 @@ use super::settings::ViewStorage;
 use super::stage::Stages;
 use super::surface::{ResourceSurface, SurfaceCx};
 use super::switch::Switch;
+
+/// What builds a part with bindings of its own, retired with the `Rc` it
+/// is handed.
+type ScopedPart = dyn Fn(&Rc<()>) -> Element;
+
+/// A part showing an answer that landed, built again with its own
+/// bindings (retired with `alive`) for each newer one.
+fn arrived_part(build: Box<ScopedPart>) -> Element {
+    Switch::keyed(
+        LocalState::new(()),
+        Box::new(move |(), alive: &Rc<()>| build(alive)),
+    )
+}
+
+/// The window's view once the room's holdings arrived, the page they
+/// reserve until then.
+fn room_arrival(holdings: &Arriving<(), RoomUnreachable>, part: Rc<ScopedPart>) -> Element {
+    let view = ArrivingView::new(holdings, move |()| {
+        let part = Rc::clone(&part);
+        arrived_part(Box::new(move |alive: &Rc<()>| part(alive)))
+    });
+    Box::new(view.shaped(SkeletonShape::Page))
+}
 
 fn disabled(mut button: Button) -> Button {
     button.set_enabled(false);
@@ -587,11 +611,25 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let part = Rc::new(part);
         ArrivingView::new(arriving, move |value: &V| {
             let (scope, part, value) = (Rc::clone(&scope), Rc::clone(&part), value.clone());
-            Switch::keyed(
-                LocalState::new(()),
-                Box::new(move |(), alive: &Rc<()>| part(&mut scope(alive), &value)),
-            )
+            arrived_part(Box::new(move |alive: &Rc<()>| {
+                part(&mut scope(alive), &value)
+            }))
         })
+    }
+
+    /// [`Self::arriving`] for the window's room: its whole view, a page,
+    /// once the room's holdings arrived. Only `part`'s scope depends on the
+    /// app; the arrival around it is built once, in the runtime.
+    pub(crate) fn arriving_room(
+        &self,
+        holdings: &Arriving<(), RoomUnreachable>,
+        part: impl Fn(&mut ViewCx<R, T>) -> Element + 'static,
+    ) -> Element {
+        let scope = self.part_scope();
+        room_arrival(
+            holdings,
+            Rc::new(move |alive: &Rc<()>| part(&mut scope(alive))),
+        )
     }
 
     /// What builds a part of this scope with its own bindings, retired
