@@ -2783,32 +2783,6 @@ impl Mount {
         )
     }
 
-    /// Where this person is on the desktop, for the room's presence:
-    /// `{focus, place}`, the record of the focused window (the desktop's
-    /// own record where no window is focused or it has none yet) and the
-    /// strip shown. `None` for a single application.
-    fn live_place_value(&self) -> Option<serde_json::Value> {
-        let desktop = self.desktop.as_ref()?;
-        let (focus, place) = desktop.handle.read(|tree| {
-            let place = tree.active_workspace().and_then(|workspace| {
-                tilo_desktop_surface::navigation::active_strip(tree, workspace)
-            });
-            let focus = tilo_desktop_surface::navigation::active_route(tree)
-                .and_then(|route| desktop.shared.live_record_of(tree, route.tab));
-            (focus, place)
-        });
-        let (app, record) = focus.unwrap_or_else(|| {
-            (
-                crate::desktop::DESKTOP_PACKAGE.to_owned(),
-                crate::replication::DESKTOP_RECORD.to_owned(),
-            )
-        });
-        Some(serde_json::json!({
-            "focus": {"app": app, "record": record},
-            "place": place.map(|strip| strip.0.to_string()),
-        }))
-    }
-
     /// Add the focus presence and the place in the room to a status where
     /// they differ from what the page was last told.
     fn add_presence_changes(&self, value: &mut serde_json::Value) {
@@ -3294,6 +3268,7 @@ pub fn request_semantics(id: u64) -> Result<(), JsValue> {
 
 mod desktop_exports;
 mod fonts;
+mod live_layout;
 use crate::first_frame::{self, GpuStep};
 pub(crate) mod pointers;
 mod retained;
