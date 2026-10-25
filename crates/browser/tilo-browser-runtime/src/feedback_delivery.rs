@@ -29,6 +29,10 @@ const ADMISSION_FRESH: Duration = Duration::from_secs(60);
 const ADMISSION_RENEW: Duration = Duration::from_secs(40);
 /// How long a question to the owner is waited for before it is asked again.
 const ASK_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a report the owner took is not filed again while its receipt
+/// is awaited: the owner keeps it, and only its picture may still be on
+/// its way there.
+const FILED_STANDS: Duration = Duration::from_secs(120);
 
 thread_local! { static CONNECTIONS: RefCell<HashMap<u32, Rc<RefCell<Connection>>>> = RefCell::new(HashMap::new()); }
 thread_local! {
@@ -48,6 +52,8 @@ struct Connection {
     pending: HashMap<u64, (web_time::Instant, Option<Submission>)>,
     /// Reports filed through the owner, by the invocation that files them.
     filing: HashMap<tilo_actions::InvocationId, (web_time::Instant, Submission)>,
+    /// Reports the owner took, by id, and when.
+    filed: HashMap<String, web_time::Instant>,
     admission: Option<(Enrollment, web_time::Instant)>,
     receipts: HashMap<String, SignedReceipt>,
     installed: bool,
@@ -90,6 +96,7 @@ pub(crate) fn configure(
             serial: 0,
             pending: HashMap::new(),
             filing: HashMap::new(),
+            filed: HashMap::new(),
             admission: None,
             receipts: HashMap::new(),
             installed: false,
@@ -155,9 +162,21 @@ impl Connection {
     /// File `submission` through the owner's own submit action. It runs
     /// there as this reporter, so filing needs only their right to comment,
     /// and is done when the owner's durable store holds it.
+    /// A report being filed or filed recently is not filed again: the
+    /// composer resends while it waits for the receipt, which the owner
+    /// signs only once its picture arrived too.
     fn file(&mut self, submission: &Submission) -> Result<(), String> {
         self.filing
             .retain(|_, (sent, _)| sent.elapsed() < Duration::from_secs(30));
+        self.filed.retain(|_, took| took.elapsed() < FILED_STANDS);
+        if self.filed.contains_key(&submission.id)
+            || self
+                .filing
+                .values()
+                .any(|(_, filing)| filing.id == submission.id)
+        {
+            return Ok(());
+        }
         if self.filing.len() >= 8 {
             return Err("feedback reports pending".into());
         }
@@ -227,6 +246,16 @@ impl Connection {
         let Some((_, submission)) = self.filing.remove(&receipt.invocation) else {
             return;
         };
+        if matches!(
+            receipt.status,
+            ReceiptStatus::Completed { .. } | ReceiptStatus::Accepted
+        ) {
+            if self.filed.len() >= 8 {
+                self.filed.clear();
+            }
+            self.filed
+                .insert(submission.id.clone(), web_time::Instant::now());
+        }
         match receipt.status {
             ReceiptStatus::Completed { .. } => {
                 self.error = None;
@@ -425,6 +454,7 @@ impl Transport for Session {
         let mut connection = self.connection.borrow_mut();
         connection.current()?;
         if let Some(receipt) = connection.receipts.remove(&submission.id) {
+            connection.filed.remove(&submission.id);
             return Ok(Some(receipt));
         }
         if !connection

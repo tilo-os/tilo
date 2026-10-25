@@ -25,7 +25,15 @@ pub struct FeedbackServices {
     /// The model the host lends for reviewing reports, if any.
     models: Rc<RefCell<crate::models::Models>>,
     pass: report::Pass,
+    /// Since when the report on its way waits for its destination's receipt.
+    awaiting: Rc<Cell<Option<crate::time::Instant>>>,
 }
+
+/// How soon a report waiting for its receipt is first looked at again: the
+/// destination may still be taking in its picture.
+const RECEIPT_CHECK_FIRST: crate::time::Duration = crate::time::Duration::from_secs(1);
+/// The longest a waiting report goes without being looked at again.
+const RECEIPT_CHECK_LAST: crate::time::Duration = crate::time::Duration::from_secs(10);
 
 /// What the one mounted composer shows of the controller's state.
 #[derive(Clone)]
@@ -72,16 +80,33 @@ impl Presentation {
 
 impl FeedbackServices {
     /// Private outbox writes need a wake independently of the ephemeral draft.
-    /// Transport retries remain explicit; only pending local persistence polls.
+    /// Pending local persistence polls; a report waiting for its receipt is
+    /// looked at again, less often the longer it waits, so a receipt that
+    /// arrives later is read and the destination is asked again.
     #[must_use]
     pub fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
         if self.pass.try_borrow().is_ok_and(|pass| pass.is_some()) {
             return crate::time::now().checked_add(crate::time::Duration::from_millis(50));
         }
         let controller = self.controller.try_borrow().ok()?;
-        match controller.state().ok()? {
+        let state = controller.state().ok()?;
+        if state != Some(DeliveryState::AwaitingReceipt) {
+            self.awaiting.set(None);
+        }
+        match state {
             Some(DeliveryState::Saving) => {
                 crate::time::now().checked_add(crate::time::Duration::from_millis(100))
+            }
+            Some(DeliveryState::AwaitingReceipt) => {
+                let now = crate::time::now();
+                let since = self.awaiting.get().unwrap_or(now);
+                self.awaiting.set(Some(since));
+                let delay = now
+                    .saturating_duration_since(since)
+                    .checked_div(4)
+                    .unwrap_or_default()
+                    .clamp(RECEIPT_CHECK_FIRST, RECEIPT_CHECK_LAST);
+                now.checked_add(delay)
             }
             _ => None,
         }
@@ -95,6 +120,7 @@ impl FeedbackServices {
             mounted: Rc::default(),
             models: Rc::default(),
             pass: Rc::default(),
+            awaiting: Rc::default(),
         }
     }
 
@@ -757,7 +783,11 @@ mod tests {
         services.pump().expect("durable approval sends");
         frame.relayout();
         assert_eq!(transport.borrow().submissions.len(), 1);
-        assert!(services.next_wake_deadline().is_none());
+        // Waiting for the receipt, the composer looks again on its own.
+        let again = services.next_wake_deadline().expect("receipt wake");
+        let now = crate::time::now();
+        assert!(again >= now.checked_add(RECEIPT_CHECK_FIRST / 2).unwrap());
+        assert!(again <= now.checked_add(RECEIPT_CHECK_LAST).unwrap());
         assert!(
             frame
                 .inspection_json()
@@ -770,6 +800,29 @@ mod tests {
                 .expect("inspection")
                 .contains("Feedback received")
         );
+        // The receipt arrives later; the wake reads it with no click.
+        let submission = transport.borrow().submissions[0].clone();
+        transport.borrow_mut().receipt = Some(Receipt {
+            id: submission.id.clone(),
+            digest: submission.digest().expect("digest"),
+            destination: submission.destination,
+            report: "chat.message:m_feedback_later".into(),
+        });
+        services.pump().expect("receipt wake");
+        for write in storage.drain() {
+            storage
+                .acknowledge(write.revision, Ok(()))
+                .expect("host commit");
+        }
+        services.pump().expect("receipt kept");
+        frame.relayout();
+        assert!(
+            frame
+                .inspection_json()
+                .expect("inspection")
+                .contains("Feedback received")
+        );
+        assert!(services.next_wake_deadline().is_none());
     }
 
     #[test]
