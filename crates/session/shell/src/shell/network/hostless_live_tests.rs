@@ -74,6 +74,7 @@ fn a_wave_crosses_a_room_with_no_workspace_host() {
             NetCmd::Publish {
                 ws,
                 msg: msg @ NeighbourMsg::LivePresence { .. },
+                ..
             } => {
                 assert_eq!(ws, room_topic_id(room), "on the room's own topic");
                 frames += 1;
