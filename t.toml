@@ -3764,10 +3764,13 @@ fault = "unlock"
 # The same fallback on the sealed release disk instead of a dev disk: the release image this
 # tree built, installed as a device installs it (/boot is the ESP, the UKI seals the composefs
 # digest the install computed, the boot loader counts and blesses there), with the release
-# itself staged as the update - published signed to a throwaway layout and handed to the guest
-# in its own storage, since a sealed disk refuses the unsigned repositories a dev disk admits
+# itself staged as the update in the release's own repository under the guest's local storage,
+# since a sealed disk refuses the unsigned repositories a dev disk admits
 # (tools/ci/boot-assessment-release.sh, os/tests/boot_assessment_rollback.sh).
 # `t dispatch boot-assessment-release-x86_64 --ref <branch>`.
+#
+# A lane that never runs on a push decides nothing from a push, so its inputs are the ones it
+# reads: the whole tree would be stale on every commit, for a check no push is waiting on.
 [[check]]
 name = "boot-assessment-release-x86_64"
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
@@ -3776,7 +3779,13 @@ privileged = true
 git = true
 run = "bash tools/ci/boot-assessment-release.sh x86_64 /target/os/x86_64/release-image /target/boot-assessment-release"
 needs = ["os-release-image-x86_64"]
-inputs = ["**"]
+inputs = [
+  "os/**",
+  "tools/ci/boot-assessment-release.sh",
+  "tools/ci/publish/lib.sh",
+  "t.toml",
+  "rust-toolchain.toml",
+]
 outputs = ["/target/boot-assessment-release/**"]
 cache = false
 timeout_secs = 7200
