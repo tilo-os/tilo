@@ -1353,19 +1353,25 @@ impl MainPanel {
     }
 
     /// How many words the note's blocks hold, in the words a reader counts:
-    /// runs of non-whitespace in each block's plain text, so the markdown
-    /// chrome around a word (`- `, `**`, a fence) is not counted as one.
+    /// runs of non-whitespace in each block's plain text, plus the bullet or
+    /// check mark of one that carries no text of its own. The markdown chrome
+    /// around a word (`- `, `**`, a fence) is not counted as one.
     ///
     /// Walking every block, so a caller on a hot path counts once and reuses
     /// the total until [`Self::content_revision`] moves.
     #[must_use]
     pub fn word_count(&self) -> usize {
-        self.editor
-            .editor()
-            .blocks()
+        let blocks = self.editor.editor().blocks();
+        blocks
             .iter()
             .map(|block| count_words(block.text()))
-            .sum()
+            .sum::<usize>()
+            + blocks
+                .iter()
+                // A bullet or a checkbox is a word of its own when it holds
+                // nothing else.
+                .filter(|block| block.text().trim().is_empty() && block.kind.supports_indent())
+                .count()
     }
 
     pub(crate) fn editor_route_available(&self) -> bool {
