@@ -4037,6 +4037,16 @@ impl ChatApp {
     }
 
     pub(crate) fn hover_tooltip_target(&self, point: Point) -> Option<(Rect, String)> {
+        // A bridged author's service mark says where they write from.
+        if let Some(tip) = self.painted_messages.values().find_map(|parts| {
+            parts
+                .service
+                .as_ref()
+                .filter(|(rect, _)| rect.contains(point))
+                .cloned()
+        }) {
+            return Some(tip);
+        }
         // A reaction pill says who reacted, with the strip's shared wording.
         if let Some((_, Hit::Reaction { msg, .. })) = self
             .hits
@@ -4105,6 +4115,9 @@ impl ChatApp {
 pub(crate) struct PaintedMessage {
     pub(crate) avatar: Option<Rect>,
     pub(crate) author: Option<(Rect, String)>,
+    /// The mark of the service a bridged author writes from, with what it
+    /// says (`From Discord`).
+    pub(crate) service: Option<(Rect, String)>,
     pub(crate) time: Option<(Rect, String)>,
     pub(crate) lines: Vec<(Rect, String)>,
 }
@@ -4120,6 +4133,7 @@ impl PaintedMessage {
         Self {
             avatar: self.avatar.and_then(cut),
             author: self.author.and_then(cut_text),
+            service: self.service.and_then(cut_text),
             time: self.time.and_then(cut_text),
             lines: self.lines.into_iter().filter_map(cut_text).collect(),
         }
@@ -4128,6 +4142,7 @@ impl PaintedMessage {
     pub(crate) fn is_empty(&self) -> bool {
         self.avatar.is_none()
             && self.author.is_none()
+            && self.service.is_none()
             && self.time.is_none()
             && self.lines.is_empty()
     }
@@ -4147,11 +4162,24 @@ impl PaintedMessage {
             }
             children.push(avatar);
         }
-        let texts = self
-            .author
-            .iter()
-            .map(|part| (part, "author"))
-            .chain(self.time.iter().map(|part| (part, "time")));
+        let texts = self.author.iter().map(|part| (part, "author"));
+        for ((rect, text), part) in texts {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(text.as_str())
+                    .with_bounds(*rect)
+                    .with_hashed_key((id, part)),
+            );
+        }
+        if let Some((rect, tip)) = &self.service {
+            children.push(
+                AccessNode::new(Role::Image)
+                    .with_name(tip.as_str())
+                    .with_bounds(*rect)
+                    .with_hashed_key((id, "service")),
+            );
+        }
+        let texts = self.time.iter().map(|part| (part, "time"));
         for ((rect, text), part) in texts {
             children.push(
                 AccessNode::new(Role::StaticText)
