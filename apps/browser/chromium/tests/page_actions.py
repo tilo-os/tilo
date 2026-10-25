@@ -345,8 +345,11 @@ class FramedActions(unittest.TestCase):
         self.assertIsNotNone(match, f'{pattern!r} not in outline:\n{outline}')
         return match.group(1)
 
-    setUpClass = PageActions.setUpClass
-    tearDownClass = PageActions.tearDownClass
+    # The same fixture and helpers as the page tests, against the same server.
+    # A classmethod copied as an attribute stays bound to its own class, so it
+    # is wrapped to bind to this one.
+    setUpClass = classmethod(lambda cls: PageActions.setUpClass.__func__(cls))
+    tearDownClass = classmethod(lambda cls: PageActions.tearDownClass.__func__(cls))
     setUp = PageActions.setUp
     tearDown = PageActions.tearDown
     page, ok, outline, main_world = PageActions.page, PageActions.ok, PageActions.outline, PageActions.main_world
