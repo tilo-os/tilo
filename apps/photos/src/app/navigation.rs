@@ -11,7 +11,7 @@ use vello::kurbo::Vec2;
 
 use super::{
     COLLECTION_PAGE_SIZE, CollectionPageHit, LIBRARY_PAGE_SIZE, LibraryDestination, PhotosApp,
-    SELECTION_ALBUMS_PER_PAGE, SLIDE_SHOW_DWELL, SelectionHit, bound, capture_day,
+    SELECTION_ALBUMS_PER_PAGE, SLIDE_SHOW_SECONDS, SelectionHit, bound, capture_day,
 };
 
 impl PhotosApp {
@@ -505,7 +505,8 @@ impl PhotosApp {
         // A slide show is a presentation: the chrome goes and the picture has
         // the screen, which is what showing photographs to someone means.
         self.presenting = true;
-        self.slide_show = Some(ui::time::now() + SLIDE_SHOW_DWELL);
+        self.slide_show =
+            Some(ui::time::now() + std::time::Duration::from_secs(SLIDE_SHOW_SECONDS));
     }
 
     /// Whether the slide show is running.
@@ -517,7 +518,8 @@ impl PhotosApp {
     /// shown for the same while.
     pub(super) fn restart_slide_show(&mut self) {
         if self.slide_show.is_some() {
-            self.slide_show = Some(ui::time::now() + SLIDE_SHOW_DWELL);
+            self.slide_show =
+                Some(ui::time::now() + std::time::Duration::from_secs(SLIDE_SHOW_SECONDS));
         }
     }
 
@@ -538,7 +540,8 @@ impl PhotosApp {
             return true;
         }
         self.step_photo(true);
-        self.slide_show = Some(ui::time::now() + SLIDE_SHOW_DWELL);
+        self.slide_show =
+            Some(ui::time::now() + std::time::Duration::from_secs(SLIDE_SHOW_SECONDS));
         true
     }
 
