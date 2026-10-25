@@ -31,9 +31,11 @@
 //! missing or cannot be computed, fails the step with the reference named,
 //! which the task's repair then plans around.
 //!
-//! Two helps need no syntax at all. An argument whose parameter takes a
-//! date or a number may be arithmetic in words (`10 business days after
-//! 2026-10-14`, `289 - 50`), which the host computes ([`plain`]); and
+//! Two helps need no syntax at all. A value that is only arithmetic in
+//! words (`10 business days after 2026-10-14`, `289 - 50`) is computed
+//! ([`plain`]): where a parameter takes a date or a number, read leniently
+//! and refused when not read whole; where nothing types it (a cell, a
+//! field by its header), read strictly and left as written otherwise. And
 //! the dates and amounts a read's answer writes are noted beside them as
 //! the host reads them (`03/04/1988 [1988-04-03]`, [`annotate`]), so the
 //! model copies ISO rather than guessing which way a date goes.
@@ -53,7 +55,7 @@ use std::collections::BTreeMap;
 
 pub(crate) use annotate::{annotate_json, annotate_text, unannotated};
 pub(crate) use expr::Value;
-pub(crate) use plain::fill as fill_plain;
+pub(crate) use plain::{fill as fill_plain, fill_untyped};
 
 /// A read a reference names: of `app` (its id, or the last part of it), on
 /// `record` or the one the host picks, the operation `operation` (an
