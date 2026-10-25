@@ -83,7 +83,7 @@ pub struct DRole { pub id: String, pub name: String, pub permissions: String,
 
 | Verb | Who may call | Kind | What it does |
 |---|---|---|---|
-| `observe-layout(channels, roles)` | bots | Undoable | Records Discord's layout as the latest layout event reported it, for the reconcile (§4). |
+| `observe-layout(channels, roles, emojis)` | bots | Undoable | Records Discord's layout (and the server's custom emoji) as the latest layout event reported it, for the reconcile (§4) and for mirroring reactions (§3). |
 | `send`, `edit`, `delete`, `react`, `unreact`, `start-thread`, `create-webhook` | bots | Outside | Queues the matching webhook or REST call. |
 | `apply-channel`, `delete-channel`, `apply-role`, `delete-role`, `set-member-roles`, `kick`, `ban`, `unban`, `set-overwrite` | bots | Outside | Queues layout and membership calls (§4, §5). |
 | `map`, `unmap` | bots | Undoable | Writes the id map (§6). |
@@ -105,8 +105,8 @@ another server.
 | `message-created` | channel, message id, author (id, display name, avatar hash, bot flag, webhook id), content, reply reference, thread, attachments (name, size, type, CDN URL) | message id |
 | `message-updated` | channel, message id, content, edit time | message id + edit time |
 | `message-deleted` | channel, message id, executor from the audit log when Discord reports one | message id + `deleted` |
-| `reaction-added`, `reaction-removed` | channel, message id, user id, emoji (unicode, or custom name) | message, user, emoji, add or remove, and the gateway sequence |
-| `layout-changed` | the guild's channels and roles, read after any channel or role event | gateway sequence |
+| `reaction-added`, `reaction-removed` | channel, message id, user id, the member's name and avatar (on an add), emoji (Unicode, or a custom emoji as `:name:` with its id and whether it is animated) | message, user, emoji, add or remove, and the gateway sequence |
+| `layout-changed` | the guild's channels, roles and custom emoji, read after any channel, role or emoji event | gateway sequence |
 | `member-changed` | user id, roles, banned or kicked | gateway sequence |
 | `command` | `/link` or `/unlink`, user id, the code's SHA-256 (the worker hashes it on arrival) | interaction id |
 
@@ -114,7 +114,7 @@ another server.
 
 The worker is the `discord-worker` binary in the connector's package. It keeps
 one gateway session with the intents `GUILDS`, `GUILD_MEMBERS`,
-`GUILD_MODERATION`, `GUILD_VOICE_STATES`, `GUILD_MESSAGES`,
+`GUILD_MODERATION`, `GUILD_EXPRESSIONS` (custom emoji), `GUILD_VOICE_STATES`, `GUILD_MESSAGES`,
 `GUILD_MESSAGE_REACTIONS` and `MESSAGE_CONTENT`, and receives slash-command
 interactions over the same gateway. Its egress allowlist is `discord.com`,
 `gateway.discord.gg` (and the regional `*.discord.gg` gateways Discord names),
@@ -181,9 +181,12 @@ The bridge is a Shortcut program with `RecordChanged` triggers on
 (`set-role`, `remove-member`, `ban` and `unban`, for role and moderation
 mirroring). It asks for `Personas`
 appearance. Its derived grant comes to: Chat `post`, `edit-message`,
-`delete-message`, `react`, `unreact`, `create-category`, `create-channel`,
+`delete-message`, `create-category`, `create-channel`,
 `move-channel`, `delete-channel`, `remove-message`, `lock-channel` and
-`unlock-channel`; the connector's bot verbs; and Read on both records, on the
+`unlock-channel`; the field edit of a message's reactions and of no other
+field (`chat.messages/resource:*/item:*/field:reactions/action:field-edit`:
+the program spells out the edit's path, so the grant derived from it names
+the field); the connector's bot verbs; and Read on both records, on the
 connector's app node and on the room. The program's inputs bind `workspace` and `guild` at install.
 
 ### Tilo to Discord
@@ -194,7 +197,7 @@ connector's app node and on the room. The program's inputs bind `workspace` and 
 | reply (`parent`) | Posted into the Discord thread mapped to the Tilo thread. If the thread has none yet, `start-thread` on the root's Discord message first. |
 | `edit-message` | Webhook message edit. |
 | `delete-message`, `remove-message` | Webhook message delete. |
-| `react` / `unreact` | The bot user adds the emoji once while at least one Tilo person has that reaction, and removes it when the last one goes. Discord shows one bot reaction per emoji. Tilo shows who reacted. |
+| a reaction (the `react` / `unreact` field edit of a message's reactions) | The bot user adds the emoji once while at least one Tilo person has that reaction, and removes it when the last one goes. Discord shows one bot reaction per emoji. Tilo shows who reacted. A workspace emoji `:name:` is the server's custom emoji of that name (`name:id`); see Reactions below. |
 | attachment | Uploaded with the webhook call if it is at most 10 MiB (Discord's limit for bots). A larger one becomes a line: "📎 name (size) – open in Tilo" with the message's link. |
 | channel and category changes | Layout reconcile (§4). |
 
@@ -211,7 +214,7 @@ way to mark a webhook author as automated.
 | message in a Discord thread | Reply to the thread's mapped root. |
 | `MESSAGE_UPDATE` | `edit-message` on the mapped message. |
 | `MESSAGE_DELETE` | `delete-message` on the mapped message (the bot is its author). |
-| `MESSAGE_REACTION_ADD` / `REMOVE` | `react` / `unreact` with the emoji and appearance. Chat records the persona on the reaction (`Reacted.persona`), so different Discord users count separately. A custom emoji arrives as its name, `:tilo_hello:`. |
+| `MESSAGE_REACTION_ADD` / `REMOVE` | The `react` / `unreact` field edit of the mapped message's reactions, with the member's appearance. The reaction records the persona (`discord/<user id>`) and the name, so each Discord member is a reaction of their own. A custom emoji arrives as its name, `:tilo_hello:`, which shows as the workspace's emoji of that name, or as its text where the workspace has none. |
 | attachments | Each one up to 32 MiB (Chat's limit) is downloaded from the CDN and posted as a Chat attachment. A larger one becomes a link to its CDN URL. Discord's URLs expire, so the bytes are copied, not linked, whenever they fit. |
 
 ### Echo suppression
@@ -227,6 +230,34 @@ The bridge must not mirror its own output back. Two rules cover every case:
 
 The id map is how edits, deletes, reactions and replies find their
 counterparts. It is not needed to stop echoes.
+
+### Reactions
+
+Chat keeps a message's reactions in the framework's `Reactions` field, which
+changes only through the `react` and `unreact` field edits. The bridge reads
+those edits from the change's history entry (`op` `react` or `unreact` on
+`messages › <message> › reactions`, the emoji as `new`), and makes them
+itself for Discord members, under each member's appearance.
+
+- **Unicode emoji** cross as they are, skin tones included. One emoji may be
+  spelled with or without its variation selector (`❤️`, `❤`); the bridge
+  compares emoji without it, and a Discord reaction takes the spelling the
+  message's Tilo reactions already use, so one emoji never shows as two.
+- **Custom emoji.** Tilo writes a workspace's own emoji `:name:`, under the
+  rule Discord names custom emoji by (2 to 32 letters, digits and
+  underscores). A Discord custom emoji becomes its `:name:` in Tilo. A Tilo
+  reaction `:name:` becomes the server's custom emoji of that name, which the
+  worker learns from `GUILD_CREATE` and `GUILD_EMOJIS_UPDATE` and the layout
+  event carries to the record. When the server has none of that name, the
+  reaction stays in Tilo. Uploading the picture would need Manage Expressions
+  and spend the server's few emoji slots on whatever anyone reacts with, and a
+  Unicode emoji of a similar name would show Discord something nobody picked.
+  It crosses once the server adds an emoji of that name and someone reacts
+  again.
+- **Echoes.** Reactions the bridge made for Discord members never count
+  toward the bot's own reaction, and the dispatcher never fires the bridge
+  on its own edits, so nothing mirrored in goes back out. The bot's own
+  reactions come back from the gateway as its user and are dropped.
 
 ## 4. Channel layout
 

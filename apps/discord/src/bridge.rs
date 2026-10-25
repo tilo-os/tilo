@@ -44,6 +44,7 @@ pub struct BridgePlan {
     pub edits: Vec<Value>,
     /// `delete`, then `unmap` the message.
     pub deletes: Vec<Value>,
+    /// `react` / `unreact`: the bot's own reaction in Discord.
     pub reacts: Vec<Value>,
     pub unreacts: Vec<Value>,
     /// `apply-channel`, then `map` it as `kind`.
@@ -71,8 +72,10 @@ pub struct BridgePlan {
     pub chat_deletes: Vec<Value>,
     /// Chat `remove-message`, then `unmap`.
     pub chat_removes: Vec<Value>,
+    /// The `react` field edit of a Chat message's reactions, with the
+    /// Discord user's appearance.
     pub chat_reacts: Vec<Value>,
-    /// Chat `unreact` with the Discord user's appearance.
+    /// The `unreact` field edit, likewise.
     pub chat_unreacts: Vec<Value>,
     /// `block-persona`.
     pub blocks: Vec<Value>,
@@ -99,10 +102,28 @@ pub struct BridgePlan {
     pub again: bool,
 }
 
+/// A reaction someone added to or took back from a Chat message: the
+/// `react` or `unreact` field edit of its reactions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Reacted {
+    message: String,
+    emoji: String,
+    added: bool,
+}
+
+/// What a change did, from its history entry (`did`): the verbs it ran and
+/// the reactions it changed.
+#[derive(Default)]
+struct Did {
+    verbs: Vec<String>,
+    reactions: Vec<Reacted>,
+}
+
 /// What fired the bot, read from its `event` input.
 enum Fired<'e> {
     Chat {
         verbs: Vec<String>,
+        reactions: Vec<Reacted>,
         item: Option<&'e str>,
         event: &'e Value,
     },
@@ -130,13 +151,15 @@ fn fired(event: &Value) -> Fired<'_> {
             payload: event.get("payload").unwrap_or(&Value::Null),
         };
     }
-    let mut verbs = Vec::new();
-    if let Some(did) = event.get("did") {
-        verbs_of(did, &mut verbs);
+    let mut did = Did::default();
+    if let Some(entry) = event.get("did") {
+        did_of(entry, &mut did);
     }
+    let Did { verbs, reactions } = did;
     match event.get("kind").and_then(Value::as_str) {
         Some(CHAT_KIND | MESSAGES_KIND) => Fired::Chat {
             verbs,
+            reactions,
             item: event.pointer("/item/id").and_then(Value::as_str),
             event,
         },
@@ -146,14 +169,15 @@ fn fired(event: &Value) -> Fired<'_> {
     }
 }
 
-/// The verbs a change ran, from its history entry (`did`).
-fn verbs_of(did: &Value, out: &mut Vec<String>) {
+/// What a change did, from its history entry (`did`).
+fn did_of(did: &Value, out: &mut Did) {
     match did.get("did").and_then(Value::as_str) {
         Some("verb") => {
             if let Some(verb) = did.pointer("/action/action").and_then(Value::as_str) {
-                out.push(verb.to_owned());
+                out.verbs.push(verb.to_owned());
             }
         }
+        Some("edit") => out.reactions.extend(reacted(did)),
         Some("group") => {
             for member in did
                 .get("members")
@@ -161,11 +185,31 @@ fn verbs_of(did: &Value, out: &mut Vec<String>) {
                 .into_iter()
                 .flatten()
             {
-                verbs_of(member, out);
+                did_of(member, out);
             }
         }
         _ => {}
     }
+}
+
+/// A field edit's entry, when it is a reaction to a message: `react` or
+/// `unreact` on `messages › <message> › reactions`, the emoji its `new`.
+fn reacted(edit: &Value) -> Option<Reacted> {
+    let added = match edit.get("op").and_then(Value::as_str)? {
+        "react" => true,
+        "unreact" => false,
+        _ => return None,
+    };
+    let path = edit.get("path")?.as_array()?;
+    let step = |at: usize, kind: &str| path.get(at)?.get(kind)?.as_str();
+    if path.len() != 3 || step(0, "field")? != "messages" || step(2, "field")? != "reactions" {
+        return None;
+    }
+    Some(Reacted {
+        message: step(1, "item")?.to_owned(),
+        emoji: edit.get("new")?.as_str()?.to_owned(),
+        added,
+    })
 }
 
 /// The message a Chat change is about: the one its verb names, else the
@@ -184,9 +228,9 @@ fn about<'a>(item: Option<&'a str>, event: &'a Value) -> &'a str {
 #[must_use]
 pub fn route_channel(event: &Value) -> String {
     match fired(event) {
-        Fired::Chat { verbs, item, event } if verbs.iter().any(|verb| verb == "post") => {
-            channel_of(item, event).to_owned()
-        }
+        Fired::Chat {
+            verbs, item, event, ..
+        } if verbs.iter().any(|verb| verb == "post") => channel_of(item, event).to_owned(),
         _ => String::new(),
     }
 }
@@ -238,7 +282,24 @@ fn payload<T: serde::de::DeserializeOwned>(payload: &Value) -> Option<T> {
 #[must_use]
 pub fn route(guild: &Guild, event: &Value) -> String {
     match fired(event) {
-        Fired::Chat { item, event, .. } => about(item, event).to_owned(),
+        Fired::Chat {
+            reactions,
+            item,
+            event,
+            ..
+        } => reactions.first().map_or_else(
+            || about(item, event).to_owned(),
+            |reacted| reacted.message.clone(),
+        ),
+        // A reaction is read with the message it is on, for the spelling
+        // of the emoji its reactions already use.
+        Fired::Discord {
+            source: source::REACTION_ADDED | source::REACTION_REMOVED,
+            payload: body,
+        } => payload::<ReactionChanged>(body)
+            .and_then(|event| guild.by_discord(MappedKind::Message, &event.message_id))
+            .map(|mapped| mapped.tilo.clone())
+            .unwrap_or_default(),
         // A Tilo message deleted in Discord is read in case it goes back.
         // Without the room every delete counts as one to send again; the
         // plan, which has the room, decides.
@@ -282,7 +343,12 @@ pub struct Reading<'a> {
 pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
     let mut plan = BridgePlan::default();
     match fired(event) {
-        Fired::Chat { verbs, item, event } => {
+        Fired::Chat {
+            verbs,
+            reactions,
+            item,
+            event,
+        } => {
             for verb in &verbs {
                 let message = if verb == "post" {
                     posted(read.guild, read.chat, item, event).unwrap_or_default()
@@ -290,6 +356,17 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
                     about(item, event).to_owned()
                 };
                 tilo_change(&mut plan, read, verb, &message, event);
+            }
+            for reacted in &reactions {
+                let (reacts, unreacts) = outbound::plan_reaction(
+                    read.guild,
+                    read.chat,
+                    &reacted.message,
+                    &reacted.emoji,
+                    reacted.added,
+                );
+                plan.reacts.extend(values(reacts));
+                plan.unreacts.extend(values(unreacts));
             }
         }
         Fired::Room { verbs, event } => {
@@ -338,16 +415,6 @@ fn tilo_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, message: &s
                 .unwrap_or_default();
             plan.deletes
                 .extend(values(outbound::plan_delete(guild, channel, message)));
-        }
-        "react" | "unreact" => {
-            let emoji = event
-                .pointer("/arguments/emoji")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let (reacts, unreacts) =
-                outbound::plan_reaction(guild, chat, message, emoji, verb == "react");
-            plan.reacts.extend(values(reacts));
-            plan.unreacts.extend(values(unreacts));
         }
         _ => reconcile(plan, read),
     }
@@ -465,12 +532,10 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
         source::MESSAGE_DELETED => {
             payload::<MessageDeleted>(body).map(|e| inbound::plan_deleted(guild, &e, read.room))
         }
-        source::REACTION_ADDED => {
-            payload::<ReactionChanged>(body).map(|e| inbound::plan_reaction(guild, &e, true))
-        }
-        source::REACTION_REMOVED => {
-            payload::<ReactionChanged>(body).map(|e| inbound::plan_reaction(guild, &e, false))
-        }
+        source::REACTION_ADDED => payload::<ReactionChanged>(body)
+            .map(|e| inbound::plan_reaction(guild, &e, read.chat, true)),
+        source::REACTION_REMOVED => payload::<ReactionChanged>(body)
+            .map(|e| inbound::plan_reaction(guild, &e, read.chat, false)),
         source::MEMBER_CHANGED => {
             payload::<MemberChanged>(body).map(|e| inbound::plan_member(guild, &e, read.room))
         }
@@ -496,6 +561,7 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
         layout.channels.clone(),
         layout.roles.clone(),
     );
+    observed.observe_emojis(layout.emojis.clone());
     if observed == *read.guild {
         reconcile(plan, read);
     } else {
@@ -503,6 +569,7 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
             "bot_user": layout.bot_user,
             "channels": layout.channels,
             "roles": layout.roles,
+            "emojis": layout.emojis,
         }));
     }
 }

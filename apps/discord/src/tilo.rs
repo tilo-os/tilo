@@ -21,13 +21,18 @@ pub struct Channel {
     pub archived: bool,
 }
 
-/// One person's reaction.
+/// One reaction, as Chat's `Reactions` field holds it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reaction {
+    /// A Unicode emoji, or a workspace emoji as `:name:`.
     pub emoji: String,
-    pub user: String,
-    /// Set when the bridge reacted for a Discord user.
+    /// The participant who reacted: a person, or the bot reacting for
+    /// someone elsewhere.
+    pub by: String,
+    /// The outside account a bot reacted for (`discord/80351110224678912`).
     pub persona: Option<String>,
+    /// The name that account shows.
+    pub name: Option<String>,
 }
 
 /// A Chat attachment.
@@ -171,28 +176,19 @@ impl RoomChat {
     }
 }
 
+/// A message's reactions: `[{emoji, by, persona?, name?, at}]`.
 fn reactions(value: &Value) -> Vec<Reaction> {
-    let items = match json_field(value, "reactions") {
-        Value::Array(items) => items,
-        _ => Vec::new(),
-    };
-    items
+    value
+        .get("reactions")
+        .and_then(Value::as_array)
         .into_iter()
-        .map(|item| match item {
-            // A `Set` of JSON-stored values keeps each as JSON text.
-            Value::String(text) => serde_json::from_str(&text).unwrap_or(Value::Null),
-            other => other,
-        })
+        .flatten()
         .filter_map(|r| {
             Some(Reaction {
                 emoji: r.get("emoji")?.as_str()?.to_owned(),
-                user: text(&r, "user"),
-                persona: opt_text(&r, "persona").or_else(|| {
-                    r.get("persona")
-                        .and_then(|p| p.get("account"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                }),
+                by: text(r, "by"),
+                persona: opt_text(r, "persona"),
+                name: opt_text(r, "name"),
             })
         })
         .collect()
@@ -309,7 +305,8 @@ mod tests {
             ],
             "messages": [
                 {"id": "m1", "value": {"channel": "c_general", "author": "u_ada", "text": "hi @Bo", "parent": null,
-                  "reactions": [{"emoji": "👍", "user": "u_bo"}, "{\"emoji\":\"👍\",\"user\":\"bot:i\",\"persona\":{\"service\":\"discord\",\"account\":\"d7\"}}"],
+                  "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1},
+                                {"emoji": "👍", "by": "bot:i", "persona": "discord/d7", "name": "Dee", "at": 2}],
                   "mentions": "[{\"user\":\"u_bo\",\"start\":3,\"len\":3,\"is_agent\":false}]",
                   "attachment": "{\"File\":{\"name\":\"a.txt\",\"blob\":\"ff\",\"size\":5}}"}}
             ],
@@ -338,7 +335,17 @@ mod tests {
         assert_eq!(m.author, "u_ada");
         assert_eq!(m.mentions, [("u_bo".to_owned(), 3, 3)]);
         assert_eq!(m.reactions.len(), 2);
-        assert_eq!(m.reactions[1].persona.as_deref(), Some("d7"));
+        assert_eq!(
+            m.reactions[0],
+            Reaction {
+                emoji: "👍".into(),
+                by: "u_bo".into(),
+                persona: None,
+                name: None,
+            }
+        );
+        assert_eq!(m.reactions[1].persona.as_deref(), Some("discord/d7"));
+        assert_eq!(m.reactions[1].name.as_deref(), Some("Dee"));
         assert_eq!(m.attachment.unwrap().size, Some(5));
         assert_eq!(
             person(&chat(), "u_ada").unwrap().avatar.as_deref(),
