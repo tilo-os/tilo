@@ -588,8 +588,9 @@ impl App {
         if self.try_action_directory_revision().is_err() {
             return;
         }
+        let visible = self.directory_explicit_visibilities(resources);
         let snapshot = ActionDirectorySnapshot::build(resources, descriptors, |resource| {
-            self.directory_explicit_visibility(resource)
+            visible.get(resource.id.as_str()).cloned()
         });
         if self.actions.action_directory_snapshot.as_deref() != Some(&snapshot) {
             if let Some((_, revision)) = &mut self.actions.action_directory_stamp {

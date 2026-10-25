@@ -1186,6 +1186,67 @@ pub(crate) fn publication_visibility(
     visit(root, doc, owner, None, id)
 }
 
+/// [`publication_visibility`] for each of `wanted` (an owner and a resource
+/// id), in one walk of the widget tree: what each resource's first
+/// publisher in tree order says discloses it. A snapshot of an app with many
+/// resources asks for all of them, and a walk per resource made that cost
+/// its resources times its widgets.
+pub(crate) fn publication_visibilities(
+    root: &dyn Widget,
+    doc: &AutoCommit,
+    wanted: &[(Option<CallbackBinding>, String)],
+) -> Vec<Option<tilo_actions::ActionAddress>> {
+    fn visit(
+        widget: &dyn Widget,
+        doc: &AutoCommit,
+        inherited: Option<CallbackBinding>,
+        wanted: &[(Option<CallbackBinding>, String)],
+        found: &mut [Option<tilo_actions::ActionAddress>],
+    ) {
+        let boundary = widget.callback_binding();
+        let binding = boundary.clone().or(inherited);
+        let Ok(_entry) = binding.as_ref().map(CallbackBinding::enter).transpose() else {
+            return;
+        };
+        if boundary.is_none()
+            && crate::widget::capability::capability::<dyn crate::resources::PublishesResources>(
+                widget,
+            )
+            .is_some()
+        {
+            let mut answer = |doc: &AutoCommit| {
+                for ((owner, id), slot) in wanted.iter().zip(found.iter_mut()) {
+                    if slot.is_some() {
+                        continue;
+                    }
+                    let mine = match (owner, binding.as_ref()) {
+                        (Some(owner), Some(binding)) => owner.same_component(binding),
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    if mine {
+                        *slot = crate::resources::action_directory_visibility(widget, doc, id);
+                    }
+                }
+            };
+            if let Some(binding) = &binding {
+                let _ = binding.read_document(doc, |doc, _| answer(doc));
+            } else {
+                answer(doc);
+            }
+        }
+        if found.iter().all(Option::is_some) {
+            return;
+        }
+        widget.for_each_child(&mut |child| {
+            visit(child, doc, binding.clone(), wanted, found);
+        });
+    }
+    let mut found = vec![None; wanted.len()];
+    visit(root, doc, None, wanted, &mut found);
+    found
+}
+
 /// Opaque legacy navigation remains scoped to the provider that produced it.
 pub(crate) fn activate_bound_search(
     root: &mut dyn Widget,
