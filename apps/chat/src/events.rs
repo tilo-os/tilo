@@ -804,6 +804,11 @@ impl ChatApp {
                 self.open_emoji_picker(None, anchor);
             }
             Hit::EmojiGroup(group) => self.emoji_picker.select_group(group),
+            Hit::EmojiAddCustom => {
+                if let Some(source) = ui::workspace_emoji::current() {
+                    source.choose_and_add();
+                }
+            }
             Hit::Attach if self.can_participate() => self.open_attach_picker(),
             Hit::AttachPick(path) => {
                 self.attach_file(doc, std::path::Path::new(&path));

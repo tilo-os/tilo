@@ -32,6 +32,7 @@ chat-call-stop-sharing = Stop sharing
 # composer's emoji button and a group tab without a name of its own.
 chat-emoji-add-reaction = Add reaction
 chat-emoji-search = Search emoji
+chat-emoji-add = Add emoji
 chat-emoji-insert = Insert emoji
 chat-emoji-group = Emoji group
 # A picker cell; the name is the emoji's name in the desktop's language.
