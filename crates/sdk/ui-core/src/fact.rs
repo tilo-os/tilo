@@ -9,16 +9,16 @@
 //! - a source names where the reading came from (`this device`, the system
 //!   journal, a repository manifest);
 //! - an as-of instant makes the reading age on screen, and a reading older
-//!   than its own expected interval is [stale](Fact::is_stale).
+//!   than its own expected interval is [stale](Measured::is_stale).
 //!
-//! `Unknown` is a designed state, not zero: [`Fact::unknown`] carries the
+//! `Unknown` is a designed state, not zero: [`Measured::unknown`] carries the
 //! reason (and the app can offer the action that would resolve it) and renders
 //! an em dash. A number is never a stand-in for "we did not measure".
 //!
 //! The type is a value, not a widget: it is what a view renders. Use
-//! [`Fact::value_or_dash`] in the value position, [`Fact::caption`] under it
+//! [`Measured::value_or_dash`] in the value position, [`Measured::caption`] under it
 //! (provenance is always the caption line, never beside the value), and
-//! [`Fact::is_stale`] to dim the provenance rather than the value.
+//! [`Measured::is_stale`] to dim the provenance rather than the value.
 //!
 //! ```
 //! use std::time::Duration;
@@ -26,7 +26,7 @@
 //! use tilo_ui::time::{SystemTime, UNIX_EPOCH};
 //!
 //! let at = UNIX_EPOCH + Duration::from_secs(120);
-//! let memory = Fact::measured(
+//! let memory = Measured::measured(
 //!     Measure::new("Memory in use").unit("GiB"),
 //!     "8.6",
 //!     "this device",
@@ -81,7 +81,7 @@ impl Measure {
 /// One value as the app knows it: a measurement with provenance, or the
 /// reason it has none.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Fact {
+pub struct Measured {
     measure: Measure,
     state: State,
 }
@@ -99,7 +99,7 @@ enum State {
     },
 }
 
-impl Fact {
+impl Measured {
     /// A reading of `value` in `measure`, taken at `as_of` from `source`.
     /// `expected` is how long the reading is good for before it is stale;
     /// `None` means the app has no interval to judge it by.
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn a_measurement_keeps_its_measure_source_and_age() {
-        let fact = Fact::measured(
+        let fact = Measured::measured(
             Measure::new("Memory in use").unit("GiB"),
             "8.6",
             "this device",
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn an_unknown_fact_is_an_em_dash_with_a_reason_never_a_zero() {
-        let fact = Fact::unknown(
+        let fact = Measured::unknown(
             Measure::new("Memory (RSS)"),
             "the process list is unavailable",
         );
@@ -301,14 +301,14 @@ mod tests {
 
     #[test]
     fn two_measures_with_the_same_word_are_still_different_claims() {
-        let card = Fact::measured(
+        let card = Measured::measured(
             Measure::new("Memory in use").unit("GiB"),
             "8.6",
             "system information service",
             at(100),
             None,
         );
-        let row = Fact::measured(
+        let row = Measured::measured(
             Measure::new("Memory (with children)").unit("GiB"),
             "10.4",
             "process table",
