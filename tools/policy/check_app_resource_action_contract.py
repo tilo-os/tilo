@@ -595,6 +595,64 @@ def legacy_api_sources(owner: Path, directories: tuple[str, ...]) -> list[tuple[
     return sources
 
 
+# What an app runs on, read from its entry point: `ui::main!(App)` runs an
+# application root, `ui::main!(definition = ..)` registers a shared definition
+# and draws in the browser, and anything else (a daemon, a compute entrypoint)
+# is no window. The first two publish resources and so commit a
+# `surface.toml` (`docs/architecture/resources.md` §6); the launcher never
+# opens the others, so they publish nothing the catalogue reads.
+REMOTE_ENTRY = re.compile(
+    r"ui\s*::\s*main\s*!\s*\(\s*definition\s*[=,)]"
+)
+WINDOW_ENTRY = re.compile(r"ui\s*::\s*main\s*!\s*\(\s*(?![=,)])", re.DOTALL)
+GUI_ENTRYPOINT = re.compile(r"^\s*type\s*=\s*\"gui\"", re.MULTILINE)
+SURFACE = "surface.toml"
+
+
+def launches_a_surface(manifest_path: Path) -> bool:
+    """Whether the app at `manifest_path` opens a window that publishes its
+    resources, and so commits its public surface."""
+    app_dir = manifest_path.parent
+    manifest = manifest_path.read_text(encoding="utf-8")
+    main = app_dir / "src" / "main.rs"
+    if not main.is_file():
+        return False
+    source = code_only(main.read_text(encoding="utf-8"))
+    if REMOTE_ENTRY.search(source):
+        return False
+    if WINDOW_ENTRY.search(source):
+        return True
+    return GUI_ENTRYPOINT.search(manifest) is not None
+
+
+def committed_surfaces() -> int:
+    """How many apps commit a `surface.toml`."""
+    return len(list((ROOT / "apps").glob(f"*/{SURFACE}")))
+
+
+def audit_public_surfaces(root: Path) -> list[Violation]:
+    """Every windowed app commits the public surface its binary reports.
+
+    `tilo-app check` compares the committed `surface.toml` with the code; an
+    app it would silently pass over because the file is missing is the one
+    place the comparison cannot run, and the surface is what a receiver
+    without the app decides its changes against.
+    """
+    violations = []
+    for manifest_path in sorted((root / "apps").glob("*/tilo-app.toml")):
+        app_dir = manifest_path.parent
+        if launches_a_surface(manifest_path) and not (app_dir / SURFACE).is_file():
+            violations.append(
+                Violation(
+                    manifest_path,
+                    1,
+                    "a windowed app commits its public surface: write it with "
+                    "`tilo-app surface` (docs/architecture/resources.md §6)",
+                )
+            )
+    return violations
+
+
 def audit_legacy_apis(
     sources: list[tuple[Path, str]],
     violations: list[Violation],
@@ -1691,6 +1749,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     if root.resolve() == ROOT.resolve():
         for manifest_path in sorted((root / "examples" / "apps").glob("*/Cargo.toml")):
             audit_legacy_apis(legacy_api_sources(manifest_path.parent, ("src", "tests")), violations)
+        violations.extend(audit_public_surfaces(root))
 
     return violations, len(manifests)
 
@@ -1704,7 +1763,8 @@ def main() -> int:
         return 1
     print(
         "application resource/action contract OK "
-        f"({app_count} app crates; one resource/action protocol)"
+        f"({app_count} app crates, {committed_surfaces()} committed surfaces; "
+        "one resource/action protocol)"
     )
     return 0
 
