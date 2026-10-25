@@ -8,6 +8,10 @@
 //! end of it ([`Openings`]), which opens each admitted app as the desktop's
 //! own launch.
 //!
+//! A window may also ask to open a resource another app keeps, by its
+//! record ([`tilo_actions::remote::application_record_target`]), as Chat's
+//! shared windows do: the desktop opens that app on that record.
+//!
 //! The windows ask during their frame, on the desktop's thread; the desktop
 //! opens the apps when it next takes [`Openings::open`]. Until then the ask
 //! stays pending, so a window shows its open as in progress, then done or
@@ -27,8 +31,8 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHost, ActionHostError, Caller,
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus, pending, workspace_activity as wire,
-    workspace_provider_room,
+    InvokeRequest, Pending, ReceiptStatus, application_provider, application_provider_record,
+    pending, workspace_activity as wire, workspace_provider_room,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -39,9 +43,31 @@ use crate::navigation::Command;
 /// What one admitted open answers to.
 type Answer = Completer<Result<InvocationReceipt, ActionHostError>>;
 
-/// An app a window asked to open, waiting for the desktop.
+/// The launch a [`crate::TileSource`] reads as opening `app` on its record
+/// `record`: `{RECORD_LAUNCH}{app}:{record}` ([`record_launch`]).
+pub const RECORD_LAUNCH: &str = "record:";
+
+/// The launch that opens `app` on its record `record`.
+#[must_use]
+pub fn record_launch(app: &str, record: &str) -> String {
+    format!("{RECORD_LAUNCH}{app}:{record}")
+}
+
+/// The app and record a [`record_launch`] names, or `None` for a plain
+/// launch.
+#[must_use]
+pub fn launched_record(launch: &str) -> Option<(&str, &str)> {
+    launch
+        .strip_prefix(RECORD_LAUNCH)?
+        .split_once(':')
+        .filter(|(app, record)| !app.is_empty() && !record.is_empty())
+}
+
+/// An app a window asked to open, on one of its records or on its own,
+/// waiting for the desktop.
 struct Opening {
     app: String,
+    record: Option<String>,
     invocation: InvocationId,
     answer: Answer,
 }
@@ -97,8 +123,13 @@ impl DesktopSession {
         &self,
         caller: &Caller,
         request: &'a InvokeRequest,
-    ) -> Result<&'a str, ActionHostError> {
+    ) -> Result<(&'a str, Option<&'a str>), ActionHostError> {
         let address = &request.target.address;
+        if let Some((room, app)) = application_provider(&request.target.provider) {
+            return self
+                .record_to_open(caller, request, room)
+                .map(|record| (app, record));
+        }
         let app = address
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
@@ -119,7 +150,30 @@ impl DesktopSession {
                 reason: "Opening something in another app isn't available here yet".into(),
             });
         }
-        Ok(app)
+        Ok((app, None))
+    }
+
+    /// The record an open of a resource in `room` names, `None` for the
+    /// app's own.
+    ///
+    /// # Errors
+    /// Another action than opening, another workspace, or a caller from
+    /// outside it.
+    fn record_to_open<'a>(
+        &self,
+        caller: &Caller,
+        request: &'a InvokeRequest,
+        room: &str,
+    ) -> Result<Option<&'a str>, ActionHostError> {
+        if request.target.address.action != APPLICATION_OPEN_ACTION || caller.room().is_none() {
+            return Err(ActionHostError::UnknownAction);
+        }
+        if room != self.room {
+            return Err(ActionHostError::Unavailable {
+                reason: "That workspace isn't open here".into(),
+            });
+        }
+        Ok(application_provider_record(&request.target.provider))
     }
 }
 
@@ -149,13 +203,14 @@ impl ActionHost for DesktopSession {
             }
             return self.activity.invoke(caller, request);
         }
-        let app = match self.app_to_open(caller, &request) {
-            Ok(app) => app.to_owned(),
+        let (app, record) = match self.app_to_open(caller, &request) {
+            Ok((app, record)) => (app.to_owned(), record.map(str::to_owned)),
             Err(error) => return Pending::ready(Err(error)),
         };
         let (answer, receipt) = pending();
         self.asked.lock_recover().push(Opening {
             app,
+            record,
             invocation: request.invocation,
             answer,
         });
@@ -192,7 +247,8 @@ impl Openings {
 
     /// Open every app the windows asked for since this was last taken, as
     /// launches of the desktop `handle` (navigation `generation`), each one
-    /// `may_open` admits. Whether anything was asked, so the host lays out
+    /// `may_open` admits; one asked on a record opens on it
+    /// ([`record_launch`]). Whether anything was asked, so the host lays out
     /// again.
     pub fn open(
         &self,
@@ -204,11 +260,16 @@ impl Openings {
         let any = !asked.is_empty();
         for Opening {
             app,
+            record,
             invocation,
             answer,
         } in asked
         {
             let opened = may_open(&app).and_then(|()| {
+                let app = match record {
+                    Some(record) => record_launch(&app, &record),
+                    None => app,
+                };
                 handle
                     .dispatch(
                         &Command::Launch {
