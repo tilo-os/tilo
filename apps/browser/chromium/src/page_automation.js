@@ -13,11 +13,11 @@ globalThis.__tiloPage ||= (() => {
   const MAX_LINES = 1200, MAX_CHARS = 100000, MAX_VISITED = 40000;
   const MAX_TEXT = 200, MAX_NAME = 120, MAX_VALUE = 200, MAX_OPTIONS = 30;
   const INPUT_ROLES = {button: 'button', submit: 'button', reset: 'button', image: 'button',
-    file: 'button', color: 'button', checkbox: 'checkbox', radio: 'radio', range: 'slider',
+    file: 'file', color: 'button', checkbox: 'checkbox', radio: 'radio', range: 'slider',
     number: 'spinbutton', search: 'searchbox'};
   const INTERACTIVE = new Set(['link', 'button', 'checkbox', 'radio', 'switch', 'textbox',
     'searchbox', 'combobox', 'listbox', 'option', 'slider', 'spinbutton', 'tab', 'menuitem',
-    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable']);
+    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable', 'file']);
   const CONTAINERS = new Set(['navigation', 'main', 'banner', 'contentinfo', 'complementary',
     'form', 'dialog', 'alertdialog', 'region', 'search', 'list', 'listitem', 'table', 'row',
     'cell', 'columnheader', 'rowheader', 'menu', 'menubar', 'tablist', 'tabpanel', 'tree',
@@ -169,6 +169,16 @@ globalThis.__tiloPage ||= (() => {
     }
     if (tag === 'select' && kind === 'combobox' && element.selectedOptions[0])
       out.push(`value=${quote(clean(element.selectedOptions[0].label, MAX_VALUE))}`);
+    if (kind === 'file') {
+      // A file input's own rule is what an upload has to satisfy, so the
+      // outline states it and what it holds now.
+      out.push('type=file');
+      if (element.multiple) out.push('multiple');
+      const accept = clean(element.getAttribute('accept'), MAX_VALUE);
+      if (accept) out.push(`accept=${quote(accept)}`);
+      const chosen = [...(element.files || [])].map(file => clean(file.name, MAX_NAME));
+      out.push(chosen.length ? `files=${quote(chosen.join(', '))}` : 'files=none');
+    }
     if (kind === 'checkbox' || kind === 'radio' || kind === 'switch' || kind === 'menuitemcheckbox') out.push(checked(element));
     if (element.getAttribute('aria-pressed') === 'true') out.push('pressed');
     const expanded = element.getAttribute('aria-expanded');
@@ -499,6 +509,8 @@ globalThis.__tiloPage ||= (() => {
     if (secret(element) && !allowSecret)
       throw failure('secret_field', `${ref} is a password or card field; fill it with fill_secret, which keeps the text out of logs and history`);
     const field = tag === 'textarea' || (tag === 'input' && !NOT_TEXT.has(kind));
+    if (kind === 'file')
+      throw failure('not_editable', `${ref} (${summary(element)}) takes files, not text; choose them with fill-page-files`);
     if (!field && !element.isContentEditable)
       throw failure('not_editable', `${ref} (${summary(element)}) is not a text field; click or select it instead`);
     if (element.disabled || element.readOnly) throw failure('not_editable', `${ref} is disabled or read-only`);
@@ -579,6 +591,65 @@ globalThis.__tiloPage ||= (() => {
       throw failure('not_focusable', `${ref} (${summary(element)}) cannot take keyboard focus`);
     return {ok: true, message: `Focused ${summary(element)}`};
   }
+
+  // A file input's files are not writable from script: the browser process
+  // sets them through the DevTools DOM domain, which is what makes the page
+  // see a real picker's result. This side is the element's own rule: the ref
+  // must name a file input, and each chosen file must pass its `accept`. The
+  // host then answers the page with the same trusted input and change events
+  // a person's picker dispatches.
+  const FILE_EXTENSIONS = {pdf: ['application/pdf'], jpg: ['image/jpeg'],
+    jpeg: ['image/jpeg'], png: ['image/png'], gif: ['image/gif'], webp: ['image/webp'],
+    txt: ['text/plain'], csv: ['text/csv'], json: ['application/json'],
+    doc: ['application/msword'], docx: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    odt: ['application/vnd.oasis.opendocument.text'], rtf: ['application/rtf']};
+  const MIME_EXTENSIONS = {pdf: 'pdf', jpeg: 'jpg', png: 'png', gif: 'gif', webp: 'webp',
+    plain: 'txt', csv: 'csv', json: 'json'};
+  function baseName(path) {
+    const name = String(path).split(/[\\/]/).pop() || '';
+    return name;
+  }
+  function mimeOf(name) {
+    const dot = name.lastIndexOf('.');
+    if (dot < 1 || dot === name.length - 1) return '';
+    const extension = name.slice(dot + 1).toLowerCase();
+    return (FILE_EXTENSIONS[extension] || [''])[0] || 'application/octet-stream';
+  }
+  function acceptsFile(accept, name) {
+    const rules = String(accept || '').split(',').map(rule => rule.trim().toLowerCase()).filter(Boolean);
+    if (!rules.length) return true;
+    const lower = name.toLowerCase(), dot = lower.lastIndexOf('.');
+    const extension = dot < 1 ? '' : lower.slice(dot + 1);
+    const mime = mimeOf(lower);
+    return rules.some(rule => rule === '*/*' ||
+      (rule.startsWith('.') ? (MIME_EXTENSIONS[mime.split('/').pop()] || extension) === rule.slice(1)
+        : rule.endsWith('/*') ? mime.startsWith(rule.slice(0, -1)) : mime === rule));
+  }
+  function fileField(ref) {
+    const element = resolve(ref);
+    enabled(element, ref);
+    if (element.localName !== 'input' || type(element) !== 'file')
+      throw failure('not_file_input', `${ref} (${summary(element)}) is not a file input; click it to open the page's own chooser`);
+    return element;
+  }
+  // Validate one fill and answer what the outline should now show. The host
+  // performs it and re-reads the line from the page.
+  function fillFilesTarget(ref, paths) {
+    const element = fileField(ref);
+    if (!Array.isArray(paths) || !paths.length)
+      throw failure('invalid_request', 'A file input needs at least one path');
+    if (!element.multiple && paths.length > 1)
+      throw failure('multiple_files', `${ref} takes one file; it was given ${paths.length}`);
+    const accept = element.getAttribute('accept') || '';
+    for (const path of paths) {
+      const name = baseName(path);
+      if (!name) throw failure('invalid_request', `${path} names no file`);
+      if (!acceptsFile(accept, name))
+        throw failure('not_accepted', `${ref} accepts ${quote(clean(accept, MAX_VALUE))}, not ${quote(name)}`);
+    }
+    return {ok: true, message: `Choosing ${paths.map(baseName).join(', ')} for ${summary(element)}`};
+  }
+  function fillFilesElement(ref) { return resolve(ref); }
 
   // Private text-input leases share this isolated world, not the page's agent
   // log. Preparation never focuses a field or exports its contents. A final
@@ -984,7 +1055,7 @@ globalThis.__tiloPage ||= (() => {
   }
 
   return {
-    nativeTextInputElement, configureNativeTextEditor, fence,
+    nativeTextInputElement, configureNativeTextEditor, fillFilesElement, fence,
     run(command) {
       try {
         if (!doc) doc = command.doc;
@@ -997,6 +1068,7 @@ globalThis.__tiloPage ||= (() => {
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
           case 'fill': arm('script'); return fill(command.element, command.text, command.secret);
+          case 'fill_files': arm('script'); return fillFilesTarget(command.element, command.paths);
           case 'select': arm('script'); return select(command.element, command.values);
           case 'submit': arm('script'); return submit(command.element, command.cross_origin);
           case 'focus': {

@@ -386,6 +386,21 @@ pub enum BrowserEffect {
         #[param("Option values or visible labels to choose")]
         values: Vec<String>,
     },
+    /// Choose files for a page upload
+    ///
+    /// Sets what an `<input type=file>` holds, as a person's own file
+    /// picker would, and the page's `input` and `change` handlers run. Each
+    /// path is absolute and must be a regular file this Browser may read:
+    /// a relative path, a folder or an unreadable file is refused. It also
+    /// answers a file chooser a click opened, so a page that asks for a file
+    /// can be finished without a native picker.
+    #[effect(row, job, returns, programmatic, untrusted)]
+    FillPageFiles {
+        #[param("Element ref from the page outline, such as d1e5")]
+        element: String,
+        #[param("Absolute paths of the files to choose, in order")]
+        paths: Vec<String>,
+    },
     /// Press key on page
     #[effect(row, job, returns, audience = "agents", untrusted)]
     PressPage {
@@ -603,6 +618,9 @@ impl BrowserEffect {
                 secret: true,
             }),
             Self::SelectPage { element, values } => page(PageRequest::Select { element, values }),
+            Self::FillPageFiles { element, paths } => {
+                page(PageRequest::FillFiles { element, paths })
+            }
             Self::PressPage { key, element } => page(PageRequest::Press {
                 element: element.filter(|element| !element.is_empty()),
                 key: PageKey::parse(&key).unwrap_or_else(|| PageKey {
