@@ -705,6 +705,7 @@ mod tests {
         };
         let person = Person {
             id: "ada".into(),
+            user: None,
             label: "Ada".into(),
             rgb: (1, 2, 3),
             agent: false,

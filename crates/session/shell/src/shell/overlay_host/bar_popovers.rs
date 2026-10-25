@@ -336,6 +336,10 @@ impl ShellOverlayHost {
             // accounts yet; none hides the section rather than showing a
             // service the person cannot link from here.
             linked: Vec::new(),
+            // The native bar shows no account key yet, and this is your own
+            // card, not someone else's.
+            key: None,
+            other: None,
 
             // The name is the identity's own; no rename of it is reachable
             // from the shell, so the card shows it and Settings' identities
@@ -528,7 +532,11 @@ impl ShellOverlayHost {
                 self.set_control_hints_enabled(*on);
                 return;
             }
-            ProfileChoice::Link(_) | ProfileChoice::Unlink(_) => {
+            // Someone else's card is not opened from the native bar yet.
+            ProfileChoice::Link(_)
+            | ProfileChoice::Unlink(_)
+            | ProfileChoice::Follow(_)
+            | ProfileChoice::Message(_) => {
                 return;
             }
         };

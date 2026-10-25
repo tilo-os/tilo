@@ -61,8 +61,9 @@ export function liveMembers(layer, seen) {
  * @param options.layer        the room's live layer, or undefined
  * @param options.peer         the certified peer: `here(window, actions)`, `participant`
  * @param options.presenceUrl  the room service's spectator count, if any
+ * @param options.photos       follows people's profile pictures (`profile-photos.mjs` `followPhotos`), if any
  */
-export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
+export function createHere({runtime, mountId, active, layer, peer, presenceUrl, photos = null,
   fetch = globalThis.fetch, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout,
   visible = () => globalThis.document?.visibilityState !== 'hidden', onError = () => {}}) {
   const seen = new Map(); // publisher -> {participant, focus, place, wave, layout, following}
@@ -127,7 +128,10 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
     try {
       const answer = await peer.here(state.window, state.actions);
       lines = Array.isArray(answer) ? answer : [];
-      if (!stopped && active()) runtime.desktop_set_here(mountId(), JSON.stringify(answer));
+      if (!stopped && active()) {
+        runtime.desktop_set_here(mountId(), JSON.stringify(answer));
+        photos?.seen(lines);
+      }
     } catch (error) {
       // Not posted: try again on the next tick, not at the next refresh.
       postedKey = undefined;

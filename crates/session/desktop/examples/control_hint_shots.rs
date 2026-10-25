@@ -71,6 +71,7 @@ impl DesktopChromeSource for Room {
             own: Some(OwnChip {
                 name: "Quinn Davis".into(),
                 rgb: COLOUR,
+                identity: String::new(),
             }),
             ..DesktopChromeSnapshot::default()
         }

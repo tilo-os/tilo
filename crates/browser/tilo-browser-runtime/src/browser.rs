@@ -3405,6 +3405,54 @@ pub fn desktop_here_people(id: u64) -> Result<Option<String>, JsValue> {
     })
 }
 
+/// The picture `user` (root key, hex) chose for their profile, decoded by
+/// the page into `width` × `height` straight-alpha RGBA pixels; empty
+/// pixels take it away. Every avatar of theirs wears it from the next frame.
+///
+/// # Errors
+///
+/// Rejects pixels that do not fill the size, a picture larger than a
+/// profile's, or a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_person_photo(
+    id: u64,
+    user: &str,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+) -> Result<(), JsValue> {
+    /// The largest side a profile picture is drawn from.
+    const MAX_SIDE: u32 = 256;
+    let image = if rgba.is_empty() {
+        None
+    } else {
+        let expected = usize::try_from(width.saturating_mul(height).saturating_mul(4)).ok();
+        if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+            return Err(error("a profile picture is at most 256 pixels square"));
+        }
+        if expected != Some(rgba.len()) {
+            return Err(error("the pixels do not fill the picture"));
+        }
+        Some(ui::peniko::ImageData {
+            data: ui::peniko::Blob::new(std::sync::Arc::new(rgba)),
+            format: ui::peniko::ImageFormat::Rgba8,
+            alpha_type: ui::peniko::ImageAlphaType::Alpha,
+            width,
+            height,
+        })
+    };
+    ui::people_photos::set(user, image);
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        desktop.here.borrow_mut().photos_changed();
+        m.apply_here();
+        Ok(())
+    })
+}
+
 /// The host's answer to `/here` (`peer.here`): each person's line.
 ///
 /// # Errors

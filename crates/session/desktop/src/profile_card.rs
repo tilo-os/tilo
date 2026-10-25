@@ -133,6 +133,49 @@ pub struct ProfileModel {
     /// Whether the desktop's control hints show; `None` where the host has
     /// none to offer.
     pub control_hints: Option<bool>,
+    /// The person's root key (hex): the id that stays theirs on every
+    /// device and never changes, shown short with Copy.
+    pub key: Option<String>,
+    /// The card is about someone else: what they say they are doing and
+    /// what this person can do with them. `None` for the person's own card.
+    pub other: Option<OtherPerson>,
+}
+
+/// Someone else, as their card shows them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OtherPerson {
+    /// Their roster id (the device their presence comes from).
+    pub id: String,
+    /// What they are doing: their own words, or a line software wrote,
+    /// which the card marks as automatic.
+    pub status: Option<crate::collaborators::RosterStatus>,
+    /// Where they are ("In Chat"), when it adds to the status.
+    pub place: Option<String>,
+    /// This person follows their view now.
+    pub following: bool,
+    /// The host can follow them (bring forward what they are in).
+    pub can_follow: bool,
+    /// The host can open a direct conversation with them in Chat: their
+    /// root key is known and Chat holds person-only conversations here.
+    pub can_message: bool,
+}
+
+/// The host actions about the person's picture, which the card offers
+/// beside their avatar rather than in its list of identity actions.
+pub const SET_PHOTO: &str = "set-photo";
+pub const RESET_PHOTO: &str = "reset-photo";
+
+/// A root key shown short: its first eight and last four characters.
+#[must_use]
+pub fn short_key(key: &str) -> String {
+    let key = key.trim();
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 14 {
+        return key.to_owned();
+    }
+    let head: String = chars.iter().take(8).collect();
+    let tail: String = chars.iter().skip(chars.len().saturating_sub(4)).collect();
+    format!("{head}…{tail}")
 }
 
 /// Whether the people here see the person.
@@ -176,13 +219,21 @@ pub enum ProfileChoice {
     Visibility(ui::PresenceVisibility),
     /// Show the desktop's control hints, or not.
     ControlHints(bool),
+    /// Follow this person (roster id), or stop following them.
+    Follow(String),
+    /// Open a direct conversation in Chat with this person (root key, hex):
+    /// person to person, never through a bridge.
+    Message(String),
 }
 
 impl ProfileChoice {
     /// Whether the card closes on it: a linked account's choice keeps it
     /// open to show what came of it.
     fn closes(&self) -> bool {
-        matches!(self, Self::Rename(_) | Self::Action(_))
+        matches!(
+            self,
+            Self::Rename(_) | Self::Action(_) | Self::Follow(_) | Self::Message(_)
+        )
         // The rest are settings the card goes on showing.
     }
 }
@@ -323,7 +374,161 @@ impl ProfileCard {
             })
     }
 
-    fn body(&self, model: &ProfileModel) -> Column {
+    /// The person's stable id, short, with a button that copies it whole.
+    fn key_row(key: &str) -> Box<dyn Widget> {
+        let copy = key.to_owned();
+        Box::new(
+            Row::new()
+                .no_wrap()
+                .with_align_items(taffy::AlignItems::Center)
+                .with_justify(taffy::JustifyContent::SpaceBetween)
+                .push(Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_rhythm(ui::tokens::Rhythm::Tight)
+                        .push(Box::new(
+                            Text::new(&t("profile-id"))
+                                .with_role(TextRole::Caption)
+                                .dimmed(),
+                        ))
+                        .push(Box::new(
+                            Text::new(&short_key(key))
+                                .with_id("profile-key")
+                                .with_role(TextRole::Code),
+                        )),
+                ))
+                .push(Box::new(
+                    Button::icon_only("profile-copy-key", Icon::Copy, &t("profile-copy-id"))
+                        .role(ButtonRole::Plain)
+                        .on_click(move || ui::text_selection::clipboard_copy(&copy)),
+                )),
+        )
+    }
+
+    /// What someone says they are doing: their own words plainly, a line
+    /// software wrote marked as automatic.
+    fn status_row(status: &crate::collaborators::RosterStatus) -> Box<dyn Widget> {
+        let written = status.source == crate::collaborators::LineSource::Written;
+        let row = ListRow::new("profile-other-status", status.text.clone()).two_line_title();
+        Box::new(if written {
+            row.secondary(t("profile-status-own-words"))
+        } else {
+            row.mark(Icon::Sparkles)
+                .secondary(t("profile-status-automatic"))
+        })
+    }
+
+    /// Someone else's card: who they are, what they are doing, and what
+    /// this person can do with them.
+    fn other_body(&self, model: &ProfileModel, other: &OtherPerson) -> Column {
+        let mut avatar = Avatar::person(&model.name, &model.identity).size(AvatarSize::Large);
+        if let Some(colour) = model.colour {
+            avatar = avatar.with_presence(colour);
+        }
+        let mut who = Column::new()
+            .with_no_padding()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .push(Box::new(
+                Text::new(&model.name)
+                    .with_id("profile-other-name")
+                    .with_role(TextRole::Subheading)
+                    .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
+            ));
+        if let Some(place) = &other.place {
+            who = who.push(Box::new(
+                Text::new(place).with_role(TextRole::Caption).dimmed(),
+            ));
+        }
+        let header = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center)
+            .push(Box::new(avatar))
+            .push(Box::new(who));
+        let mut body = Column::new()
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
+            .push(Box::new(CardFocus::new()))
+            .push(Box::new(header));
+        if let Some(status) = &other.status {
+            body = body.push(Self::status_row(status));
+        }
+        if let Some(key) = &model.key {
+            body = body
+                .push(Box::new(Divider::horizontal()))
+                .push(Self::key_row(key));
+        }
+        let mut actions = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center);
+        let mut any = false;
+        if other.can_message
+            && let Some(key) = model.key.clone()
+        {
+            let chosen = Rc::clone(&self.chosen);
+            actions = actions.push(Box::new(
+                Button::new("profile-message", &t("profile-message"))
+                    .with_icon(Icon::MessageCircle)
+                    .role(ButtonRole::Primary)
+                    .on_click(move || {
+                        *chosen.borrow_mut() = Some(ProfileChoice::Message(key.clone()));
+                    }),
+            ));
+            any = true;
+        }
+        if other.can_follow {
+            let chosen = Rc::clone(&self.chosen);
+            let id = other.id.clone();
+            let label = if other.following {
+                t("profile-stop-following")
+            } else {
+                t("profile-follow")
+            };
+            actions = actions.push(Box::new(
+                Button::new("profile-follow", &label)
+                    .with_icon(Icon::Eye)
+                    .on_click(move || {
+                        *chosen.borrow_mut() = Some(ProfileChoice::Follow(id.clone()));
+                    }),
+            ));
+            any = true;
+        }
+        if any {
+            body = body
+                .push(Box::new(Divider::horizontal()))
+                .push(Box::new(actions));
+        }
+        body
+    }
+
+    /// Change the picture, and take it away again, where the host offers
+    /// it: beside the avatar, not among the identity actions.
+    fn photo_buttons(&self, model: &ProfileModel) -> Option<Box<dyn Widget>> {
+        let offered = |id: &str| model.actions.iter().find(|action| action.id == id);
+        let set = offered(SET_PHOTO)?;
+        let mut row = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center);
+        for (action, label, icon) in [
+            (Some(set), t("profile-photo-change"), Icon::Camera),
+            (offered(RESET_PHOTO), t("profile-photo-remove"), Icon::X),
+        ] {
+            let Some(action) = action else { continue };
+            let chosen = Rc::clone(&self.chosen);
+            let id = action.id.clone();
+            row = row.push(Box::new(
+                Button::new(&format!("profile-action-{id}"), &label)
+                    .with_icon(icon)
+                    .role(ButtonRole::Plain)
+                    .on_click(move || {
+                        *chosen.borrow_mut() = Some(ProfileChoice::Action(id.clone()));
+                    }),
+            ));
+        }
+        Some(Box::new(row))
+    }
+
+    /// Your avatar, your name (or a field for it) and the hint beneath.
+    fn own_header(&self, model: &ProfileModel) -> Row {
         let mut avatar = Avatar::person(&model.name, &model.identity).size(AvatarSize::Large);
         if let Some(colour) = model.colour {
             avatar = avatar.with_presence(colour);
@@ -364,11 +569,18 @@ impl ProfileCard {
             .with_rhythm(ui::tokens::Rhythm::Tight)
             .push(name)
             .push(below);
-        let header = Row::new()
+        Row::new()
             .no_wrap()
             .with_align_items(taffy::AlignItems::Center)
             .push(Box::new(avatar))
-            .push(Box::new(who));
+            .push(Box::new(who))
+    }
+
+    fn body(&self, model: &ProfileModel) -> Column {
+        if let Some(other) = &model.other {
+            return self.other_body(model, other);
+        }
+        let header = self.own_header(model);
         let mut body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
@@ -376,6 +588,12 @@ impl ProfileCard {
             // itself, not in its name field.
             .push(Box::new(CardFocus::new()))
             .push(Box::new(header));
+        if let Some(photo) = self.photo_buttons(model) {
+            body = body.push(photo);
+        }
+        if let Some(key) = &model.key {
+            body = body.push(Self::key_row(key));
+        }
         if model.offers_presence {
             body = self.presence_sections(body, model);
         } else if model.sharing.is_some() {
@@ -390,6 +608,8 @@ impl ProfileCard {
                 .actions
                 .iter()
                 .filter(|action| action.group == group)
+                // The picture's are offered beside the avatar.
+                .filter(|action| action.id != SET_PHOTO && action.id != RESET_PHOTO)
                 // One clear way to keep who you are: the host's first
                 // (it lists them best first). The rest stay in search, so
                 // three overlapping asks never compete here.
@@ -737,7 +957,11 @@ impl ProfileCard {
         .side(PopoverSide::Below)
         .aligned(ui::widget::PanelAlign::Trailing)
         .confined_to_viewport()
-        .with_label(t("profile-card"));
+        .with_label(if model.other.is_some() {
+            t_args("profile-card-of", &[("name", model.name.clone().into())])
+        } else {
+            t("profile-card")
+        });
         self.popover.set_viewport(viewport);
         self.popover.set_anchor(anchor);
         self.popover.set_open(true);
@@ -1330,5 +1554,92 @@ mod tests {
         let mut card = opened();
         card.toggle(&model(), Rect::ZERO, Rect::new(0.0, 0.0, 800.0, 600.0));
         assert!(!card.is_open());
+    }
+
+    const ADA_KEY: &str = "a6d40c19e7b25f83c1d9e0a4b7f26c58d3e1a9b0c7f4e2d6a8b5c3e1f0d9a7c2";
+
+    fn ada(can_message: bool, status: crate::collaborators::LineSource) -> ProfileModel {
+        ProfileModel {
+            name: "Ada".into(),
+            identity: "ada-device".into(),
+            key: Some(ADA_KEY.into()),
+            other: Some(OtherPerson {
+                id: "ada-device".into(),
+                status: Some(crate::collaborators::RosterStatus {
+                    text: "Reviewing the checklist".into(),
+                    source: status,
+                }),
+                place: None,
+                following: false,
+                can_follow: true,
+                can_message,
+            }),
+            ..ProfileModel::default()
+        }
+    }
+
+    fn framed_model(model: &ProfileModel) -> ui::headless::Framed<ProfileCard> {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            model,
+            Rect::new(1000.0, 2.0, 1020.0, 22.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
+    }
+
+    #[test]
+    fn someone_elses_card_says_who_they_are_and_offers_writing_and_following() {
+        let mut frame = framed_model(&ada(true, crate::collaborators::LineSource::Generated));
+        let said = says(&mut frame);
+        assert!(said.contains("Ada’s profile"), "{said}");
+        assert!(said.contains("a6d40c19…a7c2"), "the id, short: {said}");
+        assert!(said.contains("Written automatically"), "{said}");
+        // Nothing of the person's own card: no name field, no identity.
+        assert!(!said.contains("Your name"), "{said}");
+        click(&mut frame, "profile-message");
+        assert_eq!(
+            frame.take_choice(),
+            Some(ProfileChoice::Message(ADA_KEY.into()))
+        );
+
+        let mut frame = framed_model(&ada(false, crate::collaborators::LineSource::Written));
+        let said = says(&mut frame);
+        assert!(said.contains("In their own words"), "{said}");
+        assert!(
+            !said.contains("\"Message\""),
+            "no conversation to open: {said}"
+        );
+        click(&mut frame, "profile-follow");
+        assert_eq!(
+            frame.take_choice(),
+            Some(ProfileChoice::Follow("ada-device".into()))
+        );
+    }
+
+    #[test]
+    fn your_own_card_shows_your_id_and_your_pictures_buttons() {
+        let mut own = model();
+        own.key = Some(ADA_KEY.into());
+        for id in [SET_PHOTO, RESET_PHOTO] {
+            own.actions.push(ProfileAction {
+                id: id.into(),
+                title: id.into(),
+                group: ProfileGroup::Identity,
+                icon: Icon::Fingerprint,
+            });
+        }
+        let mut frame = framed_model(&own);
+        let said = says(&mut frame);
+        assert!(said.contains("Change picture"), "{said}");
+        assert!(said.contains("Remove picture"), "{said}");
+        assert!(said.contains("Copy ID"), "{said}");
+        click(&mut frame, "profile-action-set-photo");
+        assert_eq!(
+            frame.take_choice(),
+            Some(ProfileChoice::Action(SET_PHOTO.into()))
+        );
+        assert_eq!(short_key("abc"), "abc");
     }
 }

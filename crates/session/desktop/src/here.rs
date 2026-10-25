@@ -103,6 +103,9 @@ pub struct HostLine {
     pub window: Option<String>,
     #[serde(default)]
     pub updated_ms: u64,
+    /// When the person last changed their kept profile (name, picture).
+    #[serde(default)]
+    pub profile_ms: u64,
 }
 
 /// A line of text and who wrote it: the person, a model, or the host
@@ -126,6 +129,9 @@ impl Line {
 pub struct Person {
     /// Their live publisher (the device key for a person), hex.
     pub id: String,
+    /// The person (user root, hex) as the host authenticated them, once
+    /// its lines say: the id that stays theirs on every device.
+    pub user: Option<String>,
     pub label: String,
     pub rgb: (u8, u8, u8),
     pub agent: bool,
@@ -219,6 +225,11 @@ impl HereState {
         }
         self.own = own;
         self.members = members;
+        if let Some(own) = &self.own
+            && let Some(user) = own.user.as_deref()
+        {
+            ui::people_photos::alias(&own.publisher, user);
+        }
         let members = self.members.clone().unwrap_or_default();
         self.hear_waves(&members);
         self.revision = self.revision.wrapping_add(1);
@@ -231,8 +242,19 @@ impl HereState {
             return false;
         }
         self.lines = lines;
+        // Each device wears its person's picture.
+        for line in &self.lines {
+            if !line.user.is_empty() {
+                ui::people_photos::alias(&line.device, &line.user);
+            }
+        }
         self.revision = self.revision.wrapping_add(1);
         true
+    }
+
+    /// Someone's picture changed: what shows them is drawn again.
+    pub fn photos_changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Who joined since the last call, by the name everyone here sees: a
@@ -395,7 +417,7 @@ impl HereState {
     }
 
     /// This page's person (user root, hex), when the page named it.
-    fn own_user(&self) -> Option<&str> {
+    pub fn own_user(&self) -> Option<&str> {
         self.own
             .as_ref()
             .and_then(|own| own.user.as_deref())
@@ -602,6 +624,7 @@ impl HereState {
             };
             people.push(Person {
                 id: member.publisher.clone(),
+                user: self.user_of(&member.publisher).map(str::to_owned),
                 label: [
                     member.label.as_str(),
                     line_of.map_or("", |l| l.label.as_str()),
@@ -636,6 +659,7 @@ impl HereState {
             let status = host_line(&l.status, l.generated);
             people.push(Person {
                 id: l.device.clone(),
+                user: Some(l.user.clone()).filter(|user| !user.is_empty()),
                 label: Some(l.label.trim())
                     .filter(|label| !label.is_empty())
                     .map_or_else(guest_label, str::to_owned),
@@ -1437,6 +1461,7 @@ mod tests {
             recent: "Edited the text of Welcome note.".into(),
             generated,
             updated_ms: 1,
+            profile_ms: 0,
             window: None,
         }
     }
@@ -1671,6 +1696,7 @@ mod tests {
         tree.active = workspace;
         let people = vec![Person {
             id: "bot".into(),
+            user: None,
             label: "Scribe".into(),
             rgb: (1, 2, 3),
             agent: true,
