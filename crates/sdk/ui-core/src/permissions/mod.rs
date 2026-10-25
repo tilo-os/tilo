@@ -976,6 +976,14 @@ impl LivePermissions {
         self.0.borrow().answer(node, kind)
     }
 
+    /// Whether anyone besides the participant belongs to the room, its owner
+    /// or a member, here now or not: what the room holds is shared with them.
+    pub fn room_has_others(&self) -> bool {
+        let context = self.0.borrow();
+        let standing = context.standing();
+        standing.policy.has_others(&standing.person)
+    }
+
     /// The permissions in force now.
     pub fn current(&self) -> PermissionContext {
         self.0.borrow().clone()

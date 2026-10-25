@@ -562,6 +562,16 @@ impl DispatchCore {
         !self.past && self.may(&reaction_need())
     }
 
+    /// Whether the room this record is in has anyone besides this window's
+    /// participant, its owner or a member, here now or not: what it holds is
+    /// shared with them.
+    pub(crate) fn room_has_others(&self) -> bool {
+        self.permissions
+            .borrow()
+            .as_ref()
+            .is_some_and(ui_core::permissions::LivePermissions::room_has_others)
+    }
+
     /// React (or take a reaction back) at `path`, a [`Reactions`](tilo_resource::Reactions)
     /// field of the resource, as the person this window is for: the field
     /// edit `op` through the door, as [`Dispatcher::submit`] submits one,
@@ -1031,6 +1041,12 @@ impl<R: Resource> Dispatcher<R> {
     /// Whether the participant may, as of now, change the room's settings.
     pub fn may_govern(&self) -> bool {
         self.core.may_govern()
+    }
+
+    /// Whether the record is shared: someone else belongs to its room, or
+    /// is in it with `people` now. Where it is, reactions are offered.
+    pub fn is_shared(&self, people: &super::People) -> bool {
+        self.core.room_has_others() || people.others_here()
     }
 
     /// Whether the participant may apply `action`
