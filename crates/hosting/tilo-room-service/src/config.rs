@@ -63,6 +63,9 @@ pub struct PersistentConfig {
     /// (`TILO_ROOMS_CHAT_CHANNELS`); unset, `general`, since a chat without a
     /// channel has nowhere for a visitor's first message to go.
     pub chat_channels: Vec<String>,
+    /// The channel its members report problems to, kept in its Chat on
+    /// every start (`TILO_ROOMS_FEEDBACK_CHANNEL`); unset, none.
+    pub feedback_channel: Option<String>,
     /// The strips, by name, the room's shared desktop has
     /// (`TILO_ROOMS_STRIPS`); unset, none beyond what people make.
     pub strips: Vec<String>,
@@ -487,6 +490,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         shown_name: shown_name(var)?,
         description: description(var)?,
         chat_channels: chat_channels(var)?,
+        feedback_channel: feedback_channel(var)?,
         strips: strips(var)?,
         trusted_proxies: trusted_proxies(var)?,
         country_header: var("TILO_ROOMS_COUNTRY_HEADER")
@@ -749,6 +753,25 @@ fn author_apps(var: &impl Fn(&str) -> Option<String>, seed_apps: &[String]) -> R
         );
     }
     Ok(apps)
+}
+
+/// `TILO_ROOMS_FEEDBACK_CHANNEL`: one channel name, as in
+/// `TILO_ROOMS_CHAT_CHANNELS`.
+fn feedback_channel(var: &impl Fn(&str) -> Option<String>) -> Result<Option<String>> {
+    let Some(name) = var("TILO_ROOMS_FEEDBACK_CHANNEL")
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+    else {
+        return Ok(None);
+    };
+    ensure!(
+        name.len() <= 64
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+        "TILO_ROOMS_FEEDBACK_CHANNEL names a channel of up to 64 lowercase letters, digits and -, not {name:?}"
+    );
+    Ok(Some(name))
 }
 
 /// `TILO_ROOMS_CHAT_CHANNELS`: comma-separated channel names, each
