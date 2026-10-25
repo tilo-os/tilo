@@ -349,6 +349,13 @@ pub trait Resource: Sized + 'static {
     /// shows when it checks work done on the resource.
     const HAS_FACTS: bool = false;
 
+    /// The record's own table, for a resource that is a record: what
+    /// generic code reads a field's value through without the record's type
+    /// (the framework, a window's [`Reactions`](crate::Reactions) with
+    /// [`record_reactions`](crate::reactions::record_reactions)).
+    /// `#[resource]` names the record's; none otherwise.
+    const RECORD_TABLE: Option<&'static crate::table::ModelTable> = None;
+
     /// What the resource holds as a compact summary of plain values, meant
     /// for checking it against a request: names, times, counts and text as
     /// a person would state them (a cut's shots with their source, in and
