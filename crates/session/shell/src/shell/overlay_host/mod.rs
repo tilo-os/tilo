@@ -804,7 +804,7 @@ pub struct ShellOverlayHost {
     /// The app the latched prompt asks for, so it opens over that app's
     /// window ([`Self::permission_prompt_surface`]).
     permission_prompt_app: Option<String>,
-    /// The portal's prompt queue, when the compositor serves portals.
+    /// The portal's capability queue, when the compositor serves portals.
     /// `drain_portal_prompts` empties it onto `chrome.pending_grants`.
     portal_prompts: Option<crate::portal::PromptQueueHandle>,
     /// Terminal tabs waiting for the person's answer about the device's own
