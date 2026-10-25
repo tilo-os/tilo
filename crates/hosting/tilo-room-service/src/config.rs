@@ -113,10 +113,16 @@ pub struct PersistentConfig {
     /// `0` keeps none): someone without an invitation leaves an email
     /// address, and whoever may invite sees it with the room's join requests.
     pub wait_list_max: usize,
-    /// Where someone on the wait list asks to be taken off it
+    /// Where someone on the wait list asks questions or to be taken off it
     /// (`TILO_ROOMS_CONTACT`: an email address or an `https://` page), said
-    /// under the door's email field; unset, the door names none.
+    /// under the door's email field beside its own way off the list; unset,
+    /// the door names none.
     pub contact: Option<String>,
+    /// How the door mails the addresses on its wait list, when it does
+    /// (`TILO_ROOMS_MAIL_FROM` and `TILO_ROOMS_RESEND_KEY_FILE`): it then
+    /// lists an address once the link mailed there is opened, and members
+    /// have invitations mailed. Unset, the door sends no mail and says so.
+    pub mail: Option<MailConfig>,
     /// Days a member may be away (no session) before their membership ends
     /// (`TILO_ROOMS_INACTIVE_AFTER_DAYS`, 30 unless set); one who comes back
     /// later joins through the door again as the same person. Membership
@@ -514,6 +520,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         admission: admission(var)?,
         wait_list_max: wait_list_max(var)?,
         contact: contact(var)?,
+        mail: mail(var, web_entry.as_deref())?,
         inactive_after_days: inactive_after_days(var)?,
         attachments: AttachmentQuota {
             max_file: optional(var, "TILO_ROOMS_ATTACHMENT_MAX_MIB")?,
@@ -608,6 +615,71 @@ fn wait_list_max(var: &impl Fn(&str) -> Option<String>) -> Result<usize> {
         "TILO_ROOMS_WAIT_LIST_MAX must be 0-{MAX_WAIT_LIST}"
     );
     Ok(max)
+}
+
+/// How the door sends mail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MailConfig {
+    /// The sender, `Name <address>` or an address (`TILO_ROOMS_MAIL_FROM`).
+    pub from: String,
+    /// The file holding the Resend API key (`TILO_ROOMS_RESEND_KEY_FILE`),
+    /// read at start and never logged.
+    pub resend_key_file: PathBuf,
+    /// Where mail is posted (`TILO_ROOMS_RESEND_URL`): Resend's API unless
+    /// set, which only a test changes, to a loopback stand-in.
+    pub resend_url: String,
+}
+
+/// Resend's endpoint for sending one mail.
+const RESEND_URL: &str = "https://api.resend.com/emails";
+
+/// `TILO_ROOMS_MAIL_FROM` with `TILO_ROOMS_RESEND_KEY_FILE`, if set: both or
+/// neither, and only beside the door's page (`TILO_ROOMS_WEB_ENTRY`), which
+/// the mailed links open.
+fn mail(
+    var: &impl Fn(&str) -> Option<String>,
+    web_entry: Option<&str>,
+) -> Result<Option<MailConfig>> {
+    let set = |name: &str| {
+        var(name)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    };
+    let (from, key) = match (
+        set("TILO_ROOMS_MAIL_FROM"),
+        set("TILO_ROOMS_RESEND_KEY_FILE"),
+    ) {
+        (None, None) => return Ok(None),
+        (Some(from), Some(key)) => (from, key),
+        _ => anyhow::bail!(
+            "TILO_ROOMS_MAIL_FROM and TILO_ROOMS_RESEND_KEY_FILE are set together, or neither"
+        ),
+    };
+    ensure!(
+        web_entry.is_some(),
+        "the door mails links to its page: mail needs TILO_ROOMS_WEB_ENTRY"
+    );
+    let address = from
+        .rsplit_once('<')
+        .map_or(from.as_str(), |(_, rest)| rest.trim_end_matches('>'));
+    ensure!(
+        tilo_relay_protocol::rooms::contact_address(address).is_ok()
+            && !from.chars().any(char::is_control),
+        "TILO_ROOMS_MAIL_FROM is an address or Name <address>"
+    );
+    let resend_url = set("TILO_ROOMS_RESEND_URL").unwrap_or_else(|| RESEND_URL.to_owned());
+    let loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+        .iter()
+        .any(|prefix| resend_url.starts_with(prefix));
+    ensure!(
+        resend_url.starts_with("https://") || loopback,
+        "TILO_ROOMS_RESEND_URL is an https URL"
+    );
+    Ok(Some(MailConfig {
+        from,
+        resend_key_file: PathBuf::from(key),
+        resend_url,
+    }))
 }
 
 /// `TILO_ROOMS_CONTACT`: an email address or an `https://` page, if set.
@@ -1141,6 +1213,66 @@ mod tests {
     }
 
     #[test]
+    fn the_door_mails_with_a_sender_and_a_key_file_beside_its_page() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+            ("TILO_ROOMS_WEB_ENTRY", "https://app.example/"),
+        ];
+        let from = ("TILO_ROOMS_MAIL_FROM", "Tilo <hello@tilo.example>");
+        let key = ("TILO_ROOMS_RESEND_KEY_FILE", "/run/secrets/resend-key");
+        let mail = config(&[base[0], base[1], base[2], from, key])
+            .unwrap()
+            .persistent
+            .unwrap()
+            .mail
+            .unwrap();
+        assert_eq!(
+            mail,
+            MailConfig {
+                from: from.1.into(),
+                resend_key_file: PathBuf::from(key.1),
+                resend_url: RESEND_URL.into(),
+            }
+        );
+        let local = config(&[
+            base[0],
+            base[1],
+            base[2],
+            ("TILO_ROOMS_MAIL_FROM", "hello@tilo.example"),
+            key,
+            ("TILO_ROOMS_RESEND_URL", "http://127.0.0.1:9/emails"),
+        ])
+        .unwrap();
+        assert_eq!(
+            local.persistent.unwrap().mail.unwrap().resend_url,
+            "http://127.0.0.1:9/emails"
+        );
+        for bad in [
+            vec![base[0], base[1], base[2], from],
+            vec![base[0], base[1], base[2], key],
+            vec![base[0], base[1], from, key],
+            vec![
+                base[0],
+                base[1],
+                base[2],
+                ("TILO_ROOMS_MAIL_FROM", "Tilo"),
+                key,
+            ],
+            vec![
+                base[0],
+                base[1],
+                base[2],
+                from,
+                key,
+                ("TILO_ROOMS_RESEND_URL", "http://mail.example/emails"),
+            ],
+        ] {
+            assert!(config(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn membership_ends_after_thirty_days_away_unless_the_host_says_otherwise() {
         let base = [
             ("TILO_ROOMS_PERSISTENT", "plaza"),
@@ -1185,7 +1317,8 @@ mod tests {
         .persistent
         .unwrap();
         assert_eq!(set.wait_list_max, 0);
-        assert_eq!(set.contact.as_deref(), Some("hello@example.org"));
+        assert_eq!(set.contact.as_deref(), Some("Hello@Example.org"));
+        assert_eq!(set.mail, None, "no mail unless told");
         let page = config(&[
             base[0],
             base[1],

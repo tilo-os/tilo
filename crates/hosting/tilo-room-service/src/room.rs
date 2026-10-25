@@ -371,9 +371,17 @@ impl Room {
                 | RoomEvent::SpectatorCertified { .. }
                 | RoomEvent::SpectateRefused { .. }
                 | RoomEvent::MemberRemoved { .. }
-                | RoomEvent::WaitListed { .. }
                 | RoomEvent::WaitListRefused { .. }),
             ) => bail!("a short-lived room relay reported {event:?}"),
+            // Not the event itself: one names an address, or carries a link.
+            Ok(
+                RoomEvent::WaitListed { .. }
+                | RoomEvent::Unlisted { .. }
+                | RoomEvent::WaitListFailed { .. }
+                | RoomEvent::Confirmed { .. }
+                | RoomEvent::Standing { .. }
+                | RoomEvent::InviteMail { .. },
+            ) => bail!("a short-lived room relay reported a wait-list event"),
         }
         Ok(())
     }
