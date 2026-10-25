@@ -2200,7 +2200,7 @@ impl WorkspaceTree {
     /// makes the room's own workspace, [`Self::join_room`]); fixtures that
     /// model a workspace already sharing a room with another device use
     /// this. Made through the stored form, as a file from before would be.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn stand_in_room(&mut self, id: WorkspaceId, room: RoomId) -> bool {
         if room.is_nil() || is_local_person_room(room) {
             return false;

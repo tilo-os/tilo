@@ -19,7 +19,7 @@ scheduled-idle-benchmark = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
-test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support"]
+test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support", "tilo-joined-room/test-support"]
 # Deterministic test seams for the `shots` renderer and the integration
 # tests (the `*_for_shots` setters, a candidate xwayland-satellite path).
 # The name outlived the removed `--mode hosted` loop whose input socket it
