@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use tilo_lock::MutexRecover as _;
 
 use tilo_app::feedback::PickedReport;
-use tilo_app::feedback::report::{CropCapture, ReportDraft, compose_crops};
+use tilo_app::feedback::report::{CropCapture, ReportDraft};
 use ui::kurbo::Rect;
 
 /// What the picked parts look like, wanted from the next presented frame.
@@ -67,7 +67,7 @@ pub(crate) fn service(
     let mut copies = Vec::new();
     for (rect, content) in &wanted.crops {
         let Some(copy) = copy_crop(device, &mut encoder, target, (*rect, content), dpr) else {
-            return finish(wanted.draft, None, wake.as_ref());
+            return finish(wanted.draft, Vec::new(), wake.as_ref());
         };
         copies.push(copy);
     }
@@ -97,10 +97,12 @@ pub(crate) fn service(
                 let Some(draft) = draft.lock_recover().take() else {
                     return;
                 };
-                let picture = (!failed.load(Ordering::Relaxed))
-                    .then(|| compose_crops(copies.iter().map(read).collect()).ok())
-                    .flatten();
-                finish(draft, picture, wake.as_ref());
+                let crops = if failed.load(Ordering::Relaxed) {
+                    Vec::new()
+                } else {
+                    copies.iter().map(read).collect()
+                };
+                finish(draft, crops, wake.as_ref());
             });
     }
 }
@@ -199,15 +201,8 @@ fn px(value: f64) -> u32 {
     value.round().clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
-fn finish(
-    draft: ReportDraft,
-    picture: Option<(
-        tilo_app::feedback::MaskedScreenshot,
-        Vec<tilo_app::feedback::report::CropRef>,
-    )>,
-    wake: &(dyn Fn() + Send + Sync),
-) {
-    READY.with_borrow_mut(|slot| *slot = Some(PickedReport { draft, picture }));
+fn finish(draft: ReportDraft, crops: Vec<CropCapture>, wake: &(dyn Fn() + Send + Sync)) {
+    READY.with_borrow_mut(|slot| *slot = Some(PickedReport { draft, crops }));
     wake();
 }
 

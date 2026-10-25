@@ -303,5 +303,10 @@ impl ModelPass {
     }
 }
 
-/// The pass in flight, shared by the services and the effects.
-pub(super) type Pass = Rc<RefCell<Option<ModelPass>>>;
+/// Lays a pass's answer over the review once it is in; whether it is.
+pub(super) type PassPoll = dyn FnMut(&mut Composer) -> bool;
+
+/// The pass in flight, shared by the services and the effects. The
+/// services poll it only through [`PassPoll`], so the review it runs stays
+/// with the composer's window.
+pub(super) type Pass = Rc<RefCell<Option<Box<PassPoll>>>>;

@@ -40,15 +40,22 @@ struct Presentation {
     review: LocalState<Option<report::ReviewShown>>,
     /// A note per picked part, by its place.
     notes: Rc<Vec<LocalState<String>>>,
+    /// What the report sheet shows of the composer: made with the composer
+    /// window, so the desktop's own code reaches it only through this.
+    report: Rc<ReportShown>,
 }
+
+/// The picks' titles and the review, as the report sheet shows them.
+type ReportShown = dyn Fn(&Composer) -> (Option<Vec<String>>, Option<report::ReviewShown>);
 
 impl Presentation {
     /// Show the controller's current review and subject: a review the
     /// controller discarded must not stay on screen as what would be sent.
     fn show(&self, composer: &Composer) {
         self.subject.set(composer.subject().cloned());
-        self.picks.set(report::titles(composer));
-        self.review.set(report::ReviewShown::of(composer));
+        let (picks, review) = (self.report)(composer);
+        self.picks.set(picks);
+        self.review.set(review);
         if let Some(review) = composer.preview() {
             let feedback = review.feedback();
             self.shown.set(feedback.text.clone());
@@ -176,7 +183,7 @@ impl FeedbackServices {
         let Some(running) = pass.as_mut() else {
             return;
         };
-        if running.poll(&mut controller) {
+        if running(&mut controller) {
             *pass = None;
             if let Ok(presentation) = self.presentation.try_borrow()
                 && let Some(presentation) = presentation.as_ref()
@@ -350,6 +357,9 @@ impl ResourceApp for FeedbackComposer {
                     .map(|_| LocalState::new(String::new()))
                     .collect(),
             ),
+            report: Rc::new(|composer: &Composer| {
+                (report::titles(composer), report::ReviewShown::of(composer))
+            }),
         };
         let screenshots = install_effects(cx, &presentation);
         let shown = presentation.clone();
@@ -528,7 +538,10 @@ fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> b
                 if reviewed.is_ok() {
                     let models = services.models.borrow().clone();
                     *services.pass.borrow_mut() =
-                        report::ModelPass::start(&models, &mut composer, words);
+                        report::ModelPass::start(&models, &mut composer, words).map(|mut pass| {
+                            Box::new(move |composer: &mut Composer| pass.poll(composer))
+                                as Box<report::PassPoll>
+                        });
                 }
                 reviewed
             }
@@ -960,7 +973,7 @@ mod tests {
                     names: vec!["Ada Lovelace".into()],
                     ..ReportDraft::default()
                 },
-                picture: None,
+                crops: Vec::new(),
             })
             .expect("report begins");
         let component = prepare(Some(services), "device", "guest", 42).expect("private composer");

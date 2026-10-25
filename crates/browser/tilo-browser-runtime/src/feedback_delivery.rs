@@ -436,6 +436,21 @@ pub(crate) fn register_feedback_startup(peer: u32, startup: Startup) -> Result<(
     Ok(())
 }
 
+/// Ask the owner of `peer`'s destination for a fresh admission, which
+/// registers a new startup; whether it was asked.
+pub(crate) fn readmit(peer: u32) -> bool {
+    let Some(connection) = CONNECTIONS.with_borrow(|connections| connections.get(&peer).cloned())
+    else {
+        return false;
+    };
+    let Ok(mut state) = connection.try_borrow_mut() else {
+        return false;
+    };
+    state.installed = false;
+    state.error = None;
+    state.request(None).is_ok()
+}
+
 /// Call `wake` once a startup is registered for `peer`.
 pub(crate) fn wake_on_startup(peer: u32, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
     WAKES.with_borrow_mut(|wakes| wakes.insert(peer, wake));

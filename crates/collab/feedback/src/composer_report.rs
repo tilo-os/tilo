@@ -6,14 +6,15 @@
 use tilo_feedback_review::{ReviewProposals, ReviewTraceRequest};
 
 use super::Composer;
-use crate::report::{CropRef, ReportDraft, ReportReview, attach_crops};
+use crate::report::{CropCapture, CropRef, ReportDraft, ReportReview, attach_crops, compose_crops};
 use crate::{Error, MaskedScreenshot, Submission};
 
-/// What the desktop picked, with each part's masked crop composed into one
-/// picture, in the order of the picks.
+/// What the desktop picked, with each part's masked crop in the order of
+/// the picks. The crops become the report's one picture when it is first
+/// reviewed, in the composer's own code rather than the desktop's.
 pub struct PickedReport {
     pub draft: ReportDraft,
-    pub picture: Option<(MaskedScreenshot, Vec<CropRef>)>,
+    pub crops: Vec<CropCapture>,
 }
 
 /// What the person wrote around the picks.
@@ -40,6 +41,8 @@ pub enum ModelCheck {
 }
 
 pub(super) struct Picked {
+    /// The crops composed into one picture, once reviewed.
+    picture: Option<(MaskedScreenshot, Vec<CropRef>)>,
     report: PickedReport,
     /// The words the review shows.
     words: Option<ReportWords>,
@@ -59,6 +62,7 @@ impl Composer {
         self.reviewed = None;
         self.picked = Some(Picked {
             report,
+            picture: None,
             words: None,
             model: None,
             check: ModelCheck::Unavailable,
@@ -81,7 +85,7 @@ impl Composer {
     pub fn report_picture(&self) -> Option<&MaskedScreenshot> {
         self.picked
             .as_ref()
-            .and_then(|picked| picked.report.picture.as_ref())
+            .and_then(|picked| picked.picture.as_ref())
             .map(|(picture, _)| picture)
     }
 
@@ -117,6 +121,9 @@ impl Composer {
         if picked.words.as_ref() != Some(words) {
             picked.model = None;
             picked.check = ModelCheck::Unavailable;
+        }
+        if picked.picture.is_none() && !picked.report.crops.is_empty() {
+            picked.picture = compose_crops(std::mem::take(&mut picked.report.crops)).ok();
         }
         let draft = &mut picked.report.draft;
         draft.summary.clone_from(&words.summary);
@@ -218,7 +225,7 @@ impl Composer {
             feedback: review.feedback.clone(),
         };
         submission.validate()?;
-        if let Some((picture, _)) = &picked.report.picture {
+        if let Some((picture, _)) = &picked.picture {
             self.host.persist_screenshot(picture)?;
         }
         if let Err(error) = self.outbox.queue(submission) {
@@ -239,7 +246,7 @@ impl Picked {
     fn reviewed(&self) -> Result<ReportReview, Error> {
         let draft = &self.report.draft;
         let mut review = draft.review(self.model.clone())?;
-        if let Some((picture, places)) = &self.report.picture {
+        if let Some((picture, places)) = &self.picture {
             attach_crops(&mut review.feedback, picture.reference(), places);
         }
         Ok(review)
