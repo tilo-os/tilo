@@ -673,14 +673,17 @@ impl BrowserShell {
             .iter()
             .map(|person| roster_row(person, theme))
             .collect();
-        let records: Vec<(TabId, String, String)> = self
-            .chrome
-            .shared
-            .bound_records()
-            .into_iter()
-            .filter_map(|(tab, _)| {
-                let (app, record) = self.chrome.shared.live_record_of(&tree, tab)?;
-                Some((tab, app, record))
+        // Every window here, by the record it shows as the live layer names
+        // it: a window on someone's screen showing one of these is shared.
+        let records: Vec<(TabId, String, String)> = tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| {
+                let (app, record) = self.chrome.shared.live_record_of(&tree, tab.id)?;
+                Some((tab.id, app, record))
             })
             .collect();
         self.pinned.draw(

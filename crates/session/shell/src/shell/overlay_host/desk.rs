@@ -510,7 +510,7 @@ impl ShellOverlayHost {
             self.end_super_surface();
         }
         self.desk.team_count = self.team_count();
-        let items: Vec<Item> = WidgetId::ALL
+        let items: Vec<Item<WidgetId>> = WidgetId::ALL
             .into_iter()
             .map(|id| {
                 let (glance, open, has_content) = self.widget_sizes(id, now);

@@ -18,6 +18,7 @@ use tilo_desktop::people_overlay::{
 };
 use tilo_desktop_model::{DesktopTree, TabId};
 use tilo_desktop_surface::DesktopHandle;
+use tilo_relay_protocol::live::LiveRecord;
 use ui::kurbo::{Affine, Point, Rect};
 use ui::tokens::{EffectiveMotion, MotionSource};
 use ui::vello::Scene;
@@ -32,7 +33,7 @@ pub(super) struct Frame<'a> {
     pub rows: &'a [RosterRow],
     pub people: &'a [Person],
     pub tree: &'a DesktopTree,
-    /// The records this page holds, by the window showing each, as the
+    /// The records this page shows, by the window showing each, as the
     /// live layer names them: `(tab, app, record)`.
     pub records: &'a [(TabId, String, String)],
     pub cursor: Option<Point>,
@@ -301,7 +302,11 @@ fn screens(frame: &Frame<'_>) -> Vec<PeerScreen> {
                 .map(|window| {
                     let here = frame.records.iter().find(|(_, app, record)| {
                         *app == window.app
-                            && tilo_relay_protocol::live::LiveRecord::digest_of(app, record)
+                            && LiveRecord {
+                                app: app.clone(),
+                                record: record.clone(),
+                            }
+                            .short_digest()
                                 == window.record
                     });
                     let tab = here.map(|(tab, _, _)| *tab);
