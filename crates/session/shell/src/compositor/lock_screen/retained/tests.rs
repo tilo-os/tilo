@@ -1,7 +1,8 @@
 use super::*;
-use crate::compositor::lock_screen::LockView;
+use crate::compositor::lock_screen::{LockLayout, LockView};
 use crate::shell::osd::Osd;
 use crate::shell::render::paint::{SceneDamage, VelloDrmBridge};
+use std::time::{Duration, Instant};
 use ui::theme::Theme;
 
 struct Fixture {
@@ -10,6 +11,9 @@ struct Fixture {
     outputs: Vec<LockOutput>,
     osd: Option<Osd>,
     wallpaper: Option<vello::peniko::ImageData>,
+    /// The instant the lock paints at. Tests that prove a transition moves it
+    /// on; the rest keep it fixed, so a phase never drifts under them.
+    now: Instant,
 }
 
 impl Fixture {
@@ -24,6 +28,7 @@ impl Fixture {
             }],
             osd: None,
             wallpaper: None,
+            now: Instant::now(),
         }
     }
 
@@ -36,9 +41,16 @@ impl Fixture {
                 view: &view,
                 wallpaper: self.wallpaper.as_ref(),
                 osd: self.osd,
-                now: ui::time::now(),
+                now: self.now,
             },
         )
+    }
+
+    fn advance(&mut self, millis: u64) {
+        self.now = self
+            .now
+            .checked_add(Duration::from_millis(millis))
+            .expect("bounded test instant");
     }
 }
 
@@ -51,6 +63,20 @@ fn view(length: usize) -> LockView<'static> {
     }
 }
 
+fn verifying() -> LockView<'static> {
+    LockView {
+        verifying: true,
+        ..view(0)
+    }
+}
+
+fn failed() -> LockView<'static> {
+    LockView {
+        error: Some("Incorrect username or password"),
+        ..view(0)
+    }
+}
+
 fn damage_pixels(frame: &FramePaint) -> u64 {
     frame
         .damage_regions
@@ -59,6 +85,54 @@ fn damage_pixels(frame: &FramePaint) -> u64 {
         .iter()
         .map(|r| u64::from(r.width).saturating_mul(u64::from(r.height)))
         .sum()
+}
+
+fn damage_rect(r: &vello::FineDamageRect) -> vello::kurbo::Rect {
+    vello::kurbo::Rect::new(
+        f64::from(r.x),
+        f64::from(r.y),
+        f64::from(r.x.saturating_add(r.width)),
+        f64::from(r.y.saturating_add(r.height)),
+    )
+}
+
+/// Every damage rect lands on the credential card: a credential answer may
+/// never repaint the output, and the tile-rounded rect may overhang the panel
+/// by one clip tile.
+fn assert_credential_damage(frame: &FramePaint, theme: &Theme, outputs: &[LockOutput]) {
+    let layout = LockLayout::for_output(outputs[0], theme);
+    let margin = 32.0 * layout.scale + 16.0;
+    let allowed = layout.panel.inflate(margin, margin);
+    let rects = frame
+        .damage_regions
+        .as_ref()
+        .expect("a credential change is a bounded frame");
+    assert!(!rects.is_empty(), "the changed credential part must damage");
+    for rect in rects {
+        let rect = damage_rect(rect);
+        assert!(
+            allowed.contains(rect.origin()) && allowed.contains((rect.x1, rect.y1)),
+            "damage {rect:?} escapes the credential card {allowed:?}"
+        );
+    }
+    let budget = (layout.password.union(layout.status)).inflate(margin, margin);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "scene sizes are positive physical pixels well inside u64"
+    )]
+    let budget = (budget.width() * budget.height()) as u64;
+    assert!(
+        damage_pixels(frame) <= budget,
+        "a credential answer stays inside the field and status rows"
+    );
+}
+
+fn assert_settled(frame: &FramePaint) {
+    assert!(
+        frame.damage_regions.as_ref().is_some_and(Vec::is_empty),
+        "a resting lock asks for no part to be repainted"
+    );
 }
 
 #[test]
@@ -78,6 +152,15 @@ fn password_changes_are_bounded_and_other_changes_break_the_proof() {
             );
             previous = frame.revision;
         }
+        // The status row and the field's ring are credential parts too: an
+        // answer repaints their bounds, not the output.
+        for changed in [failed(), verifying()] {
+            f.draw(&theme, view(0));
+            let frame = f.draw(&theme, changed);
+            assert_credential_damage(&frame, &theme, &f.outputs);
+        }
+        // Everything outside the credential parts cannot pass the byte-for-byte
+        // proof and must still take the full frame.
         for changed in [
             LockView {
                 clock: "10:43",
@@ -85,14 +168,6 @@ fn password_changes_are_bounded_and_other_changes_break_the_proof() {
             },
             LockView {
                 date: "Sunday, 25 October",
-                ..view(0)
-            },
-            LockView {
-                error: Some("Incorrect password"),
-                ..view(0)
-            },
-            LockView {
-                verifying: true,
                 ..view(0)
             },
             LockView {
@@ -113,11 +188,85 @@ fn password_changes_are_bounded_and_other_changes_break_the_proof() {
         }
         f.draw(&theme, view(0));
         f.osd = Some(Osd::volume(0.5, false));
+        // The fixture clock was frozen before the new OSD existed. Advance
+        // through its arrival so this assertion observes a visible readout.
+        f.now = Instant::now()
+            .checked_add(crate::shell::osd::osd_fade_in())
+            .expect("bounded OSD arrival");
         assert!(f.draw(&theme, view(1)).damage_regions.is_none());
+        let steady_osd = f.draw(&theme, view(2));
+        assert_credential_damage(&steady_osd, &theme, &f.outputs);
         f.osd = None;
-        assert!(f.draw(&theme, view(2)).damage_regions.is_none());
+        assert!(f.draw(&theme, view(3)).damage_regions.is_none());
         drop(f);
     }
+}
+
+#[test]
+fn the_status_answer_cross_fades_in_place_and_then_rests() {
+    let mut f = Fixture::new((1600, 900));
+    let theme = Theme::dark();
+    let start = f.now;
+    f.retained.clear();
+    assert!(f.draw(&theme, view(0)).damage_regions.is_none());
+
+    // A refusal arrives: the row and the field's availability change, and
+    // both are bounded credential parts.
+    f.advance(1);
+    let arriving = f.draw(&theme, failed());
+    assert_credential_damage(&arriving, &theme, &f.outputs);
+    assert!(f.retained.feedback_frame_due(f.now));
+    let deadline = f
+        .retained
+        .next_feedback_deadline()
+        .expect("the answer has an end");
+
+    // Every frame of the run is bounded and differs from the last.
+    for millis in [20, 45, 80, 130] {
+        f.now = start + Duration::from_millis(millis);
+        let frame = f.draw(&theme, failed());
+        assert_credential_damage(&frame, &theme, &f.outputs);
+    }
+    // The resting frame is the last one asked for; after it, the row is still
+    // and the lock asks for nothing.
+    f.now = deadline;
+    assert_credential_damage(&f.draw(&theme, failed()), &theme, &f.outputs);
+    assert!(!f.retained.feedback_frame_due(f.now));
+    assert_eq!(f.retained.next_feedback_deadline(), None);
+    assert_settled(&f.draw(&theme, failed()));
+
+    // A retry cross-fades the refusal out; the field takes the pending mark
+    // and the row says a check is running.
+    f.advance(1);
+    let retry = f.draw(&theme, verifying());
+    assert_credential_damage(&retry, &theme, &f.outputs);
+    assert!(f.retained.feedback_frame_due(f.now));
+    drop(f);
+}
+
+#[test]
+fn a_quiet_edit_lands_at_once_and_a_fresh_lock_rests() {
+    let mut f = Fixture::new((1280, 800));
+    let theme = Theme::dark();
+    f.retained.clear();
+    assert!(f.draw(&theme, view(0)).damage_regions.is_none());
+    f.advance(1);
+    f.draw(&theme, failed());
+    // Typing after a refusal is an edit: the hint replaces the refusal in the
+    // same frame, with nothing left running.
+    f.advance(1);
+    let typed = f.draw(&theme, view(1));
+    assert_credential_damage(&typed, &theme, &f.outputs);
+    assert!(!f.retained.feedback_frame_due(f.now));
+    assert_eq!(f.retained.next_feedback_deadline(), None);
+    // A lock edge forgets the session and starts at rest.
+    f.advance(1);
+    f.draw(&theme, failed());
+    assert!(f.retained.feedback_frame_due(f.now));
+    f.retained.clear();
+    assert!(!f.retained.feedback_frame_due(f.now));
+    assert!(f.draw(&theme, view(0)).damage_regions.is_none());
+    drop(f);
 }
 
 #[test]
@@ -275,5 +424,86 @@ fn retained_password_pixels_match_full_renders_in_every_theme_and_after_dropped_
         assert_pixels(&mut retained, &mut dense, &over_wallpaper);
         f.wallpaper = None;
         assert_pixels(&mut retained, &mut dense, &f.draw(&theme, view(2)));
+    }
+}
+
+#[test]
+fn retained_status_answers_match_dense_pixels_at_every_phase_and_under_reduced_motion() {
+    let mut retained = VelloDrmBridge::new(1280, 800).expect("GPU required for lock pixel oracle");
+    let mut dense = VelloDrmBridge::new(1280, 800).expect("GPU required for dense lock oracle");
+    retained.wait_for_gpu_completion_for_test();
+    dense.wait_for_gpu_completion_for_test();
+    for theme in [
+        Theme::dark(),
+        Theme::light(),
+        Theme::high_contrast(),
+        Theme::dark().with_reduce_motion(true),
+    ] {
+        let mut f = Fixture::new((1280, 800));
+        let start = f.now;
+        f.retained.clear();
+        assert_pixels(&mut retained, &mut dense, &f.draw(&theme, view(0)));
+
+        // The refusal's entrance: every phase must match a full render while
+        // damaging only the credential card.
+        f.now = start + Duration::from_millis(1);
+        let refused = f.draw(&theme, failed());
+        assert_credential_damage(&refused, &theme, &f.outputs);
+        assert_pixels(&mut retained, &mut dense, &refused);
+        for millis in [20, 45, 80, 130, 400] {
+            f.now = start + Duration::from_millis(millis);
+            let frame = f.draw(&theme, failed());
+            assert!(
+                frame.damage_regions.is_some(),
+                "a declining phase still needs its frame"
+            );
+            if frame
+                .damage_regions
+                .as_ref()
+                .is_some_and(|rects| !rects.is_empty())
+            {
+                assert_credential_damage(&frame, &theme, &f.outputs);
+            }
+            assert_pixels(&mut retained, &mut dense, &frame);
+        }
+        if let Some(rest) = f.retained.next_feedback_deadline() {
+            f.now = f.now.max(rest);
+            let resting = f.draw(&theme, failed());
+            assert_credential_damage(&resting, &theme, &f.outputs);
+            assert_pixels(&mut retained, &mut dense, &resting);
+        }
+        assert!(!f.retained.feedback_frame_due(f.now));
+        assert_eq!(f.retained.next_feedback_deadline(), None);
+
+        // Retrying: the pending mark and the new row, at the same phases.
+        let retry_start = f.now + Duration::from_millis(1);
+        f.now = retry_start;
+        let retry = f.draw(&theme, verifying());
+        assert_credential_damage(&retry, &theme, &f.outputs);
+        assert_pixels(&mut retained, &mut dense, &retry);
+        for millis in [20, 45, 80, 130, 400] {
+            f.now = retry_start + Duration::from_millis(millis);
+            let frame = f.draw(&theme, verifying());
+            assert!(frame.damage_regions.is_some());
+            if frame
+                .damage_regions
+                .as_ref()
+                .is_some_and(|rects| !rects.is_empty())
+            {
+                assert_credential_damage(&frame, &theme, &f.outputs);
+            }
+            assert_pixels(&mut retained, &mut dense, &frame);
+        }
+        if let Some(rest) = f.retained.next_feedback_deadline() {
+            f.now = f.now.max(rest);
+            let resting = f.draw(&theme, verifying());
+            assert_credential_damage(&resting, &theme, &f.outputs);
+            assert_pixels(&mut retained, &mut dense, &resting);
+        }
+        assert!(!f.retained.feedback_frame_due(f.now));
+        assert_eq!(f.retained.next_feedback_deadline(), None);
+        f.retained.clear();
+        assert_pixels(&mut retained, &mut dense, &f.draw(&theme, failed()));
+        assert_pixels(&mut retained, &mut dense, &f.draw(&theme, view(0)));
     }
 }
