@@ -25,6 +25,7 @@ mod person_chat;
 #[cfg(test)]
 pub(crate) use owner_source::OPENING as NATIVE_OWNER_OPENING;
 mod resource_views;
+mod room_nodes;
 #[cfg(target_os = "linux")]
 mod service_sessions;
 mod tracker_runs;
@@ -2100,6 +2101,7 @@ pub fn native_services(
         }),
         nearby_transfer,
         own_device: NativeOwnDevice::service(network.as_ref()),
+        room_nodes: room_nodes::NativeRoomNodes::service(network.as_ref()),
         workspace_control: network.map(|network| {
             Arc::new(NativeWorkspaceControl(network)) as Arc<dyn WorkspaceControlServices>
         }),
