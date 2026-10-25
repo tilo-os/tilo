@@ -610,6 +610,10 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         allowed_origins: vec![],
         features: 0,
         rooms: relay.rooms().cloned(),
+        private: relay
+            .rooms()
+            .cloned()
+            .map(crate::rooms::PrivateProtocol::new),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: envelopes::Envelopes::of(
             envelopes::Kind::Profile,
@@ -1218,6 +1222,10 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         allowed_origins: vec![],
         features: 0,
         rooms: relay.rooms().cloned(),
+        private: relay
+            .rooms()
+            .cloned()
+            .map(crate::rooms::PrivateProtocol::new),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: envelopes::Envelopes::of(
             envelopes::Kind::Profile,
@@ -1517,6 +1525,10 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         allowed_origins: vec!["https://app.example".into()],
         features: protocol::FEATURE_FETCH_PROXY,
         rooms: relay.rooms().cloned(),
+        private: relay
+            .rooms()
+            .cloned()
+            .map(crate::rooms::PrivateProtocol::new),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: envelopes::Envelopes::of(
             envelopes::Kind::Profile,
