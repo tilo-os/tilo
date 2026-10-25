@@ -480,12 +480,9 @@ impl AgentParticipant {
         };
         if !running.begin_wait(wait, until, before) {
             let id = running.id.clone();
-            self.running = None;
-            self.finish_task(
+            self.fail_running(
                 id,
-                Err(format!(
-                    "waited {MOST_WAITS} times for a message; not waiting again"
-                )),
+                format!("waited {MOST_WAITS} times for a message; not waiting again"),
             );
             return;
         }
