@@ -1590,6 +1590,25 @@ pub struct WasmPeer {
     /// for a peer in no profile) and a queue opened at start, until a room
     /// is joined and replicated ([`crate::replication`]).
     replication: RefCell<Option<(PeerEvents, ReplicaStore)>>,
+    /// The room the person takes part in through this page, once joined
+    /// as a person rather than a spectator: the one that names them.
+    person_room: RefCell<Option<String>>,
+}
+
+/// Tell `room` its member, the page's person, goes by `name` from now on:
+/// what its member list and everyone's person lists show for them. Asked
+/// as the page joins and whenever the person renames themself, so a name
+/// the room recorded earlier is corrected on the next visit. A person who
+/// chose no name keeps the one they were admitted with.
+fn name_in_room(handle: &PeerHandle, room: &str, name: &str) {
+    if name.trim().is_empty() {
+        return;
+    }
+    let request = tilo_relay_protocol::rooms::RoomsRequest::Name {
+        room: room.to_owned(),
+        name: name.to_owned(),
+    };
+    let _ = handle.rooms_then(request, Box::new(|_| {}));
 }
 
 #[wasm_bindgen]
@@ -1718,6 +1737,7 @@ impl WasmPeer {
             handle,
             listeners,
             replication,
+            person_room: RefCell::default(),
         })
     }
 
@@ -1774,6 +1794,10 @@ impl WasmPeer {
             // privately; a page that only watches has no conversations.
             if !self.handle.watching() {
                 crate::person_chat::install(self.handle.clone(), room);
+                if let Some(identity) = ui::local_identity::load() {
+                    name_in_room(&self.handle, room, &identity.display_name);
+                }
+                *self.person_room.borrow_mut() = Some(room.to_owned());
             }
         }
         Ok(())
@@ -2432,6 +2456,9 @@ impl WasmPeer {
     /// (empty for none).
     #[wasm_bindgen(js_name = setDisplayName)]
     pub fn set_display_name(&self, name: String) {
+        if let Some(room) = self.person_room.borrow().as_deref() {
+            name_in_room(&self.handle, room, &name);
+        }
         install_identity(&self.reporter_cert, name);
     }
 

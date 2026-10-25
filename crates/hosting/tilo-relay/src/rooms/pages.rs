@@ -107,13 +107,16 @@ const fn room_role(role: MemberRole) -> RoomRole {
     }
 }
 
-fn page_room(room: &GovernedRoom) -> Room {
+/// `room` as a page sees it. Its `spectator` person, whom every page
+/// that only watches is certified as, is nobody on its member list.
+fn page_room(room: &GovernedRoom, spectator: Option<[u8; 32]>) -> Room {
     let summary = room.summary();
     let certificates = room.peer().certificates();
     let owner = room.peer().authority().user_public_key;
     let mut members: Vec<_> = summary
         .members
         .into_iter()
+        .filter(|member| Some(member.user_public_key) != spectator)
         .map(|member| RoomMember {
             name: member.display_name.clone().or_else(|| {
                 certificates
@@ -267,6 +270,10 @@ impl Rooms {
             request @ (RoomsRequest::Share { .. } | RoomsRequest::Unshare { .. }) => {
                 self.page_share(device, request).await?
             }
+            RoomsRequest::Name { room, name } => {
+                self.name_self(&room, device, &name, now).await?;
+                RoomsReply::Named
+            }
         })
     }
 
@@ -297,6 +304,56 @@ impl Rooms {
             }
             _ => return Err(CollaborationError::new("not a share")),
         }))
+    }
+
+    /// Name `device`'s person `name` in `room`: the name the room shows for
+    /// them from now on. Only a person names themself, on a device the
+    /// room admitted as theirs; the room's spectator person is nobody to
+    /// name. A name they already go by writes nothing.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room stays locked from the check until the name is committed"
+    )]
+    pub(crate) async fn name_self(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        name: &str,
+        now: u64,
+    ) -> Result<(), CollaborationError> {
+        let name = valid_name(name)?;
+        let state = self.room(room).await?;
+        let mut room = state.lock().await;
+        if self.watches_only(room.workspace_id(), device).await {
+            return Err(CollaborationError::new(
+                "a page that only watches names nobody",
+            ));
+        }
+        let at = system_time(now);
+        let member = room
+            .peer()
+            .permissions(device.device_public_key, at)
+            .map_err(CollaborationError::new)?;
+        if member.foreign
+            || member.delegate.is_some()
+            || member.person != hex::encode(device.user_public_key)
+        {
+            return Err(CollaborationError::new("only a person names themself"));
+        }
+        let key = self.inner.host.key.clone();
+        let mut candidate = room.peer().clone();
+        if !candidate
+            .governance_mut()
+            .name_person(device.user_public_key, &name, &key, at)
+            .map_err(CollaborationError::new)?
+        {
+            return Ok(());
+        }
+        let ledger = room.collaboration().clone();
+        room.commit(candidate, &key, at, |_, _| Ok(ledger))
+            .map_err(CollaborationError::new)?;
+        self.settle(&mut room).await?;
+        Ok(())
     }
 
     /// Whether `device`'s person may make an undoable change at `node` of
@@ -334,6 +391,14 @@ impl Rooms {
     /// Whether `device` is of the spectator person of the room hosted as
     /// `workspace_id`.
     pub(super) async fn watches_only(&self, workspace_id: u64, device: &DeviceCert) -> bool {
+        self.spectator_person(workspace_id).await == Some(device.user_public_key)
+    }
+
+    /// The spectator person of the room hosted as `workspace_id`, when it
+    /// lets pages watch: the one person every watching page is certified
+    /// as. A member of the room, so it may watch, yet nobody: no person
+    /// list shows it.
+    pub(crate) async fn spectator_person(&self, workspace_id: u64) -> Option<[u8; 32]> {
         let workspace = self
             .inner
             .host
@@ -341,15 +406,9 @@ impl Rooms {
             .lock()
             .await
             .get(&workspace_id)
-            .cloned();
-        match workspace {
-            Some(workspace) => workspace
-                .lock()
-                .await
-                .spectators
-                .is_some_and(|spectators| spectators.root == device.user_public_key),
-            None => false,
-        }
+            .cloned()?;
+        let spectators = workspace.lock().await.spectators;
+        spectators.map(|spectators| spectators.root)
     }
 
     /// A page's change to who is in a room and with which role.
@@ -555,7 +614,9 @@ impl Rooms {
             .collect::<Vec<_>>();
         let mut listed = Vec::with_capacity(rooms.len());
         for room in rooms {
-            listed.push(page_room(&*room.lock().await));
+            let workspace_id = room.lock().await.workspace_id();
+            let spectator = self.spectator_person(workspace_id).await;
+            listed.push(page_room(&*room.lock().await, spectator));
         }
         Ok(RoomsReply::Rooms(listed))
     }
@@ -608,7 +669,9 @@ impl Rooms {
 
     async fn page_room(&self, room: &str) -> Result<RoomsReply, CollaborationError> {
         let room = self.room(room).await?;
-        Ok(RoomsReply::Room(page_room(&*room.lock().await)))
+        let workspace_id = room.lock().await.workspace_id();
+        let spectator = self.spectator_person(workspace_id).await;
+        Ok(RoomsReply::Room(page_room(&*room.lock().await, spectator)))
     }
 
     async fn page_pending(
@@ -946,7 +1009,7 @@ impl Rooms {
             room.peer().permissions(device, system_time(now))?;
             return Ok(());
         }
-        let (device, proof_digest, redemption) = {
+        let (device, proof_digest, redemption, name) = {
             let joins = self.page_joins();
             let join = joins
                 .find(room_id, request_id)
@@ -956,6 +1019,7 @@ impl Rooms {
                 join.request.device_public_key,
                 join.proof_digest,
                 join.redemption.clone(),
+                join.request.name.clone(),
             )
         };
         // Admitting someone hands out the role their invitation carries:
@@ -971,6 +1035,7 @@ impl Rooms {
             request_id,
             proof_digest,
             redemption: &redemption,
+            name: Some(&name),
         };
         self.admit_redemptions(&mut room, &[join], now)
             .await?
@@ -1262,6 +1327,7 @@ impl Rooms {
                     request_id: redemption.request_id(),
                     proof_digest: queued.get(*index).map_or([0; 32], |join| join.proof_digest),
                     redemption,
+                    name: queued.get(*index).map(|join| join.name.as_str()),
                 },
             )
             .collect();
