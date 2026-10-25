@@ -101,6 +101,7 @@ impl ContextMenu {
                 MenuAction::EditChannel => Icon::Settings,
                 MenuAction::Delete | MenuAction::DeleteMessage => Icon::Trash,
                 MenuAction::BanAuthor => Icon::Ban,
+                MenuAction::StopSharing => Icon::EyeOff,
                 MenuAction::MoveUp => Icon::ChevronUp,
                 MenuAction::MoveDown | MenuAction::ToggleCollapse => Icon::ChevronDown,
                 MenuAction::NewChannelHere
@@ -182,6 +183,8 @@ pub(crate) enum MenuAction {
     ReportAuthor,
     /// As a moderator, ban a message's author from the room.
     BanAuthor,
+    /// Stop sharing the window a message of yours shares.
+    StopSharing,
     /// Stop hearing someone in the call, on this device only, or hear them
     /// again.
     Silence,
@@ -211,6 +214,7 @@ impl MenuAction {
             MenuAction::ReportMessage => "Report message",
             MenuAction::ReportAuthor => "Report sender",
             MenuAction::BanAuthor => "Ban from the room",
+            MenuAction::StopSharing => "Stop sharing",
             MenuAction::Silence => "Mute for me",
             MenuAction::Volume(_) => "Volume",
         }
@@ -388,6 +392,18 @@ pub(crate) enum Hit {
     StopSharingLiveContext,
     CopyResourceLink(Id),
     OpenResource(Id),
+    /// Open the window a message shares, as a window of this person's own.
+    OpenShare(Id),
+    /// Stop sharing the window a message of yours shares.
+    StopShare(Id),
+    /// Open the "Share a window" panel from the attach menu.
+    ShareWindowPanel,
+    /// What the people a window is shared with may do there.
+    ShareAccess(crate::record::ShareAccess),
+    /// Choose the window of this tab in the "Share a window" panel.
+    SharePick(u64),
+    /// Share the window the panel has chosen.
+    ShareChosen,
     CloseThread,
     /// Grab the floating call overlay to drag it (records the press point).
     CallDragHandle,
@@ -442,6 +458,12 @@ impl Hit {
             Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
             Self::CopyResourceLink(id) => format!("chat.copy-resource-link:{id}"),
             Self::OpenResource(id) => format!("chat.open-resource:{id}"),
+            Self::OpenShare(id) => format!("chat.open-share:{id}"),
+            Self::StopShare(id) => format!("chat.stop-sharing:{id}"),
+            Self::ShareWindowPanel => "chat.share-window".into(),
+            Self::ShareAccess(access) => format!("chat.share-access:{}", access.as_str()),
+            Self::SharePick(tab) => format!("chat.share-pick:{tab}"),
+            Self::ShareChosen => "chat.share-chosen".into(),
             Self::ToggleRightFlap => "chat.toggle-details".into(),
             Self::OpenThread(id) => format!("chat.open-thread:{id}"),
             Self::CloseThread => "chat.close-thread".into(),
@@ -636,6 +658,8 @@ pub struct ChatApp {
     pub(crate) call: CallState,
     pub(crate) native_voice: crate::local_voice::LocalVoice,
     pub(crate) resource_navigation: crate::shared_resources::Navigation,
+    /// Windows shared live into the room ([`crate::live_share`]).
+    pub(crate) live_shares: crate::live_share::LiveShares,
     pub(crate) moderation: crate::moderation::Moderation,
     /// Measured control/header sizes of the expanded call overlay, refreshed
     /// by the paint pass and read by the renderer-less layout functions.
@@ -1044,6 +1068,7 @@ impl ChatApp {
             call: CallState::default(),
             native_voice: crate::local_voice::LocalVoice::default(),
             resource_navigation: crate::shared_resources::Navigation::default(),
+            live_shares: crate::live_share::LiveShares::default(),
             moderation: crate::moderation::Moderation::default(),
             call_overlay_metrics: crate::render_call::CallOverlayMetrics::default(),
             call_overlay_metrics_key: None,
@@ -2126,7 +2151,6 @@ impl ChatApp {
     }
 
     // --- model lookups ----------------------------------------------------
-    #[cfg(test)]
     pub(crate) fn user(&self, id: &str) -> Option<&User> {
         self.users.iter().find(|u| u.id == id)
     }
@@ -3780,6 +3804,59 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
+                    Hit::OpenShare(message) => (
+                        self.message(message).map_or_else(String::new, |m| {
+                            crate::i18n::t_args(
+                                "chat-share-open",
+                                &[
+                                    (
+                                        "title",
+                                        m.reference
+                                            .as_ref()
+                                            .map(|r| r.label.clone())
+                                            .unwrap_or_default()
+                                            .into(),
+                                    ),
+                                    ("name", self.user_name(&m.author).into()),
+                                ],
+                            )
+                        }),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::StopShare(_) => (crate::i18n::t("chat-share-stop"), Role::Button, false),
+                    Hit::ShareWindowPanel => {
+                        (crate::i18n::t("chat-share-window"), Role::Button, false)
+                    }
+                    Hit::ShareAccess(access) => (
+                        crate::live_share::access_label(*access),
+                        Role::ToggleButton,
+                        self.live_shares
+                            .panel
+                            .as_ref()
+                            .is_some_and(|panel| panel.access == *access),
+                    ),
+                    Hit::SharePick(tab) => (
+                        ui::window_share::windows()
+                            .into_iter()
+                            .find(|window| window.tab == *tab)
+                            .map_or_else(String::new, |window| {
+                                crate::i18n::t_args(
+                                    "chat-share-pick",
+                                    &[("title", window.title.into())],
+                                )
+                            }),
+                        Role::ToggleButton,
+                        self.live_shares
+                            .panel
+                            .as_ref()
+                            .is_some_and(|panel| panel.chosen == Some(*tab)),
+                    ),
+                    Hit::ShareChosen => (
+                        crate::i18n::t("chat-share-window-button"),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::ToggleRightFlap => ("Show people or thread".into(), Role::Button, false),
                     Hit::TogglePins => {
                         ("Pinned messages".into(), Role::ToggleButton, self.pins_open)
@@ -4141,6 +4218,7 @@ impl Widget for ChatApp {
         self.flush_staged_parts();
         self.apply_window_toolbar(edits);
         self.take_sidebar_events(edits);
+        self.follow_window_shares(edits);
     }
 
     ui::provides!(
@@ -4519,6 +4597,12 @@ impl Widget for ChatApp {
                 self.draw_attach_picker(scene, tf, tr, theme, &mut hits);
             });
         }
+        if self.live_shares.panel.is_some() {
+            parts.draw(scene, "chat-share", window, |scene| {
+                self.draw_share_panel(scene, tf, tr, theme, &mut hits);
+            });
+        }
+        self.declare_share_embeds();
 
         // Immediate-mode keyboard focus needs a visible counterpart. The ring
         // is painted last so it remains legible on sidebar and popovers.
@@ -4620,6 +4704,7 @@ impl Widget for ChatApp {
         if self.menu.is_none()
             && self.channel_sheet.is_none()
             && !self.attach_open
+            && self.live_shares.panel.is_none()
             && !self.emoji_open
             && self.history_open.is_none()
             && !self.thread_is_page()
@@ -4918,9 +5003,12 @@ impl Widget for ChatApp {
     fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
         let model_changed = self.pump_model();
         let room_changed = self.take_room();
+        // The desktop asked something of Chat (share a window, stop
+        // sharing one): the settle pass after this one answers it.
+        let asked = ui::window_share::asked();
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
-        std::mem::take(&mut self.read_on_present) || model_changed || room_changed
+        std::mem::take(&mut self.read_on_present) || model_changed || room_changed || asked
     }
 
     fn needs_animation_frame(&self) -> bool {
