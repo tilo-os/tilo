@@ -3457,6 +3457,13 @@ pub mod banner;
 pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
 pub mod chip;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
+pub mod conversation;
+pub use conversation::{
+    AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,
+    ComposerRule, ConversationClock, ConversationDay, ConversationLine, ConversationList,
+    ConversationRole, DayBreaks, DayDividerFace, DeliveryFace, DeliveryState, DeliveryStep,
+    DraftBook, ListFace, SavedCopy, UploadProgress,
+};
 pub mod card;
 mod tone;
 pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};
