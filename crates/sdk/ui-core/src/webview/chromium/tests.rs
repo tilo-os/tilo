@@ -223,6 +223,35 @@ fn navigation_outcomes_are_mapped_and_preserved_under_bursts() {
         assert!(decode_event(&json!({"event":"future-event"})).is_none());
         assert!(decode_event(&json!({"event":"uri"})).is_none());
     }
+    // phase: cursor_events_name_a_page_shape_and_reject_malformed_ones
+    {
+        assert_eq!(
+            decode_event(&json!({"event":"cursor","type":"CT_HAND"})),
+            Some(WebViewEvent::Cursor(CursorShape::Pointer))
+        );
+        assert_eq!(
+            decode_event(&json!({"event":"cursor","type":"CT_IBEAM"})),
+            Some(WebViewEvent::Cursor(CursorShape::Text))
+        );
+        assert_eq!(
+            decode_event(&json!({"event":"cursor","type":"CT_CUSTOM"})),
+            Some(WebViewEvent::Cursor(CursorShape::Custom))
+        );
+        assert_eq!(
+            decode_event(&json!({"event":"cursor","type":"CT_NONE"})),
+            Some(WebViewEvent::Cursor(CursorShape::Custom))
+        );
+        assert!(validate_event(&json!({"event":"cursor","type":"CT_HAND"})).is_ok());
+        for malformed in [
+            json!({"event":"cursor"}),
+            json!({"event":"cursor","type":7}),
+            json!({"event":"cursor","type":""}),
+            json!({"event":"cursor","type":"x".repeat(65)}),
+        ] {
+            assert!(validate_event(&malformed).is_err(), "{malformed}");
+            assert!(decode_event(&malformed).is_none(), "{malformed}");
+        }
+    }
     // phase: completed_navigation_preserves_page_identity
     {
         let event =

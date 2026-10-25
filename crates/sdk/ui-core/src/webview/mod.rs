@@ -429,6 +429,11 @@ pub enum WebViewEvent {
         final_update: bool,
     },
     ZoomChanged(f64),
+    /// The page asked for a different mouse pointer shape. The engine names it
+    /// with CEF's cursor type (`"CT_HAND"`, …); drawing it is the embedding
+    /// host's business, since the engine has no window of its own to put a
+    /// pointer in. See [`CursorShape::from_cef`].
+    Cursor(CursorShape),
     NavigationHistory {
         request_id: u32,
         direction: NavigationDirection,
@@ -555,6 +560,99 @@ pub enum WebViewEvent {
         error: String,
         cancelled: bool,
     },
+}
+
+/// A pointer shape a page asked for, as CEF names it.
+///
+/// The page's `cursor` CSS property is intent, not pixels: a host maps this to
+/// its own pointer instead of letting the engine install one. `Custom` keeps
+/// `CT_CUSTOM` and every type this toolkit has no equivalent for, so an
+/// unknown shape falls back to the host's default arrow rather than to the
+/// last shape a page happened to want.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CursorShape {
+    #[default]
+    Default,
+    Pointer,
+    ContextMenu,
+    Help,
+    Progress,
+    Wait,
+    Cell,
+    Crosshair,
+    Text,
+    VerticalText,
+    Move,
+    NotAllowed,
+    Copy,
+    Alias,
+    ZoomIn,
+    ZoomOut,
+    Grab,
+    Grabbing,
+    ResizeEast,
+    ResizeNorth,
+    ResizeNorthEast,
+    ResizeNorthWest,
+    ResizeSouth,
+    ResizeSouthEast,
+    ResizeSouthWest,
+    ResizeWest,
+    ResizeColumn,
+    ResizeRow,
+    /// A bitmap the page supplied, or a type this toolkit does not map.
+    Custom,
+}
+
+impl CursorShape {
+    /// CEF's `cef_cursor_type_t` name (`"CT_HAND"`, `"CT_IBEAM"`, …), as the
+    /// engine writes it into a [`WebViewEvent::Cursor`] event.
+    pub fn from_cef(name: &str) -> Self {
+        match name {
+            "CT_POINTER" | "CT_HAND" => Self::Pointer,
+            "CT_NONE" | "CT_CUSTOM" => Self::Custom,
+            "CT_CONTEXTMENU" => Self::ContextMenu,
+            "CT_HELP" => Self::Help,
+            "CT_PROGRESS" => Self::Progress,
+            "CT_WAIT" => Self::Wait,
+            "CT_CELL" => Self::Cell,
+            "CT_CROSS" => Self::Crosshair,
+            "CT_IBEAM" => Self::Text,
+            "CT_VERTICALTEXT" => Self::VerticalText,
+            "CT_MOVE"
+            | "CT_MIDDLEPANNING"
+            | "CT_EASTPANNING"
+            | "CT_NORTHPANNING"
+            | "CT_NORTHEASTPANNING"
+            | "CT_NORTHWESTPANNING"
+            | "CT_SOUTHPANNING"
+            | "CT_SOUTHEASTPANNING"
+            | "CT_SOUTHWESTPANNING"
+            | "CT_WESTPANNING"
+            | "CT_MIDDLE_PANNING_VERTICAL"
+            | "CT_MIDDLE_PANNING_HORIZONTAL" => Self::Move,
+            "CT_NOTALLOWED" | "CT_NODROP" | "CT_DND_NONE" => Self::NotAllowed,
+            "CT_COPY" | "CT_DND_COPY" => Self::Copy,
+            "CT_ALIAS" | "CT_DND_LINK" => Self::Alias,
+            "CT_ZOOMIN" => Self::ZoomIn,
+            "CT_ZOOMOUT" => Self::ZoomOut,
+            "CT_GRAB" => Self::Grab,
+            "CT_GRABBING" => Self::Grabbing,
+            "CT_EASTRESIZE" => Self::ResizeEast,
+            "CT_NORTHRESIZE" => Self::ResizeNorth,
+            "CT_NORTHEASTRESIZE" => Self::ResizeNorthEast,
+            "CT_NORTHWESTRESIZE" => Self::ResizeNorthWest,
+            "CT_SOUTHRESIZE" => Self::ResizeSouth,
+            "CT_SOUTHEASTRESIZE" => Self::ResizeSouthEast,
+            "CT_SOUTHWESTRESIZE" => Self::ResizeSouthWest,
+            "CT_WESTRESIZE" => Self::ResizeWest,
+            "CT_COLUMNRESIZE" => Self::ResizeColumn,
+            "CT_ROWRESIZE" => Self::ResizeRow,
+            // CT_NONE (a page hiding the pointer), CT_CUSTOM (a bitmap) and
+            // CT_DND_MOVE (no host equivalent): the host's own pointer.
+            _ => Self::Custom,
+        }
+    }
 }
 
 /// A visible media element expressed relative to the web viewport. Keeping

@@ -29,7 +29,9 @@ use crate::gesture::NavDirection;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::webview::{KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand};
+use crate::webview::{
+    CursorShape, KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand,
+};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -66,6 +68,42 @@ fn frame_quantization_slack(scale_factor: f32) -> u32 {
     })
 }
 
+/// The toolkit pointer for a shape a page asked for. Every page shape has an
+/// equivalent here; what this toolkit cannot draw falls back to the arrow.
+fn cursor_icon(shape: &CursorShape) -> winit::window::CursorIcon {
+    use winit::window::CursorIcon;
+    match shape {
+        CursorShape::Pointer => CursorIcon::Pointer,
+        CursorShape::ContextMenu => CursorIcon::ContextMenu,
+        CursorShape::Help => CursorIcon::Help,
+        CursorShape::Progress => CursorIcon::Progress,
+        CursorShape::Wait => CursorIcon::Wait,
+        CursorShape::Cell => CursorIcon::Cell,
+        CursorShape::Crosshair => CursorIcon::Crosshair,
+        CursorShape::Text => CursorIcon::Text,
+        CursorShape::VerticalText => CursorIcon::VerticalText,
+        CursorShape::Move => CursorIcon::Move,
+        CursorShape::NotAllowed => CursorIcon::NotAllowed,
+        CursorShape::Copy => CursorIcon::Copy,
+        CursorShape::Alias => CursorIcon::Alias,
+        CursorShape::ZoomIn => CursorIcon::ZoomIn,
+        CursorShape::ZoomOut => CursorIcon::ZoomOut,
+        CursorShape::Grab => CursorIcon::Grab,
+        CursorShape::Grabbing => CursorIcon::Grabbing,
+        CursorShape::ResizeEast => CursorIcon::EResize,
+        CursorShape::ResizeNorth => CursorIcon::NResize,
+        CursorShape::ResizeNorthEast => CursorIcon::NeResize,
+        CursorShape::ResizeNorthWest => CursorIcon::NwResize,
+        CursorShape::ResizeSouth => CursorIcon::SResize,
+        CursorShape::ResizeSouthEast => CursorIcon::SeResize,
+        CursorShape::ResizeSouthWest => CursorIcon::SwResize,
+        CursorShape::ResizeWest => CursorIcon::WResize,
+        CursorShape::ResizeColumn => CursorIcon::ColResize,
+        CursorShape::ResizeRow => CursorIcon::RowResize,
+        CursorShape::Default | CursorShape::Custom => CursorIcon::Default,
+    }
+}
+
 /// See module docs.
 pub struct WebView {
     text_input: crate::webview::text_input::Guard,
@@ -78,6 +116,9 @@ pub struct WebView {
     scale_factor: f32,
     focused: bool,
     last_mouse: Point,
+    /// The latest pointer shape the page asked for. The engine never installs a
+    /// pointer itself; the host draws this one over the view.
+    cursor: CursorShape,
     /// Physical size last sent as a `Resize`, to avoid spamming the engine.
     last_sent_size: (u32, u32),
     /// Last expected/observed mismatch for which we requested a repaint.
@@ -105,6 +146,7 @@ impl WebView {
             scale_factor: 1.0,
             focused: false,
             last_mouse: Point::ZERO,
+            cursor: CursorShape::Default,
             last_sent_size: (0, 0),
             stale_resize_retry: None,
             native_mounted: false,
@@ -435,6 +477,23 @@ impl Widget for WebView {
             &self.engine,
             self.focused && self.engine.supports_text_input(),
         );
+        for event in self.engine.drain_events() {
+            let crate::webview::WebViewEvent::Cursor(shape) = &event else {
+                continue;
+            };
+            // A shape the host cannot draw (`CT_CUSTOM`, `CT_NONE`) is a page
+            // hiding its pointer, not evidence of a shape either: keep the last
+            // one the page named so leaving it does not leave a stale hand.
+            if *shape != CursorShape::Custom {
+                self.cursor = shape.clone();
+            }
+        }
+    }
+
+    /// The page's pointer shape, as a toolkit cursor, while the pointer is over
+    /// the view. `None` elsewhere: the host's own chrome sets the shape there.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.rect.contains(point).then(|| cursor_icon(&self.cursor))
     }
 
     fn ime_content(&self) -> Option<crate::ime::InputContent> {
@@ -855,6 +914,96 @@ mod tests {
     use automerge::AutoCommit;
     use std::sync::Arc;
     use winit::event::{ElementState, WindowEvent};
+
+    #[test]
+    fn page_cursor_shapes_draw_the_toolkit_pointer() {
+        use winit::window::CursorIcon;
+        for (name, icon) in [
+            ("CT_POINTER", CursorIcon::Pointer),
+            ("CT_HAND", CursorIcon::Pointer),
+            ("CT_IBEAM", CursorIcon::Text),
+            ("CT_VERTICALTEXT", CursorIcon::VerticalText),
+            ("CT_WAIT", CursorIcon::Wait),
+            ("CT_PROGRESS", CursorIcon::Progress),
+            ("CT_CROSS", CursorIcon::Crosshair),
+            ("CT_MOVE", CursorIcon::Move),
+            ("CT_EASTRESIZE", CursorIcon::EResize),
+            ("CT_NORTHRESIZE", CursorIcon::NResize),
+            ("CT_NORTHEASTRESIZE", CursorIcon::NeResize),
+            ("CT_NORTHWESTRESIZE", CursorIcon::NwResize),
+            ("CT_SOUTHRESIZE", CursorIcon::SResize),
+            ("CT_SOUTHEASTRESIZE", CursorIcon::SeResize),
+            ("CT_SOUTHWESTRESIZE", CursorIcon::SwResize),
+            ("CT_WESTRESIZE", CursorIcon::WResize),
+            ("CT_COLUMNRESIZE", CursorIcon::ColResize),
+            ("CT_ROWRESIZE", CursorIcon::RowResize),
+            ("CT_NOTALLOWED", CursorIcon::NotAllowed),
+            ("CT_GRAB", CursorIcon::Grab),
+            ("CT_GRABBING", CursorIcon::Grabbing),
+            ("CT_ZOOMIN", CursorIcon::ZoomIn),
+            ("CT_ZOOMOUT", CursorIcon::ZoomOut),
+            ("CT_HELP", CursorIcon::Help),
+            ("CT_CONTEXTMENU", CursorIcon::ContextMenu),
+            ("CT_CELL", CursorIcon::Cell),
+            ("CT_COPY", CursorIcon::Copy),
+            ("CT_ALIAS", CursorIcon::Alias),
+            // A page that names no host-drawable shape gets the arrow, never a
+            // pointer left over from the last element it hovered.
+            ("CT_NONE", CursorIcon::Default),
+            ("CT_CUSTOM", CursorIcon::Default),
+            ("CT_UNKNOWN_TO_THIS_HOST", CursorIcon::Default),
+        ] {
+            assert_eq!(
+                cursor_icon(&CursorShape::from_cef(name)),
+                icon,
+                "{name} must draw {icon:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_page_cursor_holds_over_the_view_until_the_page_names_another() {
+        let engine = TestEngine::new();
+        let (mut page, _, _) = laid_out(engine.clone());
+        let doc = AutoCommit::new();
+        let rect = page.get_rect();
+        assert!(rect.width() > 0.0 && rect.height() > 0.0);
+        let inside = rect.center();
+        let outside = Point::new(rect.x1 + 40.0, rect.y1 + 40.0);
+        assert_eq!(
+            page.cursor_shape(inside),
+            Some(winit::window::CursorIcon::Default)
+        );
+
+        engine.push_event(crate::webview::WebViewEvent::Cursor(CursorShape::from_cef(
+            "CT_HAND",
+        )));
+        page.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            page.cursor_shape(inside),
+            Some(winit::window::CursorIcon::Pointer)
+        );
+        assert_eq!(page.cursor_shape(outside), None);
+
+        engine.push_event(crate::webview::WebViewEvent::Cursor(CursorShape::from_cef(
+            "CT_IBEAM",
+        )));
+        page.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            page.cursor_shape(inside),
+            Some(winit::window::CursorIcon::Text)
+        );
+
+        // A page hiding its pointer must not inherit the shape it hid.
+        engine.push_event(crate::webview::WebViewEvent::Cursor(CursorShape::from_cef(
+            "CT_NONE",
+        )));
+        page.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            page.cursor_shape(inside),
+            Some(winit::window::CursorIcon::Text)
+        );
+    }
 
     #[test]
     fn native_history_operation_waits_for_renderer_ack_and_rejects_focus_change() {

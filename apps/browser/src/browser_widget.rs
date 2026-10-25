@@ -3252,6 +3252,7 @@ impl BrowserWidget {
                     request_id,
                     element,
                 } => self.accept_media_element(request_id, element),
+                WebViewEvent::Cursor(_) => {}
                 WebViewEvent::MediaElementUnavailable { request_id } => {
                     self.reject_media_element(request_id);
                 }

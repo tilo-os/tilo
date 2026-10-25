@@ -22,8 +22,8 @@ use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::{
-    FrameSlot, KeyInput, MouseButton, NavigationCommand, WebViewCommand, WebViewEngine,
-    WebViewEvent,
+    CursorShape, FrameSlot, KeyInput, MouseButton, NavigationCommand, WebViewCommand,
+    WebViewEngine, WebViewEvent,
 };
 use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
@@ -1773,6 +1773,9 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "zoom" => value["level"]
             .as_f64()
             .is_some_and(|level| level.is_finite() && (-5.0..=9.0).contains(&level)),
+        "cursor" => value["type"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty() && name.len() <= 64),
         "fullscreen" => value["fullscreen"].is_boolean(),
         "audio_start" | "audio" | "audio_stop" => audio::valid_event(event, value),
         "renderer_terminated" => value
@@ -2144,6 +2147,13 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             final_update: value["final"].as_bool()?,
         },
         "zoom" => WebViewEvent::ZoomChanged(value["level"].as_f64()?),
+        "cursor" => {
+            let name = value["type"].as_str()?;
+            if name.is_empty() || name.len() > 64 {
+                return None;
+            }
+            WebViewEvent::Cursor(CursorShape::from_cef(name))
+        }
         "fullscreen" => WebViewEvent::FullscreenChanged(value["fullscreen"].as_bool()?),
         "renderer_terminated" => WebViewEvent::RendererTerminated,
         "uri" => WebViewEvent::UriChanged(value["url"].as_str()?.into()),

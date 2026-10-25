@@ -137,6 +137,63 @@ void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr)
 void StringEvent(const std::string& name,const std::string& key,const CefString& text) {
   auto d=CefDictionaryValue::Create();d->SetString(key,text);Event(name,d);
 }
+// The name of a `cef_cursor_type_t` value, as the app's cursor event carries it
+// so both sides name one shape with one string.
+const char* CursorTypeName(cef_cursor_type_t type) {
+  switch(type) {
+    case CT_POINTER: return "CT_POINTER";
+    case CT_CROSS: return "CT_CROSS";
+    case CT_HAND: return "CT_HAND";
+    case CT_IBEAM: return "CT_IBEAM";
+    case CT_WAIT: return "CT_WAIT";
+    case CT_HELP: return "CT_HELP";
+    case CT_EASTRESIZE: return "CT_EASTRESIZE";
+    case CT_NORTHRESIZE: return "CT_NORTHRESIZE";
+    case CT_NORTHEASTRESIZE: return "CT_NORTHEASTRESIZE";
+    case CT_NORTHWESTRESIZE: return "CT_NORTHWESTRESIZE";
+    case CT_SOUTHRESIZE: return "CT_SOUTHRESIZE";
+    case CT_SOUTHEASTRESIZE: return "CT_SOUTHEASTRESIZE";
+    case CT_SOUTHWESTRESIZE: return "CT_SOUTHWESTRESIZE";
+    case CT_WESTRESIZE: return "CT_WESTRESIZE";
+    case CT_NORTHSOUTHRESIZE: return "CT_NORTHSOUTHRESIZE";
+    case CT_EASTWESTRESIZE: return "CT_EASTWESTRESIZE";
+    case CT_NORTHEASTSOUTHWESTRESIZE: return "CT_NORTHEASTSOUTHWESTRESIZE";
+    case CT_NORTHWESTSOUTHEASTRESIZE: return "CT_NORTHWESTSOUTHEASTRESIZE";
+    case CT_COLUMNRESIZE: return "CT_COLUMNRESIZE";
+    case CT_ROWRESIZE: return "CT_ROWRESIZE";
+    case CT_MIDDLEPANNING: return "CT_MIDDLEPANNING";
+    case CT_EASTPANNING: return "CT_EASTPANNING";
+    case CT_NORTHPANNING: return "CT_NORTHPANNING";
+    case CT_NORTHEASTPANNING: return "CT_NORTHEASTPANNING";
+    case CT_NORTHWESTPANNING: return "CT_NORTHWESTPANNING";
+    case CT_SOUTHPANNING: return "CT_SOUTHPANNING";
+    case CT_SOUTHEASTPANNING: return "CT_SOUTHEASTPANNING";
+    case CT_SOUTHWESTPANNING: return "CT_SOUTHWESTPANNING";
+    case CT_WESTPANNING: return "CT_WESTPANNING";
+    case CT_MOVE: return "CT_MOVE";
+    case CT_VERTICALTEXT: return "CT_VERTICALTEXT";
+    case CT_CELL: return "CT_CELL";
+    case CT_CONTEXTMENU: return "CT_CONTEXTMENU";
+    case CT_ALIAS: return "CT_ALIAS";
+    case CT_PROGRESS: return "CT_PROGRESS";
+    case CT_NODROP: return "CT_NODROP";
+    case CT_COPY: return "CT_COPY";
+    case CT_NONE: return "CT_NONE";
+    case CT_NOTALLOWED: return "CT_NOTALLOWED";
+    case CT_ZOOMIN: return "CT_ZOOMIN";
+    case CT_ZOOMOUT: return "CT_ZOOMOUT";
+    case CT_GRAB: return "CT_GRAB";
+    case CT_GRABBING: return "CT_GRABBING";
+    case CT_MIDDLE_PANNING_VERTICAL: return "CT_MIDDLE_PANNING_VERTICAL";
+    case CT_MIDDLE_PANNING_HORIZONTAL: return "CT_MIDDLE_PANNING_HORIZONTAL";
+    case CT_CUSTOM: return "CT_CUSTOM";
+    case CT_DND_NONE: return "CT_DND_NONE";
+    case CT_DND_MOVE: return "CT_DND_MOVE";
+    case CT_DND_COPY: return "CT_DND_COPY";
+    case CT_DND_LINK: return "CT_DND_LINK";
+    default: return "CT_NONE";
+  }
+}
 class DevToolsClient final : public CefClient {
  private: IMPLEMENT_REFCOUNTING(DevToolsClient);
 };
@@ -398,6 +455,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     auto d=CefDictionaryValue::Create();d->SetString("page_url",page);d->SetInt("width",width);d->SetInt("height",height);d->SetString("png",CefBase64Encode(bytes.data(),bytes.size()));Event("favicon",d);
   }
   void OnLoadingProgressChange(CefRefPtr<CefBrowser>,double progress) override { auto d=CefDictionaryValue::Create();d->SetDouble("progress",progress);Event("progress",d); }
+  // The page's cursor choice is intent, the app's business: draw it where the
+  // person actually points. Claiming the change keeps Chromium's own macOS
+  // cursor handling from installing NSCursor in this background process, whose
+  // window is not the one the pointer is over.
+  bool OnCursorChange(CefRefPtr<CefBrowser>,CefCursorHandle,cef_cursor_type_t type,const CefCursorInfo&) override {
+    StringEvent("cursor","type",CursorTypeName(type));return true;
+  }
   void CompleteMainNavigation(const std::string& uri,int status) {
     // A failed frame may subsequently finish its error document. Publishing
     // success there would overwrite the queued failure in the native bridge.
