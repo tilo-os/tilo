@@ -22,6 +22,7 @@ pub mod collaborators;
 pub mod composition;
 pub mod emoji_picker;
 pub mod feedback;
+pub mod feedback_picker;
 pub mod here;
 pub mod intents;
 pub mod launchpad;
