@@ -34,10 +34,11 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::{ActionBinding, ControlInvocation, Resource};
+use ui::webview::page::is_element_ref;
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{
-    MediaElementInfo, NavigationCommand, NavigationDirection, PageFailure, PageReply, PageRequest,
-    SharedEngine, WebViewCommand, WebViewEvent,
+    JsDialogKind, MediaElementInfo, NavigationCommand, NavigationDirection, PageFailure, PageKey,
+    PageReply, PageRequest, SharedEngine, WebViewCommand, WebViewEvent,
 };
 use ui::widget::{
     AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
@@ -82,6 +83,8 @@ const PIP_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const PAGE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// The engine's answer to one page request never stays pending longer.
 const PAGE_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+/// The most text one `type-page` types.
+const PAGE_TYPE_MAX_BYTES: usize = 64 * 1024;
 /// A page action that started a navigation waits this long for it to load.
 const PAGE_NAVIGATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -96,6 +99,66 @@ struct PageOperation {
     /// loaded, after the tab heard so: an answer that says "loading" then
     /// completes at once instead of waiting for a load that already happened.
     settled_while_sent: Option<SettledLoad>,
+}
+
+/// A JavaScript dialog the page is waiting on: `alert`, `confirm`, `prompt`
+/// or the question a page asks before it is left.
+#[derive(Clone, Debug, PartialEq)]
+struct PageDialog {
+    id: u32,
+    kind: JsDialogKind,
+    message: String,
+    default_prompt: String,
+    origin: String,
+}
+
+impl PageDialog {
+    /// The dialog as one outline line, so a reader sees what they must answer.
+    fn line(&self) -> String {
+        let mut text = format!(
+            "- dialog {} {}",
+            self.kind.label(),
+            quote_page(&self.message)
+        );
+        if self.kind == JsDialogKind::Prompt && !self.default_prompt.is_empty() {
+            text.push_str(&format!(" default {}", quote_page(&self.default_prompt)));
+        }
+        if !self.origin.is_empty() {
+            text.push_str(&format!(" from {}", self.origin));
+        }
+        text
+    }
+
+    /// What a page action refused because of it says.
+    fn blocked(&self) -> String {
+        format!(
+            "The page is waiting on a {} dialog: {}. Answer it with answer-page-dialog \
+             before doing anything else to the page.",
+            self.kind.label(),
+            self.message
+        )
+    }
+}
+
+/// A page string as one outline token, with its quotes and newlines made
+/// visible so a dialog's text can never look like outline structure.
+fn quote_page(text: &str) -> String {
+    const MAX: usize = 512;
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for (index, character) in text.chars().enumerate() {
+        if index >= MAX {
+            quoted.push('…');
+            break;
+        }
+        match character {
+            '"' => quoted.push('\\'),
+            '\n' | '\r' => quoted.push(' '),
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// How a main-frame load settled.
@@ -501,6 +564,14 @@ pub struct BrowserWidget {
     resource_pip_deadline: Option<ui::time::Instant>,
     page_operation: Option<PageOperation>,
     page_operation_result: Option<ui::tilo_actions::InvocationUpdate>,
+    /// The page's open JavaScript dialog, which has frozen its renderer: no
+    /// page action but reading or answering it can run meanwhile.
+    page_dialog: Option<PageDialog>,
+    /// The outline the page last answered with, which a read while a dialog
+    /// is open still shows under the dialog.
+    page_outline: Option<String>,
+    /// What answering a page dialog did, reported as its action's output.
+    page_dialog_answer: Option<String>,
     /// Effects waiting on an operation this window accepted.
     pending_replies: Vec<(ui::tilo_actions::InvocationId, ui::framework::EffectReply)>,
     page_request_seq: u32,
@@ -1286,6 +1357,9 @@ impl BrowserWidget {
             resource_pip_deadline: None,
             page_operation: None,
             page_operation_result: None,
+            page_dialog: None,
+            page_outline: None,
+            page_dialog_answer: None,
             pending_replies: Vec::new(),
             page_request_seq: 0,
             pending_pip: None,
@@ -1910,6 +1984,12 @@ impl BrowserWidget {
                     .thread_name("browser-reveal-download")
                     .send();
             }
+            BrowserOperation::TypePage { text, element } => {
+                self.start_type_page(text, element.filter(|element| !element.is_empty()))?;
+            }
+            BrowserOperation::AnswerPageDialog { accept, text } => {
+                self.page_dialog_answer = Some(self.answer_page_dialog(accept, text)?);
+            }
             BrowserOperation::Page(_) => {
                 return Err("page actions report their result; start them as an invocation".into());
             }
@@ -1969,6 +2049,131 @@ impl BrowserWidget {
         self.progress < 1.0 && !self.loading_stopped
     }
 
+    /// The page opened a JavaScript dialog: its renderer is paused, so no
+    /// other page action can run until this one is answered.
+    fn page_dialog_opened(&mut self, dialog: PageDialog) {
+        self.page_dialog = Some(dialog);
+        self.structure_dirty = true;
+        // A request the engine was still working on is answered now, naming
+        // the dialog, rather than left to its timeout.
+        let Some(operation) = self
+            .page_operation
+            .take_if(|operation| matches!(operation.phase, PagePhase::Sent))
+        else {
+            return;
+        };
+        let message = self
+            .page_dialog
+            .as_ref()
+            .map_or_else(String::new, PageDialog::blocked);
+        self.reader_request = None;
+        self.page_operation_result = Some(ui::tilo_actions::InvocationUpdate::Failed {
+            invocation: operation.invocation,
+            error: ui::tilo_actions::ActionFailure {
+                retryable: false,
+                code: "browser.page.dialog_open".into(),
+                message,
+                details: None,
+            },
+        });
+    }
+
+    /// Answer the open dialog: `accept` is its OK button, `text` a prompt's
+    /// value.
+    fn answer_page_dialog(&mut self, accept: bool, text: Option<String>) -> Result<String, String> {
+        let dialog = self
+            .page_dialog
+            .take()
+            .ok_or_else(|| "The page has no open dialog to answer.".to_string())?;
+        let answer = if dialog.kind == JsDialogKind::Prompt {
+            text.unwrap_or_else(|| dialog.default_prompt.clone())
+        } else {
+            String::new()
+        };
+        self.engine.send(WebViewCommand::JsDialogDecision {
+            id: dialog.id,
+            accept,
+            text: answer,
+        });
+        self.structure_dirty = true;
+        Ok(format!(
+            "Answered the page's {} dialog: {}.",
+            dialog.kind.label(),
+            match (dialog.kind, accept) {
+                (JsDialogKind::BeforeUnload, true) => "leave the page",
+                (_, true) => "OK",
+                (_, false) => "Cancel",
+            }
+        ))
+    }
+
+    /// What a request the page cannot answer right now still answers from
+    /// what it said before the dialog: reads answer at once, with the dialog
+    /// at the top of the outline.
+    fn read_while_dialog(&self, request: &PageRequest, dialog: &PageDialog) -> Option<PageReply> {
+        let (outline, message) = match request {
+            PageRequest::Outline => (self.page_outline.clone(), "Read the page".to_string()),
+            PageRequest::Changes => (
+                self.page_outline.clone(),
+                format!(
+                    "The page has not changed since its {} dialog opened",
+                    dialog.kind.label()
+                ),
+            ),
+            _ => return None,
+        };
+        let dialog_line = dialog.line();
+        let outline = match outline {
+            Some(outline) if !outline.is_empty() => format!("{dialog_line}\n{outline}"),
+            _ => dialog_line,
+        };
+        Some(PageReply {
+            url: self.current_uri.clone(),
+            message,
+            outline: Some(outline),
+            data: None,
+            navigated: false,
+            loading: false,
+        })
+    }
+
+    /// Type `text` into the page: first focused through `element` when one is
+    /// named, then into whatever the page focuses. A dialog's own field is
+    /// the case that needs it, since the outline cannot ref it.
+    fn start_type_page(&mut self, text: String, element: Option<String>) -> Result<(), String> {
+        if text.len() > PAGE_TYPE_MAX_BYTES {
+            return Err(format!(
+                "type-page types at most {PAGE_TYPE_MAX_BYTES} bytes at a time."
+            ));
+        }
+        if self.page_dialog.is_none()
+            && let Some(element) = element.clone()
+            && !is_element_ref(&element)
+        {
+            return Err(format!(
+                "`{element}` is not an element ref from the page outline, such as d1e5"
+            ));
+        }
+        let click = element.map(|element| WebViewCommand::Page {
+            request_id: self.next_page_request(),
+            request: PageRequest::Click { element },
+        });
+        let typing = WebViewCommand::TypePage {
+            request_id: self.next_page_request(),
+            text,
+        };
+        if let Some(click) = click {
+            self.engine.send(click);
+        }
+        self.engine.send(typing);
+        Ok(())
+    }
+
+    fn next_page_request(&mut self) -> u32 {
+        self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
+        self.page_request_seq
+    }
+
     /// Read and operate the page's content without its pixels: an outline
     /// whose interactive elements carry refs, and actions on those refs.
     fn start_page_operation(
@@ -1977,19 +2182,32 @@ impl BrowserWidget {
         request: PageRequest,
     ) -> Result<(), String> {
         if !request.valid() {
-            return Err(format!(
-                "`{}` names no element of the page outline, or arguments the page cannot take",
-                request.action()
-            ));
+            return Err(match &request {
+                PageRequest::Press { key, .. } => PageKey::reject(&key.chord()),
+                _ => format!(
+                    "`{}` names no element of the page outline, or arguments the page cannot take",
+                    request.action()
+                ),
+            });
+        }
+        if let Some(dialog) = &self.page_dialog {
+            // The renderer is paused: a read answers from what the page said
+            // before the dialog, and anything else says what to answer first.
+            if let Some(mut reply) = self.read_while_dialog(&request, dialog) {
+                reply.url.clone_from(&self.current_uri);
+                self.page_operation_result = Some(self.page_success(invocation, &reply, None));
+                return Ok(());
+            }
+            return Err(dialog.blocked());
         }
         if self.page_operation.is_some() || self.page_operation_result.is_some() {
             return Err("another page action is already running in this tab".into());
         }
-        self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
+        let request_id = self.next_page_request();
         let now = std::time::Instant::now();
         self.page_operation = Some(PageOperation {
             invocation,
-            request_id: self.page_request_seq,
+            request_id,
             phase: PagePhase::Queued {
                 request,
                 until: now + PAGE_LOAD_WAIT,
@@ -2054,6 +2272,9 @@ impl BrowserWidget {
         }) else {
             return;
         };
+        if let Ok(reply) = &result {
+            self.remember_outline(reply);
+        }
         if let Some(enabled) = self.reader_request.take()
             && result.is_ok()
         {
@@ -2119,6 +2340,15 @@ impl BrowserWidget {
         let note = error.map(|error| format!("the page it opened failed to load: {error}"));
         self.page_operation_result =
             Some(self.page_success(operation.invocation, &reply, note.as_deref()));
+    }
+
+    /// Remember the outline a page read answered with, so a read that the
+    /// page cannot answer while one of its dialogs is open still shows what
+    /// the page said.
+    fn remember_outline(&mut self, reply: &PageReply) {
+        if let Some(outline) = &reply.outline {
+            self.page_outline = Some(outline.clone());
+        }
     }
 
     fn page_success(
@@ -3036,6 +3266,31 @@ impl BrowserWidget {
                     } {
                         self.pending_history = None;
                         self.open_navigation_menu(direction, entries);
+                    }
+                }
+                WebViewEvent::JsDialog {
+                    id,
+                    kind,
+                    message,
+                    default_prompt,
+                    origin,
+                } => {
+                    self.page_dialog_opened(PageDialog {
+                        id,
+                        kind,
+                        message,
+                        default_prompt,
+                        origin,
+                    });
+                }
+                WebViewEvent::JsDialogClosed { id } => {
+                    if self
+                        .page_dialog
+                        .as_ref()
+                        .is_some_and(|dialog| dialog.id == id)
+                    {
+                        self.page_dialog = None;
+                        self.structure_dirty = true;
                     }
                 }
                 event @ (WebViewEvent::PermissionRequested { .. }
@@ -5245,6 +5500,20 @@ impl BrowserWidget {
                 &["key", "element"][..],
             ),
             (
+                E::TypePage {
+                    text: String::new(),
+                    element: None,
+                },
+                &["text", "element"][..],
+            ),
+            (
+                E::AnswerPageDialog {
+                    accept: None,
+                    text: None,
+                },
+                &["accept", "text"][..],
+            ),
+            (
                 E::FillPageSecret {
                     element: element.clone(),
                     text: String::new(),
@@ -5782,6 +6051,10 @@ impl BrowserWidget {
                 BrowserOperation::OpenInNewTab { .. } => {
                     local_output("Asked the desktop for a new Browser tab beside this one.")
                 }
+                BrowserOperation::AnswerPageDialog { .. } => self
+                    .page_dialog_answer
+                    .take()
+                    .map_or_else(ui::tilo_actions::ActionOutput::default, local_output),
                 _ => ui::tilo_actions::ActionOutput::default(),
             };
             self.perform_browser_operation(operation)?;

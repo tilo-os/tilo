@@ -196,6 +196,38 @@ const NAMED_KEYS: &[&str] = &[
 ];
 
 impl PageKey {
+    /// What is wrong with `chord`, in the caller's words, when [`Self::parse`]
+    /// refuses it. A chord of several characters is the mistake this names
+    /// exactly: it is text to type, not a key to press.
+    pub fn reject(chord: &str) -> String {
+        let trimmed = chord.trim();
+        if trimmed.is_empty() {
+            return "No key was named. Name one key or chord, such as Enter, Tab, \
+                    Escape, ArrowDown or Control+a. To type text in the page, use \
+                    type-page."
+                .to_string();
+        }
+        let text = if chord.ends_with("++") {
+            "+"
+        } else {
+            chord.rsplit('+').next().unwrap_or(chord)
+        };
+        let letters = text.chars().count();
+        if letters > 1 && !NAMED_KEYS.contains(&text) && text != "Space" {
+            return format!(
+                "`{trimmed}` is {letters} characters, so it is text rather than a key. \
+                 press-page presses one key or chord, such as Enter, Tab, Escape, \
+                 ArrowDown or Control+a; type-page types text into the page."
+            );
+        }
+        format!(
+            "`{trimmed}` is not a key press. Name one key (Enter, Tab, Escape, \
+             Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, \
+             PageUp, PageDown, Space, or a single character) with optional Control, \
+             Shift, Alt or Meta, such as Shift+Tab or Control+a."
+        )
+    }
+
     pub fn parse(chord: &str) -> Option<Self> {
         let mut parts: Vec<&str> = chord.split('+').collect();
         // `Control++` names the plus key itself.

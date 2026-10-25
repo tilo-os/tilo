@@ -89,6 +89,49 @@ pub struct KeyModifiers {
     pub meta: bool,
 }
 
+/// The JavaScript dialogs a page can open, which freeze it until a person or
+/// an action answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsDialogKind {
+    Alert,
+    Confirm,
+    Prompt,
+    /// The page asks before it is left, because it holds unsaved work.
+    BeforeUnload,
+}
+
+impl JsDialogKind {
+    /// The name the engine protocol uses.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Alert => "alert",
+            Self::Confirm => "confirm",
+            Self::Prompt => "prompt",
+            Self::BeforeUnload => "beforeunload",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "alert" => Self::Alert,
+            "confirm" => Self::Confirm,
+            "prompt" => Self::Prompt,
+            "beforeunload" => Self::BeforeUnload,
+            _ => return None,
+        })
+    }
+
+    /// The word an answer's message uses for it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Alert => "alert",
+            Self::Confirm => "confirm",
+            Self::Prompt => "prompt",
+            Self::BeforeUnload => "before-unload question",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamedKey {
     Enter,
@@ -335,6 +378,13 @@ pub enum WebViewCommand {
         request_id: u32,
         request: PageRequest,
     },
+    /// Type `text` into the page one character at a time, into whatever has
+    /// focus: the field a page's own dialog shows is not one the outline refs.
+    /// Exactly one [`WebViewEvent::PageResult`] with the same id answers it.
+    TypePage {
+        request_id: u32,
+        text: String,
+    },
     /// Capture the page's layout for the paint stream: every box and text
     /// line the engine laid out (see `tilo_paint_stream::snapshot`). Exactly
     /// one [`WebViewEvent::PaintSnapshot`] with the same id answers it.
@@ -359,6 +409,13 @@ pub enum WebViewCommand {
     DownloadDecision {
         id: u32,
         allow: bool,
+    },
+    /// Answer the page's open JavaScript dialog: `accept` is its OK button,
+    /// and `text` is a prompt's value.
+    JsDialogDecision {
+        id: u32,
+        accept: bool,
+        text: String,
     },
     CancelNativeDownload {
         id: u32,
@@ -440,6 +497,18 @@ pub enum WebViewEvent {
         permissions: String,
     },
     PermissionClosed {
+        id: u32,
+    },
+    /// The page is waiting on a JavaScript dialog, so it answers nothing more
+    /// until one arrives.
+    JsDialog {
+        id: u32,
+        kind: JsDialogKind,
+        message: String,
+        default_prompt: String,
+        origin: String,
+    },
+    JsDialogClosed {
         id: u32,
     },
     NativeDownloadRequested {

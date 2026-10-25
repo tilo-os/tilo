@@ -6,6 +6,7 @@
 #include "document_scripts.h"
 #include "startup_diagnostics.h"
 #include "capabilities.h"
+#include "js_dialogs.h"
 #include "site_info.h"
 #include "navigation_history.h"
 #include "page_automation.h"
@@ -181,9 +182,11 @@ CefRefPtr<tilo::Downloads> downloads;
 tilo::DownloadOwnerReservations download_owners;
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
-                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler, public CefAudioHandler {
+                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler, public CefAudioHandler, public CefJSDialogHandler {
  public:
-  explicit Client(int id):id_(id),credential_document_(private_mode),capabilities_(new tilo::Capabilities([this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
+  explicit Client(int id):id_(id),credential_document_(private_mode),capabilities_(new tilo::Capabilities([this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})),js_dialogs_(new tilo::JsDialogs([this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);},
+    [this](const std::string& kind){ if(page_automation_) page_automation_->DialogOpened(kind); },
+    [this] { if(page_automation_) page_automation_->DialogClosed(); })) {}
   void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
     if(transfer_owner_ && name!="tab_detached" && name!="closed") return;
     if(!fields) fields=CefDictionaryValue::Create();fields->SetInt("tab",id_);::Event(name,fields);
@@ -265,6 +268,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void OnAudioStreamError(CefRefPtr<CefBrowser>,const CefString&) override { AudioEvent("audio_stop",nullptr,false); }
   CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return downloads; }
   CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return capabilities_; }
+  CefRefPtr<CefJSDialogHandler> GetJSDialogHandler() override { return js_dialogs_; }
   CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
@@ -356,6 +360,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(site_clear_)site_clear_->Detach();
     site_clear_=nullptr;
     capabilities_->Close();
+    js_dialogs_->Close();
     if(navigation_history_)navigation_history_->Detach();
     navigation_history_=nullptr;
     if(page_automation_)page_automation_->Detach();
@@ -379,7 +384,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(closing && clients.empty())CefQuitMessageLoop();
   }
   bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool,bool redirect) override {
-    if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
+    if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close();js_dialogs_->Close(); }return false;
   }
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
@@ -693,6 +698,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(action=="console" || action=="network") agent_log_->Request(d);
       else { agent_log_->Activate();page_automation_->Request(d); }
     }
+    else if(op=="type_page") PageType(d->GetString("text").ToString(),d->GetInt("request_id"));
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
@@ -748,6 +754,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="key") Key(d);
     else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
     else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"));
+    else if(op=="js_dialog_decision") js_dialogs_->Decide(d->GetInt("id"),d->GetBool("accept"),d->GetString("text").ToString());
     else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
     else if(op=="devtools") { CefWindowInfo window;
       host->ShowDevTools(window,new DevToolsClient,CefBrowserSettings(),CefPoint());
@@ -763,7 +770,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else { StringEvent("error","message","Unknown command: "+op);CloseHost(); }
   }
   void Key(CefRefPtr<CefDictionaryValue> d) {
-    CefKeyEvent e;e.type=d->GetBool("down")?KEYEVENT_RAWKEYDOWN:KEYEVENT_KEYUP;
+    // CEF keeps the encoded characters from the last key event, so every event
+    // states them rather than inheriting an earlier character.
+    d->SetInt("encoded",0);d->SetInt("unmodified",0);
+    const bool text_only=d->GetBool("no_raw") && d->GetBool("down") && !d->GetBool("ctrl") && !d->GetBool("meta") && !d->GetBool("alt");
+    CefKeyEvent e;e.type=d->GetBool("down")?(text_only?KEYEVENT_CHAR:KEYEVENT_RAWKEYDOWN):KEYEVENT_KEYUP;
     e.modifiers=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
     key_modifiers_=e.modifiers;
     std::string key=d->GetString("key");
@@ -793,8 +804,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
 #endif
     CefString text(key);auto utf16=text.ToString16();
     if(utf16.size()==1) e.character=e.unmodified_character=utf16[0];
+    if(d->HasKey("encoded")) e.character=static_cast<char16_t>(d->GetInt("encoded"));
+    if(d->HasKey("unmodified")) e.unmodified_character=static_cast<char16_t>(d->GetInt("unmodified"));
     browser_->GetHost()->SendKeyEvent(e);
-    if(d->GetBool("down") && (utf16.size()==1 || key=="Enter") && !d->GetBool("ctrl")&&!d->GetBool("meta")) { e.type=KEYEVENT_CHAR;browser_->GetHost()->SendKeyEvent(e); }
+    if(!d->GetBool("no_raw") && d->GetBool("down") && (utf16.size()==1 || key=="Enter") && !d->GetBool("ctrl")&&!d->GetBool("meta")) { e.type=KEYEVENT_CHAR;browser_->GetHost()->SendKeyEvent(e); }
   }
   // Page actions deliver input exactly as a person's pointer and keyboard do.
   // Coordinates arrive in CSS pixels; CEF's view space is zoomed DIPs.
@@ -809,8 +822,27 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!browser_)return;const int held=key_modifiers_;
     // Keys reach only a focused view; the page's own focused element is kept.
     browser_->GetHost()->SetFocus(true);
-    key->SetBool("down",true);Key(key);key->SetBool("down",false);Key(key);
+    // A typed character is sent as text and not additionally as a raw key
+    // event, so a page never sees the same character twice.
+    const bool character=key->GetBool("character"),up=key->GetBool("up");
+    key->SetBool("down",!up);key->SetBool("no_raw",character);
+    Key(key);
+    key->SetBool("down",false);Key(key);
     key_modifiers_=held;
+  }
+  // Type `text` into the page one character at a time, into whatever has
+  // focus: the field a page's prompt shows is not one the outline refs.
+  void PageType(const std::string& text,int request) {
+    if(!browser_ || !page_automation_) return;
+    std::vector<std::string> characters;
+    for(size_t i=0;i<text.size();) {
+      // UTF-8 lead byte and its continuations are one character.
+      const unsigned char byte=static_cast<unsigned char>(text[i]);
+      const size_t length=byte>=0xf0?4:byte>=0xe0?3:byte>=0xc0?2:1;
+      characters.push_back(text.substr(i,std::min(length,text.size()-i)));
+      i+=characters.back().size();
+    }
+    page_automation_->Type(characters,"Typed "+std::to_string(characters.size())+" characters in the page",request);
   }
   CefRefPtr<CefBrowser> browser_;
   bool detached() const {return transfer_owner_;}
@@ -823,7 +855,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!download_owners.Detach(id_)){Event("close_blocked");return;}
     InvalidateCredentials();
     transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
-    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();pixels_.clear();popup_.clear();Event("tab_detached");PublishDownloadRuntime();
+    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();js_dialogs_->Close();pixels_.clear();popup_.clear();Event("tab_detached");PublishDownloadRuntime();
   }
  private:
   struct CredentialPending {
@@ -1131,6 +1163,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<tilo::PaintSnapshot> paint_snapshot_;
   CefRefPtr<tilo::DocumentSize> document_size_;
   CefRefPtr<tilo::Capabilities> capabilities_;
+  CefRefPtr<tilo::JsDialogs> js_dialogs_;
   CefRefPtr<tilo::StartupDiagnostics> startup_diagnostics_;
   CefRefPtr<tilo::DocumentScripts> document_scripts_,composition_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
   CefRefPtr<tilo::SiteClear> site_clear_;
@@ -1308,6 +1341,8 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   }
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
   if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  if(op=="js_dialog_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("accept",VTYPE_BOOL)
+      && (!d->HasKey("text") || (type("text",VTYPE_STRING) && d->GetString("text").length()<=65536));
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
   if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);
   if(op=="stop_find") return true;
@@ -1408,6 +1443,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     }
     return true;
   }
+  if(op=="type_page") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=65536;
   if(op=="paint_capture") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("styles",VTYPE_LIST))return false;
     auto styles=d->GetList("styles");if(!styles->GetSize() || styles->GetSize()>64)return false;

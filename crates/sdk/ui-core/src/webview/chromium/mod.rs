@@ -516,7 +516,8 @@ impl WebViewEngine for UnavailableEngine {
                 uri,
                 error: self.message.clone(),
             }),
-            WebViewCommand::Page { request_id, .. } => {
+            WebViewCommand::Page { request_id, .. }
+            | WebViewCommand::TypePage { request_id, .. } => {
                 self.shared.event(WebViewEvent::PageResult {
                     request_id,
                     result: Err(super::PageFailure::new("unavailable", self.message.clone())),
@@ -1378,7 +1379,9 @@ impl WebViewEngine for ChromiumEngine {
             return;
         }
         if !command_within_limits(&command) {
-            if let WebViewCommand::Page { request_id, .. } = command {
+            if let WebViewCommand::Page { request_id, .. }
+            | WebViewCommand::TypePage { request_id, .. } = command
+            {
                 self.shared.event(WebViewEvent::PageResult {
                     request_id,
                     result: Err(super::PageFailure::new(
@@ -1398,7 +1401,8 @@ impl WebViewEngine for ChromiumEngine {
             return;
         }
         let page_request = match &command {
-            WebViewCommand::Page { request_id, .. } => Some(*request_id),
+            WebViewCommand::Page { request_id, .. }
+            | WebViewCommand::TypePage { request_id, .. } => Some(*request_id),
             _ => None,
         };
         if let Some(mut command) = encode_command(command) {
@@ -1779,6 +1783,20 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             .as_object()
             .is_some_and(|object| object.len() == if value.get("tab").is_some() { 2 } else { 1 }),
         "permission_prompt" => valid_id(value) && text("origin") && text("permissions"),
+        "js_dialog" => {
+            valid_id(value)
+                && value["kind"]
+                    .as_str()
+                    .is_some_and(|kind| super::JsDialogKind::parse(kind).is_some())
+                && text("message")
+                && text("default_prompt")
+                && text("origin")
+                && value["message"].as_str().is_some_and(|m| m.len() <= 8192)
+                && value["default_prompt"]
+                    .as_str()
+                    .is_some_and(|prompt| prompt.len() <= 8192)
+        }
+        "js_dialog_closed" => valid_id(value),
         "download_prompt" => valid_id(value) && text("url") && text("name"),
         "download" => {
             valid_id(value)
@@ -1959,6 +1977,9 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             request_id,
             request,
         } => *request_id > 0 && i32::try_from(*request_id).is_ok() && request.valid(),
+        WebViewCommand::TypePage { request_id, text } => {
+            *request_id > 0 && i32::try_from(*request_id).is_ok() && text.len() <= 65536
+        }
         WebViewCommand::PaintResource { request_id, url } => {
             *request_id > 0
                 && i32::try_from(*request_id).is_ok()
@@ -1969,6 +1990,9 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         | WebViewCommand::DownloadDecision { id, .. }
         | WebViewCommand::CancelNativeDownload { id }
         | WebViewCommand::RetryDownload { id } => *id > 0 && i32::try_from(*id).is_ok(),
+        WebViewCommand::JsDialogDecision { id, text, .. } => {
+            *id > 0 && i32::try_from(*id).is_ok() && text.len() <= 65536
+        }
         WebViewCommand::Navigate(url) => url.len() <= 65536,
         WebViewCommand::StartDownload { uri } => {
             uri.len() <= 8192
@@ -2162,6 +2186,16 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             permissions: value["permissions"].as_str()?.into(),
         },
         "permission_closed" => WebViewEvent::PermissionClosed {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+        },
+        "js_dialog" => WebViewEvent::JsDialog {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+            kind: super::JsDialogKind::parse(value["kind"].as_str()?)?,
+            message: value["message"].as_str()?.into(),
+            default_prompt: value["default_prompt"].as_str()?.into(),
+            origin: value["origin"].as_str()?.into(),
+        },
+        "js_dialog_closed" => WebViewEvent::JsDialogClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
         "download_prompt" => WebViewEvent::NativeDownloadRequested {
@@ -2376,6 +2410,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::DownloadDecision { id, allow } => {
             json!({"op":"download_decision","id":id,"allow":allow})
         }
+        WebViewCommand::JsDialogDecision { id, accept, text } => {
+            json!({"op":"js_dialog_decision","id":id,"accept":accept,"text":text})
+        }
         WebViewCommand::Find {
             id,
             text,
@@ -2400,6 +2437,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             request_id,
             request,
         } => super::page::encode_request(request_id, &request),
+        WebViewCommand::TypePage { request_id, text } => {
+            json!({"op":"type_page","request_id":request_id,"text":text})
+        }
         WebViewCommand::PaintCapture { request_id } => json!({
             "op": "paint_capture",
             "request_id": request_id,

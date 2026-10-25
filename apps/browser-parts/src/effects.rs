@@ -287,6 +287,31 @@ pub enum BrowserEffect {
         #[param("Element ref to focus first; otherwise the focused element")]
         element: Option<String>,
     },
+    /// Type text into the page
+    ///
+    /// Presses each character in turn, into the focused element by default.
+    /// Slower and more literal than filling a field: use it to answer a page's
+    /// prompt, where the field it types into is not one the outline refs.
+    #[effect(row, job, returns, programmatic, untrusted)]
+    TypePage {
+        #[param("Text to type, in order")]
+        text: String,
+        #[param("Element ref to focus first; otherwise the focused element")]
+        element: Option<String>,
+    },
+    /// Answer page dialog
+    ///
+    /// Answers the page's open alert, confirm or prompt that read-page shows.
+    /// Accepting an alert just closes it; a confirm's allow is OK and its
+    /// refusal is Cancel; a prompt's allow is OK and its text is what it
+    /// answers with.
+    #[effect(row, job, returns, programmatic, untrusted)]
+    AnswerPageDialog {
+        #[param("OK: accept an alert, confirm, prompt or before-unload question (default true)")]
+        accept: Option<bool>,
+        #[param("What a prompt answers with; otherwise it keeps its default text")]
+        text: Option<String>,
+    },
     /// Submit page form
     ///
     /// A form that sends its data to another site than the page's own is
@@ -431,6 +456,14 @@ impl BrowserEffect {
                 secret: true,
             }),
             Self::SelectPage { element, values } => page(PageRequest::Select { element, values }),
+            Self::TypePage { text, element } => BrowserOperation::TypePage {
+                text,
+                element: element.filter(|element| !element.is_empty()),
+            },
+            Self::AnswerPageDialog { accept, text } => BrowserOperation::AnswerPageDialog {
+                accept: accept.unwrap_or(true),
+                text,
+            },
             Self::PressPage { key, element } => page(PageRequest::Press {
                 element: element.filter(|element| !element.is_empty()),
                 key: PageKey::parse(&key).unwrap_or_else(|| PageKey {
@@ -529,6 +562,16 @@ pub enum BrowserOperation {
     },
     RevealDownload {
         id: String,
+    },
+    /// Type `text` into the focused element, or `element` after focusing it.
+    TypePage {
+        text: String,
+        element: Option<String>,
+    },
+    /// Answer the page's open JavaScript dialog.
+    AnswerPageDialog {
+        accept: bool,
+        text: Option<String>,
     },
     Page(PageRequest),
 }

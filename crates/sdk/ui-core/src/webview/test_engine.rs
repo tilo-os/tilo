@@ -10,8 +10,8 @@
 use std::sync::{Arc, Mutex};
 
 use super::{
-    Frame, FrameSlot, MediaElementInfo, PageFailure, PageReply, PageRequest, WebViewCommand,
-    WebViewEngine, WebViewEvent,
+    Frame, FrameSlot, MediaElementInfo, PageFailure, PageKey, PageReply, PageRequest,
+    WebViewCommand, WebViewEngine, WebViewEvent,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -456,6 +456,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ShowDeveloperTools
             | WebViewCommand::PermissionDecision { .. }
             | WebViewCommand::DownloadDecision { .. }
+            | WebViewCommand::JsDialogDecision { .. }
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }
             | WebViewCommand::StopFinding
@@ -478,6 +479,18 @@ impl WebViewEngine for TestEngine {
                 request,
             } => {
                 let result = Self::page_reply_locked(&mut inner, &request);
+                inner
+                    .events
+                    .push(WebViewEvent::PageResult { request_id, result });
+            }
+            WebViewCommand::TypePage { request_id, .. } => {
+                let result = Self::page_reply_locked(
+                    &mut inner,
+                    &PageRequest::Press {
+                        element: None,
+                        key: PageKey::parse("Space").expect("Space is a named key"),
+                    },
+                );
                 inner
                     .events
                     .push(WebViewEvent::PageResult { request_id, result });

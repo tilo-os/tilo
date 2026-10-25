@@ -41,7 +41,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   void Request(CefRefPtr<CefDictionaryValue> command) {
     const int request=command->GetInt("request_id");
     if(!browser_) return;
-    if(pending_) { Reply(request,Failure("busy","Another page action is still running in this tab"),command->GetString("op")=="text_input");return; }
+    if(pending_) { Reply(request,Failure(dialog_waiting_?"dialog_open":"busy",dialog_waiting_?DialogMessage():"Another page action is still running in this tab"),command->GetString("op")=="text_input");return; }
+    if(dialog_waiting_) { Reply(request,Failure("dialog_open",DialogMessage()),command->GetString("op")=="text_input");return; }
     const bool private_text=command->GetString("op")=="text_input";
     auto owned=command->Copy(false);
     if(private_text) {
@@ -71,6 +72,40 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     world_=0;loader_.clear();text_owner_.reset();text_lease_.clear();
     if(pending_ && call_) Fail("unavailable","The page's inspector connection closed");
   }
+  // The page opened a JavaScript dialog, which pauses its renderer: nothing
+  // it is asked from now on is answered. Whatever was waiting is failed at
+  // once, naming the dialog, instead of waiting out its timeout.
+  void DialogOpened(const std::string& question) {
+    dialog_waiting_=true;dialog_question_=question;
+    if(!pending_) return;
+    if(PrivateText()) { text_owner_.reset();text_lease_.clear();Finish(Failure("dialog_open",DialogMessage()));return; }
+    Fail("dialog_open",DialogMessage());
+  }
+  void DialogClosed() { dialog_waiting_=false;dialog_question_.clear(); }
+  // The focused element receives `keys` in order, each sent exactly as a
+  // person's keyboard sends a character: so a masked input, a key handler or
+  // a prompt's own field sees them one at a time.
+  void Type(const std::vector<std::string>& characters,const std::string& message,int request) {
+    if(!browser_ || characters.empty()) return;
+    ++token_;typing_=true;
+    for(const auto& character:characters) {
+      // One code point, as UTF-16: the shape CEF key events carry text in.
+      const CefString text(character);const auto units=text.ToString16();
+      if(units.empty()) continue;
+      for(const bool up:{false,true}) {
+        auto event=CefDictionaryValue::Create();
+        event->SetString("key",character);event->SetBool("up",up);
+        event->SetBool("character",true);
+        event->SetInt("encoded",units[0]);event->SetInt("unmodified",units[0]);
+        key_(event);
+      }
+    }
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,std::string message,int request,uint64_t token) {
+      if(!self->browser_ || !self->typing_ || self->token_!=token) return;
+      self->typing_=false;
+      self->Reply(request,TypeFailure(message.empty()?"Typed in the page":message));
+    },CefRefPtr<PageAutomation>(this),message,request,token_),kSettleMs);
+  }
 
  private:
   static constexpr int64_t kTimeoutMs=30000;
@@ -86,6 +121,15 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     CefRefPtr<CefDictionaryValue> command;std::string message;bool awaiting_load=false;
   };
   std::string Action() const { return pending_->command->GetString("action").ToString(); }
+  std::string DialogMessage() const {
+    return "The page is waiting on its "+dialog_question_+" dialog; answer it with answer-page-dialog";
+  }
+  CefRefPtr<CefDictionaryValue> TypeFailure(const std::string& message) const {
+    auto fields=CefDictionaryValue::Create();fields->SetBool("ok",true);
+    fields->SetString("url",browser_->GetMainFrame()->GetURL());fields->SetString("message",message.substr(0,1024));
+    fields->SetBool("navigated",false);fields->SetBool("loading",false);fields->SetNull("outline");
+    return fields;
+  }
   bool PrivateText() const { return pending_->command->GetString("op")=="text_input"; }
   bool CollectTextFrames(CefRefPtr<CefDictionaryValue> tree,std::vector<TextFrame>& frames,const std::string& root_origin={},bool observed_ancestors=true) {
     if(!tree || frames.size()>=128)return false;
@@ -372,6 +416,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   std::vector<TextFrame> text_candidates_;TextFrame text_frame_;std::optional<TextFrame> text_owner_;std::string text_lease_;
   bool native_attempted_=false;std::string native_object_;
   int world_=0,document_=0;std::string loader_;uint64_t token_=0,navigations_=0;
+  bool dialog_waiting_=false;std::string dialog_question_;bool typing_=false;
   IMPLEMENT_REFCOUNTING(PageAutomation);
 };
 }
