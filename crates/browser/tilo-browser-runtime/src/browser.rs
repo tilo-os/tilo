@@ -395,6 +395,9 @@ struct Mount {
     frames: u64,
     /// Redraws the browser delivered ([`first_frame::Driver`]).
     redraws: u32,
+    /// Where the last draw stopped short of presenting: what a mount that
+    /// never presents says it was waiting on (`watch_first_frame`).
+    held: &'static str,
     /// How many of the harness's refused or failed invocations the page's
     /// log has been told about.
     failures_logged: usize,
@@ -1721,6 +1724,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         generation: 1,
         frames: 0,
         redraws: 0,
+        held: "no draw yet",
         failures_logged: 0,
         presented_capture_protected: true,
         presentation: std::cell::Cell::new(false),
@@ -1753,6 +1757,32 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
 extern "C" {
     #[wasm_bindgen(js_name = setTimeout)]
     fn set_timeout(handler: &Function, ms: u32) -> JsValue;
+    #[wasm_bindgen(js_name = requestAnimationFrame)]
+    fn request_animation_frame(handler: &JsValue) -> JsValue;
+}
+
+/// Whether the page gets animation frames while a mount waits on its first
+/// one: asked for once a tick by [`watch_first_frame`], counted as they come.
+/// A redraw needs one, so a first frame that waits without them waits on the
+/// browser, not the renderer.
+#[derive(Default)]
+struct FrameProbe {
+    asked: bool,
+    came: u32,
+}
+
+impl FrameProbe {
+    fn ask(probe: &Rc<RefCell<Self>>) {
+        if std::mem::replace(&mut probe.borrow_mut().asked, true) {
+            return;
+        }
+        let answered = Rc::clone(probe);
+        let _ = request_animation_frame(&Closure::once_into_js(move || {
+            let mut answered = answered.borrow_mut();
+            answered.asked = false;
+            answered.came = answered.came.saturating_add(1);
+        }));
+    }
 }
 
 pub(crate) async fn sleep_ms(ms: u32) {
@@ -1772,7 +1802,9 @@ pub(crate) async fn sleep_ms(ms: u32) {
 async fn watch_first_frame(id: u64) {
     let mut watch = first_frame::Watch::new(first_frame::DRIVE_MS);
     let mut driver = first_frame::Driver::default();
+    let probe = Rc::new(RefCell::new(FrameProbe::default()));
     loop {
+        FrameProbe::ask(&probe);
         sleep_ms(first_frame::DRIVE_MS).await;
         if !await_runtime_admission().await {
             return;
@@ -1806,11 +1838,27 @@ async fn watch_first_frame(id: u64) {
             };
             let visible = !m.hidden && !m.viewport.suspended();
             let tick = watch.tick(step, PIPELINES_BUILT.get(), visible);
+            if tick.step_changed {
+                probe.borrow_mut().came = 0;
+            }
             if tick.step_changed || tick.stalled.is_some() {
                 let stalled = tick.stalled.unwrap_or(false);
                 if stalled {
+                    // Waiting on the first frame, say what held it back.
+                    let why = if step == GpuStep::FirstFrame {
+                        let deferred = DEFERRED_EVENTS
+                            .with(|events| events.try_borrow().map_or(0, |e| e.len()));
+                        format!(
+                            " ({} redraws arrived, the last draw held by {}; {} animation frames came meanwhile, {deferred} events wait deferred)",
+                            m.redraws,
+                            m.held,
+                            probe.borrow().came
+                        )
+                    } else {
+                        String::new()
+                    };
                     web_sys::console::warn_1(&JsValue::from_str(&format!(
-                        "desktop: no first frame after {} s on one step, {}; still waiting",
+                        "desktop: no first frame after {} s on one step, {}{why}; still waiting",
                         first_frame::STALL_MS / 1000,
                         step.waiting_on()
                     )));
@@ -2189,13 +2237,16 @@ impl Mount {
     )]
     fn draw_measured(&mut self) -> Result<(), String> {
         if self.hidden || self.error.is_some() {
+            self.held = "hidden";
             return Ok(());
         }
         self.queue_resize();
         if self.viewport.suspended() {
+            self.held = "an empty canvas";
             return Ok(());
         }
         let Some(gpu) = self.gpu.as_mut() else {
+            self.held = "no surface";
             return Ok(());
         };
         let viewport = self.viewport.requested();
@@ -2260,10 +2311,15 @@ impl Mount {
             self.pending |= drive_pixels(&handle.device, &handle.queue, conservative);
         }
         if !self.pending {
+            // A skipped layout waits for input or a wake: say that, not idleness.
+            if !self.skipped_frame {
+                self.held = "nothing to draw";
+            }
             return Ok(());
         }
         let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
             // Another mount's GPU setup holds the shared device for a moment.
+            self.held = "the shared device busy";
             self.window.request_redraw();
             return Ok(());
         };
@@ -2302,9 +2358,18 @@ impl Mount {
         let output = match acquired {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
-            wgpu::CurrentSurfaceTexture::Outdated
-            | wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded => None,
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.held = "an outdated surface";
+                None
+            }
+            wgpu::CurrentSurfaceTexture::Timeout => {
+                self.held = "a surface texture that timed out";
+                None
+            }
+            wgpu::CurrentSurfaceTexture::Occluded => {
+                self.held = "an occluded surface";
+                None
+            }
             other => return Err(format!("WebGPU surface unavailable: {other:?}")),
         };
         drop(shared_guard);
@@ -2428,6 +2493,7 @@ impl Mount {
             // waits for input or a wake instead of failing on every frame.
             self.pending = !self.skipped_frame;
             self.skipped_frame = true;
+            self.held = "a layout that did not settle";
             return self.keep_last_frame(output);
         }
         self.skipped_frame = false;
@@ -2442,6 +2508,7 @@ impl Mount {
                 web_sys::console::error_1(&JsValue::from_str(&reason));
             }
             self.pending = false;
+            self.held = "a scene too large to draw";
             return self.keep_last_frame(output);
         }
         self.oversized_scene = false;
