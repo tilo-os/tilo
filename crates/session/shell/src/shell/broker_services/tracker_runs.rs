@@ -220,6 +220,7 @@ fn run_of(id: &Id, issue: &Issue) -> Option<TrackerRun> {
         action: question.action.clone(),
         arguments_digest: question.arguments_digest.clone(),
         draft: question.draft.clone(),
+        before: question.preview.clone(),
         answer: match question.state {
             ConfirmationState::Waiting => TrackerAnswer::Waiting,
             ConfirmationState::Confirmed => TrackerAnswer::Confirmed {

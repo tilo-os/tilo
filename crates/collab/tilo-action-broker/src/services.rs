@@ -4,9 +4,9 @@ pub mod person_chat;
 mod task_execution;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use task_execution::{
-    NativeTaskActionRequirement, NativeTaskBinding, TRACKER_APP, TRACKER_ISSUE_PREFIX,
-    TRACKER_RESOURCE, TrackerAnswer, TrackerDirection, TrackerQuestion, TrackerRun, TrackerRuns,
-    is_tracker_issue,
+    NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
+    TRACKER_ISSUE_PREFIX, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection, TrackerQuestion,
+    TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
 };
 
 use std::sync::Arc;

@@ -50,20 +50,22 @@ async fn append_target(f: &Fixture) -> (channel_handle::Client, invocation_strea
 
 /// The person tells the agent Notes asks first.
 fn ask_first_for_notes(f: &Fixture) {
+    put_grant(f, asks_first_for_notes(f));
+}
+
+/// The grant [`ask_first_for_notes`] puts.
+fn asks_first_for_notes(f: &Fixture) -> tilo_action_policy::Grant {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
-    put_grant(
-        f,
-        agent_answers::grant(
-            &room().to_string(),
-            "scribe",
-            (
-                &AnswerScope::app("so.tilo.notes"),
-                tilo_action_policy::ActionKind::Undoable,
-            ),
-            tilo_action_policy::Answer::Ask,
-            tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+    agent_answers::grant(
+        &room().to_string(),
+        "scribe",
+        (
+            &AnswerScope::app("so.tilo.notes"),
+            tilo_action_policy::ActionKind::Undoable,
         ),
-    );
+        tilo_action_policy::Answer::Ask,
+        tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+    )
 }
 
 async fn append(
@@ -161,20 +163,41 @@ pub(super) fn ask(
         action: action.into(),
         arguments_digest: digest,
         draft: serde_json::to_value(&draft).unwrap(),
+        before: None,
         answer: TrackerAnswer::Waiting,
     };
     f.on_run(|run| run.question = Some(question.clone()));
     question
 }
 
-/// The agent asks about appending `text` to the release notes.
+/// The agent asks about appending `text` to the release notes, previewing
+/// the tree the append leaves beside the line it adds: its person approves
+/// the change, not only the sentence.
 pub(super) fn ask_append(f: &Fixture, text: &str) -> TrackerQuestion {
     let arguments = serde_json::json!({ "text": text });
-    ask(
+    let mut question = ask(
         f,
         ("notes:release", "append"),
         arguments.as_object().unwrap(),
-    )
+    );
+    let before = crate::services::Preview {
+        before: crate::services::PreviewSide {
+            text: "Release notes\n".into(),
+            spoken: "Release notes".into(),
+        },
+        after: crate::services::PreviewSide {
+            text: format!("Release notes\n{text}\n"),
+            spoken: format!("Release notes, then {text}"),
+        },
+    };
+    let recorded = serde_json::to_value(&before).unwrap();
+    question.before = Some(recorded.clone());
+    f.on_run(|run| {
+        if let Some(asked) = run.question.as_mut() {
+            asked.before = Some(recorded);
+        }
+    });
+    question
 }
 
 /// The person answers the run's question on the issue.
@@ -266,6 +289,11 @@ async fn the_tasks_app_has_a_runs_question_put_to_its_person_on_the_hosts_sheet(
             assert_eq!(request.app_id, "scribe");
             assert_eq!(request.action_label, "Append");
             assert_eq!(request.draft.unwrap().fields[0].value.line(), "Draft line");
+            let preview = request
+                .preview
+                .expect("the sheet shows the change the step makes");
+            assert_eq!(preview.before.text, "Release notes\n");
+            assert_eq!(preview.after.text, "Release notes\nDraft line\n");
             assert_eq!(
                 request.scope, None,
                 "a person who may not grant is offered once"
@@ -391,6 +419,43 @@ async fn an_asking_action_pauses_the_run_and_runs_exactly_what_the_person_confir
             let argument: serde_json::Value =
                 serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
             assert_eq!(argument["text"], "Reviewed line", "the person's edit ran");
+            drop(f);
+        })
+        .await;
+}
+
+/// The person is shown the change before it runs: the question carries the
+/// step's own preview, before and after, so approving it approves a change
+/// and not only a sentence, and a person who cannot see the tree reads the
+/// same two sides as words.
+#[tokio::test(flavor = "current_thread")]
+async fn a_waiting_question_shows_the_change_before_anything_runs() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (_target, _stream) = append_target(&f).await;
+            ask_first_for_notes(&f);
+
+            let waiting = append(&agent, &run, 9400, "Draft line").await.unwrap_err();
+            assert!(
+                waiting
+                    .to_string()
+                    .contains(tilo_actions::draft::AWAITING_CONFIRMATION),
+                "{waiting}"
+            );
+            assert!(nothing_delivered(), "nothing ran before the answer");
+            let asked = ask_append(&f, "Draft line");
+            assert_eq!(held(&f).unwrap().id, asked.id);
+            let preview = crate::services::confirmation_preview(&asked)
+                .1
+                .expect("the question carries the change preview");
+            assert_eq!(preview.before.text, "Release notes\n");
+            assert_eq!(preview.after.text, "Release notes\nDraft line\n");
+            assert!(!preview.after.spoken.is_empty(), "{:?}", preview.after);
+            assert!(nothing_delivered(), "a waiting question runs nothing");
             drop(f);
         })
         .await;
