@@ -22,9 +22,8 @@ use tilo_desktop_model::{DesktopTree, UserId};
 
 use super::{
     AppDirectory, DefaultAppsCtx, GrantDraft, WsTab, agents_add_rect, agents_pane_rows,
-    default_app_rows, draw_agents_pane, draw_default_apps_pane, draw_members_pane,
-    draw_permissions_pane, members_pane_rows, ownership_action_rect, permission_profiles_rect,
-    permissions_pane_layout,
+    default_app_rows, draw_agents_pane, draw_default_apps_pane, draw_permissions_pane,
+    permission_profiles_rect, permissions_pane_layout,
 };
 use ui::TextRole;
 
@@ -271,6 +270,8 @@ pub struct WorkspaceSettingsOverlay {
     member_sheet_option_rects: Vec<Rect>,
     /// The General tab's body, laid out by the toolkit.
     general: general::GeneralPage,
+    /// The People tab's body, laid out by the toolkit.
+    people: people::PeoplePage,
     /// Shaped caret/scroll cache; the host owns the rename draft and selection.
     name_input: Option<ui::widget::TextInput>,
 }
@@ -305,6 +306,7 @@ impl Default for WorkspaceSettingsOverlay {
             member_sheet_focus: 0,
             member_sheet_option_rects: Vec::new(),
             general: general::GeneralPage::default(),
+            people: people::PeoplePage::default(),
             name_input: None,
         }
     }
@@ -1692,28 +1694,37 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
-        let body_rect = Self::body_rect(rect);
-        let is_owner = model.owner_controls;
-        if let Some(ws) = model.desktop.active_workspace() {
-            let actor = model.acting_user;
-            if super::ownership_button(ws, actor).is_some() {
-                self.ownership_action_rect = ownership_action_rect(body_rect);
+        let Some(ws) = model.desktop.active_workspace() else {
+            Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
+            return;
+        };
+        let lead = f64::from(theme.tokens.spacing.s2);
+        let hint = Self::footer_hints(false);
+        let footer = Self::footer_hint_rect(rect, &hint, text_renderer, theme);
+        let mut body = Self::body_rect(rect);
+        body.y1 = (footer.y0 - lead).max(body.y0);
+        let content = people::content(ws, model.people, model.acting_user, model.owner_controls);
+        self.people
+            .lay_out(&content, body.width(), theme, text_renderer);
+        self.people.place(Point::new(body.x0, body.y0 + lead));
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
+        self.people.draw(scene, transform, text_renderer, theme);
+        scene.pop_layer();
+        // What the body clips away takes no press.
+        let shown = |rect: Rect| {
+            if rect.y0 >= body.y0 && rect.y1 <= body.y1 {
+                rect
+            } else {
+                Rect::ZERO
             }
-            for row in members_pane_rows(ws, body_rect) {
-                let (role, remove) = super::member_row_controls(&row, actor);
-                self.member_control_rects
-                    .push((row.user.clone(), role, remove));
-            }
-            draw_members_pane(
-                scene,
-                transform,
-                body_rect,
-                (ws, model.people),
-                model.acting_user,
-                is_owner,
-                text_renderer,
-                theme,
-            );
+        };
+        self.ownership_action_rect = shown(self.people.rect(people::OWNERSHIP));
+        for (index, person) in content.people.iter().enumerate() {
+            self.member_control_rects.push((
+                person.user.clone(),
+                shown(self.people.rect(&people::role_id(index))),
+                shown(self.people.rect(&people::remove_id(index))),
+            ));
         }
         Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
     }
@@ -2550,6 +2561,8 @@ mod tests {
 }
 
 mod general;
+mod page;
+mod people;
 
 #[cfg(test)]
 mod general_scroll_tests;
