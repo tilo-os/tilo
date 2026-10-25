@@ -34,7 +34,7 @@ chord to reach a capability, that capability is not shipped.
 | 1 | The diagnosis: nine causes (P1–P9) | written |
 | 2 | Nine people, and where Tilo fails them | written |
 | 3 | Thirteen design moves (M1–M13), and what each deletes | written |
-| 4 | The tested round — what the pixels and the harness actually said | written; 10 findings, 4 of my own claims retracted |
+| 4 | The tested round — what the pixels and the harness actually said | written; 9 findings, 5 of my own claims retracted |
 | 5 | Apps: the promise, the gap, the honest fix | written |
 | 5b | Where my own design was wrong — ten corrections to it | written |
 | 6 | The bets in order, the habit to stop, and what "finished" means | written |
@@ -1286,42 +1286,46 @@ floating-point ordering question inside the sampler, and reproducibility is wort
 having for its own sake — a person comparing two screenshots of the same function
 should not find them different.
 
-## 4.12 T11 — blocker for the gate — A capture's result depends on what captured before it
+## 4.12 T11 — retracted — "A capture's result depends on what captured before it" was my measurement error
 
-The parity check found this while being calibrated, and it is the most consequential thing in
-this round, because it undermines every frame anybody has ever compared.
+**This finding is withdrawn, and the way it was produced is worth more than the finding.**
 
-Four captures of the same app at the same size, all `--shots --viewport 1920x1080 --theme dark`:
+I wrote that four captures of the same app at the same size produced four different outputs depending
+on what ran first, and called it a blocker for the gate. I had compared **hashes**. Comparing
+*layouts* instead, with the same tool that produced the hashes:
 
 ```
-shots, then matrix   -> 1ba06cb8eb0d
-matrix, then shots   -> b8248230f4f5
-matrix (first)       -> 80a31e3b80a1
-matrix (after shots) -> d83285160258
+four identical runs of `settings --shots --viewport 1920x1080 --theme dark`:
+  a61a52543fce  a43fe4b9d797  37d55b0131f2  8cae20f7969a     (four distinct hashes)
+  run 2 vs run 1: same layout: 0 differing pixels over the delta floor, 1 rounding-only, max delta 1
+  run 3 vs run 1: same layout: 0 differing pixels, 1 rounding-only, max delta 1
+  run 4 vs run 1: same layout: 0 differing pixels, 1 rounding-only, max delta 1
 ```
 
-Same binary, same arguments, different output directories — and **all four differ**. So a frame is
-not a function of (app, size, theme, scale, locale). It is a function of that *and* whatever ran
-before it in the same machine state.
+Every run is the same picture. A single pixel rounds differently, the hash changes, and a byte
+comparison calls that a different frame. That is `T10` again — *captures are not byte-reproducible* —
+and I had just finished writing a tool to deal with it, then reasoned about raw hashes anyway.
 
-**What has to be leaking.** Something an app writes when it is resized or captured is read back by
-the next capture: a window size, a pane width, a collapsed sidebar, a last route. The capture
-harness seeds a private profile per capture (`launch/capture_settings.rs`), so the leak is either
-outside that profile or written after seeding. Either way the rule is clear — a capture must not
-be able to observe a previous capture, and an app must not persist a layout decision the person
-did not make.
+**What survives, precisely.** Isolating the profile (a private `HOME`, `XDG_*`, a shared font cache)
+writes nothing app-specific between runs, and repeated runs are stable. What is *not* stable is a
+frame from a resized window against a frame from a freshly opened one: Settings still differs at
+tablet by 4,352 pixels over the floor (max delta 115) while desktop agrees. So the real residuals
+are `T1`'s class surviving in specific apps — canvas, typst-editor, and Settings' tablet width — and
+`T10`'s rounding, which is harmless.
 
-**Why this matters more than T10.** `T10` (a one-pixel tie) means a byte gate cannot be exact.
-`T11` means a frame cannot be *trusted at all* as evidence until runs are isolated: two reviewers
-can look at two different frames of the same screen and both be honest. Every visual claim in this
-audit, including my own, inherits that doubt; the ones that survive are those where the difference
-was large enough to swamp it (the Settings layout differed by 277,493 pixels — that is not a
-persistence artifact).
+**Why this belongs in the document rather than being quietly deleted.** Three times in this audit a
+conclusion of mine dissolved when the instrument improved: a high-contrast chart I thought was
+unreadable (it measured 12.9:1), a "contradiction" in Monitor's memory figure (two different
+measures), and now a capture blocker that was a comparison of hashes. The lesson is not "measure
+carefully" but something sharper: **a difference is not evidence until the instrument that reports
+it can distinguish the classes of difference it might be.** Hashes cannot tell a rounding tie from a
+moved control, which is why `tools/ci/capture_parity.py` counts layout after a downsample, and why
+`M10`'s first assertion has to be stated in those terms rather than as "frames match".
 
-**What it changes about `M10`.** The gate's first assertion is no longer "frames match"; it is
-"runs are isolated and frames are a function of their inputs". Until that holds, `tools/ci/
-capture_parity.py` is a diagnostic to run by hand and read, not a check to enforce, and this
-document says so rather than shipping a gate that fails for reasons nobody can name.
+**What it changes about `M10`.** Nothing structural, and that is the good news: repeated runs *are*
+stable, so a screenshot gate is viable as long as it compares what it means to compare. The gate
+needs two assertions, not one: layout equality within the floor, and a byte-difference budget for
+rounding, so the second does not hide the first.
 
 # 5. Apps: the promise, the gap, and the honest fix
 
@@ -1824,8 +1828,9 @@ Each is code motion along a seam that already existed, named in the new module's
 
 - `SHELL-01`, the blocker: no input method on the lock screen. In flight, and the only finding
   where "not fixed" means some people cannot use the product.
-- `T11`: a capture's output depends on what captured before it. Named, not fixed — so `M10`'s gate
-  is a diagnostic to run by hand until runs are isolated.
+- `T11` withdrawn (§4.12): captures are not byte-reproducible (`T10`), but repeated runs are
+  layout-identical, so the gate is viable. What is left is `T1`'s class in canvas, typst-editor and
+  Settings' tablet width.
 - `SHELL-02..17` (17), and the creation and utility app clusters.
 - `T10`: one antialiased pixel still differs between identical runs of the calculator's graph.
 - **A toolkit gap found while integrating.** `policy/app-toolbars` fails on `apps/activity`'s own
