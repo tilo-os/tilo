@@ -16,7 +16,6 @@ mod display_input_tests;
 mod display_observation_refresh_tests;
 mod display_observations;
 mod governor_actions;
-mod home_peer_reader;
 mod hosted_sites;
 mod hosted_topology;
 mod room_window_carriers;
@@ -727,7 +726,7 @@ struct RegisteredHomePeer {
 }
 
 /// The registrations in the home-peer registry, read from disk. Not for the
-/// compositor's loop: [`HomePeerInputs`] reads it on a worker.
+/// compositor's loop: [`HomePeerInputs::watch`] reads it on a worker.
 fn read_home_peer_registry() -> Result<Vec<tilo_relay_protocol::HomePeerRegistration>, String> {
     let path = home_peer_registry_path();
     let metadata = match std::fs::metadata(&path) {
@@ -827,7 +826,7 @@ struct HomePeerInputs {
 
 impl HomePeerInputs {
     /// Read the files. Waits for the disk: the compositor's loop never calls
-    /// this, its reader thread does.
+    /// this, it reads [`Self::watch`]'s copy.
     fn read() -> Self {
         let peers = personal_device_peer_path();
         Self {
@@ -836,11 +835,16 @@ impl HomePeerInputs {
         }
     }
 
-    /// [`Self::read`] after the state writer has written what this process
-    /// queued, so the refresh sees the rooms export it just made.
-    fn read_after_pending_writes() -> Self {
-        crate::shell::durable_writer::global().flush();
-        Self::read()
+    /// The files as read now, off the loop, and again on a worker whenever
+    /// their directory changes. `None` when it cannot be watched: the
+    /// refresh then knows only what the session started with.
+    fn watch() -> Option<tilo_files::native::Watched<Self>> {
+        let directory = home_peer_registry_path()
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        tilo_files::native::Watched::start("home-peers", vec![directory], Self::read)
+            .inspect_err(|error| tracing::warn!(%error, "cannot watch the home-peer registry"))
+            .ok()
     }
 }
 
@@ -1502,8 +1506,9 @@ pub struct ShellNetwork {
     /// When [`Self::note_session_reachability`] last told the relays what
     /// the session has recorded. `None` until the first tick.
     session_reach_checked: Mutex<Option<std::time::Instant>>,
-    /// Reads the files the refresh needs, off the compositor thread.
-    home_peer_reader: home_peer_reader::HomePeerReader<HomePeerInputs>,
+    /// The files the refresh needs, read off the compositor thread when
+    /// they change.
+    home_peer_inputs: Option<tilo_files::native::Watched<HomePeerInputs>>,
     /// When [`Self::kick_periodic_sync`] last did its local upkeep. `None`
     /// until the first tick.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
@@ -2289,9 +2294,7 @@ impl ShellNetwork {
             host_room_members: Mutex::new(std::collections::HashSet::new()),
             registered_home_device_ids: Mutex::new(home_device_ids),
             personal_device_peers,
-            home_peer_reader: home_peer_reader::HomePeerReader::spawn(
-                HomePeerInputs::read_after_pending_writes,
-            ),
+            home_peer_inputs: HomePeerInputs::watch(),
             own_device_fleet,
             lan_discovery,
             last_home_peer_refresh: Mutex::new(None),
@@ -4606,18 +4609,10 @@ impl ShellNetwork {
 
     /// Reload newly approved same-identity home peers, reading the files here
     /// and waiting for the disk. The compositor's loop does not call this: its
-    /// refresh reads them on a worker (`Self::refresh_home_peer_hosts_periodically`).
+    /// refresh applies what a worker read when they changed
+    /// (`Self::refresh_home_peer_hosts_periodically`).
     pub fn refresh_home_peer_hosts(&self) -> bool {
         self.apply_home_peer_inputs(&HomePeerInputs::read())
-    }
-
-    /// Apply what the reader published, if it published anything. Reads and
-    /// writes no file: it queues dials with `try_send` and never waits for
-    /// relay discovery or a connection.
-    fn apply_published_home_peers(&self) {
-        if let Some(inputs) = self.home_peer_reader.take() {
-            let _ = self.apply_home_peer_inputs(&inputs);
-        }
     }
 
     fn apply_home_peer_inputs(&self, inputs: &HomePeerInputs) -> bool {
@@ -4768,8 +4763,12 @@ impl ShellNetwork {
         }
         *last = Some(now);
         drop(last);
-        // The files are read by the worker; `tick` applies what it publishes.
-        self.home_peer_reader.request();
+        // Reads and writes no file: the worker read them when they changed,
+        // and dials are queued with `try_send`, never waiting for relay
+        // discovery or a connection.
+        if let Some(inputs) = &self.home_peer_inputs {
+            let _ = self.apply_home_peer_inputs(&inputs.get());
+        }
     }
 
     /// The current iroh address published in an invite. It contains the
@@ -7034,7 +7033,6 @@ impl ShellNetwork {
         });
         steps.time("network/home-peers", || {
             self.refresh_home_peer_hosts_periodically();
-            self.apply_published_home_peers();
         });
         steps.time("network/shared-rooms", || match admission {
             Admission::InPlace => self.finish_shared_rooms(),
@@ -8939,9 +8937,7 @@ pub(crate) fn shell_network_for_test(
         lan_discovery: None,
         last_home_peer_refresh: Mutex::new(None),
         session_reach_checked: Mutex::new(None),
-        home_peer_reader: home_peer_reader::HomePeerReader::spawn(
-            HomePeerInputs::read_after_pending_writes,
-        ),
+        home_peer_inputs: HomePeerInputs::watch(),
         last_sync_kick: Mutex::new(None),
         next_sync_pull: Mutex::new(None),
         peers_joined: std::sync::atomic::AtomicU64::new(0),
@@ -9508,9 +9504,9 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn the_periodic_refresh_applies_what_the_reader_published() {
-        // Same inputs as the blocking refresh above, through the loop's path:
-        // a request, then an apply once the worker has read the files.
+    fn the_periodic_refresh_applies_the_watched_files() {
+        // Same inputs as the blocking refresh above, through the loop's path,
+        // which applies what the network read when it started.
         let dir = tempfile::tempdir().expect("temp");
         let peers = dir.path().join("home-peers.json");
         std::fs::write(&peers, b"not-json").unwrap();
@@ -9525,25 +9521,29 @@ mod tests {
         env.set("XDG_STATE_HOME", dir.path().join("state"));
         let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
         net.refresh_home_peer_hosts_periodically();
-        let mut dialed = false;
-        tilo_test_env::wait_until("the enrolled device to be dialed", || {
-            net.apply_published_home_peers();
-            dialed |= std::iter::from_fn(|| commands.try_recv().ok()).any(
+        assert!(
+            std::iter::from_fn(|| commands.try_recv().ok()).any(
                 |command| matches!(command, NetCmd::Connect { addr } if *addr.id.as_bytes() == device),
-            );
-            dialed
-        });
+            ),
+            "the enrolled device was not dialed"
+        );
     }
 
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(process_env)]
     fn the_loops_home_peer_refresh_does_not_wait_for_the_registry() {
-        // The registry is a pipe nobody writes: opening it for reading waits
-        // for a writer, as a read waits for a busy disk. The loop's calls must
-        // return anyway; only the reader thread waits.
+        // The registry becomes a pipe nobody writes: opening it for reading
+        // waits for a writer, as a read waits for a busy disk. The loop's
+        // calls must return anyway; only the watching worker waits.
         let dir = tempfile::tempdir().expect("temp");
         let registry = dir.path().join("home-peers.json");
+        std::fs::write(&registry, b"[]").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
+        std::fs::remove_file(&registry).unwrap();
         assert!(
             std::process::Command::new("mkfifo")
                 .arg(&registry)
@@ -9551,16 +9551,11 @@ mod tests {
                 .expect("mkfifo")
                 .success()
         );
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_HOME_PEERS_PATH", &registry);
-        env.set("XDG_STATE_HOME", dir.path().join("state"));
-        let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
         for _ in 0..20 {
             net.refresh_home_peer_hosts_periodically();
-            net.apply_published_home_peers();
         }
         net.tick();
-        // Let the reader finish, so its thread does not outlive the test.
+        // Let the worker finish, so its thread does not outlive the test.
         drop(
             std::fs::OpenOptions::new()
                 .write(true)
