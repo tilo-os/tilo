@@ -1674,6 +1674,24 @@ impl Core {
     /// of the list has reflowed to open a gap near the tail where it will
     /// land. Insertion is finalised by `sync_insertion` against real geometry
     /// during the shot's draw pass.
+    /// Stage a forecast fetched `ago` ago, so a capture shows the age the page
+    /// states: minutes ago for a fresh one, hours for one that has gone stale.
+    /// The age is measured from this instant, because a captured forecast, like
+    /// a live one, is the one in front of the person now.
+    pub fn seed_fetched(&mut self, ago: std::time::Duration) {
+        // The toolkit's clock, not the process's: a capture renders against a
+        // fixed instant, and an age measured from the wall clock would be
+        // months in the future on that page and read as "just now".
+        let now = u64::try_from(ui::clock::local_now().timestamp()).unwrap_or_default();
+        let fetched_at = now.saturating_sub(ago.as_secs());
+        for snapshot in self.model.snapshots.values_mut() {
+            snapshot.fetched_at = fetched_at;
+        }
+        for air in self.model.air_quality.values_mut() {
+            air.fetched_at = fetched_at;
+        }
+    }
+
     pub fn seed_drag(&mut self) {
         if self.model.locations.is_empty() {
             return;

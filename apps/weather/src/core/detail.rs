@@ -1830,6 +1830,46 @@ mod accessibility_tests {
             .unwrap_or_else(|| panic!("the forecast exposes a {name:?} group"))
     }
 
+    /// A capture stages its age from the toolkit's clock, the same clock the
+    /// page reads it back with: a stamp taken from the wall clock would be
+    /// months ahead of a fixture's fixed instant and read as "just now".
+    #[test]
+    fn a_staged_forecast_age_is_measured_against_the_clock_the_page_reads() {
+        let mut core = Core::new(crate::sample::sample_model(), Units::METRIC);
+        core.seed_fetched(std::time::Duration::from_secs(4 * 60));
+        let now = ui::clock::local_now().naive_local();
+        let age = core
+            .model
+            .snapshots
+            .values()
+            .map(|snapshot| {
+                crate::freshness::updated(snapshot.fetched_at, now)
+                    .expect("a staged forecast has an age")
+            })
+            .collect::<Vec<_>>();
+        assert!(age.iter().all(|age| !age.stale), "four minutes is current");
+        assert!(
+            age.iter().all(|age| age.text.starts_with("Updated 4")),
+            "the page says four minutes: {}",
+            age.first().map(|age| age.text.clone()).unwrap_or_default()
+        );
+
+        core.seed_fetched(std::time::Duration::from_secs(5 * 60 * 60));
+        let age = core
+            .model
+            .snapshots
+            .values()
+            .map(|snapshot| {
+                crate::freshness::updated(snapshot.fetched_at, now)
+                    .expect("a staged forecast has an age")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            age.iter().all(|age| age.stale),
+            "five hours says it is out of date"
+        );
+    }
+
     #[test]
     fn every_hour_and_day_is_a_row_a_screen_reader_can_read() {
         let (core, snapshot) = core(Units::IMPERIAL);

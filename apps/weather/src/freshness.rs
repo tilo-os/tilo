@@ -137,7 +137,7 @@ mod tests {
         assert_eq!(
             morning.text,
             format!(
-                "Last updated at {} · out of date",
+                "Last updated at {}, which is out of date",
                 ui::format::time(&at(2026, 6, 30, 7, 0).time())
             )
         );
@@ -146,7 +146,7 @@ mod tests {
         assert_eq!(
             days.text,
             format!(
-                "Last updated {} · out of date",
+                "Last updated {}, which is out of date",
                 ui::format::timestamp(&at(2026, 6, 27, 9, 15))
             )
         );
