@@ -966,8 +966,8 @@ impl RichTextLine {
                 Mark::Link(_)
                 | Mark::Transclusion(_)
                 | Mark::ExternalLink(_)
-                | Mark::ResourceLink(_) => (theme.tokens.colors.text_primary, false),
-                Mark::Underline => (theme.tokens.colors.text_primary, false),
+                | Mark::ResourceLink(_)
+                | Mark::Underline => (theme.tokens.colors.text_primary, false),
                 Mark::Strikethrough => (theme.tokens.colors.text_primary, true),
                 _ => continue,
             };
