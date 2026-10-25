@@ -576,7 +576,7 @@ fn wait_for_socket(socket: Option<&std::path::Path>) {
         };
         let (created, appeared) = mpsc::channel();
         let entry = missing.to_owned();
-        let watch = tilo_files::native::watch_changes(
+        let watch = tilo_files::native::watch_presence(
             directory,
             move |changed| changed == entry,
             move || {

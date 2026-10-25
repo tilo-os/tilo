@@ -16,7 +16,9 @@ mod change_watch;
     feature = "watch",
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
-pub use change_watch::{ChangeWatch, THREAD_NAME as CHANGE_WATCH_THREAD, watch_changes};
+pub use change_watch::{
+    ChangeWatch, THREAD_NAME as CHANGE_WATCH_THREAD, watch_changes, watch_presence,
+};
 #[cfg(all(
     feature = "watch",
     not(all(target_arch = "wasm32", target_os = "unknown"))
