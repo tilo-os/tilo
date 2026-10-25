@@ -37,8 +37,8 @@ use tilo_desktop::chrome::{
     AvatarAsk, ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
 };
 use tilo_desktop::collaborators::{
-    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, LineSource, RecentChange,
-    RosterRow, RosterStatus,
+    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, RecentChange, RosterRow,
+    RosterStatus,
 };
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadCopy};
 use tilo_desktop::overview::{OverviewHost, room_cards};
@@ -340,7 +340,7 @@ pub(crate) fn now_ms() -> u64 {
 fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
     let status = |line: &tilo_desktop::here::Line| RosterStatus {
         text: line.text.clone(),
-        source: LineSource::generated_if(line.automatic),
+        source: line.source,
     };
     RosterRow {
         id: person.id.clone(),
@@ -375,6 +375,22 @@ fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
         join: None,
         own_device: false,
     }
+}
+
+/// This page's person as the people here read them, for their own row in
+/// the pinned roster: their name, colour, and what they are doing (their
+/// own words, else the host's automatic line while they share one).
+fn own_row(here: &tilo_desktop::here::HereState, theme: &Theme) -> RosterRow {
+    let (label, rgb) = own_identity(here);
+    RosterRow::own(
+        ui::collaboration::local_user_id().0,
+        label,
+        theme.tokens.colors.presence.of_rgb(rgb),
+        here.own_doing().map(|line| RosterStatus {
+            text: line.text,
+            source: line.source,
+        }),
+    )
 }
 
 /// The wall clock's minute, which the bar shows.
@@ -696,6 +712,9 @@ impl BrowserShell {
             .collect();
         // Every window here, by the record it shows as the live layer names
         // it: a window on someone's screen showing one of these is shared.
+        // A spectator only watches: nobody here reads them, so no row.
+        let own = (!self.chrome.shared.watching.get())
+            .then(|| own_row(&self.chrome.here.borrow(), theme));
         let records: Vec<(TabId, String, String)> = tree
             .workspaces
             .iter()
@@ -715,6 +734,7 @@ impl BrowserShell {
             &people::Frame {
                 rect: self.rect,
                 rows: &rows,
+                own: own.as_ref(),
                 people: &people,
                 tree: &tree,
                 records: &records,
@@ -775,6 +795,9 @@ impl BrowserShell {
             // The page has no direct messages: the box says so instead of
             // offering to send, and the edge was kept as it moved.
             PeopleHit::Send { .. } | PeopleHit::Moved(_) => {}
+            PeopleHit::SetStatus(words) => {
+                self.chrome.here.borrow_mut().set_own_words(Some(words));
+            }
         }
         (self.chrome.wake)();
     }
@@ -1249,6 +1272,15 @@ impl BrowserShell {
             // choose here, beside their name; a spectator shares nothing,
             // since nobody here sees them.
             sharing: (!watching).then(|| self.chrome.here.borrow().sharing()),
+            // What they are doing, in their own words: the card's field
+            // beside how it is shared.
+            status: self
+                .chrome
+                .here
+                .borrow()
+                .own_words()
+                .unwrap_or_default()
+                .to_owned(),
             seen: if watching {
                 tilo_desktop::profile_card::Seen::Watching
             } else {
@@ -1274,8 +1306,11 @@ impl BrowserShell {
                 self.chrome.here.borrow_mut().set_sharing(mode);
                 return;
             }
+            ProfileChoice::Status(words) => {
+                self.chrome.here.borrow_mut().set_own_words(Some(words));
+                return;
+            }
             ProfileChoice::Availability(_)
-            | ProfileChoice::Status(_)
             | ProfileChoice::Colour(_)
             | ProfileChoice::Visibility(_) => return,
         };

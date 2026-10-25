@@ -24,6 +24,10 @@ mod waves;
 pub use screen::{MemberLayout, MemberWindow, Screen, ScreenWindow};
 pub use waves::{WAVE_AGAIN_MS, Wave, WaveEar, WaveFrom, WaveOut};
 
+/// The most bytes of a person's own words, as their live presence carries
+/// them (a participant's activity line).
+const MAX_OWN_WORDS_BYTES: usize = 96;
+
 /// How long a host line keeps a person listed without the live layer to
 /// say they are present: a page posts every 20 seconds while open.
 const HOST_ONLY_FRESH_MS: u64 = 90_000;
@@ -97,11 +101,20 @@ pub struct HostLine {
     pub updated_ms: u64,
 }
 
-/// A line of text and whether software wrote it rather than the person.
+/// A line of text and who wrote it: the person, a model, or the host
+/// reading it plainly off what they did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
     pub text: String,
-    pub automatic: bool,
+    pub source: crate::collaborators::LineSource,
+}
+
+impl Line {
+    /// Whether software wrote it rather than the person.
+    #[must_use]
+    pub fn automatic(&self) -> bool {
+        self.source != crate::collaborators::LineSource::Written
+    }
 }
 
 /// Someone present, as the desktop shows them.
@@ -146,6 +159,10 @@ pub struct HereState {
     /// What this page's person lets the host say about them: only
     /// [`ui::StatusSharing::Automatic`] sends their actions.
     sharing: ui::StatusSharing,
+    /// What this page's person says they are doing, in their own words:
+    /// it travels on their live presence and leads what everyone here
+    /// reads of them, before anything the host words automatically.
+    own_words: Option<String>,
     /// The other people's devices already announced as here; `None` until
     /// the first roster arrived ([`HereState::take_arrivals`]).
     announced: Option<std::collections::BTreeSet<String>>,
@@ -160,12 +177,29 @@ pub struct HereState {
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
 
-fn line(text: &str, automatic: bool) -> Option<Line> {
+fn line(text: &str, source: crate::collaborators::LineSource) -> Option<Line> {
     let text = text.trim();
     (!text.is_empty()).then(|| Line {
         text: text.to_owned(),
-        automatic,
+        source,
     })
+}
+
+/// A line of the host's: model prose, or what it read off their actions.
+fn host_line(text: &str, generated: bool) -> Option<Line> {
+    line(
+        text,
+        crate::collaborators::LineSource::generated_if(generated),
+    )
+}
+
+/// What someone says they are doing in their own words, as their live
+/// presence carries it.
+fn own_words(member: &LiveMember) -> Option<Line> {
+    member
+        .activity
+        .as_deref()
+        .and_then(|text| line(text, crate::collaborators::LineSource::Written))
 }
 
 impl HereState {
@@ -284,6 +318,60 @@ impl HereState {
             self.sharing = sharing;
             self.revision = self.revision.wrapping_add(1);
         }
+    }
+
+    /// Say what this person is doing in their own words; `None` (or only
+    /// spaces) clears it. On one line, at most [`ui::MAX_STATUS_CHARS`]
+    /// characters and as many bytes as a live participant's activity
+    /// carries.
+    pub fn set_own_words(&mut self, words: Option<String>) {
+        let words = words
+            .map(|words| {
+                let mut kept = String::new();
+                for (index, c) in words
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .enumerate()
+                {
+                    if index == ui::MAX_STATUS_CHARS
+                        || kept.len().saturating_add(c.len_utf8()) > MAX_OWN_WORDS_BYTES
+                    {
+                        break;
+                    }
+                    kept.push(c);
+                }
+                kept.trim_end().to_owned()
+            })
+            .filter(|words| !words.is_empty());
+        if self.own_words != words {
+            self.own_words = words;
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    /// What this person said they are doing, whether or not they share it.
+    pub fn own_words(&self) -> Option<&str> {
+        self.own_words.as_deref()
+    }
+
+    /// The words this page publishes as what its person is doing: their
+    /// own, unless they share nothing of what they do.
+    pub fn shared_words(&self) -> Option<&str> {
+        self.own_words()
+            .filter(|_| self.sharing != ui::StatusSharing::Off)
+    }
+
+    /// What everyone here reads of this person: their own words, else
+    /// the host's automatic line while they share one.
+    pub fn own_doing(&self) -> Option<Line> {
+        self.shared_words()
+            .and_then(|words| line(words, crate::collaborators::LineSource::Written))
+            .or_else(|| {
+                self.own_status()
+                    .filter(|_| self.sharing == ui::StatusSharing::Automatic)
+            })
     }
 
     pub fn watching(&self) -> u32 {
@@ -457,7 +545,7 @@ impl HereState {
         self.lines
             .iter()
             .find(|line| line.device == own)
-            .and_then(|own| line(&own.status, own.generated))
+            .and_then(|own| host_line(&own.status, own.generated))
     }
 
     /// Everyone present but this page, people first, then agents, each in
@@ -496,14 +584,10 @@ impl HereState {
                 .as_ref()
                 .and_then(|focus| window_of(tree, records, focus))
                 .or_else(|| line_of.and_then(|l| shown_window(tree, l)));
-            let status = if agent {
-                member
-                    .activity
-                    .as_deref()
-                    .and_then(|text| line(text, false))
-            } else {
-                line_of.and_then(|l| line(&l.status, l.generated))
-            };
+            // Their own words first (an agent's activity is its own), else
+            // what the host read off what they did.
+            let status = own_words(member)
+                .or_else(|| line_of.and_then(|l| host_line(&l.status, l.generated)));
             let place = match tab {
                 Some(tab) => worded_place(tree, tab, app_name, status.as_ref()),
                 None => focused_app(member, app_name, status.as_ref()),
@@ -523,7 +607,7 @@ impl HereState {
                 tab,
                 place,
                 status,
-                recent: line_of.and_then(|l| line(&l.recent, l.generated)),
+                recent: line_of.and_then(|l| host_line(&l.recent, l.generated)),
                 screen: if agent { None } else { self.screen_of(person) },
             });
         }
@@ -541,7 +625,7 @@ impl HereState {
             }
             persons.push(person);
             let tab = shown_window(tree, l);
-            let status = line(&l.status, l.generated);
+            let status = host_line(&l.status, l.generated);
             people.push(Person {
                 id: l.device.clone(),
                 label: Some(l.label.trim())
@@ -552,7 +636,7 @@ impl HereState {
                 tab,
                 place: tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref())),
                 status,
-                recent: line(&l.recent, l.generated),
+                recent: host_line(&l.recent, l.generated),
                 screen: None,
             });
         }
@@ -814,7 +898,7 @@ mod tests {
             kind: kind.into(),
             label: label.into(),
             focus: None,
-            activity: Some("Reading the notes".into()),
+            activity: (kind == "agent").then(|| "Reading the notes".into()),
             place: None,
             user: None,
             wave: None,
@@ -1098,7 +1182,7 @@ mod tests {
         let app = |id: &str| (id == "so.tilo.chat").then(|| "Chat".to_owned());
         let status = |text: &str| Line {
             text: text.into(),
-            automatic: false,
+            source: crate::collaborators::LineSource::Observed,
         };
         let place = |tree: &DesktopTree, line: Option<&Line>| worded_place(tree, 7, &app, line);
         assert_eq!(
@@ -1256,6 +1340,85 @@ mod tests {
         }
     }
 
+    /// What someone is doing reads their own words first, then a model's
+    /// line, then the host's plain reading of what they did: each marked
+    /// by who wrote it, so nothing automatic passes for their words.
+    #[test]
+    fn their_own_words_lead_then_a_models_then_the_hosts_reading() {
+        use crate::collaborators::LineSource;
+        let mut here = HereState::default();
+        let mut ada = member("ada", "person", "Ada");
+        let bo = member("bo", "person", "Bo");
+        let cy = member("cy", "person", "Cy");
+        ada.activity = Some("  Reviewing the launch plan ".into());
+        here.set_members(Some(member("me", "person", "Me")), Some(vec![ada, bo, cy]));
+        here.set_lines(
+            vec![
+                host("ada", "Working in Chat", false),
+                host("bo", "Drafting the welcome note", true),
+                host("cy", "Working in Chat", false),
+            ],
+            1,
+        );
+        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
+        let said: Vec<(&str, LineSource)> = people
+            .iter()
+            .filter_map(|person| person.status.as_ref())
+            .map(|line| (line.text.as_str(), line.source))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ("Reviewing the launch plan", LineSource::Written),
+                ("Drafting the welcome note", LineSource::Generated),
+                ("Working in Chat", LineSource::Observed),
+            ]
+        );
+        assert!(!people[0].status.as_ref().is_some_and(Line::automatic));
+        assert!(people[2].status.as_ref().is_some_and(Line::automatic));
+    }
+
+    /// This person's own words are what their page publishes and what
+    /// everyone reads of them, unless they share nothing; without words,
+    /// the host's automatic line, only while they share one.
+    #[test]
+    fn this_persons_own_words_lead_unless_they_share_nothing() {
+        use crate::collaborators::LineSource;
+        let mut here = HereState::default();
+        here.set_members(Some(member("me", "person", "Me")), Some(Vec::new()));
+        here.set_lines(vec![host("me", "Working in Notes", false)], 1);
+        assert_eq!(
+            here.own_doing().map(|line| (line.text, line.source)),
+            Some(("Working in Notes".into(), LineSource::Observed))
+        );
+        here.set_own_words(Some("  Fixing\nthe onboarding   copy ".into()));
+        assert_eq!(here.shared_words(), Some("Fixing the onboarding copy"));
+        assert_eq!(
+            here.own_doing().map(|line| (line.text, line.source)),
+            Some(("Fixing the onboarding copy".into(), LineSource::Written))
+        );
+        here.set_sharing(ui::StatusSharing::ManualOnly);
+        assert_eq!(here.shared_words(), Some("Fixing the onboarding copy"));
+        here.set_sharing(ui::StatusSharing::Off);
+        assert_eq!(here.shared_words(), None, "sharing nothing hides them");
+        assert_eq!(here.own_doing(), None);
+        assert_eq!(here.own_words(), Some("Fixing the onboarding copy"));
+        here.set_sharing(ui::StatusSharing::Automatic);
+        here.set_own_words(Some("   ".into()));
+        assert_eq!(here.own_words(), None, "only spaces clear them");
+        here.set_own_words(Some("x".repeat(ui::MAX_STATUS_CHARS + 20)));
+        assert_eq!(
+            here.own_words().map(|words| words.chars().count()),
+            Some(ui::MAX_STATUS_CHARS)
+        );
+        here.set_own_words(Some("é".repeat(80)));
+        assert_eq!(
+            here.own_words().map(str::len),
+            Some(96),
+            "as many bytes as their presence carries"
+        );
+    }
+
     fn host(device: &str, status: &str, generated: bool) -> HostLine {
         HostLine {
             device: device.into(),
@@ -1304,7 +1467,7 @@ mod tests {
             people[0].status,
             Some(Line {
                 text: "Drafting Welcome note in Notes".into(),
-                automatic: true
+                source: crate::collaborators::LineSource::Generated,
             })
         );
         assert!(people[1].agent);
