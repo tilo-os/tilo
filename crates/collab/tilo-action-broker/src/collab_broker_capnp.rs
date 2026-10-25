@@ -2195,6 +2195,7 @@ impl PendingInvocation {
 
 // Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
 mod action_host;
+mod invocation_update;
 pub(crate) use action_host::{LEGACY_DOOR_FOREIGN_APP, legacy_door_may_act_as_person};
 mod admission_memo;
 mod app_consent;
@@ -3637,8 +3638,6 @@ pub struct CapnpBrokerState {
     /// Applications with a grant question on screen, by room: one at a
     /// time each, so an app cannot bury the person in sheets.
     app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
-    /// Steps waiting on their person, and the runs one may stop.
-    shortcut_runs: crate::automation::RunLedger,
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.
@@ -4402,7 +4401,6 @@ impl CapnpBrokerState {
                 app_action_consent: RwLock::new(None),
                 run_question_notices: Mutex::new(HashMap::new()),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
-                shortcut_runs: crate::automation::RunLedger::default(),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
@@ -21120,104 +21118,6 @@ pub mod tests {
     }
 }
 
-/// Checks one application-reported update against its pending invocation's
-/// published contract, returning the sequence it advances to.
-fn validate_invocation_update(
-    pending: &PendingInvocation,
-    update: &tilo_actions::InvocationUpdate,
-) -> Result<u64, capnp::Error> {
-    if update.invocation() != pending.update.invocation() {
-        return Err(capnp::Error::failed(
-            "invocation update identity mismatch".into(),
-        ));
-    }
-    let mut next_sequence = pending.last_sequence;
-    if matches!(update, tilo_actions::InvocationUpdate::Accepted { .. }) {
-        return Err(capnp::Error::failed(
-            "invocation acceptance is owned by the broker".into(),
-        ));
-    }
-    if let tilo_actions::InvocationUpdate::Progress {
-        sequence,
-        phase,
-        completed,
-        total,
-        ..
-    } = update
-    {
-        if matches!(pending.execution, tilo_actions::ExecutionMode::Immediate) {
-            return Err(capnp::Error::failed(
-                "immediate action reported background progress".into(),
-            ));
-        }
-        if *sequence <= pending.last_sequence {
-            return Err(capnp::Error::failed(
-                "invocation progress must be monotonic".into(),
-            ));
-        }
-        if phase.trim().is_empty() {
-            return Err(capnp::Error::failed(
-                "invocation progress phase must be non-empty".into(),
-            ));
-        }
-        if completed
-            .zip(*total)
-            .is_some_and(|(completed, total)| completed > total)
-        {
-            return Err(capnp::Error::failed(
-                "invocation progress cannot exceed its total".into(),
-            ));
-        }
-        next_sequence = *sequence;
-    }
-    if let tilo_actions::InvocationUpdate::Item {
-        sequence, value, ..
-    } = update
-    {
-        let Some(item_schema) = pending.execution.item_schema() else {
-            return Err(capnp::Error::failed(
-                "non-streaming action reported a streamed item".into(),
-            ));
-        };
-        if *sequence <= pending.last_sequence {
-            return Err(capnp::Error::failed(
-                "invocation stream sequence must be monotonic".into(),
-            ));
-        }
-        tilo_actions::validate_json_schema(value, item_schema).map_err(|error| {
-            capnp::Error::failed(format!(
-                "streamed item violated its published contract: {error}"
-            ))
-        })?;
-        next_sequence = *sequence;
-    }
-    if let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update {
-        pending.result.validate(output).map_err(|error| {
-            capnp::Error::failed(format!(
-                "invocation result violated its published contract: {error}"
-            ))
-        })?;
-    }
-    if let tilo_actions::InvocationUpdate::Failed { error, .. } = update {
-        if error.code.trim().is_empty() || error.message.trim().is_empty() {
-            return Err(capnp::Error::failed(
-                "invocation failure requires a code and message".into(),
-            ));
-        }
-        if error.retryable && !pending.retryable_on_disconnect {
-            return Err(capnp::Error::failed(
-                "at-most-once action cannot advertise a retryable failure".into(),
-            ));
-        }
-    }
-    if matches!(update, tilo_actions::InvocationUpdate::Cancelled { .. }) && !pending.cancellable {
-        return Err(capnp::Error::failed(
-            "non-cancellable action reported cancellation".into(),
-        ));
-    }
-    Ok(next_sequence)
-}
-
 impl CapnpBrokerState {
     fn publish_pending_activity(
         &self,
@@ -21278,7 +21178,7 @@ impl CapnpBrokerState {
                 .get(&id)
                 .filter(|pending| pending.peer_id == peer_id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-            let next_sequence = validate_invocation_update(pending, &update)?;
+            let next_sequence = invocation_update::validate_invocation_update(pending, &update)?;
             (pending.clone(), next_sequence)
         };
         state
