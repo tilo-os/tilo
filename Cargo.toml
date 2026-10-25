@@ -1126,6 +1126,25 @@ strip = "symbols"
 inherits = "wasm-release"
 strip = "none"
 
+# `wasm-release` with the assertions the qualification surface is behind. A
+# measured release-speed bundle must still refuse what a dev build refuses
+# (`debug_assertions`, `cfg!(debug_assertions)` and the diagnostics that read
+# it, overflow checks), so qualification runs on this profile rather than on a
+# plain `release` that drops them. Debug information and the symbol table stay
+# out: a page streams this module.
+[profile.wasm-assert]
+inherits = "wasm-release"
+debug-assertions = true
+overflow-checks = true
+
+# `wasm-assert` with the symbol table kept, for the same reason `wasm-split`
+# keeps it: the desktop bundle is split into a start module and per-app
+# modules, and the splitter reads the linked module's function names and
+# relocations. The modules it writes are stripped.
+[profile.wasm-assert-split]
+inherits = "wasm-assert"
+strip = "none"
+
 # The browser bundles' quick development build (`build.sh --profile quick`).
 # Without debug information and with light optimisation, the linked desktop
 # module is a quarter of `dev`'s, and wasm-bindgen and the splitter take half
