@@ -1151,6 +1151,42 @@ fn the_pickers_add_emoji_tile_is_a_named_action() {
 }
 
 #[test]
+fn a_reaction_pill_says_how_many_reacted() {
+    let (mut app, _doc) = app_with_doc();
+    render_frame(&mut app, 1280.0, 720.0);
+    let shown: Vec<(String, usize)> = app
+        .hits
+        .iter()
+        .filter_map(|(_, hit)| match hit {
+            Hit::Reaction { msg, emoji } => app
+                .message(msg)
+                .and_then(|m| m.reactions.iter().find(|r| r.emoji == *emoji))
+                .map(|r| (emoji.clone(), r.count())),
+            _ => None,
+        })
+        .collect();
+    let (emoji, count) = shown
+        .first()
+        .cloned()
+        .expect("a message with a reaction shows");
+    let tree = app.accessibility().unwrap();
+    let pill = tree
+        .children
+        .iter()
+        .find(|node| {
+            node.name
+                .as_deref()
+                .is_some_and(|name| name.contains(&emoji))
+        })
+        .expect("the pill is named");
+    assert_eq!(
+        pill.value.as_deref(),
+        Some(ui::widget::reaction_strip::pill_count(count).as_str()),
+        "its value is the count, as the toolkit's strip says it"
+    );
+}
+
+#[test]
 fn the_message_menu_adds_a_first_reaction_and_starts_a_thread() {
     // The reaction row's "+" and the thread bar exist only once a
     // message has reactions or replies, so the menu is how anyone
