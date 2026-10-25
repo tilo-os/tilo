@@ -15,6 +15,9 @@ git-diff-split-name = Diff nebeneinander
 git-syntax-name = Syntaxhervorhebung
 git-dismiss-error = Fehler schließen
 
+git-switched = Zu { $name } gewechselt
+git-switched-stashed = Zu { $name } gewechselt; die Änderungen liegen als { $stash } im Stash
+
 # Confirmation
 git-confirm-discard-file-title = Änderungen an { $name } verwerfen?
 git-confirm-discard-hunk-title = Diese Änderung verwerfen?
@@ -23,6 +26,12 @@ git-confirm-discard-untracked-body = Die Datei wird aus deinem Arbeitsverzeichni
 git-confirm-discard-body = Deine Änderungen gehen verloren. Das lässt sich nicht rückgängig machen.
 git-confirm-delete-branch-body = Commits, die nur dieser Branch enthält, gehen verloren.
 git-confirm-discard = Verwerfen
+git-confirm-switch-title = Zu { $name } wechseln?
+git-confirm-switch-body = Das Arbeitsverzeichnis ist sauber; es wechselt nur der Branch.
+git-confirm-switch-dirty-body = Du hast nicht festgeschriebene Änderungen. Lege sie in den Stash und wechsle, oder nimm sie mit; eine Änderung, die überschrieben würde, lehnt beides ab.
+git-switch-stash = In den Stash legen und wechseln
+git-switch-carry = Wechseln und Änderungen mitnehmen
+git-switch-go = Wechseln
 git-cancel = Abbrechen
 
 # Changes
@@ -158,3 +167,19 @@ git-worktree-read-error = Arbeitsverzeichnisse konnten nicht gelesen werden: { $
 
 git-client-git-client-repository = Repository { $new } geöffnet
 git-client-record-repository = Zweige und Verlauf des Repositorys festgehalten
+
+# Conflicts and a commit's changed files
+git-conflict-resolved = { $side } für { $file } behalten
+git-conflict-ours = unsere Seite
+git-conflict-theirs = ihre Seite
+git-conflict-take-ours = Unsere nehmen
+git-conflict-take-theirs = Ihre nehmen
+git-conflict-explainer = Diese Datei ist im Konflikt.
+git-back-to-commit = Zurück zum Commit
+git-commit-file-heading = { $file } in { $commit }
+git-commit-file-name = { $file } ({ $kind })
+git-show-commit-file = Die Änderungen dieser Datei im Commit zeigen
+
+# Diff controls in the window bar
+git-whitespace-name = Leerraum anzeigen
+git-wrap-name = Lange Zeilen umbrechen

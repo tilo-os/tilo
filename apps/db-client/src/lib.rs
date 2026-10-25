@@ -53,6 +53,7 @@ pub mod connect_modal;
 pub mod engine;
 pub mod engine_mysql;
 pub mod engine_pg;
+pub mod i18n;
 pub mod link;
 pub mod model;
 pub mod navigator;

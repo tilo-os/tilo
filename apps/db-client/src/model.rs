@@ -345,6 +345,15 @@ fn format_real(r: f64) -> String {
     }
 }
 
+/// Why a result holds fewer rows than the statement returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Truncation {
+    /// The app's row limit was reached.
+    RowLimit,
+    /// The result's payload (bytes or cells) reached its limit first.
+    Payload,
+}
+
 /// The result of running a SQL statement.
 #[derive(Clone, Debug, Default)]
 pub struct QueryResult {
@@ -357,31 +366,161 @@ pub struct QueryResult {
     /// True when the statement returned a row set (SELECT/PRAGMA), false for
     /// DML/DDL.
     pub is_select: bool,
-    /// True when collection stopped at the app's bounded result limit. The
-    /// grid can stay responsive without pretending the server returned only
-    /// these rows.
-    pub truncated: bool,
+    /// Why collection stopped short of what the statement returned, if it
+    /// did. The grid can stay responsive without pretending the server
+    /// returned only these rows.
+    pub truncation: Option<Truncation>,
 }
 
+/// The row limit a query result is collected to, as the sentence that says so
+/// spells it.
+pub const ROW_LIMIT_NOTE: usize = crate::engine::MAX_QUERY_ROWS;
+
 impl QueryResult {
+    /// Whether the result holds fewer rows than the statement returned.
+    pub fn truncated(&self) -> bool {
+        self.truncation.is_some()
+    }
+
+    /// One line naming what the statement returned, and, when the result was
+    /// cut, saying that it was cut rather than adding a `+` nobody can read.
     pub fn message(&self) -> String {
-        if self.is_select {
-            format!(
-                "{} rows{} in {:.1} ms",
-                self.rows.len(),
-                if self.truncated { "+" } else { "" },
-                self.elapsed_ms
-            )
-        } else {
-            let n = self.rows_affected.unwrap_or(0);
-            format!("{n} rows affected in {:.1} ms", self.elapsed_ms)
+        use crate::i18n::{count, t_args, text};
+        let ms = text(&format!("{:.1}", self.elapsed_ms));
+        if !self.is_select {
+            let n = usize::try_from(self.rows_affected.unwrap_or(0)).unwrap_or(0);
+            return t_args("db-result-affected", &[("count", count(n)), ("ms", ms)]);
         }
+        if self.truncated() {
+            return t_args(
+                "db-result-rows-cut",
+                &[("count", count(self.rows.len())), ("ms", ms)],
+            );
+        }
+        t_args(
+            "db-result-rows",
+            &[("count", count(self.rows.len())), ("ms", ms)],
+        )
+    }
+
+    /// What to do about a cut result, when it was cut: the reason and the way
+    /// out, in one sentence above the grid.
+    pub fn cut_note(&self) -> Option<String> {
+        use crate::i18n::{count, t, t_args, text};
+        match self.truncation? {
+            Truncation::RowLimit => Some(t_args(
+                "db-result-cut-rows",
+                &[("limit", count(ROW_LIMIT_NOTE))],
+            )),
+            Truncation::Payload => Some(t_args(
+                "db-result-cut-payload",
+                &[("limit", text(&t("db-result-cut-payload-limit")))],
+            )),
+        }
+    }
+
+    /// One row as tab-separated text, the shape a spreadsheet or a message
+    /// takes: `NULL` is written as nothing, and a tab or newline inside a
+    /// cell becomes a space so the row stays one line.
+    pub fn row_text(&self, row: usize) -> Option<String> {
+        let row = self.rows.get(row)?;
+        Some(
+            row.iter()
+                .map(|cell| {
+                    if cell.is_null() {
+                        String::new()
+                    } else {
+                        cell.display().replace(['\t', '\n', '\r'], " ")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\t"),
+        )
+    }
+
+    /// The whole result as tab-separated text, a header line first when it
+    /// has columns.
+    pub fn text(&self) -> String {
+        let mut out = String::new();
+        if !self.columns.is_empty() {
+            out.push_str(&self.columns.join("\t"));
+            out.push('\n');
+        }
+        for row in 0..self.rows.len() {
+            if let Some(line) = self.row_text(row) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        out
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A result the app cut says so in words, and names what to do about it;
+    /// a complete one says what it returned and nothing more.
+    #[test]
+    fn a_cut_result_says_what_was_cut_and_what_to_do() {
+        let mut result = QueryResult {
+            columns: vec!["id".into(), "name".into()],
+            rows: vec![vec![Cell::Integer(1), Cell::Text("one".into())]],
+            elapsed_ms: 12.4,
+            is_select: true,
+            ..QueryResult::default()
+        };
+        assert_eq!(result.message(), "1 row in 12.4 ms");
+        assert_eq!(result.cut_note(), None, "a whole result needs no note");
+
+        result.truncation = Some(Truncation::RowLimit);
+        assert!(
+            result.message().starts_with("The first 1 row in"),
+            "{}",
+            result.message()
+        );
+        let note = result.cut_note().expect("a cut result says why");
+        assert!(note.contains("1000"), "{note}");
+        assert!(note.to_lowercase().contains("narrow"), "{note}");
+
+        result.truncation = Some(Truncation::Payload);
+        let note = result.cut_note().expect("a cut result says why");
+        assert!(note.contains("8 MB"), "{note}");
+        assert!(note.to_lowercase().contains("narrow"), "{note}");
+    }
+
+    /// A row copies as one tab-separated line: NULL is empty, and a tab or a
+    /// newline inside a cell becomes a space so the row stays a row.
+    #[test]
+    fn a_row_copies_as_one_line_of_text() {
+        let result = QueryResult {
+            columns: vec!["id".into(), "note".into(), "missing".into()],
+            rows: vec![
+                vec![
+                    Cell::Integer(7),
+                    Cell::Text("two\twords\nand a line".into()),
+                    Cell::Null,
+                ],
+                vec![
+                    Cell::Text("a".into()),
+                    Cell::Text("b".into()),
+                    Cell::Real(1.5),
+                ],
+            ],
+            is_select: true,
+            ..QueryResult::default()
+        };
+        assert_eq!(
+            result.row_text(0).as_deref(),
+            Some("7\ttwo words and a line\t")
+        );
+        assert_eq!(result.row_text(9), None, "there is no such row");
+        assert_eq!(
+            result.text(),
+            "id\tnote\tmissing\n7\ttwo words and a line\t\na\tb\t1.5\n"
+        );
+    }
 
     /// Reals display without trailing zeros, hostile text is refused, and profiles report local or network engines.
     #[test]
