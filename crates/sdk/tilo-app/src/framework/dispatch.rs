@@ -146,10 +146,45 @@ pub struct Dispatcher<R: Resource> {
     last: Rc<RefCell<Option<Serialed<R>>>>,
 }
 
+/// What a dispatcher keeps that does not name the resource's action type
+/// ([`DispatchState`]), dropped out of line: a dispatcher is dropped in code
+/// generic over its resource, and dropping each of these fields there would
+/// compile it into every app.
+pub(crate) struct DispatchCore(std::mem::ManuallyDrop<DispatchState>);
+
+impl Drop for DispatchCore {
+    #[inline(never)]
+    fn drop(&mut self) {
+        // SAFETY: the state is dropped here once, as its owner goes, and
+        // nothing reads it after.
+        unsafe { std::mem::ManuallyDrop::drop(&mut self.0) }
+    }
+}
+
+impl DispatchCore {
+    fn of(state: DispatchState) -> Self {
+        Self(std::mem::ManuallyDrop::new(state))
+    }
+}
+
+impl std::ops::Deref for DispatchCore {
+    type Target = DispatchState;
+
+    fn deref(&self) -> &DispatchState {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for DispatchCore {
+    fn deref_mut(&mut self) -> &mut DispatchState {
+        &mut self.0
+    }
+}
+
 /// What a dispatcher keeps that does not name the resource's action type:
 /// who edits, the door's queue, permissions, refusals and the undo-step
 /// bookkeeping.
-pub(crate) struct DispatchCore {
+pub(crate) struct DispatchState {
     app_id: &'static str,
     resource_id: Rc<str>,
     /// [`Resource::KIND`] and [`Resource::LABEL`] of the resource.
@@ -231,7 +266,7 @@ impl Clone for DispatchCore {
     /// compiles for its resource.
     #[inline(never)]
     fn clone(&self) -> Self {
-        Self {
+        Self(std::mem::ManuallyDrop::new(DispatchState {
             app_id: self.app_id,
             resource_id: self.resource_id.clone(),
             kind: self.kind,
@@ -261,7 +296,7 @@ impl Clone for DispatchCore {
             past: self.past,
             continuable: self.continuable.clone(),
             gesture: self.gesture.clone(),
-        }
+        }))
     }
 }
 
@@ -316,7 +351,7 @@ impl DispatchCore {
         read_only: bool,
         me: Option<&str>,
     ) -> Self {
-        Self {
+        Self(std::mem::ManuallyDrop::new(DispatchState {
             app_id,
             resource_id: Rc::from(resource_id),
             kind,
@@ -346,7 +381,7 @@ impl DispatchCore {
             continuable: Rc::default(),
             gesture: Rc::default(),
             applied_as: None,
-        }
+        }))
     }
 
     /// The core of the dispatcher of another record than this resource's,
@@ -357,7 +392,7 @@ impl DispatchCore {
         (kind, label): (&'static str, &'static str),
         read_only: bool,
     ) -> Self {
-        Self {
+        Self::of(DispatchState {
             app_id: self.app_id,
             me: self.me.clone(),
             custody: self.custody.clone(),
@@ -387,21 +422,20 @@ impl DispatchCore {
             continuable: Rc::default(),
             gesture: Rc::default(),
             applied_as: None,
-        }
+        })
     }
 
     /// The core of the dispatcher of a resource nested in this one at `id`
     /// ([`Dispatcher::child`]): it shares this one's permissions and undo
     /// steps.
     fn child(&self, id: &str, (kind, label): (&'static str, &'static str)) -> Self {
-        Self {
-            resource_id: Rc::from(id),
-            kind,
-            label,
-            applied_as: self.applied_as.or(Some((self.kind, self.label))),
-            resource_label: LocalState::new(label.to_owned()),
-            ..self.clone()
-        }
+        let mut child = self.clone();
+        child.resource_id = Rc::from(id);
+        child.kind = kind;
+        child.label = label;
+        child.applied_as = self.applied_as.or(Some((self.kind, self.label)));
+        child.resource_label = LocalState::new(label.to_owned());
+        child
     }
 
     fn queue_invocation(
@@ -1148,7 +1182,7 @@ impl<R: Resource> Dispatcher<R> {
 
     /// The client of the session's action door the views' opens and
     /// reads go through.
-    pub(crate) const fn opener(&self) -> &super::reference::Opener {
+    pub(crate) fn opener(&self) -> &super::reference::Opener {
         &self.core.opener
     }
 

@@ -107,8 +107,42 @@ struct Inner {
     /// next, and an answer the one before sends late is not shown.
     generation: Arc<AtomicU64>,
     followed: RefCell<Option<Followed>>,
-    /// Reads again after a failure; see [`asked_again`].
-    again: Option<Box<dyn Fn()>>,
+    /// The answer it lands in; none for a read that reaches no provider.
+    answer: Option<Box<dyn Landing>>,
+}
+
+/// What lands each update of a followed call in its answer.
+type Lander = Box<dyn Fn(&Arrival<InvocationUpdate, ActionHostError>) + Send>;
+
+/// What following a read does with its answer, whatever the answer's type:
+/// the following is not generic, so the runtime holds it once for every
+/// app and every answer type.
+trait Landing {
+    /// What lands each update of the call in the answer, decoded.
+    fn lander(&self) -> Lander;
+    /// Whether an answer shows.
+    fn shown(&self) -> bool;
+    /// The answer is on its way from `from`.
+    fn begin(&self, from: Source);
+}
+
+impl<T: DeserializeOwned + Send + Sync + 'static> Landing for Arriving<T, ReadFailure> {
+    fn lander(&self) -> Lander {
+        let writer = self.writer();
+        Box::new(move |call| {
+            if let Some(answered) = answered::<T>(call) {
+                writer.finish(answered);
+            }
+        })
+    }
+
+    fn shown(&self) -> bool {
+        self.with(|read| read.ready().is_some())
+    }
+
+    fn begin(&self, from: Source) {
+        let _ = Arriving::begin(self, from);
+    }
 }
 
 thread_local! {
@@ -123,9 +157,37 @@ static NEXT_QUERY: AtomicU64 = AtomicU64::new(1);
 /// Read query `number` again, if it still lives on this thread.
 fn asked_again(number: u64) {
     let inner = QUERIES.with(|queries| queries.borrow().get(&number).and_then(Weak::upgrade));
-    if let Some(again) = inner.as_ref().and_then(|inner| inner.again.as_ref()) {
-        again();
+    if let Some(inner) = inner {
+        follow(&inner, true);
     }
+}
+
+/// Follow a query numbered `number` through `opener` while `alive` lives,
+/// landing its answers in `answer`.
+fn following(
+    opener: &super::reference::Opener,
+    alive: &Weak<()>,
+    target: RemoteActionTarget,
+    argument: InvokeArgument,
+    number: u64,
+    answer: Box<dyn Landing>,
+) -> Rc<Inner> {
+    let inner = Rc::new(Inner {
+        opener: Some(opener.clone()),
+        target,
+        argument: RefCell::new(argument),
+        generation: Arc::new(AtomicU64::new(0)),
+        followed: RefCell::new(None),
+        answer: Some(answer),
+    });
+    QUERIES.with(|queries| {
+        let mut queries = queries.borrow_mut();
+        queries.retain(|_, query| query.strong_count() > 0);
+        queries.insert(number, Rc::downgrade(&inner));
+    });
+    follow(&inner, false);
+    opener.keep(alive.clone(), Rc::clone(&inner) as Rc<dyn std::any::Any>);
+    inner
 }
 
 impl<T: DeserializeOwned + Send + Sync + 'static> Query<T> {
@@ -137,28 +199,8 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Query<T> {
     ) -> Self {
         let number = NEXT_QUERY.fetch_add(1, Ordering::Relaxed);
         let answer = Arriving::pending(Source::Local).on_retry(move |_| asked_again(number));
-        let inner = Rc::new_cyclic(|weak: &Weak<Inner>| {
-            let (weak, read) = (weak.clone(), answer.clone());
-            Inner {
-                opener: Some(opener.clone()),
-                target,
-                argument: RefCell::new(argument),
-                generation: Arc::new(AtomicU64::new(0)),
-                followed: RefCell::new(None),
-                again: Some(Box::new(move || {
-                    if let Some(inner) = weak.upgrade() {
-                        follow::<T>(&inner, &read, true);
-                    }
-                })),
-            }
-        });
-        QUERIES.with(|queries| {
-            let mut queries = queries.borrow_mut();
-            queries.retain(|_, query| query.strong_count() > 0);
-            queries.insert(number, Rc::downgrade(&inner));
-        });
-        follow::<T>(&inner, &answer, false);
-        opener.keep(alive.clone(), Rc::clone(&inner) as Rc<dyn std::any::Any>);
+        let landing = Box::new(answer.clone());
+        let inner = following(opener, alive, target, argument, number, landing);
         Self { answer, inner }
     }
 
@@ -186,7 +228,7 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Query<T> {
                 argument: RefCell::new(InvokeArgument::None),
                 generation: Arc::new(AtomicU64::new(0)),
                 followed: RefCell::new(None),
-                again: None,
+                answer: None,
             }),
         }
     }
@@ -198,7 +240,7 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Query<T> {
             return;
         }
         *self.inner.argument.borrow_mut() = argument;
-        follow::<T>(&self.inner, &self.answer, false);
+        follow(&self.inner, false);
     }
 
     /// What the read has answered, kept current: build what shows once it
@@ -208,16 +250,12 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Query<T> {
     }
 }
 
-/// Follow `inner`'s read with its current argument, publishing into
-/// `answer`; the read it replaces is cancelled as it drops. A read asked
+/// Follow `inner`'s read with its current argument, landing it in its
+/// answer; the read it replaces is cancelled as it drops. A read asked
 /// again (`again`) shows its placeholder until it answers; a new argument
 /// keeps the last result shown until the new one lands.
-fn follow<T: DeserializeOwned + Send + Sync + 'static>(
-    inner: &Inner,
-    answer: &Arriving<T, ReadFailure>,
-    again: bool,
-) {
-    let Some(opener) = &inner.opener else {
+fn follow(inner: &Inner, again: bool) {
+    let (Some(opener), Some(answer)) = (&inner.opener, &inner.answer) else {
         return;
     };
     let generation = inner
@@ -225,16 +263,13 @@ fn follow<T: DeserializeOwned + Send + Sync + 'static>(
         .fetch_add(1, Ordering::AcqRel)
         .wrapping_add(1);
     let current = Arc::clone(&inner.generation);
-    let writer = answer.writer();
+    let land = answer.lander();
     let followed = opener.follow(
         inner.target.clone(),
         inner.argument.borrow().clone(),
         move |call: &Arrival<InvocationUpdate, ActionHostError>| {
-            if current.load(Ordering::Acquire) != generation {
-                return;
-            }
-            if let Some(answered) = answered::<T>(call) {
-                writer.finish(answered);
+            if current.load(Ordering::Acquire) == generation {
+                land(call);
             }
         },
     );
@@ -243,9 +278,8 @@ fn follow<T: DeserializeOwned + Send + Sync + 'static>(
         .call()
         .with(|call| call.source().cloned())
         .unwrap_or(Source::Local);
-    let shown = answer.with(|read| read.ready().is_some());
-    if again || !shown {
-        let _ = answer.begin(from);
+    if again || !answer.shown() {
+        answer.begin(from);
     }
     inner.followed.replace(Some(followed));
 }
