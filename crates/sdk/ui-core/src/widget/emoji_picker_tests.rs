@@ -309,6 +309,38 @@ fn a_click_picks_and_a_click_outside_dismisses() {
 }
 
 #[test]
+fn moving_an_open_picker_moves_its_grid_and_field_with_it() {
+    let window = window(false);
+    let _in = window.scope.enter();
+    let theme = Theme::dark();
+    let mut picker = opened(&theme);
+    let before = picker.item_rect(0).expect("the first emoji is in view");
+    let from = picker.rect().origin();
+    // A host placing the open picker on every frame, as its window moves.
+    picker.place_at(
+        Rect::new(500.0, 300.0, 530.0, 330.0),
+        Rect::new(0.0, 0.0, 1280.0, 800.0),
+        &theme,
+    );
+    let moved = picker.rect().origin() - from;
+    assert!(moved.hypot() > 100.0, "the picker moved: {moved:?}");
+    let after = picker
+        .item_rect(0)
+        .expect("the first emoji is still in view");
+    assert_eq!(
+        after.origin() - before.origin(),
+        moved,
+        "the grid moved with the panel"
+    );
+    click(&mut picker, after.center());
+    assert_eq!(
+        picker.take_events(),
+        [PickerEvent::Picked(":party_parrot:".into())],
+        "a click where the first emoji now is picks it"
+    );
+}
+
+#[test]
 fn the_picker_is_a_dialog_with_its_field_tabs_and_named_emoji() {
     let window = window(true);
     let _in = window.scope.enter();
