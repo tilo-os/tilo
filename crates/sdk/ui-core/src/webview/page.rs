@@ -25,6 +25,9 @@ pub const MAX_SELECT_VALUES: usize = 64;
 /// Upper bound on one option value or label.
 pub const MAX_SELECT_VALUE_BYTES: usize = 1024;
 const MAX_REF_BYTES: usize = 40;
+/// A frame part names one of the bounded number of frames a read descends
+/// into, so it is a few digits, never an open-ended number.
+const MAX_FRAME_REF_DIGITS: usize = 6;
 const MAX_MESSAGE_BYTES: usize = 1024;
 const MAX_CODE_BYTES: usize = 64;
 
@@ -155,17 +158,35 @@ impl PageRequest {
     }
 }
 
-/// Element refs are `d<document>e<element>`: both parts are decimal, so a ref
-/// can never smuggle selector or script syntax to the engine.
+/// Element refs are `d<document>e<element>`, and for an element inside a child
+/// frame `f<frame>d<document>e<element>`: every part is decimal, so a ref can
+/// never smuggle selector or script syntax to the engine. The frame part says
+/// which frame's own isolated world the element was read in, never what the
+/// page may do.
 pub fn is_element_ref(value: &str) -> bool {
-    let Some((document, element)) = value
-        .strip_prefix('d')
-        .and_then(|rest| rest.split_once('e'))
-    else {
+    if value.len() > MAX_REF_BYTES {
+        return false;
+    }
+    let rest = match value.strip_prefix('f') {
+        Some(rest) => {
+            let Some((frame, rest)) = rest.split_once('d') else {
+                return false;
+            };
+            if frame.is_empty() || frame.len() > MAX_FRAME_REF_DIGITS {
+                return false;
+            }
+            rest
+        }
+        None => match value.strip_prefix('d') {
+            Some(rest) => rest,
+            None => return false,
+        },
+    };
+    let Some((document, element)) = rest.split_once('e') else {
         return false;
     };
     let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
-    value.len() <= MAX_REF_BYTES && digits(document) && digits(element)
+    digits(document) && digits(element)
 }
 
 /// One key plus modifiers, written as a chord such as `Enter`, `Shift+Tab`
@@ -405,6 +426,24 @@ mod tests {
                 assert!(!is_element_ref(bad), "{bad}");
             }
             assert!(!is_element_ref(&format!("d1e{}", "9".repeat(40))));
+        }
+        // phase: element_refs_of_a_frame_name_their_frame
+        {
+            assert!(is_element_ref("f1d2e3"));
+            assert!(is_element_ref("f16d1e2"));
+            for bad in [
+                "f1d2",
+                "fd1e2",
+                "f1de2",
+                "f1e2",
+                "f1d2e",
+                "F1D2E3",
+                "f1d2e3;alert(1)",
+            ] {
+                assert!(!is_element_ref(bad), "{bad}");
+            }
+            // A frame part is a bounded number, like the rest of a ref.
+            assert!(!is_element_ref(&format!("f{}d1e2", "9".repeat(7))));
         }
         // phase: key_chords_parse_to_canonical_form
         {

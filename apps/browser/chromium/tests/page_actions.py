@@ -49,6 +49,29 @@ AGENT = b'''<!doctype html><title>Agent</title>
 '''
 
 
+# A page whose form is in a child frame, the way a bank's payment widget is.
+FRAMED = b'''<!doctype html><title>Framed</title>
+<h1>Bank details</h1>
+<p>Enter your account in the frame below.</p>
+<iframe id="fr" title="Payment frame" src="/widget" style="width:400px;height:300px;border:3px solid #000;padding:2px"></iframe>
+<p id="status"></p>'''
+
+WIDGET = b'''<!doctype html><title>Payment</title>
+<body style="padding:6px">
+<label for="iban">IBAN</label><input type="text" id="iban" name="iban">
+<label for="holder">Account holder</label><input type="text" id="holder" name="holder">
+<button type="submit" onclick="parent.document.getElementById('status').textContent = 'saved'">Save bank details</button>
+</body>'''
+
+# A frame of another site cannot post to the page at all, so it reports what it
+# did where only its own world can read it.
+FOREIGN = b'''<!doctype html><title>Payment widget</title>
+<body style="padding:6px">
+<label for="iban">IBAN</label><input type="text" id="iban" name="iban">
+<button type="button" onclick="document.title = 'saved ' + document.getElementById('iban').value">Save bank details</button>
+</body>'''
+
+
 PARAGRAPH = ('Reading on a screen is easiest when the line is short, the type is calm and nothing '
              'else competes for attention. ') * 3
 ARTICLE = f'''<!doctype html><title>The long read</title>
@@ -62,10 +85,18 @@ ARTICLE = f'''<!doctype html><title>The long read</title>
 <input id="kept" value="typed by the person">'''.encode()
 
 
+# The same page, one of its frames same-origin and one of them another site's.
+CROSS = (b'<!doctype html><title>Two frames</title><h1>Two frames</h1>'
+         b'<iframe title="Same site" src="/widget" style="width:300px;height:200px"></iframe>'
+         b'<iframe title="Other site" src="http://localhost:PORT/foreign" style="width:300px;height:200px"></iframe>')
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
+            else FRAMED if path == '/framed' else WIDGET if path == '/widget' \
+            else FOREIGN if path == '/foreign' else CROSS if path == '/cross' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -76,6 +107,62 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+
+class FramedActions(unittest.TestCase):
+    """A page whose controls live in child frames, reached through the actions."""
+
+    setUpClass = PageActions.setUpClass
+    tearDownClass = PageActions.tearDownClass
+    setUp = PageActions.setUp
+    tearDown = PageActions.tearDown
+    page, ok, outline, main_world = PageActions.page, PageActions.ok, PageActions.outline, PageActions.main_world
+
+    def test_outline_lists_a_frame_and_its_own_lines_under_it(self):
+        self.h.navigate(self.url + '/framed')
+        outline = self.outline()
+        self.assertRegex(outline, r'- iframe "Payment frame" \[ref=(f1d\d+e\d+)\]')
+        # The frame's own lines follow the line naming it, indented below it.
+        lines = outline.splitlines()
+        at = next(i for i, line in enumerate(lines) if 'iframe "Payment frame"' in line)
+        below = lines[at + 1:at + 5]
+        self.assertTrue(any('textbox "IBAN"' in line for line in below), below)
+        self.assertTrue(any(line.startswith('      - ') for line in below), below)
+        self.assertRegex(outline, r'button "Save bank details" \[ref=f1d\d+e\d+\]')
+        # The frame's refs name the frame they were read in.
+        self.assertRegex(outline, r'textbox "IBAN" \[ref=f1d\d+e\d+\]')
+        # The page's own controls keep the refs they always had.
+        self.assertRegex(outline, r'heading "Bank details" level=1')
+
+    def test_actions_on_a_frame_ref_run_in_that_frame(self):
+        self.h.navigate(self.url + '/framed')
+        outline = self.outline()
+        self.ok('fill', element=self.ref_of(outline, 'textbox "IBAN"'), text='EX89370400440532013000')
+        self.ok('fill', element=self.ref_of(outline, 'textbox "Account holder"'), text='Maria Elena Fischer')
+        after = self.outline()
+        self.assertIn('value="EX89370400440532013000"', after)
+        self.assertIn('value="Maria Elena Fischer"', after)
+        # A trusted click reaches the frame's button, and what it did reaches
+        # the page: the page's own script ran from it.
+        self.ok('click', element=self.ref_of(after, 'button "Save bank details"'))
+        self.ok('settle', quiet_ms=300, timeout_ms=5000)
+        self.assertIn('text "saved"', self.outline())
+        # Reading a frame is still reading: page script cannot call the world.
+        self.assertEqual(self.main_world('typeof globalThis.__tiloPage'), 'undefined')
+
+    def test_each_frame_is_read_in_its_own_world(self):
+        self.h.navigate(self.url + '/cross'.replace('PORT', self.url.rsplit(':', 1)[1]))
+        outline = self.outline()
+        self.assertRegex(outline, r'- iframe "Same site" \[ref=f1d\d+e\d+\]')
+        self.assertRegex(outline, r'- iframe "Other site" \[ref=f2d\d+e\d+\]')
+        # A frame of another site is read exactly as one of this site's is.
+        self.assertRegex(outline, r'textbox "IBAN" \[ref=f2d\d+e\d+\]')
+        self.assertNotIn('f1d', outline.split('iframe "Other site"')[1], 'the two frames keep their own refs')
+        iban = self.ref_of(outline, 'textbox "IBAN"')
+        self.ok('fill', element=iban, text='EX89')
+        # The foreign frame's own world saw the text its own document holds.
+        self.assertIn('value="EX89"', self.outline().split('iframe "Other site"')[1])
+        self.assertNotIn('value="EX89"', self.outline().split('iframe "Other site"')[0])
 
 
 class PageActions(unittest.TestCase):
@@ -275,5 +362,10 @@ class PageActions(unittest.TestCase):
         self.assertEqual(entered['code'], 'cross_origin_submit', entered)
 
 
-if __name__ == '__main__':
+    def ref_of(self, outline, pattern):
+        """A ref describing an element inside a child frame."""
+        match = re.search(pattern + r'.*?\[ref=(f\d+d\d+e\d+)\]', outline)
+        self.assertIsNotNone(match, f'{pattern!r} not in outline:\n{outline}')
+        return match.group(1)
+
     unittest.main(verbosity=2)
