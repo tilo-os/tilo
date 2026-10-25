@@ -187,7 +187,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 15;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 16;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 /// What a model may know about one change it is asked to describe: the
@@ -476,6 +476,12 @@ pub enum FloatingSurfaceClientMessage {
         request: u64,
         control: Option<PointedControl>,
     },
+    /// The answer to [`FloatingSurfaceHostMessage::Pick`] `request`, read
+    /// from this window's retained tree ([`crate::pick_wire::answer`]).
+    PickAnswered {
+        request: u64,
+        answer: crate::pick_wire::PickAnswer,
+    },
 }
 
 /// One control of an app's window as the shell names it when a person
@@ -563,6 +569,14 @@ pub enum FloatingSurfaceHostMessage {
     PointAt {
         request: u64,
         point: [f64; 2],
+    },
+    /// The person is picking parts of the screen to report a problem with
+    /// them, over this app's window: answer `query` with
+    /// [`FloatingSurfaceClientMessage::PickAnswered`]. Sent only to an app
+    /// that announced [`FloatingSurfaceClientMessage::SelectionCapable`].
+    Pick {
+        request: u64,
+        query: crate::pick_wire::PickQuery,
     },
     /// The person used this app's slots in its window's bar
     /// ([`FloatingSurfaceClientMessage::Toolbar`]), or the bar's search or

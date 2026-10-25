@@ -46,6 +46,24 @@ pub struct PickTarget {
     pub caption: String,
 }
 
+impl PickTarget {
+    /// The caption a part of `app` with role `role` (as assistive
+    /// technology names it, `ListItem`) is shown with: "Chat · List item".
+    #[must_use]
+    pub fn caption(app: &str, role: &str) -> String {
+        let mut spaced = String::new();
+        for (index, c) in role.chars().enumerate() {
+            if c.is_uppercase() && index > 0 {
+                spaced.push(' ');
+                spaced.extend(c.to_lowercase());
+            } else {
+                spaced.push(c);
+            }
+        }
+        format!("{app} \u{b7} {spaced}")
+    }
+}
+
 /// The host's view of what is on screen, from its retained widget tree.
 pub trait PickSource {
     /// The nameable parts under `point`, the outermost first and the
@@ -145,6 +163,15 @@ impl FeedbackPicker {
     #[must_use]
     pub fn selected(&self) -> &[PickTarget] {
         self.session.as_ref().map_or(&[], |s| s.selected.as_slice())
+    }
+
+    /// The rectangle being dragged, while the button is down past a click:
+    /// releasing it picks what [`PickSource::within`] finds there. A host
+    /// whose parts are drawn elsewhere asks for them before it lets the
+    /// release through.
+    #[must_use]
+    pub fn dragging(&self) -> Option<Rect> {
+        self.session.as_ref().and_then(|s| s.drag)
     }
 
     fn finish(&mut self, outcome: PickerOutcome) {

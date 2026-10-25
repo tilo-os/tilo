@@ -100,8 +100,15 @@ fn shift_clicks_and_a_dragged_rectangle_pick_several_until_continue() {
     click(&mut picker, Point::new(10.0, 10.0), true, now);
     assert_eq!(keys(picker.selected()), ["button2"]);
     picker.button(Point::new(0.0, 155.0), true, false, &Screen);
+    assert_eq!(picker.dragging(), None, "a press alone drags nothing");
     picker.hover(Point::new(400.0, 245.0), &Screen, now);
+    assert_eq!(
+        picker.dragging(),
+        Some(Rect::new(0.0, 155.0, 400.0, 245.0)),
+        "the host can ask for what is in the rectangle before the release"
+    );
     picker.button(Point::new(400.0, 245.0), false, false, &Screen);
+    assert_eq!(picker.dragging(), None);
     assert_eq!(keys(picker.selected()), ["button2", "row4", "row5"]);
     assert!(picker.is_open(), "a drag adds without ending");
     picker.key(&Key::Named(NamedKey::Enter), now);
@@ -227,4 +234,13 @@ fn a_click_fades_the_dim_in_and_then_asks_for_no_frames() {
     let settled = now + ui::time::Duration::from_secs(1);
     assert!((dim(&picker, settled) - 1.0).abs() < f64::EPSILON);
     assert!(!picker.needs_animation_frame(settled));
+}
+
+#[test]
+fn a_caption_names_the_app_and_the_role_in_words() {
+    assert_eq!(
+        PickTarget::caption("Chat", "ListItem"),
+        "Chat \u{b7} List item"
+    );
+    assert_eq!(PickTarget::caption("Tilo", "Button"), "Tilo \u{b7} Button");
 }

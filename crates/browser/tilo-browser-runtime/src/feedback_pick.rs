@@ -54,7 +54,7 @@ impl Source<'_> {
     fn target(&self, target: ui::pick::PickTarget) -> PickTarget {
         let app = window_of(self.windows, target.rect).map_or("Tilo", |w| w.name.as_str());
         PickTarget {
-            caption: format!("{app} \u{b7} {}", spaced(&target.role_name())),
+            caption: PickTarget::caption(app, &target.role_name()),
             key: target.path,
             rect: target.rect,
         }
@@ -228,18 +228,4 @@ fn window_of(windows: &[PickWindow], rect: Rect) -> Option<&PickWindow> {
     windows
         .iter()
         .find(|window| window.rect.contains(rect.center()))
-}
-
-/// `ListItem` as "List item".
-fn spaced(role: &str) -> String {
-    let mut out = String::new();
-    for (index, c) in role.chars().enumerate() {
-        if c.is_uppercase() && index > 0 {
-            out.push(' ');
-            out.extend(c.to_lowercase());
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
