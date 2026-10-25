@@ -7,9 +7,8 @@
 # It prepares what the packages under test need beyond the builder image,
 # then runs the command under
 # tools/test-env.sh. Without an -E of its own, the run leaves out the visual
-# goldens (the `goldens` check runs them alone, on their image) and the
-# imager's internal-cache tests (the `imager-cache` check runs them on an ext4
-# of its own), as .config/nextest-filters.toml says. With one (`t test
+# goldens (the `goldens` check runs them alone, on their image), as
+# .config/nextest-filters.toml says. With one (`t test
 # PKG --test NAME` asks for one test) the filter is left as given. Other cargo
 # commands (`t cargo build` runs under this wrapper too) pass through unchanged.
 #
@@ -109,7 +108,7 @@ for name, value in nextest_filters.filters().items():
     print(f"{name}={shlex.quote(value)}")
 PY
 )
-    arguments+=(-E "not ($GOLDEN_FILTER) and not ($IMAGER_CACHE_FILTER)${T_NEXTEST_FILTER:+ and ($T_NEXTEST_FILTER)}")
+    arguments+=(-E "not ($GOLDEN_FILTER)${T_NEXTEST_FILTER:+ and ($T_NEXTEST_FILTER)}")
 elif (( nextest )) && [[ -n ${T_NEXTEST_FILTER:-} ]]; then
     # t's selection of test binaries narrows the filters given.
     for (( index = 0; index < ${#arguments[@]}; index++ )); do
