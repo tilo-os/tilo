@@ -136,7 +136,12 @@ fn the_input_method_opens_where_the_page_reports_its_caret() {
     assert!(view.ime_multiline());
     assert_eq!(
         view.ime_cursor_rect(),
-        Some(Rect::new(10.0, 100.0, 390.0, 100.0 + FIELD_LINE_HEIGHT))
+        Some(Rect::new(
+            10.0,
+            100.0,
+            390.0,
+            100.0 + ControlSize::Regular.height(&Theme::dark())
+        ))
     );
     engine.set_text_field(Some(TextField {
         bounds: Some(Rect::new(10.0, 900.0, 390.0, 930.0)),

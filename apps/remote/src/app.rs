@@ -508,12 +508,19 @@ impl SessionCore {
     /// Scroll the live remote desktop under `p` by `delta`: each whole wheel
     /// click is a press and release of the wheel's button (RFB 6143 §7.5.5),
     /// at most [`VNC_WHEEL_BURST`] of them per event. `false` when the
-    /// pointer is not over the desktop.
-    fn forward_vnc_wheel(&mut self, p: Point, delta: &MouseScrollDelta, scale_factor: f64) -> bool {
+    /// pointer is not over the desktop. A trackpad clicks every
+    /// `wheel_line` logical pixels.
+    fn forward_vnc_wheel(
+        &mut self,
+        p: Point,
+        delta: &MouseScrollDelta,
+        scale_factor: f64,
+        wheel_line: f64,
+    ) -> bool {
         let Some((x, y)) = self.vnc_pointer_target(p) else {
             return false;
         };
-        let clicks = vnc_wheel_clicks(&mut self.vnc_wheel, delta, scale_factor);
+        let clicks = vnc_wheel_clicks(&mut self.vnc_wheel, delta, scale_factor, wheel_line);
         if let Some(s) = self.vnc_session() {
             for button in clicks {
                 for button_mask in [self.vnc_buttons | button, self.vnc_buttons] {
@@ -2629,6 +2636,9 @@ pub(crate) struct SessionPane {
     session: SharedSession,
     rect: Rect,
     focused: bool,
+    /// How far one wheel notch scrolls, from the theme the pane was last
+    /// laid out with: a trackpad clicks a VNC desktop's wheel this often.
+    wheel_line: f64,
 }
 
 impl SessionPane {
@@ -2637,6 +2647,7 @@ impl SessionPane {
             session,
             rect: Rect::ZERO,
             focused: true,
+            wheel_line: f64::from(ui::tokens::metrics::Metrics::BASE.wheel_line),
         }
     }
 
@@ -2805,7 +2816,7 @@ impl SessionPane {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let p = core.pointer;
-                core.forward_vnc_wheel(p, delta, scale_factor)
+                core.forward_vnc_wheel(p, delta, scale_factor, self.wheel_line)
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let p = core.pointer;
@@ -2921,9 +2932,10 @@ impl Widget for SessionPane {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.wheel_line = f64::from(theme.tokens.metrics.wheel_line);
         let style = Style {
             flex_grow: 1.0,
             size: Size::from_percent(1.0, 1.0),
@@ -3069,22 +3081,23 @@ fn ssh_key_bytes(key: &Key, text: Option<&str>, mods: ModifiersState) -> Option<
 /// cannot fill the session's bounded input queue.
 const VNC_WHEEL_BURST: usize = 10;
 
-/// Trackpad pixels per wheel click sent to a VNC desktop.
-const VNC_WHEEL_CLICK_PX: f64 = 40.0;
-
 /// The wheel buttons to click on a VNC desktop for `delta`, carrying what is
 /// short of a whole click in `pending`. RFB's buttons 4 to 7 (mask bits 3 to
 /// 6) scroll up, down, left and right; winit's positive deltas move the
 /// content right and down, which is scrolling left and up.
+///
+/// A trackpad's pixels make a click every `wheel_line` logical pixels, the
+/// theme's distance for one notch of a line-stepping wheel.
 fn vnc_wheel_clicks(
     pending: &mut (f64, f64),
     delta: &MouseScrollDelta,
     scale_factor: f64,
+    wheel_line: f64,
 ) -> Vec<u8> {
     let (dx, dy) = match delta {
         MouseScrollDelta::LineDelta(x, y) => (f64::from(*x), f64::from(*y)),
         MouseScrollDelta::PixelDelta(position) => {
-            let per_click = VNC_WHEEL_CLICK_PX * scale_factor.max(f64::MIN_POSITIVE);
+            let per_click = wheel_line.max(1.0) * scale_factor.max(f64::MIN_POSITIVE);
             (position.x / per_click, position.y / per_click)
         }
     };

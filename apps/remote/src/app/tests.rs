@@ -1021,29 +1021,25 @@ fn the_wheel_scrolls_a_vnc_desktop() {
     let mut pending = (0.0, 0.0);
     let line = |x, y| MouseScrollDelta::LineDelta(x, y);
     let pixels = |x, y| MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(x, y));
-    assert_eq!(vnc_wheel_clicks(&mut pending, &line(0.0, 1.0), 1.0), [0x08]);
-    assert_eq!(
-        vnc_wheel_clicks(&mut pending, &line(0.0, -2.0), 1.0),
-        [0x10, 0x10]
-    );
-    assert_eq!(vnc_wheel_clicks(&mut pending, &line(1.0, 0.0), 1.0), [0x20]);
-    assert_eq!(
-        vnc_wheel_clicks(&mut pending, &line(-1.0, 0.0), 1.0),
-        [0x40]
-    );
+    let notch = f64::from(ui::tokens::metrics::Metrics::BASE.wheel_line);
+    let mut clicks =
+        |delta: &MouseScrollDelta, scale: f64| vnc_wheel_clicks(&mut pending, delta, scale, notch);
+    assert_eq!(clicks(&line(0.0, 1.0), 1.0), [0x08]);
+    assert_eq!(clicks(&line(0.0, -2.0), 1.0), [0x10, 0x10]);
+    assert_eq!(clicks(&line(1.0, 0.0), 1.0), [0x20]);
+    assert_eq!(clicks(&line(-1.0, 0.0), 1.0), [0x40]);
+    // At scale 2, a click is two notches of physical pixels.
+    let most_of_a_click = -0.6 * notch * 2.0;
     assert!(
-        vnc_wheel_clicks(&mut pending, &pixels(0.0, -50.0), 2.0).is_empty(),
+        clicks(&pixels(0.0, most_of_a_click), 2.0).is_empty(),
         "under a click at this scale"
     );
     assert_eq!(
-        vnc_wheel_clicks(&mut pending, &pixels(0.0, -50.0), 2.0),
+        clicks(&pixels(0.0, most_of_a_click), 2.0),
         [0x10],
         "the two together make one"
     );
-    assert_eq!(
-        vnc_wheel_clicks(&mut pending, &line(0.0, 500.0), 1.0).len(),
-        VNC_WHEEL_BURST
-    );
+    assert_eq!(clicks(&line(0.0, 500.0), 1.0).len(), VNC_WHEEL_BURST);
 }
 
 #[test]
