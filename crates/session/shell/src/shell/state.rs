@@ -2215,7 +2215,13 @@ impl WorkspaceTree {
         let Ok(mut stored) = serde_json::to_value(&*current) else {
             return false;
         };
-        stored["room"] = serde_json::Value::String(room.to_string());
+        let Some(fields) = stored.as_object_mut() else {
+            return false;
+        };
+        fields.insert(
+            "room".to_owned(),
+            serde_json::Value::String(room.to_string()),
+        );
         let Ok(mut workspace) = serde_json::from_value::<Workspace>(stored) else {
             return false;
         };
