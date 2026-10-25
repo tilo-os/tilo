@@ -91,6 +91,12 @@ impl Drop for BluetoothFollow {
 pub fn follow_changes(
     on_change: impl Fn() + Send + Sync + 'static,
 ) -> Result<BluetoothFollow, String> {
+    // Not generic past here: the runtime holds the follower, its D-Bus
+    // connection and its tasks once, rather than every app calling it.
+    follow_changes_boxed(Box::new(on_change))
+}
+
+fn follow_changes_boxed(on_change: Box<dyn Fn() + Send + Sync>) -> Result<BluetoothFollow, String> {
     let runtime = tilo_rt::try_app().map_err(|error| error.to_string())?;
     let task = runtime.spawn(async move {
         let watched = async { BluezClient::connect().await?.watch_changes().await }.await;

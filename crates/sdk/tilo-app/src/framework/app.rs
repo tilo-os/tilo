@@ -678,11 +678,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     // the app's view says nothing about it. Holdings already here (no
     // shell hosts the window, or the room synced) need no stand-in.
     let content: Element = match awaiting {
-        Some(holdings) if holdings.with(|room| room.ready().is_none()) => Box::new(
-            cx.arriving(&holdings, |cx, ()| A::view(cx))
-                // The window's whole view: a page.
-                .shaped(ui_core::widget::SkeletonShape::Page),
-        ),
+        Some(holdings) if room_pending(&holdings) => cx.arriving_room(&holdings, A::view),
         _ => A::view(&mut cx),
     };
     let live = permissions.is_some();
@@ -697,6 +693,13 @@ pub(crate) fn build_root<A: ResourceApp>(
         return root.drawing_past(super::preview::draw_past::<A>);
     }
     root
+}
+
+/// Whether the room's holdings are still on their way.
+fn room_pending(
+    holdings: &ui_core::arriving::Arriving<(), ui_core::room_sync::RoomUnreachable>,
+) -> bool {
+    holdings.with(|room| room.ready().is_none())
 }
 
 /// The decoders of every edit `A`'s document takes: its resource's actions

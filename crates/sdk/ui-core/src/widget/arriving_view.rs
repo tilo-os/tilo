@@ -408,9 +408,15 @@ trait ArrivalRead {
     /// What its answer shows once it landed; `None` while pending.
     fn landed(&self) -> Option<Showing>;
     fn holds_frame_until(&self, now: Instant) -> Option<Instant>;
+    /// Which read this is: the same for every clone of it.
+    fn identity(&self) -> usize;
+    /// What went wrong, in the read's words; `None` unless it failed.
+    fn failure(&self) -> Option<String>;
+    fn can_retry(&self) -> bool;
+    fn retry(&self);
 }
 
-impl<T, E> ArrivalRead for Arriving<T, E> {
+impl<T, E: std::fmt::Display> ArrivalRead for Arriving<T, E> {
     fn revision(&self) -> u64 {
         Arriving::revision(self)
     }
@@ -434,11 +440,27 @@ impl<T, E> ArrivalRead for Arriving<T, E> {
     fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
         Arriving::holds_frame_until(self, now)
     }
+
+    fn identity(&self) -> usize {
+        Arriving::identity(self)
+    }
+
+    fn failure(&self) -> Option<String> {
+        self.with(|arrival| arrival.failure().map(ToString::to_string))
+    }
+
+    fn can_retry(&self) -> bool {
+        Arriving::can_retry(self)
+    }
+
+    fn retry(&self) {
+        Arriving::retry(self);
+    }
 }
 
 /// A read's view. See the module docs; build one with [`Arriving::view`].
 pub struct ArrivingView {
-    arriving: Box<dyn ArrivalRead>,
+    arriving: Rc<dyn ArrivalRead>,
     shape: Rc<Cell<SkeletonShape>>,
     reveal: Rc<Cell<Reveal>>,
     inner: ModelView<Reveal>,
@@ -477,6 +499,19 @@ impl ArrivingView {
         arriving: &Arriving<T, E>,
         mut build: impl FnMut(&T) -> Element + 'static,
     ) -> Self {
+        // Only reading the answer depends on its type: every app compiles
+        // this much, and the toolkit builds the view, its placeholder and
+        // its failure once for all of them.
+        let source = arriving.clone();
+        Self::of_read(
+            Rc::new(arriving.clone()),
+            Box::new(move || source.with(|arrival| arrival.ready().map(&mut build))),
+        )
+    }
+
+    /// The view of `read`, showing what `answer` builds of its answer
+    /// (`None` while there is none).
+    fn of_read(read: Rc<dyn ArrivalRead>, mut answer: Box<dyn FnMut() -> Option<Element>>) -> Self {
         let shape = Rc::new(Cell::new(SkeletonShape::Page));
         let reveal = Rc::new(Cell::new(Reveal {
             showing: Showing::Placeholder,
@@ -485,30 +520,26 @@ impl ArrivingView {
         }));
         let projected = Rc::clone(&reveal);
         let built_shape = Rc::clone(&shape);
-        let source = arriving.clone();
+        let source = Rc::clone(&read);
         let inner = ModelView::from_document(
             move |_, _| projected.get(),
             move |reveal: &Reveal| -> Element {
                 let empty = || -> Element { Box::new(Reserve::empty()) };
                 match reveal.showing {
                     Showing::Placeholder => empty(),
-                    Showing::Answer => source
-                        .with(|arrival| arrival.ready().map(&mut build))
-                        .unwrap_or_else(empty),
+                    Showing::Answer => answer().unwrap_or_else(empty),
                     Showing::Failure if !reveal.speaks => empty(),
-                    Showing::Failure => source
-                        .with(|arrival| arrival.failure().map(ToString::to_string))
-                        .map_or_else(empty, |message| {
-                            failure(&source, message, built_shape.get())
-                        }),
+                    Showing::Failure => source.failure().map_or_else(empty, |message| {
+                        failure(&source, message, built_shape.get())
+                    }),
                 }
             },
         );
         let naming = Rc::new(NamingEntry::default());
-        naming.read.set(arriving.identity());
+        naming.read.set(read.identity());
         register_naming(&naming);
         Self {
-            arriving: Box::new(arriving.clone()),
+            arriving: read,
             shape,
             reveal,
             inner,
@@ -531,14 +562,10 @@ impl ArrivingView {
 /// The reserved box as the error, with a retry when the read offers one:
 /// a banner where the box holds one, a row of the box's own kind where it
 /// is a row's (or a line's).
-fn failure<T: 'static, E: 'static>(
-    arriving: &Arriving<T, E>,
-    message: String,
-    shape: SkeletonShape,
-) -> Element {
+fn failure(read: &Rc<dyn ArrivalRead>, message: String, shape: SkeletonShape) -> Element {
     let failed = crate::i18n::I18nManager::lookup_plain("arriving-failed");
-    let retry = arriving.can_retry().then(|| {
-        let again = arriving.clone();
+    let retry = read.can_retry().then(|| {
+        let again = Rc::clone(read);
         Button::new("arriving.retry", "arriving-retry").on_view(move || again.retry())
     });
     let compact = match shape {
