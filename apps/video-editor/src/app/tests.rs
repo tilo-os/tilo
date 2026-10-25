@@ -1,7 +1,7 @@
-#[test]
-fn seeding_and_scenarios_start_only_where_asked() {
-    // Case `every_named_scenario_parses_and_none_is_missing`:
+scenario! {
+    fn seeding_and_scenarios_start_only_where_asked;
     // The launcher's scenario list and the parser agree, in both directions.
+    phase every_named_scenario_parses_and_none_is_missing;
     {
         for name in ShotScenario::ALL_NAMES {
             assert!(
@@ -23,13 +23,13 @@ fn seeding_and_scenarios_start_only_where_asked() {
              them is a typo: {seen:?}",
         );
     }
-    // Case `sync_seeds_and_selects`.
+    phase sync_seeds_and_selects;
     {
         let app = app_with_sample();
         assert_eq!(app.project.clips.len(), 7);
         assert!(app.selected().is_some(), "a clip should be auto-selected");
     }
-    // Case `live_new_over_fresh_doc_stays_empty`.
+    phase live_new_over_fresh_doc_stays_empty;
     {
         // The live constructor must not fabricate a project: synced against a
         // fresh (empty) document it opens blank — no media, no clips.
@@ -54,6 +54,7 @@ fn seeding_and_scenarios_start_only_where_asked() {
 
 use super::*;
 use crate::resource::ProjectAction;
+use tilo_test_env::scenario;
 use ui::tilo_resource::{Fields, Resource as _};
 
 // The edits the test host applied, one entry per undo step, for a test that
@@ -205,9 +206,9 @@ fn exported(d: &ui::headless::FrameHarness) -> Vec<(ui::accesskit::Role, String)
         .collect()
 }
 
-#[test]
-fn accessibility_tree_exposes_transport_clips_and_tracks() {
-    // Case `the_editor_is_no_longer_an_empty_window_to_a_screen_reader`.
+scenario! {
+    fn accessibility_tree_exposes_transport_clips_and_tracks;
+    phase the_editor_is_no_longer_an_empty_window_to_a_screen_reader;
     {
         // Before: one leaf widget contributing zero nodes — a reader found a
         // window with nothing in it.
@@ -225,7 +226,7 @@ fn accessibility_tree_exposes_transport_clips_and_tracks() {
             );
         }
     }
-    // Case `every_transport_button_carries_the_meaning_its_glyph_does_not`.
+    phase every_transport_button_carries_the_meaning_its_glyph_does_not;
     {
         // Two glyph pairs were once drawn near-identically, so the name is the
         // control's real label rather than a decoration on a picture.
@@ -245,7 +246,7 @@ fn accessibility_tree_exposes_transport_clips_and_tracks() {
             assert_eq!(hit.0, ui::accesskit::Role::Button, "{name} is a button");
         }
     }
-    // Case `a_clip_says_where_it_is_how_long_it_runs_and_what_it_is_on`.
+    phase a_clip_says_where_it_is_how_long_it_runs_and_what_it_is_on;
     {
         let d = a11y_driver();
         let clips: Vec<_> = d
@@ -268,7 +269,7 @@ fn accessibility_tree_exposes_transport_clips_and_tracks() {
             "a clip knows its place in its track"
         );
     }
-    // Case `tracks_expose_their_mute_solo_and_lock_as_real_toggles`.
+    phase tracks_expose_their_mute_solo_and_lock_as_real_toggles;
     {
         let d = a11y_driver();
         let toggles: Vec<_> = d
@@ -292,7 +293,7 @@ fn accessibility_tree_exposes_transport_clips_and_tracks() {
             );
         }
     }
-    // Case `an_assistive_technology_can_play_the_video`.
+    phase an_assistive_technology_can_play_the_video;
     {
         // The proof that the tree is operable and not merely readable.
         let mut d = a11y_driver();
@@ -1401,9 +1402,9 @@ fn timecode_entry_jumps_or_explains_and_owns_the_keyboard() {
     }
 }
 
-#[test]
-fn hover_labels_and_pointer_shapes_describe_each_region() {
-    // Case `every_icon_only_control_has_a_hover_label`.
+scenario! {
+    fn hover_labels_and_pointer_shapes_describe_each_region;
+    phase every_icon_only_control_has_a_hover_label;
     {
         // An icon with no words is a control only someone who already knows it
         // can use.
@@ -1417,7 +1418,7 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
         }
         assert_eq!(app.tooltip_at(r.lanes.center()), None);
     }
-    // Case `the_pointer_says_what_each_region_does`.
+    phase the_pointer_says_what_each_region_does;
     {
         use winit::window::CursorIcon;
         let (mut app, mut doc) = app_and_doc();
@@ -1458,7 +1459,7 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
         click(&mut app, &mut doc, pill.center().x, pill.center().y);
         assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::NotAllowed));
     }
-    // Case `a_disabled_export_offers_no_pointer_and_a_running_render_only_its_cancel`.
+    phase a_disabled_export_offers_no_pointer_and_a_running_render_only_its_cancel;
     {
         use winit::window::CursorIcon;
         let (mut app, _doc) = app_and_doc();
@@ -1996,9 +1997,9 @@ fn imports_add_real_clips_through_the_document() {
     }
 }
 
-#[test]
-fn timeline_geometry_maps_time_lanes_and_canvas() {
-    // Case `time_x_round_trips`.
+scenario! {
+    fn timeline_geometry_maps_time_lanes_and_canvas;
+    phase time_x_round_trips;
     {
         let app = app_with_sample();
         let r = app.regions();
@@ -2006,7 +2007,7 @@ fn timeline_geometry_maps_time_lanes_and_canvas() {
         let t = app.x_to_time(x, &r.lanes);
         assert!((t - 12.0).abs() < 1e-6);
     }
-    // Case `split_then_delete_changes_clip_count`.
+    phase split_then_delete_changes_clip_count;
     {
         let mut app = app_with_sample();
         let mut doc = crate::seed::sample_document();
@@ -2023,13 +2024,13 @@ fn timeline_geometry_maps_time_lanes_and_canvas() {
         sync(&mut app, &mut doc);
         assert_eq!(app.project.clips.len(), before);
     }
-    // Case `lane_rects_cover_all_tracks`.
+    phase lane_rects_cover_all_tracks;
     {
         let app = app_with_sample();
         let r = app.regions();
         assert_eq!(app.lane_rects(&r).len(), 4);
     }
-    // Case `regions_letterbox_canvas_is_16x9`.
+    phase regions_letterbox_canvas_is_16x9;
     {
         let app = app_with_sample();
         let r = app.regions();
@@ -2288,9 +2289,9 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
 
 use winit::keyboard::{Key as WKey, ModifiersState};
 
-#[test]
-fn range_marks_scope_renders_without_stealing_trim_keys() {
-    // Case `marking_in_and_out_narrows_what_a_render_covers`.
+scenario! {
+    fn range_marks_scope_renders_without_stealing_trim_keys;
+    phase marking_in_and_out_narrows_what_a_render_covers;
     {
         // The export loop ran `0..total` unconditionally, so checking a
         // ten-second fix meant re-rendering the whole timeline. There were no
@@ -2348,7 +2349,7 @@ fn range_marks_scope_renders_without_stealing_trim_keys() {
             plan.total,
         );
     }
-    // Case `clearing_the_marks_puts_the_render_back_to_the_whole_timeline`.
+    phase clearing_the_marks_puts_the_render_back_to_the_whole_timeline;
     {
         let (mut app, mut doc) = app_and_doc();
         app.playhead = 6.0;
@@ -2365,7 +2366,7 @@ fn range_marks_scope_renders_without_stealing_trim_keys() {
         let (from, to) = app.project.export_range();
         assert!((from).abs() < 1e-9 && (to - app.project.duration()).abs() < 1e-9);
     }
-    // Case `the_range_marks_do_not_take_the_clip_trim_keys_away`.
+    phase the_range_marks_do_not_take_the_clip_trim_keys_away;
     {
         // I and O have always trimmed the selected clip. The range is a
         // different decision on a different thing, so it takes a different
@@ -2426,9 +2427,9 @@ fn seed_media(app: &mut VideoEditorApp, doc: &mut AutoCommit, w: u32, h: u32, fp
     id
 }
 
-#[test]
-fn project_format_follows_the_first_clip_unless_chosen() {
-    // Case `a_blank_project_takes_its_shape_from_the_first_clip_that_lands_on_it`.
+scenario! {
+    fn project_format_follows_the_first_clip_unless_chosen;
+    phase a_blank_project_takes_its_shape_from_the_first_clip_that_lands_on_it;
     {
         // Shoot vertically and there was no way to say so: the frame was
         // fixed at 1920x1080 at 30 from the moment the project existed, and
@@ -2458,7 +2459,7 @@ fn project_format_follows_the_first_clip_unless_chosen() {
         let (w, h) = crate::export::output_dims(&ExportSettings::default(), &app.project);
         assert!(h > w, "a vertical project exports vertical, got {w}x{h}");
     }
-    // Case `a_format_chosen_by_hand_is_not_overridden_by_the_next_clip`.
+    phase a_format_chosen_by_hand_is_not_overridden_by_the_next_clip;
     {
         // Adoption is for a project that has never been told its shape. One
         // that has must keep it, or the picker would be undone by the next
@@ -2473,7 +2474,7 @@ fn project_format_follows_the_first_clip_unless_chosen() {
         assert_eq!((app.project.width, app.project.height), (3840, 2160));
         assert!((app.project.fps - 25.0).abs() < 1e-9);
     }
-    // Case `a_second_clip_does_not_reshape_a_timeline_already_cut_against_the_first`.
+    phase a_second_clip_does_not_reshape_a_timeline_already_cut_against_the_first;
     {
         let (mut app, mut doc) = blank_app_and_doc();
         let first = seed_media(&mut app, &mut doc, 1080, 1920, 30.0);
@@ -2487,7 +2488,7 @@ fn project_format_follows_the_first_clip_unless_chosen() {
             "the shape the timeline was cut against survives"
         );
     }
-    // Case `the_frame_size_and_rate_are_pressable_in_the_inspector`.
+    phase the_frame_size_and_rate_are_pressable_in_the_inspector;
     {
         // The picker is the pointer half of the same capability the
         // `set-frame-size` / `set-frame-rate` actions carry.
@@ -2515,7 +2516,7 @@ fn project_format_follows_the_first_clip_unless_chosen() {
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         assert!((app.project.fps - rate).abs() < 1e-9);
     }
-    // Case `a_reader_can_set_the_projects_frame_size_without_a_pointer`.
+    phase a_reader_can_set_the_projects_frame_size_without_a_pointer;
     {
         // The accessibility tree and the keyboard walk are the same list, and
         // the project's format had no stop on it at all.
@@ -2867,11 +2868,12 @@ fn reveal_inspector_rect_for_test(app: &mut VideoEditorApp, r: &Regions, rect: R
         .clamp(0.0, app.inspector_max_scroll(r));
 }
 
-#[test]
-fn resource_and_view_actions_target_exact_entities() {
-    // Case `a_chosen_search_hit_brokers_the_exact_timeline_selection`:
+scenario! {
+    fn resource_and_view_actions_target_exact_entities;
+
     // A chosen search row resolves through the exported resource tree and the
     // operation broker, then opens the exact clip and timeline instant.
+    phase a_chosen_search_hit_brokers_the_exact_timeline_selection;
     {
         let (mut app, _doc) = app_and_doc();
         let clip = app.project.clips[0].clone();
@@ -2903,9 +2905,10 @@ fn resource_and_view_actions_target_exact_entities() {
         assert_eq!(app.selected_media, Some(clip.media));
         assert!(!app.playback.playing, "the shared seek stops the transport");
     }
-    // Case `marker_view_action_selects_its_owner_at_the_current_position`:
+
     // Clip markers resolve their current collaborative position at execution
     // time and select their owner, rather than replaying a stale timestamp.
+    phase marker_view_action_selects_its_owner_at_the_current_position;
     {
         let (mut app, _doc) = app_and_doc();
         let cid = app.project.clips[0].id;
@@ -2926,7 +2929,7 @@ fn resource_and_view_actions_target_exact_entities() {
         assert_eq!(app.selected(), Some(cid));
         assert!((app.playhead - (clip.start + 1.25)).abs() < 1e-9);
     }
-    // Case `effect_view_action_targets_its_instance_and_refuses_a_stale_id`.
+    phase effect_view_action_targets_its_instance_and_refuses_a_stale_id;
     {
         let (mut app, _doc) = app_and_doc();
         let clip_id = app.project.clips[0].id;
@@ -3016,9 +3019,9 @@ fn key_press_mods(
     handled
 }
 
-#[test]
-fn project_save_and_open_round_trip_and_replace() {
-    // Case `saving_writes_a_file_that_opens_back_as_the_same_timeline`.
+scenario! {
+    fn project_save_and_open_round_trip_and_replace;
+    phase saving_writes_a_file_that_opens_back_as_the_same_timeline;
     {
         // The whole point of a project file, end to end through the app: save
         // the loaded project, open it into a *fresh* editor, and get the same
@@ -3050,9 +3053,10 @@ fn project_save_and_open_round_trip_and_replace() {
         assert_eq!(reloaded.clips.len(), clips);
         std::fs::remove_dir_all(&dir).ok();
     }
-    // Case `a_project_handed_over_by_contents_opens_with_no_path_to_save_to`:
+
     // where files have no paths (a browser page) the chooser hands over the
     // file's contents; the edit comes back, and Save asks where again.
+    phase a_project_handed_over_by_contents_opens_with_no_path_to_save_to;
     {
         let (app, _doc) = app_and_doc();
         let clips = app.project.clips.len();
@@ -3069,7 +3073,7 @@ fn project_save_and_open_round_trip_and_replace() {
             "there is no path to write back to"
         );
     }
-    // Case `opening_a_second_project_replaces_the_first_instead_of_merging_it`.
+    phase opening_a_second_project_replaces_the_first_instead_of_merging_it;
     {
         // The failure this guards is not a crash: it is opening project B and
         // being shown A's clips *and* B's, with no way to tell them apart.
@@ -3116,7 +3120,7 @@ fn project_save_and_open_round_trip_and_replace() {
         assert_eq!(load(&doc).clips.len(), 1, "and in the document too");
         std::fs::remove_dir_all(&dir).ok();
     }
-    // Case `an_open_is_one_undoable_action_rather_than_a_side_door_document_swap`.
+    phase an_open_is_one_undoable_action_rather_than_a_side_door_document_swap;
     {
         // Opening a file has to travel the same road every other edit does, or
         // it neither undoes nor reaches a peer. Assert on what was dispatched.
@@ -3136,9 +3140,9 @@ fn project_save_and_open_round_trip_and_replace() {
     }
 }
 
-#[test]
-fn unsaved_badge_follows_the_document() {
-    // Case `the_unsaved_badge_follows_the_document_not_a_flag_someone_remembered_to_set`.
+scenario! {
+    fn unsaved_badge_follows_the_document;
+    phase the_unsaved_badge_follows_the_document_not_a_flag_someone_remembered_to_set;
     {
         let dir = scratch("dirty");
         let path = dir.join("D.qvp");
@@ -3168,7 +3172,7 @@ fn unsaved_badge_follows_the_document() {
         assert!(app.project_status_line().contains("unsaved changes"));
         std::fs::remove_dir_all(&dir).ok();
     }
-    // Case `a_save_in_the_same_frame_as_the_edit_still_settles_the_badge`.
+    phase a_save_in_the_same_frame_as_the_edit_still_settles_the_badge;
     {
         // `sync` caches the document's heads once per frame. A save that
         // stamped that cached copy, rather than the document as it stands,
@@ -3199,7 +3203,7 @@ fn unsaved_badge_follows_the_document() {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
-    // Case `an_empty_never_saved_project_is_not_reported_as_unsaved_work`.
+    phase an_empty_never_saved_project_is_not_reported_as_unsaved_work;
     {
         // Otherwise a fresh window would wear a badge and interrogate the user
         // about discarding a project they never made.
@@ -3210,7 +3214,7 @@ fn unsaved_badge_follows_the_document() {
         assert!(!app.project_is_dirty());
         assert!(app.project_status_line().contains("empty project"));
     }
-    // Case `the_reader_hears_whether_the_project_is_written_down`.
+    phase the_reader_hears_whether_the_project_is_written_down;
     {
         // A screen-reader user must not get the tidier story: the editor's
         // own node says whether the project is saved to a file.
@@ -4077,9 +4081,9 @@ fn inspector_state_is_the_same_for_eye_and_reader() {
     }
 }
 
-#[test]
-fn portal_destinations_save_where_chosen_or_cancel_cleanly() {
-    // Case `a_chosen_destination_arriving_from_the_portal_saves_where_it_said`.
+scenario! {
+    fn portal_destinations_save_where_chosen_or_cancel_cleanly;
+    phase a_chosen_destination_arriving_from_the_portal_saves_where_it_said;
     {
         // Drives the real per-frame drain the worker feeds, not the writer
         // underneath it — the wiring is the part that breaks.
@@ -4114,7 +4118,7 @@ fn portal_destinations_save_where_chosen_or_cancel_cleanly() {
         assert_eq!(fresh.project.clips.len(), 7, "the whole timeline arrived");
         std::fs::remove_dir_all(&dir).ok();
     }
-    // Case `a_cancelled_chooser_clears_the_notice_and_abandons_a_queued_open`.
+    phase a_cancelled_chooser_clears_the_notice_and_abandons_a_queued_open;
     {
         let (mut app, mut doc) = app_and_doc();
         app.save_then_open = Some(PendingOpen {
@@ -6793,9 +6797,9 @@ fn inspector_and_bin_scrollbars_reach_every_row() {
     }
 }
 
-#[test]
-fn filmstrip_cells_request_and_draw_the_same_frames() {
-    // Case `every_filmstrip_cell_of_a_visible_clip_has_a_frame_to_draw`.
+scenario! {
+    fn filmstrip_cells_request_and_draw_the_same_frames;
+    phase every_filmstrip_cell_of_a_visible_clip_has_a_frame_to_draw;
     {
         // Regression: the clip body fetched ONE thumbnail and tiled it, and
         // when that lookup missed, every cell drew an empty box — a row of
@@ -6838,7 +6842,7 @@ fn filmstrip_cells_request_and_draw_the_same_frames() {
             "the fixture actually has visible video cells to check"
         );
     }
-    // Case `the_strip_request_and_the_strip_draw_agree_on_cell_count`.
+    phase the_strip_request_and_the_strip_draw_agree_on_cell_count;
     {
         // The two passes derive the cell layout from the same helpers; if they
         // ever diverge, frames get decoded at times no cell asks for and every
@@ -7148,9 +7152,9 @@ fn waveforms_are_warmed_for_sources_that_carry_sound() {
     }
 }
 
-#[test]
-fn track_header_controls_add_and_delete_tracks() {
-    // Case `clicking_add_audio_track_button_adds_a_track_to_the_crdt`.
+scenario! {
+    fn track_header_controls_add_and_delete_tracks;
+    phase clicking_add_audio_track_button_adds_a_track_to_the_crdt;
     {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
@@ -7178,7 +7182,7 @@ fn track_header_controls_add_and_delete_tracks() {
             "the add-audio-track button added a track to the CRDT",
         );
     }
-    // Case `right_click_track_header_delete_removes_the_track_and_its_clips`.
+    phase right_click_track_header_delete_removes_the_track_and_its_clips;
     {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
@@ -8202,9 +8206,9 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
     }
 }
 
-#[test]
-fn pointer_edits_on_the_timeline_write_the_crdt() {
-    // Case `click_scrubs_playhead_on_the_ruler`.
+scenario! {
+    fn pointer_edits_on_the_timeline_write_the_crdt;
+    phase click_scrubs_playhead_on_the_ruler;
     {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
@@ -8220,7 +8224,7 @@ fn pointer_edits_on_the_timeline_write_the_crdt() {
             app.playhead
         );
     }
-    // Case `drag_moves_a_clip_and_writes_the_new_start_to_the_crdt`.
+    phase drag_moves_a_clip_and_writes_the_new_start_to_the_crdt;
     {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
@@ -8249,7 +8253,7 @@ fn pointer_edits_on_the_timeline_write_the_crdt() {
             "dragging moved the clip right in the CRDT ({start_before} -> {start_after})"
         );
     }
-    // Case `drag_right_edge_trims_the_clip_in_the_crdt`.
+    phase drag_right_edge_trims_the_clip_in_the_crdt;
     {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
@@ -8281,7 +8285,7 @@ fn pointer_edits_on_the_timeline_write_the_crdt() {
             "trimming the right edge shortened out_point in the CRDT ({out_before} -> {out_after})"
         );
     }
-    // Case `click_selects_a_clip_via_the_real_hit_test`.
+    phase click_selects_a_clip_via_the_real_hit_test;
     {
         let (mut app, mut doc) = app_and_doc();
         app.selection.clear();
@@ -10528,15 +10532,16 @@ fn app_with_clipped_mix() -> (VideoEditorApp, AutoCommit) {
     (app, doc)
 }
 
-#[test]
-fn mix_clipping_walk_and_measurement_reports() {
-    // Case `c_walks_the_places_the_mix_clipped_and_wraps_round`:
+scenario! {
+    fn mix_clipping_walk_and_measurement_reports;
+
     // C walks the places the mix went over, and wraps.
     //
     // The half of the warning that makes it worth having: knowing a
     // ninety-second timeline clipped somewhere is knowing you have ninety
     // seconds to scrub. Until this key the only route to the answer was
     // clicking a chip sixty pixels wide.
+    phase c_walks_the_places_the_mix_clipped_and_wraps_round;
     {
         let (mut app, mut doc) = app_with_clipped_mix();
         app.playhead = 0.0;
@@ -10561,10 +10566,11 @@ fn mix_clipping_walk_and_measurement_reports() {
             app.playhead,
         );
     }
-    // Case `c_does_nothing_on_a_mix_that_never_went_over`:
+
     // …and says nothing when there is nothing to say. A key that jumped the
     // playhead somewhere on a mix that never clipped would be reporting a
     // fault that does not exist.
+    phase c_does_nothing_on_a_mix_that_never_went_over;
     {
         let (mut app, mut doc) = app_and_doc();
         app.playhead = 7.0;
@@ -10574,9 +10580,10 @@ fn mix_clipping_walk_and_measurement_reports() {
         );
         assert!((app.playhead - 7.0).abs() < 1e-9, "and nothing moved");
     }
-    // Case `a_reader_is_told_the_mix_clipped_and_can_walk_to_it`:
+
     // The master strip's accessibility node is a *button* once the mix has
     // clipped, and pressing it is the same walk the chip and the key do.
+    phase a_reader_is_told_the_mix_clipped_and_can_walk_to_it;
     {
         let (mut app, _) = app_with_clipped_mix();
         let words = app.mix_words().expect("the timeline has audio");
@@ -10599,9 +10606,10 @@ fn mix_clipping_walk_and_measurement_reports() {
             app.playhead,
         );
     }
-    // Case `an_unmeasured_mix_says_so_rather_than_claiming_it_is_fine`:
+
     // A mix nobody has listened to reports that, rather than reporting that
     // the levels are fine.
+    phase an_unmeasured_mix_says_so_rather_than_claiming_it_is_fine;
     {
         let (app, _doc) = app_and_doc();
         let words = app.mix_words().expect("the timeline has audio");
@@ -10860,12 +10868,13 @@ fn the_timeline_resizes_against_the_preview_and_its_lanes_scroll() {
     );
 }
 
-#[test]
-fn a_fresh_project_reads_as_ready_to_start() {
-    // Case `an_empty_project_starts_at_zero`:
+scenario! {
+    fn a_fresh_project_reads_as_ready_to_start;
+
     // The empty editor used to park the playhead ten seconds into a project
     // of zero, read "00:10:00 / 00:00:00" and drop a new title after ten
     // seconds of nothing.
+    phase an_empty_project_starts_at_zero;
     {
         let mut app = editor();
         assert!(
@@ -10885,10 +10894,11 @@ fn a_fresh_project_reads_as_ready_to_start() {
             "a title never lands after a gap of nothing"
         );
     }
-    // Case `a_title_or_a_kept_import_is_on_this_device`:
+
     // A title has no file to be missing, and media imported by contents was
     // kept on this device the moment it was imported; neither may be badged
     // "Not on this device".
+    phase a_title_or_a_kept_import_is_on_this_device;
     {
         let mut app = editor();
         app.add_title();
@@ -10906,9 +10916,10 @@ fn a_fresh_project_reads_as_ready_to_start() {
         };
         assert!(!media_missing_here(&kept), "an import kept here is here");
     }
-    // Case `the_empty_bins_import_button_asks_for_media_like_the_toolbar`:
+
     // The Media panel's own button is the empty state's one action; it must
     // ask for files exactly as the toolbar's Import does.
+    phase the_empty_bins_import_button_asks_for_media_like_the_toolbar;
     {
         let (mut app, mut doc) = blank_app_and_doc();
         render(&mut app);
@@ -10921,9 +10932,10 @@ fn a_fresh_project_reads_as_ready_to_start() {
             "the empty bin's Import media asked for no files",
         );
     }
-    // Case `unavailable_preview_and_export_speak_in_user_terms`:
+
     // Build flags and graphics-stack words mean nothing to a person editing
     // video; the picture says where they are and what still works.
+    phase unavailable_preview_and_export_speak_in_user_terms;
     {
         let (title, hint) = preview_paint::preview_unavailable_words();
         let words = format!(
