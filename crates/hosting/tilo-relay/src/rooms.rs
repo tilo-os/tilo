@@ -794,6 +794,8 @@ struct RoomsInner {
     /// Those waiting for their room's next write of the changes it staged,
     /// by room.
     queued_writes: std::sync::Mutex<HashMap<String, Vec<collaboration::Written>>>,
+    /// The bounds of the governor's private door, over every carrier.
+    private: private::PrivateBounds,
     /// The rooms listed as public workspaces, and how lively each is.
     listings: listing::Listings,
     /// Each room's layout scope, as its governance says
@@ -927,6 +929,7 @@ impl Rooms {
                 channel_notices: std::sync::Mutex::default(),
                 queued_admissions: std::sync::Mutex::default(),
                 queued_writes: std::sync::Mutex::default(),
+                private: private::PrivateBounds::default(),
                 listings,
                 layouts: layout_scope::Layouts::default(),
                 #[cfg(feature = "agents")]
