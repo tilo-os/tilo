@@ -1,17 +1,26 @@
 //! Authenticated, bounded private governor door. No payload enters relay gossip,
 //! room publication, action audit, tracing, or error messages.
+//!
+//! One door, two carriers: a native device's iroh stream on the private ALPN
+//! and a page's HTTPS session (`tilo_relay_protocol::rooms::private::PRIVATE_PATH`).
+//! Each hands [`PrivateProtocol::serve`] the device certificate its transport
+//! proved and the device key that proof bound; the checks and the governor
+//! code are the same.
 use super::Rooms;
 use crate::auth::{self, HandshakeTrust};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tilo_relay_session::rooms::private::{
-    MAX_REPLY_BYTES, MAX_REQUEST_BYTES, PrivateOperation, PrivateReply, PrivateRequest,
+use tilo_relay_protocol::rooms::private::{
+    MAX_REPLY_BYTES, MAX_REQUEST_BYTES, PrivateOperation, PrivateReply,
 };
-use tokio::sync::Semaphore;
+use tilo_relay_session::rooms::private::PrivateRequest;
+use tilo_user_identity::DeviceCert;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONNECTIONS: usize = 64;
@@ -22,13 +31,20 @@ const MAX_PER_PEER: usize = 4;
 pub struct PrivateProtocol {
     rooms: Rooms,
     connections: Arc<Semaphore>,
-    peers: Arc<Mutex<HashMap<iroh::EndpointId, Arc<Semaphore>>>>,
+    peers: Arc<Mutex<HashMap<[u8; 32], Arc<Semaphore>>>>,
 }
 impl std::fmt::Debug for PrivateProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("PrivateProtocol")
     }
 }
+
+/// The capacity one exchange holds: of the door, and of its device.
+pub(crate) struct Admitted {
+    _door: OwnedSemaphorePermit,
+    _device: OwnedSemaphorePermit,
+}
+
 impl PrivateProtocol {
     #[must_use]
     /// Serve private operations using the same governed room custody.
@@ -39,15 +55,38 @@ impl PrivateProtocol {
             peers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
-    fn authenticate(&self, request: &PrivateRequest, remote: &[u8; 32]) -> Result<(), String> {
+
+    /// Room for one more exchange of `device`, within the door's and the
+    /// device's bounds; `None` when either is full.
+    pub(crate) fn admit(&self, device: [u8; 32]) -> Option<Admitted> {
+        let door = self.connections.clone().try_acquire_owned().ok()?;
+        let peer = {
+            let mut peers = self
+                .peers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            peers.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
+            peers
+                .entry(device)
+                .or_insert_with(|| Arc::new(Semaphore::new(MAX_PER_PEER)))
+                .clone()
+        };
+        let device = peer.try_acquire_owned().ok()?;
+        Some(Admitted {
+            _door: door,
+            _device: device,
+        })
+    }
+
+    fn authenticate(&self, cert: &DeviceCert, device: &[u8; 32]) -> Result<(), String> {
         let host = &self.rooms.inner.host;
         let revocations = host
             .revocations
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         auth::authenticate_endpoint_bound(
-            &request.device_cert,
-            remote,
+            cert,
+            device,
             &host.cert.user_public_key,
             HandshakeTrust::AnyCertifiedDevice,
             &revocations,
@@ -56,15 +95,41 @@ impl PrivateProtocol {
         .map(|_| ())
         .map_err(|_| "private caller authentication refused".into())
     }
+
+    /// Answer `operation` in `room` for the device `device` whose
+    /// certificate `cert` its transport proved. A watch waits for the
+    /// conversation to change; `until` ends the wait early: with an error
+    /// when the caller went away (nothing is answered), with `Ok` when a
+    /// poll's time is up (the current, freshly authorized answer is given,
+    /// the unchanged cursor if nothing changed). Anything refused answers
+    /// [`PrivateReply::Refused`], never why.
+    pub(crate) async fn serve(
+        &self,
+        cert: &DeviceCert,
+        device: &[u8; 32],
+        room: &str,
+        operation: PrivateOperation,
+        until: impl Future<Output = Result<(), String>>,
+    ) -> PrivateReply {
+        if self.authenticate(cert, device).is_err() {
+            return PrivateReply::Refused;
+        }
+        self.execute(cert, device, room, operation, until)
+            .await
+            .unwrap_or(PrivateReply::Refused)
+    }
+
     async fn execute(
         &self,
-        request: &PrivateRequest,
-        remote: &[u8; 32],
-        connection: &iroh::endpoint::Connection,
+        cert: &DeviceCert,
+        device: &[u8; 32],
+        room: &str,
+        operation: PrivateOperation,
+        until: impl Future<Output = Result<(), String>>,
     ) -> Result<PrivateReply, String> {
         let governed = self
             .rooms
-            .room(&request.room)
+            .room(room)
             .await
             .map_err(|_| "private room unavailable")?;
         // Subscribe before inspecting authority or the cursor, closing both wake races.
@@ -73,13 +138,15 @@ impl PrivateProtocol {
         if let PrivateOperation::Watch {
             peer,
             after_sequence,
-        } = &request.operation
+        } = &operation
         {
             let mut changes = {
                 let room = governed.lock().await;
-                self.authenticate(request, remote)?;
-                room.private_watch(&request.device_cert, peer)?
+                self.authenticate(cert, device)?;
+                room.private_watch(cert, peer)?
             };
+            let mut until = std::pin::pin!(until);
+            let mut ended = false;
             loop {
                 // Expiry of either pair participant must wake the stream even if
                 // nobody publishes or sends. No idle polling and no lock while waiting.
@@ -88,10 +155,10 @@ impl PrivateProtocol {
                     // Capture time before authorization: a deadline crossed during
                     // the check must schedule an immediate wake, not be discarded.
                     let checked_at = tilo_clock::unix_now_ns();
-                    self.authenticate(request, remote)?;
-                    let reply =
-                        room.private_command(&request.device_cert, request.operation.clone())?;
-                    if !matches!(reply, PrivateReply::Changed(sequence) if sequence == *after_sequence)
+                    self.authenticate(cert, device)?;
+                    let reply = room.private_command(cert, operation.clone())?;
+                    if ended
+                        || !matches!(reply, PrivateReply::Changed(sequence) if sequence == *after_sequence)
                     {
                         return Ok(reply);
                     }
@@ -114,7 +181,7 @@ impl PrivateProtocol {
                     }
                 };
                 tokio::select! {
-                    _ = connection.closed() => return Err("private stream disconnected".into()),
+                    result = &mut until => { result?; ended = true; },
                     result = changes.changed() => { result.map_err(|_| "private stream closed")?; },
                     _ = authority.changed() => {},
                     _ = governance.recv() => {},
@@ -123,9 +190,10 @@ impl PrivateProtocol {
             }
         }
         let room = governed.lock().await;
-        self.authenticate(request, remote)?;
-        room.private_command(&request.device_cert, request.operation.clone())
+        self.authenticate(cert, device)?;
+        room.private_command(cert, operation)
     }
+
     async fn exchange(&self, connection: &iroh::endpoint::Connection) -> Result<(), ()> {
         let (mut send, mut recv) = tokio::time::timeout(HEADER_TIMEOUT, connection.accept_bi())
             .await
@@ -140,13 +208,19 @@ impl PrivateProtocol {
         .map_err(|_| ())?;
         let request: PrivateRequest = postcard::from_bytes(&bytes).map_err(|_| ())?;
         let remote = *connection.remote_id().as_bytes();
-        let reply = match self.authenticate(&request, &remote) {
-            Ok(()) => self
-                .execute(&request, &remote, connection)
-                .await
-                .unwrap_or(PrivateReply::Refused),
-            Err(_) => PrivateReply::Refused,
+        let disconnected = async {
+            connection.closed().await;
+            Err("private stream disconnected".to_owned())
         };
+        let reply = self
+            .serve(
+                &request.device_cert,
+                &remote,
+                &request.room,
+                request.operation,
+                disconnected,
+            )
+            .await;
         let bytes = postcard::to_stdvec(&reply).map_err(|_| ())?;
         if bytes.len() > MAX_REPLY_BYTES {
             return Err(());
@@ -162,22 +236,7 @@ impl PrivateProtocol {
 }
 impl ProtocolHandler for PrivateProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        let Ok(_permit) = self.connections.clone().try_acquire_owned() else {
-            connection.close(1u32.into(), b"capacity");
-            return Ok(());
-        };
-        let peer = {
-            let mut peers = self
-                .peers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            peers.retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
-            peers
-                .entry(connection.remote_id())
-                .or_insert_with(|| Arc::new(Semaphore::new(MAX_PER_PEER)))
-                .clone()
-        };
-        let Ok(_peer) = peer.clone().try_acquire_owned() else {
+        let Some(_admitted) = self.admit(*connection.remote_id().as_bytes()) else {
             connection.close(1u32.into(), b"capacity");
             return Ok(());
         };
