@@ -424,7 +424,7 @@ them is t's server config; what they may do is the other side's:
 
 | audience | refs | accepted by |
 |---|---|---|
-| `registry.tilo.so` | `main`, `stable`, `tag:v*` | registry.tilo.so, as the password of the user `oidc`: tilo/tilo may push under `tilo/` from `main`, `stable` and `v*` tags |
+| `registry.tilo.so` | any branch, `tag:v*` | registry.tilo.so, as the password of the user `oidc`: tilo/tilo may push under `tilo/` from `main`, `stable` and `v*` tags, and from any other branch only to `tilo/tilo-vm-ref` (per-ref dev images), so no branch moves the tags devices follow in `tilo/tilo-vm` |
 | `sts.amazonaws.com` | `stable`, `tag:v*`, `tag:desktop-v*`, `tag:imager-v*` | the AWS role `TiloTReleaseSigner`, for `stable` and `v*` tags of tilo/tilo only: `kms:Sign`, `kms:GetPublicKey` and `kms:DescribeKey` on the three release keys |
 
 More roles trust t's issuer the same way, each with its own keys:
@@ -433,7 +433,7 @@ More roles trust t's issuer the same way, each with its own keys:
 |---|---|---|
 | `TiloTPackageSigner` | `sts.amazonaws.com`; `stable`, `desktop-v*` and `imager-v*` tags | `alias/tilo-rpm-signing` (RSA 4096, digests only), `alias/tilo-authenticode-signing` (RSA 3072) |
 | `TiloTExtensionManifestSigner` | `tilo-extension-manifests`; `main` | `alias/tilo-extension-manifests` |
-| `TiloTDevSigner` | `tilo-dev-signing`; `main` | `alias/tilo-dev-signing` (P-256), development candidates only, never trusted for releases |
+| `TiloTDevSigner` | `tilo-dev-signing`; any branch | `alias/tilo-dev-signing` (P-256), development candidates only, never trusted for releases |
 
 The key reference (`COSIGN_KEY_REF`) and the role (`AWS_SIGNING_ROLE_ARN`) are not secret; the
 signing checks set them in `t.toml`. What has no OpenID Connect verifier yet stays a secret in
