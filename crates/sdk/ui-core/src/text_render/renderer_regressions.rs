@@ -1227,3 +1227,56 @@ fn clipped_rich_text_draws_ink_that_overhangs_from_rows_far_outside_the_clip() {
         "every pixel of ink the clip shows is drawn, from whichever row it hangs"
     );
 }
+
+#[test]
+fn a_field_scrolled_deep_culls_the_glyphs_outside_its_clip_as_one_scrolled_shallow_does() {
+    let mut renderer = renderer();
+    // Every row is twenty words in turn of two colours, so a row is twenty
+    // glyph batches, far wider than the clip, which shows the first few.
+    let words: Vec<RichSpan> = (0..20u8)
+        .map(|word| RichSpan::new("word ").color(Some([200, 40 + 100 * (word % 2), 90])))
+        .collect();
+    let mut spans = Vec::new();
+    for _ in 0..1200 {
+        spans.extend(words.iter().cloned());
+        spans.push(RichSpan::new("\n"));
+    }
+    let layout = RichTextLayout::shape_styled(
+        &mut renderer.font_system,
+        &spans,
+        &named_style("Noto Sans"),
+        None,
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    let tops: Vec<f32> = layout
+        .buffer
+        .layout_runs()
+        .map(|run| run.line_top)
+        .collect();
+    assert!(tops.len() >= 1200, "one row per line: {}", tops.len());
+    let clip = Rect::new(0.0, 0.0, 61.3, 100.0);
+    let mut glyphs_scrolled_to = |row: usize| {
+        let mut scene = Scene::new();
+        let transform = Affine::translate((0.0, -f64::from(tops[row])));
+        renderer.draw_rich_in_clip(&mut scene, &layout, transform, Color::WHITE, clip);
+        scene.encoding().resources.glyphs.len()
+    };
+    let shallow = glyphs_scrolled_to(10);
+    let deep = glyphs_scrolled_to(1150);
+    // Each row is a hundred glyphs: twenty words of four letters and a space.
+    let rows_shown = tops
+        .iter()
+        .filter(|top| (tops[10] - 30.0..tops[10] + 130.0).contains(*top))
+        .count();
+    assert!(
+        shallow * 4 < rows_shown * 100,
+        "the clip shows a few words of each of its rows: {shallow} glyphs"
+    );
+    assert_eq!(
+        deep, shallow,
+        "the same rows the same distance from the clip keep the same glyphs, \
+         however far down the field is scrolled"
+    );
+}
