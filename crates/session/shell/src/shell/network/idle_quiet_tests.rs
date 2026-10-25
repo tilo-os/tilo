@@ -305,9 +305,14 @@ impl Drop for AddressRefresher {
 /// Every thread of this process except the one driving the desktops'
 /// frame loops, whose 10 Hz is the simulation's and not the session's.
 pub(super) fn session_threads(driver: Option<u32>) -> Vec<tilo_test_env::idle::ThreadSample> {
+    session_threads_but(&[driver])
+}
+
+/// This process's threads but the ones named in `left_out`.
+fn session_threads_but(left_out: &[Option<u32>]) -> Vec<tilo_test_env::idle::ThreadSample> {
     let mut threads = tilo_test_env::idle::sample_process(std::process::id())
         .expect("sample this process's threads");
-    threads.retain(|thread| Some(thread.tid) != driver);
+    threads.retain(|thread| !left_out.contains(&Some(thread.tid)));
     threads
 }
 
@@ -734,12 +739,18 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
     let driver = refresher.as_ref().map(|(tid, _)| *tid);
     std::thread::sleep(Duration::from_millis(500));
 
-    // Nothing drives this desktop, so every thread of the process counts.
-    let before = session_threads(driver);
+    // Nothing drives this desktop, so every thread of the process counts
+    // but the router simulation's and this one, which only sleeps and reads
+    // `/proc`: a loaded runner blocks it on page faults, which is the runner
+    // and not the desktop.
+    let measurer = Some(tilo_test_env::idle::current_thread_id().expect("this thread's id"));
+    let left_out = [driver, measurer];
+    let before = session_threads_but(&left_out);
     let started = Instant::now();
     std::thread::sleep(LONE_IDLE);
     let measured = started.elapsed();
-    let wakeups = tilo_test_env::idle::Wakeups::between(before, session_threads(driver), measured);
+    let wakeups =
+        tilo_test_env::idle::Wakeups::between(before, session_threads_but(&left_out), measured);
     stop.store(true, std::sync::atomic::Ordering::Release);
     if let Some((_, thread)) = refresher {
         let refreshes = thread.join().unwrap();
