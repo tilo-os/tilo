@@ -341,8 +341,9 @@ globalThis.__tiloPage ||= (() => {
   // are viewport CSS pixels, `local` are relative to the drawing element.
   function contactPath(ref, raw) {
     const origin = ref ? resolve(ref).getBoundingClientRect() : {left: 0, top: 0};
-    const points = raw.map(([x, y]) => ({x: ref ? origin.left + x : x, y: ref ? origin.top + y : y}));
-    return {points, local: raw.map(([x, y]) => [x, y])};
+    // Pairs, because the engine reads them as plain points in view pixels.
+    const points = raw.map(([x, y]) => [ref ? origin.left + x : x, ref ? origin.top + y : y]);
+    return {points};
   }
 
   // Resolves once the document stops changing for `quiet` ms after it has
@@ -1173,10 +1174,12 @@ globalThis.__tiloPage ||= (() => {
             const to = dragEnd(command.to, command.to_x, command.to_y, 'drop on');
             const target = topmost(to.x, to.y) || document.body;
             const report = syntheticDrag({x: to.x, y: to.y, element: from.element}, target);
+            const before = gestureBefore || {lines: [], reveals: new Map()};
+            gestureBefore = null;
             const said = `Dragged ${from.element ? describe(from.element) : 'the pointer'} to ${describe(target)}`;
             if (!report.accepted)
-              return gestureResult(gestureBefore, `Dropped on ${describe(target)}, which received no drop`, {...report});
-            return gestureResult(gestureBefore, said, {...report, from: describe(from.element), to: describe(target)});
+              return gestureResult(before, `Dropped on ${describe(target)}, which received no drop`, {...report});
+            return gestureResult(before, said, {...report, from: describe(from.element), to: describe(target)});
           }
           // A contact path for the engine's pointer, in viewport pixels.
           case 'path': {
