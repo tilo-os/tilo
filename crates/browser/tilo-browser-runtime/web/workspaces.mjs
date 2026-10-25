@@ -63,6 +63,7 @@ import {AdmissionError} from './admission.mjs';
 import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, pairDevice, renewDevice, withCustody} from './peer.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {memberText} from './json-text.mjs';
+import {backoffDelay} from './reconnect.mjs';
 import {hostUnreachable} from './session-refusal.mjs';
 
 const MEMBERSHIPS = 'tilo-host-memberships';
@@ -513,13 +514,11 @@ export function hostToReconnect(origin, userPublicKey, memberships = globalThis.
   return kept && !kept.paired && kept.userPublicKey === userPublicKey ? kept : null;
 }
 
-/** How long a page whose join the host refused waits before each next try. */
-const REJOIN_MS = [2000, 5000, 10_000, 30_000];
-
-/** Resolves after `ms`, or rejects once `signal` aborts. */
-const waitFor = (ms, signal) => new Promise((resolve, reject) => {
+/** Resolves after the backoff before try `attempt` (`reconnect.mjs`), or
+ * rejects once `signal` aborts. */
+const backOff = ({attempt, signal}) => new Promise((resolve, reject) => {
   signal?.throwIfAborted();
-  const timer = setTimeout(resolve, ms);
+  const timer = setTimeout(resolve, backoffDelay(attempt));
   signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, {once: true});
 });
 
@@ -545,7 +544,7 @@ const browserCustody = profile => openDeviceCustody({profile, storage: idbStorag
 export async function joinViaHost({
   workspace, identity, displayName = defaultDisplayName(identity?.userPublicKey), fetch = globalThis.fetch, memberships = globalThis.localStorage,
   join = joinWorkspace, connect = connectPeer, pair = pairDevice, openCustody = browserCustody, renew = renewDevice,
-  wait = waitFor, onProgress, ...connectOptions
+  wait = backOff, onProgress, ...connectOptions
 }) {
   admissionDoor(workspace);
   const known = keptMembership(workspace, memberships);
@@ -607,10 +606,11 @@ export async function joinViaHost({
    * host admitted never finished here) is never admitted under another, so
    * the person comes again as a new device of theirs. A person the room
    * bans is told so; anything else passes (a host still starting, a crowd
-   * at the door), so the page says it is reconnecting and asks again, later
-   * each time. */
+   * at the door), so the page waits (`wait`: the reconnect screen, with
+   * backoff) and asks again. */
   const admitAnew = async (custody, refused = false) => {
     let held = custody;
+    let since = null;
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await throughDoor(held, refused, attempt > 0);
@@ -621,12 +621,10 @@ export async function joinViaHost({
         }
         // The first new device took this tab's key in place of the old one.
         if (attempt > 0) held = null;
-        const delay = attempt ? REJOIN_MS[Math.min(attempt, REJOIN_MS.length) - 1] : 0;
-        console.warn(`host admission: the host refused the door's invitation, joining as a new device${delay ? ` in ${delay} ms` : ''}`, error.reason);
-        if (delay) {
-          onProgress?.({phase: 'reconnecting', attempt, retryInMs: delay});
-          await wait(delay, connectOptions.signal);
-        }
+        since ??= Date.now();
+        console.warn('host admission: the host refused the door\'s invitation, joining as a new device', error.reason);
+        // The first new device goes at once; later ones after a wait.
+        if (attempt > 0) await wait({attempt: attempt - 1, error, since, signal: connectOptions.signal});
       }
     }
   };
