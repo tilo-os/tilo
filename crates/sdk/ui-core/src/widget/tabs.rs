@@ -27,6 +27,8 @@ use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
 mod rename;
 #[path = "tabs_status_chips.rs"]
 mod status_chips;
+#[path = "tabs_title_menu.rs"]
+mod title_menu;
 use crate::tokens::{EffectiveMotion, MotionSource};
 
 /// Drop-target indicator line width; thin enough not to compete with pill chrome.
@@ -681,7 +683,7 @@ impl TabBar {
     /// slots: the control then follows the tabs ([`Self::tabs_end`]).
     #[must_use]
     pub fn toolbar_search_slot(&self) -> Option<(Rect, f64)> {
-        self.active_toolbar()?;
+        self.active_slots()?;
         let row = self.toolbar_row_rect();
         let location = self.toolbar_row.slots().location;
         let reach = if location.area() > 0.0 {
@@ -900,7 +902,7 @@ impl TabBar {
     /// window whose app put its slots in the title's row.
     fn icon_only(&self, id: u64) -> bool {
         self.pinned_ids.contains(&id)
-            || (self.solo() && id == self.active_id && self.active_toolbar().is_some())
+            || (self.solo() && id == self.active_id && self.active_slots().is_some())
     }
 
     /// Whether the bar stands two rows tall: the tabs, then the active
@@ -908,7 +910,7 @@ impl TabBar {
     /// stays until the slots have moved up into the title's row, so the
     /// window's content is resized once, after the motion.
     fn two_rows(&self) -> bool {
-        self.active_toolbar().is_some()
+        self.active_slots().is_some()
             && (self.tabs.len() > 1 || (!self.tabbed && self.tabbed_in_flight()))
     }
 
@@ -945,6 +947,9 @@ impl TabBar {
     /// changes, on the same motion as the tabs' bodies.
     fn toolbar_row_rect(&self) -> Rect {
         let tab_row = self.tab_row();
+        if let Some(menu) = self.menu_button_row(tab_row) {
+            return menu;
+        }
         let solo = {
             let icon = self.tab_rects.first().copied().unwrap_or(Rect::ZERO);
             let x0 = if icon.area() > 0.0 {
@@ -1008,8 +1013,10 @@ impl TabBar {
         let active = self.active_id;
         let mut toolbar = self.active_toolbar().cloned();
         // With nothing open the window is named by its app: slots that name
-        // no location show the tab's title in the location's place.
+        // no location show the tab's title in the location's place. A menu
+        // alone leaves the title in its tab.
         if let Some(toolbar) = toolbar.as_mut()
+            && !toolbar.menu_only()
             && toolbar.location.is_none()
             && let Some(tab) = self.tabs.iter().find(|tab| tab.id == active)
         {
@@ -3276,7 +3283,7 @@ impl TabBar {
         // leading edge as the close glyph keeps from its trailing edge.
         let lead = WINDOW_BAR_LEAD_PX;
         let x0 = row.x0 + lead;
-        let x1 = (self.controls.content_limit(row) - self.search_control.unwrap_or(0.0)).max(x0);
+        let x1 = (self.tab_row_limit(row) - self.search_control.unwrap_or(0.0)).max(x0);
         Rect::new(x0, row.y0, x1, row.y1)
     }
 
@@ -8461,7 +8468,7 @@ mod tests {
         clippy::cast_possible_truncation,
         reason = "test fixture dimensions are small literal px values"
     )]
-    fn lay_out_at_width_with(b: &mut TabBar, width: f64, theme: &crate::theme::Theme) {
+    pub(super) fn lay_out_at_width_with(b: &mut TabBar, width: f64, theme: &crate::theme::Theme) {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Style};
 
@@ -8706,7 +8713,7 @@ mod tests {
         lay_out_at_width_with(b, width, theme);
     }
 
-    fn dispatch_cursor(b: &mut TabBar, p: Point, handled: &mut bool) {
+    pub(super) fn dispatch_cursor(b: &mut TabBar, p: Point, handled: &mut bool) {
         let (taffy, node) = built_layout(b);
         *handled = Dispatch::new()
             .handled(*handled)
@@ -8724,7 +8731,7 @@ mod tests {
     /// Dispatches a left `MouseInput` event at the given press/release state —
     /// shared by every test that drives a click through `handle_event` without
     /// a real pointer.
-    fn dispatch_left_button(b: &mut TabBar, state: ElementState, handled: &mut bool) {
+    pub(super) fn dispatch_left_button(b: &mut TabBar, state: ElementState, handled: &mut bool) {
         let (taffy, node) = built_layout(b);
         *handled = Dispatch::new()
             .handled(*handled)
@@ -8782,7 +8789,7 @@ mod tests {
         }
     }
 
-    fn send_key(b: &mut TabBar, key: Key, text: Option<&str>) -> bool {
+    pub(super) fn send_key(b: &mut TabBar, key: Key, text: Option<&str>) -> bool {
         let (taffy, node) = built_layout(b);
         let event = crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
             key,

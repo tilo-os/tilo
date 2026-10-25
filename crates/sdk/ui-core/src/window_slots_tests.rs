@@ -163,8 +163,7 @@ fn a_hosted_windows_slots_reach_its_bar_and_presses_reach_its_app() {
 }
 
 /// The desktop's own "Share to channel…" ends the menu of a window whose
-/// app has a bar, and choosing it reaches the desktop, never the app. A
-/// window without a bar keeps its title alone.
+/// app has a bar, and choosing it reaches the desktop, never the app.
 #[test]
 fn the_desktops_own_menu_items_join_an_apps_bar_and_come_back_to_the_desktop() {
     let window = HostedWindow::new();
@@ -186,7 +185,12 @@ fn the_desktops_own_menu_items_join_an_apps_bar_and_come_back_to_the_desktop() {
         shown.actions[1].menu,
         "in the overflow menu, after the app's"
     );
-    assert_eq!(groups[1].tab_toolbar(6), None, "a bare window stays bare");
+    assert!(
+        groups[1]
+            .tab_toolbar(6)
+            .is_some_and(WindowToolbar::menu_only),
+        "a window without a bar carries the menu alone"
+    );
 
     assert!(slots.route(
         5,
@@ -204,4 +208,48 @@ fn the_desktops_own_menu_items_join_an_apps_bar_and_come_back_to_the_desktop() {
     slots.set_host_items(5, Vec::new());
     slots.sync_hosted(&windows, groups.iter_mut());
     assert_eq!(groups[0].tab_toolbar(5), Some(&new_contact()));
+}
+
+/// A window whose app declared no bar still offers the desktop's own items:
+/// they are its only slots, a menu alone, which leaves its title where it
+/// is. Choosing one reaches the desktop as from a bar, and taking them away
+/// leaves the window bare again.
+#[test]
+fn a_window_without_a_bar_offers_the_desktops_items_in_a_menu_alone() {
+    let bare = HostedWindow::new();
+    let mut groups = [group(&[6])];
+    let mut slots = WindowSlots::default();
+    let windows = [(6, bare.clone())];
+    slots.sync_hosted(&windows, groups.iter_mut());
+    assert_eq!(groups[0].tab_toolbar(6), None);
+
+    let share = ToolbarAction::new(
+        "tilo.desktop.share-to-channel",
+        "screen-share",
+        "Share to channel…",
+    );
+    slots.set_host_items(6, vec![share]);
+    slots.sync_hosted(&windows, groups.iter_mut());
+    let shown = groups[0].tab_toolbar(6).expect("the menu");
+    assert!(shown.menu_only(), "{shown:?}");
+    assert_eq!(shown.actions.len(), 1);
+    assert_eq!(shown.actions[0].id, "tilo.desktop.share-to-channel");
+    assert!(shown.location.is_none(), "the title stays in its tab");
+
+    assert!(slots.route(
+        6,
+        ToolbarEvent::Action {
+            id: "tilo.desktop.share-to-channel".into()
+        }
+    ));
+    slots.sync_hosted(&windows, groups.iter_mut());
+    assert!(bare.take_events().is_empty(), "the app never hears it");
+    assert_eq!(
+        slots.take_host_actions(),
+        vec![(6, "tilo.desktop.share-to-channel".to_owned())]
+    );
+
+    slots.set_host_items(6, Vec::new());
+    slots.sync_hosted(&windows, groups.iter_mut());
+    assert_eq!(groups[0].tab_toolbar(6), None, "bare again");
 }
