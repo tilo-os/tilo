@@ -186,6 +186,7 @@ impl Rooms {
                 role,
                 expires_at_ns,
                 inviter_name,
+                wait_list_entry,
             } => {
                 let request = IssueInvitationRequest {
                     request_id,
@@ -195,7 +196,8 @@ impl Rooms {
                     expires_at_ns,
                     inviter_name,
                 };
-                self.page_invitation(&room, device, request).await?
+                self.page_invitation(&room, device, request, wait_list_entry)
+                    .await?
             }
             RoomsRequest::Cancel {
                 room,
@@ -230,6 +232,15 @@ impl Rooms {
             }
             RoomsRequest::Unlist { room, request_id } => {
                 self.unlist(&room, device, request_id, now).await?;
+                RoomsReply::WaitList(self.wait_list(&room, device, now).await?)
+            }
+            RoomsRequest::MailInvite {
+                room,
+                wait_list_entry,
+                link,
+            } => {
+                self.mail_invite(&room, device, wait_list_entry, link, now)
+                    .await?;
                 RoomsReply::WaitList(self.wait_list(&room, device, now).await?)
             }
             request @ (RoomsRequest::SetRole { .. }
@@ -517,13 +528,46 @@ impl Rooms {
         Ok(RoomsReply::Rooms(listed))
     }
 
+    /// Issue the invitation `request` asks; for the wait-list entry
+    /// `wait_list_entry`, noted on it, so it shows as invited and leaves the
+    /// list once someone joins with it.
     async fn page_invitation(
         &self,
         room: &str,
         device: &DeviceCert,
         request: IssueInvitationRequest,
+        wait_list_entry: Option<[u8; 32]>,
     ) -> Result<RoomsReply, CollaborationError> {
-        let issued = self.issue(room, device, request).await?;
+        let Some(entry) = wait_list_entry else {
+            let issued = self.issue(room, device, request).await?;
+            return Ok(RoomsReply::Invitation {
+                invite_id: issued.invite_id,
+                signed_invitation: issued.signed_invitation,
+            });
+        };
+        let now = tilo_clock::unix_now_ns();
+        let issued = {
+            let governed = self.room(room).await?;
+            let mut governed = governed.lock().await;
+            self.authorize(
+                device,
+                Some(&governed),
+                RoomOp::Invite(request.role.into()),
+                now,
+            )?;
+            if !governed.wait_list.has(entry, now) {
+                return Err(CollaborationError::new(
+                    "that address is no longer on the wait list",
+                ));
+            }
+            let issued = self.stage_issue(&mut governed, device, request, now)?;
+            governed
+                .wait_list
+                .invited(entry, issued.invite_id, now)
+                .map_err(CollaborationError::new)?;
+            issued
+        };
+        self.written(room, false).await?;
         Ok(RoomsReply::Invitation {
             invite_id: issued.invite_id,
             signed_invitation: issued.signed_invitation,
@@ -591,14 +635,16 @@ impl Rooms {
         now: u64,
     ) -> Result<Vec<WaitListEntry>, CollaborationError> {
         let governed = self.room(room).await?;
-        let governed = governed.lock().await;
+        let mut governed = governed.lock().await;
         self.authorize(
             device,
             Some(&governed),
             RoomOp::Govern(governance::INVITE),
             now,
         )?;
-        Ok(governed.wait_list.entries())
+        // Whoever joined by a way that did not take them off already.
+        governed.forget_joined_wait_list();
+        Ok(governed.wait_list.entries(now))
     }
 
     /// Take the address `request_id` off `room`'s wait list, for someone the
@@ -620,7 +666,7 @@ impl Rooms {
         )?;
         if !governed
             .wait_list
-            .remove(request_id)
+            .remove(request_id, now)
             .map_err(CollaborationError::new)?
         {
             return Err(CollaborationError::new("no such address on the wait list"));
@@ -630,15 +676,64 @@ impl Rooms {
         Ok(())
     }
 
+    /// Mail the invitation `link` to the confirmed wait-list entry
+    /// `request_id` of `room`, for someone the room lets invite, once the
+    /// relay sends mail ([`Rooms::mail_wait_list`]).
+    async fn mail_invite(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        request_id: [u8; 32],
+        link: String,
+        now: u64,
+    ) -> Result<(), CollaborationError> {
+        let Some((door, mail)) = self.inner.wait_list_mail.get() else {
+            return Err(CollaborationError::new("this door sends no mail"));
+        };
+        if !tilo_relay_protocol::rooms::invitation_on_door(door, &link) {
+            return Err(CollaborationError::new(
+                "only an invitation on this door is mailed",
+            ));
+        }
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        self.authorize(
+            device,
+            Some(&governed),
+            RoomOp::Govern(governance::INVITE),
+            now,
+        )?;
+        let (to, removal) = governed
+            .wait_list
+            .mail_invite(request_id, now)
+            .map_err(CollaborationError::new)?
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        mail.send(super::WaitListMail { to, link, removal })
+            .map_err(|_| CollaborationError::new("this door sends no mail now"))?;
+        tracing::info!(%room, "an invitation was mailed to an address on the wait list");
+        Ok(())
+    }
+
     /// Keep the request of someone who asked at `room`'s door without an
     /// invitation, to be invited at `contact` (an address
     /// [`tilo_relay_protocol::rooms::contact_address`] accepts), while the
     /// room keeps fewer than `max`. Whoever may invite sees it on the room's
-    /// wait list until they take it off.
+    /// wait list until it leaves it, once confirmed; whoever holds the
+    /// secret whose SHA-256 is `secrets.removal` takes it off
+    /// ([`Self::leave_wait_list`]), and the one whose SHA-256 is
+    /// `secrets.confirm` confirms it ([`Self::confirm_wait_list`]).
+    ///
+    /// # Errors
+    ///
+    /// Not an address, the room is unknown, or its wait list could not be
+    /// written.
     pub async fn wait(
         &self,
         room: &str,
         contact: &str,
+        secrets: super::WaitListSecrets,
+        language: &str,
         max: usize,
     ) -> Result<super::WaitListed, CollaborationError> {
         let contact = tilo_relay_protocol::rooms::contact_address(contact)
@@ -647,11 +742,104 @@ impl Rooms {
         let mut governed = governed.lock().await;
         let kept = governed
             .wait_list
-            .keep(&contact, tilo_clock::unix_now_ns(), max)
+            .keep(&contact, secrets, language, tilo_clock::unix_now_ns(), max)
             .map_err(CollaborationError::new)?;
         drop(governed);
         tracing::info!(%room, outcome = ?kept, "a request was left at the door");
         Ok(kept)
+    }
+
+    /// Confirm the request whose confirmation secret has the SHA-256
+    /// `confirm` on `room`'s wait list: whether one had it.
+    ///
+    /// # Errors
+    ///
+    /// The room is unknown, or its wait list could not be written.
+    pub async fn confirm_wait_list(
+        &self,
+        room: &str,
+        confirm: [u8; 32],
+    ) -> Result<bool, CollaborationError> {
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        let confirmed = governed
+            .wait_list
+            .confirm(confirm, tilo_clock::unix_now_ns())
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        if confirmed {
+            tracing::info!(%room, "an address on the wait list was confirmed");
+        }
+        Ok(confirmed)
+    }
+
+    /// Where the request whose removal secret has the SHA-256 `removal`
+    /// stands on `room`'s wait list, for whoever left it.
+    ///
+    /// # Errors
+    ///
+    /// The room is unknown.
+    pub async fn wait_list_standing(
+        &self,
+        room: &str,
+        removal: [u8; 32],
+    ) -> Result<tilo_relay_protocol::room_operator::WaitListStanding, CollaborationError> {
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        governed.forget_joined_wait_list();
+        Ok(governed
+            .wait_list
+            .standing(removal, tilo_clock::unix_now_ns()))
+    }
+
+    /// Forget the addresses on `room`'s wait list that were not confirmed
+    /// in time.
+    ///
+    /// # Errors
+    ///
+    /// The room is unknown, or its wait list could not be written.
+    pub async fn expire_wait_list(&self, room: &str) -> Result<(), CollaborationError> {
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        let expired = governed
+            .wait_list
+            .expire(tilo_clock::unix_now_ns())
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        if expired > 0 {
+            tracing::info!(%room, expired, "unconfirmed addresses left the wait list");
+        }
+        Ok(())
+    }
+
+    /// Take the request whose removal secret has the SHA-256 `removal` off
+    /// `room`'s wait list, for whoever left it. Answers alike whether or not
+    /// one had that secret, so the answer tells nobody what is listed; where
+    /// to tell the address it left comes back only to whoever runs the room,
+    /// once the address had been confirmed.
+    ///
+    /// # Errors
+    ///
+    /// The room is unknown, or its wait list could not be written.
+    pub async fn leave_wait_list(
+        &self,
+        room: &str,
+        removal: [u8; 32],
+    ) -> Result<Option<super::Mailbox>, CollaborationError> {
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        let now = tilo_clock::unix_now_ns();
+        let had = governed.wait_list.standing(removal, now)
+            != tilo_relay_protocol::room_operator::WaitListStanding::Gone;
+        let told = governed
+            .wait_list
+            .leave(removal, now)
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        if had {
+            tracing::info!(%room, "someone took their address off the wait list");
+        }
+        Ok(told)
     }
 
     fn waiting(&self, room: &str, now: u64) -> Vec<JoinRequest> {

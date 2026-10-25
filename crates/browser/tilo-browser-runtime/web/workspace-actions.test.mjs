@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createWorkspaceActions, INVITE, NEW_WORKSPACE, WAITING} from './workspace-actions.mjs';
+import {createWorkspaceActions, INVITE, invitedLine, NEW_WORKSPACE, WAITING} from './workspace-actions.mjs';
+
+test('an invited wait-list entry says how long ago it was invited', () => {
+  const now = Date.UTC(2026, 9, 24, 12);
+  assert.equal(invitedLine(now - 20_000, now, 'en'), 'Invited just now');
+  assert.equal(invitedLine(now - 5 * 60_000, now, 'en'), 'Invited 5 minutes ago');
+  assert.equal(invitedLine(now - 3 * 3600_000, now, 'en'), 'Invited 3 hours ago');
+  assert.equal(invitedLine(now - 26 * 3600_000, now, 'en'), 'Invited yesterday');
+  assert.equal(invitedLine(now - 9 * 86_400_000, now, 'en'), 'Invited 9 days ago');
+});
 
 const ADA = 'aa'.repeat(32);
 const ROOM = '6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90';
@@ -78,7 +87,8 @@ test('the wait list is listed with who waits, gets no banner, and each address i
   const {peer, calls} = adasRoom({owner: false, letsIn: true});
   const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1000};
   const member = {...peer, userPublicKey: 'bb'.repeat(32), membership: {...peer.membership, requests: async () => [],
-    waitList: async () => [ed], unlist: async requestId => { calls.push(['unlist', requestId]); }}};
+    waitList: async () => [ed], unlist: async requestId => { calls.push(['unlist', requestId]); },
+    mailInvite: async () => { throw new Error('this door sends no mail'); }}};
   const {mount, shown, banners} = desktop();
   const polls = [];
   const shared = [];
@@ -93,13 +103,31 @@ test('the wait list is listed with who waits, gets no banner, and each address i
   assert.equal(banners.length, 0);
   await actions.perform(WAITING.id);
   assert.deepEqual(await listed.load(), {people: [], waitList: [ed]});
-  await listed.invite(ed);
-  assert.deepEqual(calls.at(-1), ['invite', {role: 'editor'}]);
+  assert.deepEqual(await listed.invite(ed), {mailed: false, link: `https://tilo.so/#/@node.example:8443/w/${ROOM}?invite=SIGNED-invitation`});
+  assert.deepEqual(calls.at(-1), ['invite', {role: 'editor', waitListEntry: ed.requestId}]);
   assert.equal(shared[0].title, 'Invite ed@example.org');
-  assert.match(shared[0].body, /^Send this link to ed@example\.org\./);
+  assert.match(shared[0].body, /^Send this link to ed@example\.org\..+leave the wait list once they join\.$/);
   assert.equal(shared[0].link, `https://tilo.so/#/@node.example:8443/w/${ROOM}?invite=SIGNED-invitation`);
   await listed.unlist(ed.requestId);
   assert.deepEqual(calls.at(-1), ['unlist', ed.requestId]);
+});
+
+test('a host that sends mail mails the invitation to the address, and nothing is shared', async () => {
+  const {peer, calls} = adasRoom({owner: false, letsIn: true});
+  const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1000};
+  const member = {...peer, userPublicKey: 'bb'.repeat(32), membership: {...peer.membership, requests: async () => [],
+    waitList: async () => [ed], mailInvite: async (requestId, link) => { calls.push(['mail', requestId, link]); }}};
+  const {mount} = desktop();
+  const polls = [];
+  let listed = null;
+  const actions = createWorkspaceActions({peer: member, every: run => { polls.push(run); return () => {}; },
+    inviteLink: text => `https://tilo.so/?invite=${text}`,
+    ui: {share: async () => assert.fail('mailed, not shared'), waitingList: async list => { listed = list; }, fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  await polls[0]();
+  await actions.perform(WAITING.id);
+  assert.deepEqual(await listed.invite(ed), {mailed: true, link: 'https://tilo.so/?invite=SIGNED-invitation'});
+  assert.deepEqual(calls.at(-1), ['mail', ed.requestId, 'https://tilo.so/?invite=SIGNED-invitation']);
 });
 
 test('a member who just invited someone hears who asks to join, though the host did not show them at first', async () => {

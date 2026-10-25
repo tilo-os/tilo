@@ -750,6 +750,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/door-wait-list.test.mjs",
   "crates/browser/tilo-browser-runtime/web/arrival.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs",

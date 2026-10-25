@@ -1094,11 +1094,16 @@ async fn approve_admitted(
                 }
                 Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
                 Some(Ok(
-                    command @ (OperatorCommand::PreAdmit { .. }
+                    OperatorCommand::PreAdmit { .. }
                     | OperatorCommand::Spectate { .. }
-                    | OperatorCommand::WaitList { .. }),
+                    | OperatorCommand::WaitList { .. }
+                    | OperatorCommand::Unlist { .. }
+                    | OperatorCommand::Confirm { .. }
+                    | OperatorCommand::Standing { .. },
                 )) => {
-                    anyhow::bail!("a short-lived room takes no {command:?}");
+                    // Not the command itself: a wait-list command carries an
+                    // email address, which no log keeps.
+                    anyhow::bail!("a short-lived room takes no command but admit and shutdown");
                 }
                 Some(Err(error)) => {
                     tracing::error!(%error, "unreadable room operator line");
