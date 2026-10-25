@@ -12381,7 +12381,8 @@ pub fn run() {
                     // time, and also observe a manual/lid lock that arrived
                     // while the async suspend request was in flight.
                     sleep_lock_was_locked |= session.is_locked();
-                    let transitions = session.prepare_for_sleep(Instant::now());
+                    let transitions =
+                        session.prepare_for_sleep(Instant::now(), power_policy.lock_on_sleep);
                     if sleep_requested_by_idle {
                         // The idle timer's sleep locks like the idle timer:
                         // the lock stays on this device.

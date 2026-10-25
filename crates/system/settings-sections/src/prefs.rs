@@ -428,6 +428,9 @@ fn default_suspend_minutes() -> u32 {
 fn default_lock_minutes() -> u32 {
     5
 }
+fn default_lock_on_sleep() -> bool {
+    settings_store::power::DEFAULT_LOCK_ON_SLEEP
+}
 fn default_lid_action() -> PowerActionPref {
     PowerActionPref::Suspend
 }
@@ -483,6 +486,12 @@ pub struct PowerPrefs {
     #[serde(default = "default_lock_minutes")]
     #[model(weaker = "higher", weakest = 0)]
     pub lock_minutes: u32,
+    /// Whether waking from sleep asks for the password. An idle, explicit or
+    /// in-flight lock survives either way; only the lock this device adds on
+    /// the way into sleep follows this.
+    #[serde(default = "default_lock_on_sleep")]
+    #[model(weaker = false)]
+    pub lock_on_sleep: bool,
     /// What to do when the lid closes.
     #[serde(default = "default_lid_action")]
     pub lid_close_action: PowerActionPref,
@@ -668,6 +677,7 @@ impl Default for PowerPrefs {
             performance_suspend_minutes: None,
             blank_minutes: 10,
             lock_minutes: default_lock_minutes(),
+            lock_on_sleep: default_lock_on_sleep(),
             lid_close_action: default_lid_action(),
             power_key_action: default_power_key_action(),
             low_battery_percent: default_low_battery_percent(),
