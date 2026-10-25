@@ -350,8 +350,12 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
     while !first.reachability.is_dormant() {
         assert!(
             Instant::now() < deadline,
-            "the desktop left alone never rested its relays; held up by (transport, session) {:?}",
-            first.reachability.holders()
+            "the desktop left alone never rested its relays; held up by (transport, session) \
+             {:?}; it names {:?} in the room (its document {:?}), the departed device was {}",
+            first.reachability.holders(),
+            first_tree.read().room_peer_names.get(&room),
+            first_tree.read().room_peer_names_in_doc(room),
+            second_id,
         );
         first.tick();
         std::thread::sleep(Duration::from_millis(20));
