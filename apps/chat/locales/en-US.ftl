@@ -283,8 +283,8 @@ chat-mention-alert = { $name } mentioned you in #{ $channel }
 # One picked part of the screen: its place, the app, what it was and its role.
 chat-feedback-pick = { $index }. { $app }: { $what } ({ $role })
 chat-feedback-note = “{ $note }”
-# The texts a picked part showed, joined with " · ".
-chat-feedback-texts = { $texts }
+# One text a picked part showed, as reviewed.
+chat-feedback-text = { $text }
 # One of the reporter's last actions; $outcome is done, refused or failed.
 chat-feedback-action = { $outcome ->
     [refused] { $action } on { $resource } (refused)
