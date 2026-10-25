@@ -51,6 +51,8 @@ mod host_commands;
 pub(crate) const HISTORY_ACTION_RESOURCE: &str = history_actions::RESOURCE;
 #[cfg(test)]
 mod history_actions_tests;
+#[cfg(test)]
+mod host_worker_pump_tests;
 mod model_lifecycle;
 mod participants;
 mod published_invocations;
