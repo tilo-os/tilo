@@ -79,6 +79,20 @@ pub const RECORD_EFFECT_RECEIPT: &str = "effect-receipt.record";
 /// then the member's own change. Answers `created` (false when the record
 /// was already there) and the room's `generation`.
 pub const PREPARE_APPLICATION_RECORD: &str = "application-record.prepare";
+/// Share one record, or one item of it, with the room: `share` (the share's
+/// id, such as the message that shares it), `node` (the record's or item's
+/// node, in its text form) and `access` (`view` or `edit`). The room's
+/// members below the owner are granted what the access gives, never more
+/// than the caller holds (`tilo_action_policy::share`). Answers `grants`,
+/// how many it holds for the share.
+pub const SHARE_RESOURCE: &str = "resource.share";
+/// End the share `share`: revoke its grants the caller gave (or any, for a
+/// caller who may govern `revoke`). Answers `revoked`, how many; none is
+/// no error.
+pub const UNSHARE_RESOURCE: &str = "resource.unshare";
+/// What the caller may do at `node`, as the room decides their reads and
+/// writes there. Answers `read` and `undoable`.
+pub const RESOURCE_PERMITS: &str = "resource.permits";
 
 /// The resource a member's own business in `room` is published on.
 #[must_use]
