@@ -1304,6 +1304,18 @@ class App final : public CefApp,public CefBrowserProcessHandler {
       AddFeature(command_line,"enable-features","NetworkServiceInProcess2");
       AddFeature(command_line,"disable-features","SpareRendererForSitePerProcess");
     }
+#if defined(OS_MAC)
+    // Chromium keeps the key that encrypts cookies and saved site data in the
+    // login keychain ("Chromium Safe Storage"), and the keychain grants that
+    // item to one code signature. Every development build is signed ad hoc,
+    // so each rebuilt engine asks the person again, and until someone answers
+    // the network service (in this process) waits and no page loads. Without
+    // a team identity the keychain cannot hold a grant across builds: keep the
+    // key out of it, as Tilo's own identity keeps an unsigned build's secrets
+    // in owner-only profile files instead. A signed engine keeps the keychain.
+    if(process_type.empty() && !HostHasStableSigningIdentity() && !command_line->HasSwitch("use-mock-keychain"))
+      command_line->AppendSwitch("use-mock-keychain");
+#endif
 #if defined(OS_LINUX)
     // Every frame is rendered offscreen, yet Chromium's default Linux platform
     // exits unless it reaches an X server, and a Tilo app sandbox has none.

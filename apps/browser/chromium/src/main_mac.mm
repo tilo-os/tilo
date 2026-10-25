@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <Security/Security.h>
 #include "include/cef_application_mac.h"
 #include "include/wrapper/cef_helpers.h"
 #include "include/wrapper/cef_library_loader.h"
@@ -36,6 +37,22 @@ bool ShowHostFileDialog(cef_file_dialog_mode_t mode,const CefString& title,const
   }];
   [NSApp activateIgnoringOtherApps:YES];[panel makeKeyAndOrderFront:nil];
   return true;
+}
+bool HostHasStableSigningIdentity() {
+  SecCodeRef self=nullptr;
+  if(SecCodeCopySelf(kSecCSDefaultFlags,&self)!=errSecSuccess||!self) return false;
+  SecStaticCodeRef code=nullptr;
+  CFDictionaryRef info=nullptr;
+  bool team=false;
+  if(SecCodeCopyStaticCode(self,kSecCSDefaultFlags,&code)==errSecSuccess&&code&&
+     SecCodeCopySigningInformation(code,kSecCSSigningInformation,&info)==errSecSuccess&&info) {
+    CFTypeRef id=CFDictionaryGetValue(info,kSecCodeInfoTeamIdentifier);
+    team=id&&CFGetTypeID(id)==CFStringGetTypeID()&&CFStringGetLength((CFStringRef)id)>0;
+  }
+  if(info) CFRelease(info);
+  if(code) CFRelease(code);
+  CFRelease(self);
+  return team;
 }
 int main(int argc,char** argv) {
   CefScopedLibraryLoader loader;
