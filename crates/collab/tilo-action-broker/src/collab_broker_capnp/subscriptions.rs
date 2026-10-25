@@ -2,127 +2,8 @@
 use super::{
     BrokerChannels, ChannelSubscribers, ContextEnvelope, CrdtRoute, OpAdmission, OpEnvelope, OpKind,
 };
-use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use tokio::sync::mpsc;
-
-/// The tree records of a room's app (a chain's next part, a container's
-/// child) that a peer wrote here, by the app route they belong to, and the
-/// records each was told about. The shell announces them once, as the write
-/// arrives ([`crate::collab_broker::FanoutState`]'s caller); a window of that
-/// app that opens afterwards was not there to hear it, and would otherwise
-/// never open a part it needs to show the history its room replayed.
-#[derive(Default)]
-pub(super) struct TreeRecords(Mutex<HashMap<(String, String), Courier>>);
-
-/// How many records one app's route keeps for its later windows: a chat's
-/// chain, or a container's children, reach far more, and a window that opens
-/// after all of them re-syncs from the room anyway.
-const KEPT_PER_ROUTE: usize = 512;
-
-#[derive(Default)]
-struct Courier {
-    records: VecDeque<String>,
-    /// The window instances (or, for a connection the shell launched no
-    /// window for, the connection) each record was already handed to.
-    told: HashMap<String, Vec<u64>>,
-}
-
-impl TreeRecords {
-    /// Remember `records` of `route`'s app, for the windows of that app that
-    /// subscribe after this.
-    pub(super) fn remember(&self, route: &CrdtRoute, records: impl IntoIterator<Item = String>) {
-        if !route.is_publishable() || route.app_id.is_empty() {
-            return;
-        }
-        let Ok(mut all) = self.0.lock() else {
-            return;
-        };
-        let courier = all
-            .entry((route.app_id.clone(), route.cluster_id.clone()))
-            .or_default();
-        for record in records {
-            if courier.records.iter().any(|known| *known == record) {
-                continue;
-            }
-            if courier.records.len() >= KEPT_PER_ROUTE
-                && let Some(evicted) = courier.records.pop_front()
-            {
-                courier.told.remove(&evicted);
-            }
-            courier.told.insert(record.clone(), Vec::new());
-            courier.records.push_back(record);
-        }
-    }
-
-    /// The records of `route`'s app that `window` has not been told about
-    /// yet, and say it has been: a record reaches each window once.
-    fn untold(&self, route: &CrdtRoute, window: u64) -> Vec<String> {
-        let Ok(mut all) = self.0.lock() else {
-            return Vec::new();
-        };
-        let Some(courier) = all.get_mut(&(route.app_id.clone(), route.cluster_id.clone())) else {
-            return Vec::new();
-        };
-        courier
-            .records
-            .iter()
-            .filter(|record| {
-                let told = courier.told.entry((*record).clone()).or_default();
-                if told.contains(&window) {
-                    return false;
-                }
-                told.push(window);
-                true
-            })
-            .cloned()
-            .collect()
-    }
-}
-
-impl super::CapnpBrokerState {
-    /// A peer wrote `record_id` in `app_id`'s tree in `cluster_id`: keep it
-    /// for the windows of that app that open later.
-    pub fn remember_tree_record(&self, app_id: &str, cluster_id: &str, record_id: &str) {
-        if ui::record::RecordId::parse(record_id)
-            .and_then(|id| id.tree())
-            .is_none()
-        {
-            return;
-        }
-        self.tree_records.remember(
-            &CrdtRoute::record(app_id, cluster_id, record_id),
-            [record_id.to_owned()],
-        );
-    }
-
-    /// Tell the window subscribing to `channel_id`, when it subscribes to
-    /// its app's whole route, about the tree records peers wrote for that app
-    /// in that room that it was not told about before: what the shell
-    /// announced while no window of the app was there
-    /// ([`TreeRecords::remember`]).
-    pub(super) fn tell_new_window_its_tree_records(
-        &self,
-        channel_id: &str,
-        peer_id: u64,
-        tx: &mpsc::UnboundedSender<ContextEnvelope>,
-    ) {
-        let route = CrdtRoute::from_channel_key(channel_id);
-        if route.app_id.is_empty() || !route.record_id.is_empty() {
-            return;
-        }
-        let window = self
-            .window_instances
-            .lock()
-            .ok()
-            .and_then(|windows| windows.get(&peer_id).copied())
-            .unwrap_or(peer_id);
-        let records = self.tree_records.untold(&route, window);
-        if !records.is_empty() {
-            let _ = tx.send(ContextEnvelope::RecordsArrived(records));
-        }
-    }
-}
 
 /// This broker's verdict for `envelope` on `route`'s channel as it fans out
 /// live: a sealed op is sealed because the channel requires it, and
@@ -174,6 +55,28 @@ pub(super) fn admitted_ops(
                 },
             });
         }
+    }
+}
+
+/// Tell a new context subscriber of `channel_id` the records of its app's
+/// trees this device holds in its room ([`BrokerChannels::tree_records_held`]).
+/// The room replays its records to a device once, when it joins, before any
+/// window of an app may run; a window opened later, or after a restart,
+/// would otherwise never hold them (a chat's messages from before this
+/// device joined). Opening a record still asks its channel's steward for
+/// the keys, as for any record.
+pub(super) fn held_tree_records(
+    channels: &Mutex<BrokerChannels>,
+    channel_id: &str,
+    tx: &mpsc::UnboundedSender<ContextEnvelope>,
+) {
+    let route = CrdtRoute::from_channel_key(channel_id);
+    let held = channels
+        .lock()
+        .map(|mut channels| channels.tree_records_held(&route))
+        .unwrap_or_default();
+    if !held.is_empty() {
+        let _ = tx.send(ContextEnvelope::RecordsArrived(held));
     }
 }
 
@@ -286,6 +189,184 @@ mod tests {
         assert!(state.window_records().is_empty(), "gone with its app");
     }
 
+    /// An op of `record` of `app` in `room`, admitted the way the broker
+    /// admits every op it validated ([`BrokerChannels::record_history`] and
+    /// the channel's op log); sealed under a content key when `sealed`.
+    fn admit(channels: &Mutex<BrokerChannels>, app: &str, room: &str, record: &str, sealed: bool) {
+        let route = CrdtRoute::record(app, room, record);
+        let artifact = document_artifact_id(app, room, record);
+        let mut op = SignedOp::new_unsigned(
+            DocumentMutation::Incremental(record.as_bytes().to_vec())
+                .encode()
+                .unwrap(),
+            artifact,
+            Ed25519PublicKey::from_bytes([5; 32]),
+            document_attestation_id(app, room, record),
+            collab_types::OpKind::Change,
+            std::time::SystemTime::now(),
+            1,
+        );
+        if sealed {
+            op.encryption = Some(collab_types::EncryptionMetadata::content_key(
+                1,
+                collab_types::document_channel_id(app, room, record),
+                collab_types::ContentRetention::Delta,
+            ));
+        }
+        let mut channels = channels.lock().unwrap();
+        channels.record_history(&route, &op);
+        channels.state_for(artifact).record_validated_op(op);
+    }
+
+    /// The records each `RecordsArrived` the subscriber was sent named.
+    fn told(rx: &mut mpsc::UnboundedReceiver<ContextEnvelope>) -> Vec<Vec<String>> {
+        let mut told = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let ContextEnvelope::RecordsArrived(records) = envelope {
+                told.push(records);
+            }
+        }
+        told
+    }
+
+    /// A broker over `channels`, with the receiver of its action
+    /// directory bridge, kept for as long as the broker is used.
+    fn broker(
+        channels: &std::sync::Arc<Mutex<BrokerChannels>>,
+    ) -> (
+        std::sync::Arc<super::super::CapnpBrokerState>,
+        std::sync::mpsc::Receiver<super::super::ActionDirectoryBridgeRequest>,
+    ) {
+        use crate::collab_broker::FanoutState;
+        use crate::collab_outbound::PeerPublisher;
+        use std::sync::Arc;
+        super::super::CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::clone(channels),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        )
+    }
+
+    const CHAT: &str = "so.tilo.chat";
+
+    /// Chat's messages: a chain of parts of the room's default record.
+    fn messages() -> ui::record::RecordId {
+        ui::record::RecordId::derived("messages", &ui::record::RecordId::room_default())
+    }
+
+    /// Part `index` of Chat's messages.
+    fn part(index: u64) -> String {
+        messages().part(index).to_string()
+    }
+
+    /// A child of a note, a record of the note's tree.
+    fn note_child() -> String {
+        ui::record::RecordId::for_tab(7)
+            .child("a")
+            .unwrap()
+            .to_string()
+    }
+
+    /// A device joined a room whose chat already had messages: the room
+    /// replayed it the chat's head part before any Chat window ran here.
+    /// The Chat window that opens later is told the part exists as it
+    /// subscribes, so it holds the part and reads what was posted before
+    /// the device joined; a window of another app or room is not told, nor
+    /// is a record of no tree.
+    #[test]
+    fn a_window_that_subscribes_later_learns_the_records_its_room_replayed() {
+        let channels = std::sync::Arc::new(Mutex::new(BrokerChannels::default()));
+        let (state, _bridge_rx) = broker(&channels);
+        let room = uuid::Uuid::from_u128(7).to_string();
+        let elsewhere = uuid::Uuid::from_u128(8).to_string();
+        let chat = CrdtRoute::app(CHAT, &room);
+
+        // Replayed at the join, while no window of Chat runs here.
+        admit(&channels, CHAT, &room, &part(0), false);
+        admit(&channels, CHAT, &room, &messages().to_string(), false);
+        admit(&channels, "so.tilo.notes", &room, &note_child(), false);
+        admit(&channels, CHAT, &elsewhere, &part(3), false);
+
+        let mut window = state.subscribe_context(&chat.channel_key(), 1, None);
+        assert_eq!(told(&mut window), [vec![part(0)]]);
+        let mut notes = state.subscribe_context(
+            &CrdtRoute::app("so.tilo.notes", &room).channel_key(),
+            2,
+            None,
+        );
+        assert_eq!(
+            told(&mut notes),
+            [vec![note_child()]],
+            "another app's tree is its own"
+        );
+        let mut other_room =
+            state.subscribe_context(&CrdtRoute::app(CHAT, &elsewhere).channel_key(), 3, None);
+        assert_eq!(
+            told(&mut other_room),
+            [vec![part(3)]],
+            "another room's chat is its own"
+        );
+        let mut record = state.subscribe_context(
+            &CrdtRoute::record(CHAT, &room, part(0)).channel_key(),
+            4,
+            None,
+        );
+        assert!(
+            told(&mut record).is_empty(),
+            "a record's subscriber is no app window"
+        );
+
+        // A part written while the window runs reaches it live, once it is
+        // admitted, and every later window learns both.
+        admit(&channels, CHAT, &room, &part(1), false);
+        state.fanout_to_route(
+            &super::super::CollabEvent::RecordsArrived {
+                records: vec![part(1)],
+            },
+            u64::MAX,
+            &chat,
+        );
+        assert_eq!(told(&mut window), [vec![part(1)]]);
+        let mut second = state.subscribe_context(&chat.channel_key(), 5, None);
+        assert_eq!(told(&mut second), [vec![part(0), part(1)]]);
+    }
+
+    /// The device holds a chat's sealed parts and its shell restarts: the
+    /// room does not replay them again, and the broker starts with nothing
+    /// in memory. A Chat window opened then is still told the parts, from
+    /// the history this device keeps on disk.
+    #[test]
+    fn a_window_opened_after_a_restart_learns_the_records_kept_before() {
+        use crate::collab_history::CollabHistoryStore;
+        let dir = tempfile::tempdir().unwrap();
+        let history = || Some(CollabHistoryStore::open(dir.path().join("history")).unwrap());
+        let room = uuid::Uuid::from_u128(7).to_string();
+        let chat = CrdtRoute::app(CHAT, &room);
+        {
+            let channels = std::sync::Arc::new(Mutex::new(BrokerChannels {
+                history: history(),
+                ..Default::default()
+            }));
+            admit(&channels, CHAT, &room, &part(0), true);
+            admit(&channels, CHAT, &room, &part(1), true);
+            admit(&channels, "so.tilo.notes", &room, &note_child(), true);
+        }
+
+        let channels = std::sync::Arc::new(Mutex::new(BrokerChannels {
+            history: history(),
+            ..Default::default()
+        }));
+        let (state, _bridge_rx) = broker(&channels);
+        let mut window = state.subscribe_context(&chat.channel_key(), 1, None);
+        assert_eq!(told(&mut window), [vec![part(0), part(1)]]);
+        let elsewhere = uuid::Uuid::from_u128(8).to_string();
+        let mut other_room =
+            state.subscribe_context(&CrdtRoute::app(CHAT, &elsewhere).channel_key(), 2, None);
+        assert!(told(&mut other_room).is_empty(), "another room's chat");
+    }
+
     /// A message another person posted reached this device before its app
     /// opened the record it went into: the app still receives it when it
     /// subscribes, though the room sent it only once.
@@ -325,66 +406,6 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "another record's subscriber gets none of it"
-        );
-    }
-
-    /// A window of the app that opens after the room replayed the chat's
-    /// part is told the part exists, so it opens it and shows the messages
-    /// posted before its person joined. It is told once, and only what its
-    /// own app's tree in its own room holds.
-    #[test]
-    fn a_window_that_opens_after_the_announcement_is_told_the_parts_peers_wrote() {
-        use crate::collab_broker::FanoutState;
-        use crate::collab_outbound::PeerPublisher;
-        use std::sync::Arc;
-        let fanout = Arc::new(FanoutState::new());
-        let (state, _bridge_rx) = super::super::CapnpBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        let chain =
-            ui::record::RecordId::derived("messages", &ui::record::RecordId::room_default());
-        let (first_part_id, second_part_id) = (chain.part(0), chain.part(1));
-        let (first_part, second_part) = (first_part_id.as_str(), second_part_id.as_str());
-        state.remember_tree_record("so.tilo.chat", "room-1", first_part);
-        state.remember_tree_record("so.tilo.chat", "room-1", second_part);
-        // The chat record itself is no tree record, and another room's part
-        // is not this window's.
-        state.remember_tree_record("so.tilo.chat", "room-1", chain.as_str());
-        state.remember_tree_record("so.tilo.chat", "room-2", first_part);
-        let chat = CrdtRoute::app("so.tilo.chat", "room-1");
-        let mut first = state.subscribe_context(&chat.channel_key(), 7, None);
-        let ContextEnvelope::RecordsArrived(told) = first.try_recv().expect("the parts") else {
-            panic!("a window hears which records arrived");
-        };
-        assert_eq!(told, [first_part.to_owned(), second_part.to_owned()]);
-
-        let mut second = state.subscribe_context(&chat.channel_key(), 8, None);
-        let ContextEnvelope::RecordsArrived(told) = second.try_recv().expect("the parts") else {
-            panic!("the next window is told too");
-        };
-        assert_eq!(told, [first_part.to_owned(), second_part.to_owned()]);
-
-        let mut again = state.subscribe_context(&chat.channel_key(), 7, None);
-        assert!(
-            again.try_recv().is_err(),
-            "a window that was told is not told again"
-        );
-
-        let notes = CrdtRoute::app("so.tilo.notes", "room-1");
-        let mut other_app = state.subscribe_context(&notes.channel_key(), 9, None);
-        assert!(
-            other_app.try_recv().is_err(),
-            "another app's window hears nothing of chat's parts"
-        );
-        let part = CrdtRoute::record("so.tilo.chat", "room-1", first_part);
-        let mut record = state.subscribe_context(&part.channel_key(), 10, None);
-        assert!(
-            record.try_recv().is_err(),
-            "a record's stream carries its own ops, not the chain's shape"
         );
     }
 

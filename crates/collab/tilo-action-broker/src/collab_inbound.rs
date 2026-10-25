@@ -175,7 +175,7 @@ fn accept(
 ) {
     let artifact = envelope.artifact;
     if let Ok(mut ch) = channels.lock() {
-        ch.record_history(&route.cluster_id, &envelope);
+        ch.record_history(route, &envelope);
         let state = ch.state_for(artifact);
         state.record_validated_op(envelope.clone());
         if envelope.kind == OpKind::Compaction

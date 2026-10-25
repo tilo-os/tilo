@@ -15491,8 +15491,15 @@ mod tests {
                 history: Some(store()),
                 ..Default::default()
             };
-            earlier.record_history(&person_room.to_string(), &person_op);
-            earlier.record_history(&shared_room.to_string(), &shared_op);
+            let route = |room: RoomId| {
+                tilo_action_broker::route::CrdtRoute::record(
+                    "so.tilo.tube",
+                    room.to_string(),
+                    "history",
+                )
+            };
+            earlier.record_history(&route(person_room), &person_op);
+            earlier.record_history(&route(shared_room), &shared_op);
         }
 
         let (net, _commands) = personal_continuity_network_for_test(user);
