@@ -920,6 +920,29 @@ impl WindowToolbar {
                 .is_none_or(ToolbarReactions::is_empty)
     }
 
+    /// Whether the slots are an overflow menu alone: actions, every one of
+    /// them in the menu, and nothing else. The window of an app that
+    /// declared no bar carries the desktop's own items this way, and its
+    /// title row keeps its title, with the menu button at its end.
+    #[must_use]
+    pub fn menu_only(&self) -> bool {
+        !self.actions.is_empty()
+            && self.actions.iter().all(|action| action.menu)
+            && self.sidebar.is_none()
+            && self.navigation.is_none()
+            && self.location.is_none()
+            && self.leading.is_empty()
+            && self
+                .views
+                .as_ref()
+                .is_none_or(|views| views.choices.is_empty())
+            && self.notice.is_none()
+            && self
+                .reactions
+                .as_ref()
+                .is_none_or(ToolbarReactions::is_empty)
+    }
+
     /// The slots as the bar lays them out: the notice up, if any, in the
     /// location's place (its kind's icon, then its text). Its action is the
     /// notice's own, laid out right after its text, never among the
