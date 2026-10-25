@@ -170,31 +170,6 @@ fn click_back(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) {
     app.settle();
 }
 
-/// The frames a window runs while nothing of the app's moves, and which of
-/// them recomposed the layout tree. A rebuild is what `rebuilt_frames` counts
-/// and what the perf budgets forbid, so a run over several frames reads the
-/// frames rather than counting from a base: a rebuild in one of them cannot
-/// be told from a quiet frame in another that way.
-fn frames_while_quiet(
-    app: &mut ui::framework::testing::TestApp<tube::TubeShell>,
-    frames: usize,
-) -> (usize, Vec<u64>) {
-    app.harness().begin_profiling();
-    let mut polled = 0;
-    for _ in 0..frames {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        polled += usize::from(app.harness().poll_frame().unwrap());
-    }
-    let rebuilt: Vec<u64> = app
-        .harness()
-        .take_profile_samples()
-        .into_iter()
-        .filter(|frame| frame.build_layout_us > 0)
-        .map(|frame| frame.frame)
-        .collect();
-    (polled, rebuilt)
-}
-
 fn route(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> tube::model::Route {
     app.with_surface::<TubeApp, _>(|tube| tube.route_for_test().clone())
         .expect("the window shows Tube")
@@ -333,42 +308,23 @@ fn hosted_playing_video_frames_lay_nothing_out() {
         std::thread::sleep(std::time::Duration::from_millis(20));
         app.harness().poll_frame().unwrap();
     }
-    let (polled, rebuilt) = frames_while_quiet(&mut app, 30);
-    assert!(polled > 0, "a playing video asks for frames");
-    assert!(
-        rebuilt.is_empty(),
-        "video frames {} recomposed the layout tree",
-        rebuilt
-            .iter()
-            .map(u64::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    // A painted frame measures what it draws and marks no leaf to measure:
-    // a picture the size of the last one changes no size in the tree.
-    let (measured, leaves) = painted_while_playing(&mut app, 30);
-    assert_eq!(measured, 0, "no video frame re-measured the layout");
-    assert_eq!(leaves, 0, "no leaf was marked to measure");
-}
-
-/// The frames a playing video painted: how many, and how many of them
-/// re-measured and marked leaves to measure. Measured after a settle, so the
-/// replayed input of an earlier frame does not land in them.
-fn painted_while_playing(
-    app: &mut ui::framework::testing::TestApp<tube::TubeShell>,
-    polls: usize,
-) -> (usize, usize) {
-    app.settle();
-    let (mut painted, mut measured, mut leaves) = (0, 0, 0);
-    for _ in 0..polls {
+    let rebuilt = app.harness().rebuilt_frames();
+    let (mut polled, mut measured, mut leaves) = (0, 0, 0);
+    for _ in 0..30 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         if app.harness().poll_frame().unwrap() {
-            painted += 1;
+            polled += 1;
             let stats = app.harness().last_relayout();
             measured += usize::from(stats.measured);
             leaves += stats.marked_leaves;
         }
     }
-    assert!(painted > 0, "a playing video paints");
-    (measured, leaves)
+    assert!(polled > 0, "a playing video asks for frames");
+    assert_eq!(
+        app.harness().rebuilt_frames(),
+        rebuilt,
+        "no frame recomposed the layout"
+    );
+    assert_eq!(measured, 0, "no video frame re-measured the layout");
+    assert_eq!(leaves, 0, "no leaf was marked to measure");
 }
