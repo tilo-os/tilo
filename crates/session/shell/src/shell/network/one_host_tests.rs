@@ -424,6 +424,10 @@ impl Device {
 
     /// Run this device's session with no secret store, as on a machine
     /// that has none: its channel service keeps no channel state of its own.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the drain stops before the network changes and starts again after"
+    )]
     pub(crate) fn lose_secret_store(&mut self) {
         drop(self.channels.take().expect("the device is online"));
         self.secret_store = false;
