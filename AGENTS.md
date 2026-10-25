@@ -45,6 +45,8 @@
   dependency exceptions.
 - Run the affected checks: `t scope`, then `t test <checks>`; `t suggest` lists
   extensive checks.
+- Run extensive checks (OS images, macOS, VMs) only when you change what they
+  test; `main` and `stable` run them anyway. `t test` runs only what you name.
 - Rerun failures, not whole suites; distinguish inherited failures from new
   ones.
 - Shell integration tests: `cargo test --locked -p shell --test it MODULE::`.
