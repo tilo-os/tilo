@@ -66,6 +66,64 @@ fn a_run_is_told_an_action_asks_first() {
     assert!(denied.contains("not allowed"), "{denied}");
 }
 
+/// A change the run can take back needs no approval: a person's grant that
+/// asks them when they press the action never pauses a run they started,
+/// while a change that cannot be undone still does.
+#[test]
+fn a_change_the_run_can_take_back_just_happens() {
+    let room = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let (mut peer, starter, key, now) = policy_fixture(room);
+    let requirement = approve_task(&starter);
+    let grant = |id: &str, kinds| {
+        Grant::new(
+            id,
+            Subject::person(hex::encode(starter.user_public_key)),
+            action_node(room, &requirement),
+            kinds,
+            Answer::Ask,
+            Subject::person("governor"),
+        )
+    };
+    peer.governance_mut()
+        .put_governed_grants(&[grant("starter-asks-notes", KindSet::ALL)], &key, now)
+        .unwrap();
+    requirement.check_run(&peer, room, now).unwrap();
+
+    // What cannot be taken back still pauses for the person.
+    let mut sends = approve_task(&starter);
+    sends.need.kind = tilo_action_policy::ActionKind::Outside;
+    let asks = sends.check_run(&peer, room, now).unwrap_err();
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
+
+    // And an answer asking the agent first still asks: the run does not
+    // undo the agent's own grants by taking them back either.
+    peer.governance_mut()
+        .put_governed_grants(
+            &[
+                grant("starter-asks-notes", KindSet::ALL),
+                Grant::new(
+                    "agent-asks-notes",
+                    Subject::agent("scribe"),
+                    action_node(room, &requirement),
+                    KindSet::UNDOABLE,
+                    Answer::Ask,
+                    Subject::person("governor"),
+                ),
+            ],
+            &key,
+            now,
+        )
+        .unwrap();
+    let asks = requirement.check_run(&peer, room, now).unwrap_err();
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
+}
+
 fn policy_fixture(room: &str) -> (StatePeer, DeviceCert, SigningKey, std::time::SystemTime) {
     admitted_fixture(room, collab_types::Role::Editor, None)
 }
