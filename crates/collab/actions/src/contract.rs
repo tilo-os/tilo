@@ -311,6 +311,17 @@ impl ActionNeed {
         }
     }
 
+    /// An undoable change of reactions, wherever they are: what someone who
+    /// may only comment may do too.
+    #[must_use]
+    pub fn reactions() -> Self {
+        Self {
+            kind: ActionKind::Undoable,
+            field: Some(tilo_action_policy::roles::REACTIONS_FIELD.to_owned()),
+            privileged: false,
+        }
+    }
+
     /// An undoable change under the resource's `moderation` node: acting on
     /// other people's content, which Moderators and the owner may do.
     #[must_use]
