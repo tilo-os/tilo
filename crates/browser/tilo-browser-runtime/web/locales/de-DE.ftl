@@ -104,3 +104,25 @@ arrival-failed-cooling-down = { $workspace } lässt aus deinem Netz gerade niema
 arrival-failed-cooling-down-unnamed = Dieser Arbeitsbereich lässt aus deinem Netz gerade niemanden herein, weil jemand von hier entfernt wurde. Bitte jemanden darin um eine Einladung oder versuch es morgen wieder.
 arrival-failed-custody-busy = Alle Geräte, die dieser Browser für { $workspace } hat, sind in anderen Tabs geöffnet. Schließ einen dieser Tabs und versuch es dann noch einmal.
 arrival-failed-custody-busy-unnamed = Alle Geräte, die dieser Browser für diesen Arbeitsbereich hat, sind in anderen Tabs geöffnet. Schließ einen dieser Tabs und versuch es dann noch einmal.
+
+## The reconnect screen: the page was not let in yet and tries again
+# { $time } is how long until the next try, such as "40 s" or "2 min 05 s".
+arrival-reconnect-unreachable = { $workspace } ist nicht erreichbar
+arrival-reconnect-unreachable-unnamed = Der Arbeitsbereich ist nicht erreichbar
+arrival-reconnect-unreachable-body = Vielleicht startet er gerade neu. Er öffnet sich hier, sobald er wieder da ist.
+arrival-reconnect-refused = Noch nicht in { $workspace }
+arrival-reconnect-refused-unnamed = Noch nicht im Arbeitsbereich
+arrival-reconnect-refused-body = Er hat diesen Browser vorerst abgewiesen. Der nächste Versuch fragt als neues Gerät von dir.
+arrival-reconnect-offline = Du bist offline
+arrival-reconnect-offline-body = Der Arbeitsbereich öffnet sich, sobald du wieder online bist.
+arrival-reconnect-busy = { $workspace } ist ausgelastet
+arrival-reconnect-busy-unnamed = Der Arbeitsbereich ist ausgelastet
+arrival-reconnect-busy-body = Gerade kommen sehr viele Leute herein. Er öffnet sich hier, sobald Platz ist.
+arrival-reconnect-next = Nächster Versuch in { $time }
+arrival-reconnect-trying = Wird versucht …
+arrival-reconnect-waiting-online = Warte auf das Netzwerk …
+arrival-reconnect-try-now = Jetzt versuchen
+arrival-reconnect-details = Technische Details
+arrival-reconnect-copy = Details kopieren
+arrival-reconnect-copied = Kopiert
+arrival-reconnect-copy-failed = Kopieren hat nicht geklappt. Markiere den Text stattdessen.
