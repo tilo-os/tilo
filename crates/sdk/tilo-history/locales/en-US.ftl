@@ -79,7 +79,10 @@ history-value-true = on
 history-value-false = off
 history-value-empty = nothing
 
-## Who did it.
+## Who did it. An action is attributed to the task it was taken in (there are
+## no separate agents): $person via $task, "ada via task 'Prepare Q3
+## financials'".
+history-actor-via-task = { $person } via task ‘{ $task }’
 history-actor-for = { $actor }, for { $for }
 history-actor-you = You
 history-actor-you-for = You, for { $for }
