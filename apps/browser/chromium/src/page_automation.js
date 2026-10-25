@@ -1,8 +1,10 @@
 // Page reading and operation for browser actions. The browser process
 // evaluates this in an isolated world of the main frame: it shares the page's
 // DOM, but the page's own scripts can neither see nor call it. Refs are
-// `d<document>e<element>`; the document number is the world's, so a ref never
-// resolves in a later document.
+// `d<document>e<element>`, and inside a child frame `f<frame>d<document>e<element>`;
+// the document number is the world the element was read in, so a ref never
+// resolves in a later document. Each frame gets its own copy of this script in
+// its own isolated world: nothing is shared between the page and a frame.
 globalThis.__tiloPage ||= (() => {
   const execNativeHistory = Document.prototype.execCommand;
   const queryNativeHistory = Document.prototype.queryCommandEnabled;
@@ -11,6 +13,9 @@ globalThis.__tiloPage ||= (() => {
     can_redo: Reflect.apply(queryNativeHistory, document, ['redo'])
   });
   const MAX_LINES = 1200, MAX_CHARS = 100000, MAX_VISITED = 40000;
+  // How many frames one document lists, and how many lines one frame's own
+  // outline may take where it is listed. The browser bounds depth.
+  const MAX_FRAMES = 16, MAX_FRAME_LINES = 200;
   const MAX_TEXT = 200, MAX_NAME = 120, MAX_VALUE = 200, MAX_OPTIONS = 30;
   const INPUT_ROLES = {button: 'button', submit: 'button', reset: 'button', image: 'button',
     file: 'button', color: 'button', checkbox: 'checkbox', radio: 'radio', range: 'slider',
@@ -35,8 +40,10 @@ globalThis.__tiloPage ||= (() => {
 
   const ids = new WeakMap(), refs = new Map();
   let next = 0, doc = 0;
-  // The outline this tab's agent last saw, for `changes`.
-  let lastLines = null;
+  // The outline this tab's agent last saw, for `changes`: the page's own lines
+  // stitched with its frames'. A frame whose lines the browser could not read
+  // leaves the page's own lines countable here.
+  let lastShown = null;
   const MAX_DIFF_CELLS = 4000000, MAX_SETTLE_POLL_MS = 50;
 
   const clean = (text, limit) => {
@@ -46,18 +53,27 @@ globalThis.__tiloPage ||= (() => {
   const quote = value => JSON.stringify(value);
   const failure = (code, message) => ({ok: false, code, message});
 
-  function refOf(element) {
+  // The frame a ref was read in, when it has one: `f<digits>`, as the page
+  // writes the frame that shows the element.
+  const FRAME_REF = /^f(\d{1,6})d\d+e\d+$/;
+  function refOf(element, frame) {
     let id = ids.get(element);
     if (id === undefined) {
       id = ++next;
       ids.set(element, id);
       refs.set(id, new WeakRef(element));
     }
-    return `d${doc}e${id}`;
+    return `${frame || ''}d${doc}e${id}`;
   }
   function resolve(ref) {
     const match = /^d(\d+)e(\d+)$/.exec(ref || '');
-    if (!match) throw failure('invalid_request', `${ref} is not an element ref`);
+    if (!match) {
+      // A ref of a frame's element is acted on in that frame's own world, so
+      // it never resolves here.
+      if (FRAME_REF.test(ref || ''))
+        throw failure('invalid_request', `${ref} is inside a frame of the page; read the page again`);
+      throw failure('invalid_request', `${ref} is not an element ref`);
+    }
     if (Number(match[1]) !== doc)
       throw failure('stale_element', `${ref} belongs to a page this tab has left; read the page again`);
     const element = refs.get(Number(match[2]))?.deref();
@@ -189,33 +205,68 @@ globalThis.__tiloPage ||= (() => {
     return label ? `${kind} ${quote(label)}` : kind;
   }
 
+  // The frames this document shows, as its world read them: the frame
+  // element's line is followed by the frame's own lines, indented. The browser
+  // read each frame in its own isolated world and answered with what it found,
+  // so a frame of another site's is listed exactly as one of this site's.
+  let frameLines = new Map();
+  function stitch(lines) {
+    const out = [];
+    let frame = 0;
+    for (const line of lines) {
+      out.push(line);
+      if (!/- iframe /.test(line) || !/\[ref=f/.test(line)) continue;
+      const below = frameLines.get(++frame);
+      if (!below) continue;
+      out.push(...below);
+    }
+    return out;
+  }
+  function outlineText(lines) {
+    return stitch(lines).join('\n');
+  }
   function outline() {
-    const {lines} = outlineLines();
-    lastLines = lines;
-    return {ok: true, message: `Read ${lines.length} lines`, outline: lines.join('\n')};
+    const {lines} = outlineLines(), shown = outlineText(lines).split('\n');
+    lastShown = shown;
+    return {ok: true, message: `Read ${shown.length} lines`, outline: shown.join('\n')};
+  }
+  // One frame's own lines, read in its own world and indented under the frame
+  // element the parent document shows it by. Its place is where a point inside
+  // it is on the page.
+  function frameOutline(maxLines) {
+    const {lines} = outlineLines(maxLines || MAX_FRAME_LINES);
+    const count = Math.min(lines.length, maxLines || MAX_FRAME_LINES);
+    if (count < lines.length) lines.push('text "… the rest of this frame is not listed; read the page again"');
+    // The browser indents these under the frame element that shows them, so a
+    // point inside this view can be placed on the page by its parent.
+    const box = document.documentElement.getBoundingClientRect();
+    return {ok: true, title: clean(document.title, MAX_NAME), url: location.href, frame: 'frame',
+      outline: lines.slice(0, count + 1).join('\n'), message: `Read ${count} lines in this frame`,
+      left: box.left, top: box.top};
   }
 
   // Lines added and removed since the last read, by longest common
   // subsequence; refs are stable within a document, so an unchanged element
   // keeps its line.
   function changes() {
-    const before = lastLines, {lines} = outlineLines();
-    lastLines = lines;
-    if (!before)
-      return {ok: true, message: `First read: ${lines.length} lines`, outline: lines.join('\n')};
-    if (before.length * lines.length > MAX_DIFF_CELLS)
-      return {ok: true, message: `Too much changed to compare; the whole page, ${lines.length} lines`, outline: lines.join('\n')};
-    const n = before.length, m = lines.length;
+    const {lines} = outlineLines(), shown = outlineText(lines).split('\n'), was = lastShown;
+    lastShown = shown;
+    if (!was)
+      return {ok: true, message: `First read: ${shown.length} lines`, outline: shown.join('\n')};
+    if (was.length * shown.length > MAX_DIFF_CELLS)
+      return {ok: true, message: `Too much changed to compare; the whole page, ${shown.length} lines`,
+        outline: shown.join('\n')};
+    const n = was.length, m = shown.length;
     const table = Array.from({length: n + 1}, () => new Uint32Array(m + 1));
     for (let i = n - 1; i >= 0; i--)
       for (let j = m - 1; j >= 0; j--)
-        table[i][j] = before[i] === lines[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
+        table[i][j] = was[i] === shown[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
     const out = [];
     let i = 0, j = 0, added = 0, removed = 0;
     while (i < n || j < m) {
-      if (i < n && j < m && before[i] === lines[j]) { i++; j++; }
-      else if (j < m && (i >= n || table[i][j + 1] >= table[i + 1][j])) { out.push('+ ' + lines[j++]); added++; }
-      else { out.push('- ' + before[i++]); removed++; }
+      if (i < n && j < m && was[i] === shown[j]) { i++; j++; }
+      else if (j < m && (i >= n || table[i][j + 1] >= table[i + 1][j])) { out.push('+ ' + shown[j++]); added++; }
+      else { out.push('- ' + was[i++]); removed++; }
     }
     return {ok: true, message: added || removed ? `${added} lines added, ${removed} removed` : 'Nothing changed',
       outline: out.join('\n')};
@@ -225,6 +276,9 @@ globalThis.__tiloPage ||= (() => {
   function at(x, y) {
     const hit = topmost(x, y);
     if (!hit) return {ok: true, message: `Nothing at ${x}, ${y}`, data: {x, y, element: null}};
+    // A point over a frame belongs to that frame's own document.
+    if (hit.localName === 'iframe' || hit.localName === 'frame')
+      return {ok: true, message: `The frame ${quote(frameName(hit))} is at ${x}, ${y}`, data: {x, y, element: describe(hit)}};
     let target = null;
     for (let node = hit; node && node.nodeType === 1; node = node.parentNode || node.host) {
       if (INTERACTIVE.has(role(node)) || node.hasAttribute('onclick')) { target = node; break; }
@@ -326,11 +380,12 @@ globalThis.__tiloPage ||= (() => {
       throw failure('cross_origin_submit', `This form sends its data to ${target}, another site than ${location.origin}; submit it with cross_origin to allow that`);
   }
 
-  function outlineLines() {
+  function outlineLines(maxLines) {
+    const limit = Math.min(maxLines || MAX_LINES, MAX_LINES);
     const lines = [];
     let chars = 0, visited = 0, truncated = false, pending = '', pendingDepth = 0;
     const emit = (depth, text) => {
-      if (lines.length >= MAX_LINES || chars >= MAX_CHARS) { truncated = true; return false; }
+      if (lines.length >= limit || chars >= MAX_CHARS) { truncated = true; return false; }
       const line = '  '.repeat(Math.min(depth, 24)) + '- ' + text;
       lines.push(line);
       chars += line.length + 1;
@@ -380,7 +435,10 @@ globalThis.__tiloPage ||= (() => {
       if (kind === 'img' || kind === 'iframe') {
         flush();
         const label = kind === 'img' ? name(element, kind) : clean(element.title || element.name || element.src, MAX_NAME);
-        emit(depth, label ? `${kind} ${quote(label)}` : kind);
+        // A frame element is named by the frame it shows, so an action can
+        // reach what the frame's own world reads there.
+        const ref = kind === 'iframe' ? ` [ref=${refOf(element, frameName(element))}]` : '';
+        emit(depth, (label ? `${kind} ${quote(label)}` : kind) + ref);
         return;
       }
       if (INTERACTIVE.has(kind) || kind === 'heading') {
@@ -455,6 +513,55 @@ globalThis.__tiloPage ||= (() => {
     for (; node; node = node.parentNode || node.host) if (node === element) return true;
     return false;
   }
+  // The frames this document shows, numbered in the page's order. Its own
+  // world writes each frame element's ref with the number, and the frame's own
+  // world indents the frame's lines below it. Nothing here reads into a frame:
+  // the browser hands each frame its own world.
+  function frameElements() {
+    const found = [...document.querySelectorAll('iframe, frame')];
+    return found.slice(0, MAX_FRAMES);
+  }
+  // The frame a frame element shows, as its ref names it: the element's place
+  // in this document, in the page's order.
+  function frameName(element) {
+    const place = frameElements().indexOf(element) + 1;
+    return place > 0 ? `f${place}` : '';
+  }
+  // Where a frame's element sits in this document, borders and padding
+  // included, so a point inside the frame's own view becomes a point of this
+  // one. A frame with no area shown has no point at all.
+  function framePlace(key, x, y) {
+    const number = /^f(\d{1,6})$/.exec(key || '');
+    const element = number ? frameElements()[Number(number[1]) - 1] : null;
+    if (!element || !element.isConnected)
+      throw failure('stale_element', `The frame ${quote(key)} is not one this page shows; read the page again`);
+    const box = element.getBoundingClientRect();
+    if (!(box.width > 0 && box.height > 0))
+      throw failure('not_visible', `The frame ${quote(key)} is not shown on the page; open or scroll to it first`);
+    // The frame's own view starts inside the element's border and padding.
+    const style = getComputedStyle(element);
+    const edge = side => Number.parseFloat(style['border' + side + 'Width']) +
+      Number.parseFloat(style['padding' + side]);
+    const left = box.left + edge('Left'), top = box.top + edge('Top');
+    const point = {x: left + x, y: top + y};
+    // A point the page cannot be clicked at is not one a person reaches.
+    if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight)
+      throw failure('not_visible', `The frame ${quote(key)} is scrolled out of view; scroll to it first`);
+    const hit = topmost(point.x, point.y);
+    if (!within(hit, element))
+      throw failure('obscured', `The frame ${quote(key)} is covered by ${describe(hit)}; close or scroll past it first`);
+    return point;
+  }
+  // Whether this world is a child frame's own, so a point it names is inside
+  // that frame rather than on the page.
+  function isFrameWorld() {
+    try {
+      return globalThis.parent !== globalThis;
+    } catch {
+      // Another site's frame cannot read its parent at all, so it is a frame.
+      return true;
+    }
+  }
   function describe(element) {
     if (!element) return 'nothing';
     const id = element.id ? `#${element.id}` : '';
@@ -491,9 +598,11 @@ globalThis.__tiloPage ||= (() => {
     const hit = topmost(center.x, center.y);
     if (!within(hit, target))
       throw failure('obscured', `${ref} is covered by ${describe(hit)}; close or scroll past it first`);
-    return {ok: true, x: center.x, y: center.y, message: `Clicked ${summary(element)}`};
+    // A frame's own view is placed on the page by the document showing it; the
+    // browser says whether this world is a frame's, and which frame.
+    return {ok: true, x: center.x, y: center.y, message: `Clicked ${summary(element)}`,
+      ...(isFrameWorld() ? {frame: 'frame'} : {})};
   }
-
   function fill(ref, text, allowSecret) {
     const element = resolve(ref), tag = element.localName, kind = type(element);
     if (secret(element) && !allowSecret)
@@ -993,6 +1102,10 @@ globalThis.__tiloPage ||= (() => {
             return guardedTextInput(command);
           case 'outline': return outline();
           case 'changes': return changes();
+          // One frame's own lines, read by the browser in that frame's world.
+          case 'frame_outline': return frameOutline(command.max_lines);
+          // Where a point of a frame's own view is on the page.
+          case 'frame_place': return framePlace(command.key, command.x, command.y);
           case 'at': return at(command.x, command.y);
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);

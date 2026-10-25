@@ -9,6 +9,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -18,7 +19,10 @@ namespace tilo {
 // browser process. Nothing flows back into the page, and a request keeps its
 // method, URL, type, status, size and failure only: never headers, bodies or
 // cookies. Logging starts the first time an agent touches the tab, so a tab
-// nobody automates pays nothing for it.
+// nobody automates pays nothing for it. Requests made before that first touch
+// are gone, so the documents already on screen — the page and each of its
+// frames — are recorded from the browser's own frame tree, and a read says
+// that a reload is what captures the rest.
 class AgentLog final : public CefDevToolsMessageObserver {
  public:
   using Emit=std::function<void(const std::string&,CefRefPtr<CefDictionaryValue>)>;
@@ -38,6 +42,23 @@ class AgentLog final : public CefDevToolsMessageObserver {
     // Bodies are never read, so the inspector need not keep them.
     network->SetInt("maxTotalBufferSize",0);network->SetInt("maxResourceBufferSize",0);
     host->ExecuteDevToolsMethod(0,"Network.enable",network);
+    // A load that already happened was not watched, so its requests cannot be
+    // replayed. The documents on screen are the browser's own news, not the
+    // page's: each is recorded once, as the Document a load would have sent.
+    // Enabling the domain is what makes the frame tree answer.
+    host->ExecuteDevToolsMethod(0,"Page.enable",nullptr);
+    host->ExecuteDevToolsMethod(0,"Page.getFrameTree",nullptr);
+  }
+  // `Page.enable` and the frame tree answer on their own, not through the
+  // event stream: the tree names the page and every frame it shows.
+  void OnDevToolsMethodResult(CefRefPtr<CefBrowser>,int,bool success,const void* result,size_t size) override {
+    if(!active_ || !success) return;
+    auto parsed=CefParseJSON(std::string(static_cast<const char*>(result),size),JSON_PARSER_RFC);
+    auto answer=parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr;
+    auto tree=answer?answer->GetDictionary("frameTree"):nullptr;
+    if(!tree) return;
+    size_t frames=0;
+    Document(tree,&frames);
   }
   // {request_id, action: console|network, since} -> page_result with data
   void Request(CefRefPtr<CefDictionaryValue> d) {
@@ -59,6 +80,8 @@ class AgentLog final : public CefDevToolsMessageObserver {
     auto fields=CefDictionaryValue::Create();fields->SetBool("ok",true);
     fields->SetString("url",browser_?browser_->GetMainFrame()->GetURL():CefString());
     std::string message=std::to_string(count)+(console?" console entries":" requests");
+    if(!console && !network_seen_ && !network_.empty() && !started)
+      message+="; these are the documents already on screen, and a reload records the rest";
     if(started) message+="; recording started now, so earlier activity is not included";
     fields->SetString("message",message);
     fields->SetString("navigation","none");fields->SetBool("navigated",false);fields->SetBool("loading",false);fields->SetNull("outline");
@@ -147,9 +170,27 @@ class AgentLog final : public CefDevToolsMessageObserver {
     Where(e,Str(entry,"url"),Num(entry,"lineNumber"));
     Push(console_,console_dropped_,e);
   }
+  // One document of the frame tree, and every frame it shows, recorded as the
+  // Document a request for it would be. Bounded like the log itself.
+  void Document(CefRefPtr<CefDictionaryValue> tree,size_t* frames) {
+    auto frame=tree->GetDictionary("frame");
+    const auto url=Str(frame,"url");
+    // Only a document that loaded has a URL; a frame still blank has none.
+    if(!url.empty() && url!="about:blank" && *frames<kMaxEntries && !seen_.contains(url)) {
+      seen_.insert(url);
+      auto e=CefDictionaryValue::Create();
+      e->SetString("method","GET");e->SetString("url",Cut(url,kMaxUrl));
+      e->SetString("type","Document");e->SetString("state","not recorded");
+      Push(network_,network_dropped_,e);
+      ++*frames;
+    }
+    auto children=tree->GetList("childFrames");
+    for(size_t i=0;children && i<children->GetSize();++i) Document(children->GetDictionary(i),frames);
+  }
   void Network(const std::string& name,CefRefPtr<CefDictionaryValue> p) {
     const auto id=Str(p,"requestId");if(id.empty()) return;
     if(name=="Network.requestWillBeSent") {
+      network_seen_=true;
       auto request=p->GetDictionary("request");
       auto e=CefDictionaryValue::Create();
       e->SetString("method",Str(request,"method"));e->SetString("url",Cut(Str(request,"url"),kMaxUrl));
@@ -189,6 +230,9 @@ class AgentLog final : public CefDevToolsMessageObserver {
   std::map<std::string,CefRefPtr<CefDictionaryValue>> open_;
   std::map<std::string,double> started_;
   std::deque<std::pair<std::string,bool>> navigations_;
+  // The documents already recorded from the frame tree, and whether any
+  // request has been watched since recording started.
+  std::set<std::string> seen_;bool network_seen_=false;
   IMPLEMENT_REFCOUNTING(AgentLog);
 };
 }
