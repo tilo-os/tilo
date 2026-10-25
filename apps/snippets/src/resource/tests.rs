@@ -326,7 +326,11 @@ fn search_finds_each_snippet_by_what_it_holds() {
         "kubectl rollout",
         "Roll a deployment",
     ] {
-        assert!(hit.text.contains(held), "{held} in {:?}", hit.text);
+        assert!(
+            hit.fields.iter().any(|(text, _)| text.contains(held)),
+            "{held} in {:?}",
+            hit.fields
+        );
     }
     assert_eq!(
         hit.anchor.as_deref(),
