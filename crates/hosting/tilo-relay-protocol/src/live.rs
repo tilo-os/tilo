@@ -23,7 +23,9 @@ use collab_types::{
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
 
+mod layout;
 mod pointer;
+pub use layout::{LAYOUT_UNITS, LiveLayout, LiveWindow, MAX_LAYOUT_APP_BYTES, MAX_LAYOUT_WINDOWS};
 pub use pointer::{LivePointer, PointerLayout, ShownStrip};
 
 /// Largest encoded presence frame. Kept at datagram size so presence can
@@ -359,6 +361,11 @@ pub struct PresenceFrame {
     /// frame restates the same wave, which shows nothing.
     #[serde(default)]
     pub wave: Option<LiveWave>,
+    /// Where the publisher's windows are on its screen, by app and record
+    /// digest only: others draw a mini view of it from what they hold.
+    /// Sent under the same rule as [`Self::focus`].
+    #[serde(default)]
+    pub layout: Option<LiveLayout>,
 }
 
 /// Largest presence place.
@@ -482,6 +489,9 @@ impl PresenceFrame {
         }
         if let Some(wave) = &self.wave {
             wave.validate()?;
+        }
+        if let Some(layout) = &self.layout {
+            layout.validate()?;
         }
         if self
             .place
@@ -1060,6 +1070,7 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
             seq,
             sent_at_ms: 1,
             focus: Some(record()),
@@ -1086,6 +1097,7 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
             seq: 1,
             sent_at_ms: 1,
             focus: Some(primary.clone()),
@@ -1188,6 +1200,7 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
             seq: 1,
             sent_at_ms: 1,
             focus: None,
@@ -1233,6 +1246,7 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
             seq: 3,
             sent_at_ms: 10,
             focus: Some(record()),
@@ -1276,6 +1290,7 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
         });
         for frame in [
             presence,
@@ -1389,6 +1404,7 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1406,6 +1422,7 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1433,6 +1450,7 @@ mod tests {
                 chat: None,
                 reaction: None,
                 wave: None,
+                layout: None,
             });
             assert_eq!(placed.encode(), Err(LiveWireError::Invalid));
         }
