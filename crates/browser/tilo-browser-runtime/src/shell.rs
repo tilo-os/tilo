@@ -733,6 +733,14 @@ impl BrowserShell {
         let followed = self.pinned.followed().map(str::to_owned);
         self.chrome.here.borrow_mut().set_following(followed);
         let (rows, _) = self.chrome.roster_rows(&people, theme);
+        // Whose device each row is: a row is someone's live publisher, a
+        // conversation is with the person.
+        let persons: Vec<(String, String)> = {
+            let here = self.chrome.here.borrow();
+            rows.iter()
+                .filter_map(|row| Some((row.id.clone(), here.user_of(&row.id)?.to_owned())))
+                .collect()
+        };
         // Every window here, by the record it shows as the live layer names
         // it: a window on someone's screen showing one of these is shared.
         // A spectator only watches: nobody here reads them, so no row.
@@ -758,6 +766,7 @@ impl BrowserShell {
                 rect: self.rect,
                 rows: &rows,
                 own: own.as_ref(),
+                persons: &persons,
                 people: &people,
                 tree: &tree,
                 records: &records,
