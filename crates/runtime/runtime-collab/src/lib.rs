@@ -85,6 +85,7 @@ pub enum DisplayOrigin {
 
 mod action_directory;
 pub use action_directory::*;
+#[cfg(feature = "client")]
 mod app_list_changes;
 mod surface_delta;
 pub use surface_delta::*;
