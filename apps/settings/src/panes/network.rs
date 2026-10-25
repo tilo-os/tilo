@@ -712,6 +712,10 @@ pub(crate) struct NetworkSnapshot {
     profiles: Part<Vec<SavedNetworkProfile>>,
     profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
     wake_settings: HashMap<String, Result<NetworkWakeStatus, String>>,
+    /// The saved profiles alone, without their settings, as a status read
+    /// lists them: a profile added or removed elsewhere has the model read
+    /// everything again. `None` when not read.
+    profile_list: Part<Vec<SavedNetworkProfile>>,
     hotspot_clients: Part<Vec<os_actions::HotspotClient>>,
     vpns: Part<Vec<VpnInfo>>,
     /// The Wi-Fi link in use; `None` when not read or not on Wi-Fi.
@@ -771,6 +775,7 @@ impl NetworkSnapshot {
             profiles: None,
             profile_settings: HashMap::new(),
             wake_settings: HashMap::new(),
+            profile_list: None,
             hotspot_clients: Some(os_actions::list_hotspot_clients()),
             vpns: Some(os_actions::list_vpn_connections().map(|vpns| {
                 vpns.into_iter()
@@ -803,6 +808,7 @@ impl NetworkSnapshot {
             profiles: None,
             profile_settings: HashMap::new(),
             wake_settings: HashMap::new(),
+            profile_list: None,
             hotspot_clients: None,
             vpns: None,
             link: None,
@@ -826,6 +832,7 @@ impl NetworkSnapshot {
             profiles: Some(Ok(Vec::new())),
             profile_settings: HashMap::new(),
             wake_settings: HashMap::new(),
+            profile_list: None,
             hotspot_clients: Some(Ok(Vec::new())),
             vpns: Some(Ok(Vec::new())),
             link: None,
@@ -862,6 +869,14 @@ fn wifi_enabled_from(radios: &Result<os_actions::RadioState, String>) -> Result<
         .as_ref()
         .map(|radios| radios.wifi_available && radios.wifi_enabled)
         .map_err(Clone::clone)
+}
+
+/// Whether `listed` names the same saved profiles as `held`, in any order.
+fn same_profiles(held: &[SavedNetworkProfile], listed: &[SavedNetworkProfile]) -> bool {
+    held.len() == listed.len()
+        && listed
+            .iter()
+            .all(|profile| held.iter().any(|known| known.uuid == profile.uuid))
 }
 
 /// Keep `value` on success and record why it failed otherwise. `None` (the
@@ -1017,8 +1032,8 @@ pub(crate) trait NetworkService: Send + Sync {
         NetworkSnapshot::networks_only(self.snapshot(false).networks)
     }
     /// What changes as the device runs (the radios, the links, the
-    /// networks in range, the VPNs) without the saved profiles and their
-    /// settings: what is read again when the device reports a change.
+    /// networks in range, the VPNs) and the saved profiles listed, without
+    /// their settings: what is read again when the device reports a change.
     fn status(&self) -> NetworkSnapshot {
         self.snapshot(false)
     }
@@ -1095,7 +1110,10 @@ impl NetworkService for DeviceNetwork {
     }
 
     fn status(&self) -> NetworkSnapshot {
-        NetworkSnapshot::status()
+        NetworkSnapshot {
+            profile_list: Some(os_actions::list_saved_network_profiles()),
+            ..NetworkSnapshot::status()
+        }
     }
 
     fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
@@ -2265,6 +2283,19 @@ impl NetworkModel {
         if let Some(vpns) = adopt(snapshot.vpns, &mut self.read_errors.vpns) {
             self.vpns = vpns;
         }
+        // A profile added or removed elsewhere (a network joined from quick
+        // settings, one forgotten with `nmcli`) has its settings read with
+        // everything else; the same profiles only take their new names and
+        // last uses.
+        let reread = match snapshot.profile_list {
+            Some(Ok(listed)) if same_profiles(&self.profiles, &listed) => {
+                self.profiles = listed;
+                self.fill_forms();
+                false
+            }
+            Some(Ok(_)) => true,
+            Some(Err(_)) | None => false,
+        };
         if whole || snapshot.link.is_some() {
             self.link = snapshot.link;
         }
@@ -2275,6 +2306,9 @@ impl NetworkModel {
             self.vpn.devices.status = status;
         }
         self.loaded = true;
+        if reread {
+            self.start_snapshot();
+        }
         outcome
     }
 
