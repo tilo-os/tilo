@@ -752,6 +752,8 @@ pub struct FileExplorerWidget {
     /// it) said in the window's bar for a while; the item and selection
     /// counts are the window's accessible status, not news.
     status_notice: StatusText,
+    /// What Needs you reports back: the row a Files notice raised.
+    needs: ui::attention::Presses,
     /// The status last said in the bar, so only a change is news.
     status_said: Option<String>,
     /// The archive last said to be read-only, so entering one says it once.
@@ -978,6 +980,15 @@ pub struct FileExplorerWidget {
     app_chooser: ui::widget::command_palette::CommandPalette,
     app_chooser_target: Option<PathBuf>,
     thumb_imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
+}
+
+/// One test at a time: the waiting stack and the ledger are the process's,
+/// so two tests running at once would see each other's rows.
+#[cfg(test)]
+pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
+    use ui::lock::MutexRecover as _;
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock_recover()
 }
 
 /// Files, as the ledger names it.
@@ -1303,12 +1314,8 @@ impl FileExplorerWidget {
         // Undo is the window's: offered only when the window has it to give
         // (a window no framework hosts keeps no history).
         let undo = undoable && self.undo.can_undo();
-        self.notice.show(
-            title,
-            "",
-            ui::widget::toast::ToastKind::Success,
-            undo.then_some(NoticeAction::Undo),
-        );
+        self.notice
+            .show(title, "", undo.then_some(NoticeAction::Undo));
         self.structure_dirty = true;
     }
 
@@ -1321,12 +1328,8 @@ impl FileExplorerWidget {
             return;
         }
         self.status = None;
-        self.notice.show(
-            title,
-            crate::fileops::readable_error(reason),
-            ui::widget::toast::ToastKind::Error,
-            action,
-        );
+        self.notice
+            .show(title, crate::fileops::readable_error(reason), action);
         self.structure_dirty = true;
     }
 
@@ -1951,6 +1954,7 @@ impl FileExplorerWidget {
             state_spinner: Spinner::new(),
             state_retry,
             status_notice: StatusText::default(),
+            needs: ui::attention::Presses::new(),
             status_said: None,
             archive_said: None,
             staged_hover: None,
@@ -8822,8 +8826,7 @@ impl FileExplorerWidget {
                     .clone()
                     .map(NoticeAction::ReceiveAgain);
                 self.status = None;
-                self.notice
-                    .show(error, "", ui::widget::toast::ToastKind::Error, again);
+                self.notice.show(error, "", again);
                 self.structure_dirty = true;
             }
         }
@@ -8997,8 +9000,7 @@ impl FileExplorerWidget {
                 self.history_pending_success = None;
                 self.status = None;
                 let action = path.map(NoticeAction::OpenHistory);
-                self.notice
-                    .show(error, "", ui::widget::toast::ToastKind::Error, action);
+                self.notice.show(error, "", action);
             }
         }
         self.close_collab_panel();
@@ -9833,7 +9835,6 @@ impl FileExplorerWidget {
             .chain(self.local_clipboard.next_wake())
             .chain(self.drives.next_wake())
             .chain(self.applications.next_wake())
-            .chain(self.notice.deadline())
             .chain((!self.incoming.is_empty()).then(Instant::now))
             .chain(
                 self.preview
@@ -10075,7 +10076,6 @@ impl Widget for FileExplorerWidget {
         let received = self.poll_received_share();
         let transfers = self.follow_transfers(ui::time::now());
         let previewed = self.preview.as_mut().is_some_and(Preview::poll);
-        let notice_expired = self.notice.expire(ui::time::now());
         let sprang = self.spring_open_if_due(ui::time::now());
         // A folder's item count came in: the list shows it.
         let counted = self.folder_counts.take_arrived();
@@ -10083,11 +10083,10 @@ impl Widget for FileExplorerWidget {
             | self.take_archive_listing()
             | self.poll_extract_chooser()
             | self.open_read_members();
-        self.structure_dirty |= notice_expired | counted;
+        self.structure_dirty |= counted;
         self.poll_share_result()
             | self.poll_history_result()
             | received
-            | notice_expired
             | transfers
             | previewed
             | sprang
@@ -10164,11 +10163,16 @@ impl Widget for FileExplorerWidget {
         }
         // The notice says so in the window's bar while it is up; its
         // button pressed there acts as the card's did.
-        if ui::window_toolbar::take_notice_press(notice::NOTICE_ACTION)
-            && let Some(action) = self.notice.press()
-        {
-            self.act_on_notice(action);
-            self.structure_dirty = true;
+        // A row in Needs you waits on the very action this notice carried:
+        // pressing it acts here, where the change it is about lives.
+        for press in self.needs.take() {
+            let Some(acted) = ui::attention::apply(press) else {
+                continue;
+            };
+            if let Some(action) = self.notice.pressed(&acted) {
+                self.act_on_notice(action);
+                self.structure_dirty = true;
+            }
         }
         self.publish_status();
         self.notice.publish();
