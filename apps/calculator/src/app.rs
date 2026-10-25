@@ -59,6 +59,9 @@ pub struct CalculatorApp {
     navigated: bool,
 
     mouse: Point,
+    /// A pointer has been over this window: until one is, no trace crosshair
+    /// is drawn. The origin is not where a pointer is.
+    pointer_seen: bool,
     dragging: bool,
     drag_last: Point,
     /// A drag-select is in progress inside a math field.
@@ -119,6 +122,7 @@ impl CalculatorApp {
             environment: InteractionEnvironment::POINTER,
             navigated: false,
             mouse: Point::ZERO,
+            pointer_seen: false,
             dragging: false,
             drag_last: Point::ZERO,
             field_dragging: false,
@@ -387,11 +391,12 @@ impl CalculatorApp {
     /// What the plot under the pointer shows: the trace of Graph 2D, and the
     /// navigation hint until the person has navigated a plot.
     fn plot_pointer(&self) -> Pointer {
-        let over = self
-            .model
-            .mode
-            .graph()
-            .is_some_and(|kind| self.canvas_contains(kind, self.mouse));
+        let over = self.pointer_seen
+            && self
+                .model
+                .mode
+                .graph()
+                .is_some_and(|kind| self.canvas_contains(kind, self.mouse));
         Pointer {
             trace: (over && self.model.mode == Mode::Graph2d).then_some(self.mouse),
             hint: (over && !self.navigated).then_some(self.environment),
@@ -1190,6 +1195,7 @@ impl Widget for CalculatorApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = ctx.logical(position);
                 self.mouse = p;
+                self.pointer_seen = true;
                 let hover_changed = self.track_pointer(p);
                 if self.field_dragging {
                     self.on_field_drag(p);
