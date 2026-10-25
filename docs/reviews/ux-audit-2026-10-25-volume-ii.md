@@ -1828,6 +1828,13 @@ Each is code motion along a seam that already existed, named in the new module's
   is a diagnostic to run by hand until runs are isolated.
 - `SHELL-02..17` (17), and the creation and utility app clusters.
 - `T10`: one antialiased pixel still differs between identical runs of the calculator's graph.
+- **A toolkit gap found while integrating.** `policy/app-toolbars` fails on `apps/activity`'s own
+  find field, and the app is not at fault: Activity is a function-based `ResourceApp`, so it has no
+  root widget for `ui::widget::SearchableWindow` to reach, and the bar's search has no other way in.
+  A history feed without search is worse than a field in the wrong place, so the field stayed and
+  the gap is recorded here: **the toolkit owes a `ResourceApp` a query view**, and that is
+  `M5`'s missing piece rather than an app's defect. It is the one policy step in this tree that is
+  red for a reason worth naming.
 - Two policy steps fail on a clean base and are not ours: `capnp` bindings (unavailable in a
   worktree) and one suite test about a fetched bundle.
 
