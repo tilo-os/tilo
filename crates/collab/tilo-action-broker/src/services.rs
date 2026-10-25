@@ -1,8 +1,10 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
 mod own_device;
 pub mod person_chat;
+mod room_nodes;
 mod task_execution;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
+pub use room_nodes::{RoomNodeActions, RoomNodeAsk, RoomNodeOutcome};
 pub use task_execution::{
     NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
     TRACKER_ISSUE_PREFIX, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection, TrackerQuestion,
@@ -1710,4 +1712,9 @@ pub struct HostServices {
     /// Carries an application's action to another of the person's own
     /// devices. Without it no app reaches another device's actions.
     pub own_device: Option<Arc<dyn OwnDeviceActions>>,
+    /// Asks the room a node of its tree is in to share it, end a share of
+    /// it, or say what the person may do there. Without it no app's share
+    /// reaches a room, and the broker refuses it rather than let a share
+    /// promise access no grant backs.
+    pub room_nodes: Option<Arc<dyn RoomNodeActions>>,
 }
