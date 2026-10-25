@@ -109,6 +109,8 @@ pub(crate) struct Bridge {
     pub has_entries: bool,
     /// How many entries the journal holds, filtered or not.
     pub total: usize,
+    /// Live tail is on: new rows keep the newest one in view.
+    pub follow: bool,
     /// The journal's refresh action, offered by the unavailable state.
     pub refresh: Option<ActionBinding<()>>,
     requests: Vec<Request>,
@@ -266,8 +268,15 @@ impl JournalPane {
 
         if self.seen_rows != Some(bridge.rows_revision) {
             self.seen_rows = Some(bridge.rows_revision);
+            let follow = bridge.follow && !bridge.rows.is_empty();
+            let last = bridge.rows.len().saturating_sub(1);
             self.table.set_rows(bridge.rows.clone());
             self.shown_selection = None;
+            // Follow means follow: when new records arrive, the newest row
+            // stays in view instead of being pushed below the fold.
+            if follow {
+                self.table.reveal_row(last);
+            }
         }
         self.show_selection(bridge.selected);
         if bridge.selected != self.adopted_selection {

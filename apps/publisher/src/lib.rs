@@ -139,6 +139,9 @@ struct Pane {
     key: KeyState,
     busy: bool,
     notice: Option<Notice>,
+    /// Every application status this window read, newest last: the timeline
+    /// the person can see instead of only the last answer.
+    history: Vec<(u64, String)>,
 }
 
 /// What the publisher does with the key on this machine and the registry,
@@ -155,6 +158,9 @@ pub enum KeyEffect {
     /// Copy key for CI.
     #[effect(attended, privileged)]
     CopySecret,
+    /// Export the key to a file the person chooses.
+    #[effect(job, attended, privileged)]
+    ExportKey,
     /// Apply for namespaces.
     #[effect(job)]
     ApplyForNamespaces,
@@ -214,7 +220,14 @@ fn local(effect: &KeyEffect, secrets: &SecretStore) -> Result<Notice, String> {
     match effect {
         KeyEffect::CreateKey => {
             let key = key::create(secrets).map_err(|error| format!("{error:#}"))?;
-            Ok(Notice::info("publisher-key-created").detailed(key::public_hex(&key)))
+            // The key exists only in this device's keychain. Say that, and
+            // point at the export that writes a real backup file.
+            Ok(Notice::info("publisher-key-created")
+                .explained("publisher-key-created-detail")
+                .detailed(format!(
+                    "Public key {}. It is stored in this device’s keychain.",
+                    key::public_hex(&key)
+                )))
         }
         KeyEffect::CopyProof => {
             let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
@@ -222,9 +235,10 @@ fn local(effect: &KeyEffect, secrets: &SecretStore) -> Result<Notice, String> {
             ui::text_selection::clipboard_copy(&proof);
             Ok(Notice::info("publisher-proof-copied").detailed(proof))
         }
-        KeyEffect::CopySecret | KeyEffect::ApplyForNamespaces | KeyEffect::CheckStatus => {
-            Err(format!("`{}` runs as a job", effect.id()))
-        }
+        KeyEffect::CopySecret
+        | KeyEffect::ExportKey
+        | KeyEffect::ApplyForNamespaces
+        | KeyEffect::CheckStatus => Err(format!("`{}` runs as a job", effect.id())),
     }
 }
 
@@ -275,6 +289,7 @@ fn unavailable(pane: &Pane) -> Vec<EffectStatus> {
         for effect in [
             KeyEffect::COPY_PROOF,
             KeyEffect::COPY_SECRET,
+            KeyEffect::EXPORT_KEY,
             KeyEffect::APPLY_FOR_NAMESPACES,
             KeyEffect::CHECK_STATUS,
         ] {
@@ -367,6 +382,7 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
                         "publisher-copy-secret",
                         &KeyEffect::CopySecret
                     ),
+                    button("export-key", "publisher-export-key", &KeyEffect::ExportKey),
                     button(
                         "check-status",
                         "publisher-check-status",
@@ -382,6 +398,106 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
         }
     }
     Box::new(column)
+}
+
+/// Every place the registry looks for the proof of the profile's claims.
+fn profile_proof_places(profile: &Publisher) -> Vec<String> {
+    let mut places = Vec::new();
+    if !profile.domain.trim().is_empty() {
+        places.extend(registry_client::proof_places(&NamespaceClaim::Domain {
+            domain: profile.domain.trim().to_owned(),
+        }));
+    }
+    if !profile.forge_account.trim().is_empty()
+        && let Ok(claim) = registry_client::forge_claim(profile.forge_account.trim())
+    {
+        places.extend(registry_client::proof_places(&claim));
+    }
+    places
+}
+
+/// Where to publish the proof line, following the domain and forge fields as
+/// they are edited. The projection reads the document, so the places are
+/// the current claims rather than the state at window construction.
+fn proof_places_section() -> ModelView<Vec<String>> {
+    ModelView::from_document(
+        |doc, _| {
+            ui::tilo_resource::evolution::read_checked::<Publisher>(doc)
+                .ok()
+                .map(|profile| profile_proof_places(&profile))
+                .unwrap_or_default()
+        },
+        |places: &Vec<String>| {
+            let mut column = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(
+                    Text::new("publisher-proof-places-heading").with_role(TextRole::Heading),
+                ))
+                .push(Box::new(Text::new("publisher-proof-places-help")));
+            if places.is_empty() {
+                column = column.push(Box::new(
+                    Text::new("Name a domain or forge account to see where its proof goes.")
+                        .with_role(TextRole::Caption)
+                        .dimmed(),
+                ));
+                return Box::new(column);
+            }
+            for (index, place) in places.iter().enumerate() {
+                column = column.push(value_group(
+                    &format!("Publish at {}", index + 1),
+                    place,
+                    &format!("proof-place-{index}"),
+                    None,
+                ));
+            }
+            Box::new(column)
+        },
+    )
+}
+
+/// The application status readings this window made, newest first, each with
+/// its own as-of.
+fn status_timeline(pane: &Pane) -> Element {
+    if pane.history.is_empty() {
+        return Box::new(
+            Text::new("No application status has been checked in this window yet.")
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        );
+    }
+    let now = ui::time::wall();
+    let mut section = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(
+            Text::new("Application status")
+                .with_id("status-timeline-heading")
+                .with_role(TextRole::Heading),
+        ));
+    for (at, summary) in pane.history.iter().rev() {
+        let Some(instant) = ui::time::UNIX_EPOCH.checked_add(ui::time::Duration::from_millis(*at))
+        else {
+            continue;
+        };
+        let fact = ui::fact::Fact::measured(
+            ui::fact::Measure::new("Application status"),
+            summary.clone(),
+            "registry",
+            instant,
+            None,
+        );
+        section = section
+            .push(Box::new(
+                Text::new(fact.value_or_dash()).with_role(TextRole::Body),
+            ))
+            .push(Box::new(
+                Text::new(&fact.caption(now))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ));
+    }
+    Box::new(section)
 }
 
 /// The namespace claims, each input bound to its field.
@@ -480,6 +596,7 @@ impl ResourceApp for App {
             key,
             busy: false,
             notice: None,
+            history: Vec::new(),
         });
         let handler = pane.clone();
         cx.effects(move |effect: KeyEffect, cx| {
@@ -498,14 +615,49 @@ impl ResourceApp for App {
                 return Ok(cx.thread(
                     move |_| remote(&effect, &profile, &remote_secrets),
                     move |(), result: Result<Notice, String>, _| {
-                        pane.set(Pane {
-                            key: KeyState::load(&reload_secrets),
-                            busy: false,
-                            notice: Some(result.clone().unwrap_or_else(Notice::error)),
-                        });
+                        let mut next = pane.get();
+                        next.key = KeyState::load(&reload_secrets);
+                        next.busy = false;
+                        next.notice = Some(result.clone().unwrap_or_else(Notice::error));
+                        if let Ok(notice) = &result {
+                            if let Some(summary) = notice
+                                .message
+                                .clone()
+                                .or_else(|| Some(notice.title.clone()))
+                            {
+                                next.history
+                                    .push((ui::time::try_unix_now_ms().unwrap_or(0), summary));
+                            }
+                        }
+                        pane.set(next);
                         result.map(|_| Effected::done())
                     },
                 ));
+            }
+            if matches!(effect, KeyEffect::ExportKey) {
+                let key = key::resolve(None, &secrets).map_err(|error| format!("{error:#}"))?;
+                let bytes = format!(
+                    "{{\"secret_key_hex\":\"{}\"}}\n",
+                    hex::encode(key.to_bytes())
+                )
+                .into_bytes();
+                let request = ui::portal::PickRequest::save(
+                    "Back up publisher key",
+                    "Save",
+                    "publisher-key.json",
+                );
+                let pane = handler.clone();
+                return Ok(cx.save_file(request, bytes, move |_, saved, _| {
+                    let mut next = pane.get();
+                    next.notice = Some(if saved {
+                        Notice::success("publisher-key-exported")
+                            .explained("publisher-key-exported-detail")
+                    } else {
+                        Notice::info("publisher-key-export-cancelled")
+                    });
+                    pane.set(next);
+                    Ok(Effected::done())
+                }));
             }
             if matches!(effect, KeyEffect::CopySecret) {
                 // The copy settles without the UI thread waiting on it; the
@@ -526,6 +678,7 @@ impl ResourceApp for App {
                             key: KeyState::load(&reload_secrets),
                             busy: false,
                             notice: Some(result.clone().unwrap_or_else(Notice::error)),
+                            history: pane.get().history,
                         });
                         result.map(|_| Effected::done())
                     },
@@ -536,6 +689,7 @@ impl ResourceApp for App {
                 key: KeyState::load(&secrets),
                 busy: false,
                 notice: Some(result.clone().unwrap_or_else(Notice::error)),
+                history: handler.get().history,
             });
             result.map(|_| Effected::done())
         })
@@ -551,6 +705,8 @@ impl ResourceApp for App {
         );
         let key =
             ModelView::from_state_by(&pane, Clone::clone, move |pane| key_section(pane, &actions));
+        let proof_places = proof_places_section();
+        let timeline = ModelView::from_state_by(&pane, Clone::clone, |pane| status_timeline(pane));
         let notice = ModelView::from_state_by(&pane, Clone::clone, |pane| {
             let mut column = Column::new().with_no_padding().with_intrinsic_height();
             if let Some(notice) = &pane.notice {
@@ -566,7 +722,20 @@ impl ResourceApp for App {
             Scrollable::new_vertical()
                 .fill_parent_height()
                 .with_child(Box::new(
-                    ui::column![key, form, apply_button, notice].with_intrinsic_height(),
+                    Column::new()
+                        .with_intrinsic_height()
+                        .with_rhythm(ui::tokens::Rhythm::Group)
+                        .push(Box::new(key))
+                        .push(Box::new(Spacer::fixed(24.0)))
+                        .push(Box::new(proof_places))
+                        .push(Box::new(Spacer::fixed(24.0)))
+                        .push(Box::new(form))
+                        .push(Box::new(Spacer::fixed(24.0)))
+                        .push(Box::new(apply_button))
+                        .push(Box::new(Spacer::fixed(24.0)))
+                        .push(Box::new(timeline))
+                        .push(Box::new(Spacer::fixed(24.0)))
+                        .push(Box::new(notice)),
                 )),
         )
     }
