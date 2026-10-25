@@ -228,7 +228,10 @@ impl EmojiPicker {
         );
         if rect != self.rect {
             self.rect = rect;
-            self.dirty = true;
+            // The grid's scroll viewport and the search field are placed on
+            // screen when laid out: moving without it would leave them where
+            // the picker was.
+            self.layout();
         }
     }
 
