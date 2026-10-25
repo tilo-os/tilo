@@ -135,37 +135,21 @@ pub fn current_code(account: &Account) -> String {
 }
 
 /// Why this device's clock may generate codes every server rejects, when it
-/// can be known.
-///
-/// TOTP has no way to ask the server what time it thinks it is; the honest
-/// signal is whether this device's clock is synchronised at all. A live
-/// Linux session asks systemd's NTP state once; a capture and a test never
-/// run a command and report no warning.
+/// What to tell a person whose codes are being rejected, when the machine says
+/// its clock is not synchronised. The question is the platform's: a device whose
+/// clock is minutes out produces codes nothing accepts, and nothing in an
+/// authenticator can tell. `None` when the clock is synchronised, and when the
+/// platform cannot say either way: a warning nobody can act on is noise.
 pub fn clock_drift_warning() -> Option<&'static str> {
-    #[cfg(test)]
-    {
-        None
+    if cfg!(test) || ui::time::wall_frozen() {
+        return None;
     }
-    #[cfg(all(not(test), target_os = "linux", not(target_family = "wasm")))]
-    {
-        if ui::time::wall_frozen() {
-            return None;
-        }
-        let output = std::process::Command::new("timedatectl")
-            .args(["show", "-p", "NTPSynchronized", "--value"])
-            .output()
-            .ok()?;
-        if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() != "yes" {
-            return Some(
-                "This device\u{2019}s clock is not synchronised; codes may be rejected. \
-                 Turn on automatic time, then try again.",
-            );
-        }
-        None
-    }
-    #[cfg(all(not(test), not(all(target_os = "linux", not(target_family = "wasm")))))]
-    {
-        None
+    match ui::time::is_synchronised() {
+        Some(false) => Some(
+            "This device\u{2019}s clock is not synchronised; codes may be rejected. \
+             Turn on automatic time, then try again.",
+        ),
+        Some(true) | None => None,
     }
 }
 
