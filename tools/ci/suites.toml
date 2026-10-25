@@ -1463,6 +1463,8 @@ inputs = [
   "apps/browser/tilo-app.toml",
   "apps/imager/packaging/linux/tilo-imager.svg",
   "apps/file-explorer/tilo-app.toml",
+  # The session names Settings' own surface as it holds the app's records.
+  "apps/settings/surface.toml",
   "tools/protocols/airdrop_sender.py",
   "tools/test-assets.py",
   "crates/sdk/ui-core/assets/fonts/",
@@ -1496,6 +1498,7 @@ readers = [
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
   "crates/session/shell/src/compositor/chooser_service.rs",
+  "crates/session/shell/src/shell/settings_records.rs",
 ]
 
 
