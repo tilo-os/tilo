@@ -30,7 +30,7 @@ export const PAIR_WAIT_MS = 30_000;
 export function liveMembers(layer, seen) {
   if (!layer?.available) return null;
   return layer.members().map(publisher => {
-    const {participant, focus, place, wave, layout} = seen.get(publisher) ?? {};
+    const {participant, focus, place, wave, layout, following} = seen.get(publisher) ?? {};
     return {
       publisher,
       kind: participant?.kind === 'agent' ? 'agent' : 'person',
@@ -46,6 +46,8 @@ export function liveMembers(layer, seen) {
       wave: participant?.kind === 'agent' ? null : wave ?? null,
       // Where a person's windows are, for a mini view of their screen.
       layout: participant?.kind === 'agent' ? null : layout ?? null,
+      // Whose view a person follows: who follows whom, on every roster.
+      following: participant?.kind === 'agent' ? null : following ?? null,
     };
   });
 }
@@ -63,7 +65,7 @@ export function liveMembers(layer, seen) {
 export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
   fetch = globalThis.fetch, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout,
   visible = () => globalThis.document?.visibilityState !== 'hidden', onError = () => {}}) {
-  const seen = new Map(); // publisher -> {participant, focus, place, wave, layout}
+  const seen = new Map(); // publisher -> {participant, focus, place, wave, layout, following}
   let stopped = false;
   let timer;
   let peopleKey;
@@ -91,7 +93,7 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
   }
   function remember({publisher, frame}) {
     const previous = seen.get(publisher);
-    seen.set(publisher, {participant: frame.participant ?? previous?.participant ?? null, focus: frame.focus ?? null, place: frame.place ?? null, wave: frame.wave ?? null, layout: frame.layout ?? null});
+    seen.set(publisher, {participant: frame.participant ?? previous?.participant ?? null, focus: frame.focus ?? null, place: frame.place ?? null, wave: frame.wave ?? null, layout: frame.layout ?? null, following: frame.following ?? null});
     pushPeople();
   }
   const live = layer();

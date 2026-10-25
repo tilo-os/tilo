@@ -778,6 +778,9 @@ struct JsPresence {
     /// focused}]}`, `record` the 16-hex short digest of its live record.
     #[serde(default)]
     layout: Option<JsLayout>,
+    /// Whose view this member follows: their publisher.
+    #[serde(default)]
+    following: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -998,6 +1001,7 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
             target: wave.target,
         }),
         layout: value.layout.map(layout_from_js).transpose()?,
+        following: value.following,
     })
 }
 
@@ -1037,6 +1041,7 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
             target: wave.target,
         }),
         layout: frame.layout.map(layout_to_js),
+        following: frame.following,
     }
 }
 
