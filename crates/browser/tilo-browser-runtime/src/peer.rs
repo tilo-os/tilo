@@ -34,8 +34,9 @@ use tilo_browser_peer::{
     SignFuture,
 };
 use tilo_relay_protocol::live::{
-    CursorChat, DragPhase, LiveAnchor, LiveFrame, LiveObject, LiveParticipant, LiveReaction,
-    LiveRecord, LiveWave, OpsFrame, ParticipantKind, PresenceFrame, PreviewOp,
+    CursorChat, DragPhase, LiveAnchor, LiveFrame, LiveLayout, LiveObject, LiveParticipant,
+    LiveReaction, LiveRecord, LiveWave, LiveWindow, OpsFrame, ParticipantKind, PresenceFrame,
+    PreviewOp,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use wasm_bindgen::prelude::*;
@@ -773,6 +774,61 @@ struct JsPresence {
     /// publisher.
     #[serde(default)]
     wave: Option<JsWave>,
+    /// Where the windows are: `{size, windows: [{app, record, rect,
+    /// focused}]}`, `record` the 16-hex short digest of its live record.
+    #[serde(default)]
+    layout: Option<JsLayout>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsLayout {
+    size: [u16; 2],
+    windows: Vec<JsWindow>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsWindow {
+    app: String,
+    record: String,
+    rect: [u16; 4],
+    focused: bool,
+}
+
+fn layout_from_js(layout: JsLayout) -> Result<LiveLayout, JsError> {
+    let windows = layout
+        .windows
+        .into_iter()
+        .map(|window| {
+            let record = <[u8; 8]>::try_from(hex::decode(&window.record).map_err(js_error)?)
+                .map_err(|_| js_error("a layout window's record is 8 bytes"))?;
+            Ok(LiveWindow {
+                app: window.app,
+                record,
+                rect: window.rect,
+                focused: window.focused,
+            })
+        })
+        .collect::<Result<_, JsError>>()?;
+    Ok(LiveLayout {
+        size: layout.size,
+        windows,
+    })
+}
+
+fn layout_to_js(layout: LiveLayout) -> JsLayout {
+    JsLayout {
+        size: layout.size,
+        windows: layout
+            .windows
+            .into_iter()
+            .map(|window| JsWindow {
+                app: window.app,
+                record: hex::encode(window.record),
+                rect: window.rect,
+                focused: window.focused,
+            })
+            .collect(),
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -941,6 +997,7 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
             seq: wave.seq,
             target: wave.target,
         }),
+        layout: value.layout.map(layout_from_js).transpose()?,
     })
 }
 
@@ -979,6 +1036,7 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
             seq: wave.seq,
             target: wave.target,
         }),
+        layout: frame.layout.map(layout_to_js),
     }
 }
 

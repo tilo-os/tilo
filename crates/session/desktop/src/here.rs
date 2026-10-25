@@ -19,7 +19,9 @@ use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent};
 use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
+mod screen;
 mod waves;
+pub use screen::{MemberLayout, MemberWindow, Screen, ScreenWindow};
 pub use waves::{WAVE_AGAIN_MS, Wave, WaveEar, WaveFrom, WaveOut};
 
 /// How long a host line keeps a person listed without the live layer to
@@ -68,6 +70,9 @@ pub struct LiveMember {
     /// The member's latest wave at someone here.
     #[serde(default)]
     pub wave: Option<Wave>,
+    /// Where a person's windows are on their screen.
+    #[serde(default)]
+    pub layout: Option<MemberLayout>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -100,7 +105,7 @@ pub struct Line {
 }
 
 /// Someone present, as the desktop shows them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Person {
     /// Their live publisher (the device key for a person), hex.
     pub id: String,
@@ -118,6 +123,9 @@ pub struct Person {
     pub place: Option<String>,
     pub status: Option<Line>,
     pub recent: Option<Line>,
+    /// Where their windows are on their screen, as their live presence
+    /// says: a person's only, from the first of their devices that says.
+    pub screen: Option<Screen>,
 }
 
 /// What the page told the desktop about the room.
@@ -318,6 +326,16 @@ impl HereState {
         self.user_of(publisher).unwrap_or(publisher)
     }
 
+    /// Where `person`'s windows are: the layout of the first of their
+    /// devices in the live layer that says.
+    fn screen_of(&self, person: &str) -> Option<Screen> {
+        self.members
+            .iter()
+            .flatten()
+            .filter(|member| member.kind != "agent" && self.person_of(&member.publisher) == person)
+            .find_map(|member| member.layout.as_ref().and_then(Screen::from_layout))
+    }
+
     /// Whether `publisher` is this page or another device of its person.
     fn is_own_person(&self, publisher: &str) -> bool {
         Some(publisher) == self.own_id()
@@ -506,6 +524,7 @@ impl HereState {
                 place,
                 status,
                 recent: line_of.and_then(|l| line(&l.recent, l.generated)),
+                screen: if agent { None } else { self.screen_of(person) },
             });
         }
         // Without the live layer the host's lines are all there is; a line
@@ -534,6 +553,7 @@ impl HereState {
                 place: tab.and_then(|tab| worded_place(tree, tab, app_name, status.as_ref())),
                 status,
                 recent: line(&l.recent, l.generated),
+                screen: None,
             });
         }
         people.compact_sort_by_key(|person| person.agent);
@@ -798,7 +818,43 @@ mod tests {
             place: None,
             user: None,
             wave: None,
+            layout: None,
         }
+    }
+
+    /// A person's screen is their device's layout; an agent has none, even
+    /// when its frame says one.
+    #[test]
+    fn a_person_s_layout_is_their_screen_and_an_agent_shows_none() {
+        let layout = MemberLayout {
+            size: [800, 600],
+            windows: vec![MemberWindow {
+                app: "so.tilo.notes".into(),
+                record: "0123456789abcdef".into(),
+                rect: [0, 0, 10_000, 10_000],
+                focused: true,
+            }],
+        };
+        let mut here = HereState::default();
+        here.set_members(
+            None,
+            Some(vec![
+                LiveMember {
+                    layout: Some(layout.clone()),
+                    ..member("ada", "person", "Ada")
+                },
+                LiveMember {
+                    layout: Some(layout.clone()),
+                    ..member("bot", "agent", "Scribe")
+                },
+            ]),
+        );
+        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
+        let ada = people.iter().find(|p| p.id == "ada").expect("Ada");
+        assert_eq!(ada.screen, Screen::from_layout(&layout));
+        assert!(ada.screen.is_some());
+        let bot = people.iter().find(|p| p.id == "bot").expect("the agent");
+        assert_eq!(bot.screen, None);
     }
 
     /// A person is named as their page's presence names them, found through
@@ -1450,6 +1506,7 @@ mod tests {
             place: None,
             status: None,
             recent: None,
+            screen: None,
         }];
         overlay_collaborators(&mut tree, &people);
         let workspace = tree.active_workspace().expect("a workspace");
