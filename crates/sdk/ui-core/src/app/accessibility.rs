@@ -1052,6 +1052,8 @@ impl App {
     /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&mut self, scale: f64) -> accesskit::TreeUpdate {
         let _entry = self.enter_wake_scope();
+        // Bounds of every widget, also those far from any view.
+        self.place_all();
         let exported = self.bindings.exported_nodes(&self.layout.node_map);
         if self
             .actions
@@ -1525,6 +1527,7 @@ impl App {
     /// Walk the widgets and diff what they declare against the tree.
     fn rebuild_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
         let _entry = self.enter_wake_scope();
+        self.place_all();
         // Built from what is there now; a presentation the tracking does
         // not follow leaves it stale, so leaving it walks again.
         self.accessibility.semantic_tree_stale = self.semantic_tree_untracked();
