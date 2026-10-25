@@ -4376,7 +4376,7 @@ impl ActionsProvider {
                             let from = chrome.borrow().window_requests_queued();
                             open(doc, root, chrome, args)?;
                             let outcomes = chrome.borrow_mut().answer_window_requests_since(from);
-                            Ok(window_outcome(outcomes))
+                            Ok(window_outcome(action_id, outcomes))
                         },
                     ) as Rc<crate::shell::search::BeginInvokeFn>
                 });

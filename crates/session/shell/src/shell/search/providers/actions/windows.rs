@@ -31,11 +31,35 @@ fn window_unchanged() -> ActionError {
     ActionError::Explained(t("search-action-window-unchanged"))
 }
 
-/// How the window operations an invocation queued (`outcomes`) went: done
-/// when nothing was queued; else answered once the overlay host ran them,
-/// a success when any changed something and "nothing changed" otherwise,
-/// so a move past the edge does not report a move.
+/// What window action `action_id` says when it changed nothing: the state
+/// that left nothing to do, so a narrower window at its narrowest is not
+/// told it "is already there".
+fn unchanged_for(action_id: &str) -> ActionError {
+    ActionError::Explained(t(match action_id {
+        "group.maximize" => "search-action-window-unchanged-maximized",
+        "group.restore" => "search-action-window-unchanged-restored",
+        "group.narrower" => "search-action-window-unchanged-narrowest",
+        "group.wider" => "search-action-window-unchanged-widest",
+        "group.move-left"
+        | "group.move-right"
+        | "group.move-to-strip-previous"
+        | "group.move-to-strip-next"
+        | "group.move-to-display-previous"
+        | "group.move-to-display-next" => "search-action-window-unchanged-edge",
+        "tab.move-to-group-previous" | "tab.move-to-group-next" => {
+            "search-action-tab-unchanged-edge"
+        }
+        _ => "search-action-window-unchanged",
+    }))
+}
+
+/// How the window operations an invocation of `action_id` queued
+/// (`outcomes`) went: done when nothing was queued; else answered once the
+/// overlay host ran them, a success when any changed something and
+/// "nothing changed", with why, otherwise, so a move past the edge does
+/// not report a move.
 pub(super) fn window_outcome(
+    action_id: &'static str,
     outcomes: Vec<crate::shell::chrome_state::WindowOutcome>,
 ) -> crate::shell::search::InvocationDisposition {
     use crate::shell::search::{ActionReceipt, InvocationDisposition};
@@ -47,7 +71,7 @@ pub(super) fn window_outcome(
         match answered {
             None => Ok(None),
             Some(changed) if changed.contains(&true) => Ok(Some(ActionReceipt::completed())),
-            Some(_) => Err(window_unchanged()),
+            Some(_) => Err(unchanged_for(action_id)),
         }
     }))
 }
