@@ -965,6 +965,17 @@ impl App {
                         );
                     }
                 }
+                FloatingSurfaceHostMessage::Pick { request, query } => {
+                    let answer = crate::pick_wire::answer(self.root_widget.as_ref(), query);
+                    if let Some(client) = &mut self.floating.client {
+                        let _ = client.send(
+                            &crate::floating_surface::FloatingSurfaceClientMessage::PickAnswered {
+                                request: *request,
+                                answer,
+                            },
+                        );
+                    }
+                }
                 FloatingSurfaceHostMessage::ShareSelection => {
                     let (selection, bounds) =
                         self.agent_reference(crate::shared_selection::AgentRequest::default());

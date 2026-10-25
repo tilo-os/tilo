@@ -649,6 +649,28 @@ impl InProcessApps {
         self.feedback_subject = subject;
     }
 
+    /// Whether reports have somewhere to go: "Report a problem…" is offered
+    /// only then.
+    pub(crate) fn feedback_configured(&self) -> bool {
+        self.feedback.is_some()
+    }
+
+    /// Start a report about what the person picked; the composer shows it
+    /// when it opens.
+    pub(crate) fn begin_feedback_report(
+        &self,
+        picked: tilo_app::feedback::PickedReport,
+    ) -> Result<(), String> {
+        let feedback = self
+            .feedback
+            .as_ref()
+            .ok_or("feedback has no destination here")?;
+        feedback
+            .services()
+            .begin_report(picked)
+            .map_err(|error| error.to_string())
+    }
+
     /// Storage/transport wakes service the approved outbox, including while
     /// its private window is closed. Failures remain in the private status UI.
     pub(crate) fn pump_feedback(&mut self) {
