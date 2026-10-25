@@ -250,4 +250,20 @@ pub mod testing {
     pub fn is_settled() -> bool {
         SETTLED.with(|count| count.get() > 0)
     }
+
+    /// While held, every motion on this thread reads at the instant it was
+    /// taken, as within one frame. Never for production frames.
+    #[must_use = "the clock stands still only while the guard is held"]
+    pub struct Frozen {
+        _frame: super::PinnedFrame,
+    }
+
+    /// Stop the clock motions on this thread read until the guard drops: a
+    /// test that checks a motion began sees it at its start, however long
+    /// a loaded machine takes between starting it and looking.
+    pub fn frozen() -> Frozen {
+        Frozen {
+            _frame: super::pin_frame(),
+        }
+    }
 }
