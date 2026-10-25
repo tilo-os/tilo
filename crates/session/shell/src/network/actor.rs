@@ -6148,50 +6148,61 @@ mod tests {
             task_b.abort();
             let _ = task_b.await;
             tokio::time::sleep(Duration::from_millis(25)).await;
-            let started = Instant::now();
-            cmd_a
-                .send(NetCmd::Publish {
-                    ws: 44,
-                    msg: NeighbourMsg::SurfaceFrame {
-                        surface: 9,
-                        source_peer,
-                        encoded_h264: vec![0, 0, 0, 1, 0x65],
-                        ts: 1,
-                        seq: 0,
-                    },
-                })
-                .await
-                .unwrap();
-            cmd_a
-                .send(NetCmd::Publish {
-                    ws: 44,
-                    msg: NeighbourMsg::SyncReq {
-                        since: vec![],
-                        room: "responsive".into(),
-                        invite_id: None,
-                        nonce: 0,
-                    },
-                })
-                .await
-                .unwrap();
-            loop {
-                let event = tilo_test_env::within(
-                    "dead media viewer stalled the collaboration actor",
-                    rx_c.recv(),
-                )
-                .await
-                .unwrap();
-                if matches!(
-                    event,
-                    NetEvent::Msg {
-                        msg: NeighbourMsg::SyncReq { ref room, .. },
-                        ..
-                    } if room == "responsive"
-                ) {
-                    break;
+            // A dial to the dead viewer takes up to its 300 ms timeout. Inside
+            // the actor loop every attempt would wait it out; outside it, an
+            // attempt on a loaded runner is late only now and then. Each
+            // attempt names a new surface, so each dials the viewer anew.
+            let mut fastest = Duration::MAX;
+            for attempt in 0..5_u32 {
+                let started = Instant::now();
+                cmd_a
+                    .send(NetCmd::Publish {
+                        ws: 44,
+                        msg: NeighbourMsg::SurfaceFrame {
+                            surface: 9 + u64::from(attempt),
+                            source_peer,
+                            encoded_h264: vec![0, 0, 0, 1, 0x65],
+                            ts: 1,
+                            seq: 0,
+                        },
+                    })
+                    .await
+                    .unwrap();
+                cmd_a
+                    .send(NetCmd::Publish {
+                        ws: 44,
+                        msg: NeighbourMsg::SyncReq {
+                            since: vec![],
+                            room: "responsive".into(),
+                            invite_id: None,
+                            nonce: u64::from(attempt),
+                        },
+                    })
+                    .await
+                    .unwrap();
+                loop {
+                    let event = tilo_test_env::within(
+                        "dead media viewer stalled the collaboration actor",
+                        rx_c.recv(),
+                    )
+                    .await
+                    .unwrap();
+                    if matches!(
+                        event,
+                        NetEvent::Msg {
+                            msg: NeighbourMsg::SyncReq { ref room, .. },
+                            ..
+                        } if room == "responsive"
+                    ) {
+                        break;
+                    }
                 }
+                fastest = fastest.min(started.elapsed());
             }
-            assert!(started.elapsed() < Duration::from_millis(250));
+            assert!(
+                fastest < Duration::from_millis(250),
+                "every attempt waited for the dead viewer's dial: {fastest:?}"
+            );
             task_a.abort();
             task_c.abort();
         }
