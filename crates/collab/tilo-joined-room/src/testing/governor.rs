@@ -34,6 +34,12 @@ pub struct TestGovernor {
     workspace_id: u64,
     generation: u64,
     outgoing: Vec<Vec<u8>>,
+    /// What the last commit published: the whole checkpoint after
+    /// [`Self::refresh_checkpoint`], only what changed after
+    /// [`Self::commit_changes`].
+    changes: Vec<(Vec<u8>, Retention)>,
+    /// The peer as last published, the baseline of the next commit.
+    published: Option<StatePeer>,
     invitations: Vec<Vec<u8>>,
     challenges: Vec<(JoinChallenge, DeviceCert)>,
     completions: BTreeMap<[u8; 32], JoinBootstrap>,
@@ -137,6 +143,8 @@ impl TestGovernor {
             workspace_id,
             generation: 0,
             outgoing: Vec::new(),
+            changes: Vec::new(),
+            published: None,
             invitations: Vec::new(),
             challenges: Vec::new(),
             completions: BTreeMap::new(),
@@ -193,6 +201,8 @@ impl TestGovernor {
             workspace_id,
             generation: 0,
             outgoing: Vec::new(),
+            changes: Vec::new(),
+            published: None,
             invitations: Vec::new(),
             challenges: Vec::new(),
             completions: BTreeMap::new(),
@@ -368,12 +378,17 @@ impl TestGovernor {
             .collect())
     }
 
-    /// Re-sign the room's full checkpoint at the next generation.
-    ///
-    /// # Errors
-    /// The checkpoint cannot be signed.
-    pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
-        let now = self.now();
+    /// What the last commit published, oldest first, each with its
+    /// retention: the whole checkpoint after [`Self::refresh_checkpoint`],
+    /// what changed after [`Self::commit_changes`].
+    pub fn changes(&self) -> impl Iterator<Item = (&[u8], Retention)> {
+        self.changes
+            .iter()
+            .map(|(bytes, retention)| (bytes.as_slice(), *retention))
+    }
+
+    /// The candidate peer of the next commit and its generation.
+    fn next_commit(&self, now: SystemTime) -> Result<(StatePeer, u64), String> {
         let mut candidate = self.peer.clone();
         candidate
             .media_mut()
@@ -392,11 +407,60 @@ impl TestGovernor {
             .max(admitted_generation)
             .checked_add(1)
             .ok_or("fixture checkpoint generation exhausted")?;
+        Ok((candidate, generation))
+    }
+
+    /// Re-sign the room's full checkpoint at the next generation.
+    ///
+    /// # Errors
+    /// The checkpoint cannot be signed.
+    pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
+        let now = self.now();
+        let (mut candidate, generation) = self.next_commit(now)?;
         let messages = candidate.durable_bootstrap_messages(&self.governor_key, now, generation)?;
         self.outgoing = messages
             .iter()
             .map(|message| postcard::to_stdvec(message).map_err(|error| error.to_string()))
             .collect::<Result<_, _>>()?;
+        self.changes = self
+            .outgoing
+            .iter()
+            .map(|bytes| (bytes.clone(), Retention::Checkpoint))
+            .collect();
+        self.published = Some(candidate.clone());
+        self.peer = candidate;
+        self.generation = generation;
+        Ok(())
+    }
+
+    /// Commit what the governor admitted since its last publication as a
+    /// room host does between checkpoints: the governance changes and every
+    /// changed record, retained after the last publication, instead of the
+    /// room's whole checkpoint re-signed. Each checkpoint replaces its
+    /// lineage on the relay, a few fsyncs; a governor that re-signed one per
+    /// admitted edit queued more of them than a loaded runner's disk keeps
+    /// up with. The first commit is a whole checkpoint.
+    ///
+    /// # Errors
+    /// The commit cannot be signed.
+    pub fn commit_changes(&mut self) -> Result<(), String> {
+        let Some(before) = self.published.clone() else {
+            return self.refresh_checkpoint();
+        };
+        let now = self.now();
+        let (mut candidate, generation) = self.next_commit(now)?;
+        let messages =
+            candidate.durable_mutation_messages(&before, &self.governor_key, now, generation)?;
+        self.changes = messages
+            .iter()
+            .map(|message| {
+                let (_, retention) = neighbour_wire::retention(message, false)
+                    .ok_or("a committed change has no retention channel")?;
+                let bytes = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
+                Ok::<_, String>((bytes, retention))
+            })
+            .collect::<Result<_, _>>()?;
+        self.published = Some(candidate.clone());
         self.peer = candidate;
         self.generation = generation;
         Ok(())
