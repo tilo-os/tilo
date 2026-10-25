@@ -583,6 +583,10 @@ pub struct HerePerson {
     pub generated: bool,
     /// When the line last changed, Unix milliseconds.
     pub updated_ms: u64,
+    /// When the person last changed the profile this host keeps for them
+    /// (their name and picture), Unix milliseconds; 0 when it keeps none.
+    /// A page fetches the profile again when it changes.
+    pub profile_ms: u64,
 }
 
 #[cfg(test)]
