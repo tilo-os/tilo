@@ -1344,7 +1344,7 @@ fn with_obligations(items: &[&str]) -> Running {
     running.checklist.adopt(
         crate::planner::Obligations {
             items: items.iter().map(|item| (*item).to_owned()).collect(),
-            set_aside: Vec::new(),
+            ..crate::planner::Obligations::default()
         },
         false,
     );
@@ -1447,6 +1447,7 @@ fn an_obligation_set_aside_lets_the_task_finish() {
     let declared = crate::planner::Obligations {
         items: vec!["something else".into()],
         set_aside: vec![(2, "not possible: no such channel".into())],
+        ..crate::planner::Obligations::default()
     };
     running.checklist.adopt(declared.clone(), false);
     assert!(

@@ -43,6 +43,7 @@ pub mod actions;
 mod authors;
 mod bound;
 mod context;
+mod decompose;
 mod facts;
 mod introduce;
 mod logs;
@@ -306,6 +307,11 @@ pub struct AgentParticipant {
     /// Whether the agent may show the room's own pictures to its model
     /// ([`PlanContext::room_pictures`]).
     room_pictures: crate::vision::RoomPictures,
+    /// Whether each item of a task's checklist is done by an agent of its
+    /// own ([`crate::profile::DECOMPOSE_ENV`]).
+    mode: decompose::Mode,
+    /// The running coordinated task's coordinator ([`decompose`]).
+    coordinator: Option<decompose::Coordinator>,
 }
 
 impl AgentParticipant {
@@ -354,6 +360,13 @@ impl AgentParticipant {
             return Err("the agent is not delegated this room".into());
         }
         let checks_work = planner.checks_work();
+        // Its planner's profile, or a setting naming this agent.
+        let itemised = planner.decomposes()
+            || crate::profile::named_on(
+                crate::control::agent_id(&identity.delegation),
+                &identity.delegation.label,
+                std::env::var(crate::profile::DECOMPOSE_ENV).ok().as_deref(),
+            );
 
         let planning = planning::Planning::start(planner, Arc::clone(&control))?;
         let peer = PeerHandle::start(
@@ -429,6 +442,12 @@ impl AgentParticipant {
             remote: Vec::new(),
             answered: actions::Answered::default(),
             room_pictures,
+            mode: if itemised {
+                decompose::Mode::Itemised
+            } else {
+                decompose::Mode::Whole
+            },
+            coordinator: None,
         })
     }
 
@@ -513,7 +532,8 @@ impl AgentParticipant {
             let left = until.saturating_duration_since(Instant::now());
             return Next::Within(left.min(keepalive).max(Duration::from_millis(1)));
         }
-        let work = self.running.is_some() || self.control.has_queued();
+        let work =
+            self.running.is_some() || self.coordinator.is_some() || self.control.has_queued();
         if work && !self.planning.busy() && self.ready && self.control.may_act() {
             if let Some(since) = self.settling {
                 return Next::Within(
@@ -585,7 +605,9 @@ impl AgentParticipant {
                     && document.route.cluster_id == self.room
                     && MESSAGE_APPS.contains(&document.route.app_id.as_str())
                     && self.identity.delegation.permits_app(&document.route.app_id)
-                    && (self.running.is_some() || self.planning.busy())
+                    && (self.running.is_some()
+                        || self.planning.busy()
+                        || self.coordinator.is_some())
                 {
                     self.news_from
                         .insert(document.route.clone(), document.author);
@@ -705,8 +727,14 @@ impl AgentParticipant {
             return false;
         }
         if self.running.is_none() {
-            // Planned on the planner's thread; its plan is taken when ready.
-            self.begin_task();
+            // Between a coordinated task's items, its coordinator carries it
+            // on; otherwise the next task begins. Either is planned on the
+            // planner's thread, and its plan taken when ready.
+            if self.coordinator.is_some() {
+                self.coordinate();
+            } else {
+                self.begin_task();
+            }
             return false;
         }
         let Some(running) = self.running.as_ref() else {
@@ -715,6 +743,7 @@ impl AgentParticipant {
         if !self.control.is_running(&running.id) {
             self.running = None;
             self.asking = None;
+            self.coordinator = None;
             return false;
         }
         if self.asking.is_some() {
@@ -727,11 +756,17 @@ impl AgentParticipant {
             self.check_wait();
             return false;
         }
+        if self.item_wait_ended() {
+            return false;
+        }
         self.gather_news();
-        let Some(running) = self.running.as_mut() else {
+        // A coordinated task's coordinator is asked about the news, and
+        // checks the whole itself once every item ended.
+        let checks_work = self.checks_work && self.coordinator.is_none();
+        let Some(running) = self.running.as_mut().filter(|_| !self.planning.busy()) else {
             return false;
         };
-        running.plan_more(self.checks_work);
+        running.plan_more(checks_work);
         if running.steps.is_empty() {
             running.remind_open();
         }
@@ -892,7 +927,9 @@ impl AgentParticipant {
         self.news.clear();
         self.news_from.clear();
         self.news_before.clear();
-        self.plan(id, &text, None);
+        if !self.begin_coordinated(&id, &text) {
+            self.plan(id, &text, None);
+        }
     }
 
     /// Plan `text` for task `id`: a new task, or the rest of the running one
@@ -976,6 +1013,8 @@ impl AgentParticipant {
                             Some(FollowUp::Checking | FollowUp::AfterReads | FollowUp::Obligations)
                         ))
             });
+        self.shape_context(&mut context, continues);
+        let role = self.plan_role();
         if let Some(steps) = written_steps(text, &context) {
             self.apply_plan(planning::Planned {
                 task: id,
@@ -987,13 +1026,16 @@ impl AgentParticipant {
                 ready_at: Instant::now(),
                 by_model: false,
                 obligations: crate::planner::Obligations::default(),
+                role,
             });
             return;
         }
-        if let Err(error) = self
-            .planning
-            .ask(id.clone(), text.to_owned(), context, continues)
-        {
+        if let Err(error) = self.planning.ask(
+            (id.clone(), text.to_owned()),
+            context,
+            continues,
+            role.clone(),
+        ) {
             self.apply_plan(planning::Planned {
                 task: id,
                 text: text.to_owned(),
@@ -1004,6 +1046,7 @@ impl AgentParticipant {
                 ready_at: Instant::now(),
                 by_model: false,
                 obligations: crate::planner::Obligations::default(),
+                role,
             });
         }
     }
@@ -1038,9 +1081,18 @@ impl AgentParticipant {
     /// Carry out `planned`: a new task's steps, or the rest of the running
     /// one's. A task cancelled or stopped while it was planned takes none of
     /// it; a rest that finds nothing left to do after steps ran is the task
-    /// done, not failed.
+    /// done, not failed. A coordinator's turn goes to it.
     fn apply_plan(&mut self, planned: planning::Planned) {
+        if self.coordinators_turn(&planned.task) {
+            self.apply_coordinator(planned);
+            return;
+        }
         self.record_plan(&planned);
+        self.apply_steps(planned);
+    }
+
+    /// [`Self::apply_plan`], once logged: a task's or an item's steps.
+    fn apply_steps(&mut self, planned: planning::Planned) {
         let planning::Planned {
             task,
             text,
@@ -1051,10 +1103,12 @@ impl AgentParticipant {
             ready_at,
             by_model,
             obligations,
+            role: _,
         } = planned;
         if !self.control.is_running(&task) {
             return;
         }
+        self.note_reply(&task, obligations.reply.as_ref());
         let running_it = self
             .running
             .as_ref()
@@ -1065,6 +1119,7 @@ impl AgentParticipant {
                 running.made = std::mem::take(&mut self.task_made);
                 running.by_model = by_model;
                 running.checklist.adopt(obligations, false);
+                self.seed_item(&mut running);
                 running.looked_at(rendered);
                 self.running = Some(running);
                 self.plan_ready_at = Some(ready_at);
@@ -1151,26 +1206,41 @@ impl AgentParticipant {
     /// Log `planned` (`TILO_AGENT_PLAN_LOG`), with the follow-up turn it
     /// answers and the checklist it was shown.
     fn record_plan(&self, planned: &planning::Planned) {
+        // A coordinator's turn is shown the items, not an item's checklist.
+        let coordinating = planned
+            .role
+            .as_ref()
+            .is_some_and(|role| role.role == "coordinator");
         let continued = self
             .running
             .as_ref()
-            .filter(|running| running.id == planned.task && planned.continues);
+            .filter(|running| running.id == planned.task && planned.continues && !coordinating);
         let turn = continued.and_then(|running| running.follow_ups.turn);
         let repair = continued
             .filter(|_| turn == Some(FollowUp::Repairing))
             .and_then(|running| running.repairs.logged_latest());
-        let shown = continued
-            .filter(|running| !running.checklist.is_empty())
-            .map(|running| running.checklist.logged());
-        record_plan(
-            crate::control::agent_id(&self.identity.delegation),
-            &planned.task,
-            &planned.text,
-            (planned.continues, turn, repair),
-            planned.by_model,
-            &planned.steps,
-            (&planned.obligations, shown),
-        );
+        let shown = if coordinating {
+            self.coordinator
+                .as_ref()
+                .map(decompose::Coordinator::logged)
+        } else {
+            continued
+                .filter(|running| !running.checklist.is_empty())
+                .map(|running| running.checklist.logged())
+        };
+        record_plan(&logs::PlanLine {
+            agent: crate::control::agent_id(&self.identity.delegation),
+            task: &planned.task,
+            text: &planned.text,
+            continues: planned.continues,
+            turn,
+            repair,
+            by_model: planned.by_model,
+            steps: &planned.steps,
+            declared: &planned.obligations,
+            shown,
+            role: planned.role.as_ref(),
+        });
     }
 
     /// Plan the rest of the running task again after `step` failed with
@@ -1227,15 +1297,20 @@ impl AgentParticipant {
     /// Drop the running task, which ended with `outcome`, logging its
     /// checklist and repairs when it kept one or had any.
     fn end_running(&mut self, outcome: &Result<String, String>) {
-        if let Some(running) = self.running.take()
-            && (!running.checklist.is_empty() || running.repairs.any())
-        {
+        let Some(running) = self.running.take() else {
+            return;
+        };
+        if !running.checklist.is_empty() || running.repairs.any() {
             record_ended(
                 crate::control::agent_id(&self.identity.delegation),
                 &running.id,
-                outcome,
+                (outcome, self.plan_role().as_ref()),
                 (&running.checklist.logged(), &running.repairs.logged()),
             );
+        }
+        // An item's task is kept until its coordinator takes in what it did.
+        if let Some(coordinator) = self.coordinator.as_mut() {
+            coordinator.ended = Some(running);
         }
     }
 
@@ -1269,6 +1344,10 @@ impl AgentParticipant {
     /// its changes in the room.
     fn finish_task(&mut self, id: String, outcome: Result<String, String>) {
         self.publish_changes();
+        // An item of a coordinated task ended, not the task.
+        if self.item_ended(&id, &outcome) {
+            return;
+        }
         // Frames of a record just made can wait for its keys before they
         // are even sent; the barrier completes once all of them are durable.
         let durable = self.peer.barrier().ok();
@@ -1333,7 +1412,11 @@ impl AgentParticipant {
             .as_ref()
             .map(|running| running.touched.clone())
             .unwrap_or_default();
-        for route in &self.previous_touched {
+        for route in self
+            .previous_touched
+            .iter()
+            .chain(&self.coordinated_records())
+        {
             if !touched.contains(route) {
                 touched.push(route.clone());
             }
@@ -1994,6 +2077,7 @@ impl AgentParticipant {
             self.control.finish(&finishing.id, finishing.outcome);
         }
         self.running = None;
+        self.coordinator = None;
         self.focus = None;
         self.place = None;
         self.publish_presence();
