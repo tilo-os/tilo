@@ -28,7 +28,7 @@ import {countryName, deviceLabel, pairingFailure, pairSecret, whenRequested} fro
 import {qrSvg} from './qr.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';
-import {followRefusal, refusalText, rejoinedName, retryRejoin} from './session-refusal.mjs';
+import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryRejoin, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
 import {
@@ -983,6 +983,7 @@ export async function startEntryPage({mode}) {
     if (page.install && !embed) void setUpFromLink(page.install, setUp);
     // The outcome, for tests and tools driving the page: open, refused or failed.
     document.documentElement.dataset.entry = 'open';
+    reachedHost();
     globalThis.tiloMount = page.mount;
     globalThis.tiloRouter = page.router;
     // The page's channel state as text (whom each room follows, what waits
@@ -1015,11 +1016,13 @@ export async function startEntryPage({mode}) {
       page.navigation?.subscribe(offerTab);
     }
   } catch (error) {
-    // A page that joined again by itself and found the door not answering
-    // yet (the host is still starting) tries again, still loading.
-    const again = error instanceof HostAdmissionError && error.code === 'unavailable' ? retryRejoin() : null;
+    // A host that did not answer before the page got in (it is starting,
+    // or restarting) is asked again, later each time, while the page says
+    // it is reconnecting: nothing the host refused, nothing to do.
+    const again = !admitted && hostUnreachable(error) ? retryRejoin() ?? retryUnreachable() : null;
     if (again !== null) {
-      console.warn('admission: the door did not answer yet, trying again', error?.message);
+      console.warn('admission: the host did not answer yet, trying again', error?.message);
+      status.textContent = RECONNECTING;
       setTimeout(() => location.reload(), again);
       return;
     }

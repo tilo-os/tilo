@@ -63,6 +63,7 @@ import {AdmissionError} from './admission.mjs';
 import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, pairDevice, renewDevice, withCustody} from './peer.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {memberText} from './json-text.mjs';
+import {hostUnreachable} from './session-refusal.mjs';
 
 const MEMBERSHIPS = 'tilo-host-memberships';
 const ADJECTIVES = ['Brave', 'Calm', 'Clever', 'Curious', 'Eager', 'Gentle', 'Happy', 'Jolly', 'Kind', 'Lively', 'Lucky', 'Merry', 'Nimble', 'Quiet', 'Swift', 'Witty'];
@@ -647,10 +648,10 @@ export async function joinViaHost({
       return peer;
     } catch (error) {
       await peer?.dispose?.().catch(() => {});
-      // The host has not answered yet: nothing the host refused, so the
-      // membership stays, and joining again would spend a seat and a join
-      // to fail the same way.
-      if (error?.name === 'CustodyError' || error?.name === 'TimeoutError') throw error;
+      // The host has not answered yet, or is not answering at all (it is
+      // restarting): nothing the host refused, so the membership stays, and
+      // joining again would spend a seat and a join to fail the same way.
+      if (error?.name === 'CustodyError' || error?.name === 'TimeoutError' || hostUnreachable(error)) throw error;
       if (error?.code === 'host-changed') {
         // Another host answers at this origin now: join it as the same
         // person. What this browser kept stays pinned to the previous host.

@@ -80,6 +80,40 @@ export function retryRejoin({storage = globalThis.sessionStorage, now = Date.now
   return DOOR_RETRIES_MS[tries];
 }
 
+/** Session storage key: how often this tab tried a host that did not
+ * answer before it got in, since when: `{at, tries}`. */
+export const UNREACHED = 'tilo-unreached';
+/** How long tries at a host that did not answer count together. */
+const UNREACHED_WINDOW_MS = 10 * 60 * 1000;
+
+/** Whether `error` is a host not answering at all (restarting, or the
+ * network between): nothing it refused. */
+export const hostUnreachable = error => (error?.name === 'HostAdmissionError' && error.code === 'unavailable')
+  || /^(fetch failed|Failed to fetch|NetworkError|Load failed)/.test(String(error?.message ?? ''));
+
+/**
+ * The host did not answer the page before it got in (a host restarting
+ * starts its relay and door a moment apart): how long to wait before the
+ * page tries again, or `null` once it has tried enough. Counts the try.
+ */
+export function retryUnreachable({storage = globalThis.sessionStorage, now = Date.now()} = {}) {
+  let kept;
+  try { kept = JSON.parse(storage?.getItem(UNREACHED) ?? 'null'); } catch { kept = null; }
+  const at = Number(kept?.at);
+  const recent = Number.isFinite(at) && at > 0 && now - at >= 0 && now - at < UNREACHED_WINDOW_MS;
+  const tries = recent && Number.isInteger(kept.tries) ? kept.tries : 0;
+  if (tries >= DOOR_RETRIES_MS.length) return null;
+  try {
+    storage?.setItem(UNREACHED, JSON.stringify({at: recent ? at : now, tries: tries + 1}));
+  } catch { return null; }
+  return DOOR_RETRIES_MS[tries];
+}
+
+/** The page got in: tries at a host that did not answer start over. */
+export function reachedHost({storage = globalThis.sessionStorage} = {}) {
+  try { storage?.removeItem(UNREACHED); } catch { /* Nothing kept. */ }
+}
+
 /** What the person is told when the host's refusal `code` cannot be undone
  * here, about the workspace `name` (or `null`). */
 export function refusalText(code, name = null) {
