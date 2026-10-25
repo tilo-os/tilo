@@ -285,7 +285,7 @@ fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
         app.on_hit(
             Hit::AddReaction {
                 msg: "m_me1".into(),
-                anchor: Point::ZERO,
+                anchor: Rect::ZERO,
             },
             &mut ui::widget::Edits::lend(&mut doc),
         );
@@ -300,7 +300,7 @@ fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
         app.on_hit(
             Hit::AddReaction {
                 msg: "m_me1".into(),
-                anchor: Point::ZERO,
+                anchor: Rect::ZERO,
             },
             &mut ui::widget::Edits::lend(&mut doc),
         );

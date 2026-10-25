@@ -353,7 +353,7 @@ fn emoji_search_enter_picks_the_best_match() {
     let (mut app, mut doc) = app_with_doc();
     app.focus = Focus::Main;
     app.on_hit(
-        Hit::ComposerEmoji(Point::ZERO),
+        Hit::ComposerEmoji(Rect::ZERO),
         &mut ui::widget::Edits::lend(&mut doc),
     );
     type_str(&mut app, &mut doc, "pizza");
@@ -368,7 +368,7 @@ fn emoji_search_enter_picks_the_best_match() {
     assert_eq!(ui::emoji_catalogue::recents()[0], "🍕");
     // Reopening starts from an empty query.
     app.on_hit(
-        Hit::ComposerEmoji(Point::ZERO),
+        Hit::ComposerEmoji(Rect::ZERO),
         &mut ui::widget::Edits::lend(&mut doc),
     );
     assert!(app.emoji_picker.query().is_empty());

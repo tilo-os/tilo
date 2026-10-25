@@ -358,7 +358,7 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
         app.focus = Focus::Main;
         assert!(app.draft_main.is_empty());
         app.on_hit(
-            Hit::ComposerEmoji(Point::ZERO),
+            Hit::ComposerEmoji(Rect::ZERO),
             &mut ui::widget::Edits::lend(&mut doc),
         );
         assert!(

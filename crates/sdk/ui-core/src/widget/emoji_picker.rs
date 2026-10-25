@@ -41,8 +41,8 @@ use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::tokens::TextRole;
 use crate::widget::{
-    ControlSize, EventCtx, ModelPath, ScrollRegion, SearchField, Segment, SegmentedFace,
-    SegmentedStyle, TaffyTreeExt, ToggleGroup, Widget,
+    ControlSize, EventCtx, ModelPath, ScrollRegion, SearchField, SegmentedFace, SegmentedStyle,
+    TaffyTreeExt, ToggleGroup, Widget,
 };
 
 /// Matches listed for a query at most.
@@ -105,6 +105,8 @@ struct Tones {
 struct Geometry {
     size: (f64, f64),
     field: Rect,
+    /// The row the group tabs share, and each tab in it.
+    tab_strip: Rect,
     tabs: Vec<Rect>,
     grid: Rect,
     footer: Rect,
@@ -431,6 +433,16 @@ impl EmojiPicker {
 
     fn layout(&mut self) {
         let mut geometry = geometry_of(&self.theme, self.framed);
+        // Every group gets an equal share of the row: their icons are all one
+        // glyph wide, and the row never runs past the panel.
+        let strip = geometry.tab_strip;
+        let share = strip.width() / f64_of_usize(self.groups.len().max(1));
+        geometry.tabs = (0..self.groups.len())
+            .map(|i| {
+                let x0 = strip.x0 + share * f64_of_usize(i);
+                Rect::new(x0, strip.y0, x0 + share, strip.y1)
+            })
+            .collect();
         let (cells, headings, height) = self.layout_cells(geometry.cell, &self.theme);
         geometry.cells = cells;
         geometry.headings = headings;
@@ -1181,7 +1193,8 @@ fn geometry_of(theme: &Theme, framed: bool) -> Geometry {
     Geometry {
         size: (width, footer.y1 + pad),
         field,
-        tabs: vec![Rect::new(pad, tabs_y, width - pad, tabs_y + tabs_h)],
+        tab_strip: Rect::new(pad, tabs_y, width - pad, tabs_y + tabs_h),
+        tabs: Vec::new(),
         grid,
         footer,
         cell,
@@ -1258,17 +1271,9 @@ impl Widget for EmojiPicker {
 
         // The group tabs.
         let g = self.geometry.clone();
-        if let Some(strip) = g.tabs.first().copied() {
+        if !g.tabs.is_empty() {
             let icons: Vec<&str> = self.groups.iter().map(|group| group.icon).collect();
-            let segments: Vec<Segment> = icons.iter().map(|icon| Segment::new(*icon)).collect();
-            let rects = SegmentedFace::partition_segments(
-                self.on_screen(strip),
-                &segments,
-                SegmentedStyle::Tabs,
-                ControlSize::Regular,
-                text,
-                theme,
-            );
+            let rects: Vec<Rect> = g.tabs.iter().map(|tab| self.on_screen(*tab)).collect();
             let selection = self.query.trim().is_empty().then_some(self.group);
             let hovered = match self.hover {
                 Some(Hit::Tab(i)) => Some(i),
@@ -1284,11 +1289,6 @@ impl Widget for EmojiPicker {
                     .style(SegmentedStyle::Tabs)
                     .hovered(hovered),
             );
-            let origin = self.rect.origin().to_vec2();
-            self.geometry.tabs = rects.iter().map(|rect| *rect - origin).collect();
-            if rects.is_empty() {
-                self.geometry.tabs = vec![strip];
-            }
         }
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         self.paint_grid(&mut ctx);
