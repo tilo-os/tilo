@@ -966,7 +966,7 @@ fn rows_tell_the_readers_changes_from_a_collaborators_and_an_agents() {
         rows,
         [
             (
-                "claude · Agent, for you".to_owned(),
+                "claude · Software, for you".to_owned(),
                 AuthorRelation::Software
             ),
             ("ada".to_owned(), AuthorRelation::Person),
@@ -1001,7 +1001,7 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
     authors.set_reader("quinten");
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     let author = &entries.last().unwrap().author;
-    assert_eq!(author.name, "claude · Agent, for ada");
+    assert_eq!(author.name, "claude · Software, for ada");
     assert_eq!(author.relation, AuthorRelation::Software);
     assert_eq!(
         author.attribution,
@@ -1038,7 +1038,7 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
         .with_authors(authors.clone())
         .entries(&mut doc);
     let author = &entries.last().unwrap().author;
-    assert_eq!(author.name, "Scribe · Agent, for Ada");
+    assert_eq!(author.name, "Scribe · Software, for Ada");
     assert_eq!(author.relation, AuthorRelation::Software);
     assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
     assert_eq!(
@@ -1056,7 +1056,7 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     assert_eq!(
         entries.last().unwrap().author.name,
-        "Scribe · Agent, for you"
+        "Scribe · Software, for you"
     );
 }
 
