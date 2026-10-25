@@ -92,12 +92,13 @@ fn followed_by(dialog: &PageDialog) -> String {
 /// then the question the page asks and how to answer it.
 pub(super) fn opened_by(dialog: &PageDialog, act: &str) -> String {
     format!(
-        "{act}; the page opened {} {} dialog{}: {}. It waits until you answer it with \
-         answer-page-dialog.",
+        "{act}; the page opened {} {} dialog{}: {}. It waits until you answer it on the \
+         {} row, with accept-page-dialog or dismiss-page-dialog.",
         article(dialog),
         kind_label(dialog),
         followed_by(dialog),
-        quote_page(&dialog.message)
+        quote_page(&dialog.message),
+        crate::page_dialogs::ROW
     )
 }
 
@@ -152,11 +153,12 @@ pub(super) fn value(dialog: &PageDialog) -> serde_json::Value {
 /// itself, so the agent knows what it is answering.
 pub(super) fn blocked(dialog: &PageDialog) -> String {
     format!(
-        "The page is waiting on its {} dialog {}{}: answer it with answer-page-dialog \
-         before doing anything else to the page.",
+        "The page is waiting on its {} dialog {}{}: answer it on the {} row, with \
+         accept-page-dialog or dismiss-page-dialog, before doing anything else to the page.",
         kind_label(dialog),
         quote_page(&dialog.message),
-        followed_by(dialog)
+        followed_by(dialog),
+        crate::page_dialogs::ROW
     )
 }
 
@@ -183,8 +185,9 @@ pub(super) fn answered(dialog: &PageDialog, accept: bool, text: &str) -> String 
     };
     format!(
         "Answered the page's {} dialog{answer}. The page goes on from here: read-page shows what \
-         it says now, and answer-page-dialog answers another question if it asks one.",
-        kind_label(dialog)
+         it says now, and the {} row asks again if the page has another question.",
+        kind_label(dialog),
+        crate::page_dialogs::ROW
     )
 }
 

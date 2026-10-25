@@ -523,6 +523,12 @@ fn a_question_the_page_asks_is_answered_from_its_dialog() {
             .is_some_and(|message| message.contains("Clicked element d1e5")),
         "it says what it did: {value}"
     );
+    assert!(
+        value["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("accept-page-dialog")),
+        "and names the action that answers it: {value}"
+    );
     assert_eq!(value["dialog"]["kind"], "prompt");
     assert_eq!(value["dialog"]["message"], "Name the list");
     assert_eq!(value["dialog"]["default_text"], "Groceries");
@@ -668,8 +674,9 @@ fn a_page_action_while_the_page_waits_on_its_question_answers_at_once() {
         error.message
     );
     assert!(
-        error.message.contains("answer-page-dialog"),
-        "and says how to answer it: {}",
+        error.message.contains("accept-page-dialog")
+            && error.message.contains("dismiss-page-dialog"),
+        "and says how to answer it, naming the actions that exist: {}",
         error.message
     );
     assert_eq!(
