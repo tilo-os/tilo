@@ -18,6 +18,7 @@ pub(super) fn follow(
     }
     if app_id == DRIVES_APP_ID {
         follow_drives(channel.clone(), inbound_tx.clone());
+        follow_applications(channel.clone(), inbound_tx.clone());
     }
 }
 
@@ -88,9 +89,40 @@ fn follow_speakers(channel: runtime_collab::ChannelHandle, inbound_tx: InboundBr
     });
 }
 
-/// The app whose routes follow the drive list: only the certified Files
-/// route is answered, so no other app spends a call on it.
+/// The app whose routes follow the drive list and the app list: only the
+/// certified Files route is answered, so no other app spends a call on it.
 const DRIVES_APP_ID: &str = "so.tilo.file-explorer";
+
+/// Follow the person's apps as Files lists them for as long as the Files
+/// route lives, handing the app a [`CollabEvent::ApplicationsChanged`] after
+/// each change. The first wait (from 0) answers at once, so Files learns its
+/// first list without asking on a timer, and learns it again after the
+/// broker comes back. The call is pending without traffic while nothing
+/// changes; a host that cannot say when its apps change ends it after the
+/// first refusal.
+fn follow_applications(channel: runtime_collab::ChannelHandle, inbound_tx: InboundBridge) {
+    tokio::task::spawn_local(async move {
+        let mut after = 0;
+        loop {
+            match channel.applications_changed(after).await {
+                Ok(change) if change != after => {
+                    after = change;
+                    if !inbound_tx.send_durable(CollabEvent::ApplicationsChanged) {
+                        return;
+                    }
+                }
+                Ok(_) => {
+                    tracing::warn!("collab: the broker reported unchanged apps as changed");
+                    return;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "collab: this route does not follow the app list");
+                    return;
+                }
+            }
+        }
+    });
+}
 
 /// Follow the drives the shell lists for as long as the Files route lives,
 /// handing the app a [`CollabEvent::DrivesChanged`] after each change. The
