@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <string>
 #include <sys/stat.h>
 #include <vector>

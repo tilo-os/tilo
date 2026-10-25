@@ -1387,6 +1387,14 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
   if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
+  if(op=="file_chooser") {
+    if(!type("id",VTYPE_INT) || d->GetInt("id")<=0) return false;
+    if(!d->HasKey("paths")) return true;
+    auto paths=d->GetList("paths");
+    if(!paths || paths->GetSize()>tilo::kMaxChooserPaths) return false;
+    for(size_t i=0;i<paths->GetSize();++i) if(paths->GetType(i)!=VTYPE_STRING || paths->GetString(i).length()>4096) return false;
+    return true;
+  }
   if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);
   if(op=="stop_find") return true;
   if(op=="exit_fullscreen") return no_payload();
