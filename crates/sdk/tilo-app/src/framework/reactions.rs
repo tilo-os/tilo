@@ -20,7 +20,6 @@
 
 use tilo_resource::Segment;
 use tilo_resource::reactions::record_reactions;
-use ui_core::presence::ParticipantKind;
 use ui_core::window_toolbar::{ToolbarReaction, ToolbarReactions, show_reactions};
 
 use super::People;
@@ -90,12 +89,8 @@ fn shown(
         return None;
     }
     let can_react = me.is_some() && input.dispatch.may_react();
-    let shared = !input.private
-        && input
-            .people
-            .members()
-            .iter()
-            .any(|member| !member.is_self && member.kind == ParticipantKind::Person);
+    // Shared with whoever belongs to the room, here now or not.
+    let shared = !input.private && (input.dispatch.room_has_others() || input.people.others_here());
     let groups = reactions.groups();
     if groups.is_empty() && !(shared && can_react) {
         return None;

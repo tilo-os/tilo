@@ -130,3 +130,32 @@ fn reactions_follow_the_grant_and_a_viewer_sees_them_without_reacting() {
         app.refused()
     );
 }
+
+#[test]
+fn a_record_in_a_room_with_other_members_offers_reactions_while_they_are_away() {
+    use tilo_app::permissions::{LOCAL_ROOM, PermissionContext, Role, Standing, policy};
+    let mut app = TestApp::<PosterApp>::new().unwrap();
+    app.settle();
+    assert_eq!(
+        reactions(),
+        None,
+        "alone in one's own room, nothing is offered"
+    );
+
+    // Ada owns the room and is away; the person is an Editor in it.
+    let mut room = policy::RoomPolicy::new(LOCAL_ROOM, "ada");
+    room.members.insert(ME.into(), Role::Editor);
+    app.set_permissions(PermissionContext::from_standing(
+        LOCAL_ROOM,
+        Standing::person(room, ME),
+    ));
+    app.settle();
+    assert_eq!(
+        reactions(),
+        Some(ToolbarReactions {
+            pills: Vec::new(),
+            can_react: true,
+        }),
+        "the record is shared with Ada, here or not"
+    );
+}
