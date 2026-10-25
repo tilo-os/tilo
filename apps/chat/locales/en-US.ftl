@@ -88,6 +88,13 @@ chat-call-voice-unavailable = Voice unavailable
 
 # An attachment the reader has no access to: the card says why it cannot open.
 chat-attachment-no-access = You don't have access to this file
+chat-attachment-close = Close
+chat-attachment-loading = Loading the picture…
+chat-attachment-save-title = Save the attachment
+chat-attachment-save-accept = Save
+chat-attachment-save-failed = Couldn't save the file
+chat-attachment-not-on-device = This file isn't on this device
+chat-attachment-saved = Saved a copy
 chat-call-unavailable = Unavailable
 
 # Effects on the Chat root that start a call in the active workspace (Home's

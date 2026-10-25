@@ -7,9 +7,14 @@
 //! one they wrote themselves.
 
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::model::{Id, Message};
+
+/// The notification scheme a mention's activation carries: clicking one names
+/// the channel and the message it was about, so the window opens that message
+/// rather than whatever channel happened to be in front.
+pub(crate) const ACTIVATION_SCHEME: &str = "tilo-chat-mention";
 
 /// The mentions this window has seen, and where it tells about new ones.
 #[derive(Default)]
@@ -18,11 +23,16 @@ pub(crate) struct MentionAlerts {
     /// The first look took in what the window opened with.
     primed: bool,
     notifier: Option<Arc<dyn ui::notify::Notifier>>,
+    /// Mentions the person clicked, waiting for the window's next update.
+    opens: Arc<Mutex<Vec<(Id, Id)>>>,
+    /// The activation handler is registered once per process.
+    listening: bool,
 }
 
 /// One mention worth telling about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Alert {
+    pub channel: Id,
     pub message: Id,
     pub title: String,
     pub body: String,
@@ -66,6 +76,7 @@ impl MentionAlerts {
                 }
                 let excerpt: String = message.text.trim().chars().take(EXCERPT_CHARS).collect();
                 alerts.push(Alert {
+                    channel: channel.clone(),
                     message: message.id.clone(),
                     title: crate::i18n::t_args(
                         "chat-mention-alert",
@@ -81,7 +92,8 @@ impl MentionAlerts {
         alerts
     }
 
-    /// Show `alerts` through the host's notifications.
+    /// Show `alerts` through the host's notifications, each one opening the
+    /// message it is about when the person chooses it.
     pub(crate) fn show(&mut self, alerts: &[Alert]) {
         if alerts.is_empty() {
             return;
@@ -90,15 +102,45 @@ impl MentionAlerts {
             .notifier
             .get_or_insert_with(|| ui::host::current().notifications)
             .clone();
+        if !self.listening {
+            self.listening = true;
+            let opens = Arc::clone(&self.opens);
+            ui::notify::set_activation_handler(ACTIVATION_SCHEME, move |uri| {
+                let Some(rest) = uri.strip_prefix(ACTIVATION_SCHEME) else {
+                    return;
+                };
+                let Some(rest) = rest.strip_prefix(':') else {
+                    return;
+                };
+                let Some((channel, message)) = rest.split_once('/') else {
+                    return;
+                };
+                if let Ok(mut opens) = opens.lock() {
+                    opens.push((channel.to_owned(), message.to_owned()));
+                }
+            });
+        }
         for alert in alerts {
             let notification = ui::notify::Notification::new(
                 format!("chat-mention-{}", alert.message),
                 alert.title.clone(),
                 alert.body.clone(),
-            );
+            )
+            .with_activation(format!(
+                "{ACTIVATION_SCHEME}:{}/{}",
+                alert.channel, alert.message
+            ));
             // A host without notifications leaves the badge to tell.
             drop(notifier.show(&notification));
         }
+    }
+
+    /// The mention the person chose to open since the last call, if any.
+    pub(crate) fn take_open(&self) -> Option<(Id, Id)> {
+        self.opens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
     }
 }
 
