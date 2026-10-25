@@ -27,17 +27,30 @@ pub struct ReportWords {
     pub slow: bool,
 }
 
-/// How far a model looked over the review.
+/// How far a model looked over the review. `by` names the model that
+/// looked, as the review says it to the reporter ("Anthropic
+/// claude-haiku-5-5"): the one asked, even if the host lends another later.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelCheck {
     /// No model reviews reports here; the rules alone did.
     Unavailable,
     /// A model is looking.
-    Pending,
+    Pending { by: String },
     /// A model looked and hid `added` more spans.
-    Applied { added: usize },
+    Applied { added: usize, by: String },
     /// The model failed or answered nonsense; the rules' review stands.
-    Failed,
+    Failed { by: String },
+}
+
+impl ModelCheck {
+    /// The model that looked or is looking, if any did.
+    #[must_use]
+    pub fn by(&self) -> Option<&str> {
+        match self {
+            Self::Unavailable => None,
+            Self::Pending { by } | Self::Applied { by, .. } | Self::Failed { by } => Some(by),
+        }
+    }
 }
 
 pub(super) struct Picked {
@@ -141,12 +154,12 @@ impl Composer {
         picked.report.draft.request().ok()
     }
 
-    /// A model is looking over the review of `words`.
-    pub fn model_pending(&mut self, words: &ReportWords) {
+    /// The model named `by` is looking over the review of `words`.
+    pub fn model_pending(&mut self, words: &ReportWords, by: &str) {
         if let Some(picked) = self.picked.as_mut()
             && picked.words.as_ref() == Some(words)
         {
-            picked.check = ModelCheck::Pending;
+            picked.check = ModelCheck::Pending { by: by.to_owned() };
         }
     }
 
@@ -161,15 +174,18 @@ impl Composer {
         if picked.sent || picked.words.as_ref() != Some(words) {
             return;
         }
+        let Some(by) = picked.check.by().map(str::to_owned) else {
+            return;
+        };
         let before = picked.hidden();
         picked.model = proposals;
-        picked.check = ModelCheck::Failed;
+        picked.check = ModelCheck::Failed { by: by.clone() };
         if picked.model.is_some() {
             match picked.reviewed() {
                 Ok(review) if review.feedback.validate_report().is_ok() => {
                     let added = review.hidden().saturating_sub(before);
                     picked.review = Some(review);
-                    picked.check = ModelCheck::Applied { added };
+                    picked.check = ModelCheck::Applied { added, by };
                     return;
                 }
                 _ => picked.model = None,

@@ -87,6 +87,8 @@ mod feedback_crops;
 mod feedback_delivery;
 #[cfg(target_arch = "wasm32")]
 mod feedback_pick;
+#[cfg(target_arch = "wasm32")]
+mod feedback_review;
 #[cfg(all(target_arch = "wasm32", feature = "deferred-feedback-composer"))]
 pub use feedback_composer::install_feedback_composer;
 #[cfg(target_arch = "wasm32")]

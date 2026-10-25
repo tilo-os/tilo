@@ -22,8 +22,9 @@ pub struct FeedbackServices {
     controller: Rc<RefCell<Composer>>,
     presentation: Rc<RefCell<Option<Presentation>>>,
     mounted: Rc<Cell<bool>>,
-    /// The model the host lends for reviewing reports, if any.
-    models: Rc<RefCell<crate::models::Models>>,
+    /// The model the host lends for reviewing reports, if any, and what
+    /// the review calls it.
+    models: Rc<RefCell<(crate::models::Models, String)>>,
     pass: report::Pass,
     /// Since when the report on its way waits for its destination's receipt.
     awaiting: Rc<Cell<Option<crate::time::Instant>>>,
@@ -125,9 +126,10 @@ impl FeedbackServices {
     }
 
     /// Lend the model that looks over reports before they are sent, as the
-    /// host's settings chose it.
-    pub fn set_models(&self, models: crate::models::Models) {
-        *self.models.borrow_mut() = models;
+    /// host's settings chose it, and what the review calls it to the
+    /// reporter: the provider and model ("Anthropic claude-haiku-5-5").
+    pub fn set_models(&self, models: crate::models::Models, name: impl Into<String>) {
+        *self.models.borrow_mut() = (models, name.into());
     }
 
     /// Start a report about what the person picked; the composer opens on
@@ -562,12 +564,14 @@ fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> b
             (FeedbackEffect::Review, Some(words)) => {
                 let reviewed = composer.review_report(words);
                 if reviewed.is_ok() {
-                    let models = services.models.borrow().clone();
+                    let (models, name) = services.models.borrow().clone();
                     *services.pass.borrow_mut() =
-                        report::ModelPass::start(&models, &mut composer, words).map(|mut pass| {
-                            Box::new(move |composer: &mut Composer| pass.poll(composer))
-                                as Box<report::PassPoll>
-                        });
+                        report::ModelPass::start(&models, &name, &mut composer, words).map(
+                            |mut pass| {
+                                Box::new(move |composer: &mut Composer| pass.poll(composer))
+                                    as Box<report::PassPoll>
+                            },
+                        );
                 }
                 reviewed
             }
@@ -977,14 +981,9 @@ mod tests {
         assert_eq!(context, ["App: Books (so.tilo.books)", "feedback-privacy"]);
     }
 
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one journey: pick, review, show a span, send"
-    )]
-    fn a_picked_report_shows_exactly_what_is_sent_and_toggles_hidden_spans() {
+    /// A composer reporting one picked chat row, its message by someone here.
+    fn picked_services(transport: &Rc<RefCell<Transport>>) -> FeedbackServices {
         use crate::feedback::report::{Area, Pick, PickedText, ReportDraft, TextKind};
-        let transport = Rc::new(RefCell::new(Transport::default()));
         let controller = Rc::new(RefCell::new(
             Composer::new(
                 Destination {
@@ -997,7 +996,7 @@ mod tests {
                     StorageKey::package("feedback-outbox"),
                 )
                 .expect("private outbox"),
-                Box::new(Host(transport.clone())),
+                Box::new(Host(Rc::clone(transport))),
             )
             .expect("admitted destination"),
         ));
@@ -1039,6 +1038,13 @@ mod tests {
                 crops: Vec::new(),
             })
             .expect("report begins");
+        services
+    }
+
+    #[test]
+    fn a_picked_report_shows_exactly_what_is_sent_and_toggles_hidden_spans() {
+        let transport = Rc::new(RefCell::new(Transport::default()));
+        let services = picked_services(&transport);
         let component = prepare(Some(services), "device", "guest", 42).expect("private composer");
         let mut frame = FrameHarness::from_component(
             component,
@@ -1085,5 +1091,84 @@ mod tests {
                 .unwrap()
                 .contains("Lovelace")
         );
+    }
+
+    /// A model the host lends looks over the review: it is asked the model
+    /// view alone, and the review says by name which model checked it.
+    #[test]
+    fn a_lent_model_reviews_the_model_view_and_the_review_names_it() {
+        use crate::models::{
+            CompletionFuture, Content, Message, ModelBackend, ModelRequest, ModelResponse, Role,
+            StopReason, Usage,
+        };
+        struct Reviewer(Rc<RefCell<Vec<String>>>);
+        impl ModelBackend for Reviewer {
+            fn complete<'a>(&'a self, request: &'a ModelRequest) -> CompletionFuture<'a> {
+                let asked: String = request
+                    .messages
+                    .iter()
+                    .flat_map(|message| &message.content)
+                    .filter_map(|content| match content {
+                        Content::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                let index = asked
+                    .lines()
+                    .find_map(|line| line.strip_suffix("] Reply")?.strip_prefix('['))
+                    .unwrap_or("0")
+                    .to_owned();
+                self.0.borrow_mut().push(asked);
+                Box::pin(async move {
+                    Ok(ModelResponse {
+                        message: Message::text(
+                            Role::Assistant,
+                            format!("{{\"hide\":[{{\"text\":{index},\"quote\":\"Reply\"}}]}}"),
+                        ),
+                        stop_reason: StopReason::EndTurn,
+                        usage: Usage::default(),
+                    })
+                })
+            }
+        }
+        let transport = Rc::new(RefCell::new(Transport::default()));
+        let services = picked_services(&transport);
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        services.set_models(
+            crate::models::Models::new(Rc::new(Reviewer(Rc::clone(&asked)))),
+            "Anthropic claude-haiku-5-5",
+        );
+        let component =
+            prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
+        let mut frame = FrameHarness::from_component(
+            component,
+            (720, 900),
+            ComponentRunnerInputs::from_native_process(),
+        )
+        .expect("production component");
+        frame.relayout();
+        describe(&mut frame, "Ada Lovelace says the row is cut off").expect("summary");
+        call(&mut frame, "review", &json!({})).expect("review");
+        services
+            .pump()
+            .expect("the model's answer is laid over the review");
+        frame.relayout();
+        let asked = asked.borrow();
+        assert_eq!(asked.len(), 1, "one pass per review");
+        assert!(
+            !asked[0].contains("Lovelace") && !asked[0].contains("Thanks"),
+            "the model sees placeholders for personal values: {}",
+            asked[0]
+        );
+        let sheet = frame.inspection_json().expect("inspection");
+        assert!(
+            sheet.contains("Checked by rules and Anthropic claude-haiku-5-5, which hid more."),
+            "{sheet}"
+        );
+        call(&mut frame, "submit", &json!({})).expect("send");
+        let sent = transport.borrow();
+        let submission = serde_json::to_string(sent.submissions.first().expect("sent")).unwrap();
+        assert!(!submission.contains("Reply"), "the model's span is hidden");
+        assert!(!submission.contains("Lovelace"), "the floor stands");
     }
 }

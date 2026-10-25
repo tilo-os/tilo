@@ -9,6 +9,7 @@
 
 mod capture;
 mod composer;
+pub mod model_review;
 mod outbox;
 pub mod report;
 mod review;

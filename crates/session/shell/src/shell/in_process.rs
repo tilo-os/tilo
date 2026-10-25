@@ -22,6 +22,8 @@ use ui::permissions::{PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
 mod feedback_native;
+#[cfg(target_os = "linux")]
+mod feedback_review;
 #[cfg(test)]
 mod feedback_tests;
 pub mod messaging;
@@ -632,7 +634,20 @@ impl InProcessApps {
         }
         startup
             .install(Rc::clone(&self.store), &mut self.feedback)
-            .map_err(|error| LaunchError::Operation(error.to_string()))
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        self.lend_review_model();
+        Ok(())
+    }
+
+    /// Lend the report composer the model the person's settings choose for
+    /// it, to look over reports before they are sent.
+    fn lend_review_model(&self) {
+        #[cfg(target_os = "linux")]
+        if let (Some(feedback), Some((models, name))) =
+            (&self.feedback, feedback_review::review_model())
+        {
+            feedback.services().set_models(models, name);
+        }
     }
 
     /// Bind a trusted host's already-admitted feedback adapter to this profile.
@@ -652,6 +667,7 @@ impl InProcessApps {
             tilo_desktop::feedback::PrivateFeedback::new(Rc::clone(&self.store), destination, host)
                 .map_err(|error| LaunchError::Operation(error.to_string()))?,
         );
+        self.lend_review_model();
         Ok(())
     }
 
