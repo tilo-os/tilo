@@ -3599,6 +3599,9 @@ pub struct CapnpBrokerState {
     /// The window instance the shell launched each connected app for, by
     /// peer id: which tab's window the records it holds are shown in.
     window_instances: Mutex<HashMap<u64, u64>>,
+    /// The tree records peers wrote for a room's app, kept for the windows
+    /// of that app that subscribe later ([`subscriptions::TreeRecords`]).
+    tree_records: subscriptions::TreeRecords,
     /// Pull-only, revisioned directories owned by currently connected apps.
     /// This intentionally has no durable/archive counterpart: retaining a
     /// capability after disconnect would make a stale live-only row look
@@ -4373,6 +4376,7 @@ impl CapnpBrokerState {
                 launchable: launchable::LaunchableCatalogue::new(),
                 workspace_opens: workspace_open::WorkspaceOpens::default(),
                 window_instances: Mutex::new(HashMap::new()),
+                tree_records: subscriptions::TreeRecords::default(),
                 action_directory_bridge: ActionDirectoryRequestQueue {
                     sender: bridge_tx,
                     turn: std::sync::Arc::clone(&local_turn),
@@ -7788,6 +7792,11 @@ impl CapnpBrokerState {
         if !history_agents.is_empty() {
             let _ = tx.send(ContextEnvelope::HistoryAgents(history_agents.clone()));
         }
+        // What peers wrote in this app's trees while no window of it was
+        // open to hear it: said now, so a window that starts after a room's
+        // replay still opens the parts it was sent
+        // ([`subscriptions::TreeRecords`]).
+        self.tell_new_window_its_tree_records(channel_id, peer_id, &tx);
         let certified = native.is_some();
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())

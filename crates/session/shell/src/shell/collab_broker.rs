@@ -659,7 +659,11 @@ impl DrainQueues {
     /// container's child) that no window here holds: tell the app's windows
     /// in that room, which then hold it like their own and sync it on its
     /// route, receiving what was admitted for it before
-    /// (`CapnpBrokerState::subscribe_ops`).
+    /// (`CapnpBrokerState::subscribe_ops`). The broker keeps the record too,
+    /// for the window of that app that opens after this and was not here to
+    /// hear it: otherwise a member who joins, has the room's replay land with
+    /// no app window open, and opens the app later never learns of a part
+    /// that holds the history they were replayed.
     fn announce_tree_record(&self, app_id: &str, cluster_id: &str, record_id: &str) {
         if ui::record::RecordId::parse(record_id)
             .and_then(|id| id.tree())
@@ -667,6 +671,8 @@ impl DrainQueues {
         {
             return;
         }
+        self.table
+            .remember_tree_record(app_id, cluster_id, record_id);
         let record = CrdtRoute::record(app_id, cluster_id, record_id);
         if self.table.holds_route(&record) {
             return;
