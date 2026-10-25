@@ -12,14 +12,14 @@ use ui::TextRole;
 use ui::i18n::ArgValue;
 use ui::motion::{Appear, Direction, ListChange, MotionValue, Presence, input_source};
 use ui::num::f32_of_f64;
-use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
 use ui::tokens::{EffectiveMotion, MotionSource};
+use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, SurfaceLevel};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Shape, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -524,18 +524,11 @@ fn caption(
         rect.y0 + OUTSET + 4.0
     };
     let chip = Rect::new(x, y, x + chip_w, y + chip_h);
-    let colors = &theme.tokens.colors;
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.intent.accent,
-        None,
-        &RoundedRect::from_rect(chip, chip_h / 2.0),
-    );
+    let on = ui::widget::paint_surface(scene, transform, chip, SurfaceLevel::Floating, theme);
     text.draw_style(
         scene,
         &shown,
-        colors.intent.on_accent,
+        on.tokens.colors.text_primary,
         transform.pre_translate((x + pad_x, y + pad_y).into()),
         None,
         &style,
@@ -553,7 +546,6 @@ fn hint(
     picked: usize,
     avoid: &[Rect],
 ) -> Option<(Rect, Rect)> {
-    let colors = &theme.tokens.colors;
     let style = theme.text(TextRole::Label);
     let line = if picked == 0 {
         t("feedback-picker-hint")
@@ -600,31 +592,11 @@ fn hint(
         low
     };
     let x0 = pill.x0;
-    ui::surface::shadow(
-        scene,
-        transform,
-        pill,
-        pill_h / 2.0,
-        &theme.tokens.elevation.floating,
-    );
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        ui::chrome::shell::panel_ground(theme),
-        None,
-        &RoundedRect::from_rect(pill, pill_h / 2.0),
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        ui::chrome::shell::panel_border(theme),
-        None,
-        &RoundedRect::from_rect(pill, pill_h / 2.0),
-    );
+    let on = ui::widget::paint_surface(scene, transform, pill, SurfaceLevel::Floating, theme);
     text.draw_style(
         scene,
         &shown,
-        colors.text_primary,
+        on.tokens.colors.text_primary,
         transform.pre_translate((x0 + pad, pill.center().y - h / 2.0).into()),
         None,
         &style,
@@ -635,47 +607,21 @@ fn hint(
     let by = pill.center().y - button_h / 2.0;
     let go = Rect::new(pill.x1 - 6.0 - go_w, by, pill.x1 - 6.0, by + button_h);
     let cancel = Rect::new(go.x0 - gap - cancel_w, by, go.x0 - gap, by + button_h);
-    let mut paint = PaintCtx::new(scene, transform, text, theme);
-    pill_button(
-        &mut paint,
-        cancel,
-        &cancel_label,
-        (colors.overlay_medium, colors.text_primary),
-    );
-    pill_button(
-        &mut paint,
-        go,
-        &go_label,
-        (colors.intent.accent, colors.intent.on_accent),
-    );
+    for (rect, label, role) in [
+        (cancel, &cancel_label, ButtonRole::Secondary),
+        (go, &go_label, ButtonRole::Primary),
+    ] {
+        Button::paint(
+            scene,
+            transform,
+            text,
+            &on,
+            &ButtonFace::new(rect, label)
+                .role(role)
+                .control_size(ControlSize::Small),
+        );
+    }
     Some((go, cancel))
-}
-
-/// One of the hint's buttons: `label` on a pill of `fill`, in `ink`.
-fn pill_button(paint: &mut PaintCtx<'_>, rect: Rect, label: &str, (fill, ink): (Color, Color)) {
-    let style = paint.theme.text(TextRole::Label);
-    paint.scene.fill(
-        Fill::NonZero,
-        paint.transform,
-        fill,
-        None,
-        &RoundedRect::from_rect(rect, rect.height() / 2.0),
-    );
-    let (lw, lh) = paint.text.measure_style(label, None, &style);
-    paint.text.draw_style(
-        paint.scene,
-        label,
-        ink,
-        paint.transform.pre_translate(
-            (
-                rect.center().x - f64::from(lw) / 2.0,
-                rect.center().y - f64::from(lh) / 2.0,
-            )
-                .into(),
-        ),
-        None,
-        &style,
-    );
 }
 
 #[cfg(test)]
