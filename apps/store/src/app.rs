@@ -23,6 +23,8 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -428,6 +430,25 @@ fn publisher_of(item: &StoreItem) -> (String, String) {
 type LaunchCompletion = Result<(String, Option<serde_json::Value>), String>;
 
 /// Root widget.
+
+/// An operation as a job: what the whole system sees, and the flag the
+/// person's Stop sets. The package manager cannot be interrupted from here,
+/// so what stops is the Store's part — and the job's outcome says exactly
+/// that.
+pub(crate) struct OperationJob {
+    job: ui::jobs::Running,
+    stopped: Arc<AtomicBool>,
+}
+
+/// The verb a failure's row carries: open the app's page, where its own
+/// control asks again.
+pub(crate) const SHOW_OPERATION: &str = "store.show-operation";
+
+/// The Store, as the ledger and the waiting stack name it.
+fn store_owner() -> ui::attention::Owner {
+    ui::attention::Owner::new("so.tilo.store", "Store").with_icon(ui::icons::Icon::Download)
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (host flatpak \
@@ -501,6 +522,13 @@ pub struct StoreApp {
     /// card communicate progress and reject a second activation; it is a
     /// backend observation, not shared document state.
     active_operation: Option<(String, ActionKind)>,
+    /// The jobs the operations run as, by app: the whole system sees them,
+    /// and they outlive this page and this operation.
+    operation_jobs: HashMap<String, OperationJob>,
+    /// What Needs you reports back.
+    needs: ui::attention::Presses,
+    /// What the jobs band reports back.
+    jobs: ui::jobs::Presses,
     operation_error: Option<String>,
     /// A refusal the window gave itself, without the worker (a handed
     /// package over the size limit). The worker never hears of it, so its
@@ -557,7 +585,6 @@ pub struct StoreApp {
     scroll_offset: Rc<Cell<(f32, f32)>>,
     /// The latest outcome (installed, removed, …), said in the window's bar
     /// for a while; work under way and failures say themselves in place.
-    status_notice: ui::widget::toast::Transient<String>,
     /// The status line last said in the bar, so only a change is news.
     status_said: String,
     /// Shared async, bounded decoded-artwork cache. `None` for hermetic shots.
@@ -602,6 +629,9 @@ impl StoreApp {
             worker_busy: false,
             catalogue_read: ui::Arriving::ready(()),
             active_operation: None,
+            operation_jobs: HashMap::new(),
+            needs: ui::attention::Presses::new(),
+            jobs: ui::jobs::Presses::new(),
             operation_error: None,
             local_refusal: None,
             flatpak_available: false,
@@ -626,7 +656,6 @@ impl StoreApp {
             safety_open: false,
             reports: Vec::new(),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
-            status_notice: ui::widget::toast::Transient::new(),
             status_said: String::new(),
             images: None,
         }
@@ -1210,6 +1239,72 @@ impl StoreApp {
         self.structure_dirty = true;
     }
 
+    /// Carry out what the person pressed on the jobs band or on a row of
+    /// what wants them: Show me opens the app's page.
+    fn answer_presses(&mut self) {
+        for press in self.jobs.take() {
+            if let Some(subject) = ui::jobs::apply(press)
+                && let Some(target) = subject.target
+            {
+                self.focus_detail(&target);
+                self.structure_dirty = true;
+            }
+        }
+        for press in self.needs.take() {
+            let Some(acted) = ui::attention::apply(press) else {
+                continue;
+            };
+            if acted.action.verb == SHOW_OPERATION
+                && let Some(ui::attention::Target::Job(number)) = acted.target
+                && let Some(subject) = ui::jobs::show(ui::jobs::JobId::from_number(number))
+                && let Some(target) = subject.target
+            {
+                self.focus_detail(&target);
+                self.structure_dirty = true;
+            }
+        }
+    }
+
+    /// End the job the operation ran as: what came of it, or that the person
+    /// stopped following it.
+    fn finish_operation_job(&mut self, app: &str, outcome: Result<String, String>) {
+        let Some(OperationJob { job, stopped }) = self.operation_jobs.remove(app) else {
+            return;
+        };
+        if stopped.load(Ordering::Acquire) {
+            job.stopped();
+            self.status_line =
+                "Stopped following this operation. The package manager may still be finishing it."
+                    .to_owned();
+            ui::attention::publish(ui::attention::Notice::did(
+                store_owner(),
+                self.status_line.clone(),
+            ));
+            return;
+        }
+        match outcome {
+            Ok(status) => {
+                // The ledger records it: `publish_status` writes the same
+                // line once the worker is idle again.
+                job.done(status);
+            }
+            Err(error) => {
+                job.failed(error.clone());
+                ui::attention::publish(
+                    ui::attention::Notice::needs(
+                        store_owner(),
+                        ui::i18n!("store-operation-failed"),
+                        ui::attention::Action::new(
+                            SHOW_OPERATION,
+                            &ui::i18n!("store-error-refresh"),
+                        ),
+                    )
+                    .because(error),
+                );
+            }
+        }
+    }
+
     pub fn set_status_line(&mut self, s: impl Into<String>) {
         self.status_line = s.into();
     }
@@ -1306,24 +1401,22 @@ impl StoreApp {
             .collect()
     }
 
-    /// Say a new outcome in the window's bar; work under way and failures
-    /// say themselves in place.
+    /// Write a new outcome to the ledger; work under way says itself in the
+    /// jobs band, and a failure waits in Needs you. Nothing here is said in
+    /// a notice that expires.
     fn publish_status(&mut self) {
         if !self.worker_busy
             && self.operation_error.is_none()
             && self.status_line != self.status_said
         {
             self.status_said.clone_from(&self.status_line);
-            if self.status_said.is_empty() {
-                self.status_notice.dismiss();
-            } else {
-                self.status_notice.show(self.status_said.clone());
+            if !self.status_said.is_empty() {
+                ui::attention::publish(ui::attention::Notice::did(
+                    store_owner(),
+                    self.status_said.clone(),
+                ));
             }
         }
-        self.status_notice.expire();
-        self.status_notice.publish(|text| {
-            ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
-        });
     }
 }
 
@@ -1384,6 +1477,7 @@ impl Widget for StoreApp {
     );
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.answer_presses();
         let changed = self
             .root
             .as_mut()
@@ -1399,6 +1493,7 @@ impl Widget for StoreApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.answer_presses();
         self.drain_worker();
         self.sync_window_toolbar();
         if let Some(root) = self.root.as_mut() {
@@ -1413,7 +1508,6 @@ impl Widget for StoreApp {
             .as_ref()
             .and_then(|root| root.next_wake_deadline())
             .into_iter()
-            .chain(self.status_notice.deadline())
             .min()
     }
 
@@ -1436,6 +1530,7 @@ impl Widget for StoreApp {
                 },
             );
         self.structure_dirty = false;
+        let jobs = self.jobs.clone();
         let mut root = self.root.take().unwrap_or_else(|| {
             let can = Rc::clone(&self.can_go_back);
             let requested = Rc::clone(&self.back_requested);
@@ -1445,6 +1540,7 @@ impl Widget for StoreApp {
                     .with_page_column(f32::from(view::Measure::CATALOGUE_LINES))
                     .with_id("store.shell")
                     .with_window_toolbar()
+                    .bottom_band(Box::new(ui::jobs::Band::with_presses(jobs.clone())))
                     .on_back(move || can.get(), move || requested.set(true)),
             )
         });
@@ -1952,6 +2048,25 @@ impl StoreApp {
             self.operation_error = None;
             self.status_line = view::progress_label(action, &item.name);
             self.structure_dirty = true;
+            // The operation is a job of the whole system: it keeps running
+            // when the person leaves this page, and its row says what the
+            // package manager is doing.
+            let stopped = Arc::new(AtomicBool::new(false));
+            let job = ui::jobs::start(
+                ui::jobs::Spec::new(self.status_line.clone())
+                    .subject(
+                        ui::jobs::Subject::new(store_owner(), item.name.clone())
+                            .opens(item.id.clone()),
+                    )
+                    .unit(ui::jobs::Unit::Steps)
+                    .phase(self.status_line.clone())
+                    .stoppable({
+                        let stopped = Arc::clone(&stopped);
+                        move || stopped.store(true, Ordering::Release)
+                    }),
+            );
+            self.operation_jobs
+                .insert(item.id.clone(), OperationJob { job, stopped });
             return Ok(Job::admitted(
                 Request::Act(Box::new(item), action),
                 Finish::Package,
@@ -2280,9 +2395,6 @@ impl StoreApp {
         if !item.allows_action(action, self.flatpak_available) {
             return Err("this action is no longer available for the current app state".into());
         }
-        if self.active_operation.is_some() {
-            return Err("a package operation is already in progress".into());
-        }
         Ok(item.clone())
     }
 
@@ -2436,6 +2548,12 @@ impl StoreApp {
     fn start_job(&mut self, job: Job, cx: &mut EffectCx<Store, Self>) -> EffectAnswer {
         let parent = ui::invocation_scope::current_invoker().and_then(|_| cx.invocation());
         let Job { request, finish } = job;
+        // The app the operation is about, so its own job ends with it even
+        // when another operation was admitted meanwhile.
+        let operating = match &request {
+            Request::Act(item, _) => Some(item.id.clone()),
+            _ => None,
+        };
         if let Request::ExternalModeration(operation) = request {
             let appeal = matches!(
                 operation.mutation,
@@ -2455,7 +2573,7 @@ impl StoreApp {
                         case: Some(case),
                         ..Default::default()
                     });
-                    app.finish_job(&finish, outcome, parent, cx)
+                    app.finish_job(&finish, operating.clone(), outcome, parent, cx)
                 },
             ));
         }
@@ -2489,7 +2607,7 @@ impl StoreApp {
                     .unwrap_or_else(|_| Err("the Store worker stopped".into()))
             },
             move |app: &mut Self, outcome: Outcome, cx| {
-                app.finish_job(&finish, outcome, parent, cx)
+                app.finish_job(&finish, operating, outcome, parent, cx)
             },
         ))
     }
@@ -2497,6 +2615,7 @@ impl StoreApp {
     fn finish_job(
         &mut self,
         finish: &Finish,
+        operating: Option<String>,
         outcome: Outcome,
         parent: Option<ui::tilo_actions::InvocationId>,
         cx: &mut EffectCx<Store, Self>,
@@ -2508,6 +2627,12 @@ impl StoreApp {
         }
         if *finish == Finish::Package {
             self.active_operation = None;
+            if let Some(app) = operating.clone() {
+                match &outcome {
+                    Ok(finished) => self.finish_operation_job(&app, Ok(finished.status.clone())),
+                    Err(error) => self.finish_operation_job(&app, Err(error.clone())),
+                }
+            }
         } else {
             self.pending_jobs = self.pending_jobs.saturating_sub(1);
         }
@@ -2966,9 +3091,6 @@ fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
 
 impl StoreApp {
     fn admit_update_all(&mut self) -> Result<Admitted, String> {
-        if self.active_operation.is_some() {
-            return Err("a package operation is already in progress".into());
-        }
         let updatable = self.updatable();
         let Some(&(first, action)) = updatable.first() else {
             return Err("every installed app is up to date".into());
@@ -4848,8 +4970,8 @@ mod tests {
         assert_eq!(job.finish, Finish::Package);
         assert_eq!(app.status_line(), "Updating 2 apps…");
         assert!(
-            app.admit(StoreEffect::UpdateAll).is_err(),
-            "a second update-all waits for the first"
+            app.admit(StoreEffect::UpdateAll).is_ok(),
+            "a second update-all is its own job, not a refusal"
         );
 
         let mut current = seeded_app();
@@ -5774,9 +5896,15 @@ mod tests {
                 Some(("id.notes".into(), ActionKind::Open))
             );
             assert_eq!(app.status_line(), "Opening Notes…");
+            // Jobs are concurrent by construction: a second operation is a
+            // second row, not a refusal that freezes the Store.
             assert!(
-                app.admit(open).is_err(),
-                "the card action cannot double-submit while the worker owns it"
+                app.admit(open).is_ok(),
+                "the Store stays usable while an operation runs"
+            );
+            assert!(
+                app.operation_jobs.values().filter(|_| true).count() >= 1,
+                "the operation is a job the whole system sees"
             );
             app.set_worker_busy(true);
             app.set_worker_busy(false);

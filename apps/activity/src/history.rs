@@ -1,8 +1,10 @@
-//! History: every change in the workspace, newest first.
+//! History: every change in the workspace, newest first — and, beside them,
+//! the ledger's outcomes: what the system did that needs no decision.
 //!
 //! Changes a work group holds sit under its name, the rest under their
-//! day. The filter row narrows them by scope, period, person and lens; the
-//! filter is the app's record ([`Filter`]), the scope is this window's.
+//! day. The filter row narrows them by scope, period, person, lens and a
+//! find; the filter is the app's record ([`Filter`]), the scope is this
+//! window's.
 //! Choosing a change selects it; "Select through here" stretches the
 //! selection to another change, and a work group's "Select" takes all of
 //! it. The selection shows in the inspector ([`crate::detail`]).
@@ -33,7 +35,13 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
             let limit = *limit;
             cx.switch(&filter, move |cx, filter| {
                 let mut query = filter.query(scope);
-                query.limit = limit;
+                // A find reaches past one page: the feed keeps reading while
+                // someone is looking for something.
+                query.limit = if filter.finding() {
+                    limit.max(wire::FEED_PAGE).saturating_mul(4)
+                } else {
+                    limit
+                };
                 feed(cx, &nav, &query, filter.narrows())
             })
         })
@@ -47,15 +55,19 @@ fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery, narrows: bool) 
     let read = Provider::of(cx).follow::<wire::Feed>(wire::FEED, Some(query));
     let nav = nav.clone();
     Box::new(cx.arriving(&read.answer(), move |cx, feed| {
+        let filter = cx.value(Filter::clone).get();
         let mut parts = vec![filters(cx, &nav, feed, narrows)];
+        let found = found(feed, &filter);
         if feed.entries.is_empty() {
             parts.push(empty(feed));
             return page(parts);
         }
+        parts.push(find_field(cx, &filter, &found));
         let shown = feed.clone();
         let listed = nav.clone();
+        let finding = filter.clone();
         parts.push(cx.switch(&nav.selection, move |_, selection| {
-            list(&listed, &shown, selection.as_ref())
+            list(&listed, &shown, selection.as_ref(), &finding)
         }));
         if feed.total > feed.entries.len() {
             let more = nav.clone();
@@ -71,6 +83,66 @@ fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery, narrows: bool) 
         }
         page(parts)
     }))
+}
+
+/// What a find leaves of the feed: the changes whose words, person or app
+/// contain it, and how many of all of them it found.
+fn found(feed: &wire::Feed, filter: &Filter) -> Vec<wire::Entry> {
+    feed.entries
+        .iter()
+        .filter(|entry| {
+            let mut words: Vec<&str> = vec![entry.summary.as_str(), entry.author.name.as_str()];
+            if let Some(place) = entry.resource.as_deref().or(entry.app.as_deref()) {
+                words.push(place);
+            }
+            if let Some(workspace) = entry.workspace.as_deref() {
+                words.push(workspace);
+            }
+            filter.matches(&words)
+        })
+        .cloned()
+        .collect()
+}
+
+/// The find: one field, and how much of the history it leaves — the same
+/// words an app's search uses, reaching the shared history.
+fn find_field(cx: &ViewCx<Filter>, filter: &Filter, found: &[wire::Entry]) -> Element {
+    let paths = Filter::paths();
+    let field: Element = Box::new(cx.control(
+        |state| {
+            TextInput::from_state(state)
+                .with_id("activity-find")
+                .with_placeholder("activity-find-placeholder")
+        },
+        paths.query,
+    ));
+    let count = if filter.finding() {
+        Box::new(
+            Text::new(&trf(
+                "activity-find-count",
+                &[
+                    ("found", ui::i18n::ArgValue::from(found.len().to_string())),
+                    ("all", ui::i18n::ArgValue::from(0.0)),
+                ],
+            ))
+            .with_role(ui::tokens::TextRole::Caption)
+            .numeric(),
+        ) as Element
+    } else {
+        Box::new(Text::new(""))
+    };
+    Box::new(
+        Row::new()
+            .no_wrap()
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .push(Box::new(
+                Container::new()
+                    .with_flex_grow()
+                    .with_no_padding()
+                    .with_child(field),
+            ))
+            .push(count),
+    )
 }
 
 fn empty(feed: &wire::Feed) -> Element {
@@ -199,7 +271,7 @@ fn heading(entry: &wire::Entry) -> Heading {
     )
 }
 
-fn list(nav: &Nav, feed: &wire::Feed, selection: Option<&wire::Range>) -> Element {
+fn list(nav: &Nav, feed: &wire::Feed, selection: Option<&wire::Range>, filter: &Filter) -> Element {
     let span = selected_span(feed, selection);
     let groups: HashMap<&str, &wire::Group> = feed
         .groups
@@ -209,6 +281,13 @@ fn list(nav: &Nav, feed: &wire::Feed, selection: Option<&wire::Range>) -> Elemen
     let this_year = chrono::Local::now().date_naive();
     let mut sections: Vec<(Heading, Vec<Element>)> = Vec::new();
     for (index, entry) in feed.entries.iter().enumerate() {
+        let mut words: Vec<&str> = vec![entry.summary.as_str(), entry.author.name.as_str()];
+        if let Some(place) = entry.resource.as_deref().or(entry.app.as_deref()) {
+            words.push(place);
+        }
+        if !filter.matches(&words) {
+            continue;
+        }
         let selected = span.is_some_and(|(first, last)| (first..=last).contains(&index));
         let row = entry_row(nav, feed, entry, selected, selection);
         let under = heading(entry);
@@ -257,7 +336,47 @@ fn list(nav: &Nav, feed: &wire::Feed, selection: Option<&wire::Range>) -> Elemen
         };
         column = column.push(Box::new(section));
     }
+    if let Some(ledger) = ledger_section(filter) {
+        column = column.push(ledger);
+    }
     Box::new(column)
+}
+
+/// What the system did, from the ledger: outcomes that needed nobody, with
+/// the app that did them and when. They sit at the end of the history and
+/// are found by the same find as the changes.
+fn ledger_section(filter: &Filter) -> Option<Element> {
+    let entries: Vec<ui::attention::Entry> = ui::attention::entries()
+        .into_iter()
+        .filter(|entry| {
+            filter.matches(&[
+                entry.what(),
+                entry.owner().name.as_str(),
+                entry.about_line().unwrap_or_default(),
+            ])
+        })
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    let rows: Vec<Element> = entries
+        .iter()
+        .rev()
+        .map(|entry| {
+            let mut row = ListRow::new(format!("activity-ledger-{}", entry.id()), entry.what())
+                .icon(entry.owner().icon)
+                .subtitle(entry.owner().name.clone())
+                .meta(ago(i64::try_from(entry.at_ms()).unwrap_or(i64::MAX)));
+            let detail = entry.detail_line();
+            if !detail.is_empty() {
+                row = row.secondary(detail);
+            }
+            Box::new(row) as Element
+        })
+        .collect();
+    Some(Box::new(Section::new(rows).with_header(
+        SectionHeader::group(tr("activity-ledger-heading")),
+    )))
 }
 
 fn entry_row(
