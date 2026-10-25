@@ -7,11 +7,17 @@
 //! ignored, because ignoring `-i` (ask before overwriting) or `-a`
 //! (preserve attributes) would silently do something other than what was
 //! asked.
+//!
+//! `append` and `touch` extend the same reading to querying and creating
+//! text: `append FILE TEXT…` is `>>`, and `touch FILE` creates without
+//! truncating, the two things a script or a model does to a text file that
+//! `truncate` and `cp` cannot say.
 
 use std::path::PathBuf;
 
-use super::{CopyOp, FileAction, LinkOp, MakeDirOp, MoveOp, RemoveDirOp, RemoveOp, TruncateOp};
-
+use super::{
+    AppendFileOp, CopyOp, FileAction, LinkOp, MakeDirOp, MoveOp, RemoveDirOp, RemoveOp, TruncateOp,
+};
 /// Which command a line was written for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -22,6 +28,8 @@ pub enum Tool {
     Rmdir,
     Ln,
     Truncate,
+    Touch,
+    Append,
 }
 
 impl Tool {
@@ -36,6 +44,8 @@ impl Tool {
             "rmdir" => Some(Self::Rmdir),
             "ln" => Some(Self::Ln),
             "truncate" => Some(Self::Truncate),
+            "touch" => Some(Self::Touch),
+            "append" => Some(Self::Append),
             _ => None,
         }
     }
@@ -51,7 +61,16 @@ impl Tool {
             Self::Rmdir => "rmdir",
             Self::Ln => "ln",
             Self::Truncate => "truncate",
+            Self::Touch => "touch",
+            Self::Append => "append",
         }
+    }
+
+    /// Whether this tool only records what it did, writing nothing: `touch`
+    /// on a file that already has contents keeps them.
+    #[must_use]
+    pub const fn records_only(self) -> bool {
+        matches!(self, Self::Touch)
     }
 }
 
@@ -170,10 +189,40 @@ pub fn parse(tool: Tool, args: &[String]) -> Result<FileAction, ParseError> {
             }))
         }
         Tool::Ln => parse_ln(&operands, &parsed.seen),
+        Tool::Touch => parse_touch(operands),
+        Tool::Append => parse_append(operands),
         // Answered above, before the operands were matched over: `truncate`
         // is the one tool whose `-s` is a size, not a link.
         Tool::Truncate => parse_truncate(operands, &parsed.values, &has),
     }
+}
+
+fn parse_touch(operands: Vec<PathBuf>) -> Result<FileAction, ParseError> {
+    if operands.is_empty() {
+        return Err(ParseError::Operands {
+            tool: "touch",
+            usage: "missing operand",
+        });
+    }
+    Ok(FileAction::Touch(AppendFileOp {
+        files: operands,
+        text: String::new(),
+    }))
+}
+
+/// `append TEXT FILE...`: the text comes first, then every file it goes into.
+fn parse_append(mut operands: Vec<PathBuf>) -> Result<FileAction, ParseError> {
+    if operands.len() < 2 {
+        return Err(ParseError::Operands {
+            tool: "append",
+            usage: "missing file operand after the text",
+        });
+    }
+    let text = operands.remove(0).to_string_lossy().into_owned();
+    Ok(FileAction::Append(AppendFileOp {
+        files: operands,
+        text,
+    }))
 }
 
 fn parse_truncate(
@@ -320,7 +369,10 @@ impl Flags {
 /// them. Anything else — `-i`, `-a`, `-L`, `-Z`, `--preserve`, … — is
 /// refused by name rather than quietly ignored.
 fn supported(short: char) -> bool {
-    matches!(short, 'f' | 'r' | 'R' | 'n' | 'u' | 'p' | 's' | 'c' | 'v')
+    matches!(
+        short,
+        'f' | 'r' | 'R' | 'n' | 'u' | 'p' | 's' | 'c' | 'v' | 'a'
+    )
 }
 
 /// The short flag a long one stands for, if this runtime implements it.
@@ -334,6 +386,7 @@ fn long_flag(name: &str) -> Option<&'static str> {
         "update" => "-u",
         "verbose" => "-v",
         "no-create" => "-c",
+        "append" => "-a",
         _ => return None,
     })
 }
@@ -400,6 +453,39 @@ mod tests {
         };
         assert_eq!(size("-s 512 log"), 512);
         assert_eq!(size("-s512 log"), 512);
+    }
+
+    #[test]
+    fn touch_names_files_and_carries_no_text() {
+        let FileAction::Touch(op) = parse(Tool::Touch, &args("notes/today.md draft.md")).unwrap()
+        else {
+            panic!("touch reads as a touch");
+        };
+        assert_eq!(
+            op.files,
+            vec![PathBuf::from("notes/today.md"), PathBuf::from("draft.md")]
+        );
+        assert!(op.text.is_empty());
+    }
+
+    #[test]
+    fn append_takes_its_text_before_the_files_it_goes_into() {
+        let FileAction::Append(op) =
+            parse(Tool::Append, &args("bought-milk notes/today.md")).unwrap()
+        else {
+            panic!("append reads as an append");
+        };
+        assert_eq!(op.text, "bought-milk");
+        assert_eq!(op.files, vec![PathBuf::from("notes/today.md")]);
+    }
+
+    #[test]
+    fn append_with_no_file_is_refused_with_what_it_takes() {
+        let error = parse(Tool::Append, &args("only-the-text")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "append: missing file operand after the text"
+        );
     }
 
     #[test]

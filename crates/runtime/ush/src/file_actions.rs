@@ -1,9 +1,9 @@
 //! File actions: the verbs that change a granted directory, as typed
 //! values rather than flags assembled by hand.
 //!
-//! `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln` and `truncate` inside a guest are
-//! this module. Each invocation parses into one [`FileAction`] carrying its
-//! arguments, is classified once ([`FileAction::plan`]) into the places it
+//! `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`, `truncate`, `touch` and `append`
+//! inside a guest are this module. Each invocation parses into one
+//! [`FileAction`] carrying its arguments, is classified once ([`FileAction::plan`]) into the places it
 //! would write and the operations it would perform, is checked as a whole
 //! against the environment's grants, and is carried out through
 //! [`FileAction::apply`] — which also hands back the [undo entry](UndoEntry)
@@ -27,6 +27,16 @@
 //! The one path that really destroys data is [`FileAction::irreversible`]: a
 //! removal asked for with `--force`, which callers name to the person before
 //! it runs.
+//!
+//! # Why touch and append exist
+//!
+//! A file's contents are what an everyday task changes — a note, a list, a
+//! paragraph — and with only `truncate` and `cp` the only safe way to change
+//! one was to rewrite the whole file, and the only way to create one was to
+//! empty it. `append` adds text to the end and `touch` creates a file without
+//! truncating it, so the everyday edits are one action each, recorded and
+//! reversible like the rest: a `touch` or an `append` keeps what it changed
+//! aside exactly as an overwrite does.
 //!
 //! # Where the check happens
 //!
@@ -78,6 +88,10 @@ pub enum FileAction {
     RemoveDir(RemoveDirOp),
     Link(LinkOp),
     Truncate(TruncateOp),
+    /// Create `files` if they are missing, leave their contents alone.
+    Touch(AppendFileOp),
+    /// Add `text` to the end of each of `files`.
+    Append(AppendFileOp),
 }
 
 impl FileAction {
@@ -92,7 +106,16 @@ impl FileAction {
             Self::RemoveDir(_) => "remove-dir",
             Self::Link(_) => "link",
             Self::Truncate(_) => "truncate",
+            Self::Touch(_) => "touch",
+            Self::Append(_) => "append",
         }
+    }
+
+    /// Whether the action adds its text to what is already there, rather
+    /// than writing all of it.
+    #[must_use]
+    pub const fn appends(&self) -> bool {
+        matches!(self, Self::Append(_))
     }
 
     /// Whether carrying this out loses anything the recoverable history does
@@ -114,6 +137,7 @@ impl FileAction {
             Self::RemoveDir(op) => op.dirs.clone(),
             Self::Link(op) => op.paths(),
             Self::Truncate(op) => op.files.clone(),
+            Self::Touch(op) | Self::Append(op) => op.files.clone(),
         }
     }
 
@@ -134,6 +158,8 @@ impl FileAction {
             Self::RemoveDir(op) => plan_remove_dir(op)?,
             Self::Link(op) => plan_link(op)?,
             Self::Truncate(op) => plan_truncate(op)?,
+            Self::Touch(op) => plan_touch(op)?,
+            Self::Append(op) => plan_append(op)?,
         };
         for path in &plan.writes {
             if !allowed(path) {
@@ -193,6 +219,20 @@ impl FileAction {
                     outcome
                         .done
                         .push(UndoEntry::Discarded { path: path.clone() });
+                }
+                Operation::Touch { .. } => {
+                    history.record(&id, op)?;
+                    outcome.done.push(UndoEntry::Touched);
+                }
+                Operation::MakeFile { path } => {
+                    create_file(path).map_err(|error| ActionError::Io {
+                        path: path.clone(),
+                        error,
+                    })?;
+                    history.record(&id, op)?;
+                    outcome
+                        .done
+                        .push(UndoEntry::MakeFile { path: path.clone() });
                 }
                 Operation::Write { path, contents } => {
                     write_file(path, contents).map_err(|error| ActionError::Io {
@@ -321,6 +361,15 @@ pub struct TruncateOp {
     pub create: bool,
 }
 
+/// `touch` and `append` as they were asked for: the same files, and the text
+/// `append` adds (empty for `touch`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppendFileOp {
+    pub files: Vec<PathBuf>,
+    #[serde(default)]
+    pub text: String,
+}
+
 /// Why an action will not run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
@@ -438,6 +487,14 @@ pub enum Operation {
         path: PathBuf,
         contents: Vec<u8>,
     },
+    /// Create `path`, empty, only where nothing is there yet.
+    MakeFile {
+        path: PathBuf,
+    },
+    /// Leave `path` as it is: `touch` on a file that is already there.
+    Touch {
+        path: PathBuf,
+    },
     Copy {
         from: PathBuf,
         to: PathBuf,
@@ -499,6 +556,10 @@ pub enum UndoEntry {
     Kept { id: String, path: PathBuf },
     /// Remove the file that was written, or put back what it replaced.
     Write { path: PathBuf },
+    /// Remove the file that was made.
+    MakeFile { path: PathBuf },
+    /// Nothing changed, so undoing takes nothing away.
+    Touched,
     /// Remove the copy. Undo does not take back the source.
     Copy { from: PathBuf, to: PathBuf },
     /// Remove the link.
@@ -538,13 +599,16 @@ pub fn undo(entries: &[UndoEntry], history: &Recoverable) -> Result<(), ActionEr
             UndoEntry::Kept { id, path } => {
                 history.restore(id, path)?;
             }
+            UndoEntry::MakeFile { path } => {
+                remove_if_present(path)?;
+            }
+            // Nothing was changed, so undoing takes nothing away.
+            UndoEntry::Touched | UndoEntry::Discarded { .. } => {}
             UndoEntry::Write { path } => {
                 // What the action wrote goes; what it replaced comes back
                 // from the entry recorded beside it, later in this walk.
                 remove_if_present(path)?;
             }
-            // Removed on purpose: there is nothing here to take away.
-            UndoEntry::Discarded { .. } => {}
             UndoEntry::Copy { to, .. } | UndoEntry::Link { path: to, .. } => {
                 remove_if_present(to)?;
             }
@@ -711,6 +775,8 @@ impl Recoverable {
             Operation::MakeDir { path, .. } => ("make-dir", path, None),
             Operation::RemoveDir { path } => ("remove-dir", path, None),
             Operation::Write { path, .. } => ("write", path, None),
+            Operation::MakeFile { path } => ("make-file", path, None),
+            Operation::Touch { path } => ("touch", path, None),
             Operation::Copy { from, to } => ("copy", to, Some(from)),
             Operation::Discard { path, .. } => ("discard", path, None),
             Operation::Link { target, path, .. } => ("link", path, Some(target)),
@@ -794,6 +860,8 @@ impl Recoverable {
                 .map(|entry| match entry.op.as_str() {
                     "make-dir" => UndoEntry::MakeDir { path: entry.path },
                     "remove-dir" => UndoEntry::RemoveDir { path: entry.path },
+                    "make-file" => UndoEntry::MakeFile { path: entry.path },
+                    "touch" => UndoEntry::Touched,
                     "keep" => UndoEntry::Kept {
                         id: entry.id,
                         path: entry.path,
@@ -1038,6 +1106,58 @@ fn plan_truncate(op: &TruncateOp) -> Result<Plan, Refusal> {
     Ok(plan)
 }
 
+fn plan_touch(op: &AppendFileOp) -> Result<Plan, Refusal> {
+    let mut plan = Plan::new();
+    for file in &op.files {
+        match fs::symlink_metadata(file) {
+            Ok(meta) => {
+                if meta.is_dir() {
+                    return Err(Refusal::IsDirectory(file.clone()));
+                }
+                // Touching what is there changes nothing: it is recorded so
+                // the invocation says it happened, and there is nothing to
+                // put back.
+                plan = plan
+                    .writes(file.clone())
+                    .push(Operation::Touch { path: file.clone() });
+            }
+            Err(_) => {
+                plan = plan
+                    .writes(file.clone())
+                    .push(Operation::MakeFile { path: file.clone() });
+            }
+        }
+    }
+    Ok(plan)
+}
+
+fn plan_append(op: &AppendFileOp) -> Result<Plan, Refusal> {
+    let mut plan = Plan::new();
+    for file in &op.files {
+        plan = plan.writes(file.clone());
+        let mut contents = Vec::new();
+        if let Ok(meta) = fs::symlink_metadata(file) {
+            if meta.is_dir() {
+                return Err(Refusal::IsDirectory(file.clone()));
+            }
+            // What is there is both what the text goes after and what
+            // undoing puts back, so it is kept beside the write.
+            let existing = fs::read(file).map_err(|_| Refusal::Missing(file.clone()))?;
+            plan = plan.push(Operation::Keep {
+                path: file.clone(),
+                contents: Some(existing.clone()),
+            });
+            contents = existing;
+        }
+        contents.extend_from_slice(op.text.as_bytes());
+        plan = plan.push(Operation::Write {
+            path: file.clone(),
+            contents,
+        });
+    }
+    Ok(plan)
+}
+
 /// `size` bytes of zeroes, which is what `truncate` writes.
 fn sized(size: u64) -> Vec<u8> {
     vec![0u8; usize::try_from(size).unwrap_or(usize::MAX)]
@@ -1107,6 +1227,19 @@ fn create_dir(path: &Path, parents: bool) -> io::Result<()> {
     } else {
         fs::create_dir(path)
     }
+}
+
+/// Create `path` empty, refusing to replace what is there. `create_new` is
+/// what makes that a check on the filesystem and not on a plan.
+fn create_file(path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(|_| ())
 }
 
 fn write_file(path: &Path, contents: &[u8]) -> io::Result<()> {
