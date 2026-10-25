@@ -2003,10 +2003,18 @@ impl Widget for Button {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let label = localized_label(&self.label);
+        // The key the name was resolved from: the app's own copy when its
+        // catalogue holds it.
+        let mut key = self.label.as_str();
         let name = if label.is_empty() {
             // Icon-only: prefer the explicit accessible name, else fall
             // back to the tooltip text so the glyph is never silent when
             // a tooltip is set.
+            key = self
+                .accessible_name
+                .as_deref()
+                .or(self.tooltip.as_deref())
+                .unwrap_or_default();
             self.accessible_name
                 .as_ref()
                 .map(|n| i18n!(n))
@@ -2015,6 +2023,7 @@ impl Widget for Button {
         } else {
             Some(label)
         };
+        let interface = name.is_some() && crate::i18n::I18nManager::has_message(key);
         let role = if self.toggled.is_some() {
             Role::ToggleButton
         } else {
@@ -2024,6 +2033,7 @@ impl Widget for Button {
             .with_semantic_key(&self.id)
             .with_bounds(self.rect)
             .with_optional_name(name)
+            .with_interface_name(interface)
             .with_state(AccessState {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),

@@ -227,6 +227,7 @@ pub mod passcode_keyboard;
 pub mod pen;
 pub mod permissions;
 pub mod persist;
+pub mod pick;
 pub mod platform;
 pub mod pointer_replay;
 pub mod portable_storage;
