@@ -142,6 +142,27 @@ pub fn focused(tree: &DesktopTree, name: impl Fn(&str) -> Option<String>) -> Foc
     }
 }
 
+/// The app the window `tab` shows, as a report names it; `None` for a tab
+/// that is not in `tree` or shows no app.
+pub fn tab_subject(
+    tree: &DesktopTree,
+    tab: TabId,
+    name: impl Fn(&str) -> Option<String>,
+) -> Option<Subject> {
+    let tile = tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .find(|shown| shown.id == tab)
+                    .map(|shown| &shown.tile)
+            })
+        })
+    })?;
+    subject(tile, name)
+}
+
 /// Whether `tile` is the feedback composer, under either host's registration.
 pub fn is_composer(tile: &TileContent) -> bool {
     match tile {
