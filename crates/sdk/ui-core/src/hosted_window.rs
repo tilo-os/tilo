@@ -182,17 +182,14 @@ impl HostedWindow {
     }
 
     /// Say whether the window's person may only look at what it shows.
+    /// Said while the app syncs, inside a frame of its host's: the host
+    /// reads the bar after that sync, so this wakes no further frame.
     pub fn show_view_only(&self, view_only: bool) {
-        let wake = {
-            let mut state = self.state();
-            if state.view_only == view_only {
-                return;
-            }
+        let mut state = self.state();
+        if state.view_only != view_only {
             state.view_only = view_only;
             state.revision = state.revision.wrapping_add(1);
-            state.wake.clone()
-        };
-        Self::wake(wake);
+        }
     }
 
     /// Whether the window's person may only look.

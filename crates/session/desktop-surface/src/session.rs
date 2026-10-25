@@ -392,14 +392,15 @@ impl Openings {
 
     /// Open every app the windows asked for since this was last taken, as
     /// launches of the desktop `handle` (navigation `generation`), each one
-    /// `may_open` admits; one asked on a record opens on it
+    /// `may_open` admits (told whether the open shows something that
+    /// exists, a record or an item of one); one asked on a record opens on it
     /// ([`record_launch`]). Whether anything was asked, so the host lays out
     /// again.
     pub fn open(
         &self,
         handle: &DesktopHandle,
         generation: &str,
-        may_open: impl Fn(&str) -> Result<(), ActionHostError>,
+        may_open: impl Fn(&str, bool) -> Result<(), ActionHostError>,
     ) -> bool {
         let asked = std::mem::take(&mut *self.asked.lock_recover());
         let any = !asked.is_empty();
@@ -411,7 +412,8 @@ impl Openings {
             answer,
         } in asked
         {
-            let opened = may_open(&app).and_then(|()| {
+            let existing = record.is_some() || resource.is_some();
+            let opened = may_open(&app, existing).and_then(|()| {
                 if let Some(resource) = resource {
                     self.reveals.borrow_mut().push(Reveal {
                         app: app.clone(),
