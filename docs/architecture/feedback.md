@@ -152,8 +152,11 @@ worker; only the purpose-specific receipt digest reaches the existing owner
 signer. `read-feedback-destination` confirms an existing text channel and
 `read-feedback-receipt` can require the exact attributed reporter root. A
 signed acknowledgment binds the owner, reporter, destination, submission
-identity and approved digest. Screenshot receipts remain refused
-until an actual owner content store supplies a durable content witness.
+identity and approved digest. A report with a screenshot is acknowledged
+only once the owner's own content store keeps bytes that hash to the
+screenshot's address, checked before and after signing
+(`CanonicalReceiptSource::keeps_content`); the relay answers from the room's
+blob store (`RoomRecordsLink::content_blob`).
 
 ### Report a problem: picking parts of the screen
 
@@ -190,7 +193,12 @@ submission in the same outbox as any other report.
 In the browser the picture of each pick is copied from the frame presented
 right after the picker closes, its content areas painted over on the device
 (`ui::pick::sensitive_areas`; images are masked too), and the crops are stacked
-into the one masked screenshot the report carries.
+into the one masked screenshot the report carries. Send keeps that PNG in the
+page's content store, where a file posted in Chat is kept. The room's host
+reads the pictures of the reports filed in its Chat record as it reads
+message attachments, asks the room for the ones it lacks (the reporter's page
+answers) and keeps them in its blob store, within its attachment quotas; the
+report's receipt waits until it does.
 
 A persistent room keeps the channel reports go to with the room service's
 `TILO_ROOMS_FEEDBACK_CHANNEL` (the relay's `--feedback-channel`): the relay
@@ -238,7 +246,7 @@ presentation remains ephemeral inside the original checked namespace, so model
 service teardown cannot replace the user's saved Chat window view. Startup cannot
 create a missing Chat record. Cold restart requires fresh owner admission and
 current selected custody again.
-`NoCapture` remains mandatory until a durable screenshot content witness exists.
+Native hosts install `NoCapture` and offer no screenshot.
 Source qualification does not establish deployed native or browser acceptance.
 Tests use isolated certified sessions, the real native broker and retained storage,
 including cold application and owner restarts.
@@ -351,10 +359,11 @@ host hook `register_feedback_startup(peer, startup)` requires an existing
 certified peer, rejects replacement and is consumed by actual desktop mounting.
 Peer close retires unused custody. URL/JSON launch options have no authority
 fields. `NoCapture` reads nothing from any surface: a review carries the description
-and, with consent, the subject's app identity; it offers no screenshot.
-The canonical service refuses screenshot-bearing acknowledgments until a durable
-content witness is integrated; Saved report metadata alone cannot confirm an
-attachment.
+and, with consent, the subject's app identity; it offers no screenshot. The
+browser's adapter captures nothing either, but keeps the picker's masked
+picture in the page's content store. Saved report metadata alone cannot confirm
+an attachment: `CanonicalRecord` witnesses one only with the owner's content
+store, and refuses it without one.
 
 These are source hooks, not an enabled public guest endpoint. The current
 `RoomRecordsLink::view_document`/`RelayRecordsLink` interface carries verified
