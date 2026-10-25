@@ -657,10 +657,33 @@ impl Device {
     /// `room`'s records are sealed channels each app opens itself, never
     /// documents this device's owner commits.
     fn assert_sealed(&self, room: RoomId) {
+        let (sealed, committed) = {
+            let tree = self.tree.read();
+            (
+                tree.seals_records(room),
+                tree.committed_record_rooms.contains(&room),
+            )
+        };
         assert!(
-            self.tree.read().seals_records(room),
-            "{} holds {room} as a sealed room",
-            self.label
+            sealed,
+            "{} holds {room} as a sealed room (its records committed instead: {committed}; \
+             its enrollment names a governor that stewards them: {}, the governor {})",
+            self.label,
+            self.net().native_room_seals_records(room),
+            self.net()
+                .opened_native_owner()
+                .and_then(|owner| {
+                    owner
+                        .with_current(room, |view| {
+                            Ok(format!(
+                                "{:?} {:?}",
+                                view.governor().device_label,
+                                view.governor().capabilities
+                            ))
+                        })
+                        .ok()
+                })
+                .unwrap_or_default()
         );
     }
 
