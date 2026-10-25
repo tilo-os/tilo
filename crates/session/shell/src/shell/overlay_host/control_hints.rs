@@ -55,6 +55,8 @@ impl ShellOverlayHost {
             avatar: (!avatar.is_zero_area()).then_some(avatar),
             colour,
             quiet: self.control_hints_quiet(now),
+            // Setup owns the screen until the person reaches the desktop.
+            presented: !self.onboarding_active(),
         }
     }
 

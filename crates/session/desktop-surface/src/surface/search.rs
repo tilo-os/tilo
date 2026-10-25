@@ -209,6 +209,20 @@ impl DesktopHandle {
     }
 }
 
+/// The search chord [`is_search_chord`] answers to, as the keyboard spells
+/// it on `platform`: ⌘K on a Mac, where Ctrl+K does not open search, and
+/// Ctrl K elsewhere.
+pub fn search_chord_keys(platform: ui::platform::PlatformConventions) -> Vec<String> {
+    let keycaps = ui::keycaps::active();
+    if platform.platform() == ui::platform::Platform::MacOs {
+        keycaps
+            .on_family(ui::interaction::KeyboardFamily::Apple)
+            .chord_keys(["Super"], "k")
+    } else {
+        keycaps.chord_keys(["Ctrl"], "k")
+    }
+}
+
 /// The search chords: Super+K and Super+Space as in the native shell, and
 /// Ctrl+K where Ctrl is the platform's command key.
 fn is_search_chord(
@@ -882,6 +896,20 @@ mod tests {
             crate::notifications::source_label(&plain.notice("X", "")),
             None
         );
+    }
+
+    #[test]
+    fn the_chord_shown_is_the_one_that_opens_search() {
+        let linux = ui::platform::PlatformConventions::new(ui::platform::Platform::Linux);
+        let mac = ui::platform::PlatformConventions::new(ui::platform::Platform::MacOs);
+        let k = press(Key::Character("k".into()));
+        assert_eq!(search_chord_keys(mac), ["⌘", "K"]);
+        assert!(is_search_chord(&k, mods(ModifiersState::SUPER), mac));
+        let shown = search_chord_keys(linux);
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[1], "K");
+        assert_eq!(shown[0], ui::keycaps::active().chord_keys(["Ctrl"], "k")[0]);
+        assert!(is_search_chord(&k, mods(ModifiersState::CONTROL), linux));
     }
 
     #[test]

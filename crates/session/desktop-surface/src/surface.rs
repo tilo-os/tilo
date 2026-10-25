@@ -60,7 +60,7 @@ mod window_bars;
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
 pub use personal_ask::PersonalAsk;
-pub use search::{HostAction, HostActionSource, is_host_offer};
+pub use search::{HostAction, HostActionSource, is_host_offer, search_chord_keys};
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or

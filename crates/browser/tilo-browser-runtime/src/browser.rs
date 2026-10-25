@@ -2722,6 +2722,11 @@ impl Mount {
         self.viewport.did_present();
         self.pending = false;
         self.frames = self.frames.saturating_add(1);
+        if !self.hidden
+            && let Some(desktop) = &self.desktop
+        {
+            desktop.shared.presented.set(true);
+        }
         if let Some(reasons) = reasons {
             self.metrics.borrow_mut().presented(reasons);
         }
