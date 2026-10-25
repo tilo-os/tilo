@@ -360,6 +360,14 @@ pub enum WebViewCommand {
         id: u32,
         allow: bool,
     },
+    /// Answer the page's open file chooser — the one a [`WebViewCommand::Page`]
+    /// click of a file input opened — with these absolute paths, exactly as a
+    /// person would have picked them, or cancel it when `paths` is empty. The
+    /// engine reports the outcome as [`WebViewEvent::FileChooserResult`].
+    FileChooserAnswer {
+        id: u32,
+        paths: Vec<String>,
+    },
     CancelNativeDownload {
         id: u32,
     },
@@ -441,6 +449,27 @@ pub enum WebViewEvent {
     },
     PermissionClosed {
         id: u32,
+    },
+    /// The page opened its file chooser and is waiting for files. `accept` is
+    /// the types it takes, in its own notation (`.pdf`, `image/*`), empty when
+    /// it takes any; `title` is the page's name for the chooser, if any.
+    FileChooserRequested {
+        id: u32,
+        title: String,
+        accept: String,
+        folder: bool,
+        multiple: bool,
+    },
+    FileChooserClosed {
+        id: u32,
+    },
+    /// The answer to [`WebViewCommand::FileChooserAnswer`]; a refused answer
+    /// leaves the chooser open, so the caller can answer it again.
+    FileChooserResult {
+        id: u32,
+        accepted: bool,
+        count: u32,
+        message: String,
     },
     NativeDownloadRequested {
         id: u32,

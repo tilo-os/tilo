@@ -299,6 +299,22 @@ pub enum BrowserEffect {
         #[param("Allow sending the form to another site than the page's own (default false)")]
         cross_origin: Option<bool>,
     },
+    /// Choose files for the page
+    ///
+    /// Answers the file chooser a click on a file input opened. A page that
+    /// opened none, files the chooser does not take, folders and relative
+    /// paths are refused, and the chooser stays open to answer again.
+    #[effect(row, job, returns, programmatic, untrusted)]
+    ChoosePageFiles {
+        #[param("Full paths of the files to give the page, at most 16")]
+        paths: Vec<String>,
+    },
+    /// Cancel the page's file chooser
+    ///
+    /// Closes the file chooser a click on a file input opened without giving
+    /// the page any file.
+    #[effect(row, job, returns, programmatic, untrusted)]
+    CancelPageFileChooser,
     /// Bookmark this page personally
     #[effect(row, returns, idempotent)]
     BookmarkPersonalPage {
@@ -445,6 +461,8 @@ impl BrowserEffect {
                 element,
                 cross_origin: cross_origin.unwrap_or(false),
             }),
+            Self::ChoosePageFiles { paths } => BrowserOperation::ChoosePageFiles { paths },
+            Self::CancelPageFileChooser => BrowserOperation::CancelPageFileChooser,
         }
     }
 }
@@ -493,6 +511,12 @@ pub enum BrowserOperation {
     Navigate {
         url: String,
     },
+    /// Answer the page's open file chooser with these paths.
+    ChoosePageFiles {
+        paths: Vec<String>,
+    },
+    /// Close the page's open file chooser without giving it a file.
+    CancelPageFileChooser,
     /// Offer the engine runtime's install through the Store.
     InstallEngine,
     /// Another Browser in a desktop tab right after this one.

@@ -178,6 +178,12 @@ globalThis.__tiloPage ||= (() => {
     if (element.required || element.getAttribute('aria-required') === 'true') out.push('required');
     if (element.readOnly && (tag === 'input' || tag === 'textarea')) out.push('readonly');
     if (element.getAttribute('aria-invalid') === 'true') out.push('invalid');
+    // A file input is operated by opening the page's file chooser, not by typing.
+    if (tag === 'input' && type(element) === 'file') {
+      if (element.multiple) out.push('multiple');
+      const accept = clean(element.getAttribute('accept'), MAX_NAME);
+      if (accept) out.push(`accept=${accept.replace(/\s+/g, '')}`);
+    }
     if (kind === 'link') {
       const href = typeof element.href === 'string' ? element.href : element.getAttribute('href') || '';
       if (/^https?:/i.test(href)) out.push(`-> ${clean(href, 300)}`);
@@ -441,7 +447,12 @@ globalThis.__tiloPage ||= (() => {
     const hit = topmost(center.x, center.y);
     if (!within(hit, target))
       throw failure('obscured', `${ref} is covered by ${describe(hit)}; close or scroll past it first`);
-    return {ok: true, x: center.x, y: center.y, message: `Clicked ${summary(element)}`};
+    // A file input opens the page's file chooser, which the reply names so the
+    // caller knows what to answer instead of waiting for a click that is done.
+    const opens = element.localName === 'input' && element.type === 'file'
+      ? `, which opened the file chooser${element.multiple ? ' for several files' : ''}; choose files for it`
+      : '';
+    return {ok: true, x: center.x, y: center.y, message: `Clicked ${summary(element)}${opens}`};
   }
 
   function fill(ref, text, allowSecret) {

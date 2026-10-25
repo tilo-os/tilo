@@ -84,6 +84,117 @@ const PAGE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 const PAGE_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 /// A page action that started a navigation waits this long for it to load.
 const PAGE_NAVIGATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// A file chooser nobody answers is cancelled after this long, so the page
+/// is not left waiting for a panel that never opens.
+const FILE_CHOOSER_LIFETIME: std::time::Duration = std::time::Duration::from_secs(60);
+/// The most files one chooser answer may name, with the engine.
+const FILE_CHOOSER_MAX_PATHS: usize = 16;
+
+/// The page's file chooser, open and waiting for files.
+#[derive(Clone, Debug)]
+struct FileChooser {
+    id: u32,
+    /// The line the outline leads with, naming what the chooser takes.
+    summary: String,
+    title: String,
+    /// The types the page takes, in its own notation (`.pdf`, `image/*`).
+    accept: String,
+    folder: bool,
+    multiple: bool,
+    deadline: ui::time::Instant,
+}
+
+/// The chooser, as the page's reader states it: its name and what it takes.
+fn chooser_summary(title: &str, accept: &str, folder: bool, multiple: bool) -> String {
+    let mut line = if title.is_empty() {
+        "file chooser".to_string()
+    } else {
+        format!("file chooser {title:?}")
+    };
+    let takes = if folder {
+        "a folder"
+    } else {
+        match accept {
+            "" => "any file",
+            accept => accept,
+        }
+    };
+    line.push_str(&format!(" takes {takes}"));
+    if multiple {
+        line.push_str(", several");
+    }
+    line
+}
+
+impl FileChooser {
+    /// Why the chooser refuses these paths, or `None` when it takes them all.
+    fn refusal(&self, paths: &[String]) -> Option<String> {
+        if paths.is_empty() {
+            return None;
+        }
+        if paths.len() > FILE_CHOOSER_MAX_PATHS {
+            return Some(format!(
+                "One answer carries at most {FILE_CHOOSER_MAX_PATHS} files."
+            ));
+        }
+        if !self.multiple && paths.len() > 1 {
+            return Some("This page takes one file in this chooser.".into());
+        }
+        for path in paths {
+            let file = std::path::Path::new(path);
+            if !file.is_absolute() {
+                return Some(format!(
+                    "{path} is not a full path; give the path from the start"
+                ));
+            }
+            if !self.folder && file.is_dir() {
+                return Some(format!("{path} is a folder, not a file"));
+            }
+            if !file.exists() {
+                return Some(format!("There is no file at {path}"));
+            }
+            if !self.accepts(file) {
+                return Some(format!(
+                    "This page takes {accept} here, not {path}",
+                    accept = self.accept
+                ));
+            }
+        }
+        None
+    }
+
+    /// Whether the page's own `accept` list offers this file.
+    fn accepts(&self, file: &std::path::Path) -> bool {
+        if self.accept.is_empty() {
+            return true;
+        }
+        let name = file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        let extension = name.rsplit_once('.').map(|(_, extension)| extension);
+        self.accept.split(',').any(|token| {
+            let token = token.trim().to_lowercase();
+            if let Some(theirs) = token.strip_prefix('.') {
+                extension == Some(theirs)
+            } else if let Some(theirs) = token.strip_prefix("*.") {
+                extension == Some(theirs)
+            } else {
+                extension.is_some_and(|extension| token.contains(extension))
+            }
+        })
+    }
+}
+
+/// A chooser answer waiting for the engine's reply: the files given, and the
+/// effect that completes when the engine takes them.
+#[derive(Clone, Debug)]
+struct FileChooserAnswer {
+    id: Option<u32>,
+    invocation: Option<ui::tilo_actions::InvocationId>,
+    paths: Vec<String>,
+}
 
 /// A page action admitted through the resource surface.
 struct PageOperation {
@@ -501,6 +612,11 @@ pub struct BrowserWidget {
     resource_pip_deadline: Option<ui::time::Instant>,
     page_operation: Option<PageOperation>,
     page_operation_result: Option<ui::tilo_actions::InvocationUpdate>,
+    /// The page's file chooser a click on a file input opened, waiting for the
+    /// person's or an agent's choice of files.
+    file_chooser: Option<FileChooser>,
+    /// The answer to a chosen chooser, until its invocation is answered.
+    file_chooser_answer: Option<FileChooserAnswer>,
     /// Effects waiting on an operation this window accepted.
     pending_replies: Vec<(ui::tilo_actions::InvocationId, ui::framework::EffectReply)>,
     page_request_seq: u32,
@@ -1286,6 +1402,8 @@ impl BrowserWidget {
             resource_pip_deadline: None,
             page_operation: None,
             page_operation_result: None,
+            file_chooser: None,
+            file_chooser_answer: None,
             pending_replies: Vec::new(),
             page_request_seq: 0,
             pending_pip: None,
@@ -1910,7 +2028,9 @@ impl BrowserWidget {
                     .thread_name("browser-reveal-download")
                     .send();
             }
-            BrowserOperation::Page(_) => {
+            BrowserOperation::Page(_)
+            | BrowserOperation::ChoosePageFiles { .. }
+            | BrowserOperation::CancelPageFileChooser => {
                 return Err("page actions report their result; start them as an invocation".into());
             }
             BrowserOperation::InstallEngine => {
@@ -2003,6 +2123,7 @@ impl BrowserWidget {
 
     /// Send a request once its page has settled, and bound every phase.
     fn drive_page_operation(&mut self) {
+        self.expire_file_chooser();
         let now = std::time::Instant::now();
         let loading = self.page_loading();
         let Some(operation) = self.page_operation.as_mut() else {
@@ -2144,7 +2265,13 @@ impl BrowserWidget {
         value.insert("message".into(), message.into());
         value.insert("navigated".into(), reply.navigated.into());
         if let Some(outline) = &reply.outline {
-            value.insert("outline".into(), outline.as_str().into());
+            // The page's file chooser waits for an answer, so every read leads
+            // with it and the action that answers it.
+            let outline = self.file_chooser.as_ref().map_or_else(
+                || outline.clone(),
+                |chooser| format!("{}\n{outline}", chooser.summary),
+            );
+            value.insert("outline".into(), outline.into());
         }
         if let Some(data) = &reply.data {
             value.insert("data".into(), data.clone());
@@ -2159,6 +2286,165 @@ impl BrowserWidget {
                 resources: Vec::new(),
             },
         }
+    }
+
+    /// Fold the page's file chooser: an answer it took completes the effect
+    /// that gave it; a refused one fails it and leaves the chooser open to
+    /// answer again.
+    fn apply_file_chooser_event(&mut self, event: WebViewEvent) {
+        match event {
+            WebViewEvent::FileChooserRequested {
+                id,
+                title,
+                accept,
+                folder,
+                multiple,
+            } => {
+                // A page can open a chooser in answer to an answer; the new
+                // one is the one left open, so it replaces any earlier one.
+                self.file_chooser = Some(FileChooser {
+                    id,
+                    summary: chooser_summary(&title, &accept, folder, multiple),
+                    title,
+                    accept,
+                    folder,
+                    multiple,
+                    deadline: ui::time::Instant::now() + FILE_CHOOSER_LIFETIME,
+                });
+                self.structure_dirty = true;
+            }
+            WebViewEvent::FileChooserClosed { id } => {
+                if self
+                    .file_chooser
+                    .as_ref()
+                    .is_some_and(|chooser| chooser.id == id)
+                {
+                    self.file_chooser = None;
+                    self.structure_dirty = true;
+                }
+            }
+            WebViewEvent::FileChooserResult {
+                id,
+                accepted,
+                count,
+                message,
+            } => {
+                let Some(answer) = self
+                    .file_chooser_answer
+                    .take_if(|answer| answer.id == Some(id))
+                else {
+                    return;
+                };
+                let Some(invocation) = answer.invocation else {
+                    return;
+                };
+                if !accepted {
+                    // The chooser is still open, so the answer can be given again.
+                    self.file_chooser = self.file_chooser.take().filter(|chooser| chooser.id != id);
+                    self.page_operation_result = Some(ui::tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: ui::tilo_actions::ActionFailure {
+                            code: "browser.page.file_chooser_refused".into(),
+                            message: message,
+                            details: None,
+                            retryable: true,
+                        },
+                    });
+                    self.structure_dirty = true;
+                    return;
+                }
+                self.file_chooser = self.file_chooser.take().filter(|chooser| chooser.id != id);
+                self.structure_dirty = true;
+                self.page_operation_result =
+                    Some(self.file_chooser_success(invocation, &answer.paths, count));
+            }
+            _ => {}
+        }
+    }
+
+    /// The engine took these files, so the page's field holds them.
+    fn file_chooser_success(
+        &self,
+        invocation: ui::tilo_actions::InvocationId,
+        paths: &[String],
+        count: u32,
+    ) -> ui::tilo_actions::InvocationUpdate {
+        let message = if paths.is_empty() {
+            "The page's file chooser is closed, and the page has no new file".to_string()
+        } else {
+            let names: Vec<&str> = paths
+                .iter()
+                .filter_map(|path| std::path::Path::new(path).file_name()?.to_str())
+                .collect();
+            let listed = if names.is_empty() {
+                format!("{count} files")
+            } else {
+                names.join(", ")
+            };
+            format!("The page has {listed}")
+        };
+        let mut value = serde_json::Map::new();
+        value.insert("url".into(), self.current_uri.as_str().into());
+        value.insert("title".into(), self.title.as_str().into());
+        value.insert("message".into(), message.as_str().into());
+        value.insert("files".into(), paths.into());
+        value.insert("provenance".into(), "web-content".into());
+        ui::tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: ui::tilo_actions::ActionOutput {
+                value: Some(value.into()),
+                resources: Vec::new(),
+            },
+        }
+    }
+
+    /// Close a chooser nobody answered in time, so the page is not left
+    /// waiting and the person's own click shows a panel again.
+    fn expire_file_chooser(&mut self) {
+        let Some(chooser) = self.file_chooser.clone() else {
+            return;
+        };
+        if ui::time::now() < chooser.deadline {
+            return;
+        }
+        self.file_chooser = None;
+        self.engine.send(WebViewCommand::FileChooserAnswer {
+            id: chooser.id,
+            paths: Vec::new(),
+        });
+        self.structure_dirty = true;
+    }
+
+    /// Answer the page's open file chooser for an agent, or refuse to.
+    fn answer_file_chooser(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        paths: Vec<String>,
+    ) -> Result<(), String> {
+        let chooser = self.file_chooser.clone().ok_or_else(|| {
+            "No file chooser is open: click the page's file input first.".to_string()
+        })?;
+        if self.file_chooser_answer.is_some()
+            || self.page_operation.is_some()
+            || self.page_operation_result.is_some()
+        {
+            return Err("another page action is already running in this tab".into());
+        }
+        if let Some(problem) = chooser.refusal(&paths) {
+            return Err(problem);
+        }
+        self.file_chooser_answer = Some(FileChooserAnswer {
+            id: Some(chooser.id),
+            invocation: Some(invocation),
+            paths: paths.clone(),
+        });
+        self.engine.send(WebViewCommand::FileChooserAnswer {
+            id: chooser.id,
+            paths,
+        });
+        self.file_chooser = None;
+        self.structure_dirty = true;
+        Ok(())
     }
 
     fn completed_download_path(&self, id: &str) -> Result<std::path::PathBuf, String> {
@@ -3037,6 +3323,11 @@ impl BrowserWidget {
                         self.pending_history = None;
                         self.open_navigation_menu(direction, entries);
                     }
+                }
+                event @ (WebViewEvent::FileChooserRequested { .. }
+                | WebViewEvent::FileChooserClosed { .. }
+                | WebViewEvent::FileChooserResult { .. }) => {
+                    self.apply_file_chooser_event(event);
                 }
                 event @ (WebViewEvent::PermissionRequested { .. }
                 | WebViewEvent::PermissionClosed { .. }
@@ -5034,11 +5325,14 @@ impl Widget for BrowserWidget {
             .into_iter()
             .flatten()
             .flatten();
+        // A file chooser nobody answers is cancelled on time too.
+        let chooser_expiry = self.file_chooser.as_ref().map(|chooser| chooser.deadline);
         self.site
             .deadline()
             .into_iter()
             .chain(feedback_expiry)
             .chain(self.credentials.deadline())
+            .chain(chooser_expiry)
             .chain(waiting)
             .chain(
                 self.children()
@@ -5259,6 +5553,8 @@ impl BrowserWidget {
                 &["element", "cross_origin"][..],
             ),
             (E::ReadPageChanges, &[][..]),
+            (E::ChoosePageFiles { paths: Vec::new() }, &["paths"][..]),
+            (E::CancelPageFileChooser, &[][..]),
             (E::ReadPageElementAt { x: 0.0, y: 0.0 }, &["x", "y"][..]),
             (
                 E::WaitPageSettled {
@@ -5503,6 +5799,14 @@ impl BrowserWidget {
             return self.page_operation_result.take();
         }
         if self
+            .file_chooser_answer
+            .as_ref()
+            .is_some_and(|answer| answer.invocation == Some(invocation))
+        {
+            // Still with the engine: the chooser's answer is not settled yet.
+            return None;
+        }
+        if self
             .resource_navigation_result
             .as_ref()
             .is_some_and(|update| update.invocation() == invocation)
@@ -5711,6 +6015,24 @@ impl BrowserWidget {
         if let BrowserOperation::Page(request) = operation {
             self.start_page_operation(invocation, request)?;
             return Ok(ui::framework::Effected::Pending);
+        }
+        if let BrowserOperation::ChoosePageFiles { paths } = operation {
+            self.answer_file_chooser(invocation, paths)?;
+            return Ok(ui::framework::Effected::Pending);
+        }
+        if matches!(&operation, BrowserOperation::CancelPageFileChooser) {
+            // Nothing to cancel is not an answer, so it is never a success.
+            let Some(chooser) = self.file_chooser.take() else {
+                return Err("No file chooser is open.".into());
+            };
+            self.engine.send(WebViewCommand::FileChooserAnswer {
+                id: chooser.id,
+                paths: Vec::new(),
+            });
+            self.structure_dirty = true;
+            return Ok(ui::framework::Effected::value(serde_json::json!({
+                "message": "The page's file chooser is closed, and the page has no new file",
+            })));
         }
         if matches!(&operation, BrowserOperation::ToggleReaderView) {
             if !is_supported_web_url(&self.current_uri) {

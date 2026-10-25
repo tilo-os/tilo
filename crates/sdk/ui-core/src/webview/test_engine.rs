@@ -455,6 +455,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::SetClearOnExit(_)
             | WebViewCommand::ShowDeveloperTools
             | WebViewCommand::PermissionDecision { .. }
+            | WebViewCommand::FileChooserAnswer { .. }
             | WebViewCommand::DownloadDecision { .. }
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }

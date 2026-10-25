@@ -9,6 +9,7 @@
 #include "site_info.h"
 #include "navigation_history.h"
 #include "page_automation.h"
+#include "file_chooser.h"
 #include "agent_log.h"
 #include "paint_snapshot.h"
 #include "document_size.h"
@@ -35,6 +36,7 @@
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
 #include "include/wrapper/cef_helpers.h"
+#include <sys/stat.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -208,6 +210,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   CefRefPtr<CefDialogHandler> GetDialogHandler() override { return this; }
   bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
+    // A page action's click opens the chooser for the agent, not a panel on
+    // the person's desktop: hold the callback and report it as a chooser.
+    if(agent_click_) return OpenAgentFileChooser(mode,title,extensions,callback);
 #if defined(OS_MAC)
     Event("file_dialog");return ShowHostFileDialog(mode,title,extensions,callback);
 #else
@@ -696,6 +701,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
+    else if(op=="file_chooser") {AnswerFileChooser(d);}
     else if(op=="try_close_tab") {DetachVisible();}
     else if(op=="close_tab") {CloseNative();}
     else if(op=="navigate") {TraceGeometry("navigate-load-url",id_);frame->LoadURL(d->GetString("url"));}
@@ -800,10 +806,74 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // Coordinates arrive in CSS pixels; CEF's view space is zoomed DIPs.
   void PageClick(double x,double y) {
     if(!browser_)return;auto host=browser_->GetHost();const double zoom=std::pow(1.2,host->GetZoomLevel());
+    // A page action's click is the agent's: an input it opens asks the agent
+    // for files instead of showing the person a panel.
+    agent_click_=true;
     CefMouseEvent event;event.x=static_cast<int>(std::lround(x*zoom));event.y=static_cast<int>(std::lround(y*zoom));event.modifiers=key_modifiers_;
     host->SendMouseMoveEvent(event,false);
     event.modifiers|=EVENTFLAG_LEFT_MOUSE_BUTTON;host->SendMouseClickEvent(event,MBT_LEFT,false,1);
     event.modifiers&=~EVENTFLAG_LEFT_MOUSE_BUTTON;host->SendMouseClickEvent(event,MBT_LEFT,true,1);
+    // The chooser request is raised while the click is dispatched; a page
+    // that opens one from a timer instead keeps the person's own panel.
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){self->agent_click_=false;},CefRefPtr<Client>(this)),kAgentClickMs);
+  }
+  // The page's file chooser, held for the agent that opened it.
+  struct AgentFileChooser {
+    int id=0;
+    bool folder=false,multiple=false;
+    std::vector<CefString> extensions;
+    CefRefPtr<CefFileDialogCallback> callback;
+  };
+  bool OpenAgentFileChooser(FileDialogMode mode,const CefString& title,const std::vector<CefString>& extensions,CefRefPtr<CefFileDialogCallback> callback) {
+    if(mode==FILE_DIALOG_SAVE || !callback) return false;
+    if(file_chooser_.callback) { file_chooser_.callback->Cancel();answered_choosers_.insert(file_chooser_.id); }
+    file_chooser_.id=next_file_chooser_=next_file_chooser_%2147483647+1;
+    file_chooser_.folder=mode==FILE_DIALOG_OPEN_FOLDER;
+    file_chooser_.multiple=mode==FILE_DIALOG_OPEN_MULTIPLE;
+    file_chooser_.extensions=extensions;
+    file_chooser_.callback=callback;
+    auto fields=CefDictionaryValue::Create();fields->SetInt("id",file_chooser_.id);
+    fields->SetBool("folder",file_chooser_.folder);fields->SetBool("multiple",file_chooser_.multiple);
+    fields->SetString("title",title);
+    fields->SetString("accept",tilo::ChooserAccept(extensions));
+    Event("file_chooser",fields);
+    return true;
+  }
+  void AnswerFileChooser(CefRefPtr<CefDictionaryValue> d) {
+    const int id=d->GetInt("id");
+    if(!file_chooser_.callback || file_chooser_.id!=id) {
+      auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("ok",false);
+      fields->SetString("message","That file chooser is no longer open");Event("file_chooser_result",fields);return;
+    }
+    std::vector<std::string> paths;
+    if(d->HasKey("paths")) {
+      auto list=d->GetList("paths");
+      const std::string error=list ? ValidateChooserPaths(*list,file_chooser_.folder,file_chooser_.extensions,file_chooser_.multiple,paths) : "No files were given";
+      if(!error.empty()) {
+        auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("ok",false);fields->SetString("message",error);Event("file_chooser_result",fields);return;
+      }
+    }
+    auto callback=file_chooser_.callback;file_chooser_.callback=nullptr;file_chooser_.extensions.clear();
+    std::vector<CefString> chosen;for(const auto& path:paths) chosen.emplace_back(path);
+    if(chosen.empty()) callback->Cancel();else callback->Continue(chosen);
+    answered_choosers_.insert(id);
+    auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("ok",true);
+    fields->SetInt("count",static_cast<int>(chosen.size()));Event("file_chooser_result",fields);
+  }
+  // Every refusal here keeps the chooser open, so the agent can answer it again.
+  static std::string ValidateChooserPaths(CefListValue& list,bool folder,const std::vector<CefString>& extensions,bool multiple,std::vector<std::string>& out) {
+    std::vector<std::string> paths;
+    for(size_t i=0;i<list.GetSize();++i) paths.push_back(list.GetString(i).ToString());
+    return tilo::ChooserRefusal(paths,folder,extensions,multiple,out);
+  }
+  void CloseFileChooser() {
+    if(!file_chooser_.callback) return;
+    const int id=file_chooser_.id;
+    auto callback=file_chooser_.callback;file_chooser_.callback=nullptr;file_chooser_.extensions.clear();
+    answered_choosers_.insert(file_chooser_.id);
+    callback->Cancel();
+    auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("ok",true);fields->SetInt("count",0);
+    Event("file_chooser_result",fields);
   }
   void PageKey(CefRefPtr<CefDictionaryValue> key) {
     if(!browser_)return;const int held=key_modifiers_;
@@ -823,7 +893,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!download_owners.Detach(id_)){Event("close_blocked");return;}
     InvalidateCredentials();
     transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
-    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();pixels_.clear();popup_.clear();Event("tab_detached");PublishDownloadRuntime();
+    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}CloseFileChooser();agent_click_=false;capabilities_->Close();pixels_.clear();popup_.clear();Event("tab_detached");PublishDownloadRuntime();
   }
  private:
   struct CredentialPending {
@@ -1137,6 +1207,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<tilo::ServiceSessionImport> service_session_import_;
   int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
+  AgentFileChooser file_chooser_;int next_file_chooser_=0;std::set<int> answered_choosers_;
+  // True only while a page action's own click is dispatched.
+  bool agent_click_=false;
+  // Long enough for the click's own dialog request to arrive.
+  static constexpr int64_t kAgentClickMs=1000;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
   tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
   IMPLEMENT_REFCOUNTING(Client);

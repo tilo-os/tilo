@@ -29,6 +29,9 @@ use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
 
 const MAX_OWNED_NAVIGATIONS: usize = 32;
+/// The most files one chooser answer may name; a page's own chooser offers
+/// more than one at a time only when it allows several.
+const MAX_FILE_CHOOSER_PATHS: usize = 16;
 
 #[derive(Default)]
 struct NavigationRequests {
@@ -1779,6 +1782,19 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             .as_object()
             .is_some_and(|object| object.len() == if value.get("tab").is_some() { 2 } else { 1 }),
         "permission_prompt" => valid_id(value) && text("origin") && text("permissions"),
+        "file_chooser" => {
+            valid_id(value)
+                && text("title")
+                && text("accept")
+                && value["folder"].is_boolean()
+                && value["multiple"].is_boolean()
+        }
+        "file_chooser_result" => {
+            valid_id(value)
+                && value["ok"].is_boolean()
+                && value["count"].as_u64().is_some_and(|count| count <= 4096)
+                && text("message")
+        }
         "download_prompt" => valid_id(value) && text("url") && text("name"),
         "download" => {
             valid_id(value)
@@ -1969,6 +1985,14 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         | WebViewCommand::DownloadDecision { id, .. }
         | WebViewCommand::CancelNativeDownload { id }
         | WebViewCommand::RetryDownload { id } => *id > 0 && i32::try_from(*id).is_ok(),
+        WebViewCommand::FileChooserAnswer { id, paths } => {
+            *id > 0
+                && i32::try_from(*id).is_ok()
+                && paths.len() <= MAX_FILE_CHOOSER_PATHS
+                && paths
+                    .iter()
+                    .all(|path| !path.is_empty() && path.len() <= 4096)
+        }
         WebViewCommand::Navigate(url) => url.len() <= 65536,
         WebViewCommand::StartDownload { uri } => {
             uri.len() <= 8192
@@ -2163,6 +2187,19 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         },
         "permission_closed" => WebViewEvent::PermissionClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
+        },
+        "file_chooser" => WebViewEvent::FileChooserRequested {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+            title: value["title"].as_str()?.into(),
+            accept: value["accept"].as_str()?.into(),
+            folder: value["folder"].as_bool()?,
+            multiple: value["multiple"].as_bool()?,
+        },
+        "file_chooser_result" => WebViewEvent::FileChooserResult {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+            accepted: value["ok"].as_bool()?,
+            count: u32::try_from(value["count"].as_u64().unwrap_or(0)).ok()?,
+            message: value["message"].as_str().unwrap_or_default().into(),
         },
         "download_prompt" => WebViewEvent::NativeDownloadRequested {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
@@ -2372,6 +2409,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::ShowDeveloperTools => json!({"op":"devtools"}),
         WebViewCommand::PermissionDecision { id, allow } => {
             json!({"op":"permission_decision","id":id,"allow":allow})
+        }
+        WebViewCommand::FileChooserAnswer { id, paths } => {
+            json!({"op":"file_chooser","id":id,"paths":paths})
         }
         WebViewCommand::DownloadDecision { id, allow } => {
             json!({"op":"download_decision","id":id,"allow":allow})
