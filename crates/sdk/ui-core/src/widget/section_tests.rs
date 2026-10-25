@@ -413,3 +413,74 @@ fn a_section_says_whether_the_pointer_is_over_it() {
     });
     assert!(!over.get(), "the pointer left the window");
 }
+
+/// The right edge of every switch in `node`, in tree order.
+fn switch_edges(node: &InspectionNode, found: &mut Vec<f64>) {
+    if node.widget == "Toggle" {
+        found.push(rect(node).x1);
+    }
+    for child in &node.children {
+        switch_edges(child, found);
+    }
+}
+
+/// The switch edges of a section of `rows` laid out 600 wide.
+fn switch_edges_of(rows: Vec<Element>) -> Vec<f64> {
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(Section::new(rows)),
+        (600, 400),
+        Theme::light(),
+    );
+    let root = harness.inspection().root;
+    let mut edges = Vec::new();
+    switch_edges(&root, &mut edges);
+    edges
+}
+
+fn switch(id: &str) -> Element {
+    Box::new(crate::widget::Toggle::new(id, id))
+}
+
+#[test]
+fn a_lists_switches_stand_in_one_column_beside_its_chevrons() {
+    let edges = switch_edges_of(vec![
+        Box::new(
+            ListRow::new("home", "Home")
+                .secondary("Connected")
+                .trailing(switch("home"))
+                .disclosure(),
+        ),
+        Box::new(ListRow::new("desk", "Through Desk PC").trailing(switch("desk"))),
+        Box::new(
+            ListRow::new("work", "Work")
+                .trailing(switch("work"))
+                .disclosure(),
+        ),
+        Box::new(ListRow::new("mini", "Through Studio Mac mini").trailing(switch("mini"))),
+        Box::new(ListRow::new("add", "Add a VPN").disclosure()),
+    ]);
+    assert_eq!(edges.len(), 4, "every switch laid out: {edges:?}");
+    assert!(
+        edges.iter().all(|edge| (edge - edges[0]).abs() < 0.5),
+        "one column of switches: {edges:?}"
+    );
+}
+
+#[test]
+fn a_list_without_marks_after_its_switches_keeps_them_on_the_edge() {
+    let alone = switch_edges_of(vec![Box::new(
+        ListRow::new("share", "Let my other devices use this device").trailing(switch("share")),
+    )]);
+    let beside_drill = switch_edges_of(vec![
+        Box::new(
+            ListRow::new("share", "Let my other devices use this device").trailing(switch("share")),
+        ),
+        Box::new(ListRow::new("more", "More options").disclosure()),
+    ]);
+    assert_eq!(alone.len(), 1);
+    assert!(
+        (alone[0] - beside_drill[0]).abs() < 0.5,
+        "a chevron with no switch before it moves no switch: {alone:?} vs {beside_drill:?}"
+    );
+}
