@@ -10,6 +10,7 @@ use vello::peniko::Color;
 
 use super::TextInput;
 use crate::scroll_copy::{Piece, Showing, Since};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 /// How one frame showed a shaped multiline field: its lines and marks
@@ -44,8 +45,11 @@ fn mark(index: usize, rect: Rect) -> Piece {
 
 impl TextInput {
     /// Note what this frame shows of a shaped multiline field, once its
-    /// draw is done.
-    pub(super) fn note_shown(&self, transform: Affine, theme: &Theme) {
+    /// draw is done. Each line is a piece where it paints: its rows' bands
+    /// and the ink that reaches past them
+    /// ([`TextRenderer::rich_line_ink_reach`]), for every line whose ink
+    /// may show in the field, as its draw takes them.
+    pub(super) fn note_shown(&self, transform: Affine, theme: &Theme, renderer: &mut TextRenderer) {
         // What this model does not follow (a placeholder, a composition,
         // spelling, an autocorrection, styled spans, an accessory) leaves
         // the frame unnoted: the field repaints whole.
@@ -85,19 +89,21 @@ impl TextInput {
                 unscrolled + f64::from(bottom),
             )
         };
+        let reach = renderer.rich_ink_reach(layout);
         let mut pieces: Vec<Piece> = Vec::new();
         let mut last: Option<(usize, f32, f32, rustc_hash::FxHasher)> = None;
-        let close = |line: Option<(usize, f32, f32, rustc_hash::FxHasher)>,
-                     pieces: &mut Vec<Piece>| {
+        let mut close = |line: Option<(usize, f32, f32, rustc_hash::FxHasher)>,
+                         pieces: &mut Vec<Piece>| {
             if let Some((index, top, bottom, hasher)) = line {
+                let ink = renderer.rich_line_ink_reach(layout, index);
                 pieces.push(Piece {
                     key: u64::try_from(index).unwrap_or(MARK - 1),
-                    rect: band(top, bottom),
+                    rect: band(top - ink.above, bottom + ink.below),
                     paint: hasher.finish(),
                 });
             }
         };
-        for run in layout.rows_within(top, bottom) {
+        for run in layout.rows_reaching(top, bottom, reach) {
             let (row_top, row_bottom) = (run.line_top, run.line_top + run.line_height);
             if let Some(line) = last.as_mut().filter(|line| line.0 == run.line_i) {
                 line.1 = line.1.min(row_top);
@@ -226,3 +232,7 @@ impl TextInput {
         self.shown.present();
     }
 }
+
+#[cfg(test)]
+#[path = "text_input_damage_tests.rs"]
+mod tests;
