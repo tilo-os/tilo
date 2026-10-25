@@ -5041,11 +5041,12 @@ requires = ["{node}"]
 cost = "heavy"
 requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 5400
-on = ["main", "idle"]
+on = ["idle"]
 default = false
 
 [check.matrix]
 arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+set = [{ when = { arch = "aarch64" }, on = ["main", "idle"] }]
 
 [[check]]
 name = "runtime-size-{arch}"
