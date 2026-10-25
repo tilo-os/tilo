@@ -30,8 +30,22 @@ const MAX_PER_PEER: usize = 4;
 /// Authenticated governor protocol serving owner-private commands.
 pub struct PrivateProtocol {
     rooms: Rooms,
+}
+
+/// How many exchanges the door holds at once, in all and per device: one
+/// set for the rooms, whichever carrier an exchange came by.
+pub(super) struct PrivateBounds {
     connections: Arc<Semaphore>,
-    peers: Arc<Mutex<HashMap<[u8; 32], Arc<Semaphore>>>>,
+    peers: Mutex<HashMap<[u8; 32], Arc<Semaphore>>>,
+}
+
+impl Default for PrivateBounds {
+    fn default() -> Self {
+        Self {
+            connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+            peers: Mutex::default(),
+        }
+    }
 }
 impl std::fmt::Debug for PrivateProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -48,20 +62,17 @@ pub(crate) struct Admitted {
 impl PrivateProtocol {
     #[must_use]
     /// Serve private operations using the same governed room custody.
-    pub fn new(rooms: Rooms) -> Self {
-        Self {
-            rooms,
-            connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
-            peers: Arc::new(Mutex::new(HashMap::new())),
-        }
+    pub const fn new(rooms: Rooms) -> Self {
+        Self { rooms }
     }
 
     /// Room for one more exchange of `device`, within the door's and the
     /// device's bounds; `None` when either is full.
     pub(crate) fn admit(&self, device: [u8; 32]) -> Option<Admitted> {
-        let door = self.connections.clone().try_acquire_owned().ok()?;
+        let bounds = &self.rooms.inner.private;
+        let door = bounds.connections.clone().try_acquire_owned().ok()?;
         let peer = {
-            let mut peers = self
+            let mut peers = bounds
                 .peers
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);

@@ -399,15 +399,10 @@ impl Rooms {
     /// as. A member of the room, so it may watch, yet nobody: no person
     /// list shows it.
     pub(crate) async fn spectator_person(&self, workspace_id: u64) -> Option<[u8; 32]> {
-        let workspace = self
-            .inner
-            .host
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned()?;
-        let spectators = workspace.lock().await.spectators;
+        let workspaces = self.inner.host.workspaces.lock().await;
+        let workspace = workspaces.get(&workspace_id).cloned();
+        drop(workspaces);
+        let spectators = workspace?.lock().await.spectators;
         spectators.map(|spectators| spectators.root)
     }
 
