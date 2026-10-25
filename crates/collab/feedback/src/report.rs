@@ -647,12 +647,8 @@ impl ReportDraft {
                 // model still look through them.
                 add(note_node(index), TextKind::Interface, note, true);
             }
-            let app = if pick.app_name.trim().is_empty() {
-                pick.app.as_str()
-            } else {
-                pick.app_name.as_str()
-            };
-            let mut picked = step(app, "Picked", texts);
+            // The app's display name; never its id, which only routes.
+            let mut picked = step(&pick.app_name, "Picked", texts);
             picked.kind = StepKind::Appeared;
             picked.resource_kind = pick
                 .record
@@ -899,29 +895,31 @@ impl ReviewedFeedback {
                 .map(ReviewedText::plain)
                 .filter(|label| !label.trim().is_empty())
                 .unwrap_or_else(|| selection.role.clone());
-            let app = if selection.app_name.is_empty() {
-                &selection.app
+            // The app's display name; never its id, which only routes.
+            let app = selection.app_name.trim();
+            lines.push(if app.is_empty() {
+                format!("{}. {what} ({})", index.saturating_add(1), selection.role)
             } else {
-                &selection.app_name
-            };
-            lines.push(format!(
-                "{}. {app}: {what} ({})",
-                index.saturating_add(1),
-                selection.role
-            ));
+                format!(
+                    "{}. {app}: {what} ({})",
+                    index.saturating_add(1),
+                    selection.role
+                )
+            });
             if let Some(note) = &selection.note {
                 lines.push(format!("   \u{201C}{}\u{201D}", note.plain()));
             }
-            let shown: Vec<String> = selection
-                .texts
-                .iter()
-                .map(ReviewedText::plain)
-                .filter(|text| !text.trim().is_empty())
-                .take(6)
-                .collect();
-            if !shown.is_empty() {
-                lines.push(format!("   {}", shown.join(" \u{00B7} ")));
-            }
+            // One line per text: a text may hold any punctuation, so no
+            // separator between them can be told apart from the text itself.
+            lines.extend(
+                selection
+                    .texts
+                    .iter()
+                    .map(ReviewedText::plain)
+                    .filter(|text| !text.trim().is_empty())
+                    .take(6)
+                    .map(|text| format!("   {text}")),
+            );
         }
         if let Some(timings) = &self.timings {
             lines.push(format!(

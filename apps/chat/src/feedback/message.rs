@@ -103,11 +103,6 @@ fn lines(
 /// showed. Only the app's own words name a part; a name that is content is
 /// one of its texts.
 fn pick(index: usize, selection: &ReviewedSelection) -> Vec<String> {
-    let app = if selection.app_name.trim().is_empty() {
-        selection.app.clone()
-    } else {
-        selection.app_name.clone()
-    };
     let label = selection
         .label
         .as_ref()
@@ -124,14 +119,27 @@ fn pick(index: usize, selection: &ReviewedSelection) -> Vec<String> {
         ),
         (None, _) => crate::i18n::t_args("chat-feedback-part-role", &[("role", role.into())]),
     };
-    let mut lines = vec![crate::i18n::t_args(
-        "chat-feedback-pick",
-        &[
-            ("index", index.saturating_add(1).into()),
-            ("what", what.into()),
-            ("app", app.into()),
-        ],
-    )];
+    // The app by the name it was picked under; never its id, which only
+    // routes. A pick with no name known is the part alone.
+    let app = selection.app_name.trim();
+    let mut lines = vec![if app.is_empty() {
+        crate::i18n::t_args(
+            "chat-feedback-pick-alone",
+            &[
+                ("index", index.saturating_add(1).into()),
+                ("what", what.into()),
+            ],
+        )
+    } else {
+        crate::i18n::t_args(
+            "chat-feedback-pick",
+            &[
+                ("index", index.saturating_add(1).into()),
+                ("what", what.into()),
+                ("app", app.to_owned().into()),
+            ],
+        )
+    }];
     let named_by_content = label
         .filter(|(kind, _)| *kind != TextKind::Interface || selection.kind.is_some())
         .map(|(_, label)| label);

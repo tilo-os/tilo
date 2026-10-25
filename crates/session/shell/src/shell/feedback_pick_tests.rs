@@ -339,7 +339,7 @@ fn a_dragged_release_waits_for_what_the_window_has_inside() {
     assert_eq!(keys, ["@9:Root[0]/Text[0]", "@9:Root[0]/Button[0]"]);
     assert_eq!(
         picking.picker.picker.selected()[1].caption,
-        "Chat \u{b7} Button"
+        "A button in Chat"
     );
 }
 
