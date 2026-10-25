@@ -621,10 +621,21 @@ impl TargetArg {
 }
 
 #[derive(clap::Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent CLI flag (release, assertions, allow_planned, \
+              no_default_features); every combination is a build someone can ask for"
+)]
 struct TargetOptions {
     /// Optimized build.
     #[arg(long)]
     release: bool,
+    /// Web only: with `--release`, keep debug assertions and overflow checks in
+    /// the optimized bundle (the workspace's `wasm-assert` profile), so a
+    /// qualified or measured bundle is never faster for having stopped
+    /// checking.
+    #[arg(long, requires = "release")]
+    assertions: bool,
     /// Web only: which bundle to build.
     #[arg(long, value_enum, default_value = "auto")]
     bundle: tilo_app_cli::targets::WebBundle,
@@ -646,6 +657,7 @@ impl TargetOptions {
     ) -> tilo_app_cli::targets::TargetRequest {
         let mut request = tilo_app_cli::targets::TargetRequest::new(target);
         request.release = self.release;
+        request.assertions = self.assertions;
         request.allow_planned = self.allow_planned;
         request.bundle = self.bundle;
         request.features.clone_from(&self.features);
@@ -2047,6 +2059,7 @@ fn web_build_request(args: BuildArgs) -> tilo_app_cli::web::WebBuildRequest {
         output: args.output,
         app_only: args.app_only,
         release: args.options.release,
+        assertions: args.options.assertions,
     }
 }
 
@@ -2081,6 +2094,9 @@ fn build_android(
 ) -> Result<Value> {
     if args.app_only || args.static_link {
         anyhow::bail!("--app-only and --static are not for --platform android");
+    }
+    if args.options.assertions {
+        anyhow::bail!("--assertions keeps a web bundle's assertions; it is for --platform web");
     }
     let build = tilo_app_cli::android::build(
         path,
@@ -2136,6 +2152,9 @@ fn build_native(
 ) -> Result<Value> {
     if args.app_only {
         anyhow::bail!("--app-only is for --platform web");
+    }
+    if args.options.assertions {
+        anyhow::bail!("--assertions keeps a web bundle's assertions; it is for --platform web");
     }
     let build = tilo_app_cli::build_native(
         path,
@@ -3849,7 +3868,7 @@ mod tests {
 
         // Phase: a_web_build_honours_release.
         {
-            let web = |args: &[&str]| {
+            let parsed = |args: &[&str]| {
                 let cli = Cli::try_parse_from(
                     ["tilo-app", "build", "--platform", "web"]
                         .iter()
@@ -3859,10 +3878,20 @@ mod tests {
                 let Command::Build(build) = cli.command else {
                     panic!("expected build command");
                 };
-                web_build_request(build).release
+                web_build_request(build)
             };
+            let web = |args: &[&str]| parsed(args).release;
             assert!(web(&["--release"]));
             assert!(!web(&[]));
+            // `--assertions` reaches the build only beside `--release`: an
+            // unoptimised build already asserts, and a plain `--release` must
+            // not silently gain or lose them.
+            assert!(parsed(&["--release", "--assertions"]).assertions);
+            assert!(!parsed(&["--release"]).assertions);
+            assert!(
+                Cli::try_parse_from(["tilo-app", "build", "--platform", "web", "--assertions"])
+                    .is_err()
+            );
         }
 
         // Phase: every_build_command_takes_platform_and_arch.
