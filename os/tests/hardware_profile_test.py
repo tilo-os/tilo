@@ -126,15 +126,92 @@ class HardwareProfileTest(unittest.TestCase):
             hardware_profile.validate_definition(LENOVO | {"internal_keyboards": [keyboard, keyboard]})
         with self.assertRaisesRegex(ValueError, "internal keyboards must be a bounded list"):
             hardware_profile.validate_definition(LENOVO | {"internal_keyboards": keyboard})
-        # Without a device tree there is no board match to confine it to.
+        # Without a device tree or a DMI identity there is no board match to
+        # confine the quirk to.
         definitions, data = self.definition()
         data = data | QUIET_CRASH_RECORD
-        with self.assertRaisesRegex(ValueError, "require a device-tree board"):
+        with self.assertRaisesRegex(ValueError, "require a device-tree or DMI board"):
             hardware_profile.validate_definition(data | {"internal_keyboards": [keyboard]})
         # A board that names no keyboard ships no quirk.
         prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent",
                                 definitions, target_update_ref=TARGET_REF)
         self.assertFalse((self.root / "usr/share/libinput").exists())
+
+    def test_a_firmware_described_keyboard_matches_on_the_boards_dmi_identity(self):
+        # An x86-64 handheld has no device tree: its firmware describes its
+        # devices. The quirk still has to name one model, so it matches the
+        # DMI modalias of the board the definition describes.
+        classes, data = self.definition(architecture="aarch64")
+        data = data | QUIET_CRASH_RECORD | {
+            "id": "other-board", "architecture": "x86_64",
+            "dmi": {"sys_vendor": "Valve", "product_name": "Jupiter"},
+            "internal_keyboards": [{"name": "AT Translated Set 2 keyboard", "bus": "i2c",
+                                     "vendor": "0001", "product": "0001",
+                                     "devicetree_compatible": None}],
+        }
+        self.assertEqual(hardware_profile.validate_definition(data)["id"], data["id"])
+        (classes / "other-board.json").write_text(json.dumps(data))
+        prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent",
+                                classes, target_update_ref=TARGET_REF)
+        quirks = (self.root / "usr/share/libinput/50-tilo-other-board.quirks").read_text(encoding="utf-8")
+        self.assertIn("MatchDMIModalias=dmi:Valve:Jupiter:\n", quirks)
+        self.assertNotIn("MatchDeviceTree", quirks, "a board without a device tree has no compatible")
+
+    def test_a_dmi_identity_is_validated_and_stays_off_a_device_tree_board(self):
+        _, base = self.definition(architecture="x86_64")
+        keyboard = {"name": "kb", "bus": "i2c", "vendor": "0001", "product": "0001",
+                    "devicetree_compatible": None}
+        board = base | QUIET_CRASH_RECORD | {
+            "dmi": {"sys_vendor": "Valve", "product_name": "Jupiter"},
+            "internal_keyboards": [keyboard]}
+        dmi = board["dmi"]
+        mutations = (
+            {"sys_vendor": "Valve", "product_name": "Jup:iter"},
+            {"sys_vendor": "Va*ve", "product_name": "Jupiter"},
+            {"sys_vendor": "Valve", "product_name": ""},
+            {"sys_vendor": 7, "product_name": "Jupiter"},
+            {"sys_vendor": "Valve"},
+            {"sys_vendor": "Valve", "product_name": "Jupiter", "board_name": "Jupiter"},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                with self.assertRaisesRegex(ValueError, "DMI"):
+                    hardware_profile.validate_definition(board | {"dmi": mutation})
+        with self.assertRaisesRegex(ValueError, "DMI"):
+            hardware_profile.validate_definition(board | {"dmi": [dmi["sys_vendor"], dmi["product_name"]]})
+        # One board, one name for it: a definition with a device tree is
+        # already confined by its compatible. That board may only be aarch64
+        # (only ARM64 embeds a DTB), so the refusal names the device tree when
+        # the board is x86-64 and the DMI field when it is not.
+        with self.assertRaises(ValueError):
+            hardware_profile.validate_definition(board | {"devicetree": "qcom/x1e80100-lenovo-yoga-slim7x.dtb"})
+        # A keyboard entry names the identity it matches on, so on a board
+        # without a device tree it carries no compatible.
+        with self.assertRaisesRegex(ValueError, "device-tree compatible"):
+            hardware_profile.validate_definition(board | {
+                "internal_keyboards": [keyboard | {"devicetree_compatible": "valve,jupiter"}]})
+
+    def test_shipped_handhelds_are_firmware_described_boards(self):
+        profiles = Path(__file__).resolve().parents[1] / "hardware/profiles"
+        handhelds = {path.stem: json.loads(path.read_text(encoding="utf-8"))
+                     for path in profiles.glob("*.json")}
+        handhelds = {name: definition for name, definition in handhelds.items()
+                     if definition["architecture"] == "x86_64"}
+        self.assertTrue(handhelds, "no x86-64 board is shipped")
+        for name, definition in handhelds.items():
+            with self.subTest(board=name):
+                self.assertIsNone(definition["devicetree"], f"{name} has no device tree")
+                # A panel mounted in portrait turns the console with it: the
+                # value is the one the panel is mounted at, so text is upright
+                # from the first frame the kernel draws. The console is on the
+                # built-in panel before any output name exists, so it is named
+                # by connector rather than by driver instance.
+                panel = "video=eDP-1:panel_orientation=right_side_up"
+                self.assertIn(panel, definition["kernel_args"], name)
+                self.assertEqual(definition["dmi"], {
+                    "sys_vendor": definition["dmi"]["sys_vendor"],
+                    "product_name": definition["dmi"]["product_name"]})
+                self.assertEqual(hardware_profile.validate_definition(definition)["id"], name)
 
     def test_current_dev_origin_requires_target_flavour_and_policy(self):
         from hardware_profile import install_update_origin, validate_target_imgref
@@ -694,8 +771,11 @@ class FirmwareTrimContractTest(unittest.TestCase):
             elif data.get("firmware_exclude"):
                 hardware_profile.validate_definition(data)
                 trimmed.add(data["id"])
-        # Neither board has a PC GPU, so neither ships its firmware.
-        self.assertEqual(trimmed, {"lenovo-83ed", "orangepi-3b-v2-1"})
+        # Every board that ships has no PC GPU of another vendor, so each
+        # names the firmware it does not need; the set is read from the
+        # shipped definitions rather than listed here, so a board added to
+        # os/hardware/profiles is held to the same rule.
+        self.assertEqual(trimmed, {path.stem for path in profiles.glob("*.json")})
         layer = (self.ROOT / "dev/install-board-layer.sh").read_text(encoding="utf-8")
         self.assertIn("dnf remove -y --no-autoremove", layer)
         self.assertIn("firmware_exclude", layer)
