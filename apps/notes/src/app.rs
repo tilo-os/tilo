@@ -1051,11 +1051,8 @@ impl NotesApp {
         let can_react = me.is_some()
             && !dispatcher.is_past()
             && dispatcher.may(&tilo_actions::ActionNeed::reactions());
-        let shared = people.is_some_and(|people| {
-            people.members().iter().any(|member| {
-                !member.is_self && member.kind == ui::presence::ParticipantKind::Person
-            })
-        });
+        // Shared with whoever belongs to the notebook's room, here now or not.
+        let shared = people.is_some_and(|people| dispatcher.is_shared(people));
         let offered = can_react && (shared || !groups.is_empty());
         (offered || !groups.is_empty()).then(|| crate::main_panel::NoteReactions {
             page,

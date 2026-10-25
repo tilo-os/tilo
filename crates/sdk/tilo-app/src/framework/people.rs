@@ -85,6 +85,13 @@ impl People {
         self.roster.borrow().members.clone()
     }
 
+    /// Whether another person is in the room with this window now.
+    pub fn others_here(&self) -> bool {
+        self.roster.borrow().members.iter().any(|member| {
+            !member.is_self && member.kind == ui_core::presence::ParticipantKind::Person
+        })
+    }
+
     /// Whether `id` is the participant this window is for.
     pub fn is_me(&self, id: &str) -> bool {
         self.me.as_deref() == Some(id)
