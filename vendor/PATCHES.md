@@ -62,7 +62,10 @@ sweep once a topic's caches are empty or membership shuffle without an active
 neighbor. A returning neighbor rearms the shuffle once. With relays, a net
 report that keeps finding the same addresses waits longer before the next, up
 to five minutes, and paths may keep alive less often than every 5 s, which
-tilo-fs uses for its held connections. Network changes still arrive through
+tilo-fs uses for its held connections. `iroh-gossip` also lets the shell share
+its connections (`Builder::connections`, `Gossip::connection`): a person's
+devices carry their fabric on bidirectional streams of the gossip connection
+they already have rather than open a second one. Network changes still arrive through
 netlink at once, and `netwatch` has the kernel drop the address-lifetime refreshes
 a router sends every few seconds (a BPF filter on its netlink socket) instead of
 waking the process to ignore them. Its monitor also re-reads the interfaces
