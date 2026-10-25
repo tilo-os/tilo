@@ -1,9 +1,8 @@
 use super::*;
 use std::collections::HashMap;
 use tilo_peer_state::join;
-use tilo_relay_session::rooms::private::{
-    PRIVATE_ALPN, PrivateClient, PrivateConversation, PrivateOperation, PrivateReply,
-};
+use tilo_relay_protocol::rooms::private::{PrivateConversation, PrivateOperation, PrivateReply};
+use tilo_relay_session::rooms::private::{PRIVATE_ALPN, PrivateClient};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 mod foreign_devices;
@@ -697,5 +696,128 @@ async fn exercise_expired_certificate(
     .await;
     client_endpoint.close().await;
     router.shutdown().await.unwrap();
+    relay.shutdown().await;
+}
+
+/// A page reaches the same door over its HTTPS session: the device its
+/// session proved is the caller, a watch is a poll whose time running out
+/// answers the unchanged cursor, a change wakes it at once, and a
+/// certificate the session did not prove is refused like a stranger's.
+#[tokio::test]
+async fn a_pages_session_carries_the_same_private_door() {
+    let directory = tempfile::tempdir().unwrap();
+    let (governor_key, governor_cert) = tests::governor();
+    let relay = tests::view_read_relay(directory.path(), &governor_key, &governor_cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms
+        .create("Private conversations in a page")
+        .await
+        .unwrap();
+    let (alice_key, alice) = identity(81, None);
+    let (bob_key, bob) = identity(91, None);
+    let now = SystemTime::now();
+    admit(
+        &rooms,
+        &created.room,
+        &governor_key,
+        &alice_key,
+        &alice,
+        now,
+    )
+    .await;
+    admit(&rooms, &created.room, &governor_key, &bob_key, &bob, now).await;
+    let door = PrivateProtocol::new(rooms.clone());
+    let (a, b) = (
+        hex::encode(alice.user_public_key),
+        hex::encode(bob.user_public_key),
+    );
+    let ask = |cert: &DeviceCert, operation, poll: Duration| {
+        let (door, cert, room) = (door.clone(), cert.clone(), created.room.clone());
+        async move {
+            let until = async {
+                tokio::time::sleep(poll).await;
+                Ok(())
+            };
+            door.serve(&cert, &cert.device_public_key, &room, operation, until)
+                .await
+        }
+    };
+    let quick = Duration::from_millis(50);
+    let PrivateReply::Contacts(contacts) = ask(&alice, PrivateOperation::Contacts, quick).await
+    else {
+        panic!("contacts");
+    };
+    assert!(contacts.iter().any(|contact| contact.public_key == b));
+    assert!(matches!(
+        ask(&alice, PrivateOperation::Open { peer: b.clone() }, quick).await,
+        PrivateReply::Conversation(_)
+    ));
+    // Nothing new within the poll: the cursor it was given.
+    let unchanged = ask(
+        &bob,
+        PrivateOperation::Watch {
+            peer: a.clone(),
+            after_sequence: 0,
+        },
+        quick,
+    )
+    .await;
+    assert!(matches!(unchanged, PrivateReply::Changed(0)));
+    let watching = tokio::spawn(ask(
+        &bob,
+        PrivateOperation::Watch {
+            peer: a.clone(),
+            after_sequence: 0,
+        },
+        Duration::from_secs(60),
+    ));
+    wait_for_watch(&rooms, &created.room, &bob, &a).await;
+    let sent = ask(
+        &alice,
+        PrivateOperation::Send {
+            peer: b.clone(),
+            invocation: uuid::Uuid::new_v4(),
+            text: BODY.into(),
+        },
+        quick,
+    )
+    .await;
+    assert!(matches!(sent, PrivateReply::Sent));
+    let changed = tilo_test_env::within("the page's watch wakes", watching)
+        .await
+        .unwrap();
+    assert!(matches!(changed, PrivateReply::Changed(1)));
+    let read = conversation(
+        ask(
+            &bob,
+            PrivateOperation::Read {
+                peer: a.clone(),
+                after_sequence: 0,
+                limit: 50,
+            },
+            quick,
+        )
+        .await,
+    );
+    assert_eq!(read.messages.len(), 1);
+    assert_eq!(read.messages[0].text, BODY);
+    assert_eq!(read.messages[0].sender, a);
+    // A session proves one device: another device's certificate is refused.
+    let unproved = door
+        .serve(
+            &alice,
+            &bob.device_public_key,
+            &created.room,
+            PrivateOperation::Contacts,
+            std::future::ready(Ok(())),
+        )
+        .await;
+    assert!(matches!(unproved, PrivateReply::Refused));
+    let (_, stranger) = identity(101, None);
+    assert!(matches!(
+        ask(&stranger, PrivateOperation::Contacts, quick).await,
+        PrivateReply::Refused
+    ));
+    drop(rooms);
     relay.shutdown().await;
 }

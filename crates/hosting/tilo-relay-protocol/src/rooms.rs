@@ -16,6 +16,8 @@
 //! challenge ([`join_proof_digest`]) and waits until the room's owner admits
 //! or declines it.
 
+pub mod private;
+
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
 
