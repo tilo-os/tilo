@@ -26,7 +26,7 @@ use tilo_actions::remote::{
     Caller, InvokeArgument, InvokeRequest, PendingPoll, application_action_target,
 };
 use tilo_desktop::people_overlay::{
-    MessageLine, PeekPictures, PeerMessages, PeerScreen, PeerWindow, PeopleHit, PeopleOverlay,
+    LivePictures, MessageLine, PeerMessages, PeerScreen, PeerWindow, PeopleHit, PeopleOverlay,
     PeopleOverlayModel,
 };
 use tilo_relay_protocol::live::{LAYOUT_UNITS, LiveLayout, LiveRecord};
@@ -541,17 +541,4 @@ fn last_lines(key: &str) -> Vec<MessageLine> {
             text: message.text.clone(),
         })
         .collect()
-}
-
-/// The live pictures the strip keeps of the windows a peek shows, by
-/// window group.
-struct LivePictures;
-
-impl PeekPictures for LivePictures {
-    fn paint(&mut self, window: u64, scene: &mut Scene, transform: Affine, rect: Rect) -> bool {
-        ui::window_pictures::with_picture(window, |picture| {
-            ui::window_pictures::paint_fitted(picture, scene, transform, rect)
-        })
-        .is_some_and(|painted| painted.area() > 0.0)
-    }
 }

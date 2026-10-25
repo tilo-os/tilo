@@ -1,13 +1,14 @@
 //! The message box beside the peek: the last few lines of the direct
 //! conversation with the person, faded, over a field that sends the next.
 //!
-//! It is a frosted floating surface, so the work behind it still reads
-//! through. It holds the keyboard only once it is pressed; Enter hands the
+//! It is a chat bubble said to the peek: half see-through frosted
+//! material whose tail reaches up to the face in the peek, so the work
+//! behind it still reads through. It holds the keyboard only once it is pressed; Enter hands the
 //! text to the host, which sends it through Chat like any other direct
 //! message, and Escape lets go of it and the peek.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape as _, Stroke};
 use vello::peniko::{BlendMode, Fill};
 use winit::keyboard::{Key, ModifiersState};
 
@@ -236,18 +237,9 @@ impl Composer {
             BlendMode::default(),
             pose.opacity,
             placed,
-            &ui::widget::floating_surface::painted_bounds(card, theme),
+            &ui::widget::floating_surface::painted_bounds(card.inflate(0.0, gap), theme),
         );
-        // Frosted and a touch see-through: the work behind still reads.
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            0.92,
-            placed,
-            &card.inflate(40.0, 40.0),
-        );
-        ui::widget::floating_surface::paint(scene, placed, card, theme);
-        scene.pop_layer();
+        Self::paint_bubble(scene, placed, theme, card, below, gap);
         let inner = card.inset(-pad);
         if model.unavailable.is_none() {
             Self::paint_lines(scene, placed, text, theme, inner, model.lines, model.name);
@@ -277,6 +269,52 @@ impl Composer {
         scene.pop_layer();
     }
 
+    /// The box's body: a chat bubble of half-see-through frosted material
+    /// whose tail reaches into the gap to the peek, under the face there,
+    /// so the box reads as said to the person the peek shows.
+    fn paint_bubble(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        card: Rect,
+        below: bool,
+        gap: f64,
+    ) {
+        let radius = ui::widget::floating_surface::radius(theme);
+        let pad = f64::from(theme.tokens.spacing.s3);
+        let tail_x = card.x0 + pad + super::FACE / 2.0;
+        let half = (gap * 1.25).max(6.0);
+        let mut bubble = BezPath::new();
+        bubble.extend(RoundedRect::from_rect(card, radius).path_elements(0.1));
+        // The tail overlaps the body by a pixel, wound as the body is (a
+        // y-down clockwise outline), so the two fill as one shape.
+        if below {
+            bubble.move_to((tail_x - half, card.y0 + 1.0));
+            bubble.line_to((tail_x, card.y0 - gap));
+            bubble.line_to((tail_x + half, card.y0 + 1.0));
+        } else {
+            bubble.move_to((tail_x + half, card.y1 - 1.0));
+            bubble.line_to((tail_x, card.y1 + gap));
+            bubble.line_to((tail_x - half, card.y1 - 1.0));
+        }
+        bubble.close_path();
+        ui::surface::floating_shadow(scene, transform, card, radius, 0.6, theme);
+        ui::floating_surface::paint_material(
+            scene,
+            transform,
+            &bubble,
+            ui::floating_surface::Material::SeeThrough,
+            theme,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            ui::chrome::panel_border(theme),
+            None,
+            &bubble,
+        );
+    }
+
     fn paint_lines(
         scene: &mut Scene,
         transform: Affine,
@@ -301,19 +339,26 @@ impl Composer {
                 1 => 0.62,
                 _ => 0.38,
             };
-            let who = if line.mine {
-                crate::i18n::t("people-overlay-you")
+            // As in a chat: their lines on the left under their name,
+            // this person's own on the right.
+            let said = if line.mine {
+                line.text.replace('\n', " ")
             } else {
-                name.to_owned()
+                format!("{name}: {}", line.text.replace('\n', " "))
             };
-            let said = format!("{who}: {}", line.text.replace('\n', " "));
-            let shown_text =
-                text.elide_to_width_style(&said, ui::num::f32_of_f64(inner.width()), &style);
+            let max = inner.width() * if line.mine { 0.8 } else { 1.0 };
+            let shown_text = text.elide_to_width_style(&said, ui::num::f32_of_f64(max), &style);
+            let x = if line.mine {
+                let (w, _) = text.measure_style(&shown_text, None, &style);
+                inner.x1 - f64::from(w)
+            } else {
+                inner.x0
+            };
             text.draw_style(
                 scene,
                 &shown_text,
                 colors.text_primary.multiply_alpha(alpha),
-                transform.pre_translate((inner.x0, y).into()),
+                transform.pre_translate((x, y).into()),
                 None,
                 &style,
             );
