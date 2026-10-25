@@ -296,6 +296,10 @@ pub struct CanonicalRecord {
     pub records: RecordStore,
     pub record: RecordId,
     pub project: ReportProjection,
+    /// The owner's durable content store, where the room keeps what its
+    /// records reference. Without one a report with a screenshot is never
+    /// acknowledged: its metadata alone does not prove the picture is kept.
+    pub content: Option<ui::content::ContentStore>,
 }
 
 pub type ReportProjection =
@@ -309,6 +313,16 @@ pub trait CanonicalReceiptSource {
     /// # Errors
     /// Refuses missing, unauthorized, conflicting or undurable reports.
     fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error>;
+    /// Whether the owner's durable content store keeps bytes that hash to
+    /// `hash`: the witness a report's screenshot needs before its receipt.
+    /// A source without a content store keeps nothing.
+    ///
+    /// # Errors
+    /// Refuses an unreadable store.
+    fn keeps_content(&self, hash: &str) -> Result<bool, Error> {
+        let _ = hash;
+        Ok(false)
+    }
 }
 
 fn digest(pin: &Pin, receipt: &Receipt) -> Result<blake3::Hash, Error> {
@@ -490,11 +504,9 @@ impl CanonicalDestination {
     ) -> Result<SignedReceipt, Error> {
         submission.validate()?;
         let pin = enrollment.authorize_receipt(submission)?;
-        // Saved report metadata does not prove custody of referenced content.
-        // Attachment acknowledgments need the owner's durable content witness.
-        if submission.feedback.screenshot.is_some() {
-            return Err(Error::NotDurable);
-        }
+        // Saved report metadata does not prove custody of referenced content:
+        // the owner must keep the screenshot's verified bytes itself.
+        self.witness_content(submission)?;
         if enrollment.owner != self.owner
             || self.signer.owner() != &self.owner
             || submission.destination != self.destination
@@ -529,7 +541,18 @@ impl CanonicalDestination {
         if current != receipt || current_author != author {
             return Err(Error::ReceiptMismatch);
         }
+        self.witness_content(submission)?;
         Ok(SignedReceipt { receipt, signature })
+    }
+
+    /// Refuses a report whose screenshot the owner does not durably keep.
+    fn witness_content(&self, submission: &Submission) -> Result<(), Error> {
+        match &submission.feedback.screenshot {
+            Some(screenshot) if !self.source.keeps_content(&screenshot.hash)? => {
+                Err(Error::NotDurable)
+            }
+            _ => Ok(()),
+        }
     }
 
     fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error> {
@@ -566,6 +589,14 @@ impl CanonicalReceiptSource for CanonicalRecord {
                 (self.project)(doc, submission)
             })
             .ok_or(Error::NotDurable)?
+    }
+    fn keeps_content(&self, hash: &str) -> Result<bool, Error> {
+        // The store verifies what it reads against the hash naming it.
+        Ok(self
+            .content
+            .as_ref()
+            .and_then(|content| content.read(hash))
+            .is_some_and(|bytes| blake3::hash(&bytes).to_hex().as_str() == hash))
     }
 }
 

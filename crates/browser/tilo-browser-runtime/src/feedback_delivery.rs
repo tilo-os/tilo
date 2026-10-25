@@ -11,10 +11,11 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_app::feedback::{Error, Submission};
+use tilo_app::feedback::{MaskedScreenshot, ReviewText};
 use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_desktop::feedback::Destination;
 use tilo_desktop::feedback::transport::{
-    Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
+    Capture, Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -294,7 +295,7 @@ pub(crate) fn pump(id: u32) {
                                 Box::new(Session {
                                     connection: connection.clone(),
                                 }),
-                                Box::new(NoCapture),
+                                Box::new(PageContent),
                             )
                             .map_err(|error| error.to_string())
                             .and_then(|startup| register_feedback_startup(id, startup));
@@ -323,6 +324,41 @@ pub(crate) fn pump(id: u32) {
         }
     }
 }
+/// Keeps a report's masked picture in the page's content store, as a file
+/// posted in Chat is kept: the room's host asks the room for the pictures of
+/// the reports filed in its Chat and keeps its own copy, which its receipt
+/// waits for. The page captures nothing itself; the picker's masked crops
+/// are the only picture a report carries.
+struct PageContent;
+impl Capture for PageContent {
+    fn offers_screenshots(&self) -> bool {
+        NoCapture.offers_screenshots()
+    }
+    fn context(&mut self) -> Result<Vec<ReviewText>, Error> {
+        NoCapture.context()
+    }
+    fn capture(&mut self) -> Result<MaskedScreenshot, Error> {
+        NoCapture.capture()
+    }
+    fn persist(&mut self, image: &MaskedScreenshot) -> Result<(), Error> {
+        keep_picture(&crate::page_content::page_content(), image)
+    }
+}
+
+/// Keep `image` in `content`, refusing a store that keeps other bytes.
+fn keep_picture(
+    content: &tilo_content::ContentStore,
+    image: &MaskedScreenshot,
+) -> Result<(), Error> {
+    let hash = content
+        .put(image.png())
+        .map_err(|_| Error::Invalid("the page has no room for the picture"))?;
+    if hash != image.reference().hash || content.read(&hash).as_deref() != Some(image.png()) {
+        return Err(Error::NotDurable);
+    }
+    Ok(())
+}
+
 fn identity(cert: &DeviceCert) -> Identity {
     Identity {
         user: cert.user_public_key,
