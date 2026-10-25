@@ -521,6 +521,7 @@ impl NetworkService for FakeNetwork {
                 profiles: Some(failed(&reason)),
                 profile_settings: HashMap::new(),
                 wake_settings: HashMap::new(),
+                profile_list: None,
                 hotspot_clients: Some(failed(&reason)),
                 vpns: Some(failed(&reason)),
                 link: None,
@@ -550,6 +551,7 @@ impl NetworkService for FakeNetwork {
         let mut snapshot = NetworkSnapshot::of_networks(self.networks.lock().unwrap().clone());
         snapshot.vpns = Some(Ok(self.vpns.lock().unwrap().clone()));
         snapshot.profiles = None;
+        snapshot.profile_list = Some(Ok(self.profiles.lock().unwrap().clone()));
         snapshot.plugins = None;
         snapshot
     }
@@ -2677,4 +2679,108 @@ fn a_change_the_device_reports_shows_while_network_is_open() {
     network.poll();
     assert!(network.snapshot.is_none(), "a closed pane reads nothing");
     assert_eq!(status_reads(), 2);
+}
+
+/// A network joined from quick settings or forgotten with `nmcli` while
+/// Network is open is listed and forgotten here too: a saved profile added
+/// or removed elsewhere has the page read everything again, its settings
+/// with it, so the new network's page offers them and the known list drops
+/// the forgotten one. The same profiles read nothing more than the status.
+#[test]
+fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
+    let fake = Arc::new(FakeNetwork::default());
+    *fake.profiles.lock().unwrap() = vec![saved("home-uuid", "Home_Network", 300)];
+    fake.follows
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut network = model(&fake);
+    // The networks were just looked for: no periodic scan comes between.
+    network.scanned_at = Some(ui::time::now());
+    let _following = PaneModel::follow(&mut network).expect("a shown pane follows the device");
+    let changed = fake
+        .follower
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the device is followed while the pane shows it");
+    let saved_names = |network: &NetworkModel| -> Vec<String> {
+        network
+            .saved_wifi()
+            .map(|profile| profile.name.clone())
+            .collect()
+    };
+    let poll_until = |network: &mut NetworkModel, names: &[&str]| {
+        let deadline = tilo_test_env::hang_deadline();
+        while saved_names(network) != names || network.snapshot.is_some() {
+            network.poll();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the saved networks were never read again: {:?}",
+                saved_names(network)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    // Showing the page reads the status once; the same profiles read
+    // nothing more.
+    network.poll();
+    poll_until(&mut network, &["Home_Network"]);
+    let whole_reads = || {
+        fake.snapshot_reads
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let before = whole_reads();
+
+    // Joined from quick settings: NetworkManager saves a profile for it.
+    fake.profiles
+        .lock()
+        .unwrap()
+        .push(saved("cafe-uuid", "Cafe", 400));
+    fake.settings.lock().unwrap().insert(
+        "cafe-uuid".into(),
+        os_actions::ConnectionProfileSettings::default(),
+    );
+    changed();
+    poll_until(&mut network, &["Home_Network", "Cafe"]);
+    assert_eq!(
+        whole_reads(),
+        before + 1,
+        "a new profile reads everything once"
+    );
+    assert!(
+        network.wifi_profile("Cafe").is_ok(),
+        "the new network's settings are read with it"
+    );
+
+    // Forgotten elsewhere.
+    fake.profiles
+        .lock()
+        .unwrap()
+        .retain(|profile| profile.uuid != "home-uuid");
+    changed();
+    poll_until(&mut network, &["Cafe"]);
+    assert_eq!(
+        whole_reads(),
+        before + 2,
+        "a profile gone reads everything once"
+    );
+
+    // A change that leaves the profiles as they are reads only the status.
+    changed();
+    let statuses = fake.status_reads.load(std::sync::atomic::Ordering::Relaxed);
+    let deadline = tilo_test_env::hang_deadline();
+    while fake.status_reads.load(std::sync::atomic::Ordering::Relaxed) == statuses
+        || network.snapshot.is_some()
+    {
+        network.poll();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the status was never read"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        whole_reads(),
+        before + 2,
+        "the same profiles read only the status"
+    );
 }
