@@ -249,6 +249,7 @@ mod paint_top;
 mod palette_routing;
 mod palette_run;
 mod palette_search;
+mod people_overlay;
 use palette_search::LaunchpadMark;
 mod nested_shortcuts;
 mod peer_sync;
@@ -308,10 +309,6 @@ use room_activity::{
 };
 use shortcut_config::{DesktopControlsSource, SHORTCUT_GUIDE_ROWS, ShortcutGuideFocus};
 
-/// How long the follow bar says "Stopped following" after the person's own
-/// input ended it.
-const FOLLOW_STOPPED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
 type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<PeerSyncResponse, String>>;
@@ -320,6 +317,7 @@ type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<Strin
 /// relationship. Kept separate from [`FollowBridge`]: the latter is private
 /// local app control, while this one only paints a room-scoped cue remotely.
 type FollowPresenceBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
+pub use people_overlay::LiveLayoutBridge;
 type StatusPresenceBridge =
     std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<ui::LiveStatus>)>;
 type ActiveTabPresenceBridge =
@@ -982,6 +980,17 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// The roster pinned out of the dropdown, floating over the windows at
+    /// an edge as a desk widget does.
+    people_overlay: tilo_desktop::people_overlay::PeopleOverlay,
+    /// Where each person's windows are, as the room's live presence says,
+    /// and where this person's are (`ShellNetwork`'s layouts).
+    live_layout_bridge: Option<LiveLayoutBridge>,
+    /// The layout last said, per room, so it goes out only on a change.
+    published_layout: Option<(
+        crate::shell::state::RoomId,
+        Option<tilo_relay_protocol::live::LiveLayout>,
+    )>,
     /// Who is here arriving from the bar and leaving (`motion::Appear`).
     collaborators_appearing: ui::motion::Appearing,
     /// The roster as it was last painted at rest, and its panel: what is
@@ -1003,19 +1012,13 @@ pub struct ShellOverlayHost {
     /// from the live workspace prevents a later workspace switch from
     /// releasing the wrong set of local app views.
     followed_room: Option<crate::shell::state::RoomId>,
-    /// Keeps the local follow dock and its tether visible long enough to
-    /// arrive and release gracefully instead of snapping between states.
-    follow_transition: ui::motion::Presence,
-    /// Last resolved identity, retained only for the short exit animation.
-    follow_visual: Option<RosterRow>,
-    /// Persistent follow-mode banner painted while following.
-    follow_chip_rect: Rect,
-    /// When following stopped because the person did something of their
-    /// own: the bar says "Stopped following" for [`FOLLOW_STOPPED_FOR`].
-    follow_stopped: Option<Instant>,
-    /// Explicit stop target within [`Self::follow_chip_rect`]. The rest of
-    /// the banner is informative, not a surprising destructive target.
-    follow_stop_rect: Rect,
+    /// The "Following Ada" banner the browser paints too: it arrives and
+    /// leaves gracefully instead of snapping between states, and only its
+    /// Stop is a target.
+    follow_banner: tilo_desktop::follow_banner::FollowBanner,
+    /// The next end of following is the person's own input taking their
+    /// view back: the banner says "Stopped following" a moment.
+    follow_ended_by_own_input: bool,
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
@@ -1805,6 +1808,13 @@ mod capture_tool_tests;
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod people_motion_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+mod people_overlay_tests;
 
 #[cfg(test)]
 #[allow(

@@ -7,11 +7,9 @@
 use super::*;
 
 impl ShellOverlayHost {
-    /// While following someone: a 2 px frame in their colour around the
-    /// work area, and a small bar in the transients' zone (the trailing
-    /// side under the top bar, never on a window's bar) with their face,
-    /// "Following Ada" and Stop (Escape stops too). When the person's own
-    /// input ends it, the bar says "Stopped following" for a moment.
+    /// While following someone: the shared "Following Ada" banner (a frame
+    /// in their colour round the work area and a bar with Stop in the
+    /// transients' zone). Escape stops too.
     pub(super) fn draw_follow_chip(
         &mut self,
         scene: &mut Scene,
@@ -19,188 +17,25 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = ui::time::now();
-        let stopped = self
-            .follow_stopped
-            .filter(|at| now.saturating_duration_since(*at) < FOLLOW_STOPPED_FOR);
-        if stopped.is_none() {
-            self.follow_stopped = None;
-        }
-        if !self.follow_transition.is_visible(now) && stopped.is_none() {
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
-            self.follow_visual = None;
-            return;
-        }
-        let Some(row) = self
-            .followed_roster_row()
-            .or_else(|| self.follow_visual.clone())
-        else {
-            self.set_followed_peer(None);
-            return;
-        };
-        self.follow_visual = Some(row.clone());
-        let following = self.followed_peer.is_some();
-        let label = if following {
-            t_args("follow-label", &[("person", row.label.as_str().into())])
-        } else {
-            t("follow-stopped")
-        };
         let area = self.overlay_area();
         let bar_top = area.y0 + f64::from(tilo_desktop::topbar::topbar_height(theme));
-        let openness = if following {
-            ui::motion::unit_opacity(self.follow_transition.progress(now))
-        } else {
-            stopped.map_or(0.0, |at| {
-                ui::motion::Transient::opacity(
-                    ui::motion::Transient::CONFIRMATION,
-                    (at, at.checked_add(FOLLOW_STOPPED_FOR).unwrap_or(at)),
-                    now,
-                    self.motion.get(),
-                )
-            })
+        let window_bars = self.window_bar_rects();
+        let following = self
+            .followed_peer
+            .is_some()
+            .then(|| self.followed_roster_row());
+        let place = tilo_desktop::follow_banner::BannerFrame {
+            work_area: Rect::new(area.x0, bar_top, area.x1, area.y1),
+            viewport: self.transient_viewport(),
+            window_bars: &window_bars,
+            cursor: self.last_cursor,
+            motion: self.motion.get(),
         };
-        // The frame says whose view this is, all the way round.
-        if following {
-            ui::presence::paint_follow_frame(
-                scene,
-                transform,
-                Rect::new(area.x0, bar_top, area.x1, area.y1),
-                row.color,
-                openness,
-                theme,
-            );
-        }
-        let stop_label = t("follow-stop");
-        let (chip, stop) = Self::follow_chip_rects(
-            text_renderer,
-            theme,
-            (&label, &stop_label),
-            (self.transient_viewport(), &self.window_bar_rects()),
-            following,
-        );
-        self.follow_chip_rect = chip;
-        self.follow_stop_rect = if following { stop } else { Rect::ZERO };
-        // The bar comes down from the top bar it hangs under.
-        let pose = ui::motion::Appear::pose(
-            f64::from(openness),
-            Point::new(chip.center().x, chip.y0),
-            self.motion.get(),
-        );
-        let placed = pose.applied_to(transform);
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            pose.opacity.min(openness),
-            placed,
-            &ui::widget::floating_surface::painted_bounds(chip, theme),
-        );
-        ui::widget::floating_surface::paint_card(scene, placed, chip, theme);
-        self.paint_follow_chip_contents(
-            &mut ui::paint::PaintCtx::new(scene, placed, text_renderer, theme),
-            &row,
-            (&label, &stop_label),
-            (chip, stop),
-            following,
-        );
-        scene.pop_layer();
-    }
-
-    /// Where the follow bar and its Stop go: the transients' slot in
-    /// `viewport`, below any of `window_bars` it would cover. Their face,
-    /// `label` and, while following, Stop.
-    fn follow_chip_rects(
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        (label, stop_label): (&str, &str),
-        (viewport, window_bars): (Rect, &[Rect]),
-        following: bool,
-    ) -> (Rect, Rect) {
-        let spacing = &theme.tokens.spacing;
-        let face = f64::from(theme.tokens.metrics.avatar_inline);
-        let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
-        let (label_w, _) = text_renderer.measure_style(label, None, &label_style);
-        let (stop_w, _) =
-            text_renderer.measure_style(stop_label, None, &theme.text(TextRole::Body));
-        let pad = f64::from(spacing.s3);
-        let stop_width = if following {
-            f64::from(stop_w) + 2.0 * f64::from(spacing.s3)
-        } else {
-            0.0
-        };
-        let width = pad
-            + face
-            + f64::from(spacing.s2)
-            + f64::from(label_w)
-            + if following {
-                f64::from(spacing.s3) + stop_width
-            } else {
-                0.0
-            }
-            + pad;
-        let chip = tilo_desktop::notifications::transient_slot(
-            viewport,
-            viewport.y0,
-            (width, 40.0),
-            window_bars,
-        );
-        let stop = Rect::new(
-            chip.x1 - pad - stop_width,
-            chip.center().y - 14.0,
-            chip.x1 - pad,
-            chip.center().y + 14.0,
-        );
-        (chip, stop)
-    }
-
-    /// The follow bar's contents: their face, `label` and, while following,
-    /// Stop.
-    fn paint_follow_chip_contents(
-        &self,
-        ctx: &mut ui::paint::PaintCtx<'_>,
-        row: &RosterRow,
-        (label, stop_label): (&str, &str),
-        (chip, stop): (Rect, Rect),
-        following: bool,
-    ) {
-        let theme = ctx.theme;
-        let spacing = &theme.tokens.spacing;
-        let pad = f64::from(spacing.s3);
-        let face = f64::from(theme.tokens.metrics.avatar_inline);
-        let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
-        let (_, label_h) = ctx.text.measure_style(label, None, &label_style);
-        let mut their_face = ui::presence::Face::new(&row.label, &row.id, row.color);
-        their_face.is_agent = row.is_agent;
-        ui::presence::FaceStack {
-            side: face - 6.0,
-            ..ui::presence::FaceStack::BAR
-        }
-        .paint(
-            ctx,
-            (chip.x0 + pad + face, chip.center().y),
-            (&[their_face], 0),
-            ui::widget::floating_surface::card_ground(theme),
-        );
-        ctx.text(
-            label,
-            &label_style,
-            theme.tokens.colors.text_primary,
-            Point::new(
-                chip.x0 + pad + face + f64::from(spacing.s2),
-                chip.center().y - f64::from(label_h) / 2.0,
-            ),
-            None,
-        );
-        if following {
-            Button::paint(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                theme,
-                &ButtonFace::new(stop, stop_label)
-                    .role(ui::widget::ButtonRole::Plain)
-                    .hovered(self.last_cursor.is_some_and(|p| stop.contains(p))),
-            );
+        let kept =
+            self.follow_banner
+                .draw(scene, transform, text_renderer, theme, place, following);
+        if !kept {
+            self.set_followed_peer(None);
         }
     }
 
@@ -633,19 +468,12 @@ impl ShellOverlayHost {
         self.followed_tab = None;
         self.followed_session = None;
         if self.followed_peer.is_some() {
-            self.follow_stopped = None;
-            self.follow_visual = self.followed_roster_row();
-            self.follow_transition.show(
-                true,
-                ui::motion::Appear::SPEC,
-                self.motion.get(),
-                self.input_source,
-                ui::time::now(),
-            );
+            let row = self.followed_roster_row();
+            self.follow_banner
+                .started(row, self.motion.get(), self.input_source, ui::time::now());
         } else {
-            self.follow_transition.show(
-                false,
-                ui::motion::Appear::SPEC,
+            self.follow_banner.ended(
+                std::mem::take(&mut self.follow_ended_by_own_input),
                 self.motion.get(),
                 self.input_source,
                 ui::time::now(),
@@ -703,9 +531,8 @@ impl ShellOverlayHost {
         if self.followed_peer.is_some() {
             self.reconcile_followed_peer();
         } else {
-            // Keep the previous geometry only while the exit is visible so
-            // a released dock cannot leave a ghost hit target behind.
-            self.follow_stop_rect = Rect::ZERO;
+            // The banner's Stop went with following (`FollowBanner::ended`),
+            // so a released dock leaves no ghost hit target behind.
         }
     }
 
@@ -750,9 +577,7 @@ impl ShellOverlayHost {
     /// The person did something of their own in the followed view: stop
     /// following, and say so on the bar for a moment.
     pub(super) fn stop_following_for_local_input(&mut self) {
-        if self.followed_peer.is_some() {
-            self.follow_stopped = Some(Instant::now());
-        }
+        self.follow_ended_by_own_input = self.followed_peer.is_some();
         self.set_followed_peer(None);
     }
 
