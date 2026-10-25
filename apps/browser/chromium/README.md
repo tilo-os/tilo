@@ -252,8 +252,10 @@ no further, and a paste got only what the engine copied. The host bridges it
 takes the page's clipboard sends `page_clipboard` (exactly `op` and `tab`)
 for a tab; a tab of one that does not keeps the engine's own.
 
-- Each renderer runs `src/page_clipboard.js` in every web document and
-  extension page before the page's scripts. Chromium decides what may copy,
+- Each renderer runs `src/page_clipboard.js` in every web document,
+  extension page and document a page wrote into a frame (`about:blank`,
+  `about:srcdoc`, where rich editors keep the text they edit) before the
+  page's scripts. Chromium decides what may copy,
   as in Chrome: a copy or cut event fires only for a copy that may happen
   (and a script's own event copies nothing), and `writeText` and `write`
   resolve only once allowed. What the copy took (the selection with its
