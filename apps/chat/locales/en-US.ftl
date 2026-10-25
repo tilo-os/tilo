@@ -288,6 +288,9 @@ chat-message-kind = Message
 ## A filed feedback report as its channel shows it
 # One picked part of the screen: its place, what it was, and the app.
 chat-feedback-pick = { $index }. { $what } in { $app }
+# One picked part from an app whose name is not known: its place and what it
+# was, never the app's id.
+chat-feedback-pick-alone = { $index }. { $what }
 # What a picked part was, when the app said what kind of thing it is.
 chat-feedback-part-kind = { $kind }
 # What a picked part was, by the app's own name for it and its role.

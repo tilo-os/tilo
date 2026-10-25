@@ -337,3 +337,15 @@ fn crops_are_masked_where_content_is_and_stacked_into_one_picture() {
     attach_crops(&mut review.feedback, picture.reference(), &places);
     assert_eq!(review.feedback.selections[0].crop, Some(places[0]));
 }
+
+#[test]
+fn a_pick_from_an_app_with_no_known_name_never_reads_out_the_apps_id() {
+    let mut draft = draft();
+    draft.picks[0].app_name = String::new();
+    let plain = draft.review(None).unwrap().feedback.plain();
+    assert!(plain.contains("1. "), "{plain}");
+    assert!(
+        !plain.contains("so.tilo.chat"),
+        "the id only routes: {plain}"
+    );
+}
