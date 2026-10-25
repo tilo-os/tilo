@@ -2,7 +2,9 @@
 """Page reading and operation through the host's `page` op, in real Chromium."""
 import http.server
 import json
+import os
 import re
+import tempfile
 import threading
 import time
 import unittest
@@ -25,6 +27,8 @@ FORM = b'''<!doctype html><title>Checkout</title>
   <label>Country <select name="country"><option value="NL">Netherlands</option><option value="BE">Belgium</option></select></label>
   <input id="terms" name="terms" type="checkbox" class="visually-hidden"><label for="terms">Accept terms</label>
   <label>Search <input name="q" type="search"></label>
+  <label>Proof of address <input name="proof" type="file" accept=".pdf"></label>
+  <label>Receipts <input name="receipts" type="file" multiple></label>
   <button>Place order</button>
 </form>
 <button id="covered" style="position:fixed;top:10px;left:10px">Covered</button>
@@ -41,6 +45,9 @@ customElements.define('shop-widget', class extends HTMLElement {
   }
 });
 document.querySelector('select').addEventListener('change', e => document.getElementById('status').textContent = 'country ' + e.target.value);
+for (const field of document.querySelectorAll('input[type=file]'))
+  field.addEventListener('change', e => document.getElementById('status').textContent =
+    'files ' + [...e.target.files].map(f => f.name + ':' + f.size).join(','));
 </script>'''
 
 
@@ -283,6 +290,43 @@ class PageActions(unittest.TestCase):
         self.assertNotIn('headers', data[0])
         self.assertEqual(self.ok('console', since=console['next'])['data']['entries'], [], 'nothing new since')
         self.assertEqual(self.main_world('typeof globalThis.__tiloPage'), 'undefined')
+
+    def test_file_inputs_show_themselves_and_take_chosen_files(self):
+        self.h.navigate(self.url + '/form')
+        outline = self.outline()
+        self.assertRegex(outline, r'file "Proof of address" \[ref=d\d+e\d+\] type=file accept="\.pdf" files=none')
+        self.assertRegex(outline, r'file "Receipts" \[ref=d\d+e\d+\] type=file multiple files=none')
+        receipts = self.ref(outline, 'file "Receipts"')
+        proof = self.ref(outline, 'file "Proof of address"')
+        with tempfile.TemporaryDirectory() as folder:
+            first = os.path.join(folder, 'proof.pdf')
+            second = os.path.join(folder, 'one.png')
+            third = os.path.join(folder, 'two.png')
+            for path, body in ((first, b'%PDF-1.4'), (second, b'\x89PNG one'), (third, b'\x89PNG two')):
+                with open(path, 'wb') as file:
+                    file.write(body)
+            # The element's own rule is the page's rule: a script cannot pick
+            # a file the page would have refused, nor a text field at all.
+            refused = self.page('fill_files', element=proof, paths=[second])
+            self.assertEqual((refused['ok'], refused['code']), (False, 'not_accepted'), refused)
+            text = self.ref(outline, 'textbox "Email"')
+            refused = self.page('fill_files', element=text, paths=[first])
+            self.assertFalse(refused['ok'], refused)
+            self.assertIn(text, refused['message'])
+            chosen = self.ok('fill_files', element=proof, paths=[first])
+            self.assertEqual(chosen['data']['files'], ['proof.pdf'], chosen)
+            # The page receives the picker's own trusted events.
+            self.assertEqual(self.main_world('document.getElementById("status").textContent'),
+                             'files proof.pdf:8')
+            self.assertRegex(self.outline(), r'file "Proof of address" .*files="proof.pdf"')
+            chosen = self.ok('fill_files', element=receipts, paths=[second, third])
+            self.assertEqual(chosen['data']['files'], ['one.png', 'two.png'], chosen)
+            self.assertEqual(self.main_world('document.getElementById("status").textContent'),
+                             'files one.png:8,two.png:8')
+            # A click on a file input asks the page's own chooser for files;
+            # nothing is chosen for it, so the outline stays as it was.
+            clicked = self.page('click', element=receipts)
+            self.assertTrue(clicked['ok'], clicked)
 
     def test_secrets_and_cross_site_submissions_need_explicit_consent(self):
         self.h.navigate(self.url + '/agent')
