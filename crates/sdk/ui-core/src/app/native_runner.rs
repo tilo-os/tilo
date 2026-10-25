@@ -2163,6 +2163,10 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
                     ..
                 }
+                | crate::floating_surface::FloatingSurfaceHostMessage::DrawsEmbeds
+                | crate::floating_surface::FloatingSurfaceHostMessage::EmbedStates { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::OpenWindows { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::WindowShareAsk { .. }
                 // Never delivered: the client's `pump` ends on it.
                 | crate::floating_surface::FloatingSurfaceHostMessage::VersionMismatch {
                     ..
