@@ -182,6 +182,7 @@ async fn serve(root: &Path, same_person: bool) -> Result<(), Box<dyn std::error:
             state_dir: root.join("agents"),
             model: ModelChoice::Scripted,
             catalogue: Some(Arc::new(chat_catalogue)),
+            feedback_reviewer: None,
         },
         iroh::RelayMode::Disabled,
     )

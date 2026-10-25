@@ -174,16 +174,20 @@ fn toggling_shows_content_and_a_model_only_adds_to_the_review_it_saw() {
         "Thanks \u{2039}name\u{203A}",
         "the content shows, but the name of someone here stays hidden"
     );
-    composer.model_pending(&words);
-    assert_eq!(composer.model_check(), Some(&ModelCheck::Pending));
+    composer.model_pending(&words, MODEL);
+    let pending = ModelCheck::Pending { by: MODEL.into() };
+    assert_eq!(composer.model_check(), Some(&pending));
     composer.apply_model(&self::words("other words"), None);
     assert_eq!(
         composer.model_check(),
-        Some(&ModelCheck::Pending),
+        Some(&pending),
         "a pass over other words is ignored"
     );
     composer.apply_model(&words, None);
-    assert_eq!(composer.model_check(), Some(&ModelCheck::Failed));
+    assert_eq!(
+        composer.model_check(),
+        Some(&ModelCheck::Failed { by: MODEL.into() })
+    );
     assert!(
         composer.report_review().is_some(),
         "the rules' review stands"
@@ -191,4 +195,49 @@ fn toggling_shows_content_and_a_model_only_adds_to_the_review_it_saw() {
     assert!(composer.report_request().is_some());
     composer.abandon_review();
     assert!(composer.picked().is_none(), "closing discards the picks");
+}
+
+const MODEL: &str = "Anthropic claude-haiku-5-5";
+
+/// The model is asked about the model view alone, and what it hides is laid
+/// over the rules' review, which it cannot undo; the review names it.
+#[test]
+fn a_model_sees_the_model_view_and_adds_to_the_floor_by_name() {
+    use crate::report::{Exposure, model_prompt, model_proposals};
+    let calls = Rc::new(RefCell::new(Calls::default()));
+    let mut composer = composer(&calls);
+    composer.begin_report(picked());
+    let words = words("Ada says hi");
+    composer.review_report(&words).unwrap();
+    let floor = composer.report_review().unwrap().hidden();
+    let (prompt, view) = model_prompt(&composer.report_request().unwrap(), Exposure::Placeholders);
+    assert!(
+        !prompt.contains("Lovelace") && !prompt.contains("Thanks"),
+        "personal values reach the model only as placeholders: {prompt}"
+    );
+    assert!(prompt.contains("Reply"), "{prompt}");
+    composer.apply_model(&words, None);
+    assert_eq!(
+        composer.model_check(),
+        Some(&ModelCheck::Unavailable),
+        "an answer nobody asked for is not laid over the review"
+    );
+    composer.model_pending(&words, MODEL);
+    let index = view.iter().position(|text| text.shown == "Reply").unwrap();
+    let answer = format!("{{\"hide\":[{{\"text\":{index},\"quote\":\"Reply\"}}]}}");
+    composer.apply_model(&words, Some(model_proposals(&view, &answer).unwrap()));
+    assert_eq!(
+        composer.model_check(),
+        Some(&ModelCheck::Applied {
+            added: 1,
+            by: MODEL.into()
+        })
+    );
+    let review = composer.report_review().unwrap();
+    assert_eq!(review.hidden(), floor + 1, "the floor stands beside it");
+    assert!(
+        !serde_json::to_string(&review.feedback)
+            .unwrap()
+            .contains("Lovelace")
+    );
 }

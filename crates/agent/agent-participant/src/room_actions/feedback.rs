@@ -6,7 +6,7 @@ use std::sync::Arc;
 use ed25519_dalek::Signer as _;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::remote::feedback::{FeedbackAdmission, FeedbackAnswer, FeedbackQuery};
-use tilo_actions::remote::{ActionHostError, Caller};
+use tilo_actions::remote::{ActionHostError, Caller, Completer};
 use tilo_desktop::feedback::Destination;
 use tilo_desktop::feedback::transport::{
     CanonicalDestination, CanonicalReceiptSource, Enrollment, ReceiptSigner, ReceiptSigningRequest,
@@ -19,6 +19,48 @@ fn unavailable(reason: &(impl ToString + ?Sized)) -> ActionHostError {
     ActionHostError::Unavailable {
         reason: reason.to_string(),
     }
+}
+
+/// Answer `query` as [`answer`] does, then, when it asks for a review and
+/// the host lends a review model, complete `done` once the model answered.
+/// A prompt that is not exactly the review contract is not asked, and the
+/// model's answer goes back holding only quotes from the texts asked about.
+pub(super) fn answer_and_review(
+    link: &Arc<dyn RoomRecordsLink>,
+    catalogue: AppCatalogue,
+    workspace: u64,
+    caller: Caller,
+    mut query: FeedbackQuery,
+    done: Completer<Result<FeedbackAnswer, ActionHostError>>,
+) {
+    let prompt = query.review.take();
+    let reviewer = link.feedback_reviewer();
+    let asker = caller.clone();
+    let mut answered = match answer(link, catalogue, workspace, caller, query) {
+        Ok(answered) => answered,
+        Err(error) => return done.complete(Err(error)),
+    };
+    let Some(reviewer) = reviewer else {
+        return done.complete(Ok(answered));
+    };
+    answered.reviewer = Some(reviewer.name());
+    let Some((prompt, texts)) = prompt.and_then(|prompt| {
+        let texts = ui::feedback::model_review::texts_of(&prompt)?;
+        Some((prompt, texts))
+    }) else {
+        return done.complete(Ok(answered));
+    };
+    reviewer.review(
+        &asker,
+        prompt,
+        ui::feedback::model_review::answer_schema(),
+        Box::new(move |reply| {
+            answered.review = reply
+                .ok()
+                .and_then(|reply| ui::feedback::model_review::confine(&texts, &reply).ok());
+            done.complete(Ok(answered));
+        }),
+    );
 }
 
 pub(super) fn answer(
@@ -123,6 +165,8 @@ pub(super) fn answer(
     Ok(FeedbackAnswer {
         admission: admission(query, &enrollment, fresh)?,
         receipt,
+        reviewer: None,
+        review: None,
     })
 }
 

@@ -188,16 +188,18 @@ fn outgoing(cx: &ViewCx<FeedbackDraft>, shown: Option<&ReviewShown>) -> Element 
             part = part.push(hidden_row(cx, index, redaction, shown.sent));
         }
     }
-    part = part.push(Box::new(
-        Text::new(match shown.check {
-            ModelCheck::Unavailable => "feedback-check-rules",
-            ModelCheck::Pending => "feedback-check-pending",
-            ModelCheck::Applied { added: 0 } => "feedback-check-model-clear",
-            ModelCheck::Applied { .. } => "feedback-check-model-added",
-            ModelCheck::Failed => "feedback-check-model-failed",
-        })
-        .with_id("feedback-check"),
-    ));
+    let check = Text::new(match shown.check {
+        ModelCheck::Unavailable => "feedback-check-rules",
+        ModelCheck::Pending { .. } => "feedback-check-pending",
+        ModelCheck::Applied { added: 0, .. } => "feedback-check-model-clear",
+        ModelCheck::Applied { .. } => "feedback-check-model-added",
+        ModelCheck::Failed { .. } => "feedback-check-model-failed",
+    });
+    let check = match shown.check.by() {
+        Some(model) => check.with_arg("model", model.to_owned()),
+        None => check,
+    };
+    part = part.push(Box::new(check.with_id("feedback-check")));
     let last = if shown.sent {
         cx.effect_button("feedback-retry", &FeedbackEffect::Retry)
     } else {
@@ -258,11 +260,13 @@ pub(super) struct ModelPass {
 }
 
 impl ModelPass {
-    /// Ask `models` over the review the composer shows. A model outside
-    /// this device sees what the person keeps hidden only as placeholders;
-    /// so does one on it, which the review does not tell apart.
+    /// Ask `models`, which the review calls `name`, over the review the
+    /// composer shows. A model outside this device sees what the person
+    /// keeps hidden only as placeholders; so does one on it, which the
+    /// review does not tell apart.
     pub(super) fn start(
         models: &Models,
+        name: &str,
         composer: &mut Composer,
         words: &ReportWords,
     ) -> Option<Self> {
@@ -278,7 +282,7 @@ impl ModelPass {
             max_output_tokens: 1024,
         };
         let models = models.clone();
-        composer.model_pending(words);
+        composer.model_pending(words, name);
         Some(Self {
             words: words.clone(),
             view,
