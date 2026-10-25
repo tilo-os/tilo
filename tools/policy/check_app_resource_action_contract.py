@@ -1759,12 +1759,13 @@ def main() -> int:
     if violations:
         print("application resource/action contract FAILED", file=sys.stderr)
         for violation in violations:
-            print(f"  {violation.display(ROOT)}", file=sys.stderr)
+            print(violation.display(ROOT))
         return 1
     print(
         "application resource/action contract OK "
         f"({app_count} app crates, {committed_surfaces()} committed surfaces; "
-        "one resource/action protocol)"
+        "one resource/action protocol)",
+        file=sys.stderr,
     )
     return 0
 

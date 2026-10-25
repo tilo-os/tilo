@@ -499,9 +499,13 @@ def main(argv: list[str] | None = None) -> int:
     errors = audit(args.repo.resolve())
     if errors:
         print(f"component manifest check failed ({len(errors)} problem(s)):\n", file=sys.stderr)
-        print("\n\n".join(errors), file=sys.stderr)
+        for error in errors:
+            # The finding's first line; its why, fix and re-run follow it on stderr.
+            finding, _, detail = error.partition("\n")
+            print(finding, flush=True)
+            print(f"{detail}\n", file=sys.stderr, flush=True)
         return 1
-    print("os/components.toml matches os/Containerfile and the Cargo workspace")
+    print("os/components.toml matches os/Containerfile and the Cargo workspace", file=sys.stderr)
     return 0
 
 

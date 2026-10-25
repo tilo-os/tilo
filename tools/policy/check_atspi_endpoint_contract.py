@@ -238,9 +238,9 @@ def main() -> int:
     errors = audit()
     if errors:
         print("AT-SPI endpoint contract failed:", file=sys.stderr)
-        print(*[f"- {error}" for error in errors], sep="\n", file=sys.stderr)
+        print(*errors, sep="\n")
         return 1
-    print("AT-SPI endpoint contract passed: every graphical app enters the shared provider.")
+    print("AT-SPI endpoint contract passed: every graphical app enters the shared provider.", file=sys.stderr)
     return 0
 
 
