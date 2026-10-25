@@ -20,6 +20,7 @@ pub mod backdrop;
 pub mod chrome;
 pub mod collaborators;
 pub mod composition;
+pub mod control_hints;
 pub mod desk_edges;
 pub mod emoji_picker;
 pub mod feedback;

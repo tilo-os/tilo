@@ -412,6 +412,8 @@ impl ShellOverlayHost {
             onboarding_released: false,
             onboarding_focus_reset: false,
             strip_navigator: tilo_desktop::strip_navigator::StripNavigator::default(),
+            control_hints: super::control_hints::load(),
+            control_hints_frame: tilo_desktop::control_hints::HintFrame::default(),
             strip_switcher_revision: None,
             outputs: Vec::new(),
             palette,

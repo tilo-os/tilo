@@ -25,7 +25,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Avatar, AvatarSize, Button, ButtonRole, ColorSwatch, ColorSwatchPicker, Column, Container,
-    Divider, Popover, PopoverSide, Row, Segment, Text, TextInput, ToggleGroup, Widget,
+    Divider, ListRow, Popover, PopoverSide, Row, Segment, Text, TextInput, Toggle, ToggleGroup,
+    Widget,
 };
 use ui::{LocalState, TextRole};
 use vello::kurbo::{Point, Rect};
@@ -129,6 +130,9 @@ pub struct ProfileModel {
     /// Whether the people here see them at all: a spectator only watches,
     /// and the card says so in place of how they are seen.
     pub seen: Seen,
+    /// Whether the desktop's control hints show; `None` where the host has
+    /// none to offer.
+    pub control_hints: Option<bool>,
 }
 
 /// Whether the people here see the person.
@@ -170,6 +174,8 @@ pub enum ProfileChoice {
     Colour(String),
     /// Let the people in the workspace on screen see this much.
     Visibility(ui::PresenceVisibility),
+    /// Show the desktop's control hints, or not.
+    ControlHints(bool),
 }
 
 impl ProfileChoice {
@@ -425,7 +431,29 @@ impl ProfileCard {
                 body = body.push(self.linked_row(account));
             }
         }
-        body
+        self.push_control_hints(body, model.control_hints)
+    }
+
+    /// The one setting the desktop's control hints have, below a divider,
+    /// where the host offers them.
+    fn push_control_hints(&self, body: Column, on: Option<bool>) -> Column {
+        let Some(on) = on else {
+            return body;
+        };
+        let body = body.push(Box::new(Divider::horizontal()));
+        let state = LocalState::new(on);
+        let chosen = Rc::clone(&self.chosen);
+        let label = t("profile-control-hints");
+        body.push(Box::new(
+            ListRow::new("profile-control-hints", label.clone()).trailing(Box::new(
+                Toggle::from_state(&state)
+                    .with_id("profile-control-hints-toggle")
+                    .with_accessible_name(&label)
+                    .on_change(move |on| {
+                        *chosen.borrow_mut() = Some(ProfileChoice::ControlHints(on));
+                    }),
+            )),
+        ))
     }
 
     /// Where the host keeps only how what they do is shared (a page): what
