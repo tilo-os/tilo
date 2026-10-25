@@ -666,10 +666,9 @@ impl ChatApp {
                 .find(|message| {
                     message.author == user
                         || message.mentions.iter().any(|mention| mention.user == user)
-                        || message
-                            .reactions
-                            .iter()
-                            .any(|reaction| reaction.users.iter().any(|id| id == user))
+                        || message.reactions.iter().any(|reaction| {
+                            reaction.reactors.iter().any(|reactor| reactor.by == user)
+                        })
                 })
                 .and_then(|message| self.channel(&message.channel))
                 .map(|channel| channel.id.clone())
