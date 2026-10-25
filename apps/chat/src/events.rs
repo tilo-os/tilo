@@ -1087,8 +1087,7 @@ impl ChatApp {
 
     fn on_hit_reaction(&mut self, msg: &str, emoji: &str, doc: &mut ui::widget::Edits<'_>) {
         if self.can_participate() {
-            let action = self.reaction_toggle_action(msg, emoji);
-            self.apply_part(doc, action);
+            self.toggle_reaction(doc, msg, emoji);
             self.reload(doc);
         }
     }
@@ -1132,8 +1131,7 @@ impl ChatApp {
         ui::emoji_catalogue::record_recent(e);
         if let Some(target) = self.emoji_target.take() {
             if self.can_participate() {
-                let action = self.reaction_toggle_action(&target, e);
-                self.apply_part(doc, action);
+                self.toggle_reaction(doc, &target, e);
                 self.reload(doc);
             }
         } else {

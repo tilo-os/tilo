@@ -261,3 +261,28 @@ chat-sheet-no-category = None
 chat-sheet-topic = Topic
 chat-sheet-topic-placeholder = What this channel is for (optional)
 chat-mention-alert = { $name } mentioned you in #{ $channel }
+
+## A filed feedback report as its channel shows it
+# One picked part of the screen: its place, the app, what it was and its role.
+chat-feedback-pick = { $index }. { $app }: { $what } ({ $role })
+chat-feedback-note = “{ $note }”
+# The texts a picked part showed, joined with " · ".
+chat-feedback-texts = { $texts }
+# One of the reporter's last actions; $outcome is done, refused or failed.
+chat-feedback-action = { $outcome ->
+    [refused] { $action } on { $resource } (refused)
+    [failed] { $action } on { $resource } (failed)
+   *[done] { $action } on { $resource }
+}
+chat-feedback-recent = Just before: { $actions }
+chat-feedback-slow = Slow: { $slow } of the last { $frames } frames over { $budget } ms, the slowest { $worst } ms
+# A hidden span of a reported text, by what it hid.
+chat-feedback-hidden = { $kind ->
+    [name] ‹name›
+    [email] ‹email›
+    [phone] ‹phone›
+    [address] ‹address›
+    [account] ‹account number›
+    [credential] ‹credential›
+   *[personal] ‹personal›
+}
