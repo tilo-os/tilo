@@ -65,6 +65,7 @@ mod address_rows;
 #[cfg(test)]
 mod architecture_tests;
 mod continuity;
+mod dialog;
 mod http_fallback;
 mod library;
 mod load_failure;
@@ -100,25 +101,6 @@ const PAGE_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// A page action that started a navigation waits this long for it to load.
 const PAGE_NAVIGATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// What a page action answers while the page waits on its own question:
-/// the page runs nothing until the question is answered.
-fn page_question_failure(
-    invocation: ui::tilo_actions::InvocationId,
-) -> ui::tilo_actions::InvocationUpdate {
-    ui::tilo_actions::InvocationUpdate::Failed {
-        invocation,
-        error: ui::tilo_actions::ActionFailure {
-            code: "browser.page.question".into(),
-            message: format!(
-                "The page waits for an answer to its question: answer it on {}",
-                crate::page_dialogs::ROW
-            ),
-            details: None,
-            retryable: false,
-        },
-    }
-}
-
 /// A page action admitted through the resource surface.
 struct PageOperation {
     invocation: ui::tilo_actions::InvocationId,
@@ -130,6 +112,9 @@ struct PageOperation {
     /// loaded, after the tab heard so: an answer that says "loading" then
     /// completes at once instead of waiting for a load that already happened.
     settled_while_sent: Option<SettledLoad>,
+    /// What the request does, repeated in an answer a question it opened cut
+    /// short: `Clicked element d1e5`.
+    act: String,
 }
 
 /// How a main-frame load settled.
@@ -426,6 +411,9 @@ pub struct BrowserWidget {
     /// "leave this page?"), shown over the window, and its dialog's node.
     page_dialogs: crate::page_dialogs::PageDialogs,
     page_dialog_node: Option<NodeId>,
+    /// What answering the page's question did, written when it is answered
+    /// so the action's answer says what happened next.
+    page_dialog_answer: Option<String>,
     credentials: crate::credentials::Credentials,
     /// The popover open next to the toolbar control it belongs to: the site
     /// or autofill panel, a permission or download question, or the no-video
@@ -1316,6 +1304,7 @@ impl BrowserWidget {
             page_popups: crate::page_popups::PagePopups::default(),
             page_dialogs: crate::page_dialogs::PageDialogs::default(),
             page_dialog_node: None,
+            page_dialog_answer: None,
             credentials: crate::credentials::Credentials::new(browsing_mode.is_private()),
             anchored_panel: None,
             side_panel_edge: None,
@@ -1835,9 +1824,17 @@ impl BrowserWidget {
                 accept,
                 text,
             } => {
+                // What was asked, so the answer says what it did with it and
+                // what to do next; the page goes on from here.
+                let asked = self.page_dialogs.current().cloned();
                 self.page_dialogs
-                    .answer(&self.engine, dialog, accept, text)?;
+                    .answer(&self.engine, dialog, accept, text.clone())?;
                 self.structure_dirty = true;
+                let answer = asked.as_ref().map_or_else(
+                    || "Answered the page's dialog.".to_string(),
+                    |asked| dialog::answered(asked, accept, text.as_deref().unwrap_or_default()),
+                );
+                self.page_dialog_answer = Some(answer);
             }
             BrowserOperation::Zoom { step } => {
                 self.daily.zoom_by(step, &self.engine)?;
@@ -1962,11 +1959,13 @@ impl BrowserWidget {
         }
         // The page runs nothing while it waits on its question: an action
         // sent now would only time out.
-        if self.page_dialogs.current().is_some() {
-            self.page_operation_result = Some(page_question_failure(invocation));
+        if let Some(dialog) = self.page_dialogs.current() {
+            let refused = dialog::blocked_output(invocation, Some(dialog));
+            self.page_operation_result = Some(refused);
             return Ok(());
         }
         self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
+        let act = request.described();
         let now = std::time::Instant::now();
         self.page_operation = Some(PageOperation {
             invocation,
@@ -1977,6 +1976,7 @@ impl BrowserWidget {
             },
             deadline: now + PAGE_OPERATION_TIMEOUT,
             settled_while_sent: None,
+            act,
         });
         self.drive_page_operation();
         Ok(())
@@ -2030,14 +2030,28 @@ impl BrowserWidget {
     }
 
     /// The page asked a question while a page action waits on it: the page
-    /// stops until the question is answered, so the action answers now with
-    /// what to do, rather than when it times out.
+    /// stops until the question is answered. The action itself did what it
+    /// said before the page stopped to ask, so it answers as a success that
+    /// carries the question, rather than as a failure of that action or as a
+    /// wait until it times out.
     fn settle_page_operation_on_question(&mut self) {
         let Some(operation) = self.page_operation.take() else {
             return;
         };
         self.reader_request = None;
-        self.page_operation_result = Some(page_question_failure(operation.invocation));
+        let dialog = self.page_dialogs.current();
+        // The page asked and the question went before it could be read:
+        // nothing is left to answer, so the action is refused as it was.
+        self.page_operation_result = Some(match dialog {
+            Some(dialog) => dialog::opened_output(
+                operation.invocation,
+                &operation.act,
+                &self.current_uri,
+                &self.title,
+                dialog,
+            ),
+            None => dialog::blocked_output(operation.invocation, None),
+        });
     }
 
     fn accept_page_result(&mut self, request_id: u32, result: Result<PageReply, PageFailure>) {
@@ -3332,10 +3346,12 @@ impl BrowserWidget {
                     self.accept_page_result(request_id, result);
                 }
                 event @ (WebViewEvent::PageDialog(_) | WebViewEvent::PageDialogClosed { .. }) => {
+                    // The question is taken first, so the action it stopped
+                    // answers with it rather than with a question already gone.
+                    self.structure_dirty |= self.page_dialogs.apply(&event);
                     if matches!(event, WebViewEvent::PageDialog(_)) {
                         self.settle_page_operation_on_question();
                     }
-                    self.structure_dirty |= self.page_dialogs.apply(&event);
                 }
                 event @ (WebViewEvent::DownloadRequested { .. }
                 | WebViewEvent::DownloadProgress { .. }
@@ -6058,13 +6074,17 @@ impl BrowserWidget {
                 BrowserOperation::OpenInNewTab { .. } => {
                     local_output("Asked the desktop for a new Browser tab beside this one.")
                 }
-                BrowserOperation::AnswerPageDialog { .. } => {
-                    local_output("The page has its answer.")
-                }
                 _ => ui::tilo_actions::ActionOutput::default(),
             };
+            let answers_a_dialog = matches!(operation, BrowserOperation::AnswerPageDialog { .. });
             self.perform_browser_operation(operation)?;
-            let output = if is_history_pause_toggle {
+            let output = if answers_a_dialog {
+                // Written when the question is answered, so the answer says
+                // what it did and what to do next.
+                self.page_dialog_answer
+                    .take()
+                    .map_or_else(ui::tilo_actions::ActionOutput::default, local_output)
+            } else if is_history_pause_toggle {
                 local_output(if self.history_paused() {
                     "History paused in this window."
                 } else {
