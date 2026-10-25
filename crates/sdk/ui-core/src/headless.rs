@@ -6643,6 +6643,33 @@ impl FrameHarness {
         }
     }
 
+    /// Lay out for the input the person now uses, as the live window does
+    /// after detecting it.
+    fn switch_interaction(&mut self, environment: crate::interaction::InteractionEnvironment) {
+        if environment == self.interaction {
+            return;
+        }
+        self.interaction = environment;
+        self.root.set_interaction_environment(environment);
+        self.invalidate_layout_tree();
+        // The live window lays out again in its next frame; a host on
+        // its own frame clock does the same.
+        if self.coalesce_input_frames {
+            self.input_frame_pending = true;
+        } else {
+            self.relayout();
+        }
+    }
+
+    /// Switch to touch once every gesture begun has landed, as the live
+    /// window does: until then the touch is hit-tested against the layout
+    /// the person saw when it began, not the touch-sized one it brings.
+    fn settle_touch_modality(&mut self) {
+        if !self.dispatching_touch_pointer && self.touch_pointer.settled() {
+            self.switch_interaction(self.interaction.with_touch_modality());
+        }
+    }
+
     fn send_with_host_navigation(&mut self, event: &WindowEvent, host_navigation_allowed: bool) {
         if !self.pans_without_drawing(event) {
             self.settle_replayed_draws();
@@ -6659,6 +6686,9 @@ impl FrameHarness {
         self.dispatch_with_host_navigation(event, host_navigation_allowed);
         if crate::pointer_replay::PointerReplay::ends_press(event) {
             self.pointer_replay.end_press();
+        }
+        if matches!(event, WindowEvent::Touch(_)) {
+            self.settle_touch_modality();
         }
     }
 
@@ -6744,11 +6774,12 @@ impl FrameHarness {
                 crate::bound_dispatch::bound_owner_standing(self.root.as_ref(), &self.state.doc),
             )
         });
+        // A touch lands on what was on screen when it began: the switch to
+        // touch waits for its gesture to land (`Self::settle_touch_modality`).
         let detected = if self.dispatching_touch_pointer {
             None
         } else {
             match event {
-                WindowEvent::Touch(_) => Some(self.interaction.with_touch_modality()),
                 WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
                 | WindowEvent::MouseWheel { .. } => Some(self.interaction.with_pointer_modality()),
@@ -6763,19 +6794,8 @@ impl FrameHarness {
                 _ => None,
             }
         };
-        if let Some(environment) = detected
-            && environment != self.interaction
-        {
-            self.interaction = environment;
-            self.root.set_interaction_environment(environment);
-            self.invalidate_layout_tree();
-            // The live window lays out again in its next frame; a host on
-            // its own frame clock does the same.
-            if self.coalesce_input_frames {
-                self.input_frame_pending = true;
-            } else {
-                self.relayout();
-            }
+        if let Some(environment) = detected {
+            self.switch_interaction(environment);
         }
         if self.active_input_instance.is_some()
             && self.focused.is_none()
@@ -9058,6 +9078,7 @@ impl FrameHarness {
     fn poll_touch_hold(&mut self, now: crate::time::Instant) {
         if let Some((device_id, events)) = self.touch_pointer.poll(now) {
             self.dispatch_touch_pointer(device_id, events);
+            self.settle_touch_modality();
         }
     }
 
@@ -12953,6 +12974,12 @@ mod tests {
             assert_eq!(pointer.available, initial.available);
             assert_eq!(pointer.pointer_precision, crate::PointerPrecision::Fine);
             send_touch(&mut driver, winit::event::TouchPhase::Started, 10.0, 10.0);
+            assert_eq!(
+                driver.interaction_environment().pointer_precision,
+                crate::PointerPrecision::Fine,
+                "a touch is hit against the layout it began on"
+            );
+            send_touch(&mut driver, winit::event::TouchPhase::Ended, 10.0, 10.0);
             let touch = driver.interaction_environment();
             assert_eq!(touch.keyboard_family, initial.keyboard_family);
             assert_eq!(touch.available, initial.available);

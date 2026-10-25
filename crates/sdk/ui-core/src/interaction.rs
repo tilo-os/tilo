@@ -810,6 +810,20 @@ impl TouchPointerEmulator {
         ]
     }
 
+    /// Whether every gesture begun has reached its target: no finger is
+    /// down whose tap, drag, pinch or raw contact is still to land. A
+    /// finger held into a secondary click has landed, and one that went
+    /// on to scroll has no target to land on. A host keeps what is on
+    /// screen laid out as it was until then, so a touch lands on what the
+    /// person saw when it began.
+    pub fn settled(&self) -> bool {
+        self.raw.is_empty()
+            && self.multi.is_none()
+            && self.active.is_none_or(|active| {
+                active.long_pressed || (active.scrolling && !active.drag && !active.lifted)
+            })
+    }
+
     /// When a still single-finger hold becomes a long press, if one is armed.
     pub fn long_press_deadline(&self) -> Option<crate::time::Instant> {
         self.active
@@ -1411,6 +1425,58 @@ mod tests {
             4,
             "move, press, release, leave"
         );
+    }
+
+    #[test]
+    fn a_gesture_settles_once_it_has_reached_its_target() {
+        use winit::event::TouchPhase;
+        let mut emulator = TouchPointerEmulator::default();
+        assert!(emulator.settled(), "no finger down");
+
+        feed(&mut emulator, TouchPhase::Started, 1, 10.0, 10.0);
+        assert!(!emulator.settled(), "a tap lands at the lift");
+        feed(&mut emulator, TouchPhase::Ended, 1, 10.0, 10.0);
+        assert!(emulator.settled());
+
+        feed(&mut emulator, TouchPhase::Started, 2, 10.0, 10.0);
+        let deadline = emulator.long_press_deadline().expect("armed");
+        emulator.poll(deadline).expect("the hold fires");
+        assert!(
+            emulator.settled(),
+            "a hold has landed its secondary click; the lift does nothing"
+        );
+        feed(&mut emulator, TouchPhase::Ended, 2, 10.0, 10.0);
+
+        feed(&mut emulator, TouchPhase::Started, 6, 10.0, 100.0);
+        feed(&mut emulator, TouchPhase::Moved, 6, 10.0, 90.0);
+        assert!(!emulator.settled(), "within the slop it may still tap");
+        feed(&mut emulator, TouchPhase::Moved, 6, 10.0, 60.0);
+        assert!(emulator.settled(), "a scroll has no target to land on");
+        feed(&mut emulator, TouchPhase::Ended, 6, 10.0, 60.0);
+
+        emulator.events_claimed(&touch(TouchPhase::Started, 7, 10.0, 100.0), |_| {
+            TouchClaim::Drag
+        });
+        emulator.events_claimed(&touch(TouchPhase::Moved, 7, 60.0, 100.0), |_| {
+            TouchClaim::Drag
+        });
+        assert!(!emulator.settled(), "a drag keeps what it picked up");
+        emulator.events_claimed(&touch(TouchPhase::Ended, 7, 60.0, 100.0), |_| {
+            TouchClaim::Drag
+        });
+        assert!(emulator.settled());
+
+        feed(&mut emulator, TouchPhase::Started, 3, 100.0, 100.0);
+        feed(&mut emulator, TouchPhase::Started, 4, 200.0, 100.0);
+        feed(&mut emulator, TouchPhase::Ended, 4, 200.0, 100.0);
+        assert!(!emulator.settled(), "one finger of a pinch is still down");
+        feed(&mut emulator, TouchPhase::Ended, 3, 100.0, 100.0);
+        assert!(emulator.settled());
+
+        emulator.events(&touch(TouchPhase::Started, 5, 10.0, 10.0), |_| true);
+        assert!(!emulator.settled(), "a raw contact is read until it lifts");
+        emulator.events(&touch(TouchPhase::Ended, 5, 10.0, 10.0), |_| true);
+        assert!(emulator.settled());
     }
 
     #[test]
