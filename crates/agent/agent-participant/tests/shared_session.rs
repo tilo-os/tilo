@@ -510,7 +510,18 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         "Drafted by the agent",
     )
     .await;
-    let status_after = status(&browser, host_cert.device_public_key, &mut agent).await;
+    // The agent's edit and its report that the task is done travel apart:
+    // the browser can hold the edit before the host hears the task finish.
+    // Ask the host until the agent is back to waiting, within the hang bound.
+    let deadline = tilo_test_env::hang_deadline();
+    let status_after = loop {
+        let status_now = status(&browser, host_cert.device_public_key, &mut agent).await;
+        if status_now.agents[0].status != AgentStatus::Running || Instant::now() >= deadline {
+            break status_now;
+        }
+        agent.pump();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
     let info = &status_after.agents[0];
     assert_eq!(info.status, AgentStatus::Waiting);
     assert_eq!(info.tasks[0].state, TaskState::Completed);
