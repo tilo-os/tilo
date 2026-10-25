@@ -497,3 +497,197 @@ fn a_field_edit_naming_no_field_says_which_fields_there_are() {
     call(&mut app, "field-edit", json!({ "edit": renamed })).unwrap();
     assert_eq!(app.state().name, "Promo");
 }
+
+/// The refusal `result` carries, as text.
+fn refusal(result: Result<Value, DoorError>) -> String {
+    format!("{:?}", result.expect_err("refused"))
+}
+
+#[test]
+fn a_title_is_restyled_by_the_words_it_shows() {
+    let mut app = editor(&Project::new("cut"));
+    let added = call(&mut app, "add-title", json!({ "text": "HARBOUR DAYS" })).unwrap();
+    let media = added["media"].as_str().unwrap().to_owned();
+    // What agents sent: the title named by its words, not its id.
+    let restyled = call(
+        &mut app,
+        "set-title",
+        json!({ "media": " harbour   Days ", "text": "OPENS 7 NOV", "colour": "#ffd400" }),
+    )
+    .unwrap();
+    assert_eq!(restyled["media"], media.as_str());
+    assert_eq!(restyled["source"]["text"], "OPENS 7 NOV");
+    assert_eq!(restyled["source"]["colour"], "#ffd400");
+
+    let placed = call(&mut app, "add-clip", json!({ "media": media, "out": 3.0 })).unwrap();
+    let by_clip = call(
+        &mut app,
+        "set-title",
+        json!({ "media": placed["clip"], "size": 0.2 }),
+    )
+    .unwrap();
+    assert_eq!(
+        by_clip["media"],
+        media.as_str(),
+        "a clip names the title it shows"
+    );
+
+    let unknown = refusal(call(
+        &mut app,
+        "set-title",
+        json!({ "media": "HARBOUR DAYS", "colour": "red" }),
+    ));
+    assert!(
+        unknown.contains("no title reads `HARBOUR DAYS`")
+            && unknown.contains("“OPENS 7 NOV”")
+            && unknown.contains(&media),
+        "the refusal lists the titles and their ids: {unknown}"
+    );
+}
+
+#[test]
+fn titles_reading_alike_or_none_at_all_are_refused_with_what_to_name() {
+    let mut app = editor(&Project::new("cut"));
+    let none = refusal(call(
+        &mut app,
+        "set-title",
+        json!({ "media": "Opening", "colour": "red" }),
+    ));
+    assert!(none.contains("add-title"), "{none}");
+    let first = call(&mut app, "add-title", json!({ "text": "Opening" })).unwrap();
+    let second = call(&mut app, "add-title", json!({ "text": "opening" })).unwrap();
+    let before = app.state().media;
+    let alike = refusal(call(
+        &mut app,
+        "set-title",
+        json!({ "media": "OPENING", "colour": "red" }),
+    ));
+    for id in [&first["media"], &second["media"]] {
+        assert!(alike.contains(id.as_str().unwrap()), "{alike}");
+    }
+    assert!(alike.contains("2 titles"), "{alike}");
+    assert_eq!(
+        app.state().media,
+        before,
+        "a refused restyle changes no title"
+    );
+}
+
+#[test]
+fn a_clip_is_named_by_its_source_and_by_its_start_when_placed_twice() {
+    let mut app = editor(&Project::new("cut"));
+    import(&mut app, &png(640, 360), "shot-b.png").unwrap();
+    import(&mut app, &wav(4), "voice.wav").unwrap();
+    let first = call(
+        &mut app,
+        "add-clip",
+        json!({ "media": "shot-b.png", "at": 0.0, "out": 3.0 }),
+    )
+    .unwrap();
+    let second = call(
+        &mut app,
+        "add-clip",
+        json!({ "media": "shot-b.png", "at": 3.0, "out": 6.0 }),
+    )
+    .unwrap();
+    let (first, second) = (
+        first["clip"].as_str().unwrap().to_owned(),
+        second["clip"].as_str().unwrap().to_owned(),
+    );
+
+    let twice = refusal(call(
+        &mut app,
+        "set-clip",
+        json!({ "clip": "shot-b.png", "fade_out": 1.0 }),
+    ));
+    assert!(
+        twice.contains(&first) && twice.contains(&second) && twice.contains("shot-b.png@<start>"),
+        "the refusal lists each placement with its id: {twice}"
+    );
+    let set = call(
+        &mut app,
+        "set-clip",
+        json!({ "clip": "SHOT-B.PNG@3", "fade_out": 1.0 }),
+    )
+    .unwrap();
+    assert_eq!(set["clips"][0]["id"], second.as_str());
+    let spelled = call(
+        &mut app,
+        "set-clip",
+        json!({ "clip": "shot-b.png at 0 s", "fade_in": 0.5 }),
+    )
+    .unwrap();
+    assert_eq!(spelled["clips"][0]["id"], first.as_str());
+    let late = refusal(call(
+        &mut app,
+        "set-clip",
+        json!({ "clip": "shot-b.png@7", "fade_in": 0.5 }),
+    ));
+    assert!(
+        late.contains("starts at 7") && late.contains(&first),
+        "{late}"
+    );
+    let unknown = refusal(call(
+        &mut app,
+        "remove-clip",
+        json!({ "clip": "shot-c.mp4" }),
+    ));
+    assert!(
+        unknown.contains("names no clip") && unknown.contains(&second),
+        "an unknown name lists the clips: {unknown}"
+    );
+
+    let sound = call(&mut app, "add-clip", json!({ "media": "voice.wav" })).unwrap();
+    call(
+        &mut app,
+        "move-clip",
+        json!({ "clip": "voice.wav", "at": 1.0 }),
+    )
+    .unwrap();
+    call(
+        &mut app,
+        "trim-out-clip",
+        json!({ "clip": "Voice.wav", "at": 4.0 }),
+    )
+    .unwrap();
+    let state = app.state();
+    let moved = state
+        .clip(sound["clip"].as_str().unwrap().parse().unwrap())
+        .unwrap();
+    assert_eq!((moved.start, moved.end()), (1.0, 4.0));
+    call(&mut app, "remove-clip", json!({ "clip": "voice.wav" })).unwrap();
+    assert_eq!(app.state().clips.len(), 2);
+}
+
+#[test]
+fn a_picture_and_its_linked_sound_are_named_as_one_placement() {
+    let (p, clip, sound) = linked_shot();
+    let mut app = editor(&p);
+    let set = call(
+        &mut app,
+        "set-clip",
+        json!({ "clip": "shot.mp4", "fade_in": 1.0 }),
+    )
+    .unwrap();
+    assert_eq!(set["clips"][0]["id"], clip.to_string().as_str());
+    call(
+        &mut app,
+        "move-clip",
+        json!({ "clip": "shot.mp4", "at": 2.0 }),
+    )
+    .unwrap();
+    let state = app.state();
+    assert_eq!(state.clip(clip).unwrap().start, 2.0);
+    assert_eq!(state.clip(sound).unwrap().start, 2.0);
+}
+
+#[test]
+fn a_start_is_read_only_after_a_name() {
+    assert_eq!(with_start("shot-b.mp4@3"), Some(("shot-b.mp4", 3.0)));
+    assert_eq!(with_start("shot-b.mp4 @ 2.5s"), Some(("shot-b.mp4", 2.5)));
+    assert_eq!(with_start("Shot B AT 4 s"), Some(("Shot B", 4.0)));
+    assert_eq!(with_start("Lunch at the harbour"), None);
+    assert_eq!(with_start("@3"), None);
+    assert_eq!(with_start("shot.mp4@-1"), None);
+    assert_eq!(folded("  Harbour\n  DAYS "), "harbour days");
+}

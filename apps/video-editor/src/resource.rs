@@ -140,17 +140,19 @@ impl Project {
     }
 
     /// Restyle a title.
+    ///
+    /// Names the title by its id or by the words it shows.
     #[action(answers, item = media)]
     pub fn set_title(
         &mut self,
-        media: &Id,
+        #[param("The title's id, or the words it shows now")] media: &Id,
         #[param("New words; the bin name follows their first line")] text: Option<String>,
         #[param("The words' colour, #rrggbb or a colour word")] colour: Option<String>,
         #[param("Letter height as a fraction of the frame height, 0.02 to 0.5")] size: Option<f64>,
         #[param("left, center or right")] align: Option<String>,
     ) -> Result<(), Refusal> {
         self.agent_set_title(
-            media,
+            self.title_named(media.as_str())?,
             &crate::agent_timeline::TitleStyle {
                 text,
                 colour,
@@ -178,6 +180,9 @@ impl Project {
     #[action(id = "move-clip", answers, item = clips)]
     pub fn shift_clip(
         &mut self,
+        #[param(
+            "The clip's id, or its source's name; add @start when it is placed more than once"
+        )]
         clip: &Id,
         #[param("Seconds on the timeline where it starts")] at: f64,
         #[param("Another track of its kind, by id or name; its own when omitted")] track: Option<
@@ -192,6 +197,9 @@ impl Project {
     #[action(answers, item = clips)]
     pub fn set_clip(
         &mut self,
+        #[param(
+            "The clip's id, or its source's name; add @start when it is placed more than once"
+        )]
         clip: &Id,
         #[param("Seconds of fade from black (and silence) at its head")] fade_in: Option<f64>,
         #[param("Seconds of fade to black (and silence) at its tail")] fade_out: Option<f64>,
@@ -218,6 +226,9 @@ impl Project {
     #[action(id = "remove-clip", answers, item = clips, destructive)]
     pub fn remove_clip_closing(
         &mut self,
+        #[param(
+            "The clip's id, or its source's name; add @start when it is placed more than once"
+        )]
         clip: &Id,
         #[param("Close the gap it leaves by moving later clips on its track back")] ripple: Option<
             bool,
@@ -324,7 +335,8 @@ impl Project {
         if self.track(track).is_none() {
             return Err(Refusal::new("no such track"));
         }
-        self.add_clip(track, uuid(media)?, instant(start)?)
+        let media = self.source_named(media.as_str())?.id;
+        self.add_clip(track, media, instant(start)?)
             .map(drop)
             .ok_or_else(|| Refusal::new("no such source"))
     }
@@ -332,8 +344,8 @@ impl Project {
     /// Delete a source and every clip of it.
     #[action(id = "delete-media", item = media, destructive)]
     pub fn remove_media(&mut self, media: &Id) -> Result<(), Refusal> {
-        let id = uuid(media)?;
-        if self.media.take(media).is_none() {
+        let id = self.source_named(media.as_str())?.id;
+        if self.media.take(&key(id)).is_none() {
             return Err(Refusal::new("no such source"));
         }
         self.clips.retain(|clip| clip.media != id);
@@ -343,7 +355,7 @@ impl Project {
     /// Use a source's frame size and rate for the project.
     #[action(id = "use-as-project-format", item = media)]
     pub fn adopt_media_format(&mut self, media: &Id) -> Result<(), Refusal> {
-        let source = self.media.find(media).cloned().ok_or("no such source")?;
+        let source = self.source_named(media.as_str())?.clone();
         if source.width == 0 || source.height == 0 {
             return Err(Refusal::new("the source has no picture size"));
         }
@@ -388,6 +400,9 @@ impl Project {
     #[action(id = "trim-in-clip", item = clips)]
     pub fn trim_head(
         &mut self,
+        #[param(
+            "The clip's id, or its source's name; add @start when it is placed more than once"
+        )]
         clip: &Id,
         #[param("Seconds on the timeline the clip starts at")] at: f64,
     ) -> Result<(), Refusal> {
@@ -403,6 +418,9 @@ impl Project {
     #[action(id = "trim-out-clip", item = clips)]
     pub fn trim_tail(
         &mut self,
+        #[param(
+            "The clip's id, or its source's name; add @start when it is placed more than once"
+        )]
         clip: &Id,
         #[param("Seconds on the timeline the clip ends at")] at: f64,
     ) -> Result<(), Refusal> {
@@ -597,7 +615,7 @@ impl Project {
         #[param("The clip to link it with")] other: Id,
     ) -> Result<(), Refusal> {
         let id = self.editable(clip)?;
-        let other = uuid(&other)?;
+        let other = self.clip_named(other.as_str())?;
         if self.clip(other).is_none() || other == id {
             return Err(Refusal::new("name another clip of this project"));
         }
@@ -614,12 +632,10 @@ impl Project {
 }
 
 impl Project {
-    /// The clip `id` names, when it may be edited.
+    /// The clip `clip` names ([`Project::clip_named`]), when it may be
+    /// edited.
     fn editable(&self, clip: &Id) -> Result<ClipId, Refusal> {
-        let id = uuid(clip)?;
-        if self.clip(id).is_none() {
-            return Err(Refusal::new("no such clip in this project"));
-        }
+        let id = self.clip_named(clip.as_str())?;
         if !self.clip_editable(id) {
             return Err(Refusal::new("the clip's track is locked"));
         }
