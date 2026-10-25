@@ -52,6 +52,7 @@ impl NotesApp {
                 Ok(Self::choose_image(page, cx))
             }
             NotesEffect::OpenLink { url } => Self::open_link(url, cx),
+            NotesEffect::OpenResource { href } => Self::open_resource(&href, cx),
             NotesEffect::CopyLink { page } => {
                 self.copy_link(&state, page).map(|()| Effected::done())
             }
@@ -244,6 +245,21 @@ impl NotesApp {
                 opened.map(|()| Effected::done())
             },
         ))
+    }
+
+    /// Open what a link in a note names, through the address it carries: the
+    /// app that keeps that resource shows it, started first when no window
+    /// does. The same door a chip uses, so a link written by hand and one an
+    /// app put in a note land in the same place.
+    fn open_resource(href: &str, cx: &Cx) -> EffectAnswer {
+        if actions::resource_address_in(href).is_none() {
+            return Err(ui::i18n!("notes-resource-link-invalid"));
+        }
+        cx.dispatcher().open_link(href).map_err(|reason| {
+            tracing::warn!(%reason, "notes: the linked resource could not be opened");
+            ui::i18n!("notes-resource-link-open-failed")
+        })?;
+        Ok(Effected::done())
     }
 
     fn choose_markdown(cx: &mut Cx) -> Effected {
