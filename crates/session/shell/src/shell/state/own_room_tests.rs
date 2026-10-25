@@ -1,5 +1,5 @@
-//! A device's own rooms: claimed for the person it acts as, on this device
-//! only until a host holds them.
+//! A device's own rooms: claimed for the person it acts as, and placed on
+//! this device's host until a host holds them.
 use super::*;
 
 /// A desktop saved before rooms had hosts: its rooms are no host's and
@@ -19,10 +19,10 @@ fn saved_before_hosts(path: &std::path::Path) -> Vec<u8> {
 }
 
 #[test]
-fn a_room_from_before_hosts_loads_as_it_was_and_is_on_this_device_only() {
+fn a_room_from_before_hosts_loads_as_it_was_and_waits_for_this_devices_host() {
     let dir = tempfile::tempdir().expect("temp");
     let path = dir.path().join("state.json");
-    let saved = saved_before_hosts(&path);
+    saved_before_hosts(&path);
 
     let (mut tree, notice) = crate::shell::persist::load_or_default(&path);
     assert!(notice.is_none(), "the old file is read: {notice:?}");
@@ -53,24 +53,32 @@ fn a_room_from_before_hosts_loads_as_it_was_and_is_on_this_device_only() {
     assert_eq!(shape(&tree), loaded, "ids, names and layout are as saved");
     for (_, room, _, _) in &loaded {
         assert!(
-            tree.on_this_device_only(*room),
-            "a room no host holds is on this device only"
+            tree.pending_placements.contains(room),
+            "a room no host holds waits to be placed on this device's host"
+        );
+        assert_eq!(
+            tree.documents_unavailable(*room),
+            Some("workspace-not-ready-no-documents"),
+            "its apps wait for it, and are never refused it"
         );
         assert!(!tree.is_joining(*room), "it is never Joining…");
     }
     assert!(
-        tree.pending_placements.is_empty(),
-        "nothing waits to be placed, so nothing is tried again"
-    );
-    assert!(
         tree.claim_own_unhosted_rooms(|_| "me".to_owned())
             .is_empty()
     );
+    let waiting = tree.pending_placements.clone();
     crate::shell::persist::wait_for_saves();
+    let (reloaded, notice) = crate::shell::persist::load_or_default(&path);
+    assert!(notice.is_none(), "the saved desktop is read: {notice:?}");
     assert_eq!(
-        std::fs::read(&path).expect("read"),
-        saved,
-        "nothing is written to the saved desktop"
+        shape(&reloaded),
+        loaded,
+        "saved, its ids, names and layout are as they were"
+    );
+    assert_eq!(
+        reloaded.pending_placements, waiting,
+        "and its rooms still wait to be placed after a restart"
     );
 }
 
@@ -82,7 +90,11 @@ fn a_new_desktops_first_workspace_waits_for_its_host() {
         tree.pending_placements.contains(&home),
         "first boot's Home is a room this device's host creates"
     );
-    assert!(!tree.on_this_device_only(home));
+    assert_eq!(
+        tree.documents_unavailable(home),
+        Some("workspace-not-ready-no-documents"),
+        "its apps wait for it"
+    );
 }
 
 #[test]
@@ -131,8 +143,12 @@ fn a_plain_desktops_own_rooms_are_its_persons_until_a_host_holds_them() {
         "with no host and no network, the person works in their own room as its owner"
     );
     assert!(
-        tree.pending_placements.is_empty(),
-        "claiming places nothing: a room waits for a host only when made to"
+        tree.pending_placements.contains(&own),
+        "a room of this device's own waits to be placed on its host"
+    );
+    assert!(
+        !tree.pending_placements.contains(&joined),
+        "a room joined from elsewhere is never placed here"
     );
     assert_eq!(
         owner_of(joined),

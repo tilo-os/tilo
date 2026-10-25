@@ -1,8 +1,9 @@
 //! A device whose state file holds a workspace of the shell's former own
 //! engine (`tests/fixtures/shell-engine-workspace/state.json`, cut from a
-//! real laptop's state file) starts cleanly. Nothing of that workspace is
-//! deleted or rewritten, on disk or in the state file, and its room is not
-//! served: no host serves it and no transport carries it.
+//! real laptop's state file) starts cleanly. Its workspace is the person's
+//! own: this device's host places its room as it places a new workspace,
+//! under the same room and workspace ids, with its windows and its files as
+//! they were.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -28,7 +29,7 @@ fn workspace_entry(state: &Path, room: &str) -> Option<serde_json::Value> {
 
 #[test]
 #[serial_test::serial]
-fn a_device_with_a_former_engines_workspace_starts_and_leaves_it_untouched_and_unserved() {
+fn a_device_with_a_former_engines_workspace_starts_and_its_host_places_it_as_it_was() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let dir = scratch();
     let wakes = Arc::new(Wakes::default());
@@ -49,9 +50,15 @@ fn a_device_with_a_former_engines_workspace_starts_and_leaves_it_untouched_and_u
     let kept = room_files.join("notes.txt");
     std::fs::write(&kept, b"written before the one host").unwrap();
 
-    // It boots from that file as a session does.
-    let (tree, notice) = crate::shell::persist::load_or_default(&state);
+    // It boots from that file as a session does: its own rooms are claimed
+    // for the person it acts as before the network starts.
+    let (mut tree, notice) = crate::shell::persist::load_or_default(&state);
     assert!(notice.is_none(), "the state file reads cleanly: {notice:?}");
+    tree.claim_own_unhosted_rooms(|_| ada.id());
+    assert!(
+        tree.pending_placements.contains(&old),
+        "the old workspace waits for this device's host"
+    );
     let device = Device::start_with(
         &ada,
         "Ada's desktop",
@@ -69,25 +76,26 @@ fn a_device_with_a_former_engines_workspace_starts_and_leaves_it_untouched_and_u
     let (_, fresh) = super::hosted_workspace(&device, &[], "Fresh");
     crate::shell::persist::wait_for_saves();
 
-    assert!(
-        !device.hosted_rooms().contains(&old),
-        "the old room is not served"
-    );
-    assert_eq!(device.hosted_rooms(), vec![fresh]);
-    assert!(
-        !device
-            .net()
-            .joined_topics
-            .lock()
-            .unwrap()
-            .contains(&super::super::room_topic_id(old)),
-        "no transport carries the old room"
-    );
-    assert_eq!(
-        workspace_entry(&state, OLD_ROOM).as_ref(),
-        Some(&before),
-        "the old workspace stays in the state file as it was"
-    );
+    until(&[&device], "the old workspace to be placed", || {
+        device.hosted_rooms().contains(&old).then_some(())
+    });
+    let mut hosted = device.hosted_rooms();
+    hosted.sort_unstable();
+    let mut expected = vec![old, fresh];
+    expected.sort_unstable();
+    assert_eq!(hosted, expected, "the old room is served as the new one is");
+    until(&[&device], "the old room to be held", || {
+        device.tree.read().holds_room(old).then_some(())
+    });
+    crate::shell::persist::wait_for_saves();
+    let after = workspace_entry(&state, OLD_ROOM).expect("the old workspace stays");
+    for field in ["id", "room", "name", "strips"] {
+        assert_eq!(
+            after.get(field),
+            before.get(field),
+            "the old workspace's {field} is as it was"
+        );
+    }
     assert_eq!(
         std::fs::read(&kept).unwrap(),
         b"written before the one host",
