@@ -151,8 +151,13 @@ class HardwareProfileTest(unittest.TestCase):
         }
         self.assertEqual(hardware_profile.validate_definition(data)["id"], data["id"])
         (classes / "other-board.json").write_text(json.dumps(data))
-        prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent",
-                                classes, target_update_ref=TARGET_REF)
+        # setUp builds as an aarch64 machine with an arm64 kernel; this board is
+        # x86-64, so it is prepared the way a native x86-64 builder would
+        # prepare it, against an x86-64 kernel.
+        (self.kernel / "config").write_text(prepare.ARCH_CONFIG["x86_64"] + "\n", encoding="utf-8")
+        with patch.object(prepare.platform, "machine", return_value="x86_64"):
+            prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent",
+                                    classes, target_update_ref=TARGET_REF)
         quirks = (self.root / "usr/share/libinput/50-tilo-other-board.quirks").read_text(encoding="utf-8")
         self.assertIn("MatchDMIModalias=dmi:Valve:Jupiter:\n", quirks)
         self.assertNotIn("MatchDeviceTree", quirks, "a board without a device tree has no compatible")
