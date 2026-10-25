@@ -150,7 +150,8 @@ impl PlotPanel {
             words,
             panel: SidePanel::new(
                 true,
-                f64::from(ui::tokens::Metrics::BASE.panel_width_utility),
+                f64::from(ui::tokens::Metrics::BASE.overview_width),
+                ui::widget::ContentKind::Page,
             ),
             rows: Vec::new(),
             add: Rect::ZERO,
