@@ -283,6 +283,7 @@ impl Default for InputPrefs {
 /// and tablets, read by the compositor's input layer.
 impl ui::storage::SettingsSchema for InputPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("input");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.input", label = "Input")]
@@ -557,6 +558,7 @@ impl Default for DeskWidgetsPrefs {
 impl ui::storage::SettingsSchema for DeskWidgetsPrefs {
     const SCOPE: ui::storage::Scope =
         ui::storage::Scope::Shared(settings_store::desk_widgets::SECTION);
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.desk_widgets", label = "Desk widgets")]
@@ -566,6 +568,7 @@ impl DeskWidgetsPrefs {}
 /// idle layer.
 impl ui::storage::SettingsSchema for PowerPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("power");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(
@@ -687,6 +690,7 @@ pub struct UpdatePrefs {
 /// This device's update preferences.
 impl ui::storage::SettingsSchema for UpdatePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("updates");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(
@@ -986,6 +990,7 @@ impl AppearancePrefs {
 
 impl ui::storage::SettingsSchema for AppearancePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.appearance", label = "Appearance")]
@@ -1103,6 +1108,7 @@ fn default_true() -> bool {
 /// layer.
 impl ui::storage::SettingsSchema for NotificationPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("notifications");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.notifications", label = "Notifications")]
@@ -1179,6 +1185,7 @@ pub fn valid_app_id(id: &str) -> bool {
 
 impl ui::storage::SettingsSchema for AudioPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.audio", label = "Sound")]
@@ -1186,6 +1193,7 @@ impl AudioPrefs {}
 
 impl ui::storage::SettingsSchema for DisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.display", label = "Displays")]

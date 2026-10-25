@@ -367,7 +367,7 @@ pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<Se
         BACKUP_V2 => open_v2_backup(body, passphrase)?,
         _ => return Err("This Passwords backup uses an unsupported version".into()),
     };
-    let items = serde_json::from_slice::<Vec<SecretItem>>(&plaintext)
+    let items = SecretItem::list_from_json(&plaintext)
         .map_err(|_| "The decrypted backup is not a valid vault".to_string())?;
     if items.len() > MAX_ROWS {
         return Err("The backup contains more than 10,000 items".into());
