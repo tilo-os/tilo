@@ -248,6 +248,20 @@ impl ShellNetwork {
     /// now: neither this device nor the room's governor. `None` for a room
     /// this device holds no native owner for.
     pub(super) fn governed_member_devices(&self, room: RoomId) -> Option<Vec<iroh::EndpointId>> {
+        self.admitted_devices(room, false)
+    }
+
+    /// The other devices the governance of enrolled `room` admits now, its
+    /// governor's among them: every device one of its people may be on,
+    /// the host's own when the room is hosted on a person's device. `None`
+    /// for a room this device holds no native owner for.
+    pub(super) fn governed_devices(&self, room: RoomId) -> Option<Vec<iroh::EndpointId>> {
+        self.admitted_devices(room, true)
+    }
+
+    /// The other devices the governance of `room` admits now, the
+    /// governor's only when `governor_too`.
+    fn admitted_devices(&self, room: RoomId, governor_too: bool) -> Option<Vec<iroh::EndpointId>> {
         let owner = self.opened_native_owner()?;
         owner
             .with_current(room, |view| {
@@ -260,7 +274,7 @@ impl ShellNetwork {
                     .into_iter()
                     .filter(|cert| {
                         cert.device_public_key != own
-                            && cert.device_public_key != governor
+                            && (governor_too || cert.device_public_key != governor)
                             && view.peer().permissions(cert.device_public_key, now).is_ok()
                     })
                     .filter_map(|cert| iroh::EndpointId::from_bytes(&cert.device_public_key).ok())

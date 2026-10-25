@@ -350,13 +350,14 @@ impl ShellNetwork {
     /// Whether `room` is public, and with what, as the host it lives on
     /// answers.
     pub(crate) fn publication(&self, room: RoomId) -> Result<Publication, String> {
-        match self.administered_room(room) {
-            Some(held) => publication_of(
-                &self.govern(&held, "publication", serde_json::Map::new())?,
-                held.room(),
-            ),
+        let answer = match self.administered_room(room) {
+            Some(held) => self
+                .govern(&held, "publication", serde_json::Map::new())
+                .and_then(|answer| publication_of(&answer, held.room())),
             None => Err(NOT_YOURS.into()),
-        }
+        };
+        self.note_publication(room, &answer);
+        answer
     }
 
     /// Make `room` public with `listing`, or private again with `None`, on
@@ -383,7 +384,11 @@ impl ShellNetwork {
             }
             None => self.govern(&held, "unpublish", serde_json::Map::new())?,
         };
-        publication_of(&answer, held.room())
+        let answer = publication_of(&answer, held.room());
+        if answer.is_ok() {
+            self.note_publication(room, &answer);
+        }
+        answer
     }
 }
 
