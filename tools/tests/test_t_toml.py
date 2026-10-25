@@ -36,9 +36,10 @@ class TTomlTests(unittest.TestCase):
                 self.assertTrue(set(step.inputs) <= set(check["inputs"]))
                 self.assertTrue(set(t_toml.policy_steps.own_files(step, ROOT)) <= set(check["inputs"]))
                 self.assertNotIn("default", check)
-                # The tests write fixtures beside the sources and read HEAD; the checks of the
-                # tree read the files as they are, through an index of them where they use Git.
-                self.assertEqual(check.get("git", False), step.tests)
+                # The tests write fixtures beside the sources, and those that read the commit's
+                # history get t's .git; the checks of the tree read the files as they are,
+                # through an index of them where they use Git.
+                self.assertEqual(check.get("git", False), step.history)
                 self.assertEqual(check.get("writable_sources", False), step.tests)
                 self.assertEqual(step.check.startswith("policy/tests/"), step.tests)
 
