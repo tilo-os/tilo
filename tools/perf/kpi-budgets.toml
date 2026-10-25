@@ -1319,9 +1319,11 @@ source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 i
 # node re-enumerated History). The harness figure is its `focus_order` walk
 # after each added item: it no longer walks the order inside a call while
 # nothing can trap focus. The shared x86_64 runner takes two to three times as
-# long (0.54-0.66 / 1.55-1.59 / 5.5-6.3 ms, its p95 at 500 items up to 1.5 ms), so
-# the 500 item recomputations stay enforced at 2 ms p95, far under what a
-# per-node walk costs; the 1,000 and 2,500 item figures are reported.
+# long (1.3-2.0 / 5.5-13 ms at 1,000 and 2,500 items, its p95 at 1,000 items up
+# to 4.1 ms), so the 1,000 item recomputations are the enforced ceiling: the
+# smallest size the scheduled lane measures (500 items is not one of them, so a
+# ceiling there would be a budget that never runs), at 5 ms p95, far under what
+# a per-node walk costs; the 2,500 item figures are reported.
 #
 # Adding one item through an agent call targets a 16 ms frame at 1,000
 # items: 4.6 / 9.4 / 27 ms at 500 / 1,000 / 2,500 items on an M5 Max (from
@@ -1342,41 +1344,41 @@ source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 i
 
 [kpi."render.framework_focus.recompute_ms.500"]
 unit = "ms"
-p95 = 2.0
-enforce = true
+p50 = 0.6
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation in the test harness, 500 items (about 2,000 widgets)"
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 500 items (about 2,000 widgets; measured when the lane is asked for it)"
 
 [kpi."render.framework_focus.native_recompute_ms.500"]
 unit = "ms"
-p95 = 2.0
+p50 = 0.6
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.1
+source = "framework-scaling focus, one focus-order recomputation of the live window, 500 items (about 2,000 widgets; measured when the lane is asked for it)"
+
+[kpi."render.framework_focus.recompute_ms.1k"]
+unit = "ms"
+p95 = 5.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation of the live window, 500 items (about 2,000 widgets)"
-
-[kpi."render.framework_focus.recompute_ms.1k"]
-unit = "ms"
-p50 = 0.6
-p50_tolerance = 1.5
-p99_tolerance = 2.0
-min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation in the test harness, 1,000 items (reported)"
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 1,000 items (about 4,000 widgets)"
 
 [kpi."render.framework_focus.native_recompute_ms.1k"]
 unit = "ms"
-p50 = 0.6
+p95 = 5.0
+enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation of the live window, 1,000 items (reported)"
+source = "framework-scaling focus, one focus-order recomputation of the live window, 1,000 items (about 4,000 widgets)"
 
 [kpi."render.framework_focus.recompute_ms.2500"]
 unit = "ms"
-p50 = 1.5
+p50 = 12.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.2
@@ -1384,7 +1386,7 @@ source = "framework-scaling focus, one focus-order recomputation in the test har
 
 [kpi."render.framework_focus.native_recompute_ms.2500"]
 unit = "ms"
-p50 = 1.5
+p50 = 12.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.2
