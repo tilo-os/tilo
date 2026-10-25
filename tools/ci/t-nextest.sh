@@ -7,8 +7,9 @@
 # It prepares what the packages under test need beyond the builder image,
 # then runs the command under
 # tools/test-env.sh. Without an -E of its own, the run leaves out the visual
-# goldens (the `goldens` check runs them alone, on their image), as
-# .config/nextest-filters.toml says. With one (`t test
+# goldens (the `goldens` check runs them alone, on their image) and the
+# imager's internal-cache tests (the `imager-cache` check runs them on an ext4
+# of its own), as .config/nextest-filters.toml says. With one (`t test
 # PKG --test NAME` asks for one test) the filter is left as given. Other cargo
 # commands (`t cargo build` runs under this wrapper too) pass through unchanged.
 #
@@ -70,28 +71,6 @@ if tests tilo-pdf pdf-viewer tilo-thumbnail; then
     export TILO_REQUIRE_PDF_SANDBOX=$pdf_sandbox
 fi
 
-# The imager's native syscall tests need a cache on a qualified filesystem
-# (ext4, XFS or Btrfs), never an overlay or tmpfs: the build directory where it
-# is one, else the job's scratch TMPDIR, else /var/tmp, which t keeps on the
-# node's volume itself (it mounts the build directory and /tmp as overlays).
-# A build or a check of the imager runs no test: it needs no such cache.
-if tests imager && [[ ${2:-} == nextest || ${2:-} == test ]] \
-    && [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
-    qualified() { case $(stat -f -c %t "$1") in ef53|58465342|9123683e) return 0 ;; esac; return 1; }
-    for candidate in "${CARGO_TARGET_DIR:-$root/target}/ci/imager-test-fs" "${TMPDIR:-/tmp}/imager-test-fs" /var/tmp/imager-test-fs; do
-        mkdir -p "$candidate"
-        chmod 700 "$candidate"
-        if qualified "$candidate"; then
-            export TILO_IMAGER_TEST_CACHE_ROOT=$candidate
-            break
-        fi
-    done
-    if [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
-        echo "t-nextest.sh: none of the build directory, TMPDIR and /var/tmp is on ext4, XFS or Btrfs, which the imager's cache tests need" >&2
-        exit 1
-    fi
-fi
-
 # An agent's host answers video renders in the `tilo-video-render` helper, which no
 # package depends on; named explicitly, it is found also where t runs an archive of
 # test binaries away from the build directory.
@@ -130,7 +109,7 @@ for name, value in nextest_filters.filters().items():
     print(f"{name}={shlex.quote(value)}")
 PY
 )
-    arguments+=(-E "not ($GOLDEN_FILTER)${T_NEXTEST_FILTER:+ and ($T_NEXTEST_FILTER)}")
+    arguments+=(-E "not ($GOLDEN_FILTER) and not ($IMAGER_CACHE_FILTER)${T_NEXTEST_FILTER:+ and ($T_NEXTEST_FILTER)}")
 elif (( nextest )) && [[ -n ${T_NEXTEST_FILTER:-} ]]; then
     # t's selection of test binaries narrows the filters given.
     for (( index = 0; index < ${#arguments[@]}; index++ )); do

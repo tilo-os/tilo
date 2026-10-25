@@ -473,6 +473,14 @@ CARGO_CHECKS: dict[str, dict] = {
         "packages": lambda packages, root: {"tilo-relay"},
         "inputs": [],
     },
+    # The imager's library tests, built for the micro-VM check that runs its internal-cache
+    # tests on an ext4 of its own (imager-cache). Built beside workspace-unify, as the test
+    # family builds them, which decides only the features they are built with: its manifest
+    # counts, not the sources of every crate it names.
+    "imager-cache-build": {
+        "packages": lambda packages, root: {"imager"},
+        "inputs": ["crates/dev/workspace-unify/Cargo.toml"],
+    },
     # The compiled helpers the micro-VM checks' scripts run, built for them.
     "vm-test-binaries": {
         "packages": lambda packages, root: {"tilo-image-policy-check", "tilo-crypto", "tilo-esp-write",
