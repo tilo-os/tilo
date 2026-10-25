@@ -135,6 +135,7 @@ suites = [
   "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/rollback_luks_device.sh",
+  "os/tests/firstboot_user_selinux.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/esp_generator.sh",
   "os/tests/deployment_dual_esp.sh",
