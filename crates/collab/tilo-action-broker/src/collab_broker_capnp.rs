@@ -70,7 +70,7 @@ mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
     DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
-    NativeDocumentReads, PreparedElsewhere, PreparingElsewhere,
+    NativeDocumentReads, PreparedElsewhere, PreparingElsewhere, RecordRead,
 };
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
