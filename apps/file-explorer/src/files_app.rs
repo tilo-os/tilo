@@ -614,6 +614,9 @@ pub struct FileExplorerWidget {
     current_path: PathBuf,
     home_path: Option<PathBuf>,
     entries: Vec<Entry>,
+    /// What the window's search has been given: its words narrow the folder
+    /// open, never another folder's.
+    find: String,
     /// Multi-selection over the displayed entry list.
     selection: SelectionModel,
     shown_selection: shown_selection::ShownSelection,
@@ -748,7 +751,7 @@ pub struct FileExplorerWidget {
     /// News ([`Self::status`], or that an archive is read-only on entering
     /// it) said in the window's bar for a while; the item and selection
     /// counts are the window's accessible status, not news.
-    status_notice: ui::widget::toast::Transient<String>,
+    status_notice: StatusText,
     /// The status last said in the bar, so only a change is news.
     status_said: Option<String>,
     /// The archive last said to be read-only, so entering one says it once.
@@ -975,6 +978,44 @@ pub struct FileExplorerWidget {
     app_chooser: ui::widget::command_palette::CommandPalette,
     app_chooser_target: Option<PathBuf>,
     thumb_imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
+}
+
+/// Files, as the ledger names it.
+fn files_owner() -> ui::attention::Owner {
+    ui::attention::Owner::new("so.tilo.files", "Files").with_icon(ui::icons::Icon::Folder)
+}
+
+/// What the folder last said about itself, waiting to be recorded: the
+/// ledger keeps it, and nothing expires.
+#[derive(Debug, Default)]
+struct StatusText(Option<String>);
+
+impl StatusText {
+    fn show(&mut self, text: impl Into<String>) {
+        self.0 = Some(text.into());
+    }
+
+    fn dismiss(&mut self) {
+        self.0 = None;
+    }
+
+    /// What was said since the last read.
+    fn take(&mut self) -> Option<String> {
+        self.0.take()
+    }
+
+    /// Whether the folder said something since it was last recorded; a
+    /// test reads it as the window would.
+    #[cfg(test)]
+    fn is_shown(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// What was said, for a test that reads it before the record does.
+    #[cfg(test)]
+    fn get(&self) -> Option<&String> {
+        self.0.as_ref()
+    }
 }
 
 impl Default for FileExplorerWidget {
@@ -1523,6 +1564,22 @@ impl FileExplorerWidget {
             order: crate::resource::sort_order_token(self.sort_order).to_owned(),
             zoom: self.zoom_level,
             hidden: self.show_hidden,
+            widths: self.list_slot.widths(),
+        }
+    }
+
+    /// Keep the widths the person dragged as their preferences, so a column
+    /// stays where they put it after a relaunch.
+    fn store_widths(&mut self) {
+        let widths = self.list_slot.widths();
+        let stored = self.preferences.as_ref().map(ui::framework::Setting::get);
+        if stored.as_ref().is_some_and(|prefs| prefs.widths == widths) {
+            return;
+        }
+        if let Some(preferences) = &self.preferences
+            && let Err(error) = preferences.update(|prefs| prefs.widths = widths)
+        {
+            tracing::warn!(%error, "file-explorer: column widths not stored");
         }
     }
 
@@ -1550,6 +1607,9 @@ impl FileExplorerWidget {
             return;
         }
         self.shown_preferences = Some(stored.clone());
+        // A column the person dragged wide is theirs on every device: the
+        // list is laid out at those widths again.
+        self.list_slot.set_widths(&stored.widths);
         self.view_mode = crate::resource::parse_view_mode(&stored.view);
         let sort_by = crate::resource::parse_sort_key(&stored.sort);
         let sort_order = crate::resource::parse_sort_order(&stored.order);
@@ -1814,6 +1874,7 @@ impl FileExplorerWidget {
             home_path: home,
             // Shown once the first read of `cwd` is (see below).
             entries: Vec::new(),
+            find: String::new(),
             selection: SelectionModel::new(),
             shown_selection: shown_selection::ShownSelection::default(),
             shown_folder: None,
@@ -1889,7 +1950,7 @@ impl FileExplorerWidget {
             declared_bar: None,
             state_spinner: Spinner::new(),
             state_retry,
-            status_notice: ui::widget::toast::Transient::new(),
+            status_notice: StatusText::default(),
             status_said: None,
             archive_said: None,
             staged_hover: None,
@@ -2065,11 +2126,26 @@ impl FileExplorerWidget {
             .refresh(self.remote_accounts_search_revision, &accounts);
     }
 
-    /// The entries currently shown. (There is no in-app search field — search
-    /// is OS-owned per `crates/sdk/ui-core/HIG.md` §5 — so this is the sorted directory
-    /// listing as-is.)
+    /// The entries currently shown: the sorted listing of the folder open,
+    /// narrowed by what the window's search has been given. There is no
+    /// in-app search field — the window's own search is the one control, and
+    /// this is what it narrows.
     pub fn displayed_entries(&self) -> Vec<Entry> {
-        self.entries.clone()
+        let find = self.find.trim().to_lowercase();
+        if find.is_empty() {
+            return self.entries.clone();
+        }
+        self.entries
+            .iter()
+            .filter(|entry| entry.name.to_lowercase().contains(&find))
+            .cloned()
+            .collect()
+    }
+
+    /// How many of the folder's entries what the person typed leaves.
+    fn find_count(&self) -> ui::widget::FilterCount {
+        let shown = self.displayed_entries().len();
+        ui::widget::FilterCount::new(shown, self.entries.len())
     }
 
     /// The sole bridge from a durable/agent-visible resource id to a host
@@ -3507,10 +3583,11 @@ impl FileExplorerWidget {
             }
             self.archive_said = archive;
         }
-        self.status_notice.expire();
-        self.status_notice.publish(|text| {
-            ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
-        });
+        // What the folder says about itself is recorded, not thrown at the
+        // window: nothing the system says expires.
+        if let Some(text) = self.status_notice.take() {
+            ui::attention::publish(ui::attention::Notice::did(files_owner(), text));
+        }
     }
 
     /// Whether the content column is narrower than the direct toolbar
@@ -3888,6 +3965,7 @@ impl FileExplorerWidget {
         self.sort_preserving_selection();
         if changed {
             self.store_preferences();
+            self.store_widths();
         }
     }
     pub fn toggle_sort_order(&mut self) {
@@ -3897,6 +3975,7 @@ impl FileExplorerWidget {
         };
         self.sort_preserving_selection();
         self.store_preferences();
+        self.store_widths();
     }
 
     fn sort_preserving_selection(&mut self) {
@@ -3938,6 +4017,7 @@ impl FileExplorerWidget {
         }
         self.view_mode = m;
         self.store_preferences();
+        self.store_widths();
     }
 
     pub fn entries_snapshot(&self) -> &[Entry] {
@@ -5055,6 +5135,7 @@ impl FileExplorerWidget {
             FileCommand::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
                 self.store_preferences();
+                self.store_widths();
                 self.refresh();
                 true
             }
@@ -5564,6 +5645,7 @@ impl FileExplorerWidget {
         if level != self.zoom_level {
             self.zoom_level = level;
             self.store_preferences();
+            self.store_widths();
         }
     }
 
@@ -9752,7 +9834,6 @@ impl FileExplorerWidget {
             .chain(self.drives.next_wake())
             .chain(self.applications.next_wake())
             .chain(self.notice.deadline())
-            .chain(self.status_notice.deadline())
             .chain((!self.incoming.is_empty()).then(Instant::now))
             .chain(
                 self.preview
@@ -9959,12 +10040,29 @@ impl ui::undo::UndoControl for FileExplorerWidget {
     }
 }
 
+/// The window's search narrows the folder open: what a person types in the
+/// bar filters the listing they are looking at, and nothing else.
+impl ui::widget::Filterable for FileExplorerWidget {
+    fn set_filter(&mut self, query: &str) {
+        if self.find == query {
+            return;
+        }
+        self.find = query.to_owned();
+        self.structure_dirty = true;
+    }
+
+    fn filter_count(&self) -> Option<ui::widget::FilterCount> {
+        Some(self.find_count())
+    }
+}
+
 impl Widget for FileExplorerWidget {
     ui::provides!(
         dyn ui::undo::UndoControl,
         dyn ui::widget::Collaborative,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::widget::Filterable
     );
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {

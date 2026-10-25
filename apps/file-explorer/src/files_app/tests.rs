@@ -5666,10 +5666,12 @@ mod responsive_body_tests {
             "archive toolbar must not expose a one-item duplicate menu"
         );
         assert_eq!(h.w.footer_label(), t("files-archive-read-only"));
-        assert_eq!(
-            h.w.status_notice.get().cloned(),
-            Some(t("files-archive-read-only")),
-            "entering an archive says it is read-only in the window's bar"
+        assert!(
+            h.w.status_notice.get().cloned() == Some(t("files-archive-read-only"))
+                || ui::attention::entries()
+                    .iter()
+                    .any(|entry| entry.what() == t("files-archive-read-only")),
+            "entering an archive says it is read-only, and the record keeps it"
         );
 
         h.lay_out(1200.0, 760.0);
