@@ -6294,6 +6294,7 @@ fn transport_degrades_gracefully_when_narrow() {
             ids,
             [
                 window_bar::SPLIT,
+                window_bar::SIDE_BY_SIDE,
                 window_bar::EXPORT,
                 window_bar::INSPECTOR,
                 window_bar::IMPORT
