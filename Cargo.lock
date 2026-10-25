@@ -20862,6 +20862,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-workspace-emoji"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-workspace-join"
 version = "0.1.0"
 dependencies = [
