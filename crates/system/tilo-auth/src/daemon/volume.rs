@@ -40,33 +40,48 @@ impl Locate {
     }
 }
 
-/// By content, not configuration: the mapping the root sits on, and what
-/// cryptsetup says is underneath it.
+/// By content, not configuration: the block device under the physical root
+/// (`/sysroot`; `/` is composefs, which none backs), and the kernel's record in
+/// sysfs of the LUKS2 partition underneath that mapping. No device-mapper
+/// ioctl and no reading of the mount table's source name.
 fn root_volume(runner: &dyn Runner) -> Option<SystemVolume> {
-    let source = ["/sysroot", "/"].into_iter().find_map(|mount| {
+    ["/sysroot", "/"].into_iter().find_map(|mount| {
         let out = runner
-            .run("findmnt", &argv!["-nro", "SOURCE", mount], None)
+            .run("findmnt", &argv!["-nro", "MAJ:MIN", mount], None)
             .ok()?;
         let text = out.stdout_utf8();
-        let first = text.lines().next()?.split('[').next()?.trim().to_owned();
-        (out.ok() && !first.is_empty()).then_some(first)
-    })?;
-    let mapping = source.strip_prefix("/dev/mapper/")?.to_owned();
-    let status = runner
-        .run("cryptsetup", &argv!["status", &mapping], None)
-        .ok()?;
-    let device = status.stdout_utf8().lines().find_map(|line| {
-        line.trim()
-            .strip_prefix("device:")
-            .map(|d| d.trim().to_owned())
-    })?;
-    let luks = runner
-        .run("cryptsetup", &argv!["isLuks", &device], None)
-        .ok()?;
-    luks.ok().then(|| SystemVolume {
-        device: PathBuf::from(device),
-        mapping: Some(mapping),
+        let majmin = text.lines().next()?.trim().to_owned();
+        let (mapping, partition) = crypt_backing(Path::new("/sys"), &majmin)?;
+        let device = Path::new("/dev").join(partition);
+        let luks = runner
+            .run("cryptsetup", &argv!["isLuks", device.as_os_str()], None)
+            .ok()?;
+        luks.ok().then_some(SystemVolume {
+            device,
+            mapping: Some(mapping),
+        })
     })
+}
+
+/// The mapping name and the one underlying device of the block device
+/// `majmin`, when it is an open LUKS mapping.
+fn crypt_backing(sys: &Path, majmin: &str) -> Option<(String, String)> {
+    let (major, minor) = majmin.split_once(':')?;
+    if major.parse::<u32>().is_err() || minor.parse::<u32>().is_err() {
+        return None;
+    }
+    let block = sys.join("dev/block").join(majmin);
+    let uuid = std::fs::read_to_string(block.join("dm/uuid")).ok()?;
+    if !uuid.starts_with("CRYPT-LUKS") {
+        return None;
+    }
+    let name = std::fs::read_to_string(block.join("dm/name")).ok()?;
+    let mut slaves = std::fs::read_dir(block.join("slaves")).ok()?;
+    let slave = slaves.next()?.ok()?.file_name().into_string().ok()?;
+    if slaves.next().is_some() {
+        return None;
+    }
+    Some((name.trim().to_owned(), slave))
 }
 
 /// A credential that already opens the volume.
@@ -165,6 +180,32 @@ fn parse_crypt_table_key(table: &str) -> Option<Zeroizing<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_root_mapping_is_followed_through_sysfs() {
+        let sys = tempfile::tempdir().unwrap();
+        let root = sys.path().join("dev/block/253:0");
+        std::fs::create_dir_all(root.join("dm")).unwrap();
+        std::fs::create_dir_all(root.join("slaves/vda3")).unwrap();
+        std::fs::write(root.join("dm/name"), "root\n").unwrap();
+        std::fs::write(root.join("dm/uuid"), "CRYPT-LUKS2-0123-root\n").unwrap();
+        assert_eq!(
+            crypt_backing(sys.path(), "253:0"),
+            Some(("root".into(), "vda3".into()))
+        );
+        // composefs, or a plain partition: no mapping at all.
+        assert_eq!(crypt_backing(sys.path(), "0:31"), None);
+        assert_eq!(crypt_backing(sys.path(), "../253:0"), None);
+        std::fs::write(root.join("dm/uuid"), "CRYPT-PLAIN-root\n").unwrap();
+        assert_eq!(crypt_backing(sys.path(), "253:0"), None);
+        std::fs::write(root.join("dm/uuid"), "CRYPT-LUKS2-0123-root\n").unwrap();
+        std::fs::create_dir_all(root.join("slaves/vdb1")).unwrap();
+        assert_eq!(
+            crypt_backing(sys.path(), "253:0"),
+            None,
+            "two devices under it"
+        );
+    }
 
     #[test]
     fn only_a_key_the_table_spells_out_is_used() {
