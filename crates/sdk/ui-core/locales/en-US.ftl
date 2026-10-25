@@ -917,3 +917,33 @@ signal-meter-weak = Weak signal
 signal-meter-fair = Fair signal
 signal-meter-good = Good signal
 signal-meter-strong = Strong signal
+
+# The conversation substrate: the delivery vocabulary and the attachment
+# ladder, shared by every app that draws a conversation.
+conversation-delivery-queued = Queued
+conversation-delivery-sending = Sending
+conversation-delivery-submitted = Submitted
+conversation-delivery-sent = Sent
+conversation-delivery-delivered = Delivered
+conversation-delivery-read = Read
+conversation-delivery-failed = Not sent
+conversation-delivery-uncertain = Status uncertain
+conversation-attachment-open = Open
+conversation-attachment-open-full-size = Open full size
+conversation-attachment-save = Save
+conversation-attachment-save-as = Save as…
+conversation-attachment-open-saved = Open saved copy
+conversation-attachment-saved = a copy on this device
+conversation-attachment-no-access = This file is not shared with you
+conversation-attachment-unavailable = This file is not on this device
+conversation-attachment-uploading = Uploading
+conversation-attachment-cancel-upload = Cancel upload
+conversation-attachment-upload-cancelled = Upload cancelled
+conversation-attachment-save-failed = Couldn’t save the file
+conversation-attachment-image = Image
+conversation-attachment-video = Video
+conversation-attachment-file = File
+conversation-draft = Draft
+conversation-draft-preview = Draft: {$text}
+conversation-unread = Unread message
+conversation-day-earlier = {$date}
