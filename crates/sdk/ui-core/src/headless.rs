@@ -285,6 +285,7 @@ mod root_wake;
 mod search_open;
 mod slot_row;
 pub use slot_row::WINDOW_SLOTS;
+mod cursor;
 pub mod system_search;
 pub mod test_support;
 mod tooltip_layer;

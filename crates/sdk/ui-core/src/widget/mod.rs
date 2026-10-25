@@ -3229,6 +3229,7 @@ pub use window_group::{
     WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, maximized_chrome_height,
     merged_controls_width, min_group_px, permille_for_px,
 };
+pub mod cursor;
 pub mod edge_resize;
 pub use edge_resize::{EdgeGrab, ResizeMode, WidthLimits, WindowEdge};
 mod resize_handle;

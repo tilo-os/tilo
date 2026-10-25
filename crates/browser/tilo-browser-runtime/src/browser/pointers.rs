@@ -304,3 +304,15 @@ pub fn remote_pointers_shown(id: u64) -> Result<String, JsValue> {
         serde_json::to_string(&shown).map_err(error)
     })
 }
+
+impl Mount {
+    /// Show the pointer shape the surface asks for where the pointer is, as
+    /// a native window does: the canvas's CSS cursor, set only on a change.
+    pub(super) fn show_cursor(&mut self) {
+        let cursor = self.frame.pointer_cursor();
+        if cursor != self.cursor {
+            self.cursor = cursor;
+            self.window.set_cursor(cursor);
+        }
+    }
+}

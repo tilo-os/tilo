@@ -2258,29 +2258,16 @@ impl App {
         self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
 
-    /// The smallest-area matching rect wins, so a nested child beats its
-    /// enclosing container. Works off `node_map` rather than walking
-    /// `children` so it still reaches widgets nested under containers with
-    /// private child storage.
+    /// [`crate::widget::cursor`]'s rule over every laid-out widget. Works
+    /// off `node_map` rather than walking `children` so it still reaches
+    /// widgets nested under containers with private child storage.
     #[cfg(feature = "native")]
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
-        let mut best: Option<(f64, CursorIcon)> = None;
+        let mut pick = crate::widget::cursor::CursorPick::default();
         for &node in self.layout.node_map.keys() {
-            let Ok((rect, icon)) = self.inspect_node(node, |widget| {
-                (widget.get_rect(), widget.cursor_shape(point))
-            }) else {
-                continue;
-            };
-            if rect.contains(point)
-                && let Some(icon) = icon
-            {
-                let area = (rect.width() * rect.height()).max(0.0);
-                if best.is_none_or(|(a, _)| area < a) {
-                    best = Some((area, icon));
-                }
-            }
+            let _ = self.inspect_node(node, |widget| pick.offer(widget, point));
         }
-        best.map(|(_, icon)| icon)
+        pick.icon()
     }
 
     /// Whether a laid-out widget claims raw per-finger touch at `point`
