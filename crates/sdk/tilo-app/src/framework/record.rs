@@ -522,6 +522,18 @@ impl<'a> Records<'a> {
         self
     }
 
+    /// The record `P` that every app of the room opens and this app keeps
+    /// (`collab_types::WORKSPACE_RECORDS`; the workspace's emoji are
+    /// Chat's): opened with the window, so the app's surface lists it and
+    /// every member's change to it is decided against that surface.
+    pub fn workspace<P: Resource>(&mut self) -> &mut Self {
+        let Some(storage) = self.storage else {
+            return self;
+        };
+        storage.workspace_record::<P>();
+        self
+    }
+
     /// The settings section `T`, a resource model ([`RecordEnv::settings`](super::RecordEnv::settings)).
     pub fn settings<T>(&mut self) -> &mut Self
     where

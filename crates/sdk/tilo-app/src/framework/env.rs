@@ -420,6 +420,15 @@ impl<R: Resource> RecordEnv<R> {
         self.storage.person::<P>()
     }
 
+    /// The record `P` that `owner` keeps in the window's room and every app
+    /// of the room opens (`collab_types::WORKSPACE_RECORDS`): the
+    /// workspace's emoji, which are Chat's. Changes to it are decided by the
+    /// room's grants on `owner`'s resource. `None` where the host keeps no
+    /// such records (a view of a past version) or it cannot be opened.
+    pub fn workspace<P: Resource>(&self, owner: &'static str) -> Option<super::WorkspaceRecord<P>> {
+        self.storage.workspace::<P>(owner)
+    }
+
     /// The person's record `P` that one app keeps for all of theirs — their
     /// accounts, which Settings keeps: the same record on every device, held
     /// here too and converging with the keeper's over the person's own room.

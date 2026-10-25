@@ -568,6 +568,13 @@ impl InProcessApps {
         ) {
             context.provide_person_records(person.sharing(&held));
         }
+        // The records every app of the room opens (the workspace's emoji),
+        // in the owners every in-process app shares: one writer per room.
+        context.provide_workspace_records(ui::record::workspace::WorkspaceRecords::in_room(
+            self.owners.clone(),
+            room.to_owned(),
+            self.author.clone(),
+        ));
         if definition.app_id == "so.tilo.messages" {
             #[cfg(target_os = "linux")]
             if let Some(first) = &self.first_accounts {

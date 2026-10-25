@@ -100,3 +100,5 @@ pub mod unreadable;
 pub mod window_content;
 #[path = "window_view.rs"]
 pub mod window_view;
+#[path = "workspace_records.rs"]
+pub mod workspace_records;
