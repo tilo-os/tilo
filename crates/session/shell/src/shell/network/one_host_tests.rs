@@ -151,14 +151,27 @@ struct Loop {
     polled: Option<Instant>,
 }
 
+/// Where a device's key and certificate come from.
+enum Identity {
+    /// The person's root certifies the device's key, with `capabilities`,
+    /// each time it starts.
+    Certified {
+        root: Box<SigningKey>,
+        capabilities: DeviceCapabilities,
+    },
+    /// The identity this host was set up with under `root`: its device key
+    /// and the certificate its person's root gave it, read as a session's
+    /// network reads them.
+    ThisHost { root: PathBuf },
+}
+
 /// One of a person's devices: its session's network over its tree, its
 /// state on disk, and its device key and certificate (made at its first
 /// start and kept across restarts, as a device's are).
 pub(crate) struct Device {
     pub(crate) label: String,
     dir: PathBuf,
-    root: SigningKey,
-    capabilities: DeviceCapabilities,
+    identity: Identity,
     /// The id namespace this device mints its windows in.
     salt: u16,
     minted: Mutex<u64>,
@@ -259,6 +272,39 @@ impl Device {
         salt: u16,
         capabilities: DeviceCapabilities,
         wakes: &Arc<Wakes>,
+        tree: WorkspaceTree,
+    ) -> Self {
+        let identity = Identity::Certified {
+            root: Box::new(person.root.clone()),
+            capabilities,
+        };
+        Self::start_from(identity, label, dir, salt, wakes, tree)
+    }
+
+    /// A device acting as the identity this host was set up with under
+    /// `identity_root`, as a desktop session does, with an empty tree and
+    /// its state under `dir`, started.
+    pub(crate) fn start_as_this_host(
+        identity_root: &Path,
+        label: &str,
+        dir: &Path,
+        salt: u16,
+        wakes: &Arc<Wakes>,
+    ) -> Self {
+        let mut tree = WorkspaceTree::default();
+        tree.set_salt_override(salt);
+        let identity = Identity::ThisHost {
+            root: identity_root.to_path_buf(),
+        };
+        Self::start_from(identity, label, dir, salt, wakes, tree)
+    }
+
+    fn start_from(
+        identity: Identity,
+        label: &str,
+        dir: &Path,
+        salt: u16,
+        wakes: &Arc<Wakes>,
         mut tree: WorkspaceTree,
     ) -> Self {
         std::fs::create_dir_all(dir).unwrap();
@@ -266,8 +312,7 @@ impl Device {
         let mut device = Self {
             label: label.into(),
             dir: dir.to_path_buf(),
-            root: person.root.clone(),
-            capabilities,
+            identity,
             salt,
             minted: Mutex::new(0),
             tree: tree.shared(),
@@ -293,37 +338,56 @@ impl Device {
     )]
     fn go_online(&mut self) {
         assert!(self.net.is_none(), "{} is already online", self.label);
-        let root = self.root.clone();
-        let capabilities = self.capabilities.clone();
         let label = self.label.clone();
         let custody = Arc::clone(&self.custody);
-        let net = ShellNetwork::spawn_with(
-            self.tree.clone(),
-            &self.dir.join("device-private/keypair.bin"),
-            &self.dir.join("peer-sync"),
-            Reach::Loopback,
-            move |secret, _| {
-                let key = SigningKey::from_bytes(&secret.to_bytes());
-                let mut cert = DeviceCert {
-                    user_public_key: root.verifying_key().to_bytes(),
-                    device_public_key: key.verifying_key().to_bytes(),
-                    device_label: label,
-                    capabilities,
-                    issued_at_ns: 1,
-                    expires_at_ns: None,
-                    signature: [0; 64],
-                };
-                sign_device_cert(&mut cert, &root).unwrap();
-                *custody.lock().unwrap() = Some((key.clone(), cert.clone()));
-                Some(HostIdentity {
-                    device_cert: cert,
-                    device_signing_key: key,
-                    workspace_device_certs: std::collections::HashMap::new(),
-                    workspace_revocations: std::collections::HashMap::new(),
-                    identity_paths: None,
-                })
-            },
-        )
+        let peer_sync = self.dir.join("peer-sync");
+        let net = match &self.identity {
+            Identity::Certified { root, capabilities } => {
+                let root = SigningKey::clone(root);
+                let capabilities = capabilities.clone();
+                ShellNetwork::spawn_with(
+                    self.tree.clone(),
+                    &self.dir.join("device-private/keypair.bin"),
+                    &peer_sync,
+                    Reach::Loopback,
+                    move |secret, _| {
+                        let key = SigningKey::from_bytes(&secret.to_bytes());
+                        let mut cert = DeviceCert {
+                            user_public_key: root.verifying_key().to_bytes(),
+                            device_public_key: key.verifying_key().to_bytes(),
+                            device_label: label,
+                            capabilities,
+                            issued_at_ns: 1,
+                            expires_at_ns: None,
+                            signature: [0; 64],
+                        };
+                        sign_device_cert(&mut cert, &root).unwrap();
+                        *custody.lock().unwrap() = Some((key.clone(), cert.clone()));
+                        Some(HostIdentity {
+                            device_cert: cert,
+                            device_signing_key: key,
+                            workspace_device_certs: std::collections::HashMap::new(),
+                            workspace_revocations: std::collections::HashMap::new(),
+                            identity_paths: None,
+                        })
+                    },
+                )
+            }
+            Identity::ThisHost { root } => ShellNetwork::spawn_with(
+                self.tree.clone(),
+                &tilo_user_identity::IdentityPaths::under(root).device_privkey,
+                &peer_sync,
+                Reach::Loopback,
+                move |secret, keypair| {
+                    let identity = super::host_identity_for_key(secret, keypair)?;
+                    *custody.lock().unwrap() = Some((
+                        identity.device_signing_key.clone(),
+                        identity.device_cert.clone(),
+                    ));
+                    Some(identity)
+                },
+            ),
+        }
         .unwrap();
         let wakes = Arc::clone(&self.wakes);
         net.set_wake(Arc::new(move || wakes.wake()));
@@ -654,6 +718,38 @@ impl Device {
             .map(|_| ())
     }
 
+    /// Ask `room`'s host to let `app` author the room's records, as this
+    /// device, as opening the app there first does: the host's answer.
+    pub(crate) fn let_app_author(&self, room: RoomId, app: &str) -> Result<(), String> {
+        let net = Arc::clone(self.net());
+        let cert = self.cert();
+        let runtime = net.runtime_handle().unwrap();
+        runtime
+            .block_on(net.grant_app_authorship_at_host(room, &cert, app))
+            .unwrap_or_else(|| Err(format!("{} reaches no host governing the room", self.label)))
+            .map(|_| ())
+    }
+
+    /// What `asked`, a request this device's session makes, answers, while
+    /// the device's loop keeps turning as the compositor's does meanwhile.
+    pub(crate) fn answer<T: Send + 'static>(
+        &self,
+        what: &str,
+        asked: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> T {
+        let runtime = self.net().runtime_handle().unwrap();
+        let wakes = Arc::clone(&self.wakes);
+        let task = runtime.spawn(async move {
+            let answer = asked.await;
+            wakes.wake();
+            answer
+        });
+        until(&[self], what, || task.is_finished().then_some(()));
+        runtime
+            .block_on(task)
+            .expect("the request runs to its answer")
+    }
+
     /// `room`'s records are sealed channels each app opens itself, never
     /// documents this device's owner commits.
     fn assert_sealed(&self, room: RoomId) {
@@ -974,6 +1070,22 @@ impl Device {
                 .iter()
                 .any(|grant| grant.subject == tilo_action_policy::Subject::App(app.into()))
         })
+    }
+
+    /// Ask the host of `room`, which this device administers, for its
+    /// governance action `action` with `arguments`, as the room's own
+    /// settings do: what the host answered.
+    pub(crate) fn govern(
+        &self,
+        room: RoomId,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let net = self.net();
+        let target = net
+            .administered_room(room)
+            .ok_or_else(|| format!("{} administers no session with the room's host", self.label))?;
+        net.govern(&target, action, arguments)
     }
 
     /// Change `person`'s role in `room` from the workspace's people
