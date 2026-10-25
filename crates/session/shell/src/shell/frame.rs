@@ -752,6 +752,8 @@ pub struct FrameBuilder {
     root_node: Option<NodeId>,
     #[cfg(test)]
     layout_tree_builds: u64,
+    #[cfg(test)]
+    layout_passes: u64,
     text_renderer: TextRenderer,
     theme: Theme,
     /// The theme the settings document describes, before the active
@@ -1158,6 +1160,8 @@ impl FrameBuilder {
             root_node: None,
             #[cfg(test)]
             layout_tree_builds: 0,
+            #[cfg(test)]
+            layout_passes: 0,
             text_renderer: presentation.text_renderer,
             last_room_epoch: 0,
             peer_windows_quiet_at: None,
@@ -1950,6 +1954,13 @@ impl FrameBuilder {
     /// re-runs, unless `take_structure_dirty()` says otherwise, in which
     /// case the taffy tree rebuilds first.
     pub fn relayout(&mut self) {
+        #[cfg(test)]
+        {
+            self.layout_passes = self
+                .layout_passes
+                .checked_add(1)
+                .expect("test layout pass counter exhausted");
+        }
         // Apply the compositor's live fullscreen state to the strip rows
         // first, flagging the owning row dirty so the structure-dirty check
         // below rebuilds and the collapse (or restore) takes this frame.
@@ -5912,6 +5923,11 @@ impl FrameBuilder {
         // Snapshot the focus going in to detect any new target set by the
         // host's `handle_event` — mirrors `ui::App::window_event`.
         let prior_focus = *focus;
+        let overlays_before = (
+            self.host.palette_visible(),
+            self.host.agent_quick_composer_open(),
+            self.host.person_quick_composer_open(),
+        );
         let mut focus_target: Option<NodeId> = None;
         if self.offer_terminal_typing(event, modifiers, state, root_obj, &mut focus_target) {
             if let Some(new_id) = focus_target
@@ -5958,9 +5974,25 @@ impl FrameBuilder {
             || self.host.person_quick_composer_open()
             || self.palette_focus_active
         {
-            // Opening or closing an overlay must update the external seat
-            // cursor too, not just the widget's internal focus during layout.
-            self.relayout();
+            // Visibility alone is not a layout change. Pointer motion and key
+            // releases used to rebuild admission and solve the entire desktop
+            // while search was open. Still settle structural edits, geometry,
+            // opening/closing and native focus synchronously before returning.
+            let structure_changed = self.host.take_structure_dirty();
+            if structure_changed {
+                self.rebuild_layout_tree();
+            }
+            let overlays_after = (
+                self.host.palette_visible(),
+                self.host.agent_quick_composer_open(),
+                self.host.person_quick_composer_open(),
+            );
+            let geometry_dirty = self
+                .root_node
+                .is_none_or(|node| self.taffy.dirty(node).unwrap_or(true));
+            if structure_changed || geometry_dirty || overlays_before != overlays_after {
+                self.relayout();
+            }
             self.reconcile_native_focus(focus);
         }
         // Native/DRM chrome does not run through `ui::App`, whose event loop
@@ -10707,6 +10739,10 @@ mod tests {
 
 #[path = "frame_scene_revision.rs"]
 mod scene_revision;
+
+#[cfg(test)]
+#[path = "frame_overlay_latency_tests.rs"]
+mod overlay_latency_tests;
 
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]
