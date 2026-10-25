@@ -63,6 +63,7 @@ pub mod approved_checks;
 pub mod audit;
 pub mod broker;
 pub mod editor;
+pub mod file_actions;
 pub mod fleet;
 pub mod guard;
 pub mod guest;
@@ -108,6 +109,19 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "app",
     "store",
     "system",
+    // The file actions: GNU's names, each one an action the broker checks
+    // against the environment's grants and records so it can be taken back.
+    // A guest that ships its own copy of one of these gets this one instead,
+    // because the copy could neither see the grants nor keep the history.
+    "cp",
+    "mv",
+    "rm",
+    "mkdir",
+    "rmdir",
+    "ln",
+    "truncate",
+    "history",
+    "undo",
 ];
 
 /// Commands for the user's installed legacy apps, from the legacy VM's
