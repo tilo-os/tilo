@@ -390,14 +390,18 @@ pub enum InlineMark {
     ExternalLink {
         url: String,
     },
-    /// A link to a resource of this desktop, by the `tilo://open#…` address
-    /// it is written as: activating it opens the resource in its own app.
-    ResourceLink {
-        href: String,
-    },
     /// A reference to a participant, by id.
     Mention {
         id: String,
+    },
+    /// A link to a resource of this desktop, by the `tilo://open#…` address
+    /// it is written as: activating it opens the resource in its own app.
+    ///
+    /// Kept last: a stored mark names its variant by position, so a new one
+    /// goes at the end or old bytes read as another kind of mark. It sorts
+    /// beside the other links through [`InlineMarkSpan`]'s own ordering.
+    ResourceLink {
+        href: String,
     },
 }
 
@@ -473,9 +477,8 @@ impl InlineMarkSpan {
             InlineMark::Code => 4,
             InlineMark::Link { .. } => 5,
             InlineMark::Transclusion { .. } => 6,
-            InlineMark::ExternalLink { .. } => 7,
-            InlineMark::ResourceLink { .. } => 8,
-            InlineMark::Mention { .. } => 9,
+            InlineMark::ExternalLink { .. } | InlineMark::ResourceLink { .. } => 7,
+            InlineMark::Mention { .. } => 8,
         }
     }
 }
