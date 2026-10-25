@@ -558,6 +558,10 @@ impl ShellOverlayHost {
             *ctx.handled = true;
             return true;
         }
+        if self.route_ws_emoji_wheel(event) {
+            *ctx.handled = true;
+            return true;
+        }
         if is_absorbable_pointer
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
