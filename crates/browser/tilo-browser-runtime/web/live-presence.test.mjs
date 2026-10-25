@@ -367,3 +367,20 @@ test('publisher carries a wave at one member, restated with the frame', () => {
   clock.frame();
   assert.deepEqual(sent.at(-1).wave, {seq: 2, target: 'ab12'}, 'the same wave, which shows nothing again');
 });
+
+test('publisher carries where its windows are, by app and digest only', () => {
+  const {clock, sent, publisher} = publisherHarness();
+  publisher.start();
+  const layout = {size: [1440, 852], windows: [
+    {app: 'so.tilo.notes', record: '0123456789abcdef', rect: [0, 0, 5000, 10000], focused: true, title: 'never sent'},
+    {app: 'x'.repeat(49), record: '0123456789abcdef', rect: [0, 0, 1, 1]},
+    {app: 'so.tilo.chat', record: 'fedcba9876543210', rect: [12000, -3, 9000, 4.4]},
+  ]};
+  publisher.update({layout});
+  clock.advance(0);
+  assert.deepEqual(sent.at(-1).layout, {size: [1440, 852], windows: [
+    {app: 'so.tilo.notes', record: '0123456789abcdef', rect: [0, 0, 5000, 10000], focused: true},
+    {app: 'so.tilo.chat', record: 'fedcba9876543210', rect: [10000, 0, 10000, 4], focused: false},
+  ]});
+  assert.throws(() => publisher.update({layout: {size: [1, 1], windows: [{app: 'a', record: 'not hex', rect: [0, 0, 1, 1]}]}}));
+});

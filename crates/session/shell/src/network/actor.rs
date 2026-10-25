@@ -7867,6 +7867,7 @@ mod tests {
                 chat: None,
                 reaction: None,
                 wave: None,
+                layout: None,
                 seq: 1,
                 sent_at_ms: 1,
                 focus: None,
