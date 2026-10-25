@@ -59,6 +59,12 @@ fn create_accessibility_adapter(
     }
 }
 
+/// How often an occluded window runs the passes nobody asks it to draw.
+/// Long enough that a window left behind another app costs nothing, short
+/// enough that work queued behind an occlusion is answered while the person
+/// waits for it.
+const OCCLUDED_TICK_INTERVAL: Duration = Duration::from_millis(50);
+
 /// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` live on a
 /// dedicated worker thread (see [`crate::render_thread`]) — this struct
 /// keeps only the channel ends to ship frames and recycle scene buffers.
@@ -72,6 +78,9 @@ struct AppHandler {
     /// A frame held for a local read ([`crate::arriving`]): drawn when the
     /// read answers, or at this instant when its frame budget runs out.
     held_frame: Option<crate::time::Instant>,
+    /// When the next state pass of an occluded window is due (see
+    /// [`App::run_state_tick`]); `None` while nothing is pending.
+    occluded_tick_at: Option<crate::time::Instant>,
     /// Debug check that animation frames move something.
     still_animation: animation_schedule::StillAnimation,
     native_scenario: Option<crate::native_scenario::Scenario>,
@@ -3600,6 +3609,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     && wake.requires_sync()
                     && let Some(window) = self.window.as_ref()
                 {
+                    // The wake may have come from this app's own engine or
+                    // worker, which an occluded window still hears. Run the
+                    // state passes now; a redraw is the paint's business.
+                    self.app.run_state_tick();
                     window.request_redraw();
                 }
                 return;
@@ -3715,6 +3728,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             UserEvent::HostCommand(invocation) => {
                 self.app.invoke_host_command(&invocation);
+                // The door is a wake too: what the command started is answered
+                // by the state passes even when no frame follows (a window
+                // macOS is not drawing, an agent driving it unseen).
+                self.app.run_state_tick();
                 self.app.needs_sync = true;
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
@@ -4212,6 +4229,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.poll_model_invocations() {
             request_primary_redraw();
         }
+        // Occlusion is not permission to stall. Once the surface has told us
+        // it is not being drawn, keep running the state passes on the loop's
+        // own pace while anything is pending: a frame may never come, and
+        // the work an agent or the engine is waiting on is theirs, not the
+        // pixels'. Nothing is marked dirty for paint that nobody asks for.
+        if self.primary_retry.known_occluded() && app.needs_sync {
+            let tick_due = self
+                .occluded_tick_at
+                .is_none_or(|at| at <= crate::time::now());
+            if tick_due {
+                app.run_state_tick();
+                self.occluded_tick_at = crate::time::now()
+                    .checked_add(OCCLUDED_TICK_INTERVAL)
+                    .filter(|_| app.needs_sync);
+            }
+        } else {
+            self.occluded_tick_at = None;
+        }
         // Reveal requests must not wait on rendering an occluded/minimized
         // window: consume them as soon as its admitted actions are polled.
         if crate::component_lifecycle::take_window_activation_intent(app.root_widget.as_ref()) {
@@ -4493,6 +4528,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .busy()
                     .then(|| crate::time::now() + Duration::from_millis(50)),
             )
+            .chain(self.occluded_tick_at)
             .min();
         match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
@@ -5167,6 +5203,7 @@ impl App {
             mark_bounds: crate::scene_parts::DrawBounds::default(),
             last_primary_frame_presented: 0,
             primary_retry: crate::render_thread::retry::RenderRetryState::default(),
+            occluded_tick_at: None,
             floating_source_clear_frames: std::collections::HashMap::new(),
             floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
