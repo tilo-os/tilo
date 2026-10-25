@@ -1028,9 +1028,23 @@ impl PeopleOverlay {
             }
         }
         if let Some(id) = self.peek.person() {
+            let label = self
+                .shown_rows
+                .iter()
+                .find(|row| row.id == id)
+                .map_or_else(String::new, |row| row.label.clone());
+            let following = self.shown_followed.as_deref() == Some(id);
             for (target, rect) in self.peek.targets() {
+                let name = match target {
+                    "follow" if following => t_args(
+                        "a11y-people-stop-following",
+                        &[("name", label.clone().into())],
+                    ),
+                    "follow" => t_args("a11y-people-follow", &[("name", label.clone().into())]),
+                    _ => String::new(),
+                };
                 self.targets
-                    .target(format!("peek-{target}:{id}"), rect, String::new());
+                    .target(format!("peek-{target}:{id}"), rect, name);
             }
             if let Some(rect) = self.composer.send_rect() {
                 self.targets
@@ -1284,7 +1298,9 @@ impl PeopleOverlay {
     /// The painted targets, for assistive technology.
     #[must_use]
     pub fn accessibility_children(&self) -> Vec<ui::a11y::AccessNode> {
-        self.targets.accessibility_children()
+        let mut children = self.targets.accessibility_children();
+        children.extend(self.composer.accessibility());
+        children
     }
 
     /// What the last frame showed of the rows.
