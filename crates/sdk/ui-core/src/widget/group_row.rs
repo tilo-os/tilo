@@ -4995,6 +4995,16 @@ impl Widget for GroupRow {
                 .and_then(|i| self.groups.get(i))
                 .is_some_and(|group| !shifted && clip.contains_rect(group.drawn_rect()));
             if clipped {
+                // A clipped lane is one damage part, there whichever of its
+                // groups draw, bounded by the clip that bounds them: a group
+                // the row leaves out (another surface draws it, or it is off
+                // screen) and draws again changes only parts inside the
+                // lane, which then damages the lane alone, not every
+                // display.
+                crate::scene_parts::begin(
+                    scene,
+                    crate::scene_parts::PartKey::new("ui.strip-lane", k),
+                );
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
@@ -5023,6 +5033,7 @@ impl Widget for GroupRow {
             );
             if clipped {
                 scene.pop_layer();
+                crate::scene_parts::end(scene, vec![transform.transform_rect_bbox(clip)]);
             }
             if shifted {
                 self.offset_lane(k, -shift);
