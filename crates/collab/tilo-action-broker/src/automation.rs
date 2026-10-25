@@ -945,7 +945,10 @@ impl RunHooks for SheetHooks {
 #[must_use]
 pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpdate {
     match &report.outcome {
-        RunOutcome::Completed => InvocationUpdate::Succeeded {
+        // A stopped run did not fail: it ends where it was told to. What it
+        // had already done is recorded and can be undone as one step, so it
+        // answers like a completed run, with the report saying it stopped.
+        RunOutcome::Completed | RunOutcome::Cancelled { .. } => InvocationUpdate::Succeeded {
             invocation,
             output: ActionOutput {
                 value: report.output.clone(),
@@ -959,16 +962,6 @@ pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpd
                 message: format!("step {path}: {failure}"),
                 details: serde_json::to_value(report).ok(),
                 retryable: false,
-            },
-        },
-        // A stopped run did not fail: it ends where it was told to. What it
-        // had already done is recorded and can be undone as one step, so it
-        // answers like a completed run, with the report saying it stopped.
-        RunOutcome::Cancelled { .. } => InvocationUpdate::Succeeded {
-            invocation,
-            output: ActionOutput {
-                value: report.output.clone(),
-                resources: Vec::new(),
             },
         },
     }
