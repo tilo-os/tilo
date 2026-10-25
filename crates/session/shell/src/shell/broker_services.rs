@@ -347,7 +347,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         let Some(room) = super::state::RoomId::parse(room) else {
             return false;
         };
-        if certificate.capabilities.can_act_as_host || !self.tree.read().holds_room(room) {
+        if !self.tree.read().holds_room(room) {
             return false;
         }
         self.opened_owner("native membership owner unavailable")
@@ -355,6 +355,16 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 super::launcher::native_app_open_access(&owner, room, certificate, app)
             })
             .is_ok_and(|access| access == super::launcher::NativeAppOpenAccess::Delegate)
+    }
+
+    /// A room this device's own host serves: what an app opening there needs
+    /// is for this device's owner to record.
+    fn hosted_here(&self, room: &str) -> bool {
+        super::state::RoomId::parse(room).is_some_and(|room| {
+            self.network
+                .as_ref()
+                .is_some_and(|net| net.hosted_here(room))
+        })
     }
 
     /// A room its node stewards: this owner forwards an opening app's
@@ -429,10 +439,11 @@ async fn grant_authorship_at_host(
     else {
         return Err(REFUSED.into());
     };
-    network
+    let generation = network
         .grant_app_authorship_at_host(room, caller, app)
         .await
         .ok_or(REFUSED)??;
+    tracing::info!(%room, app, generation, "the host let the app author the room");
     // The host's answer is not this device's commit barrier: wait until the
     // authorship it published is in this device's actual admitted room.
     tokio::time::timeout(HOST_AUTHORSHIP_ADMISSION_TIMEOUT, async {
@@ -460,7 +471,10 @@ async fn grant_authorship_at_host(
         }
     })
     .await
-    .map_err(|_| "the host committed the app authorship but it did not reach this device in time")?
+    .map_err(|_| {
+        tracing::warn!(%room, app, "the app authorship did not reach this device in time");
+        "the host committed the app authorship but it did not reach this device in time"
+    })?
 }
 
 /// A commit's outcome on the owner's thread: done here, or a receipt for
