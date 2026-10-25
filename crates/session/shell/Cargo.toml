@@ -101,8 +101,6 @@ tilo-paths.workspace = true
 tilo-control = { path = "../control-cli" }
 # The emoji picker's catalogue, search, skin tones and recents.
 emoji = { path = "../../text/emoji" }
-# The same catalogue for the window bars' reaction pickers.
-tilo-emoji-catalogue = { path = "../../text/emoji-catalogue" }
 # Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
 # written to settings.
 tilo-secret-vault = { path = "../../system/secret-vault" }
