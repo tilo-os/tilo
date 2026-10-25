@@ -2315,30 +2315,23 @@ impl OnboardingView {
         {
             return self.identity_actions();
         }
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
-                .with_vertical_padding(theme.tokens.spacing.s2)
-                .with_gap(theme.tokens.spacing.s3)
-                .push(Box::new(
-                    Checkbox::new(
-                        "onboarding.backup.skip-acknowledged.box",
-                        KEY_BACKUP_SKIP_ACKNOWLEDGED,
-                    )
-                    .with_id("onboarding.backup.skip-acknowledged.row")
-                    .with_label(t("onboarding-backup-skip-acknowledgement"))
-                    .on_change({
-                        let pending = Rc::clone(&self.acknowledgements);
-                        move |checked| {
-                            pending
-                                .borrow_mut()
-                                .push((AcknowledgementKind::SkipBackup, checked));
-                        }
-                    }),
-                ))
-                .push(self.identity_actions()),
+        acknowledgement_footer(
+            theme,
+            Checkbox::new(
+                "onboarding.backup.skip-acknowledged.box",
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+            )
+            .with_id("onboarding.backup.skip-acknowledged.row")
+            .with_label(t("onboarding-backup-skip-acknowledgement"))
+            .on_change({
+                let pending = Rc::clone(&self.acknowledgements);
+                move |checked| {
+                    pending
+                        .borrow_mut()
+                        .push((AcknowledgementKind::SkipBackup, checked));
+                }
+            }),
+            self.identity_actions(),
         )
     }
 
@@ -2477,21 +2470,7 @@ impl OnboardingView {
         let Some(acknowledgement) = acknowledgement else {
             return self.identity_actions();
         };
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                // Match the scroll content gutter so a long acknowledgement
-                // measures and wraps inside the panel rather than running
-                // into its edge. The vertical inset is part of the sticky
-                // footer's reserved height and keeps the label distinct from
-                // the action row below it.
-                .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
-                .with_vertical_padding(theme.tokens.spacing.s2)
-                .with_gap(theme.tokens.spacing.s3)
-                .push(Box::new(acknowledgement))
-                .push(self.identity_actions()),
-        )
+        acknowledgement_footer(theme, acknowledgement, self.identity_actions())
     }
 
     #[expect(
@@ -4212,6 +4191,32 @@ fn actions(buttons: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
 
 /// Sticky page navigation with a deliberate 20 px side and 16 px bottom
 /// inset, independent of the scrollable page body.
+/// An acknowledgement above the action row. Only the checkbox takes the
+/// content gutter, so a long label wraps inside the panel; the actions keep
+/// every other footer's inset, so the buttons do not jump between steps.
+fn acknowledgement_footer(
+    theme: &Theme,
+    acknowledgement: Checkbox,
+    actions: Box<dyn Widget>,
+) -> Box<dyn Widget> {
+    let spacing = &theme.tokens.spacing;
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_vertical_padding(spacing.s2)
+            .with_gap(spacing.s3)
+            .push(Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_horizontal_padding(spacing.s3, spacing.s3)
+                    .push(Box::new(acknowledgement)),
+            ))
+            .push(actions),
+    )
+}
+
 fn footer_actions(buttons: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
     let mut row = Row::new().push(Box::new(Spacer::new()));
     for button in buttons {
