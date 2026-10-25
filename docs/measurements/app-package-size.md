@@ -20,7 +20,8 @@ enforces the budgets in these places:
   another app's code included, leaves its result standing. `runtime-size-<arch>` does the same for the shared
   runtime (docs/measurements/runtime-size.md). The push gate runs the aarch64 one of each app whose
   files a commit changes, when t has the commit's shared runtime built; every main push that
-  changes the runtime builds it (`thin-runtime-<arch>` runs on `main`, and `idle`). A commit that changes what the runtime is
+  changes the runtime builds it (`thin-runtime-aarch64` runs on `main`, and `idle`; the x86_64 one
+  only on `idle`, as only checks named for x86_64 use it). A commit that changes what the runtime is
   built from, or more than three apps, skips it and says so; run the ones you need before you
   push. `tools/ci/t_toml.py` generates one per app of the default collection, so a new app has
   its own.

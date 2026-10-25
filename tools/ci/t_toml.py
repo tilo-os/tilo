@@ -553,6 +553,8 @@ def resolved_dirs(names: set[str], target: str, dev: bool, root: Path = ROOT) ->
 # `runtime-size-<arch>` need it, so their keys hold its key, and compile only their apps on it.
 # They read:
 SIZE_ARCHES = [("x86_64", "arch=x86_64"), ("aarch64", "arch=arm64")]
+# The architecture whose app sizes the push gate checks (tools/ci/pre_push.py SIZE_ARCH).
+PUSH_GATE_SIZE_ARCH = "aarch64"
 # to compile: t-release.sh and what it sources, the app plan (app_release.py, which reads every
 # app's manifests and the collections), the architecture guard, package-apps.sh up to its
 # compile, build-thin-apps.sh and the rustc wrappers it puts in front of the compiler;
@@ -649,11 +651,14 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
             lines += [f'requirement = {{ cores = 8, memory = "{memory}" }}', f"needs = [{json.dumps(shared)}]"]
         lines += ["timeout_secs = 5400", 'cost = "heavy"', "default = false"]
         if shared is None:
-            # Built for every main push that changes it (`main`), so the push gate's size check of
-            # an app a commit changes (tools/ci/pre_push.py, aarch64) finds the runtime of the main
-            # it lands on built and compiles only that app; `idle` would wait for t to have room,
-            # which a busy t rarely has. A push that leaves the runtime's inputs alone reuses it.
-            lines.append('on = ["main", "idle"]')
+            # The push gate's architecture's is built for every main push that changes it
+            # (`main`), so the gate's size check of an app a commit changes (tools/ci/pre_push.py)
+            # finds the runtime of the main it lands on built and compiles only that app; `idle`
+            # would wait for t to have room, which a busy t rarely has. A push that leaves the
+            # runtime's inputs alone reuses it. The other architecture's only the size checks
+            # named for it use, so it waits for room.
+            on = ["main", "idle"] if name.endswith(f"-{PUSH_GATE_SIZE_ARCH}") else ["idle"]
+            lines.append(f"on = {json.dumps(on)}")
         return "\n".join(lines) + "\n" + cargo_check(name, spec, manifest, packages, ROOT)
 
     shared = [check(f"thin-runtime-{arch}", f"bash tools/apps/t-release.sh thin-runtime {arch}",
@@ -714,8 +719,12 @@ def size_matrices(per_arch: list[list[str]], app_size: dict[str, list[str]], app
     listed = tree("apps/*/tilo-app.toml")
     blocks = []
     for checks in per_arch:
-        shape = template(tomllib.loads(checks[0])["check"][0], arches[0])
-        blocks.append(products.check(shape, None, {"arch": arches}))
+        each = [template(tomllib.loads(block)["check"][0], values) for block, values in zip(checks, arches)]
+        shape = each[0]
+        # Fields one architecture's check says otherwise, as the matrix's `set` for it.
+        sets = [{"when": {"arch": values["arch"]}, **{k: v for k, v in fields.items() if shape.get(k) != v}}
+                for fields, values in zip(each[1:], arches[1:]) if fields != shape]
+        blocks.append(products.check(shape, None, {"arch": arches, **({"set": sets} if sets else {})}))
     for i, (shape, members) in enumerate(groups):
         if i == 0:
             axis = {"from": "apps/*/tilo-app.toml"}
