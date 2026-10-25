@@ -134,6 +134,106 @@ fn truncate_keeps_what_it_shrinks() {
 }
 
 #[test]
+fn an_append_adds_to_the_end_and_undo_puts_the_previous_text_back() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("src");
+    write(&root.join("today.md"), "# Today\n");
+    let policy = granted(&root);
+    let history = history(home.path());
+
+    let action = FileAction::Append(AppendFileOp {
+        files: vec![root.join("today.md")],
+        text: "- bought milk\n".into(),
+    });
+    let outcome = perform(&action, &policy, &history, Some(1_000)).unwrap();
+    assert_eq!(
+        fs::read_to_string(root.join("today.md")).unwrap(),
+        "# Today\n- bought milk\n"
+    );
+
+    undo_id(&outcome.id, &history);
+    assert_eq!(
+        fs::read_to_string(root.join("today.md")).unwrap(),
+        "# Today\n",
+        "undo puts the text back as it was, not just the file"
+    );
+}
+
+#[test]
+fn an_append_to_a_file_that_is_not_there_makes_it() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("src");
+    fs::create_dir_all(&root).unwrap();
+    let policy = granted(&root);
+    let history = history(home.path());
+
+    let action = FileAction::Append(AppendFileOp {
+        files: vec![root.join("new.md")],
+        text: "first line\n".into(),
+    });
+    let outcome = perform(&action, &policy, &history, Some(1_000)).unwrap();
+    assert_eq!(
+        fs::read_to_string(root.join("new.md")).unwrap(),
+        "first line\n"
+    );
+
+    undo_id(&outcome.id, &history);
+    assert!(!root.join("new.md").exists(), "nothing was there before");
+}
+
+#[test]
+fn touch_keeps_the_text_a_file_already_has() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("src");
+    write(&root.join("draft.md"), "a paragraph I wrote");
+    let policy = granted(&root);
+    let history = history(home.path());
+
+    let action = FileAction::Touch(AppendFileOp {
+        files: vec![root.join("draft.md"), root.join("empty.md")],
+        text: String::new(),
+    });
+    let outcome = perform(&action, &policy, &history, Some(1_000)).unwrap();
+    assert_eq!(
+        fs::read_to_string(root.join("draft.md")).unwrap(),
+        "a paragraph I wrote",
+        "touch is not truncate: what is there stays"
+    );
+    assert_eq!(
+        fs::read(root.join("empty.md")).unwrap(),
+        Vec::<u8>::new(),
+        "a missing file is created empty"
+    );
+
+    undo_id(&outcome.id, &history);
+    assert!(!root.join("empty.md").exists(), "the made file is gone");
+    assert_eq!(
+        fs::read_to_string(root.join("draft.md")).unwrap(),
+        "a paragraph I wrote"
+    );
+}
+
+#[test]
+fn touching_a_directory_is_refused_and_changes_nothing() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("src");
+    fs::create_dir_all(root.join("notes")).unwrap();
+    let policy = granted(&root);
+    let history = history(home.path());
+
+    let action = FileAction::Touch(AppendFileOp {
+        files: vec![root.join("notes")],
+        text: String::new(),
+    });
+    let error = perform(&action, &policy, &history, Some(1_000)).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!("{}/notes: is a directory", root.display())
+    );
+    assert!(root.join("notes").is_dir(), "nothing was written");
+}
+
+#[test]
 fn a_write_outside_every_grant_is_refused_and_changes_nothing() {
     let home = tempfile::tempdir().unwrap();
     let granted_dir = home.path().join("granted");
