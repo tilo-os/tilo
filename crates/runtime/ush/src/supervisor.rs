@@ -408,6 +408,7 @@ impl Session {
             BrokerState {
                 session_id: self.session_id.clone(),
                 environment: EnvironmentHandle {
+                    var_dir: self.store.environment_var(&resolved.key),
                     records: self.records(),
                     key: resolved.key.clone(),
                     built_from: resolved.environment.clone(),
