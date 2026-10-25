@@ -2072,6 +2072,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-document",
+ "tilo-emoji-catalogue",
  "tilo-emoji-engine",
  "tilo-files",
  "tilo-model-client",
@@ -10039,6 +10040,8 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-doc",
  "tilo-document",
+ "tilo-emoji-catalogue",
+ "tilo-emoji-engine",
  "tilo-files",
  "tilo-rich-text",
  "tilo-test-env",
@@ -15031,6 +15034,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-documents",
+ "tilo-emoji-catalogue",
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-handoff",
@@ -17928,6 +17932,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-emoji-catalogue"
+version = "0.1.0"
+dependencies = [
+ "emoji",
+ "tilo-ui",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-emoji-engine"
 version = "0.1.0"
 dependencies = [
@@ -18400,6 +18413,7 @@ dependencies = [
  "tilo-test-env",
  "tokio",
  "wire-frame",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -25741,6 +25755,7 @@ dependencies = [
  "tilo-document",
  "tilo-documents",
  "tilo-egress",
+ "tilo-emoji-catalogue",
  "tilo-endpoint-reachability",
  "tilo-engine-loader",
  "tilo-environment",
@@ -25753,6 +25768,7 @@ dependencies = [
  "tilo-firstboot-files",
  "tilo-font-catalog",
  "tilo-fs",
+ "tilo-fs-client",
  "tilo-governor",
  "tilo-handoff",
  "tilo-headless-schema",
@@ -25762,6 +25778,7 @@ dependencies = [
  "tilo-host",
  "tilo-host-search",
  "tilo-identity-ceremony",
+ "tilo-identity-client",
  "tilo-identity-host",
  "tilo-image-codec",
  "tilo-image-policy-check",
@@ -25782,6 +25799,7 @@ dependencies = [
  "tilo-messaging",
  "tilo-messaging-protocol",
  "tilo-mime",
+ "tilo-model-client",
  "tilo-model-gateway",
  "tilo-moderation",
  "tilo-moq",
@@ -25872,6 +25890,7 @@ dependencies = [
  "tilo-wet-media",
  "tilo-winit",
  "tilo-winit-x11",
+ "tilo-workspace-emoji",
  "tilo-workspace-join",
  "tilo-zone-globe",
  "time",
