@@ -94,6 +94,7 @@ macro_rules! model {
             devices: $devices,
             archived: $archived,
             public: $public,
+            emoji: super::super::emoji_pane::EmojiPaneModel::unavailable($user),
         }
     };
 }

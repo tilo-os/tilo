@@ -2094,6 +2094,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         WsTab::Agents => "agents",
         WsTab::Permissions => "permissions",
         WsTab::Apps => "apps",
+        WsTab::Emoji => "emoji",
     };
     let palette_visible = host.palette_visible();
     let palette_query = host.palette_query();

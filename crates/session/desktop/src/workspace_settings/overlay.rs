@@ -54,6 +54,8 @@ pub struct WorkspaceSettingsModel<'a> {
     /// The workspaces this device keeps archived: off its switcher and
     /// desktop, each restorable or deletable from here.
     pub archived: &'a [ArchivedWorkspace],
+    /// The workspace's emoji, for the Emoji tab.
+    pub emoji: super::emoji_pane::EmojiPaneModel<'a>,
 }
 
 /// A workspace this device keeps archived, as the General tab lists it.
@@ -172,6 +174,12 @@ pub enum EventOutcome {
     RestoreArchived(usize),
     /// Delete the `n`th archived workspace, after the usual confirmation.
     DeleteArchived(usize),
+    /// Choose a picture and add it as the workspace's emoji.
+    AddEmoji,
+    /// Remove the workspace's emoji of this name, the way given.
+    RemoveEmoji(String, super::emoji_pane::Removal),
+    /// Put away the note about the last emoji not added or removed.
+    DismissEmojiNotice,
 }
 
 /// Keyboard operations understood by the focused member-permission sheet.
@@ -234,10 +242,13 @@ pub struct WorkspaceSettingsOverlay {
     /// Measured footer plus its themed inset/gap, reserved outside the body clip.
     general_footer_height: f64,
     transition: ui::motion::Presence,
-    tab_pill_rects: [Rect; 5],
+    tab_pill_rects: [Rect; WsTab::COUNT],
     /// The strip that switches between the lens's tabs, and the labels it
     /// was built with (the catalogue's, which follow the language).
     tabs: Option<(Vec<String>, ui::widget::ViewTabs)>,
+    /// The Emoji tab as painted, and how far its grid is scrolled.
+    emoji: super::emoji_pane::EmojiPaneLayout,
+    emoji_scroll: f64,
     default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
     revoke_rects: Vec<(String, Rect)>,
     grant_composer_rects: Option<GrantComposerRects>,
@@ -284,8 +295,10 @@ impl Default for WorkspaceSettingsOverlay {
             general_lead: f64::from(ui::tokens::Spacing::BASE.s2),
             general_footer_height: 48.0,
             transition: ui::motion::Presence::closed(),
-            tab_pill_rects: [Rect::ZERO; 5],
+            tab_pill_rects: [Rect::ZERO; WsTab::COUNT],
             tabs: None,
+            emoji: super::emoji_pane::EmojiPaneLayout::default(),
+            emoji_scroll: 0.0,
             default_app_rects: Vec::new(),
             revoke_rects: Vec::new(),
             grant_composer_rects: None,
@@ -550,15 +563,25 @@ impl WorkspaceSettingsOverlay {
 
     pub fn tab_pill_rect(&self, tab: WsTab) -> Rect {
         self.tab_pill_rects
-            .get(match tab {
-                WsTab::General => 0,
-                WsTab::Members => 1,
-                WsTab::Agents => 2,
-                WsTab::Permissions => 3,
-                WsTab::Apps => 4,
-            })
+            .get(tab.index())
             .copied()
             .unwrap_or(Rect::ZERO)
+    }
+
+    /// The Emoji tab as last painted: its controls and cells.
+    pub fn emoji_layout(&self) -> &super::emoji_pane::EmojiPaneLayout {
+        &self.emoji
+    }
+
+    /// Scroll the Emoji tab's grid by `delta`; whether it moved. Nothing
+    /// moves while the tab is not shown.
+    pub fn scroll_emoji(&mut self, delta: f64) -> bool {
+        if !delta.is_finite() || self.emoji.grid.area() <= 0.0 {
+            return false;
+        }
+        let old = self.emoji_scroll;
+        self.emoji_scroll = (old + delta).clamp(0.0, self.emoji.max_scroll);
+        (old - self.emoji_scroll).abs() > f64::EPSILON
     }
 
     pub fn revoke_rects(&self) -> &[(String, Rect)] {
@@ -664,7 +687,8 @@ impl WorkspaceSettingsOverlay {
     }
 
     fn clear_hits(&mut self) {
-        self.tab_pill_rects = [Rect::ZERO; 5];
+        self.tab_pill_rects = [Rect::ZERO; WsTab::COUNT];
+        self.emoji = super::emoji_pane::EmojiPaneLayout::default();
         self.default_app_rects.clear();
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
@@ -677,6 +701,21 @@ impl WorkspaceSettingsOverlay {
         self.bot_remove_rects.clear();
         self.agent_access = super::agent_access::AgentAccessLayout::default();
         self.member_sheet_option_rects.clear();
+    }
+
+    /// Forget every pane's controls, keeping the tab strip just painted.
+    fn clear_hits_but_tabs(&mut self) {
+        let tabs = self.tab_pill_rects;
+        self.clear_hits();
+        self.tab_pill_rects = tabs;
+    }
+
+    /// What a press at `point` on the Agents or Emoji tab means.
+    fn pane_outcome(&self, point: Point, active_tab: WsTab) -> Option<EventOutcome> {
+        match active_tab {
+            WsTab::Emoji => self.emoji.hit(point),
+            _ => self.agents_outcome(point, active_tab),
+        }
     }
 
     /// What a press at `point` on the Agents tab means: the agent view's
@@ -1020,7 +1059,7 @@ impl WorkspaceSettingsOverlay {
         if self.ownership_action_rect.area() > 0.0 && self.ownership_action_rect.contains(point) {
             return EventOutcome::ManageOwnership;
         }
-        if let Some(outcome) = self.agents_outcome(point, active_tab) {
+        if let Some(outcome) = self.pane_outcome(point, active_tab) {
             return outcome;
         }
         for (id, rect) in &self.revoke_rects {
@@ -1625,6 +1664,9 @@ impl WorkspaceSettingsOverlay {
         active_tab: WsTab,
         model: &WorkspaceSettingsModel<'_>,
     ) -> bool {
+        if active_tab != WsTab::Emoji {
+            self.emoji = super::emoji_pane::EmojiPaneLayout::default();
+        }
         match active_tab {
             WsTab::Members => {
                 self.draw_ws_settings_members_tab(
@@ -1661,6 +1703,25 @@ impl WorkspaceSettingsOverlay {
             }
             WsTab::Apps => {
                 self.draw_ws_settings_apps_tab(scene, transform, text_renderer, theme, rect, model);
+                true
+            }
+            WsTab::Emoji => {
+                self.clear_hits_but_tabs();
+                let body = Self::body_rect(rect);
+                if let Some(ws) = model.desktop.active_workspace() {
+                    self.emoji = super::emoji_pane::draw_emoji_pane(
+                        &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                        body,
+                        &model.emoji,
+                        &super::emoji_pane::EmojiPaneContext {
+                            ws,
+                            people: model.people,
+                        },
+                        self.emoji_scroll,
+                    );
+                    self.emoji_scroll = self.emoji_scroll.min(self.emoji.max_scroll);
+                }
+                Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
                 true
             }
             WsTab::General => {
@@ -2055,6 +2116,7 @@ mod tests {
             devices: &[],
             archived: &[],
             public: &PublicCard::Asking,
+            emoji: super::super::emoji_pane::EmojiPaneModel::unavailable(&local_user),
         };
         overlay.draw_contents(&mut scene, Affine::IDENTITY, &mut tr, &theme, &model);
         overlay.paint_name_field(
@@ -2096,6 +2158,7 @@ mod tests {
             devices: &[],
             archived: &[],
             public: &PublicCard::Asking,
+            emoji: super::super::emoji_pane::EmojiPaneModel::unavailable(&local_user),
         };
         let mut overlay = WorkspaceSettingsOverlay::default();
         let mut renderer = TextRenderer::new();
@@ -2209,6 +2272,7 @@ mod tests {
                 devices: &[],
                 archived: &[],
                 public: &PublicCard::Asking,
+                emoji: super::super::emoji_pane::EmojiPaneModel::unavailable(&user),
             };
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
@@ -2369,6 +2433,7 @@ mod tests {
             devices: &[],
             archived: &[],
             public: &PublicCard::Asking,
+            emoji: super::super::emoji_pane::EmojiPaneModel::unavailable(&user),
         };
         for viewport in [
             Rect::new(0.0, 0.0, 1600.0, 900.0),
@@ -2431,7 +2496,8 @@ mod tests {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
             let hit_rect = Rect::new(700.0, 200.0, 760.0, 240.0);
-            overlay.tab_pill_rects = [hit_rect, Rect::ZERO, Rect::ZERO, Rect::ZERO, Rect::ZERO];
+            overlay.tab_pill_rects = [Rect::ZERO; WsTab::COUNT];
+            overlay.tab_pill_rects[0] = hit_rect;
             let Ok(resource) = desktop_policy::ResourceKind::extension("pdf") else {
                 panic!("pdf is a valid extension resource");
             };
