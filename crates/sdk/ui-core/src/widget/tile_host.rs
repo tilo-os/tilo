@@ -529,6 +529,14 @@ impl TileHost {
         self.content_shift += dx;
     }
 
+    /// How far the content is drawn from where it was laid out
+    /// ([`Self::offset_layout`]): what its app placed at `x` shows at
+    /// `x + content_shift()`.
+    #[must_use]
+    pub fn content_shift(&self) -> f64 {
+        self.content_shift
+    }
+
     fn install_live_custody(&mut self, attachment: crate::control_custody::CustodyAttachment) {
         let Some(parent) = self.custody_parent.clone() else {
             return;
