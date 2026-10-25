@@ -235,6 +235,19 @@ impl HostedWindow {
         self.state().toolbar.clone()
     }
 
+    /// What the window's bar shows: the slots as declared, with the
+    /// notice up and the reactions at the end, which are the window's own
+    /// ([`Self::notify`], [`Self::show_reactions`]).
+    #[must_use]
+    pub fn shown(&self) -> Option<WindowToolbar> {
+        let state = self.state();
+        crate::window_toolbar::with_window_owned(
+            state.toolbar.clone(),
+            state.notice.clone(),
+            state.reactions.clone(),
+        )
+    }
+
     /// Bumped by every declaration that changed the slots.
     #[must_use]
     pub fn revision(&self) -> u64 {
@@ -335,17 +348,8 @@ impl HostedWindow {
     /// one the host last showed; `None`: it showed none yet).
     #[must_use]
     pub fn toolbar_since(&self, seen: Option<u64>) -> Option<(u64, Option<WindowToolbar>)> {
-        let state = self.state();
-        (seen != Some(state.revision)).then(|| {
-            (
-                state.revision,
-                crate::window_toolbar::with_window_owned(
-                    state.toolbar.clone(),
-                    state.notice.clone(),
-                    state.reactions.clone(),
-                ),
-            )
-        })
+        let revision = self.revision();
+        (seen != Some(revision)).then(|| (revision, self.shown()))
     }
 
     /// Hand the app what the person did with its slots.

@@ -162,6 +162,48 @@ fn a_hosted_windows_slots_reach_its_bar_and_presses_reach_its_app() {
     assert_eq!(groups[0].tab_toolbar(5), None);
 }
 
+/// A window of an app in the host's own process (the browser's) shows the
+/// reactions to its record in its bar, as an app's own window does, and a
+/// press on a pill reaches the app as the reaction it is.
+#[test]
+fn a_hosted_windows_reactions_reach_its_bar_and_presses_reach_its_app() {
+    use crate::window_toolbar::{REACTION_ACTION_PREFIX, ToolbarReaction, ToolbarReactions};
+    let window = HostedWindow::new();
+    let mut groups = [group(&[5])];
+    let mut slots = WindowSlots::default();
+    let reactions = ToolbarReactions {
+        pills: vec![ToolbarReaction {
+            emoji: "🎉".into(),
+            count: 2,
+            mine: false,
+            names: vec!["Ada".into()],
+        }],
+        can_react: true,
+    };
+    window.show_reactions(Some(reactions.clone()));
+    let windows = [(5, window.clone())];
+    assert!(slots.sync_hosted(&windows, groups.iter_mut()).changed);
+    assert_eq!(
+        groups[0]
+            .tab_toolbar(5)
+            .and_then(|toolbar| toolbar.reactions.as_ref()),
+        Some(&reactions),
+        "a window with no slots of its own still shows them"
+    );
+    assert!(slots.route(
+        5,
+        ToolbarEvent::Action {
+            id: format!("{REACTION_ACTION_PREFIX}🎉")
+        }
+    ));
+    slots.sync_hosted(&windows, groups.iter_mut());
+    assert_eq!(window.take_reaction_presses(), vec!["🎉".to_owned()]);
+    assert!(
+        window.take_events().is_empty(),
+        "never among the app's slot events"
+    );
+}
+
 /// The desktop's own "Share to channel…" ends the menu of a window whose
 /// app has a bar, and choosing it reaches the desktop, never the app.
 #[test]
