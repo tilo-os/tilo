@@ -202,6 +202,93 @@ fn only_typed_arguments_compute_and_text_stays_text() {
 }
 
 #[test]
+fn a_value_nothing_types_computes_when_it_is_only_arithmetic() {
+    let params = [
+        // A row's cells by header, as Sheets' `upsert-item` takes them.
+        ActionParam::required_owned("value", ParamType::Object, "")
+            .with_schema(json!({"type": "object", "additionalProperties": true})),
+        ActionParam::required("rows", ParamType::Array, ""),
+        ActionParam::required_owned("edit", ParamType::Object, "").with_schema(json!({
+            "type": "object",
+            "properties": {"op": {"type": "string"}, "path": {"type": "array"}},
+        })),
+        ActionParam::required("body", ParamType::Text, ""),
+        ActionParam::required_owned("subject", ParamType::Text, "")
+            .with_schema(json!({"type": "string"})),
+    ];
+    let mut arguments = json!({
+        "value": {"Pay by": "10 business days after 2026-10-14", "Payout": "319 - 75",
+                  "Note": "Call 319 - 75 today", "Name": "Ana"},
+        "rows": [["2026-10-14 + 3 weeks", "4 x 38.50", "sum of 120, 80 and 45", "15% of 200"]],
+        "edit": {"op": "upsert-item", "match": {"Invoice": "INV-7"},
+                 "value": {"Excess": "289 - 50", "Due": "2026-10-14"}},
+        "body": "319 - 75",
+        "subject": "10 business days after 2026-10-14",
+    })
+    .as_object()
+    .cloned()
+    .unwrap();
+    fill_untyped(&mut arguments, &params);
+    assert_eq!(
+        serde_json::Value::Object(arguments),
+        json!({
+            "value": {"Pay by": "2026-10-28", "Payout": 244,
+                      "Note": "Call 319 - 75 today", "Name": "Ana"},
+            "rows": [["2026-11-04", 154, 245, 30]],
+            "edit": {"op": "upsert-item", "match": {"Invoice": "INV-7"},
+                     "value": {"Excess": 239, "Due": "2026-10-14"}},
+            // Text a parameter takes is text, however it reads.
+            "body": "319 - 75",
+            "subject": "10 business days after 2026-10-14",
+        })
+    );
+}
+
+#[test]
+fn a_value_nothing_types_is_read_strictly_or_left_as_written() {
+    assert_eq!(
+        plain::untyped("10 business days after 2026-10-14"),
+        Some(json!("2026-10-28"))
+    );
+    assert_eq!(
+        plain::untyped(" 2026-10-14T09:00 + 2 days "),
+        Some(json!("2026-10-16T09:00"))
+    );
+    assert_eq!(plain::untyped("319 - 75"), Some(json!(244)));
+    assert_eq!(plain::untyped("$1,200.50 - 200.50"), Some(json!(1000)));
+    for text in [
+        // More than the arithmetic: a sentence, a mail body.
+        "Call 319 - 75 today",
+        "Hi Ana,\n\nthe payout is 289 - 50, due 10 business days after 2026-10-14.",
+        "10 business days after 2026-10-14, please",
+        // Dates other than ISO, which a typed date reads: never guessed here.
+        "10 business days after 03/04/2026",
+        "10 business days after October 14, 2026",
+        "3 days after today",
+        // Digits that only look like arithmetic.
+        "555-1234",
+        "1920x1080",
+        "3/4",
+        "289-50",
+        "03/04/2026",
+        "2026-10",
+        "09:00 - 17:00",
+        "+49 30 1234567",
+        "2026-10-14 - 2026-10-01",
+        // Plain values, already what they say.
+        "2026-10-14",
+        "239",
+        "-5",
+        "15%",
+        "1,234.50",
+        "INV-7",
+        "",
+    ] {
+        assert_eq!(plain::untyped(text), None, "{text}");
+    }
+}
+
+#[test]
 fn an_expression_may_say_its_arithmetic_in_words() {
     assert_eq!(
         computed("10 business days after 2026-10-14"),
