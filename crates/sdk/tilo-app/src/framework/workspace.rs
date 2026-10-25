@@ -262,6 +262,12 @@ impl WorkspaceState {
         }
     }
 
+    /// What wakes the window: for an answer that arrives later, such as a
+    /// chooser's.
+    pub(crate) fn wake(&self) -> Option<&WakeHandle> {
+        self.wake.as_ref()
+    }
+
     /// The window's app.
     pub(crate) fn app_id(&self) -> &'static str {
         self.app_id

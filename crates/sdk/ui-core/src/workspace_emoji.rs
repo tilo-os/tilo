@@ -211,6 +211,13 @@ pub fn make_small(image: &[u8]) -> Small {
     Small::TooLarge
 }
 
+/// Wake `window` once the image tools [`make_small`] waits for are in:
+/// a picture it answered [`Small::Pending`] for is made small then, on
+/// the frame that wake brings, and not only when something else changes.
+pub fn wake_when_tools_are_in(window: &WakeHandle) {
+    crate::image_decoders::wake_when_in(window.clone());
+}
+
 impl Small {
     /// Why it was not made small, for the person; `None` when it was.
     #[must_use]
