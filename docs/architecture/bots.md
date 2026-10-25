@@ -126,7 +126,6 @@ pub struct Installation {
     pub connector_cursors_from_ms: i64,  // connector events before this are never delivered (§9)
     pub paused: bool,
 }
-
 pub enum AppearancePolicy { Own, Personas }
 
 // The program bytes are kept in the room's content store, so every member can
@@ -800,6 +799,12 @@ pub struct BotRequirements {
   `tilo_bot_directory` does the fetch, verification, grant derivation and
   connector check for the Store and the room service alike;
   `registry_types::DirectoryRef` names the listing an installation came from.
+- **Installed from a program file.** A host's own operator can run a bot the
+  image ships without publishing it to a directory: `--bot` takes a path to a
+  program file as readily as a directory entry, and the installation records
+  that path as where it came from. It is not `source` — a path names no
+  listing, no version and no publisher — and the bot's name is the program's
+  own name, never the path.
 - **Updates.** A newer version is offered like an app update. Applying it
   follows §3: automatic when the grant fits inside the old one, reviewed when it
   is wider.
