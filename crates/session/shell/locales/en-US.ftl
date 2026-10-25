@@ -3004,7 +3004,7 @@ onboarding-backup-unavailable = A personal identity backup can’t be created on
 
 onboarding-ready-welcome = Welcome to Tilo
 
-onboarding-ready-next = Make yourself at home, or take a quick tour first.
+onboarding-ready-next = The desktop is ready. Start with anything: open an app, search for what you need, or invite someone to a workspace.
 
 onboarding-migration-cleanup-pending = Your things are ready in Tilo. Some temporary files still need to be removed.
 
