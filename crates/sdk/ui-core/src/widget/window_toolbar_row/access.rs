@@ -5,7 +5,7 @@ use super::{
     ACTION_TARGET_PREFIX, BACK_TARGET, CHOICE_TARGET_PREFIX, FORWARD_TARGET, LEADING_TARGET_PREFIX,
     LOCATION_TARGET, MenuEntry, NOTICE_TARGET_PREFIX, OVERFLOW_TARGET, Rect, SEGMENT_TARGET_PREFIX,
     SIDEBAR_TARGET, SUGGESTION_TARGET_PREFIX, Slot, ToolbarEvent, ToolbarRow, VIEW_TARGET_PREFIX,
-    VIEWS_MENU_TARGET, Widget, edited_word, sidebar_key,
+    VIEWS_MENU_TARGET, Widget, sidebar_key, trailing_word,
 };
 
 impl ToolbarRow {
@@ -92,8 +92,10 @@ impl ToolbarRow {
                 .with_name(name)
                 .with_optional_value(Some(location.edit_value().to_owned()))
                 .with_bounds(self.slots.location);
-                if location.edited && toolbar.notice.is_none() {
-                    node = node.with_description(edited_word());
+                if let Some(word) = trailing_word(location)
+                    && toolbar.notice.is_none()
+                {
+                    node = node.with_description(word);
                 }
                 if toolbar.notice.is_some() {
                     // A notice is read out as it arrives, without moving

@@ -140,6 +140,10 @@ pub(crate) struct Room {
     standing: crate::desktop::Standing,
     /// The standing the mounts' permissions were last set to.
     followed: u8,
+    /// Nodes below the room where the room told this page's person they
+    /// may change things beyond their role (an item shared with them to
+    /// edit), mirrored into the mounts' permissions.
+    permitted: BTreeSet<ui::permissions::TreePath>,
     /// The room keeps no member's layout: it refused this page's desktop as
     /// a public room does. The attached desktops are their people's own
     /// from then on: sent to nobody, and not replaced by the room's.
@@ -209,6 +213,7 @@ pub(crate) fn open(
         moderation_due_ms: Arc::default(),
         standing: crate::desktop::Standing::unknown(),
         followed: 0,
+        permitted: BTreeSet::new(),
         own_layout: false,
         members: None,
         in_flight: HashMap::new(),
@@ -327,6 +332,46 @@ pub(crate) enum Kept {
 
 fn room(id: u32) -> Option<Rc<RefCell<Room>>> {
     ROOMS.with_borrow(|rooms| rooms.get(&id).cloned())
+}
+
+/// Ask peer `id`'s room `request` through the host's rooms door; `done`
+/// gets its answer.
+///
+/// # Errors
+/// The peer replicates no room, or its session is gone.
+pub(crate) fn rooms_then(
+    id: u32,
+    request: impl FnOnce(&str) -> tilo_relay_protocol::rooms::RoomsRequest,
+    done: tilo_browser_peer::RoomsCompletion,
+) -> Result<(), String> {
+    let room = room(id).ok_or("this page joined no room")?;
+    let room = room.borrow();
+    room.peer.rooms_then(request(&room.uuid), done)
+}
+
+/// The room told peer `id`'s person whether they may change things at
+/// `node` (its text form): their windows let them where the room will keep
+/// it, and stop where it no longer would.
+pub(crate) fn permit(id: u32, node: &str, may: bool) {
+    let Some(room) = room(id) else {
+        return;
+    };
+    let Ok(node) = node.parse::<ui::permissions::TreePath>() else {
+        return;
+    };
+    let mut room = room.borrow_mut();
+    let node = node.within_room();
+    let changed = if may {
+        room.permitted.insert(node)
+    } else {
+        room.permitted.remove(&node)
+    };
+    if changed {
+        room.apply_standing();
+        for mounted in room.mounts.values() {
+            (mounted.attachment.notify)();
+        }
+    }
 }
 
 /// Attach mount `mount` to peer `id`'s room.
@@ -515,14 +560,22 @@ impl Room {
         if standing == self.followed {
             return;
         }
+        self.apply_standing();
+    }
+
+    /// Set every mount's permissions to the role the room last answered,
+    /// with what it permits beyond it.
+    fn apply_standing(&mut self) {
         let Some(role) = self.standing.role() else {
             return;
         };
-        self.followed = standing;
+        self.followed = self.standing.code();
         for mounted in self.mounts.values() {
             let attachment = &mounted.attachment;
-            *attachment.permissions.borrow_mut() =
-                ui::permissions::PermissionContext::member(attachment.author.clone(), role);
+            *attachment.permissions.borrow_mut() = self.permitted.iter().fold(
+                ui::permissions::PermissionContext::member(attachment.author.clone(), role),
+                |context, node| context.permitted_at(node, ui::permissions::KindSet::UNDOABLE),
+            );
             // A window waiting to learn whether its person starts the
             // room's record now knows.
             if let Some((handle, shared)) = &attachment.desktop {

@@ -655,12 +655,60 @@ impl ResourceRoot {
         });
     }
 
+    /// Show the item the launch asked for once a view that opens items is
+    /// up. An item the record does not hold yet (it is still arriving) is
+    /// asked for again at the next sync.
+    fn reveal_launched(&self) {
+        let mut reveal = self.run.launched.reveal.borrow_mut();
+        if let Some(anchor) = reveal.as_deref()
+            && self.stages.opens()
+            && self.stages.open(anchor).is_ok()
+        {
+            *reveal = None;
+        }
+    }
+
+    /// Whether the person may change the item the window shows (its bar's
+    /// location anchor, `<kind>/<field>/<item>`) though not the record: an
+    /// item shared with them to edit.
+    fn may_change_shown_item(&self, permissions: &LivePermissions) -> bool {
+        let Some(anchor) = ui_core::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.location)
+            .and_then(|location| location.anchor)
+        else {
+            return false;
+        };
+        let Some((collection, item)) = anchor.rsplit_once('/') else {
+            return false;
+        };
+        let Some((kind, _)) = collection.split_once('/') else {
+            return false;
+        };
+        let record = self
+            .run
+            .launched
+            .record
+            .as_ref()
+            .map_or("", |record| record.route());
+        permissions.check(&PermissionScope::Action {
+            node: ui_core::permissions::TreePath::root()
+                .app(self.dispatch.app_id())
+                .kind(kind)
+                .resource(record)
+                .item(item),
+            kind: ui_core::permissions::ActionKind::Undoable,
+        })
+    }
+
     /// Apply a permission change made while the app runs: dispatchers stop
     /// (or resume) submitting, bound state and surfaces see the new value.
     fn refresh_access(&self) {
         let _profile = tilo_resource::profiling::Phase::start("framework.access_refresh");
         if let (Some(permissions), Some(write)) = (&self.permissions, &self.write) {
-            self.dispatch.set_read_only(!permissions.check(write));
+            let read_only = !permissions.check(write) && !self.may_change_shown_item(permissions);
+            self.dispatch.set_read_only(read_only);
+            // Its person sees, in the window's bar, that they may only look.
+            ui_core::window_toolbar::show_view_only(read_only);
         }
         self.dispatch.refresh_permission_states();
     }
@@ -2072,6 +2120,7 @@ impl RootModel for ResourceRoot {
             let _profile = tilo_resource::profiling::Phase::start("framework.content_sync");
             self.content.sync(state, path);
         }
+        self.reveal_launched();
         self.settle_arrival();
         self.follow_search();
         // What the view's sync changed (a surface's bound edits, its

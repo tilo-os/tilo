@@ -89,6 +89,7 @@ pub mod record;
 pub mod render_call;
 pub mod render_chat;
 pub mod resource;
+mod share_grants;
 mod shared_resources;
 mod sidebar;
 pub mod transcript;
