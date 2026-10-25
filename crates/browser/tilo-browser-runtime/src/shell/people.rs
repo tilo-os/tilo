@@ -19,7 +19,7 @@ use tilo_desktop::desk_edges::DockEdge;
 use tilo_desktop::follow_banner::{BannerFrame, FollowBanner};
 use tilo_desktop::here::Person;
 use tilo_desktop::people_overlay::{
-    PeekPictures, PeerScreen, PeerWindow, PeopleHit, PeopleOverlayModel,
+    LivePictures, PeerScreen, PeerWindow, PeopleHit, PeopleOverlayModel,
 };
 use tilo_desktop_model::{DesktopTree, TabId};
 use tilo_desktop_surface::DesktopHandle;
@@ -437,18 +437,6 @@ fn group_of(tree: &DesktopTree, tab: TabId) -> Option<u64> {
         .flat_map(|strip| &strip.window_groups)
         .find(|group| group.tabs.iter().any(|t| t.id == tab))
         .map(|group| group.id)
-}
-
-/// The live pictures the strip keeps of the windows a peek shows.
-struct LivePictures;
-
-impl PeekPictures for LivePictures {
-    fn paint(&mut self, window: u64, scene: &mut Scene, transform: Affine, rect: Rect) -> bool {
-        ui::window_pictures::with_picture(window, |picture| {
-            ui::window_pictures::paint_fitted(picture, scene, transform, rect)
-        })
-        .is_some_and(|painted| painted.area() > 0.0)
-    }
 }
 
 #[cfg(test)]

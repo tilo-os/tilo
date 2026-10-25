@@ -115,18 +115,50 @@ pub struct MessageLine {
     pub text: String,
 }
 
+/// What a peek showed of a window's live picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pictured {
+    /// None to show: the window shows as its app.
+    No,
+    /// The window as it looks now.
+    Live,
+    /// The window as it looked when this device last showed it: it has
+    /// been off screen since, and the peek marks it so.
+    AsLastSeen,
+}
+
 /// Paints this device's live picture of a window ([`PeerWindow::picture`])
-/// fitted into a rect; `false` when it has none to paint.
+/// fitted into a rect, and says what it showed.
 pub trait PeekPictures {
-    fn paint(&mut self, window: u64, scene: &mut Scene, transform: Affine, rect: Rect) -> bool;
+    fn paint(&mut self, window: u64, scene: &mut Scene, transform: Affine, rect: Rect) -> Pictured;
+}
+
+/// The live pictures the strip keeps of this device's windows, by window
+/// group ([`ui::window_pictures`]): what every host's peek shows.
+pub struct LivePictures;
+
+impl PeekPictures for LivePictures {
+    fn paint(&mut self, window: u64, scene: &mut Scene, transform: Affine, rect: Rect) -> Pictured {
+        ui::window_pictures::with_picture(window, |picture| {
+            let painted = ui::window_pictures::paint_fitted(picture, scene, transform, rect);
+            if painted.area() <= 0.0 {
+                Pictured::No
+            } else if picture.current {
+                Pictured::Live
+            } else {
+                Pictured::AsLastSeen
+            }
+        })
+        .unwrap_or(Pictured::No)
+    }
 }
 
 /// A host with no pictures: every window shows as its app.
 pub struct NoPictures;
 
 impl PeekPictures for NoPictures {
-    fn paint(&mut self, _: u64, _: &mut Scene, _: Affine, _: Rect) -> bool {
-        false
+    fn paint(&mut self, _: u64, _: &mut Scene, _: Affine, _: Rect) -> Pictured {
+        Pictured::No
     }
 }
 

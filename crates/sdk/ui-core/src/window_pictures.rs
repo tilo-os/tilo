@@ -31,6 +31,10 @@ pub struct WindowPicture {
     pub scene: Scene,
     /// The window's rect in the coordinates of [`Self::scene`].
     pub rect: Rect,
+    /// The strip showed the window when it last drew: the picture follows
+    /// it. `false` once a draw left it off screen, where nothing draws it:
+    /// the picture is how it last looked, and a host shows it as such.
+    pub current: bool,
 }
 
 #[derive(Default)]
@@ -76,6 +80,7 @@ pub(crate) fn keep(group: u64, scene: &Scene, rect: Rect) {
         let picture = WindowPicture {
             scene: scene.clone(),
             rect,
+            current: true,
         };
         match pictures.held.iter_mut().find(|(held, _)| *held == group) {
             Some((_, held)) => *held = picture,
@@ -92,6 +97,23 @@ pub(crate) fn forget(group: u64) {
             .borrow_mut()
             .held
             .retain(|(held, _)| *held != group);
+    });
+}
+
+/// The window groups of `groups` were left off screen by a draw: their
+/// pictures stay, as they last looked ([`WindowPicture::current`]), until
+/// the strip draws them again.
+pub(crate) fn unseen<'a>(groups: impl IntoIterator<Item = &'a u64>) {
+    PICTURES.with(|pictures| {
+        let mut pictures = pictures.borrow_mut();
+        if pictures.held.is_empty() {
+            return;
+        }
+        for group in groups {
+            if let Some((_, picture)) = pictures.held.iter_mut().find(|(held, _)| held == group) {
+                picture.current = false;
+            }
+        }
     });
 }
 
@@ -195,11 +217,26 @@ mod tests {
         want(&[]);
     }
 
+    /// A window left off screen keeps its picture as it last looked, until
+    /// a draw shows it again.
+    #[test]
+    fn a_window_off_screen_is_pictured_as_it_last_looked() {
+        want(&[4]);
+        keep(4, &drawn(), Rect::new(0.0, 0.0, 200.0, 100.0));
+        assert_eq!(with_picture(4, |picture| picture.current), Some(true));
+        unseen(&[4, 5]);
+        assert_eq!(with_picture(4, |picture| picture.current), Some(false));
+        keep(4, &drawn(), Rect::new(0.0, 0.0, 200.0, 100.0));
+        assert_eq!(with_picture(4, |picture| picture.current), Some(true));
+        want(&[]);
+    }
+
     #[test]
     fn a_picture_fits_inside_keeping_its_shape() {
         let picture = WindowPicture {
             scene: drawn(),
             rect: Rect::new(100.0, 50.0, 500.0, 250.0),
+            current: true,
         };
         let into = Rect::new(0.0, 0.0, 100.0, 100.0);
         assert_eq!(
