@@ -44,7 +44,10 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 # Walks the app's tree in the guest, where each AT-SPI call is one local gdbus: from the
 # host every call would cross ssh. Prints one JSON object: the bus it read, whether the
-# root was there, and the names in the folder listing (None: no listing found).
+# root was there, and the names in the folder listing (None: no listing found). When it
+# finds no connection of the program it prints every connection instead, attributed to
+# its process, so the report separates "nothing published" from "published under a
+# process this reader does not recognise".
 ATSPI_PROBE = r'''
 import importlib.util, json, os, re, sys, time
 CLIENT = os.environ["TILO_ATSPI_CLIENT"]
@@ -97,7 +100,9 @@ def set_a11y(on):
               "org.a11y.Status", "IsEnabled", "b", "true" if on else "false", check=False)
 
 deadline = time.monotonic() + timeout
-last = {"error": f"no AT-SPI connection belongs to a {program} process"}
+found = None
+# Every connection the walk found on the last pass, whether it belonged to PROGRAM.
+clients = []
 try:
     address = m.atspi_address()
 except Exception as e:
@@ -117,20 +122,27 @@ def report(result):
         set_a11y(False)
     sys.exit(0)
 while True:
+    clients = []
     for bus, pid in m.bus_pids(address).items():
-        cmd = m.process_command(m.app_process(pid)).split()
-        if not cmd or cmd[0].rsplit("/", 1)[-1] != program:
-            continue
+        app = m.app_process(pid)
+        cmd = m.process_command(app).split()
+        own = bool(cmd) and cmd[0].rsplit("/", 1)[-1] == program
         try:
             names, entries = walk(m.AtspiClient(address, bus))
+            client = {"bus": bus, "pid": pid, "app_pid": app, "command": " ".join(cmd)[:160],
+                      "root": root_name in names, "entries": entries, "names": names[:20]}
         except Exception as e:
-            last = {"bus": bus, "error": f"walk failed: {e}"}
+            client = {"bus": bus, "pid": pid, "app_pid": app, "command": " ".join(cmd)[:160],
+                      "error": f"walk failed: {e}"}
+        clients.append(client)
+        if not own:
             continue
-        last = {"bus": bus, "root": root_name in names, "entries": entries, "names": names[:80]}
-        if last["root"] and entries:
-            report(last)
+        found = client
+        if found["root"] and entries:
+            report(found)
     if time.monotonic() >= deadline:
-        report(last)
+        report(found or {"error": f"no AT-SPI connection belongs to a {program} process",
+                         "clients": clients[:20]})
     time.sleep(0.5)
 '''
 

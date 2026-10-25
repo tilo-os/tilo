@@ -671,6 +671,28 @@ class ListingTests(unittest.TestCase):
 
 
 class GuestAtspiProbeTests(unittest.TestCase):
+    # Stands in for tools/atspi_external_client.py where the guest's bus must answer a
+    # known way: one AT-SPI address, one connection of another process, walks refused.
+    STUB_CLIENT = (
+        "ROOT_PATH = '/org/a11y/atspi/accessible/root'\n"
+        "PATH_RE = None\n"
+        "def command(*args, check=True):\n"
+        "    return ''\n"
+        "def atspi_address():\n"
+        "    return 'unix:path=/run/user/1000/at-spi/bus'\n"
+        "def bus_pids(address):\n"
+        "    return {':1.4': 4101}\n"
+        "def app_process(pid):\n"
+        "    return pid\n"
+        "def process_command(pid):\n"
+        "    return '/usr/bin/other-app'\n"
+        "class AtspiClient:\n"
+        "    def __init__(self, address, bus):\n"
+        "        self.bus = bus\n"
+        "    def property(self, path, name):\n"
+        "        raise RuntimeError('stub refuses the walk')\n"
+    )
+
     def probe(self, client, no_commands):
         proc = subprocess.run(
             [sys.executable, "-", "file-explorer", "Files activity", "Files", "0"],
@@ -707,6 +729,20 @@ class GuestAtspiProbeTests(unittest.TestCase):
             probe = self.probe(client, empty)
         self.assertIn("failed to load: FileNotFoundError:", probe["error"])
         self.assertNotIn("no AT-SPI client", probe["error"])
+
+    def test_no_connection_of_the_program_reports_the_ones_the_bus_has(self):
+        # A bus that answers, holds one connection of another process and none of
+        # file-explorer: the report says so, names the connection it did find with its
+        # process, and leaves the listing unobserved rather than empty.
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "stub_client.py"
+            client.write_text(self.STUB_CLIENT)
+            probe = self.probe(client, empty)
+        self.assertIn("belongs to a file-explorer process", probe["error"])
+        self.assertEqual([(c["bus"], c["app_pid"], c["command"]) for c in probe["clients"]],
+                         [(":1.4", 4101, "/usr/bin/other-app")])
+        self.assertEqual(probe["clients"][0]["error"], "walk failed: stub refuses the walk")
+        self.assertEqual(judge_listing(probe, "m")[0], "unobservable")
 
 
 class GuestClientCopyTests(unittest.TestCase):
