@@ -152,7 +152,9 @@ chmod 0666 /dev/kvm
 # install -d gives -o only to the directories it names, so .config is named too: a
 # root-owned .config would leave the user unable to make tilo-vm's config and keys there.
 install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config" "/home/$run_user/.config/libvirt"
-echo 'max_core = 0' | install -m 0644 -o "$run_user" -g "$run_user" /dev/stdin "/home/$run_user/.config/libvirt/qemu.conf"
+# The micro-VM's /dev has no /dev/stdin to install from.
+printf 'max_core = 0\n' > "/home/$run_user/.config/libvirt/qemu.conf"
+chown "$run_user:" "/home/$run_user/.config/libvirt/qemu.conf"
 mkdir -p "$src/target/dev-runs"
 chown -R "$run_user:" "$work" "$report"
 chown -R "$run_user:" "$CARGO_HOME" "$RUSTUP_HOME"
