@@ -793,7 +793,7 @@ impl TerminalWidget {
     /// It is drawn over the grid, because a bell nobody sees is what the
     /// terminal used to do.
     fn draw_bell_flash(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let flash = self.bell_flash();
+        let flash = self.bell_flash(theme.motion());
         if flash <= 0.0 {
             self.bell_at = None;
             return;
@@ -1501,7 +1501,7 @@ impl TerminalWidget {
     /// The bell's flash as a test reads it.
     #[cfg(test)]
     pub(crate) fn bell_flash_for_test(&self) -> f32 {
-        self.bell_flash()
+        self.bell_flash(ui::theme::Theme::default().motion())
     }
 
     /// Whether a finished selection copies, as a test reads it.
@@ -1510,20 +1510,23 @@ impl TerminalWidget {
         self.select_to_copy
     }
 
-    /// How much of the bell's flash is left, `0.0..=1.0`.
-    fn bell_flash(&self) -> f32 {
+    /// How much of the bell's flash is left, `0.0..=1.0`. A bell is a
+    /// confirmation that arrives at once and leaves, so its arrival, its life
+    /// and its fade are the motion library's `Transient` — the app decides only
+    /// how long it is worth looking at.
+    fn bell_flash(&self, motion: ui::tokens::EffectiveMotion) -> f32 {
         // A quarter second: long enough to catch the eye from another window,
         // short enough not to sit on the text.
         const FLASH: std::time::Duration = std::time::Duration::from_millis(260);
         let Some(at) = self.bell_at else {
             return 0.0;
         };
-        let elapsed = ui::time::now().saturating_duration_since(at);
-        if elapsed >= FLASH {
-            return 0.0;
-        }
-        let left = 1.0 - elapsed.as_secs_f32() / FLASH.as_secs_f32();
-        left.clamp(0.0, 1.0)
+        ui::motion::Transient::opacity(
+            ui::motion::Transient::CONFIRMATION,
+            (at, at + FLASH),
+            ui::time::now(),
+            motion,
+        )
     }
     /// Set (or clear) the selection programmatically over buffer-absolute
     /// cells. Host/demo API — e.g. "select all", or a screenshot scenario
@@ -3129,7 +3132,10 @@ impl Widget for TerminalWidget {
         // A glide, or the give past an end springing back.
         let gliding = self.view.glide.is_active()
             || self.view.glide.give_needs_frame(ui::motion::frame_now());
-        queued || gliding || self.folder_picker_pending() || self.bell_flash() > 0.0
+        queued
+            || gliding
+            || self.folder_picker_pending()
+            || self.bell_flash(ui::theme::Theme::default().motion()) > 0.0
     }
 
     /// The rows that changed, came into view or went, and a scroll as a
