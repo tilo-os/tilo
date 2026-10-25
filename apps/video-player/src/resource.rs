@@ -218,11 +218,14 @@ mod tests {
         );
         // Seek reaches the player: it moves the open clip, or, on a machine
         // without the system decoder, says a video must be open first. The
-        // scenario parks the clip at two seconds and plays on from there, so
-        // the target is before it: a seek that did nothing would leave the
-        // playhead at or past where it was.
+        // test puts the playhead at two seconds itself and seeks back from
+        // there: a seek that did nothing would leave it at or past where it
+        // was. The scenario's own park at two seconds is no starting point:
+        // it comes before the decoder knows how long the clip is, so it can
+        // land at the start, and the clip then plays on from there.
+        let parked = drive_invoke(&mut app, &VideoEffect::Seek { seconds: 2.0 });
         let before = surface(&mut app, |player| player.player().position_ms());
-        match drive_invoke(&mut app, &VideoEffect::Seek { seconds: 0.5 }) {
+        match parked.and_then(|()| drive_invoke(&mut app, &VideoEffect::Seek { seconds: 0.5 })) {
             Ok(()) => {
                 let after = surface(&mut app, |player| player.player().position_ms());
                 assert!(
