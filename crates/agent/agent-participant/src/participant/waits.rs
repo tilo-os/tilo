@@ -225,7 +225,7 @@ pub(super) fn wait_alternatives(wanted: &str) -> Vec<Vec<WaitWord>> {
 const MOST_NAMING_RECORDS: usize = 4;
 
 /// What arrived for a waiting task.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Arrival {
     pub(super) route: DocumentRoute,
     /// What its app calls the record, when it names it.
@@ -702,10 +702,11 @@ impl AgentParticipant {
     /// Before the plan after a wait is made, gather all that arrived in the
     /// records it waited on since it began: what ended it, and what came
     /// with it or after it until now. News of those records is then not
-    /// news; it is in that plan ([`Running::rewake`]).
-    pub(super) fn fold_into_wake(&mut self) {
+    /// news; it is in that plan ([`Running::rewake`]). Returns what
+    /// arrived.
+    pub(super) fn fold_into_wake(&mut self) -> Vec<Arrival> {
         let Some(woken) = self.running.as_ref().and_then(Running::woken) else {
-            return;
+            return Vec::new();
         };
         let mut routes = vec![woken.first.clone()];
         for route in woken
@@ -734,6 +735,7 @@ impl AgentParticipant {
         if let Some(running) = self.running.as_mut() {
             running.rewake(&arrivals, texts);
         }
+        arrivals
     }
 
     /// Put a re-plan for the news that arrived before the running task's
@@ -747,7 +749,9 @@ impl AgentParticipant {
         // the chat, a read mark) is not news: nothing is planned again.
         self.news
             .retain(|route| arrived.iter().any(|arrival| arrival.route == *route));
-        if let Some(running) = self.running.as_mut() {
+        if self.coordinates_news() {
+            self.news_to_coordinator(arrived);
+        } else if let Some(running) = self.running.as_mut() {
             take_news(running, &mut self.news, &arrived);
         }
         let news = &self.news;
@@ -911,21 +915,39 @@ pub(super) fn take_news(running: &mut Running, news: &mut Vec<DocumentRoute>, ar
         return;
     }
     running.news_replans = running.news_replans.saturating_add(1);
+    replan_for_news(running, &std::mem::take(news), arrived, None);
+}
+
+/// Put a re-plan for `news` (what it added, `arrived`) before `running`'s
+/// next step, shown the steps it replaces; with `note`, what a coordinator
+/// told the item's agent of it.
+pub(super) fn replan_for_news(
+    running: &mut Running,
+    news: &[DocumentRoute],
+    arrived: &[Arrival],
+    note: Option<&str>,
+) {
     // The follow-up turn queued is replaced: the news re-plan is not it.
     running.follow_ups.turn = None;
-    let news = std::mem::take(news);
     // The re-plan is of the rest of the request, as a repair's is, shown
     // the steps it replaces.
     let replaced: Vec<Step> = running.steps.drain(..).collect();
     let pending: Vec<String> = replaced.iter().map(pending_brief).collect();
     running.news_resume = (!replaced.is_empty()).then_some(replaced);
+    let mut brief = news_brief(news, arrived, &pending);
+    if let Some(note) = note {
+        let _ = write!(
+            brief,
+            "\nThe coordinator's note on it for your item: {note}"
+        );
+    }
     running.steps.push_back(Step {
         app: news
             .first()
             .map(|route| route.app_id.clone())
             .unwrap_or_default(),
         record: None,
-        action: StepAction::Continue(news_brief(&news, arrived, &pending)),
+        action: StepAction::Continue(brief),
         carries: None,
         serves: None,
     });
