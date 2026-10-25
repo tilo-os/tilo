@@ -4267,34 +4267,13 @@ pub(crate) fn queue_native_authoring_launch(
                     .read()
                     .installed_native_owner()
                     .ok_or("native app owner disappeared")?;
-                let access = native_app_open_access(&owner, room, &certificate, &package)?;
+                let access =
+                    admit_native_app(&owner, room, &certificate, &package, opening.as_ref())?;
                 if access != NativeAppOpenAccess::Delegate {
                     return Ok(native_launch_capabilities(
                         &native_launch_workspace(&tree, room)?,
                         &package,
                         access,
-                    ));
-                }
-                let broker = opening.ok_or("native app authorship broker unavailable")?;
-                let broker = broker.0.upgrade()?;
-                let job = broker.change_workspace_membership(
-                    &room.to_string(),
-                    &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                        app: package,
-                    },
-                    &certificate,
-                )?;
-                drop(broker);
-                let completed = job
-                    .completion
-                    .recv_timeout(Duration::from_secs(30))
-                    .map_err(|error| {
-                        format!("native app authorship did not durably complete: {error}")
-                    })?;
-                if !completed.code.is_empty() {
-                    return Err(format!(
-                        "native app authorship refused: {}",
-                        completed.message
                     ));
                 }
                 native_launch_workspace(&tree, room)
@@ -4307,8 +4286,49 @@ pub(crate) fn queue_native_authoring_launch(
     )
 }
 
+/// Open `package` in `room` as `certificate`'s person: when the room does not
+/// let the app author there yet and that person may grant it, ask through
+/// the session's broker that it may, and wait until that is durable. What
+/// every native opening of an app goes through, launched or restored into a
+/// tab, before the app writes in the room. Answers the access the room gave
+/// the app before, [`NativeAppOpenAccess::Delegate`] once it was granted
+/// here. Blocks: call it off the frame loop.
+pub(crate) fn admit_native_app(
+    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+    room: RoomId,
+    certificate: &tilo_user_identity::DeviceCert,
+    package: &str,
+    opening: Option<&NativeAppOpening>,
+) -> Result<NativeAppOpenAccess, String> {
+    let access = native_app_open_access(owner, room, certificate, package)?;
+    if access != NativeAppOpenAccess::Delegate {
+        return Ok(access);
+    }
+    let broker = opening.ok_or("native app authorship broker unavailable")?;
+    let broker = broker.0.upgrade()?;
+    let job = broker.change_workspace_membership(
+        &room.to_string(),
+        &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+            app: package.to_owned(),
+        },
+        certificate,
+    )?;
+    drop(broker);
+    let completed = job
+        .completion
+        .recv_timeout(Duration::from_secs(30))
+        .map_err(|error| format!("native app authorship did not durably complete: {error}"))?;
+    if !completed.code.is_empty() {
+        return Err(format!(
+            "native app authorship refused: {}",
+            completed.message
+        ));
+    }
+    Ok(NativeAppOpenAccess::Delegate)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum NativeAppOpenAccess {
+pub(crate) enum NativeAppOpenAccess {
     Delegate,
     Author,
     Viewer,
@@ -4428,7 +4448,7 @@ mod native_open_tests;
 #[path = "launcher_package_surface_tests.rs"]
 mod package_surface_tests;
 
-fn native_app_open_access(
+pub(crate) fn native_app_open_access(
     owner: &super::native_workspace_owner::NativeWorkspaceOwner,
     room: RoomId,
     certificate: &tilo_user_identity::DeviceCert,
