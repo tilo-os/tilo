@@ -658,6 +658,10 @@ fn run_echo() -> tilo_automation::Step {
 }
 
 /// Whether a finished run is waiting, without taking it.
+#[allow(
+    clippy::future_not_send,
+    reason = "the fixture's broker state is thread confined to the test's current-thread runtime"
+)]
 async fn wait_for_finished(fixture: &Fixture) {
     tilo_test_env::within("the shortcut finishes", async {
         while !fixture.state.has_finished_shortcut_runs() {

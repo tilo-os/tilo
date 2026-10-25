@@ -1729,7 +1729,7 @@ impl RunHooks for StoppableHooks {
     }
 
     fn stopped(&self, _what: StopWatch<'_>) -> Pending<Result<(), String>> {
-        let asked = self.asked.fetch_add(1, Ordering::Relaxed) + 1;
+        let asked = self.asked.fetch_add(1, Ordering::Relaxed).saturating_add(1);
         Pending::ready(match &self.stop {
             Some((after, reason)) if asked >= *after => Err(reason.clone()),
             _ => Ok(()),
