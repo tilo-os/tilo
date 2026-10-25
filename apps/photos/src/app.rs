@@ -1782,12 +1782,17 @@ impl PhotosApp {
         let (title, body, icon, action) = if self.library_mode {
             match self.library_destination {
                 _ if self.people_mode => return None,
-                LibraryDestination::Albums if self.library_albums.is_empty() => (
-                    tr("photos-albums-empty-title"),
-                    tr("photos-albums-empty-body"),
-                    Icon::GalleryVerticalEnd,
-                    Some(EmptyAction::NewAlbum),
-                ),
+                LibraryDestination::Albums if self.library_albums.is_empty() => {
+                    // While an album is being made, its editor stands for
+                    // New album.
+                    let new_album = (!self.album_editor).then_some(EmptyAction::NewAlbum);
+                    (
+                        tr("photos-albums-empty-title"),
+                        tr("photos-albums-empty-body"),
+                        Icon::GalleryVerticalEnd,
+                        new_album,
+                    )
+                }
                 LibraryDestination::Places if self.places_items.is_empty() => (
                     tr("photos-places-empty-title"),
                     tr("photos-places-empty-body"),
@@ -1837,8 +1842,14 @@ impl PhotosApp {
                 // door, as the header's Open does.
                 let (label, id, effect) = match shown.action {
                     None => return empty,
+                    // After a failure, Open says it is for another photo:
+                    // the one that failed stays failed.
                     Some(EmptyAction::Open) => (
-                        tr("photos-open"),
+                        tr(if shown.error {
+                            "photos-open-another"
+                        } else {
+                            "photos-open"
+                        }),
                         "photos-empty-open",
                         PhotosEffect::Import { path: None },
                     ),
