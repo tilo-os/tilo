@@ -310,10 +310,7 @@ impl StripLayout {
             .map(|pill| {
                 AccessNode::new(Role::ToggleButton)
                     .with_name(pill_name(&pill.emoji, pill.mine))
-                    .with_value(crate::i18n::widget_format(
-                        "reaction-strip-count",
-                        &[("count", pill.count.into())],
-                    ))
+                    .with_value(pill_count(pill.count))
                     .with_bounds(pill.rect)
                     .with_hashed_key(("reaction", &pill.emoji))
                     .with_state(
@@ -335,6 +332,12 @@ impl StripLayout {
         }
         nodes
     }
+}
+
+/// A pill's accessible value: how many reacted with its emoji.
+#[must_use]
+pub fn pill_count(count: usize) -> String {
+    crate::i18n::widget_format("reaction-strip-count", &[("count", count.into())])
 }
 
 /// A pill's accessible name: what pressing it does.
