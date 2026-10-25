@@ -137,9 +137,12 @@ impl ShortcutLibraryServices for Library {
 
 /// Two installed applications, one of them the shortcuts app.
 #[derive(Default)]
-struct Launcher;
-impl LauncherServices for Launcher {
-    fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+struct Launcher {
+    enumerations: AtomicUsize,
+    lookups: AtomicUsize,
+}
+impl Launcher {
+    fn records() -> Vec<crate::services::LaunchableApplication> {
         ["so.tilo.shortcuts", "so.tilo.notes"]
             .into_iter()
             .map(|package_id| crate::services::LaunchableApplication {
@@ -149,6 +152,19 @@ impl LauncherServices for Launcher {
                 unconfined: false,
                 offers: Vec::new(),
             })
+            .collect()
+    }
+}
+impl LauncherServices for Launcher {
+    fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+        self.enumerations.fetch_add(1, Ordering::Relaxed);
+        Self::records()
+    }
+    fn applications_for(&self, app_id: &str) -> Vec<crate::services::LaunchableApplication> {
+        self.lookups.fetch_add(1, Ordering::Relaxed);
+        Self::records()
+            .into_iter()
+            .filter(|app| app.package_id == app_id)
             .collect()
     }
     fn launch(
@@ -172,6 +188,7 @@ struct Fixture {
     state: Arc<CapnpBrokerState>,
     governance: Arc<Governance>,
     keys: Arc<Keys>,
+    launcher: Arc<Launcher>,
     caller: Caller,
     room: String,
 }
@@ -194,6 +211,7 @@ fn fixture(keys: Vec<CatalogueRow>) -> Fixture {
         calls: AtomicUsize::new(0),
         rows: keys,
     });
+    let launcher = Arc::new(Launcher::default());
     let (state, _bridge_rx) = CapnpBrokerState::new_configured(
         &Arc::new(FanoutState::new()),
         Arc::new(Mutex::new(BrokerChannels::default())),
@@ -202,7 +220,7 @@ fn fixture(keys: Vec<CatalogueRow>) -> Fixture {
         None,
         None,
         HostServices {
-            launcher: Some(Arc::new(Launcher)),
+            launcher: Some(launcher.clone()),
             workspace_governance: Some(governance.clone()),
             shortcut_library: Some(Arc::new(Library)),
             keyboard_shortcuts: Some(keys.clone()),
@@ -214,6 +232,7 @@ fn fixture(keys: Vec<CatalogueRow>) -> Fixture {
         state,
         governance,
         keys,
+        launcher,
         caller,
         room,
     }
@@ -278,6 +297,8 @@ fn an_app_scoped_query_builds_only_that_apps_rows() {
         &fixture.caller,
         &scoped_query(&fixture.room, SHORTCUTS_APP_ID),
     );
+    assert_eq!(fixture.launcher.enumerations.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.launcher.lookups.load(Ordering::Relaxed), 1);
     let governance_calls = fixture.governance.0.load(Ordering::Relaxed);
     let keyboard_calls = fixture.keys.calls.load(Ordering::Relaxed);
     drop(fixture);

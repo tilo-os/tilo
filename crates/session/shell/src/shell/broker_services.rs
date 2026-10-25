@@ -1002,6 +1002,27 @@ fn launchable_applications(
         .collect()
 }
 
+/// Native package discovery needs neither host-entry conversion/deduplication
+/// nor other packages' capability manifests. Host IDs retain the full merge so
+/// an installed Tilo package still shadows its corresponding desktop entry.
+fn launchable_applications_for(
+    app_id: &str,
+    packages: Vec<super::launcher::InstalledApp>,
+    hosts: impl FnOnce() -> Vec<super::host_apps::HostApp>,
+) -> Vec<LaunchableApplication> {
+    if app_id.starts_with(HOST_APPLICATION_PREFIX) {
+        return launchable_applications(packages, hosts())
+            .into_iter()
+            .filter(|app| app.package_id == app_id)
+            .collect();
+    }
+    let packages = packages
+        .into_iter()
+        .filter(|app| app.package_id == app_id)
+        .collect();
+    launchable_applications(packages, Vec::new())
+}
+
 /// Open host application `desktop_id` in `workspace`, where its X11 bridge,
 /// if it needs one, is that workspace's own.
 fn launch_host_application(
@@ -1049,6 +1070,13 @@ impl LauncherServices for NativeLauncher {
     }
     fn applications(&self) -> Vec<LaunchableApplication> {
         launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
+    }
+    fn applications_for(&self, app_id: &str) -> Vec<LaunchableApplication> {
+        launchable_applications_for(
+            app_id,
+            super::launcher::gui_apps(),
+            super::host_apps::host_apps,
+        )
     }
     fn person_initiated(&self, app_id: &str) -> bool {
         self.0.as_ref().is_some_and(|tree| {
@@ -2714,6 +2742,40 @@ mod tests {
                 ("host:chromium-browser", true),
             ]
         );
+        let native = launchable_applications_for(
+            "so.tilo.word-processor",
+            vec![package("so.tilo.notes"), package("so.tilo.word-processor")],
+            || panic!("native lookup must not enumerate host apps"),
+        );
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0].package_id, apps[0].package_id);
+        assert_eq!(native[0].display_name, apps[0].display_name);
+        assert!(!native[0].unconfined);
+        assert!(
+            launchable_applications_for("missing", Vec::new(), || {
+                panic!("missing native lookup must not enumerate host apps")
+            })
+            .is_empty()
+        );
+        for id in ["host:chromium-browser", "host:SO.TILO.WORD-PROCESSOR"] {
+            let selected =
+                launchable_applications_for(id, vec![package("so.tilo.word-processor")], || {
+                    vec![
+                        host("chromium-browser", "Chromium"),
+                        host("SO.TILO.WORD-PROCESSOR", "Shadowed"),
+                    ]
+                });
+            assert_eq!(
+                selected
+                    .iter()
+                    .map(|app| (&app.package_id, app.unconfined))
+                    .collect::<Vec<_>>(),
+                apps.iter()
+                    .filter(|app| app.package_id == id)
+                    .map(|app| (&app.package_id, app.unconfined))
+                    .collect::<Vec<_>>(),
+            );
+        }
     }
 
     #[test]
