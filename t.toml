@@ -3761,6 +3761,32 @@ on = ["dispatch"]
 [check.dispatch_inputs]
 fault = "unlock"
 
+# The same fallback on the sealed release disk instead of a dev disk: the release image this
+# tree built, installed as a device installs it (/boot is the ESP, the UKI seals the composefs
+# digest the install computed, the boot loader counts and blesses there), with the release
+# itself staged as the update - published signed to a throwaway layout and handed to the guest
+# in its own storage, since a sealed disk refuses the unsigned repositories a dev disk admits
+# (tools/ci/boot-assessment-release.sh, os/tests/boot_assessment_rollback.sh).
+# `t dispatch boot-assessment-release-x86_64 --ref <branch>`.
+[[check]]
+name = "boot-assessment-release-x86_64"
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+requirement = { cores = 8, memory = "16GiB" }
+privileged = true
+git = true
+run = "bash tools/ci/boot-assessment-release.sh x86_64 /target/os/x86_64/release-image /target/boot-assessment-release"
+needs = ["os-release-image-x86_64"]
+inputs = ["**"]
+outputs = ["/target/boot-assessment-release/**"]
+cache = false
+timeout_secs = 7200
+cost = "heavy"
+default = false
+on = ["dispatch"]
+
+[check.dispatch_inputs]
+fault = "greetd"
+
 # The same suite with this commit's launcher, install, shell and apps+runtime entering as
 # prebuilt signed layers through verified swap-artifact (docs/layer-artifacts.md,
 # tools/ci/vm-cohort.sh): vm-cohort-x86_64 packs them with this tree's tilo-vm, and

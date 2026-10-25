@@ -1870,7 +1870,7 @@ reason = "runs inside a booted guest, as root"
 
 [[unrequired]]
 suite = "os/tests/boot_assessment_rollback.sh"
-reason = "stages an update on a booted disk and reboots it until the boot loader falls back: t's boot-assessment-x86_64 check runs it"
+reason = "stages an update on a booted disk and reboots it until the boot loader falls back: t's boot-assessment-x86_64 check runs it on a dev disk, boot-assessment-release-x86_64 on the sealed release disk"
 workflow = "dev-disk-boot-diagnostic.yml"
 
 [[unrequired]]
