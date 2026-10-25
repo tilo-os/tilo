@@ -108,6 +108,10 @@ pub struct HintFrame {
     pub colour: Option<(u8, u8, u8)>,
     /// Why no hint may begin now, if anything.
     pub quiet: Option<Quiet>,
+    /// The person can see the desktop: its first frame is on screen, past
+    /// any setup. Hints that wait for a while in ([`Cue::After`]) count
+    /// from the first frame that says so.
+    pub presented: bool,
 }
 
 /// The desktop's control hints on one host.
@@ -202,6 +206,11 @@ impl ControlHints {
     pub fn update(&mut self, frame: &HintFrame, now: Instant) {
         for what in performed::take() {
             self.observe(what, now);
+        }
+        // Not yet seen, no hint's time runs: what the person does is
+        // still heard above.
+        if !frame.presented {
+            return;
         }
         let row = &frame.row;
         let holds = |signal: Signal| match signal {
@@ -422,6 +431,7 @@ mod tests {
             },
             area: Rect::new(0.0, 40.0, 1440.0, 900.0),
             search_keys: vec!["Ctrl".into(), "K".into()],
+            presented: true,
             ..HintFrame::default()
         }
     }
@@ -486,6 +496,29 @@ mod tests {
         let learned = hints.take_changed().expect("learned");
         assert!(learned.knows("resize-window") && learned.knows("pan-view"));
         assert_eq!(learned.showings("resize-window"), 0);
+    }
+
+    #[test]
+    fn the_wait_for_search_counts_from_when_the_desktop_is_seen() {
+        let mut hints = ControlHints::new(Learned::default());
+        let start = ui::time::now();
+        let mut frame = frame();
+        frame.row.windows = 0;
+        frame.row.beyond = (false, false);
+        frame.row.focused_bar = None;
+        frame.row.focused_edge = None;
+        frame.presented = false;
+        // Loading for half a minute: nothing on screen yet.
+        hints.update(&frame, start);
+        hints.update(&frame, start + Duration::from_secs(30));
+        assert!(!hints.is_showing());
+        frame.presented = true;
+        let seen = start + Duration::from_secs(31);
+        hints.update(&frame, seen);
+        hints.update(&frame, seen + Duration::from_secs(10));
+        assert!(!hints.is_showing(), "too soon after it was seen");
+        hints.update(&frame, seen + Duration::from_secs(18));
+        assert!(hints.is_showing());
     }
 
     #[test]

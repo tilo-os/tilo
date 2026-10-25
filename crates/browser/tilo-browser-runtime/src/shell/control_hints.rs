@@ -21,13 +21,14 @@ impl BrowserShell {
     /// What the page's frame shows the hints now.
     fn hint_frame(&self) -> HintFrame {
         let area = self.area.get_rect();
-        let keys = if self.offers.mac {
-            ui::keycaps::active()
-                .on_family(ui::interaction::KeyboardFamily::Apple)
-                .chord_keys(["Cmd"], "k")
-        } else {
-            ui::keycaps::active().chord_keys(["Ctrl"], "k")
-        };
+        // The chord the page's search answers to on this platform.
+        let keys = tilo_desktop_surface::search_chord_keys(ui::platform::PlatformConventions::new(
+            if self.offers.mac {
+                ui::platform::Platform::MacOs
+            } else {
+                ui::platform::Platform::Linux
+            },
+        ));
         let avatar = self.bar.own_avatar_rect();
         HintFrame {
             row: self.handle.hint_places(),
@@ -36,6 +37,7 @@ impl BrowserShell {
             avatar: (!avatar.is_zero_area()).then_some(avatar),
             colour: Some(self.chrome.own_chip().rgb),
             quiet: self.hints_quiet(),
+            presented: self.chrome.shared.presented.get(),
         }
     }
 
