@@ -164,7 +164,7 @@ impl ShellOverlayHost {
         // the report carries their texts and places.
         let picked = tilo_app::feedback::PickedReport {
             draft,
-            picture: None,
+            crops: Vec::new(),
         };
         if let Err(error) = crate::shell::feedback_entry::report(&mut chrome.borrow_mut(), picked) {
             tracing::debug!(?error, "feedback report did not open");
