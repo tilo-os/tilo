@@ -137,6 +137,42 @@ fn an_ended_share_is_edited_to_say_it_is_no_longer_shared() {
     );
 }
 
+/// While its sharer has the window closed, the Discord copy says it is not
+/// live right now and still links to it; reopening makes it live again.
+#[test]
+fn a_closed_share_reads_as_not_live_right_now() {
+    let url = format!(
+        "https://tilo.example/app/#/@lounge.tilo.example/w/{ROOM}/so.tilo.notes/notes:plan/notes.page:1"
+    );
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
+    let closed = chat(&[shared(
+        "m1",
+        "Launch *plan*",
+        &json!({"access": {"$variant": "view"}, "open": false, "ended": false}),
+    )]);
+    let edit = &plan_edit(&g, &closed, "m1", &linked())[0];
+    assert_eq!(
+        edit.content,
+        format!("Shared **Launch \\*plan\\***, not live right now. Open it in Tilo: {url}")
+    );
+    let bare = &plan_edit(&g, &closed, "m1", &context())[0];
+    assert_eq!(
+        bare.content,
+        "Shared **Launch \\*plan\\***, not live right now"
+    );
+    let reopened = chat(&[shared(
+        "m1",
+        "Launch *plan*",
+        &json!({"access": {"$variant": "view"}, "open": true, "ended": false}),
+    )]);
+    let edit = &plan_edit(&g, &reopened, "m1", &linked())[0];
+    assert_eq!(
+        edit.content,
+        format!("Sharing **Launch \\*plan\\*** live. Open it in Tilo: {url}")
+    );
+}
+
 /// A resource shared without a live window links to it too.
 #[test]
 fn a_shared_resource_links_to_it() {
