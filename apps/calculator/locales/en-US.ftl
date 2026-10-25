@@ -35,3 +35,17 @@ calculator-calculator-surfaces = { $op ->
     [remove] Removed a surface
    *[other] Rearranged the surfaces
 }
+
+## The keypad's two pages. A window too narrow for the full scientific pad
+## folds the function keys onto the second page instead of dropping them.
+calculator-page-numbers = Numbers
+calculator-page-functions = { $count ->
+    [one] 1 function
+   *[other] { $count } functions
+}
+
+## Every value the display shows can be copied; these name the controls.
+calculator-copy-expression = Copy the expression
+calculator-copy-result = Copy the result
+calculator-copy-answer = Copy the previous answer
+calculator-copy-memory = Copy the memory value

@@ -302,7 +302,7 @@ impl CalcModel {
 }
 
 /// A pressable key on the calculator pad.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Key {
     Digit(char),
     Dot,
@@ -406,6 +406,43 @@ impl Key {
     }
 }
 
+/// Which page of the keypad is showing.
+///
+/// The full scientific pad needs seven columns, and a narrow window cannot
+/// give it seven. Rather than drop the function keys off the pad (they then
+/// existed nowhere on screen), the layouts that cannot hold them fold them
+/// onto a second page that the pad names in a page control: a narrow window
+/// changes *arrangement*, never capability.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum KeypadPage {
+    /// The number entry pad, plus the door to the functions.
+    #[default]
+    Primary,
+    /// The scientific functions the pad's width folded off the primary page.
+    Functions,
+}
+
+impl KeypadPage {
+    /// The pages, in the order the pad's page control shows them.
+    pub const ALL: [KeypadPage; 2] = [KeypadPage::Primary, KeypadPage::Functions];
+
+    /// Where this page sits in [`Self::ALL`].
+    pub fn index(self) -> usize {
+        match self {
+            KeypadPage::Primary => 0,
+            KeypadPage::Functions => 1,
+        }
+    }
+
+    /// The page at `index` in [`Self::ALL`].
+    pub fn from_index(index: usize) -> Self {
+        match index {
+            1 => KeypadPage::Functions,
+            _ => KeypadPage::Primary,
+        }
+    }
+}
+
 /// What a keycap is: the number entry pad (digits and operators) stands out
 /// from the scientific functions, `=` is the one primary action and `AC`
 /// discards the expression.
@@ -466,13 +503,36 @@ impl KeypadLayout {
         }
     }
 
-    /// The row-major key list for this layout. Each layout is a dense grid of
-    /// `cols()` columns.
+    /// The row-major key list for this layout's primary page. Each layout is
+    /// a dense grid of `cols()` columns.
     pub fn keys(self) -> Vec<Key> {
         match self {
             KeypadLayout::Compact => Self::compact_keys(),
             KeypadLayout::Standard => Self::standard_keys(),
             KeypadLayout::Scientific => Self::scientific_keys(),
+        }
+    }
+
+    /// The function keys this layout folds off its primary page: every key of
+    /// the full scientific pad that does not fit here. Empty at the widest
+    /// layout — nothing is folded, so the pad shows no page control.
+    pub fn folded_keys(self) -> Vec<Key> {
+        Self::scientific_keys()
+            .into_iter()
+            .filter(|key| !self.keys().contains(key))
+            .collect()
+    }
+
+    /// Whether this layout has to fold keys onto a second page.
+    pub fn folds(self) -> bool {
+        !self.folded_keys().is_empty()
+    }
+
+    /// The keys showing on `page` at this layout width.
+    pub fn page_keys(self, page: KeypadPage) -> Vec<Key> {
+        match page {
+            KeypadPage::Primary => self.keys(),
+            KeypadPage::Functions => self.folded_keys(),
         }
     }
 
@@ -884,5 +944,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A narrow window changes the pad's arrangement, never its capability:
+    /// every key of the full scientific pad is on some page of every layout,
+    /// exactly once, and the page control is only offered where something was
+    /// actually folded.
+    #[test]
+    fn every_layout_reaches_the_whole_scientific_pad_through_its_pages() {
+        // phase every_scientific_key_is_on_a_page_at_every_width
+        for layout in [
+            KeypadLayout::Compact,
+            KeypadLayout::Standard,
+            KeypadLayout::Scientific,
+        ] {
+            let primary = layout.page_keys(KeypadPage::Primary);
+            let functions = layout.page_keys(KeypadPage::Functions);
+            for key in KeypadLayout::Scientific.keys() {
+                let on_primary = primary.contains(&key);
+                let on_functions = functions.contains(&key);
+                assert!(
+                    on_primary ^ on_functions,
+                    "{layout:?}: {} is on {on_primary} primary / {on_functions} functions",
+                    key.label()
+                );
+            }
+        }
+
+        // phase the_page_control_appears_only_where_keys_were_folded
+        assert!(KeypadLayout::Compact.folds());
+        assert!(KeypadLayout::Standard.folds());
+        assert!(!KeypadLayout::Scientific.folds());
+        assert!(KeypadLayout::Scientific.folded_keys().is_empty());
+        // A narrower pad folds strictly more than a wider one.
+        assert!(
+            KeypadLayout::Compact.folded_keys().len() > KeypadLayout::Standard.folded_keys().len()
+        );
     }
 }

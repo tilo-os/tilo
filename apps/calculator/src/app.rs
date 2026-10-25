@@ -29,9 +29,9 @@ use crate::actions::{self, GraphKind};
 use crate::engine;
 use crate::graph2d::{Graph2dScreen, Pointer};
 use crate::graph3d::Graph3dScreen;
-use crate::keypad::{CalcScreen, MEM_KEYS};
+use crate::keypad::{CalcScreen, CopyTarget, MEM_KEYS};
 use crate::mathfield::MathField;
-use crate::model::{self, CalcModel, Mode, PlotFn};
+use crate::model::{self, CalcModel, KeypadPage, Mode, PlotFn};
 use crate::plot_panel::PlotPanel;
 use crate::resource::Calculator;
 
@@ -93,7 +93,13 @@ pub struct CalculatorApp {
     rows: Rc<Calculator>,
     /// A graph row this window just added, to select once it is presented.
     select: Option<(GraphKind, Id)>,
+    /// The value whose copy control was used last, and when: its mark confirms
+    /// the copy for [`COPY_CONFIRM`] and then offers the next one.
+    copied: Option<(CopyTarget, ui::time::Instant)>,
 }
+
+/// How long a copy's tick stands in for the copy mark.
+const COPY_CONFIRM: std::time::Duration = std::time::Duration::from_millis(1200);
 
 impl CalculatorApp {
     /// The live app: boots empty in Calculator mode. The resource's rows
@@ -134,6 +140,7 @@ impl CalculatorApp {
             entries: Rc::default(),
             rows: Rc::default(),
             select: None,
+            copied: None,
         }
     }
 
@@ -183,7 +190,7 @@ impl CalculatorApp {
         self.model.ans = lived_in.ans;
         self.model.memory = lived_in.memory;
         match scenario {
-            Some("calculator" | "narrow") => {
+            Some("calculator" | "narrow" | "narrow-second-page") => {
                 self.set_mode(Mode::Calc);
             }
             Some("error") => self.model.apply_error_demo(),
@@ -193,6 +200,11 @@ impl CalculatorApp {
         // The drawer decides docked or floating from the window it has been
         // laid out in, so lay the mode out before staging its panel.
         self.relayout();
+        if scenario == Some("narrow-second-page") {
+            // The page the pad's door leads to. Whether a width folds at all
+            // is a layout answer, so ask after the window has been laid out.
+            self.calc.show_page(KeypadPage::Functions);
+        }
         if scenario == Some("narrow-functions") {
             self.g2.panel.side_mut().snap(true);
         }
@@ -469,6 +481,18 @@ impl CalculatorApp {
     }
 
     fn on_press_calc(&mut self, p: Point, doc: &mut ui::widget::Edits<'_>) {
+        // The pad's page control, and the display's copy targets, are one
+        // press each; they never reach the keys underneath.
+        if let Some(index) = self.calc.page_at(p) {
+            if self.calc.show_page(KeypadPage::from_index(index)) {
+                self.model_dirty = true;
+            }
+            return;
+        }
+        if let Some(target) = self.calc.copy_at(p) {
+            self.copy_value(target);
+            return;
+        }
         if let Some(i) = self.calc.key_at(p) {
             self.calc.pressed_key = Some(i);
             if let Some(key) = self.calc.keys().get(i).cloned() {
@@ -487,6 +511,18 @@ impl CalculatorApp {
             self.apply_calc_key(&key);
             self.model_dirty = true;
         }
+    }
+
+    /// Put a value the display shows on the clipboard. The value's own mark
+    /// says it worked; a value that is not there has no control, so nothing
+    /// is confirmed that did not happen.
+    fn copy_value(&mut self, target: CopyTarget) {
+        let Some(text) = self.calc.copy_value(target, &self.model) else {
+            return;
+        };
+        ui::clipboard_copy(&text);
+        self.copied = Some((target, ui::time::now()));
+        self.dirty = true;
     }
 
     /// Delete one graph row through the same stable, tombstoned action the
@@ -687,7 +723,9 @@ impl CalculatorApp {
             }
             WKey::Character(s) => {
                 if ctrl {
-                    if self.model.mode == Mode::Calc
+                    if self.model.mode == Mode::Calc && matches!(s.as_str(), "c" | "C") {
+                        self.copy_on_ctrl_c(key, modifiers);
+                    } else if self.model.mode == Mode::Calc
                         && matches!(s.as_str(), "v" | "V")
                         && let Some(paste) = paste()
                     {
@@ -719,6 +757,26 @@ impl CalculatorApp {
             }
             _ => {}
         }
+    }
+
+    /// Ctrl+C in Calculator mode: a selection in the expression copies as it
+    /// always did; with nothing selected it copies the result — the value the
+    /// person came for — and failing that the whole expression.
+    fn copy_on_ctrl_c(&mut self, key: &WKey, modifiers: winit::event::Modifiers) {
+        if self.calc.field.selected_linear().is_some() {
+            self.edit_calc(key, modifiers);
+            return;
+        }
+        let target = if self
+            .calc
+            .copy_value(CopyTarget::Result, &self.model)
+            .is_some()
+        {
+            CopyTarget::Result
+        } else {
+            CopyTarget::Expression
+        };
+        self.copy_value(target);
     }
 
     /// Edit at the two-dimensional caret, preserving continuation after Equals.
@@ -1121,6 +1179,13 @@ impl Widget for CalculatorApp {
     ) {
         // The window ground is the framework's; this paints content on it.
         let area = self.area;
+        // A copy's tick has said its piece: go back to offering the next one.
+        if self
+            .copied
+            .is_some_and(|(_, at)| at.elapsed() >= COPY_CONFIRM)
+        {
+            self.copied = None;
+        }
         match self.model.mode {
             Mode::Calc => self.calc.prepare(tr, theme, &self.model, area),
             Mode::Graph2d => self.g2.prepare(tr, theme, &self.model, area),
@@ -1133,7 +1198,9 @@ impl Widget for CalculatorApp {
         match self.model.mode {
             Mode::Calc => {
                 self.calc.field_focused = self.host_focused;
-                self.calc.draw_content(scene, t, tr, theme, &self.model);
+                let copied = self.copied.map(|(target, _)| target);
+                self.calc
+                    .draw_content(scene, t, tr, theme, &self.model, copied);
             }
             Mode::Graph2d => self
                 .g2
@@ -1302,6 +1369,16 @@ impl Widget for CalculatorApp {
         match self.model.mode {
             Mode::Calc => {
                 let mut controls = Vec::new();
+                for (index, key) in MEM_KEYS.iter().enumerate() {
+                    let mut node = AccessNode::new(Role::Button)
+                        .with_name(key_accessible_name(key))
+                        .with_action_target(format!("calculator.memory:{index}"))
+                        .with_state(AccessState::new().focusable(true));
+                    if let Some(bounds) = self.calc.mem_rect(index) {
+                        node = node.with_bounds(bounds);
+                    }
+                    controls.push(node);
+                }
                 let mut display = AccessNode::new(Role::TextInput)
                     .with_name("Expression")
                     .with_value(self.model.expr.clone())
@@ -1324,22 +1401,56 @@ impl Widget for CalculatorApp {
                 }
                 children.push(display);
 
-                for (index, key) in MEM_KEYS.iter().enumerate() {
-                    let mut node = AccessNode::new(Role::Button)
-                        .with_name(key_accessible_name(key))
-                        .with_action_target(format!("calculator.memory:{index}"))
-                        .with_state(AccessState::new().focusable(true));
-                    if let Some(bounds) = self.calc.mem_rect(index) {
-                        node = node.with_bounds(bounds);
-                    }
-                    controls.push(node);
+                // Every display value has its own copy control, and the
+                // pad's pages are a tab bar whose names say what each holds.
+                let mut copies = Vec::new();
+                for target in CopyTarget::ALL {
+                    let Some(bounds) = self.calc.copy_rect(target) else {
+                        continue;
+                    };
+                    copies.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(crate::resource::CATALOG.t(target.name_key()))
+                            .with_action_target(format!("calculator.copy:{}", target.index()))
+                            .with_bounds(bounds)
+                            .with_state(AccessState::new().focusable(true)),
+                    );
                 }
+                let mut pages = Vec::new();
+                if self.calc.folds() {
+                    for page in KeypadPage::ALL {
+                        let Some(bounds) = self.calc.page_rect(page.index()) else {
+                            continue;
+                        };
+                        pages.push(
+                            AccessNode::new(Role::Tab)
+                                .with_name(self.calc.page_name(page))
+                                .with_action_target(format!("calculator.page:{}", page.index()))
+                                .with_bounds(bounds)
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .selected(self.calc.page() == page),
+                                ),
+                        );
+                    }
+                }
+                let mut toolbar = controls;
+                toolbar.extend(copies);
                 children.push(
                     AccessNode::new(Role::Toolbar)
                         .with_name("Calculator controls")
                         .with_hashed_key("calculator.keypad-controls")
-                        .with_children(controls),
+                        .with_children(toolbar),
                 );
+                if !pages.is_empty() {
+                    children.push(
+                        AccessNode::new(Role::TabBar)
+                            .with_name("Keypad pages")
+                            .with_hashed_key("calculator.keypad-pages")
+                            .with_children(pages),
+                    );
+                }
 
                 let keys = self
                     .calc
@@ -1359,7 +1470,7 @@ impl Widget for CalculatorApp {
                     .collect();
                 children.push(
                     AccessNode::new(Role::Group)
-                        .with_name("Scientific keypad")
+                        .with_name(self.calc.page_accessible_name())
                         .with_description(
                             "Use the calculator keys, or type an expression directly.",
                         )
@@ -1430,6 +1541,32 @@ impl Widget for CalculatorApp {
                 self.model.after_equals = false;
                 self.model_dirty = true;
             }
+            _ if target.starts_with("calculator.copy:") && matches!(action, Action::Activate) => {
+                let Some(index) = target
+                    .rsplit(':')
+                    .next()
+                    .and_then(|i| i.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                let Some(target) = CopyTarget::ALL.get(index).copied() else {
+                    return false;
+                };
+                self.copy_value(target);
+            }
+            _ if target.starts_with("calculator.page:") && matches!(action, Action::Activate) => {
+                let Some(index) = target
+                    .rsplit(':')
+                    .next()
+                    .and_then(|i| i.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                if !self.calc.show_page(KeypadPage::from_index(index)) {
+                    return false;
+                }
+                self.model_dirty = true;
+            }
             "calculator.evaluate"
                 if matches!(action, Action::Activate) && self.model.mode == Mode::Calc =>
             {
@@ -1482,7 +1619,8 @@ impl Widget for CalculatorApp {
     /// (only the visible screen's `draw` advances its own animation).
     fn needs_animation_frame(&self) -> bool {
         match self.model.mode {
-            Mode::Calc => false,
+            // A copy's tick clears itself after `COPY_CONFIRM`.
+            Mode::Calc => self.copied.is_some(),
             Mode::Graph2d => self.g2.zoom_active() || self.g2.panel.side().is_animating(),
             Mode::Graph3d => self.g3.zoom_active() || self.g3.panel.side().is_animating(),
         }

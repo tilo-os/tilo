@@ -324,7 +324,7 @@ fn a_past_version_previews_the_graph_the_window_shows() {
         "the preview is the graph with its function: {preview}"
     );
     assert!(
-        !preview.contains("Scientific keypad"),
+        !preview.contains("Calculator key"),
         "the preview shows the graph, not the keypad: {preview}"
     );
 }

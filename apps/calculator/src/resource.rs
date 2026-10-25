@@ -195,6 +195,10 @@ const SCENARIOS: &[&str] = &[
     "long-formula",
     "error",
     "remote-cursor",
+    // Last, so the frames a reviewer already knows keep their numbers: the
+    // pad's second page, where a narrow window puts the function keys it
+    // cannot show beside the numbers.
+    "narrow-second-page",
 ];
 
 /// A collaborator's pointer in the `remote-cursor` scenario: over the first
@@ -220,7 +224,9 @@ impl ResourceApp for CalculatorShell {
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
-        if scenario.is_some_and(|name| name.starts_with("narrow")) {
+        if scenario == Some("narrow-second-page") {
+            (390, 800)
+        } else if scenario.is_some_and(|name| name.starts_with("narrow")) {
             (480, 800)
         } else {
             (1280, 800)

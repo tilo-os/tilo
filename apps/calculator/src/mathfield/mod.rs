@@ -125,6 +125,13 @@ impl MathField {
         self.editor.expr.is_empty()
     }
 
+    /// The selected part of the formula as a linear string, when something is
+    /// selected — so a caller can tell "Ctrl+C copies this field's selection"
+    /// from "Ctrl+C has nothing here to copy".
+    pub fn selected_linear(&self) -> Option<String> {
+        self.editor.selected_linear().map(|lin| engine_linear(&lin))
+    }
+
     /// Park the caret at the very end of the formula, so a field that keeps
     /// its caret in view scrolls to the formula's tail.
     pub fn park_caret_at_end(&mut self) {

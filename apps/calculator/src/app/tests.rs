@@ -527,11 +527,23 @@ fn accessibility_exposes_and_activates_calculator_controls() {
         app.relayout();
         app.layout_active();
         let tree = app.accessibility().expect("calculator semantics");
+        // The key group is named by the page it shows, so find it by the keys
+        // it holds rather than by a fixed name.
         let keypad = tree
             .children
             .iter()
-            .find(|node| node.name.as_deref() == Some("Scientific keypad"))
+            .find(|node| {
+                node.children
+                    .first()
+                    .and_then(|child| child.action_target.as_deref())
+                    .is_some_and(|target| target.starts_with("calculator.key:"))
+            })
             .expect("all painted keypad keys are exposed");
+        assert_eq!(
+            keypad.name.as_deref(),
+            Some(app.calc.page_name(app.calc.page()).as_str()),
+            "the key group says which page it shows"
+        );
         let expression = tree
             .children
             .iter()

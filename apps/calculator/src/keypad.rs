@@ -4,31 +4,86 @@
 //!
 //! The keypad picks a [`KeypadLayout`] (compact / standard / scientific) from
 //! its available width, so the pad stays usable from a narrow strip up to a
-//! wide window. Past calculations are the window's History, the system's one
-//! list of what was done here (`crate::history_face`), not a panel of this
-//! screen.
+//! wide window. A width too narrow for the full scientific pad does not lose
+//! the function keys: they move to a second page, and the pad names both
+//! pages in a page control above the keys ([`KeypadPage`]). Every value the
+//! display shows is a copy target ([`CopyTarget`]). Past calculations are the
+//! window's History, the system's one list of what was done here
+//! (`crate::history_face`), not a panel of this screen.
 
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize};
+use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, SegmentedFace, ToggleGroup};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use crate::draw::{self, Align};
 use crate::engine;
 use crate::mathfield::{self, MathField};
-use crate::model::{CalcModel, Key, KeyRole, KeypadLayout};
+use crate::model::{CalcModel, Key, KeyRole, KeypadLayout, KeypadPage};
 
 /// Memory-bar buttons, left → right.
 pub const MEM_KEYS: [Key; 4] = [Key::MemClear, Key::MemRecall, Key::MemAdd, Key::MemSub];
+
+/// The narrowest the memory readout gets before it is not drawn at all.
+const MIN_READOUT: f64 = 48.0;
+
+/// A value the display shows, which the person can put on the clipboard.
+///
+/// Every value on this screen is one of these: the answer the person came
+/// for can always leave the app, not only from History.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyTarget {
+    /// The expression being typed.
+    Expression,
+    /// The evaluated result (or the live preview of it).
+    Result,
+    /// The previous answer, on the display's status line.
+    Answer,
+    /// The memory register's value.
+    Memory,
+}
+
+impl CopyTarget {
+    /// The values the display and the memory bar copy, in the order of their
+    /// geometry.
+    pub const ALL: [CopyTarget; 4] = [
+        CopyTarget::Expression,
+        CopyTarget::Result,
+        CopyTarget::Answer,
+        CopyTarget::Memory,
+    ];
+
+    /// Where this value sits in [`Self::ALL`].
+    pub fn index(self) -> usize {
+        match self {
+            CopyTarget::Expression => 0,
+            CopyTarget::Result => 1,
+            CopyTarget::Answer => 2,
+            CopyTarget::Memory => 3,
+        }
+    }
+
+    /// The catalogue key of this control's name for assistive technology.
+    pub fn name_key(self) -> &'static str {
+        match self {
+            CopyTarget::Expression => "calculator-copy-expression",
+            CopyTarget::Result => "calculator-copy-result",
+            CopyTarget::Answer => "calculator-copy-answer",
+            CopyTarget::Memory => "calculator-copy-memory",
+        }
+    }
+}
 
 /// What the pointer is over, for deciding when to repaint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Hover {
     pub key: Option<usize>,
     pub mem: Option<usize>,
+    pub page: Option<usize>,
+    pub copy: Option<CopyTarget>,
 }
 
 /// The theme's measurements the screen lays out with, cached from the last
@@ -53,6 +108,12 @@ struct Metrics {
     short_line: f64,
     /// The memory row's button height.
     mem_h: f64,
+    /// The height of the keypad's page control.
+    page_h: f64,
+    /// The side of a value's copy glyph.
+    copy_glyph: f64,
+    /// The leading gutter the display's copy glyphs stand in.
+    copy_gutter: f64,
     /// The shortest a key gets before the chrome around the pad gives way.
     key_min_h: f64,
     /// The narrowest a key column gets beside the display.
@@ -89,6 +150,9 @@ impl Metrics {
             result_tall_line,
             short_line,
             mem_h: ButtonFace::height(ControlSize::Small, theme),
+            page_h: SegmentedFace::height(ControlSize::Small, theme),
+            copy_glyph: f64::from(theme.tokens.metrics.icon_md),
+            copy_gutter: f64::from(theme.tokens.metrics.icon_md) + f64::from(s.s2),
             key_min_h: f64::from(theme.tokens.metrics.min_pointer_target),
             key_min_w: f64::from(s.s12),
             side_max_w: f64::from(theme.tokens.metrics.panel_width_utility),
@@ -106,9 +170,24 @@ pub struct CalcScreen {
     /// The layout the cached `keys`/`key_rects` were built for, so we only
     /// rebuild the key list when the breakpoint actually changes.
     layout_kind: KeypadLayout,
+    /// Which page of the pad is showing: the numbers, or the functions the
+    /// pad's width folded off them.
+    page: KeypadPage,
     cols: usize,
     key_rects: Vec<Rect>,
     mem_rects: Vec<Rect>,
+    /// The page control's band above the keys, `Rect::ZERO` at a width where
+    /// nothing was folded.
+    page_band: Rect,
+    /// The page control's two segments, once the band has been laid out.
+    page_rects: [Rect; 2],
+    /// The page control's segment labels, in the active locale.
+    page_labels: [String; 2],
+    /// Where each value's copy control is, in [`CopyTarget::ALL`] order.
+    copy_rects: [Rect; 4],
+    /// Which values there is something to copy from, by [`CopyTarget::ALL`]
+    /// position. A value that is not showing has no control.
+    copy_live: [bool; 4],
     /// Expression line used to anchor the platform IME candidate window.
     expression_rect: Rect,
     display_rect: Rect,
@@ -116,6 +195,8 @@ pub struct CalcScreen {
     memory_rect: Rect,
     pub hovered_key: Option<usize>,
     pub hovered_mem: Option<usize>,
+    pub hovered_page: Option<usize>,
+    pub hovered_copy: Option<CopyTarget>,
     pub pressed_key: Option<usize>,
     hover: Hover,
     /// The window the screen lays out in.
@@ -123,6 +204,12 @@ pub struct CalcScreen {
     m: Metrics,
     /// The memory buttons' width, measured at the size they paint at.
     mem_w: f64,
+    /// The memory readout's width, measured at the size it paints at.
+    memory_text_w: f64,
+    /// The readout's words, right of its copy mark where the mark fits.
+    memory_text_rect: Rect,
+    /// Whether the readout has room for its copy mark beside the value.
+    memory_glyph: bool,
 }
 
 impl Default for CalcScreen {
@@ -134,19 +221,33 @@ impl Default for CalcScreen {
             field_focused: false,
             keys: layout_kind.keys(),
             layout_kind,
+            page: KeypadPage::Primary,
             cols: layout_kind.cols(),
             key_rects: Vec::new(),
             mem_rects: Vec::new(),
+            page_band: Rect::ZERO,
+            page_rects: [Rect::ZERO; 2],
+            page_labels: [
+                page_label(KeypadPage::Primary, 0),
+                page_label(KeypadPage::Functions, 0),
+            ],
+            copy_rects: [Rect::ZERO; 4],
+            copy_live: [false; 4],
             expression_rect: Rect::ZERO,
             display_rect: Rect::ZERO,
             memory_rect: Rect::ZERO,
             hovered_key: None,
             hovered_mem: None,
+            hovered_page: None,
+            hovered_copy: None,
             pressed_key: None,
             hover: Hover::default(),
             content: Rect::ZERO,
             m: Metrics::of(&stock),
             mem_w: f64::from(ui::tokens::Metrics::BASE.min_pointer_target) + 12.0,
+            memory_text_w: 0.0,
+            memory_text_rect: Rect::ZERO,
+            memory_glyph: false,
         }
     }
 }
@@ -202,6 +303,98 @@ impl CalcScreen {
         self.content
     }
 
+    /// Which keypad page is showing.
+    pub fn page(&self) -> KeypadPage {
+        self.page
+    }
+
+    /// A page's name in the active locale, as the page control shows it.
+    pub fn page_name(&self, page: KeypadPage) -> String {
+        self.page_labels
+            .get(page.index())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The showing page's name, for the key group it heads.
+    pub fn page_accessible_name(&self) -> String {
+        self.page_name(self.page)
+    }
+
+    /// Whether this width folded function keys onto a second page.
+    pub fn folds(&self) -> bool {
+        self.layout_kind.folds()
+    }
+
+    /// Show `page`. Returns `false` when this width has no such page (the
+    /// widest pad keeps every key on one page, so there is nothing to fold).
+    pub fn show_page(&mut self, page: KeypadPage) -> bool {
+        if page == KeypadPage::Functions && !self.layout_kind.folds() {
+            return false;
+        }
+        if self.page != page {
+            self.page = page;
+            self.rebuild_keys();
+        }
+        true
+    }
+
+    /// The text `target` puts on the clipboard, or `None` when the value the
+    /// display would copy is empty.
+    pub fn copy_value(&self, target: CopyTarget, model: &CalcModel) -> Option<String> {
+        match target {
+            CopyTarget::Expression => {
+                let expr = model.expr.trim();
+                (!expr.is_empty()).then(|| model.expr.clone())
+            }
+            CopyTarget::Result => {
+                let expr = model.expr.trim();
+                if expr.is_empty() {
+                    return None;
+                }
+                engine::evaluate(&model.expr, &model.ctx())
+                    .ok()
+                    .map(engine::format_number)
+            }
+            CopyTarget::Answer => Some(engine::format_number(model.ans)),
+            // A cleared register has no value to take; `MC` is the way to
+            // say "nothing here".
+            CopyTarget::Memory => {
+                (model.memory != 0.0).then(|| engine::format_number(model.memory))
+            }
+        }
+    }
+
+    /// The copy control under `p`, if there is a value there to copy.
+    pub fn copy_at(&self, p: Point) -> Option<CopyTarget> {
+        CopyTarget::ALL.into_iter().find(|target| {
+            self.copy_live.get(target.index()).copied().unwrap_or(false)
+                && self
+                    .copy_rects
+                    .get(target.index())
+                    .is_some_and(|r| r.contains(p))
+        })
+    }
+
+    /// The page control's segment under `p`.
+    pub fn page_at(&self, p: Point) -> Option<usize> {
+        self.page_rects.iter().position(|r| r.contains(p))
+    }
+
+    /// The page control's segment geometry, for the accessibility tree.
+    pub fn page_rect(&self, index: usize) -> Option<Rect> {
+        self.page_rects.get(index).copied().filter(|_| self.folds())
+    }
+
+    /// A copy control's geometry, for the accessibility tree.
+    pub fn copy_rect(&self, target: CopyTarget) -> Option<Rect> {
+        self.copy_rects.get(target.index()).copied().filter(|rect| {
+            self.copy_live.get(target.index()).copied().unwrap_or(false)
+                && rect.width() > 0.0
+                && rect.height() > 0.0
+        })
+    }
+
     /// Pick the keypad layout for `keypad_w` and rebuild the key list if the
     /// breakpoint changed. Cheap when unchanged (the common case).
     fn ensure_layout(&mut self, keypad_w: f64) {
@@ -228,10 +421,22 @@ impl CalcScreen {
         if want != self.layout_kind {
             self.layout_kind = want;
             self.cols = want.cols();
-            self.keys = want.keys();
-            self.pressed_key = None;
-            self.hovered_key = None;
+            // A wider pad may hold every function on one page: go back to
+            // the numbers rather than opening on a page that no longer
+            // exists.
+            if !want.folds() {
+                self.page = KeypadPage::Primary;
+            }
+            self.rebuild_keys();
         }
+    }
+
+    /// Rebuild the pad's keys for the current layout and page, dropping any
+    /// hover or press aimed at the keys that just left.
+    fn rebuild_keys(&mut self) {
+        self.keys = self.layout_kind.page_keys(self.page);
+        self.pressed_key = None;
+        self.hovered_key = None;
     }
 
     /// Adopt the theme's scale and metrics.
@@ -254,6 +459,17 @@ impl CalcScreen {
             .fold(0.0, f64::max);
         self.field.set_source(&model.expr);
         self.field.set_size(mathfield::formula_size(theme, tr));
+        // The readout's words are as wide as they measure, so the copy glyph
+        // can stand immediately beside them.
+        self.memory_text_w = if model.memory == 0.0 {
+            0.0
+        } else {
+            let readout = format!("Memory {}", engine::format_number(model.memory));
+            f64::from(
+                tr.measure_style(&readout, None, &theme.text(TextRole::Label).numeric())
+                    .0,
+            )
+        };
         let formula_h = (self.field.content_height(tr) * f64::from(tr.text_scale()))
             .min(mathfield::CARD_MAX_H * theme.responsive_scale());
         let extra = (formula_h - self.m.expr_tall_line).max(0.0);
@@ -265,6 +481,35 @@ impl CalcScreen {
             .display_short
             .max(formula_h + self.m.short_line + 2.0 * f64::from(theme.tokens.spacing.s2));
         self.layout(area);
+        // The page control's labels name what each page holds, and are set
+        // to their measured widths so a longer translation elides inside its
+        // own segment instead of overrunning it.
+        let folded = self.layout_kind.folded_keys().len();
+        self.page_labels = [
+            page_label(KeypadPage::Primary, folded),
+            page_label(KeypadPage::Functions, folded),
+        ];
+        let labels: Vec<&str> = self.page_labels.iter().map(String::as_str).collect();
+        // Nothing is folded at a width that fits the whole pad, so there is no
+        // door to draw.
+        self.page_rects = [Rect::ZERO; 2];
+        if self.page_band != Rect::ZERO {
+            let segments =
+                SegmentedFace::partition(self.page_band, &labels, ControlSize::Small, tr, theme);
+            for (slot, rect) in self.page_rects.iter_mut().zip(segments) {
+                *slot = rect;
+            }
+        }
+        // A value that is showing has a copy control; one that is not has
+        // neither a control nor a hit target.
+        let readout_shown = model.memory != 0.0 && self.memory_rect.width() >= MIN_READOUT;
+        let live = [
+            self.copy_value(CopyTarget::Expression, model).is_some(),
+            self.copy_value(CopyTarget::Result, model).is_some(),
+            !self.display_is_short() && self.copy_value(CopyTarget::Answer, model).is_some(),
+            readout_shown,
+        ];
+        self.copy_live = live;
     }
 
     /// Recompute all geometry for the window `area`. Called at the top of both draw and event handling so
@@ -350,12 +595,21 @@ impl CalcScreen {
         // Keys stop at `key_max_h` too, so a tall window has height left
         // over: the pad (with a stacked display and memory row) stands in
         // the middle of it rather than at the top above a blank half.
+        //
+        // A pad that folded its function keys names the page holding them:
+        // the page control takes the top of the pad, so the functions are
+        // one labelled control away at every width.
+        let page_h = if self.layout_kind.folds() {
+            m.page_h + m.cell_gap
+        } else {
+            0.0
+        };
         let cols = self.cols;
         let rows = self.keys.len().div_ceil(cols);
-        let ch = ((grid.height() - m.cell_gap * (rows as f64 - 1.0)) / rows as f64)
+        let keys_h = (grid.height() - page_h).max(1.0);
+        let ch = ((keys_h - m.cell_gap * (rows as f64 - 1.0)) / rows as f64)
             .clamp(1.0, m.key_max_h.max(1.0));
-        let slack =
-            (grid.height() - (rows as f64 * ch + (rows as f64 - 1.0) * m.cell_gap)).max(0.0);
+        let slack = (keys_h - (rows as f64 * ch + (rows as f64 - 1.0) * m.cell_gap)).max(0.0);
         let dy = (slack / 2.0).floor();
         let (chrome, grid) = if stacked {
             (
@@ -365,38 +619,165 @@ impl CalcScreen {
         } else {
             (chrome, Rect::new(grid.x0, grid.y0 + dy, grid.x1, grid.y1))
         };
+        self.page_band = if page_h > 0.0 {
+            Rect::new(grid.x0, grid.y0, grid.x1, grid.y0 + m.page_h)
+        } else {
+            Rect::ZERO
+        };
+        self.layout_display(chrome, display_h);
+        self.layout_keys(
+            Rect::new(grid.x0, grid.y0 + page_h, grid.x1, grid.y1),
+            cols,
+            ch,
+        );
+    }
+
+    /// The display with every value's copy control, and the memory bar under
+    /// it, in the `chrome` column.
+    fn layout_display(&mut self, chrome: Rect, display_h: f64) {
+        let m = self.m;
         self.display_rect = Rect::new(chrome.x0, chrome.y0, chrome.x1, chrome.y0 + display_h);
         let mem_top = self.display_rect.y1 + m.gap;
+        // The register buttons keep the width their labels need; the readout
+        // takes what is left, and its copy mark is painted only when it fits
+        // beside the value rather than over it.
         let row_w = chrome.width() - 3.0 * m.cell_gap;
         let button_w = (row_w / 4.0).clamp(1.0, self.mem_w);
         self.layout_memory(chrome.x0, mem_top, button_w, m.mem_h);
         let mem_end = self.mem_rects.last().map_or(chrome.x0, |r| r.x1);
         self.memory_rect = Rect::new(mem_end + m.gap, mem_top, chrome.x1, mem_top + m.mem_h);
+        self.memory_glyph = self.memory_text_w > 0.0
+            && self.memory_rect.width() >= self.memory_text_w + m.copy_gutter;
+        let text_x0 = if self.memory_glyph {
+            self.memory_rect.x0 + m.copy_gutter
+        } else {
+            self.memory_rect.x0
+        };
+        self.memory_text_rect = Rect::new(
+            text_x0.min(self.memory_rect.x1),
+            self.memory_rect.y0,
+            self.memory_rect.x1,
+            self.memory_rect.y1,
+        );
 
+        // The display keeps a leading gutter for its values' copy glyphs, so
+        // every value it shows is a copy target with a mark saying so.
+        let gutter = m.copy_gutter.min(self.display_rect.width() / 3.0);
         let (expr_top, expr_bottom) = self.expression_band();
         self.expression_rect = Rect::new(
-            self.display_rect.x0 + m.display_pad,
+            self.display_rect.x0 + m.display_pad + gutter,
             expr_top,
             self.display_rect.x1 - m.display_pad,
             expr_bottom,
         );
+        self.layout_copy_targets(gutter, expr_top);
+    }
 
-        // Keypad grid (column count is layout-dependent).
+    /// The keypad grid in `grid`. A page whose rows do not fill the last one —
+    /// the folded functions, whose count no width divides — centres that row
+    /// instead of leaving it hanging off the pad's leading edge.
+    fn layout_keys(&mut self, grid: Rect, cols: usize, ch: f64) {
+        let m = self.m;
         self.key_rects.clear();
-        let cw = (grid.width() - m.cell_gap * (cols as f64 - 1.0)) / cols as f64;
+        let cw = (grid.width() - m.cell_gap * (cols as f64 - 1.0)) / cols.max(1) as f64;
+        let last_row = self.keys.len().saturating_sub(1) / cols.max(1);
         for idx in 0..self.keys.len() {
             let r = idx / cols;
             let c = idx % cols;
-            let x0 = grid.x0 + c as f64 * (cw + m.cell_gap);
+            let in_row = if r == last_row {
+                self.keys.len().saturating_sub(r * cols)
+            } else {
+                cols
+            };
+            let shift = if in_row < cols {
+                (cols - in_row) as f64 * (cw + m.cell_gap) / 2.0
+            } else {
+                0.0
+            };
+            let x0 = grid.x0 + shift + c as f64 * (cw + m.cell_gap);
             let y0 = grid.y0 + r as f64 * (ch + m.cell_gap);
             self.key_rects.push(Rect::new(x0, y0, x0 + cw, y0 + ch));
         }
     }
 
-    /// The height the current pad needs at `key_min_h` per key.
+    /// Where each value's copy control is: the strips in the display's leading
+    /// gutter for its three lines, and the memory bar's readout.
+    fn layout_copy_targets(&mut self, gutter: f64, expr_top: f64) {
+        let m = self.m;
+        let d = self.display_rect;
+        let strip = Rect::new(
+            d.x0 + m.display_pad,
+            0.0,
+            d.x0 + m.display_pad + gutter,
+            0.0,
+        );
+        let mut rect = [Rect::ZERO; 4];
+        let result_top = self.expression_rect.y1;
+        let result_h = if self.display_is_short() {
+            m.short_line
+        } else {
+            m.result_tall_line
+        };
+        let wanted = [
+            // The expression being typed, in the gutter beside it.
+            Rect::new(strip.x0, expr_top, strip.x1, result_top),
+            // The result line, whole: the value is the target.
+            Rect::new(
+                d.x0 + m.display_pad,
+                result_top,
+                d.x1 - m.display_pad,
+                result_top + result_h,
+            ),
+            // The previous answer, on the status line above the expression.
+            Rect::new(strip.x0, expr_top - m.status_line, strip.x1, expr_top),
+            // The memory bar's readout.
+            self.memory_rect,
+        ];
+        let tall = !self.display_is_short();
+        for (target, wanted) in CopyTarget::ALL.into_iter().zip(wanted) {
+            let shown = target != CopyTarget::Answer || tall;
+            if let Some(slot) = rect.get_mut(target.index())
+                && shown
+            {
+                *slot = wanted;
+            }
+        }
+        self.copy_rects = rect;
+    }
+
+    /// The painted glyph of a value's copy control: a copy mark, or a tick
+    /// once this copy is the one that just happened.
+    fn copy_glyph_rect(&self, target: CopyTarget) -> Option<Rect> {
+        let rect = *self.copy_rects.get(target.index())?;
+        let side = self.m.copy_glyph.min(rect.height().max(0.0));
+        if side <= 0.0 || rect.width() <= 0.0 {
+            return None;
+        }
+        // The display's values stand in its leading gutter; the memory bar's
+        // readout has its own strip at the readout's leading edge.
+        let x = if target == CopyTarget::Memory {
+            if !self.memory_glyph {
+                return None;
+            }
+            rect.x0 + self.m.copy_glyph / 2.0
+        } else {
+            self.display_rect.x0 + self.m.display_pad + self.m.copy_glyph / 2.0
+        };
+        Some(Rect::from_center_size(
+            Point::new(x, rect.center().y),
+            (side, side),
+        ))
+    }
+    /// The height the current pad needs at `key_min_h` per key, page control
+    /// included.
     fn grid_min_h(&self) -> f64 {
         let rows = self.keys.len().div_ceil(self.cols) as f64;
-        rows * self.m.key_min_h + (rows - 1.0) * self.m.cell_gap
+        let page = if self.layout_kind.folds() {
+            self.m.page_h + self.m.cell_gap
+        } else {
+            0.0
+        };
+        page + rows * self.m.key_min_h + (rows - 1.0) * self.m.cell_gap
     }
 
     /// The four memory buttons from `x0`, each `width` by `height`.
@@ -430,6 +811,9 @@ impl CalcScreen {
     }
 
     /// The display, memory bar and keypad.
+    ///
+    /// `copied` is the value whose copy control just succeeded, so its mark
+    /// can confirm it and then go back to offering another copy.
     pub fn draw_content(
         &mut self,
         scene: &mut Scene,
@@ -437,9 +821,12 @@ impl CalcScreen {
         tr: &mut TextRenderer,
         theme: &Theme,
         model: &CalcModel,
+        copied: Option<CopyTarget>,
     ) {
         self.draw_display(scene, t, tr, theme, model);
+        self.draw_copy_controls(scene, t, theme, copied);
         self.draw_memory_bar(scene, t, tr, theme, model);
+        self.draw_page_switch(scene, t, tr, theme);
         self.draw_keys(scene, t, tr, theme);
     }
 
@@ -466,13 +853,13 @@ impl CalcScreen {
         let m = &self.m;
         let short = self.display_is_short();
         let pad = m.display_pad;
-        let (expr_top, expr_bottom) = self.expression_band();
-        let expr_rect = Rect::new(display.x0 + pad, expr_top, display.x1 - pad, expr_bottom);
+        let (expr_top, _expr_bottom) = self.expression_band();
+        let expr_rect = self.expression_rect;
 
         if !short {
             // status line: the previous answer
             let status = Rect::new(
-                display.x0 + pad,
+                expr_rect.x0,
                 expr_top - m.status_line,
                 display.x1 - pad,
                 expr_top,
@@ -509,9 +896,11 @@ impl CalcScreen {
             self.field_focused,
         );
 
-        // result / preview line
+        // result / preview line. Its words start right of the copy gutter, so
+        // a result too long for the line elides into its own space rather
+        // than under the mark that copies it.
         let res_rect = Rect::new(
-            display.x0 + pad,
+            expr_rect.x0,
             expr_rect.y1,
             display.x1 - pad,
             expr_rect.y1
@@ -556,6 +945,48 @@ impl CalcScreen {
         );
     }
 
+    /// One glyph per display value, in the display's leading gutter: the mark
+    /// that says what it copies is visible before the pointer finds it, and a
+    /// tick replaces it while a copy is fresh.
+    fn draw_copy_controls(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        copied: Option<CopyTarget>,
+    ) {
+        let c = &theme.tokens.colors;
+        for target in CopyTarget::ALL {
+            if !self.copy_live.get(target.index()).copied().unwrap_or(false) {
+                continue;
+            }
+            let Some(glyph) = self.copy_glyph_rect(target) else {
+                continue;
+            };
+            let (icon, ink) = if copied == Some(target) {
+                (ui::icons::Icon::Check, theme.tokens.colors.semantic.success)
+            } else if self.hovered_copy == Some(target) {
+                (ui::icons::Icon::Copy, c.text_primary)
+            } else {
+                (ui::icons::Icon::Copy, c.text_tertiary)
+            };
+            icon.draw(scene, t, glyph, ink);
+        }
+    }
+
+    /// The pad's page control: the named door to the keys this width folded
+    /// away. Absent where nothing was folded.
+    fn draw_page_switch(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        if self.page_band == Rect::ZERO {
+            return;
+        }
+        let labels: Vec<&str> = self.page_labels.iter().map(String::as_str).collect();
+        let face = SegmentedFace::new(&self.page_rects, &labels, self.page.index())
+            .control_size(ControlSize::Small)
+            .hovered(self.hovered_page);
+        ToggleGroup::paint(scene, t, tr, theme, &face);
+    }
+
     /// The memory-register buttons (MC/MR/M+/M−) and the memory readout.
     fn draw_memory_bar(
         &self,
@@ -575,12 +1006,12 @@ impl CalcScreen {
                 .hovered(self.hovered_mem == Some(i));
             Button::paint(scene, t, tr, theme, &face);
         }
-        if model.memory != 0.0 && self.memory_rect.width() >= 48.0 {
+        if model.memory != 0.0 && self.memory_rect.width() >= MIN_READOUT {
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
             let readout = format!("Memory {}", engine::format_number(model.memory));
             draw::text_in(
                 &mut ctx,
-                self.memory_rect,
+                self.memory_text_rect,
                 &readout,
                 &theme.text(TextRole::Label).numeric(),
                 theme.tokens.colors.text_dim,
@@ -637,13 +1068,29 @@ impl CalcScreen {
     pub fn set_pointer(&mut self, p: Point) -> bool {
         self.hovered_key = self.key_at(p);
         self.hovered_mem = self.mem_at(p);
+        self.hovered_page = self.page_at(p);
+        self.hovered_copy = self.copy_at(p);
         let next = Hover {
             key: self.hovered_key,
             mem: self.hovered_mem,
+            page: self.hovered_page,
+            copy: self.hovered_copy,
         };
         let changed = next != self.hover;
         self.hover = next;
         changed
+    }
+}
+
+/// A page's name, from the app's catalogue: the door names what it holds, and
+/// is translated with everything else.
+fn page_label(page: KeypadPage, folded: usize) -> String {
+    match page {
+        KeypadPage::Primary => crate::resource::CATALOG.t("calculator-page-numbers"),
+        KeypadPage::Functions => crate::resource::CATALOG.t_args(
+            "calculator-page-functions",
+            &[("count", ui::i18n::ArgValue::Number(folded as f64))],
+        ),
     }
 }
 
@@ -769,6 +1216,137 @@ mod tests {
             assert!(
                 s.display_rect.contains_rect(s.expression_rect),
                 "{context}: the expression line leaves the display"
+            );
+        }
+    }
+
+    /// A narrow window changes the pad's arrangement, not what it can do:
+    /// the page control is visible and hit-testable, every function key is
+    /// laid out on the second page, and a wide window folds nothing at all.
+    #[test]
+    fn a_narrow_window_keeps_the_functions_one_named_door_away() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let model = CalcModel::seeded();
+        let mut screen = CalcScreen::default();
+
+        // phase a_narrow_pad_shows_the_page_control
+        let area = Rect::new(0.0, 0.0, 390.0, 844.0);
+        screen.prepare(&mut text, &theme, &model, area);
+        assert_eq!(screen.cols, KeypadLayout::Compact.cols());
+        assert!(screen.folds(), "the compact pad folds the functions");
+        for index in 0..2 {
+            let rect = screen
+                .page_rect(index)
+                .unwrap_or_else(|| panic!("page {index} is on screen"));
+            assert!(area.contains_rect(rect), "page {index} {rect:?}");
+            // The segments tile the band: neither label is clipped away.
+            assert!(rect.width() > 0.0 && rect.height() > 0.0);
+            assert!(
+                screen.page_at(rect.center()).is_some(),
+                "page {index} is hit-testable"
+            );
+        }
+        // Both page names are real words from the catalogue, not keys.
+        for page in KeypadPage::ALL {
+            let name = screen.page_name(page);
+            assert!(!name.is_empty(), "{page:?} has no name");
+            assert!(!name.starts_with("calculator-"), "{name} is not a key");
+        }
+
+        // phase the_door_leads_to_every_function_key
+        let primary = screen.keys().to_vec();
+        assert!(screen.show_page(KeypadPage::Functions), "the door opens");
+        screen.layout(area);
+        assert_eq!(screen.page(), KeypadPage::Functions);
+        let functions = screen.keys().to_vec();
+        for key in KeypadLayout::Scientific.keys() {
+            assert!(
+                primary.contains(&key) || functions.contains(&key),
+                "{} is reachable at 390 px",
+                key.label()
+            );
+        }
+        assert_eq!(screen.key_rects.len(), functions.len());
+        for rect in &screen.key_rects {
+            assert!(area.contains_rect(*rect), "key {rect:?} leaves the window");
+            assert!(rect.height() > 0.0 && rect.width() > 0.0);
+        }
+        // ...and the keys do not sit under the page control or the display.
+        let page_band = screen.page_band;
+        for rect in &screen.key_rects {
+            assert!(!rect.overlaps(page_band), "key {rect:?} under the pages");
+            assert!(!rect.overlaps(screen.display_rect));
+        }
+        // The door is how you get back.
+        assert!(screen.show_page(KeypadPage::Primary));
+        assert_eq!(screen.keys().len(), primary.len());
+
+        // phase a_wide_window_folds_nothing
+        let wide = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        screen.prepare(&mut text, &theme, &model, wide);
+        assert!(!screen.folds());
+        assert!(screen.page_rect(0).is_none(), "no door where nothing folds");
+        assert_eq!(screen.page(), KeypadPage::Primary);
+        assert_eq!(screen.keys().len(), KeypadLayout::Scientific.keys().len());
+    }
+
+    /// Every value on the display, and the memory readout, is a copy target
+    /// with its own control, and a value that is not showing has none.
+    #[test]
+    fn every_display_value_is_a_copy_target() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut screen = CalcScreen::default();
+        let model = CalcModel {
+            expr: "sqrt(2)".into(),
+            memory: 42.0,
+            ..CalcModel::seeded()
+        };
+        let area = Rect::new(0.0, 0.0, 390.0, 844.0);
+        screen.prepare(&mut text, &theme, &model, area);
+
+        // phase every_shown_value_has_a_control_inside_the_window
+        for target in CopyTarget::ALL {
+            let rect = screen
+                .copy_rect(target)
+                .unwrap_or_else(|| panic!("{target:?} has no control"));
+            assert!(area.contains_rect(rect), "{target:?} {rect:?}");
+            assert_eq!(
+                screen.copy_at(rect.center()),
+                Some(target),
+                "{target:?} is not the control under its own centre"
+            );
+        }
+
+        // phase each_control_copies_its_own_value
+        assert_eq!(
+            screen.copy_value(CopyTarget::Expression, &model).as_deref(),
+            Some("sqrt(2)")
+        );
+        assert_eq!(
+            screen.copy_value(CopyTarget::Result, &model).as_deref(),
+            Some("1.4142135624")
+        );
+        assert_eq!(
+            screen.copy_value(CopyTarget::Memory, &model).as_deref(),
+            Some("42")
+        );
+        assert!(screen.copy_value(CopyTarget::Answer, &model).is_some());
+
+        // phase an_empty_display_offers_nothing_to_copy
+        let empty = CalcModel::default();
+        screen.prepare(&mut text, &theme, &empty, area);
+        assert!(screen.copy_value(CopyTarget::Expression, &empty).is_none());
+        assert!(screen.copy_value(CopyTarget::Result, &empty).is_none());
+        for target in [
+            CopyTarget::Expression,
+            CopyTarget::Result,
+            CopyTarget::Memory,
+        ] {
+            assert!(
+                screen.copy_rect(target).is_none(),
+                "{target:?} offers a copy of nothing"
             );
         }
     }
