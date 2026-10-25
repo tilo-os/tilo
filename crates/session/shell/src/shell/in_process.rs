@@ -1472,6 +1472,15 @@ mod tests {
         }
     }
 
+    /// What a wait last saw, said when it never ends.
+    struct LastSeen<'a>(&'static str, &'a std::cell::RefCell<String>);
+
+    impl std::fmt::Display for LastSeen<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} ({})", self.0, self.1.borrow())
+        }
+    }
+
     /// Frames of `shown` until `done`, bounded.
     fn until(
         shown: &mut [&mut Shown],
@@ -1574,17 +1583,26 @@ mod tests {
             .room_host()
             .expect("the session runs its host");
         let runtime = session.network().runtime_handle().unwrap();
+        let held = std::cell::RefCell::new(String::new());
         until(
             &mut [&mut notes],
-            "the Notes tab's record exists in the room",
+            LastSeen("the Notes tab's record exists in the room", &held),
             || {
-                runtime
-                    .block_on(host.rooms().record_routes(&session.room))
-                    .is_ok_and(|routes| {
-                        routes.iter().any(|(held_app, held)| {
-                            held_app == app && (*held == record || *held == wire)
-                        })
+                let routes = runtime.block_on(host.rooms().record_routes(&session.room));
+                let found = routes.as_ref().is_ok_and(|routes| {
+                    routes.iter().any(|(held_app, held_record)| {
+                        held_app == app && (*held_record == record || *held_record == wire)
                     })
+                });
+                let tree = session.workspace_tree().read();
+                *held.borrow_mut() = format!(
+                    "host routes {routes:?}, record {record}, wire {wire}, sealed here {}, \
+                 committed here {}",
+                    tree.seals_records(room),
+                    tree.committed_record_rooms.contains(&room),
+                );
+                drop(tree);
+                found
             },
         );
         drop(host);
