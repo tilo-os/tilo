@@ -1298,7 +1298,11 @@ mod saving_record_wake_tests {
 
     #[test]
     fn a_record_saving_at_the_last_frame_is_resampled_when_its_store_wakes_the_pump() {
-        let host = ProbeHost::new();
+        // The frame's sync offers the edit to the record's writer, which
+        // would land it on its own after its debounce: on a loaded machine
+        // that falls inside the pumps below that check a save still under
+        // way. The store writes only when the test flushes it.
+        let host = ProbeHost::holding_writes();
         let component = runner_probe_definition()
             .instantiate(
                 host.prepare_with_permissions(
