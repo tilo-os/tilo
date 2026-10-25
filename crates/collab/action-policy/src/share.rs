@@ -20,6 +20,10 @@
 //! - **Never more than the sharer holds.** Each grant is bounded by the
 //!   sharer's own holdings on its node ([`check_held`]), so a Viewer cannot
 //!   hand out edit.
+//! - **Never past a decision about a person.** A share grants roles, and a
+//!   sharer may not lift a ban or a restriction, so neither does the share:
+//!   a person's ban or restriction holds over every grant to their role,
+//!   however specific ([`crate::Party::held_off`]).
 
 use std::str::FromStr;
 
@@ -284,6 +288,43 @@ mod tests {
         assert!(
             may(&view, "cy", &edit_at(&item("p1")), ActionKind::Undoable),
             "an Editor still edits the shared item through their role"
+        );
+    }
+
+    #[test]
+    fn a_share_lifts_no_ban_or_restriction() {
+        let mut edit = shared(ShareAccess::Edit);
+        edit.grants.push(crate::roles::restriction_grant(
+            ROOM,
+            "bo",
+            1_000,
+            Subject::Person("ada".into()),
+        ));
+        assert!(
+            !may(&edit, "bo", &edit_at(&item("p1")), ActionKind::Undoable),
+            "a restricted Viewer changes nothing, the shared item included"
+        );
+        assert!(
+            may(&edit, "bo", &edit_at(&item("p1")), ActionKind::Read),
+            "a restriction leaves reading alone"
+        );
+        let lapsed = Authority::person(edit.party("bo"))
+            .decide(
+                &edit_at(&item("p1")),
+                ActionKind::Undoable,
+                &Context::at(2_000),
+            )
+            .answer;
+        assert_eq!(
+            lapsed,
+            Answer::Allow,
+            "a lapsed restriction holds nothing off"
+        );
+        edit.grants
+            .push(edit.block("cy", Subject::Person("ada".into())));
+        assert!(
+            !may(&edit, "cy", &edit_at(&item("p1")), ActionKind::Read),
+            "a ban keeps the person out of what the room shares too"
         );
     }
 
