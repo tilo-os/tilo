@@ -11,11 +11,21 @@ rolled instead, anywhere else in the toolkit, the shell and the apps:
   ``ease_*`` / ``smoothstep`` helper, a cubic ease written out
   (``1.0 - (1.0 - t).powi(3)``) (a smoothstep written out is as often a
   shape as a motion, so it is caught where it matters, by its time ratio);
-* an ad-hoc spring: ``Spring::new(…)`` or a ``SpringParams { … }`` literal;
+* an ad-hoc spring: ``Spring::new(…)`` or a ``SpringParams { … }`` literal,
+  or a ``SpringSpec`` built by hand (``SpringSpec::critical(…)``,
+  ``SpringSpec::from_params(…)``, ``SpringSpec { … }``): a spring is a named
+  motion's pace, so a new one is a ``MotionSpec`` in the library;
 * lerp over time: an elapsed time divided by a duration
   (``elapsed().as_secs_f32() / …``, ``duration_since(…).as_secs_f64() / …``),
   or any span divided by a duration constant (``remain.as_secs_f32() /
   FADE.as_secs_f32()``): a literal duration timing a fade;
+* time-bounded interpolation: a span of time as a fraction in any unit,
+  divided by an upper-case constant (``now.duration_since(t).as_millis() as
+  f32 / FADE_MS as f32``, ``(now - start).as_secs_f64() / SLIDE_SECS``): a
+  motion whose length the call site chose. Interpolating between two
+  samples (a finger path's reports) or a rate over a span (bytes per
+  second) divides by a span or a literal, and whole units divided whole
+  (``age.as_secs() / DAY``) are a bucket: none of them is a motion;
 * a wall-clock tween built by hand: ``Animated::new`` / ``Animated::starting_at``;
 * a literal timing instead of a named motion's pace: a spring timed by a
   duration of the call site's choosing (``SpringSpec::settling_within(…)``),
@@ -92,6 +102,27 @@ PATTERNS = (
     (
         "fade timed by a literal duration",
         re.compile(r"\.as_secs_f(?:32|64)\(\)\s*/\s*[A-Z][A-Z0-9_]*\.as_secs_f(?:32|64)\(\)"),
+    ),
+    (
+        "time-bounded interpolation",
+        re.compile(
+            # A span of time as a fraction: an elapsed time or a
+            # `duration_since` cast from whole units (in seconds, "lerp over
+            # time" has it), or two instants subtracted. Whole units divided
+            # whole are buckets (a day, an hour), not a motion's progress…
+            r"(?:(?:\belapsed\(\)|\b(?:elapsed|age|remaining|left)\b"
+            r"|\b(?:saturating_|checked_)?duration_since\([^()]*(?:\([^()]*\))?[^()]*\)"
+            r"|\([^()]*\s-\s[^()]*\))"
+            r"\s*\.as_(?:millis|micros|nanos|secs)\(\)\s*as\s+f(?:32|64)"
+            r"|\([^()]*\s-\s[^()]*\)\s*\.as_secs_f(?:32|64)\(\))"
+            r"\s*\)?"
+            # …divided by a constant: the motion's length, chosen here.
+            r"\s*/\s*\(?\s*(?:f(?:32|64)::from\(\s*)?[A-Z][A-Z0-9_]*\b(?!\s*\.as_secs_f)"
+        ),
+    ),
+    (
+        "spring built outside the library",
+        re.compile(r"\bSpringSpec\s*(?:::\s*(?:critical|from_params)\s*\(|\{)"),
     ),
     ("hand-built tween", re.compile(r"\bAnimated::(?:new|starting_at)\s*\(")),
     (
