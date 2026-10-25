@@ -989,6 +989,9 @@ pub(super) fn fixture(fixture: &mut Fixture<Messages>) {
 
 fn capture_history() -> tilo_messaging::HistoryPage {
     use tilo_messaging::{Delivery, Direction, HistoryPage, Message};
+    // Anchored to now, so the capture shows the day dividers a person would
+    // see whenever it is taken.
+    let now_ms = u64::try_from(ui::clock::local_now().timestamp_millis()).unwrap_or(0);
     HistoryPage {
         route: routing::Route {
             person: Id::from_raw("00000000-0000-4000-8000-000000000001"),
@@ -1001,28 +1004,53 @@ fn capture_history() -> tilo_messaging::HistoryPage {
         },
         more: false,
         messages: [
-            ("capture-1", "Are you nearby?", Direction::Incoming, None),
+            // Two days, so the capture shows what a divider is for and what
+            // a time on every line is for.
+            (
+                "capture-1",
+                "Are you nearby?",
+                Direction::Incoming,
+                None,
+                -86_400 - 3_600,
+            ),
             (
                 "capture-2",
                 "On my way. See you in ten minutes!",
                 Direction::Outgoing,
                 Some(Delivery::RecipientDelivered),
+                -86_400 - 1_800,
             ),
             (
                 "capture-3",
                 "Perfect. I'll find us a table by the window.",
                 Direction::Incoming,
                 None,
+                -2_700,
+            ),
+            (
+                "capture-4",
+                "The corner one, by the plants. I'll keep it warm.",
+                Direction::Outgoing,
+                Some(Delivery::RecipientRead),
+                -2_400,
             ),
         ]
         .into_iter()
-        .map(|(id, text, direction, delivery)| Message {
-            id: id.into(),
-            text: text.to_owned().into(),
-            direction,
-            timestamp_ms: 1,
-            delivery,
-        })
+        .map(
+            |(id, text, direction, delivery, ago): (
+                &str,
+                &str,
+                Direction,
+                Option<Delivery>,
+                i64,
+            )| Message {
+                id: id.into(),
+                text: text.to_owned().into(),
+                direction,
+                timestamp_ms: now_ms.saturating_add_signed(ago.saturating_mul(1_000)),
+                delivery,
+            },
+        )
         .collect(),
     }
 }

@@ -1641,7 +1641,8 @@ impl ChatApp {
                     name,
                     &format_bytes(*size),
                 );
-                return card;
+                self.paint_attachment_open(&mut ctx, att, card);
+                card
             }
             Attachment::Image { blob, .. } => {
                 let image = self.images.get(&crate::images::blob_key(blob));
@@ -1658,6 +1659,7 @@ impl ChatApp {
                 let h = face.height(ctx.text, theme, w);
                 let card = Rect::new(origin.x, origin.y, origin.x + w, origin.y + h);
                 face.paint(&mut ctx, card);
+                self.paint_attachment_open(&mut ctx, att, card);
                 card
             }
             Attachment::Video { blob, .. } => {
@@ -1673,9 +1675,20 @@ impl ChatApp {
                 let h = face.height(ctx.text, theme, w);
                 let card = Rect::new(origin.x, origin.y, origin.x + w, origin.y + h);
                 face.paint(&mut ctx, card);
+                self.paint_attachment_open(&mut ctx, att, card);
                 card
             }
         }
+    }
+
+    /// The badge that says a card opens, on the card the pointer is over.
+    fn paint_attachment_open(&self, paint: &mut PaintCtx<'_>, att: &Attachment, card: Rect) {
+        let summary = self.attachment_summary(att);
+        ui::widget::conversation::attachment::AttachmentFace::new(&summary).paint_open_badge(
+            paint,
+            card,
+            self.hovered(card),
+        );
     }
 
     // ------------------------------------------------------------ composer
@@ -3228,13 +3241,74 @@ fn composer_slot(slots: &[Rect], index: usize) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentWorkLineStyle, AgentWorkPresentation, RowM, media_face, media_meta};
+    use super::{
+        AgentWorkLineStyle, AgentWorkPresentation, RowM, TimelineItem, media_face, media_meta,
+    };
     use crate::model::{
         AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
         Attachment,
     };
     use ui::theme::Theme;
     use ui::widget::{MediaArt, MediaSize};
+
+    /// A conversation that crosses midnight gets a divider at the crossing,
+    /// not only at the oldest message: scrolling to a line from three days ago
+    /// must show which day it belongs to.
+    #[test]
+    fn a_divider_appears_wherever_the_day_changes() {
+        use crate::model::Message;
+        let theme = Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let identity = crate::identity::LocalIdentity::demo();
+        let doc = automerge::AutoCommit::new();
+        let mut app = crate::ChatApp::new(
+            identity,
+            crate::app::ChatRuntime::Unavailable,
+            tilo_content::ContentStore::memory(),
+        );
+        app.attach_framework(ui::framework::Dispatcher::detached(
+            "so.tilo.chat",
+            &app.me.id.clone(),
+        ));
+        let line = |id: &str, ts: i64| Message {
+            id: id.into(),
+            channel: "c".into(),
+            author: "u_ada".into(),
+            ts,
+            text: "x".into(),
+            body: Vec::new(),
+            edited: false,
+            history: Vec::new(),
+            parent: None,
+            reactions: Vec::new(),
+            mentions: Vec::new(),
+            reference: None,
+            source_provider: None,
+            attachment: None,
+            pinned: false,
+            work: None,
+            appearance: None,
+        };
+        // Two hours apart across midnight, and one three days later.
+        let start = 1_782_828_300_i64;
+        app.messages = vec![
+            line("a", start),
+            line("b", start.saturating_add(3_600)),
+            line("c", start.saturating_add(4 * 86_400)),
+        ];
+        let groups = crate::model::group_messages(&app.messages);
+        let clock = ui::widget::ConversationClock::at(0, start);
+        let (items, _) = app.measure_message_rows(&mut text, &theme, &groups, 400.0, clock);
+        let dividers = items
+            .iter()
+            .filter(|item| matches!(item, TimelineItem::Divider { .. }))
+            .count();
+        assert_eq!(
+            dividers, 2,
+            "one divider for the first day and one where the day changes"
+        );
+        let _ = doc;
+    }
 
     #[test]
     fn media_cards_keep_the_picture_shape_inside_a_regular_card() {
