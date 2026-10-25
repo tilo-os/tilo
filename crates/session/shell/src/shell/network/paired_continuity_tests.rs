@@ -89,6 +89,7 @@ impl Session {
         self.network
             .cmd_tx
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: topic,
                 msg: NeighbourMsg::IdentityHello {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,

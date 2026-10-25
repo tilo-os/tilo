@@ -120,6 +120,7 @@ async fn two_actors_exchange_a_workspace_change() {
     let changes = source.export_room_changes_since(room, &[]).unwrap();
     cmd_a
         .send(NetCmd::Publish {
+            at: tokio::time::Instant::now(),
             ws: WS,
             msg: NeighbourMsg::SyncResp {
                 changes,
@@ -176,6 +177,7 @@ async fn presence_round_trips_over_iroh() {
     };
     cmd_a
         .send(NetCmd::Publish {
+            at: tokio::time::Instant::now(),
             ws: WS,
             msg: presence.clone(),
         })
@@ -242,6 +244,7 @@ async fn warm_path(cmd: &mpsc::Sender<NetCmd>, events: &mut mpsc::Receiver<NetEv
         colour: None,
     };
     cmd.send(NetCmd::Publish {
+        at: tokio::time::Instant::now(),
         ws: WS,
         msg: warm.clone(),
     })
@@ -326,6 +329,7 @@ impl DragRun {
             published.push(Instant::now());
             cmd_a
                 .send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: WS,
                     msg: drag_move(step),
                 })
@@ -433,15 +437,28 @@ async fn a_caret_passes_a_held_pointer_and_a_departure_follows_it() {
     wait_peer_joined(&mut events_a).await;
     wait_peer_joined(&mut events_b).await;
 
-    // The first move goes at once; the second, inside the gap, is held.
+    // The first move goes at once; the second, published inside the gap, is
+    // held. The gap runs from when each move was published, not from when
+    // the actor got to it: the second move reaches the actor well after
+    // the gap of the first has ended, as on a loaded runner, and is held
+    // all the same.
     let sent = [
         drag_move(1),
         drag_move(2),
         app_presence(P::Caret { pos: 4 }),
         app_presence(P::Left),
     ];
-    for msg in sent.clone() {
-        cmd_a.send(NetCmd::Publish { ws: WS, msg }).await.unwrap();
+    let published = tokio::time::Instant::now();
+    let publish = |index: usize| NetCmd::Publish {
+        at: published + Duration::from_millis(u64::try_from(index).unwrap()),
+        ws: WS,
+        msg: sent[index].clone(),
+    };
+    cmd_a.send(publish(0)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    // The rest queue together, as the actor finds them behind a stall.
+    for index in 1..sent.len() {
+        cmd_a.try_send(publish(index)).unwrap();
     }
     let arrived = tilo_test_env::within("the drag and the departure arrived", async {
         let mut arrived = Vec::new();
@@ -633,6 +650,7 @@ async fn a_pushed_tab_change_reaches_the_other_device_in_one_incremental_batch()
     assert!(b.pin_room_authority(room, PeerOrigin::peer(&a_id)));
 
     let publish = |changes: Vec<Vec<u8>>| NetCmd::Publish {
+        at: tokio::time::Instant::now(),
         ws: WS,
         msg: NeighbourMsg::SyncResp {
             changes,
@@ -765,6 +783,7 @@ async fn document_edit_latencies() -> Vec<Duration> {
             format!("edit {sequence}"),
         );
         NetCmd::Publish {
+            at: tokio::time::Instant::now(),
             ws: WS,
             msg: NeighbourMsg::AppDocument {
                 peer: 7,

@@ -69,6 +69,14 @@ impl ShellNetwork {
             peer: self.local_peer_id_hash(),
             frame,
         };
-        self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
+        self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
+                    ws,
+                    msg,
+                })
+                .is_ok()
     }
 }

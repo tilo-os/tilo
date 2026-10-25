@@ -391,6 +391,10 @@ pub enum NetCmd {
     Publish {
         ws: WorkspaceId,
         msg: NeighbourMsg,
+        /// When the message was published, which pointer pacing measures
+        /// its gap from: a command the actor reaches late still paces as the
+        /// moves happened, not as the actor got to them.
+        at: tokio::time::Instant,
     },
     /// Send one shared window's stream (its start, frames, end and control
     /// grants) to exactly the viewers named by their peer handles, over the
@@ -1749,7 +1753,7 @@ impl ActorState {
                     }
                 }
             }
-            Some(NetCmd::Publish { ws, msg }) => {
+            Some(NetCmd::Publish { ws, msg, at }) => {
                 self.observe_surface_stream(ws, &msg);
                 remember_governance(&mut self.governance, ws, &msg);
                 if self.native_routes.contains(ws)
@@ -1805,7 +1809,7 @@ impl ActorState {
                     }
                 } else {
                     self.hold_for_host(ws, &msg, false);
-                    self.publish_paced(ws, msg).await;
+                    self.publish_paced(ws, msg, at).await;
                 }
             }
             Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
@@ -3606,7 +3610,16 @@ impl ActorState {
     /// an agent's pointer travel alike. Carets, selections and typing pass a
     /// held pointer; anything else is broadcast after every held pointer, so
     /// an app's `Left` never overtakes its last move.
-    async fn publish_paced(&mut self, ws: WorkspaceId, msg: NeighbourMsg) {
+    ///
+    /// A pointer move is held and judged due at `at`, when it was published,
+    /// so its gap runs from when the move happened however late the actor
+    /// reaches it; a move that fell due meanwhile goes at once.
+    async fn publish_paced(
+        &mut self,
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        at: tokio::time::Instant,
+    ) {
         let pacing = slot_pacing(ws, msg.presence_slot());
         if let Pacing::Pointer(key) = pacing
             && self.topics.contains_key(&ws)
@@ -3630,10 +3643,9 @@ impl ActorState {
                 true,
             )
             .await;
-            let now = tokio::time::Instant::now();
             self.gossip_pointers
-                .hold(key, GossipPointer { ws, bytes }, now);
-            let due = self.gossip_pointers.take_due(now);
+                .hold(key, GossipPointer { ws, bytes }, at);
+            let due = self.gossip_pointers.take_due(at);
             self.broadcast_pointers(due).await;
             return;
         }
@@ -5828,6 +5840,7 @@ mod tests {
             }
             cmd_b
                 .send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: 42,
                     msg: NeighbourMsg::SyncReq {
                         since: vec![],
@@ -5857,6 +5870,7 @@ mod tests {
                 DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed);
             cmd_a
                 .send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: 42,
                     msg: NeighbourMsg::SurfaceFrame {
                         surface: 7,
@@ -6157,6 +6171,7 @@ mod tests {
                 let started = Instant::now();
                 cmd_a
                     .send(NetCmd::Publish {
+                        at: tokio::time::Instant::now(),
                         ws: 44,
                         msg: NeighbourMsg::SurfaceFrame {
                             surface: 9 + u64::from(attempt),
@@ -6170,6 +6185,7 @@ mod tests {
                     .unwrap();
                 cmd_a
                     .send(NetCmd::Publish {
+                        at: tokio::time::Instant::now(),
                         ws: 44,
                         msg: NeighbourMsg::SyncReq {
                             since: vec![],
@@ -6869,6 +6885,7 @@ mod tests {
 
             cmd_a
                 .send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: 42,
                     msg: NeighbourMsg::SyncReq {
                         since: vec![],
@@ -7325,6 +7342,7 @@ mod tests {
         collab_types::sign_op(&mut op, &signer).unwrap();
         cmd_b
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: 42,
                 msg: NeighbourMsg::AppDocument {
                     peer: 7,
@@ -7451,6 +7469,7 @@ mod tests {
             .unwrap();
         cmd_a
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: 42,
                 msg: NeighbourMsg::MlsGovernance {
                     room: "room".into(),
@@ -7574,6 +7593,7 @@ mod tests {
             .unwrap();
         cmd_a
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: 42,
                 msg: NeighbourMsg::AppDocument {
                     peer: 7,
@@ -7980,6 +8000,7 @@ mod tests {
 
         cmd_a
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: 42,
                 msg: NeighbourMsg::SyncReq {
                     since: vec![],
@@ -8040,7 +8061,13 @@ mod tests {
 
     impl crate::shell::channel_encryption::GovernanceTransport for ActorChannelTransport {
         fn publish(&self, msg: NeighbourMsg) -> bool {
-            self.cmd.try_send(NetCmd::Publish { ws: 42, msg }).is_ok()
+            self.cmd
+                .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
+                    ws: 42,
+                    msg,
+                })
+                .is_ok()
         }
 
         fn take_inbound(&self) -> Vec<crate::shell::network::InboundChannelGovernance> {
@@ -8300,6 +8327,7 @@ mod tests {
         collab_types::sign_op(&mut op, &a_key).unwrap();
         cmd_a
             .send(NetCmd::Publish {
+                at: tokio::time::Instant::now(),
                 ws: 42,
                 msg: NeighbourMsg::AppDocument {
                     peer: 1,
