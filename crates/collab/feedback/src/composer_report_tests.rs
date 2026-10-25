@@ -4,7 +4,7 @@ use std::rc::Rc;
 use durable_store::{MemoryStore, StorageKey};
 
 use super::*;
-use crate::report::{Area, CropCapture, Pick, PickedText, TextKind, compose_crops};
+use crate::report::{Area, CropCapture, Pick, PickedText, TextKind};
 use crate::{Composer, DeliveryState, Destination, FeedbackHost, Outbox, Receipt, ReviewText};
 
 #[derive(Default)]
@@ -91,7 +91,7 @@ fn picked() -> PickedReport {
             names: vec!["Ada Lovelace".into()],
             ..ReportDraft::default()
         },
-        picture: Some(compose_crops(vec![crop]).unwrap()),
+        crops: vec![crop],
     }
 }
 
