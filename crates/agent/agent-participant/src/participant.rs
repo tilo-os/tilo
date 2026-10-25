@@ -504,7 +504,7 @@ impl AgentParticipant {
         while self.step() && slice.elapsed() < STEP_SLICE {}
         self.publish_changes();
         self.finish_committed();
-        if (self.focus.is_some() || self.waiting().is_some())
+        if (self.focus.is_some() || self.waiting().is_some() || self.holding())
             && now.saturating_sub(self.presence_at_ms) >= PRESENCE_KEEPALIVE_MS
         {
             self.publish_presence();
@@ -524,6 +524,16 @@ impl AgentParticipant {
         // wait runs out or its presence is due: never a pump, nor a plan.
         if let Some(until) = self.waiting().map(|waiting| waiting.until)
             && self.news.is_empty()
+            && self.control.may_act()
+        {
+            let due = self.presence_at_ms.saturating_add(PRESENCE_KEEPALIVE_MS);
+            let keepalive =
+                Duration::from_millis(due.saturating_sub(tilo_clock::unix_now_ms()).max(1));
+            let left = until.saturating_duration_since(Instant::now());
+            return Next::Within(left.min(keepalive).max(Duration::from_millis(1)));
+        }
+        // A coordinated task with only waits left sleeps the same way.
+        if let Some(until) = self.holds_until()
             && self.control.may_act()
         {
             let due = self.presence_at_ms.saturating_add(PRESENCE_KEEPALIVE_MS);
@@ -617,6 +627,9 @@ impl AgentParticipant {
                         self.news_before.insert(document.route.clone(), before);
                         self.news.push(document.route.clone());
                     }
+                    // What a coordinated task's waits look for, whatever
+                    // takes the news.
+                    self.before_others_change(&document.route);
                 }
                 if document.route.cluster_id != self.room {
                     return;
@@ -722,6 +735,9 @@ impl AgentParticipant {
         if !self.may_step() {
             return false;
         }
+        if self.coordinator.is_some() {
+            self.take_in_arrivals();
+        }
         if self.planning.busy() {
             // The planner's thread wakes the loop when the plan is ready.
             return false;
@@ -756,17 +772,19 @@ impl AgentParticipant {
             self.check_wait();
             return false;
         }
-        if self.item_wait_ended() {
-            return false;
-        }
         self.gather_news();
-        // A coordinated task's coordinator is asked about the news, and
-        // checks the whole itself once every item ended.
-        let checks_work = self.checks_work && self.coordinator.is_none();
+        let (coordinated, checks_work) = (self.coordinator.is_some(), self.checks_work);
         let Some(running) = self.running.as_mut().filter(|_| !self.planning.busy()) else {
             return false;
         };
-        running.plan_more(checks_work);
+        // A coordinated task's coordinator checks the whole once every item
+        // ended; an item's agent is checked only to be shown the pictures
+        // its steps rendered, which it would otherwise never see.
+        running.plan_more(if coordinated {
+            !running.looked.is_empty()
+        } else {
+            checks_work
+        });
         if running.steps.is_empty() {
             running.remind_open();
         }
@@ -1088,7 +1106,9 @@ impl AgentParticipant {
             return;
         }
         self.record_plan(&planned);
-        self.apply_steps(planned);
+        if let Some(planned) = self.item_answer(planned) {
+            self.apply_steps(planned);
+        }
     }
 
     /// [`Self::apply_plan`], once logged: a task's or an item's steps.
@@ -1108,7 +1128,6 @@ impl AgentParticipant {
         if !self.control.is_running(&task) {
             return;
         }
-        self.note_reply(&task, obligations.reply.as_ref());
         let running_it = self
             .running
             .as_ref()
