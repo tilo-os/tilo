@@ -605,7 +605,7 @@ impl RoomActivityPane {
                             app_id: step.app.clone(),
                             change: step.sentence(),
                             undo: self.can_undo_agent_record(step).then(|| wire::Offer {
-                                action: wire::DetailAction::UndoRecord.action().to_owned(),
+                                action: wire::DetailAction::UndoRecord,
                                 label: t("activity-detail-undo-step"),
                             }),
                         }
