@@ -99,7 +99,7 @@ impl CallState {
         self.active
             .then(|| ui::floating_surface::FloatingSurfaceRequest {
                 id: format!("chat-call:{}", self.channel),
-                title: "Active call".into(),
+                title: crate::i18n::t("chat-call-active"),
                 role: ui::floating_surface::FloatingRole::ActiveCall,
                 source: ui::floating_surface::FloatingSource::AppElement {
                     app_id: "so.tilo.chat".into(),

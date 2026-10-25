@@ -510,11 +510,11 @@ impl ChatApp {
             PaintCtx::new(scene, tf, tr, theme),
             rect,
             &me,
-            if self.call.audio_only {
-                "Camera off"
+            &crate::i18n::t(if self.call.audio_only {
+                "chat-call-camera-off-caption"
             } else {
-                "Your camera is starting"
-            },
+                "chat-call-camera-starting"
+            }),
         );
     }
 
@@ -657,7 +657,7 @@ impl ChatApp {
         );
         let name = self
             .channel(&self.call.channel)
-            .map_or_else(|| "Call".into(), |c| c.name.clone());
+            .map_or_else(|| crate::i18n::t("chat-call-untitled"), |c| c.name.clone());
         ui::surface::floating_drag_grip(scene, tf, panel, local.text_dim);
         let sp = &theme.tokens.spacing;
         let count = self.call_count_label();
@@ -914,19 +914,19 @@ impl ChatApp {
         // Sibling controls sit an `s2` apart, like the expanded bar's.
         let gap = f64::from(theme.tokens.spacing.s2);
         // The microphone and leaving are the window bar's.
-        let mut ctrls: Vec<(&str, Icon, ButtonRole, Hit)> = vec![
+        let mut ctrls: Vec<(String, Icon, ButtonRole, Hit)> = vec![
             (
-                if self.call.audio_only {
-                    "Camera"
+                crate::i18n::t(if self.call.audio_only {
+                    "chat-call-camera-on"
                 } else {
-                    "Stop camera"
-                },
+                    "chat-call-camera-off"
+                }),
                 Icon::Video,
                 ButtonRole::Secondary,
                 Hit::CallCamera,
             ),
             (
-                "Expand",
+                crate::i18n::t("chat-call-expand"),
                 Icon::Maximize2,
                 ButtonRole::Secondary,
                 Hit::CallExpand,
@@ -959,9 +959,9 @@ impl ChatApp {
             let r = Rect::new(x, cy, x + cw, cy + bh);
             let hovered = self.call_control_is_hovered(&hit);
             let face = if fits {
-                ButtonFace::new(r, label).icon(icon)
+                ButtonFace::new(r, &label).icon(icon)
             } else {
-                ButtonFace::icon_only(r, icon, label)
+                ButtonFace::icon_only(r, icon, &label)
             };
             Button::paint(
                 scene,
@@ -1065,23 +1065,23 @@ impl ChatApp {
                 media.ink_dim,
             );
             let head = if is_me {
-                "You're sharing your screen".to_string()
+                crate::i18n::t("chat-call-screen-mine")
             } else {
-                format!("{name} is sharing their screen")
+                crate::i18n::t_args("chat-call-screen-theirs", &[("name", name.clone().into())])
             };
             // Honest status: the local sharer is the source; a remote tile
             // waits on the first decoded frame (this branch only runs with no
             // frame, so it never claims to show video it lacks).
-            let sub = if is_me {
-                "Everyone in the call sees your screen"
+            let sub = crate::i18n::t(if is_me {
+                "chat-call-screen-mine-detail"
             } else {
-                "Waiting for the first frame"
-            };
+                "chat-call-screen-waiting"
+            });
             let mut ctx = PaintCtx::new(scene, tf, tr, theme);
             let mut y = top + icon_side + gap;
             for (s, style, ink) in [
                 (head.as_str(), &head_style, media.ink),
-                (sub, &sub_style, media.ink_dim),
+                (sub.as_str(), &sub_style, media.ink_dim),
             ] {
                 let shown = elide(ctx.text, s, style, rect.width() - 2.0 * gap);
                 let w = width_of(ctx.text, &shown, style);
@@ -1097,9 +1097,9 @@ impl ChatApp {
             }
         }
         let who = if is_me {
-            "Your screen".to_string()
+            crate::i18n::t("chat-call-screen-mine-chip")
         } else {
-            format!("{name}'s screen")
+            crate::i18n::t_args("chat-call-screen-theirs-chip", &[("name", name.into())])
         };
         let h = ChipFace::height(theme);
         let w = ChipFace::intrinsic_width(&who, ChipLead::None, false, tr, theme);
@@ -1472,11 +1472,11 @@ impl ChatApp {
             );
         } else {
             let caption = if is_stream {
-                "Audio stream"
+                crate::i18n::t("chat-call-audio-stream")
             } else {
                 member_tile_caption(p)
             };
-            self.paint_viewfinder(PaintCtx::new(scene, tf, tr, theme), rect, &p.user, caption);
+            self.paint_viewfinder(PaintCtx::new(scene, tf, tr, theme), rect, &p.user, &caption);
         }
     }
 
@@ -1611,13 +1611,11 @@ impl ChatApp {
         let head_style = local.text(TextRole::Caption).numeric();
         let body_style = local.text(TextRole::Body);
         let head_h = line_of(tr, &head_style);
+        let at = |key: &str, ts| crate::i18n::t_args(key, &[("time", clock_label(ts).into())]);
         let mut entries: Vec<(String, String)> =
-            vec![(format!("Current, {}", clock_label(m.ts)), m.text.clone())];
+            vec![(at("chat-edit-history-current", m.ts), m.text.clone())];
         for rec in m.history.iter().rev() {
-            entries.push((
-                format!("Earlier, {}", clock_label(rec.ts)),
-                rec.text.clone(),
-            ));
+            entries.push((at("chat-edit-history-earlier", rec.ts), rec.text.clone()));
         }
         let title_h = ui::chrome::nav_row_height(theme);
         let gap = f64::from(sp.s3);
@@ -1646,7 +1644,7 @@ impl ChatApp {
         let title_band = Rect::new(panel.x0, panel.y0 + pad, panel.x1, panel.y0 + pad + title_h);
         line_in(
             &mut ctx,
-            "Edit history",
+            &crate::i18n::t("chat-edit-history"),
             &local.text(TextRole::Subheading),
             local.text_primary,
             panel.x0 + pad,
@@ -1777,12 +1775,12 @@ fn viewfinder_block(
 /// environment, so a tile must never imply a live feed: an audio-only peer
 /// reads "Camera off"; a camera-enabled peer whose frame doesn't reach us
 /// reads "No video".
-fn member_tile_caption(p: &Participant) -> &'static str {
-    if p.audio_only {
-        "Camera off"
+fn member_tile_caption(p: &Participant) -> String {
+    crate::i18n::t(if p.audio_only {
+        "chat-call-camera-off-caption"
     } else {
-        "No video"
-    }
+        "chat-call-no-video"
+    })
 }
 
 /// Lay `n` participant tiles into a single centred row filling `region`'s
