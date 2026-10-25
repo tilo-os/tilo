@@ -245,6 +245,27 @@ stored = "value"
 title = "Created"
 type = "u64"
 
+[[resources.fields]]
+owner = "page"
+path = "log"
+readonly = true
+stored = "collection"
+title = "Log"
+type = "Collection<Entry>"
+unit = true
+
+[[resources.fields]]
+owner = "entry"
+path = "log.*.text"
+readonly = true
+type = "String"
+
+[[resources.fields]]
+owner = "entry"
+path = "log.*.reactions"
+readonly = true
+type = "ui::tilo_resource::Reactions"
+
 [[resources.verbs]]
 id = "comment"
 kind = "undoable"
@@ -308,6 +329,18 @@ writes = ["record", "comments.*"]
         assert!(
             !surface.editable(&[PathStep::Field("created".into()), PathStep::Key("x".into()),])
         );
+        let entry = |field: &str| {
+            [
+                PathStep::Field("log".into()),
+                PathStep::Item("e1".into()),
+                PathStep::Field(field.into()),
+            ]
+        };
+        assert!(
+            surface.editable(&entry("reactions")),
+            "a read-only item still takes reactions"
+        );
+        assert!(!surface.editable(&entry("text")));
         let comment = ClaimedAction::Verb {
             action: ActionKey::new("notes", "notes.page", "comment"),
             item: Some("c1".into()),
