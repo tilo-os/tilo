@@ -119,8 +119,14 @@ pub mod action_palette;
 pub mod agent_identity;
 pub mod animation;
 pub mod arriving;
+/// What wants a person: the waiting stack, and the ledger an outcome goes to
+/// when it does not. Replaces the transient notice as a category.
+pub mod attention;
 pub mod author;
 pub mod content_zoom;
+/// What is running: one cancellable job with a body, which the whole system
+/// can see and which outlives the window that started it.
+pub mod jobs;
 pub mod motion;
 #[cfg(test)]
 extern crate self as tilo_ui;

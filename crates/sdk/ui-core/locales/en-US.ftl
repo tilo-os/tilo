@@ -917,3 +917,47 @@ signal-meter-weak = Weak signal
 signal-meter-fair = Fair signal
 signal-meter-good = Good signal
 signal-meter-strong = Strong signal
+
+# Jobs: what is running. A job's row says what it is doing and how far.
+jobs-starting = Starting
+# $phase is what it is doing ("Downloading"), $done and $total are what it has
+# got through and how much there is, each in the job's own unit.
+jobs-phase-of = { $phase } { $done } of { $total }
+# $phase is what it is doing, $seen is how much it has seen where there is no
+# total to read.
+jobs-phase-seen = { $phase } { $seen }
+jobs-percent = { $percent }%
+jobs-bar-of = { $done } of { $total }
+jobs-failed = Couldn’t finish: { $reason }
+jobs-stopped = Stopped
+jobs-stop = Stop
+jobs-stopping = Stopping
+jobs-show-me = Show me
+jobs-read = Read
+# $count is how many jobs the band is not showing.
+jobs-more = { $count } more
+jobs-running-heading = In progress
+jobs-finished-heading = Finished
+jobs-none = Nothing is running
+jobs-none-message = Anything longer than a breath appears while it runs, and says how it ended.
+
+jobs-files-one = { $count } file
+jobs-files = { $count } files
+jobs-items-one = { $count } item
+jobs-items = { $count } items
+jobs-steps-one = { $count } step
+jobs-steps = { $count } steps
+
+# Needs you: what wants a person.
+attention-blocking = Now
+attention-waiting = Waiting
+attention-noted = Worth knowing
+attention-none = Nothing needs you
+attention-none-message = Anything that waits on your decision keeps waiting here.
+# $about is what it is about, $because is why it is waiting.
+attention-because = { $about }, { $because }
+attention-defer = Put aside for now
+attention-deferred-one = { $count } put aside
+attention-deferred = { $count } put aside
+attention-pill-one = { $count } waiting
+attention-pill = { $count } waiting
