@@ -191,9 +191,11 @@ def policy_checks(root: Path = ROOT) -> str:
             # Policy steps read the tree and build nothing (their tests stub cargo): no build
             # snapshot to lease and no target/ to prepare, which cost each step over a minute.
             "hints = { builds = false }",
-            # The tests make repositories and scratch files beside the sources, and some read
-            # release contracts at HEAD: t's own .git and a private writable view of the tree.
-            *(["git = true", "writable_sources = true"] if step.tests else []),
+            # The tests make repositories and scratch files beside the sources: a private
+            # writable view of the tree. Those that read the commit's history (release contracts
+            # at HEAD) get t's own .git too, which keys their result per commit.
+            *(["git = true"] if step.history else []),
+            *(["writable_sources = true"] if step.tests else []),
             f"inputs = {array(inputs)}",
         ]) + "\n")
     return "\n".join(blocks)

@@ -856,7 +856,6 @@ requires = ["arch=any"]
 requirement = { cores = 8, memory = "4GiB" }
 run = "bash tools/tests/ci_sccache.sh"
 hints = { builds = false }
-git = true
 writable_sources = true
 inputs = ["tools/ci/sccache.sh", "tools/tests/ci_sccache.sh"]
 
@@ -866,7 +865,6 @@ requires = ["arch=any"]
 requirement = { cores = 8, memory = "4GiB" }
 run = "bash tools/tests/cargo_shim.sh"
 hints = { builds = false }
-git = true
 writable_sources = true
 inputs = ["tools/ci/cargo-shim", "tools/tests/cargo_shim.sh"]
 
@@ -876,7 +874,6 @@ requires = ["arch=any"]
 requirement = { cores = 8, memory = "4GiB" }
 run = "bash tools/tests/test_ci_receipt.sh"
 hints = { builds = false }
-git = true
 writable_sources = true
 inputs = ["tools/ci/receipt.sh", "tools/tests/test_ci_receipt.sh"]
 
@@ -886,9 +883,8 @@ requires = ["arch=any"]
 requirement = { cores = 8, memory = "4GiB" }
 run = "python3 os/tests/test_builder_candidate_workflow.py"
 hints = { builds = false }
-git = true
 writable_sources = true
-inputs = ["t.toml", ".forgejo/workflows/**", "os/dev/**", "os/Containerfile.builder", "tools/ci/**", "dist/ci/install-build-deps.sh", "crates/agent/agent-participant/tests/host_agents.rs", "os/tests/test_builder_candidate_workflow.py", "tools/ci/t_matrix.py"]
+inputs = ["t.toml", ".forgejo/workflows/**", "os/dev/**", "os/Containerfile.builder", "tools/ci/**", "dist/ci/install-build-deps.sh", "crates/agent/agent-participant/tests/host_agents.rs", "crates/browser/tilo-browser-peer/tests/end_to_end.rs", "crates/browser/tilo-browser-peer/tests/passkey_root.rs", "crates/browser/tilo-browser-peer/tests/node_workspace.rs", "crates/browser/tilo-browser-peer/tests/voice_browsers.rs", "scripts/legacy-app-subjects.sh", "apps/*/tilo-app.toml", "os/tests/test_builder_candidate_workflow.py", "tools/ci/t_matrix.py"]
 
 [[check]]
 name = "policy/tests/codex-hooks"
@@ -896,7 +892,6 @@ requires = ["arch=any"]
 requirement = { cores = 8, memory = "4GiB" }
 run = "python3 tools/policy/run_unit_tests.py .codex/hooks"
 hints = { builds = false }
-git = true
 writable_sources = true
 inputs = [".codex/**", "tools/policy/run_unit_tests.py"]
 # END generated
