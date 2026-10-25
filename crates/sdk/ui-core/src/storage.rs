@@ -172,6 +172,55 @@ pub trait SettingsSchema: Serialize + DeserializeOwned + Default + 'static {
         let _ = device;
         true
     }
+
+    /// The setting `value` holds, as JSON stores it. Generic code reading
+    /// a setting compiles this, and serde's whole decoder for the type,
+    /// into each crate that names the type; a large type's own crate can
+    /// compile it once instead with [`settings_codec!`](crate::settings_codec).
+    ///
+    /// # Errors
+    ///
+    /// When `value` is not one.
+    fn from_settings_value(value: Value) -> serde_json::Result<Self> {
+        serde_json::from_value(value)
+    }
+
+    /// The setting as JSON stores it; see [`Self::from_settings_value`].
+    ///
+    /// # Errors
+    ///
+    /// When it does not serialize.
+    fn to_settings_value(&self) -> serde_json::Result<Value> {
+        serde_json::to_value(self)
+    }
+}
+
+#[doc(hidden)]
+pub use serde_json as __serde_json;
+
+/// [`SettingsSchema::from_settings_value`] and
+/// [`SettingsSchema::to_settings_value`] compiled where the impl is, never in
+/// the crates that read the setting: for a large settings type whose crate
+/// is in the shared runtime or an engine, every app or pane reading it
+/// otherwise carries its own copy of serde's decoder. Use it inside the
+/// `impl SettingsSchema`.
+#[macro_export]
+macro_rules! settings_codec {
+    () => {
+        #[inline(never)]
+        fn from_settings_value(
+            value: $crate::storage::__serde_json::Value,
+        ) -> $crate::storage::__serde_json::Result<Self> {
+            $crate::storage::__serde_json::from_value(value)
+        }
+
+        #[inline(never)]
+        fn to_settings_value(
+            &self,
+        ) -> $crate::storage::__serde_json::Result<$crate::storage::__serde_json::Value> {
+            $crate::storage::__serde_json::to_value(self)
+        }
+    };
 }
 
 /// Which settings document a host gives its apps.
@@ -659,8 +708,8 @@ impl<T: SettingsSchema> Settings<T> {
         value: &T,
         origin: Option<&settings_store::ChangeOrigin>,
     ) -> std::io::Result<()> {
-        let value = serde_json::to_value(value).map_err(std::io::Error::other)?;
-        let current = serde_json::to_value(self.get()).ok();
+        let value = value.to_settings_value().map_err(std::io::Error::other)?;
+        let current = self.get().to_settings_value().ok();
         store_changed(
             &self.document,
             &self.app_id,
@@ -728,9 +777,9 @@ fn store_changed(
 /// does not decode (an older shape, a hand edit) reads as its default
 /// instead of discarding every other key.
 fn decode<T: SettingsSchema>(stored: Map<String, Value>, device: DeviceClass) -> T {
-    let defaults = serde_json::to_value(T::defaults_on(device));
-    let decodes = |value: &Value| serde_json::from_value::<T>(value.clone()).is_ok();
-    serde_json::from_value(decoded(defaults.ok(), stored, &decodes))
+    let defaults = T::defaults_on(device).to_settings_value();
+    let decodes = |value: &Value| T::from_settings_value(value.clone()).is_ok();
+    T::from_settings_value(decoded(defaults.ok(), stored, &decodes))
         .unwrap_or_else(|_| T::defaults_on(device))
 }
 
