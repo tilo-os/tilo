@@ -301,7 +301,7 @@ pub(crate) fn desktop_history_heads(id: u32) -> Option<Vec<ui::automerge::Change
 }
 
 pub(crate) fn close(id: u32) {
-    crate::browser::forget_feedback_startup(id);
+    crate::feedback_delivery::forget_feedback_startup(id);
     crate::feedback_delivery::forget(id);
     ROOMS.with_borrow_mut(|rooms| rooms.remove(&id));
 }

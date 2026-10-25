@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {boot, chosenRoute, initialRoute, readEntry, scopeHost} from './entry.mjs';
+import {boot, chosenRoute, configureFeedback, initialRoute, readEntry, scopeHost} from './entry.mjs';
 import {UNAVAILABLE, openTarget, untilSnapshot, untilViewable, viewInvocation} from './open-target.mjs';
 
 const message = {kind: 'chat.message', id: 'chat.message:1'};
@@ -518,4 +518,23 @@ test('once admitted, the page names its host’s fetch proxy for the apps', asyn
   session = null;
   assert.equal(window.__tiloFetchProxy(), null);
   page.router.stop?.();
+});
+
+test('the home workspace sends reports to the channel its entry names, without holding the page', async () => {
+  const asked = [];
+  let settle;
+  const peer = {room: 'r1', configureFeedback: destination => {
+    asked.push(destination);
+    return new Promise((_, reject) => { settle = reject; });
+  }};
+  configureFeedback(peer, {feedback: {channel: 'c_feedback'}});
+  assert.deepEqual(asked, [{room: 'r1', provider: 'record:so.tilo.chat:', channel: 'c_feedback'}]);
+  const warn = console.warn;
+  console.warn = () => {};
+  settle(new Error('owner refused'));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  console.warn = warn;
+  configureFeedback(peer, {});
+  configureFeedback({configureFeedback: peer.configureFeedback}, {feedback: {channel: 'c_feedback'}});
+  assert.equal(asked.length, 1, 'no channel, or no room, asks nothing');
 });
