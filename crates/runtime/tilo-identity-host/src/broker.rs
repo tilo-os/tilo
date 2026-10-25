@@ -619,8 +619,11 @@ fn channel_keys(
         Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
             .id()
             .to_string();
-    // The person reads their own room; a workspace, as its policy says.
-    let reads = !launch_room
+    // The person reads their own room, the launch room of an app opened
+    // there included; a workspace, as its policy says.
+    let own_room =
+        collab_types::person_room(&profile.user_public_key).to_string() == route.workspace_id;
+    let reads = own_room
         || read_workspace(tree, bound.room, |workspace| {
             let node = collab_types::validator::document_node(
                 &workspace.policy.room,
@@ -1596,6 +1599,39 @@ params = []
                 vec![1, 2, 3],
             )))
         }
+    }
+
+    /// An app opened in the person's own room (Settings) is answered the
+    /// keys of the person's records it declares there: that room is no
+    /// workspace with a policy, and the person reads it.
+    #[test]
+    fn an_app_opened_in_the_persons_own_room_gets_the_keys_of_their_records() {
+        let fixture = crate::join_proof::tests::Fixture::new();
+        let own_room =
+            RoomId::parse(&collab_types::person_room(&fixture.user_public_key).to_string())
+                .expect("the person's room");
+        let own = own_room.to_string();
+        let app_id = "so.tilo.notes";
+        let watched = collab_types::person_record_id("notes.watched");
+        let answer = channel_keys(
+            &WorkspaceTree::default().shared(),
+            &ReadyChannels,
+            &ChannelKeyRoute {
+                bound: Bound {
+                    room: &own_room,
+                    app_id,
+                    person: &NotesKeepsWatched,
+                },
+                workspace_id: &own,
+                app_id,
+                record_id: &watched,
+            },
+            0,
+        );
+        assert!(
+            matches!(answer, Response::ChannelKeys { .. }),
+            "the person reads their own room: {answer:?}"
+        );
     }
 
     /// Answering an app's key request checks this device's trust from the
