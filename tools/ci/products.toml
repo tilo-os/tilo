@@ -1029,7 +1029,7 @@ family = "os-base"
 about = """
 The compiler cache image-kernel-<arch> compiles through (kernel.sh compile-cache): every object
 of the kernel and its modules, compiled on the machine the kernel builds on (`host`, as the
-kernel product's `hosts` says) into an empty sccache directory. Its inputs are the buildroot
+kernel product's `hosts` says) into an empty ccache directory. Its inputs are the buildroot
 (the Fedora source and the toolchain) and the scripts that run it. The patches, the
 configuration and the rest of the build are deliberately not among them: it compiles the tree
 of the commit that first needs it and stays until the buildroot moves, so a patch or a config

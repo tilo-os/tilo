@@ -47,7 +47,7 @@ case ${1:-} in
       test "$(find /usr/src/tilo-kernel -maxdepth 1 -name "kernel-*.src.rpm" | wc -l)" -eq 1
       cd /usr/src/tilo-kernel
       sed -n 2p /usr/lib/tilo/kernel-buildroot-srpm.txt | sha256sum --check --strict
-      command -v createrepo_c rpmbuild gcc clang cargo pahole >/dev/null
+      command -v createrepo_c rpmbuild gcc clang cargo pahole ccache >/dev/null
       if [ "$1" = x86_64 ]; then
         test "$(cat /usr/lib/tilo/kernel-buildroot-cross)" = "aarch64 aarch64-linux-gnu-"
         command -v aarch64-linux-gnu-gcc aarch64-linux-gnu-ld aarch64-linux-gnu-strip >/dev/null

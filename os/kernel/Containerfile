@@ -143,27 +143,6 @@ RUN set -eu; \
 FROM build-toolchain AS build-source
 ARG KERNEL_ARCH
 
-# The same pinned compiler cache client as the OS image build, for builds
-# given a compiler cache (TILO_COMPILER_CACHE below). A build whose asset
-# context lacks the archive compiles directly.
-ARG SCCACHE_VERSION=0.17.0
-ARG SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
-ARG SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77
-RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
-    case "$(uname -m)" in \
-      x86_64) sccache_arch=x86_64; sccache_sha="$SCCACHE_SHA256_X86_64" ;; \
-      aarch64) sccache_arch=aarch64; sccache_sha="$SCCACHE_SHA256_AARCH64" ;; \
-      *) echo "unsupported sccache architecture: $(uname -m)" >&2; exit 1 ;; \
-    esac \
-    && name="sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl" \
-    && if [ -f "/tilo-assets/${name}.tar.gz" ]; then \
-         echo "${sccache_sha}  /tilo-assets/${name}.tar.gz" | sha256sum -c - \
-         && tar -xzf "/tilo-assets/${name}.tar.gz" -C /tmp \
-         && install -m 0755 "/tmp/${name}/sccache" /usr/local/bin/sccache \
-         && rm -rf "/tmp/${name}" \
-         && /usr/local/bin/sccache --version; \
-       fi
-
 # One ephemeral signing identity per kernel build. Only the public
 # certificate is compiled into the kernel; the key is deleted before publish.
 COPY os/kernel/build-support.sh /work/kernel-build-support.sh
@@ -219,6 +198,9 @@ ARG KERNEL_BUILD_JOBS
 RUN set -eu; \
     test -d /work/compiler-cache \
       || { echo "no compiler cache directory mounted at /work/compiler-cache" >&2; exit 1; }; \
+    if ! command -v ccache >/dev/null; then \
+      echo "this kernel buildroot has no ccache: the compiler cache stays empty" >&2; exit 0; \
+    fi; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     JOBS="${KERNEL_BUILD_JOBS:-$(nproc)}"; \
     TILO_KERNEL_COMPILER_CACHE=/work/compiler-cache \
@@ -233,7 +215,7 @@ ARG KERNEL_ARCH
 # Override on memory-constrained builders; an empty value uses all CPUs.
 ARG KERNEL_BUILD_JOBS
 
-# `local` compiles through sccache over the directory mounted at
+# `local` compiles through ccache over the directory mounted at
 # /work/compiler-cache: image-kernel-cache-<arch>'s objects, which
 # tools/ci/publish/kernel.sh unpacks there. Nothing remote reaches a kernel
 # build, no cache server, credentials or other builds' writes, and in a trusted

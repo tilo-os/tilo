@@ -151,7 +151,7 @@ case ${1:-} in
       || die "no digest-pinned kernel buildroot for $host"
     use_cosign
     cosign verify --key keys/cosign.pub "$buildroot" >/dev/null
-    assets=$(pinned_assets v4l2loopback-0.15.3-a7e4a4d.tar.gz "sccache-v0.17.0-$host-unknown-linux-musl.tar.gz")
+    assets=$(pinned_assets v4l2loopback-0.15.3-a7e4a4d.tar.gz)
     # The kernel's SOURCE_DATE_EPOCH keeps its default of 0 beside the fixed layer timestamps.
     args=(--platform "$platform" --build-context "github-assets=$assets"
       --build-arg "KERNEL_BUILDROOT_REF=$buildroot" --build-arg "KERNEL_ARCH=$arch"
@@ -170,7 +170,7 @@ started=$SECONDS
 case $1 in
   compile-cache)
     # Every object of the kernel and its modules, compiled into an empty directory and packed
-    # as OUT/compiler-cache.tar (sccache stores each entry compressed already).
+    # as OUT/compiler-cache.tar (ccache stores each entry compressed already).
     cache=$scratch/compiler-cache
     rm -rf "$cache" && mkdir -p "$cache"
     b build --layers --timestamp 0 --file os/kernel/Containerfile --target compile-cache \

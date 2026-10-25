@@ -219,7 +219,7 @@ operate it. Companion to `docs/security/design-rationale.md`.
   on the kernel's own architecture. Kernel CI therefore rebuilds only for
   kernel inputs: the kernel sources, config and patches, the buildroot pin,
   the Rust module signer and the kernel build scripts.
-- **Kernel compiler cache.** A kernel build compiles through one sccache
+- **Kernel compiler cache.** A kernel build compiles through one ccache
   directory, which `image-kernel-cache-<arch>` compiles from empty in the same
   run and hands over as its output; no cache server, credential or other
   job's writes reach it, and a trusted run takes it only from trusted runs.
