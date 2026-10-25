@@ -406,7 +406,7 @@ impl ChatApp {
     }
 
     /// Whether the pointer is over `rect`.
-    fn hovered(&self, rect: Rect) -> bool {
+    pub(crate) fn hovered(&self, rect: Rect) -> bool {
         rect.contains(self.last_mouse)
     }
 
@@ -985,7 +985,9 @@ impl ChatApp {
             } else {
                 0.0
             },
-            resource_h: if !editing && m.reference.is_some() && m.source_provider.is_some() {
+            resource_h: if !editing && m.share.is_some() {
+                self.share_card_height(m, f64::from(text_w), tr, theme)
+            } else if !editing && m.reference.is_some() && m.source_provider.is_some() {
                 2.0 * (ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2))
             } else {
                 0.0
@@ -1106,7 +1108,10 @@ impl ChatApp {
                 Hit::MessageMenu { msg: m.id.clone() },
             );
         }
-        if rm.resource_h > 0.0 {
+        if rm.resource_h > 0.0 && m.share.is_some() {
+            let place = (column.text_x, f64::from(column.text_width), column.area);
+            self.draw_share_card(PaintCtx::new(scene, tf, tr, theme), &m, place, y, hits);
+        } else if rm.resource_h > 0.0 {
             self.draw_resource_navigation(PaintCtx::new(scene, tf, tr, theme), &m, column, y, hits);
         }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
@@ -2643,9 +2648,12 @@ impl ChatApp {
             .secondary("Ag")
             .leading(RowLeading::Icon(Icon::Image))
             .height(tr, &local);
-        // This device's files first; the workspace's, where there is one,
+        // This device's files first, then a window to share live when the
+        // desktop lists one; the workspace's files, where there is one,
         // under their own caption.
+        let windows = !ui::window_share::windows().is_empty();
         let body_h = row_h
+            + if windows { row_h } else { 0.0 }
             + if rows.is_empty() {
                 0.0
             } else {
@@ -2719,6 +2727,11 @@ impl ChatApp {
             .paint(&mut ctx, device);
         ChatApp::push_hit(hits, device, Hit::AttachDevice);
         y = device.y1;
+        if windows {
+            let row = Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + row_h);
+            self.draw_share_window_row(&mut ctx, row, hits);
+            y = row.y1;
+        }
         if !rows.is_empty() {
             let band = Rect::new(panel.x0, y + pad, panel.x1, y + pad + caption_h);
             line_in(

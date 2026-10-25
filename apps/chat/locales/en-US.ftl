@@ -155,6 +155,23 @@ chat-conversation-read-only = You can read this conversation but not write in it
 chat-agent-author = { $name } (agent)
 chat-resource-link-copied = Link copied
 chat-resource-link-unavailable = Link unavailable
+
+## A window shared live into a channel
+chat-share-window = Share a window
+chat-share-window-detail = A live view others can open
+chat-share-window-to = Share a window in { $place }
+chat-share-window-button = Share
+chat-share-your-windows = Your windows
+chat-share-no-windows = Open the window you want to share, then come back here.
+chat-share-view-only = View only
+chat-share-can-edit = Can edit
+chat-share-live = Live
+chat-share-ended = No longer shared
+chat-share-stop = Stop sharing
+chat-share-loading = Loading the live view…
+chat-share-open-to-see = Open it to see it live
+chat-share-open = Open { $title }, shared by { $name }
+chat-share-pick = Share { $title }
 chat-voice-unavailable = Voice calls are unavailable until a media service is connected.
 chat-call-not-joined = Join the call first.
 chat-attachment-import-unavailable = Attachment import is unavailable on this host.
