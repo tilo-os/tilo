@@ -745,6 +745,10 @@ impl NotificationStack {
             let (alpha, slide_dx) =
                 Self::animation_state(n, now, (self.reduce_motion, held), width);
             if alpha <= 0.0 {
+                // Nothing to paint yet: a banner's fade starts the frame it
+                // first comes on screen. Its place still counts as what the
+                // stack covers, so that frame repaints where it is arriving.
+                bounds.expand(y, y + height);
                 y += height + TOAST_GAP;
                 continue;
             }
