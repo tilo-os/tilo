@@ -1200,7 +1200,7 @@ name = "goldens"
 tool = "nextest"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
 requires = ["arch=x86_64"]
-wrapper = ["bash", "tools/test-env.sh"]
+wrapper = ["bash", "-c", "export TILO_FONT_ASSET_CACHE=\"$CARGO_TARGET_DIR/font-artifacts\"; exec bash tools/test-env.sh \"$@\"", "goldens"]
 packages = ["ebook", "shell", "tilo-ui"]
 args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and test(e2e_shell_flows::))"]
 inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
