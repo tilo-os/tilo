@@ -121,12 +121,12 @@ class NextestPolicyTests(unittest.TestCase):
     def test_checks_read_filters_from_the_tested_tree(self) -> None:
         # A filterset copied into t.toml would name packages a later tree may
         # have renamed, and nextest rejects a package() that matches nothing.
-        self.assertNotRegex(T_TOML.read_text(encoding="utf-8"), r"(?m)^\s*(GOLDEN|PUSH_ONLY)_FILTER\s*=")
+        self.assertNotRegex(T_TOML.read_text(encoding="utf-8"), r"(?m)^\s*(GOLDEN|PUSH_ONLY|IMAGER_CACHE)_FILTER\s*=")
         self.assertIn("import nextest_filters", T_NEXTEST.read_text(encoding="utf-8"))
         output = subprocess.run([sys.executable, str(REPO / "tools/ci/nextest_filters.py")],
                                 check=True, capture_output=True, text=True).stdout
         names = [line.split("=", 1)[0] for line in output.splitlines()]
-        self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER"])
+        self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER", "IMAGER_CACHE_FILTER"])
 
 if __name__ == "__main__":
     unittest.main()
