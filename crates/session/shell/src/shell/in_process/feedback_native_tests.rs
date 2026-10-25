@@ -535,3 +535,85 @@ fn save_user_view(apps: &InProcessApps) -> Vec<u8> {
         .unwrap()
         .bytes
 }
+
+/// An app opened cold in a sealed room loads the records the room already
+/// holds, so reopening it shows what was written before. The room's documents
+/// are its host's to commit, which must not make its records unreadable here.
+#[test]
+fn a_cold_app_reads_the_records_a_sealed_room_already_holds() {
+    let (directory, owner, room, _, key) = native_workspace_owner::test_enrolled_owner();
+    assert!(
+        native_workspace_owner::tree_of(&owner)
+            .read()
+            .seals_records(room),
+        "the fixture's room is sealed"
+    );
+    prepare_existing_chat(&owner, &key);
+    assert!(
+        owner
+            .with_current(room, |view| Ok(vec![
+                view.peer().document("so.tilo.chat", "").is_some()
+            ]))
+            .unwrap()
+            .pop()
+            .unwrap(),
+        "the sealed room holds the chat before the app opens"
+    );
+    let (network, commands) = fixture_network(&owner, &key);
+    let (reporter, _) = network.feedback_custody(room).unwrap();
+    let author = hex::encode(reporter.user_public_key);
+    let delivery = Delivery::new(network.clone(), destination(), &author).unwrap();
+    admit(&delivery);
+    let admission = delivery.connection.borrow().current().unwrap();
+    let runtime = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(directory.path())
+        .unwrap();
+    let socket = runtime.path().join("broker.sock");
+    let broker = crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
+        socket.clone(),
+        native_workspace_owner::tree_of(&owner),
+        vec![reporter.device_public_key],
+        &network,
+        None,
+    )
+    .unwrap();
+    let profile = directory.path().join("cold-reader");
+    assert!(!profile.exists());
+    let mut apps = InProcessApps::at(&profile, &profile.join("person"), &author).unwrap();
+    let publisher = publisher_on(
+        &mut apps,
+        &admission,
+        certified_manager(&socket, &reporter, &key),
+    )
+    .expect("a cold app opens in a sealed room");
+    let records = apps
+        .owners
+        .open("so.tilo.chat", &destination().room)
+        .unwrap();
+    let channels = records
+        .read(&RecordId::package_primary(), |document| {
+            vec![
+                chat::projection::read(&mut document.clone())
+                    .channel_rows()
+                    .iter()
+                    .map(|channel| channel.id.clone())
+                    .collect::<Vec<_>>(),
+            ]
+        })
+        .unwrap()
+        .pop()
+        .expect("the cold app reads the record the sealed room already holds");
+    assert!(
+        channels.iter().any(|channel| channel == "feedback"),
+        "the cold app reads the channel the sealed room already holds, found {channels:?}"
+    );
+    drop(records);
+    drop(publisher);
+    drop(apps);
+    drop(delivery);
+    drop(broker);
+    drop(network);
+    drop(commands);
+    drop(owner);
+}
