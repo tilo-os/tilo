@@ -3695,10 +3695,6 @@ impl TextRenderer {
         };
         let cached = self.ink_bounds.entry(key).or_default();
         let entry_count = &mut self.ink_bounds_entries;
-        let coefficients = transform
-            .as_coeffs()
-            .iter()
-            .fold(1.0_f64, |m, v| m.max(v.abs()));
         glyphs.iter().all(|glyph| {
             let bounds = if let Some(bounds) = cached.get(&glyph.glyph_id) {
                 *bounds
@@ -3722,20 +3718,7 @@ impl TextRenderer {
             #[allow(clippy::arithmetic_side_effects, reason = "rectangle translation is floating-point arithmetic; nonfinite bounds are rejected below")]
             let local = bounds + vello::kurbo::Vec2::new(x, y);
             let projected = transform.transform_rect_bbox(local);
-            let magnitude = [
-                local.x0,
-                local.y0,
-                local.x1,
-                local.y1,
-                projected.x0,
-                projected.y0,
-                projected.x1,
-                projected.y1,
-            ]
-            .iter()
-            .fold(1.0_f64, |m, v| m.max(v.abs()));
-            // Include pixel coverage and accumulated f32 transform/position rounding.
-            let padding = 2.0 + 32.0 * f64::from(f32::EPSILON) * magnitude * coefficients;
+            let padding = ink_padding(local, projected, transform);
             let ink = projected.inflate(padding, padding);
             [ink.x0, ink.y0, ink.x1, ink.y1]
                 .iter()
@@ -3804,18 +3787,21 @@ pub(crate) fn rich_run_outside_clip(
     screen.y1 < clip.y0 || screen.y0 > clip.y1
 }
 
-/// The pixels around ink bounds that can still take coverage from it, with
-/// the f32 rounding of positions and transforms. The rounding grows with
-/// the coordinates on either side of `transform` and with its scale; its
-/// translation is already in the on-screen coordinates, so it does not
-/// scale the rounding again (a field scrolled far down would otherwise pad
-/// its rows by thousands of pixels and draw rows far outside the clip).
+/// The pixels around ink bounds (`local`, drawn at `screen` through
+/// `transform`) that can still take coverage from it, with the f32 rounding
+/// of positions and transforms. The rounding grows with the coordinates on
+/// either side of `transform` and with its scale; its translation is
+/// already in the on-screen coordinates, so it does not scale the rounding
+/// again (a field scrolled far down would otherwise pad its rows and glyphs
+/// by thousands of pixels and draw ink far outside the clip).
 fn ink_padding(local: Rect, screen: Rect, transform: Affine) -> f64 {
     let [a, b, c, d, _, _] = transform.as_coeffs();
     let coefficients = [a, b, c, d].iter().fold(1.0_f64, |m, v| m.max(v.abs()));
-    let magnitude = [local.y0, local.y1, screen.y0, screen.y1]
-        .iter()
-        .fold(1.0_f64, |m, v| m.max(v.abs()));
+    let magnitude = [
+        local.x0, local.y0, local.x1, local.y1, screen.x0, screen.y0, screen.x1, screen.y1,
+    ]
+    .iter()
+    .fold(1.0_f64, |m, v| m.max(v.abs()));
     2.0 + 32.0 * f64::from(f32::EPSILON) * magnitude * coefficients
 }
 
