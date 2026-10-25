@@ -1138,9 +1138,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 else {
                     continue;
                 };
-                let opens = row.action.as_ref().is_some_and(|action| {
-                    action.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
-                });
+                // The workspace offers an action on an app (open, or close
+                // while it runs) only to a caller that may use it, and names
+                // one it may not without any: a running app shows only its
+                // close, and is still this caller's to open.
+                let opens = row.action.is_some();
                 match apps.iter_mut().find(|app| app.app_id == app_id) {
                     Some(app) => app.opens |= opens,
                     None => apps.push(InstalledApp {

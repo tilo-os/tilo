@@ -62,6 +62,9 @@ enum Installed {
     Openable,
     /// Notes to open; Sheets named only, this agent may not open it.
     SheetsClosedToAgent,
+    /// Notes to open; Sheets offered only to close, as the workspace offers
+    /// an app that runs before its directory is published for browsing.
+    SheetsOnlyCloses,
     /// None at all.
     Nothing,
     /// It cannot be read.
@@ -219,6 +222,14 @@ impl Notes {
                 Installed::SheetsClosedToAgent => {
                     let mut sheets = open("so.tilo.sheets", "Sheets");
                     sheets.action = None;
+                    vec![open(APP, "Notes"), sheets]
+                }
+                Installed::SheetsOnlyCloses => {
+                    let mut sheets = open("so.tilo.sheets", "Sheets");
+                    if let Some(action) = sheets.action.as_mut() {
+                        action.address.action = "close".into();
+                        action.action_label = "Close".into();
+                    }
                     vec![open(APP, "Notes"), sheets]
                 }
                 Installed::Nothing | Installed::Unreadable => Vec::new(),
@@ -821,6 +832,35 @@ fn an_app_the_agent_may_not_open_is_listed_and_says_who_decides() {
         assert!(
             text.contains("installed but not running") && text.contains("may not open"),
             "{text}"
+        );
+    });
+}
+
+/// An app the workspace offers this agent only to close (it runs, but its
+/// directory is not yet there to browse) is one the agent may use: it is
+/// listed as installed, never as one the person has to grant.
+#[test]
+fn an_app_offered_only_to_close_is_still_the_agents_to_open() {
+    let host = Notes::new(true).installed(Installed::SheetsOnlyCloses);
+    run(async {
+        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({})).await;
+        assert!(!failed, "{text}");
+        assert_eq!(
+            text,
+            "apps\nnotes  Notes  running\nsheets  Sheets  installed"
+        );
+        let (text, _) = tool(&agent(&host), "tilo_ls", json!({"path": "sheets"})).await;
+        assert!(
+            text.contains("installed but not running") && !text.contains("may not open"),
+            "{text}"
+        );
+        let (text, _) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
+        assert!(!text.contains("may not open"), "{text}");
+        assert!(
+            host.invoked()
+                .iter()
+                .any(|(resource, action, _)| resource == "app.so.tilo.sheets" && action == "open"),
+            "the workspace was asked to open Sheets: {text}"
         );
     });
 }
