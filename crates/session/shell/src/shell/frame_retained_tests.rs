@@ -95,7 +95,7 @@ fn assert_xrgb_pixels_eq(actual: &[u8], expected: &[u8], label: &str) {
 
 /// A settled fixture, and the guard pinning the bar's clock while it lives: two paints
 /// compared pixel for pixel must not straddle a minute.
-fn settled_builder() -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
+pub(super) fn settled_builder() -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
     settled_builder_in(Theme::dark())
 }
 
@@ -139,7 +139,7 @@ fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::Sc
 /// fading in (reduced motion keeps fades). Two paints a moment apart, while
 /// that pause runs out or the fade runs, catch the glance at different
 /// opacities, so a comparison of two paints waits for both.
-fn settle_desk(frame: &mut PopulatedShellFixture) {
+pub(super) fn settle_desk(frame: &mut PopulatedShellFixture) {
     let deadline = tilo_test_env::hang_deadline();
     let desk_pending = |frame: &PopulatedShellFixture| {
         let now = std::time::Instant::now();
@@ -167,7 +167,7 @@ fn assert_legacy_and_segmented_match(
     let _ = legacy_and_segmented_pixels(frame, label, expect_quick_settings);
 }
 
-fn legacy_and_segmented_pixels(
+pub(super) fn legacy_and_segmented_pixels(
     frame: &mut FrameBuilder,
     label: &str,
     expect_quick_settings: bool,
@@ -3990,3 +3990,6 @@ fn moving_to_another_strip_shows_the_whole_other_screen() {
 #[cfg(target_os = "linux")]
 #[path = "frame_scroll_copy_tests.rs"]
 mod scroll_copy;
+
+#[path = "frame_modal_paint_tests.rs"]
+mod modal_paint;
