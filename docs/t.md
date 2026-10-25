@@ -36,8 +36,10 @@ python3 tools/dev/install-git-hooks.py
   annoying to break (`tools/ci/pre_push.py`), of what the commit touches (`t scope --rev`):
   - `fmt-changed`, rustfmt of the Rust files the commit changes;
   - the policy steps (`policy/*`) and the generated-file and manifest checks (`t-toml`,
-    `codemap`, `sdk-policy`, `workspace-layout`, `lockfile`, `hakari`, `deny`) whose inputs it
-    touches; the policy suite's own tests only when it touches `tools/policy/`;
+    `codemap`, `sdk-policy`, `lockfile`, `hakari`, `deny`) whose inputs it touches; the policy
+    suite's own tests only when it touches `tools/policy/`. A policy step runs when
+    `tools/policy/steps.toml` marks it `pre_push = true`, which it may only be when it builds
+    nothing and reads no Git index of the tree: those take minutes each and wait for main;
   - `changes`, the diff gates (allow reasons, commit messages, interfaces);
   - clippy of the packages whose files it changes, not of their dependents;
   - the aarch64 size check of each app whose files it changes (`app-size/<app>-aarch64`), about a

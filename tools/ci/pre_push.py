@@ -6,10 +6,11 @@ continuous deployment ships, and it moves only on green (docs/t.md, "How changes
 release"). So a push runs only what is cheap to catch and annoying to break, in seconds:
 
   * `fmt-changed`: rustfmt of the Rust files the change touches;
-  * the `policy/*` steps whose inputs the change touches (the policy suite's own tests,
-    `policy/tests/*`, only when the change touches tools/policy/);
+  * the `policy/*` steps that are their own cheap check (tools/policy/steps.toml: `pre_push =
+    true`) and whose inputs the change touches (the policy suite's own tests, `policy/tests/*`,
+    only when the change touches tools/policy/);
   * the generated-file and manifest checks whose inputs it touches (lockfile, deny, hakari,
-    t-toml, codemap, sdk-policy, workspace-layout, workspace-unify-x86_64);
+    t-toml, codemap, sdk-policy, workspace-unify-x86_64);
   * `changes`, the diff gates (allow reasons, commit policy, interfaces);
   * clippy of the packages whose files it changes, not of their dependents;
   * the aarch64 size check of each app whose files it changes, when t has that commit's
@@ -18,6 +19,11 @@ release"). So a push runs only what is cheap to catch and annoying to break, in 
 No tests, VM checks, images, suites or dependents, and no size check of an app the change
 does not touch: main's CI runs those on every commit or its newest head and tells the commit
 that broke one, and `t test <check>` runs any of them on request.
+
+A policy step a push does not run waits for main, which is where it belongs when it is not
+cheap: the steps that walk the tree through a Git index of it (`tools/ci/t-git-index.sh`) and
+those whose inputs are the whole tree take minutes each on a loaded node, and steps.toml refuses
+`pre_push = true` on them. Run one yourself with `t test policy <step>`.
 
 A check red on main runs all the same: t compares what fails with the same check at the commit
 the push is based on, and only what fails there too passes. A lint (`clippy/*`) and a policy
@@ -36,6 +42,9 @@ on main named its findings, is refused instead: what fails can't be told from ma
       else none, the skip said on stderr and appended to FILE.
   pre_push.py opt-in --suggest SUGGEST.json
       The opt-in checks `t suggest --json` says the change touches, space-separated.
+  pre_push.py policy-steps --top DIR
+      The `policy/*` checks a push runs (steps.toml's `pre_push = true`), space-separated: what
+      the hook passes to `select`.
   pre_push.py unpassed --run RUN.jsonl CHECK...
       Every check of the gate (CHECK...) that the run (`t test --json`) did not pass, one per
       line with why, and t's own errors: what a refused push names, and what a push passed
@@ -60,9 +69,10 @@ ROOT = Path(__file__).resolve().parents[2]
 ALWAYS = ("fmt-changed", "changes")
 # Whole-tree checks of generated files, manifests and repository policy, each seconds long and
 # keyed by narrow inputs, so `t scope` names them only when the change touches what they read.
+# A gate that lists the tree through Git (workspace-layout) is not among them: t indexes every
+# file first, minutes on a loaded node, and it waits for main (tools/policy/steps.toml).
 GATES = frozenset({
-    "lockfile", "deny", "hakari", "t-toml", "codemap", "sdk-policy", "workspace-layout",
-    "workspace-unify-x86_64",
+    "lockfile", "deny", "hakari", "t-toml", "codemap", "sdk-policy", "workspace-unify-x86_64",
 })
 # Replaced before a push by fmt-changed.
 REPLACED = frozenset({"fmt"})
@@ -70,6 +80,22 @@ POLICY = "policy/"
 POLICY_TESTS = "policy/tests/"
 POLICY_SOURCES = "tools/policy/"
 CLIPPY = "clippy/"
+
+
+def policy_steps(root: Path = ROOT) -> set[str]:
+    """The `policy/*` checks a push runs: the steps tools/policy/steps.toml marks `pre_push = true`,
+    because each builds nothing and reads no Git index of the tree, so it answers in seconds. A
+    step without the mark waits for main, which runs every default check."""
+    sys.path.insert(0, str(root / "tools/policy"))
+    try:
+        import steps
+    finally:
+        sys.path.pop(0)
+    names = set()
+    for step in steps.load(root):
+        if step.pre_push:
+            names.add("policy/tests/" + step.name if step.tests else step.covered_by or "policy/" + step.name)
+    return names
 
 
 def package_of(path: str, root: Path) -> str | None:
@@ -89,27 +115,33 @@ def package_of(path: str, root: Path) -> str | None:
     return None
 
 
-def wanted(check: str, changed: list[str], packages: set[str]) -> bool:
+def wanted(check: str, changed: list[str], packages: set[str], steps: set[str]) -> bool:
     """Whether a check `t scope` names runs before a push. `t scope` names the lint of every
     package whose key the change moves, its dependents' too; only those of the packages whose
-    files it changes (`packages`) run."""
+    files it changes (`packages`) run, and only the policy steps t.toml says a push runs
+    (`steps`)."""
     if check in GATES or check in ALWAYS:
         return True
     if check.startswith(POLICY_TESTS):
         return any(path.startswith(POLICY_SOURCES) for path in changed)
     if check.startswith(CLIPPY):
         return check.removeprefix(CLIPPY) in packages
-    return check.startswith(POLICY)
+    return check.startswith(POLICY) and check in steps
 
 
-def select(scope: dict, changed: list[str], root: Path = ROOT) -> dict[str, list[str]]:
+def select(scope: dict, changed: list[str], root: Path = ROOT,
+           steps: set[str] | None = None) -> dict[str, list[str]]:
+    """What a push runs, of what `t scope` names for it: `run`, `left` (in scope, not run) and
+    `sizes`. `steps` are the policy checks a push runs; from steps.toml when it is None."""
     named = list(dict.fromkeys(scope.get("checks", [])))
     packages = {package for path in changed if (package := package_of(path, root))}
+    if steps is None:
+        steps = policy_steps()
     run, left = [], []
     for check in [*ALWAYS, *named]:
         if check in run or check in left:
             continue
-        if check in REPLACED or not wanted(check, changed, packages):
+        if check in REPLACED or not wanted(check, changed, packages, steps):
             left.append(check)
         else:
             run.append(check)
@@ -332,6 +364,8 @@ def main(argv: list[str]) -> int:
     chosen = sub.add_parser("select")
     chosen.add_argument("--scope", type=Path, required=True)
     chosen.add_argument("--changed", type=Path, required=True)
+    chosen.add_argument("--policy-steps", default=None,
+                        help="the policy checks a push runs, space-separated; steps.toml's own when left out")
     suggested = sub.add_parser("opt-in")
     suggested.add_argument("--suggest", type=Path, required=True)
     verdict = sub.add_parser("unpassed")
@@ -342,7 +376,12 @@ def main(argv: list[str]) -> int:
     sized.add_argument("--rev", required=True)
     sized.add_argument("--record", type=Path, required=True)
     sized.add_argument("checks", nargs="*")
+    steps = sub.add_parser("policy-steps")
+    steps.add_argument("--top", required=True, type=Path)
     args = parser.parse_args(argv)
+    if args.command == "policy-steps":
+        print(" ".join(sorted(policy_steps(args.top))))
+        return 0
     if args.command == "unpassed":
         for line in unpassed(load_events(args.run), args.checks):
             print(line)
@@ -354,9 +393,9 @@ def main(argv: list[str]) -> int:
         print(opt_in_line(opt_in(load(args.suggest))))
         return 0
     changed = [line for line in args.changed.read_text(encoding="utf-8").splitlines() if line]
-    print(json.dumps(select(load(args.scope), changed)))
+    steps = None if args.policy_steps is None else set(args.policy_steps.split())
+    print(json.dumps(select(load(args.scope), changed, steps=steps)))
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
