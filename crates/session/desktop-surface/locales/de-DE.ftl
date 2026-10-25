@@ -117,6 +117,11 @@ profile-visibility-nothing = Nichts
 profile-visibility-where-detail = Dein Gesicht, dein Fenster und dein Zeiger
 profile-visibility-here-detail = Dein Gesicht, nie dein Fenster oder dein Zeiger
 profile-visibility-nothing-detail = Du erscheinst nicht und siehst auch die Zeiger der anderen nicht
+profile-control-hints = Bedienhinweise zeigen
+control-hint-open = Alles öffnen
+control-hint-move = Zum Verschieben ziehen
+control-hint-resize = Größe per Ziehen ändern
+control-hint-pan = Freie Fläche ziehen
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich

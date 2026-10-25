@@ -548,7 +548,16 @@ impl DesktopSurface {
                 },
             }
         }
-        match (self.search.take_choice(), self.new_tab_into.take()) {
+        let choice = self.search.take_choice();
+        if matches!(choice, Some(Target::Launch { .. })) {
+            // The person opened something from search themselves: what
+            // the desktop opens on its own (a room's home app) teaches
+            // nothing.
+            ui::control_hints::performed::note(
+                ui::control_hints::performed::Performed::OpenedWindow,
+            );
+        }
+        match (choice, self.new_tab_into.take()) {
             (Some(Target::Launch { app }), Some((strip, group))) => {
                 self.open_tab_in_group(strip, group, &app);
             }
@@ -556,7 +565,11 @@ impl DesktopSurface {
             (None, into) => self.new_tab_into = into,
         }
         let open = self.search.is_open();
-        if !open {
+        if open {
+            ui::control_hints::performed::note(
+                ui::control_hints::performed::Performed::OpenedSearch,
+            );
+        } else {
             // The aim is for one choice; search opened otherwise opens
             // applications as their own windows again.
             self.new_tab_into = None;

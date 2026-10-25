@@ -73,6 +73,7 @@ impl ShellOverlayHost {
                 peer_sync: self.peer_sync_overlay.needs_animation_frame(),
                 directory_sheet: self.directory_sheet.needs_animation_frame(),
                 feedback_picker: self.feedback_picker.needs_animation_frame(now),
+                control_hints: self.control_hints_animating(now),
             },
         )
     }
@@ -295,6 +296,7 @@ impl ShellOverlayHost {
         );
         self.prepare_quick_settings_transition(theme, flags);
         self.prepare_strip_indicators(Instant::now());
+        self.prepare_control_hints(Instant::now());
         self.sync_top_bar_presence(Instant::now());
         let quick_settings_transition_visible = self.qs_motion.is_visible(ui::time::now());
         phase_at = scene_phase("scene/sections/overlays", phase_at);
@@ -466,6 +468,15 @@ impl ShellOverlayHost {
             desktop,
             |scene| {
                 self.draw_bar_popovers(scene, transform, text_renderer, theme, presence);
+                None
+            },
+        );
+        overlay_part(
+            above_quick_settings,
+            "shell.control-hints",
+            desktop,
+            |scene| {
+                self.draw_control_hints(scene, transform, text_renderer, theme);
                 None
             },
         );
@@ -739,7 +750,7 @@ impl ShellOverlayHost {
     pub(super) fn wake_deadline_sources(
         &self,
         now: Instant,
-    ) -> [(&'static str, Option<Instant>); 21] {
+    ) -> [(&'static str, Option<Instant>); 22] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -834,6 +845,7 @@ impl ShellOverlayHost {
                 "display-identify",
                 self.display_identify.next_wake_deadline(now),
             ),
+            ("control-hints", self.control_hints_wake_deadline(now)),
         ]
     }
 

@@ -32,6 +32,9 @@ use crate::widget::{
 #[path = "group_row_edges.rs"]
 mod edges;
 use edges::RowEdgeDrag;
+#[path = "group_row_hint_places.rs"]
+mod hint_places;
+pub use hint_places::HintPlaces;
 
 /// Idle time before the strip snaps to the nearest group's left edge.
 const SNAP_IDLE_MS: u32 = 200;
@@ -2687,6 +2690,13 @@ impl GroupRow {
     }
 
     fn finish_strip_pan(&mut self, now: Instant, throw: bool) -> bool {
+        if self.pan_of_lane(self.focus_lane).strip_pan_origin.is_some() {
+            // A hand moved the view: a drag on the canvas, a finger, a
+            // touchpad's fingers or a wheel's pull.
+            crate::control_hints::performed::note(
+                crate::control_hints::performed::Performed::PannedView,
+            );
+        }
         let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
         let settle = self.move_timing(MotionSource::Gesture);
         let settling = self
@@ -3703,6 +3713,12 @@ impl GroupRow {
             return claimed;
         }
         let lane = self.group_reorder_lane.take();
+        if commit && drag.moved {
+            // Carried by its bar, wherever it was let go.
+            crate::control_hints::performed::note(
+                crate::control_hints::performed::Performed::MovedWindow,
+            );
+        }
         if commit
             && drag.moved
             && let Some(insert_at) = self.group_reorder_target.take()
@@ -5034,6 +5050,7 @@ impl Widget for GroupRow {
             self.last_cursor =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.refresh_tab_drop_preview();
+            self.note_bar_hover();
         }
 
         // Runs before resize-handle/per-child dispatch so, once past
@@ -7468,6 +7485,25 @@ mod tests {
             f64::midpoint(last.x1, bar.x1),
             f64::midpoint(bar.y0, bar.y1),
         )
+    }
+
+    // The move hint points where a drag takes the window, not at the bar's
+    // middle, which its tabs and controls may fill.
+    #[test]
+    fn hint_places_point_at_where_a_bar_takes_its_window() {
+        let mut row = make_row_with_groups(&[&[1], &[2]]);
+        row.groups[0].focused = true;
+        let grab = group_grab_point(&row, 0);
+        let stretch = row.hint_places().focused_bar.expect("a stretch to take");
+        let y = stretch.center().y;
+        assert!(row.groups[0].bar_grab_hit(Point::new(stretch.x0, y)));
+        assert!(row.groups[0].bar_grab_hit(Point::new(stretch.x1, y)));
+        assert!(
+            stretch.x0 <= grab.x && grab.x <= stretch.x1,
+            "{stretch:?} {grab:?}"
+        );
+        let pill = row.groups[0].tab_rects()[0].center();
+        assert!(pill.x < stretch.x0, "a tab is not where it is taken");
     }
 
     // A press on a window's search control opens the platform search, which
