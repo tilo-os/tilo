@@ -1594,14 +1594,18 @@ mod tests {
                         held_app == app && (*held_record == record || *held_record == wire)
                     })
                 });
-                let tree = session.workspace_tree().read();
+                let (sealed, committed) = {
+                    let handle = session.workspace_tree();
+                    let tree = handle.read();
+                    (
+                        tree.seals_records(room),
+                        tree.committed_record_rooms.contains(&room),
+                    )
+                };
                 *held.borrow_mut() = format!(
-                    "host routes {routes:?}, record {record}, wire {wire}, sealed here {}, \
-                 committed here {}",
-                    tree.seals_records(room),
-                    tree.committed_record_rooms.contains(&room),
+                    "host routes {routes:?}, record {record}, wire {wire}, sealed here {sealed}, \
+                     committed here {committed}"
                 );
-                drop(tree);
                 found
             },
         );
