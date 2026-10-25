@@ -769,6 +769,8 @@ approved-check-reports-disabled = Phase reports unavailable
 
 author-bot-chip = Bot
 author-via-chip = via { $service }
+author-from-service = From { $service }
+author-from-service-as = From { $service } as { $handle }
 author-bot-details = { $bot } (bot, added by { $installer })
 author-bot-details-as = { $name }, via { $bot } (bot, added by { $installer })
 author-bot-linked = Linked to { $person } on Tilo

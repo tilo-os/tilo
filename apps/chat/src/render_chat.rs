@@ -373,11 +373,18 @@ impl ChatApp {
         let mut line = author.layout(&members, origin, max_x - origin.x, ctx.text, theme);
         line.mark = mark;
         line.name = line.name.with_size((line.name.width(), line_h));
-        if let Some(chip) = line.chip.as_mut() {
-            *chip = chip.with_origin((chip.x0, name_at.y + (line_h - chip.height()) / 2.0));
+        for part in [line.chip.as_mut(), line.badge.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            *part = part.with_origin((part.x0, name_at.y + (line_h - part.height()) / 2.0));
         }
         author.paint(&line, ctx);
-        (line.chip.map_or(line.name.x1, |chip| chip.x1), line_h, line)
+        let end = line
+            .chip
+            .or(line.badge)
+            .map_or(line.name.x1, |part| part.x1);
+        (end, line_h, line)
     }
 
     pub(crate) fn message_author<'a>(
@@ -1308,6 +1315,11 @@ impl ChatApp {
         let clock_w = f64::from(clock_w);
         parts.avatar = Some(line.mark);
         parts.author = Some((line.name, line.shown));
+        // Where a bridged person writes from: its mark, saying so when
+        // hovered and to assistive technology.
+        parts.service = line
+            .badge
+            .zip(self.message_author(m, "", "", None).service_tip());
         parts.time = Some((
             Rect::new(
                 clock_x,
