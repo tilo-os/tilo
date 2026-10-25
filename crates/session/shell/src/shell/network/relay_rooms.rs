@@ -677,6 +677,26 @@ impl ShellNetwork {
         let mut arguments = serde_json::Map::new();
         arguments.insert("room".into(), room.to_string().into());
         arguments.insert("app".into(), app.into());
+        // A room this device's own host holds is asked there in process: a
+        // local room never waits on the network.
+        if self.hosted_here(room) {
+            return Some(
+                self.local_host_action_awaited(
+                    room_topic_id(room),
+                    GRANT_APP_AUTHORSHIP,
+                    arguments,
+                )
+                .await
+                .and_then(|answer| {
+                    answer
+                        .get("generation")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| {
+                            "the host answered the app authorship with something else".into()
+                        })
+                }),
+            );
+        }
         let invoke = invocation(
             HOST_ACTIONS_PROVIDER,
             HOST_ROOMS_RESOURCE.to_owned(),
