@@ -233,7 +233,9 @@ impl Desktop {
                     .iter()
                     .rev()
                     .map(|(_, line)| line.as_str())
-                    .filter(|line| !line.contains("paint-tick: "))
+                    .filter(|line| {
+                        !line.contains("paint-tick: ") && !line.starts_with("SLOW-CONTROL ")
+                    })
                     .take(60)
                     .collect();
                 tail.reverse();
@@ -334,6 +336,13 @@ pub(crate) fn notes_desktop() -> shell::shell::state::WorkspaceTree {
     let group = &mut home.strips[0].window_groups[0];
     group.tabs.retain(|tab| tab.title == "Notes");
     group.active_tab = group.tabs[0].id;
+    // A workspace is a room this device's host holds: the session places
+    // Home's room on its own host before its apps start, as it does a
+    // workspace made here, so the Notes tab opens its document there. Left
+    // unplaced, Home would be a workspace from before rooms had hosts, on
+    // this device only, where no app opens a document.
+    let room = home.room();
+    tree.pending_placements.insert(room);
     tree
 }
 
