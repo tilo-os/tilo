@@ -1108,6 +1108,7 @@ impl WorkspaceTree {
             return false;
         }
         self.archived_workspaces.push(workspace);
+        self.place_own_unhosted_rooms();
         self.queue_save();
         true
     }
@@ -1133,20 +1134,31 @@ impl WorkspaceTree {
         Some(id)
     }
 
-    /// Whether `room` is on this device only: a room of a workspace here that
-    /// no host holds, none is joining and none waits to create. A room from
-    /// before rooms had hosts: its windows and layout are here, and nothing
-    /// else is, so no app opens a document in it.
-    pub fn on_this_device_only(&self, room: RoomId) -> bool {
-        !room.is_nil()
-            && !self.native_authority.holds(room)
-            && !self.is_joining(room)
-            && !self.pending_placements.contains(&room)
-            && self
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room() == room)
+    /// Put every room of a workspace of this device's own that no host holds
+    /// among [`Self::pending_placements`]: shown or archived, made here or
+    /// before rooms had hosts, never joined from elsewhere. A workspace this
+    /// person has is a room this device's host holds, or one waiting to be
+    /// placed there: never one no app may open a document in. Changes no id
+    /// and removes nothing. Answers the rooms now waiting.
+    fn place_own_unhosted_rooms(&mut self) -> Vec<RoomId> {
+        let unhosted: Vec<RoomId> = self
+            .desktop
+            .workspaces
+            .iter()
+            .chain(&self.archived_workspaces)
+            .map(Workspace::room)
+            .filter(|room| {
+                !room.is_nil()
+                    && !self.native_authority.requires(*room)
+                    && !self.joining_rooms.contains(room)
+                    && !self.pending_placements.contains(room)
+            })
+            .collect();
+        if !unhosted.is_empty() {
+            self.pending_placements.extend(unhosted.iter().copied());
+            self.queue_save();
+        }
+        unhosted
     }
 
     /// Whether `room`'s workspace is waiting for its replica: a join through
@@ -1206,13 +1218,12 @@ impl WorkspaceTree {
         self.stewarded_rooms.contains(&room)
     }
 
-    /// Why no app opens a document in `room` on this device, as a catalogue
-    /// id, when none can: the room is on this device only, or it is still
-    /// joining or being placed on its host and holds no records yet.
+    /// Why no app opens a document in `room` on this device yet, as a
+    /// catalogue id: it is still joining or being placed on its host and
+    /// holds no records yet. Every room of a workspace here is held, joining
+    /// or being placed ([`Self::place_own_unhosted_rooms`]), so an app waits
+    /// for it and is never refused it.
     pub(crate) fn documents_unavailable(&self, room: RoomId) -> Option<&'static str> {
-        if self.on_this_device_only(room) {
-            return Some("workspace-on-this-device-only-no-documents");
-        }
         (self.is_joining(room) || self.pending_placements.contains(&room))
             .then_some("workspace-not-ready-no-documents")
     }
@@ -2707,13 +2718,13 @@ impl WorkspaceTree {
     /// person this device acts as in it (`identity_for_room(room)`), who is
     /// the one its host records as owner when it creates the room
     /// ([`Self::pending_placements`]), whose admitted document then says
-    /// who owns it. Until then the desktop works in it as its owner, with
-    /// no host and no network. Places nothing: a workspace waits for a host
-    /// only when it was made to ([`Self::create_hosted_workspace`]). Asked
-    /// again when the person this device acts as changes (first-login
-    /// setup), so a room claimed under the account's name belongs to the
-    /// new identity. Changes no id, removes nothing and writes nothing.
-    /// Answers the workspaces given an owner.
+    /// who owns it. Each such room waits to be placed on this device's host
+    /// ([`Self::place_own_unhosted_rooms`]); until it is, the desktop works
+    /// in it as its owner and its apps wait for it. Asked again when the
+    /// person this device acts as changes (first-login setup), so a room
+    /// claimed under the account's name belongs to the new identity.
+    /// Changes no id and removes nothing. Answers the workspaces given an
+    /// owner.
     pub fn claim_own_unhosted_rooms(
         &mut self,
         identity_for_room: impl Fn(&RoomId) -> UserId,
@@ -2734,6 +2745,7 @@ impl WorkspaceTree {
         }
         // The owner is what this device acts as, not something it learned:
         // it is claimed again on every start, and nothing is written for it.
+        self.place_own_unhosted_rooms();
         owned
     }
 
@@ -3375,6 +3387,7 @@ impl WorkspaceTree {
         let id = workspace.id;
         self.desktop.workspaces.insert(index, workspace);
         self.desktop.active = id;
+        self.place_own_unhosted_rooms();
         self.seed_doc_from_cache();
         self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
         self.queue_save();
