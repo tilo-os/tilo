@@ -19,8 +19,15 @@ impl ShellOverlayHost {
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
         if let Some(chrome) = &self.chrome {
-            chrome.borrow_mut().native_app_opening =
-                Some(crate::shell::launcher::NativeAppOpening(broker.downgrade()));
+            let opening = crate::shell::launcher::NativeAppOpening(broker.downgrade());
+            let mut chrome = chrome.borrow_mut();
+            // Apps shown in tabs open through this broker as launched ones
+            // do: those restored before it bound, and every later one.
+            if let Some(apps) = chrome.hosted_inputs.in_process() {
+                apps.borrow_mut()
+                    .admit_through(chrome.tree_handle.clone(), opening.clone());
+            }
+            chrome.native_app_opening = Some(opening);
         }
         self.room_activity.attach_task_broker(broker.clone());
         self.attach_shortcut_trigger_broker(broker.clone());

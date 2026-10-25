@@ -25,6 +25,7 @@ mod feedback_native;
 #[cfg(test)]
 mod feedback_tests;
 pub mod messaging;
+mod tab_admission;
 
 /// The apps the shell mounts in-process, with the store their records and
 /// views live in, as one person on one device.
@@ -75,6 +76,7 @@ pub struct InProcessApps {
     /// The window each mounted tab is shown in, as lent to its app: the
     /// slots it declares for its bar and its asks to close its tab.
     windows: HashMap<u64, ui::hosted_window::HostedWindow>,
+    admission: tab_admission::TabAdmission,
 }
 
 /// Connects an app the session shows in its own process to the session's
@@ -134,7 +136,19 @@ impl InProcessApps {
             receivers: Vec::new(),
             messaging_services: Vec::new(),
             windows: HashMap::new(),
+            admission: tab_admission::TabAdmission::default(),
         }
+    }
+
+    /// Let the apps the session's tabs show author their rooms through the
+    /// session's broker, as their launches would: the ones mounted before
+    /// it bound, and every one mounted from now on.
+    pub(crate) fn admit_through(
+        &mut self,
+        tree: crate::shell::state::WorkspaceTreeHandle,
+        opening: crate::shell::launcher::NativeAppOpening,
+    ) {
+        self.admission.bind(tree, opening);
     }
 
     /// The window tab `tab` is shown in, to lend its app: the same one for
@@ -514,6 +528,7 @@ impl InProcessApps {
             }
             self.prepare_default_messaging();
         }
+        self.admission.admit(room, definition.app_id);
         let records = self
             .owners
             .open(definition.app_id, room)
