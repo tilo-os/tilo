@@ -16,9 +16,9 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
 use ui::tokens::{EffectiveMotion, MotionSource};
-use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, SurfaceLevel};
+use ui::widget::{BadgeFace, Button, ButtonFace, ButtonRole, ChipStyle, ControlSize, SurfaceLevel};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Shape, Stroke};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape, Stroke};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -60,7 +60,9 @@ impl PickTarget {
     /// what kind of thing the app says it is ("Message in Chat"), else the
     /// app's own name for it by its role ("The “Send message” button in
     /// Chat"), else its role (`ListItem`, as assistive technology names it:
-    /// "A list item in Chat"). Content never names a part here.
+    /// "A list item in Chat"). Content never names a part here. An `app`
+    /// with no display name known leaves the part alone ("A list item"):
+    /// an app's id only routes and is never shown.
     #[must_use]
     pub fn caption(app: &str, role: &str, kind: Option<&str>, copy: Option<&str>) -> String {
         let what = match (kind, copy) {
@@ -71,6 +73,9 @@ impl PickTarget {
             ),
             (None, None) => t_args("feedback-part-role", &[("role", role.into())]),
         };
+        if app.trim().is_empty() {
+            return what;
+        }
         t_args(
             "feedback-part-in",
             &[("what", what.into()), ("app", app.into())],
@@ -477,7 +482,8 @@ fn dimmed(bounds: Rect, holes: &[Rect]) -> BezPath {
     path
 }
 
-/// A picked part's number, on its top-left corner.
+/// A picked part's number, on its top-left corner: the shared badge in
+/// the accent, the selection's colour.
 fn badge(
     scene: &mut Scene,
     transform: Affine,
@@ -486,22 +492,13 @@ fn badge(
     rect: Rect,
     number: usize,
 ) {
-    let colors = &theme.tokens.colors;
-    let style = theme.text(TextRole::Label);
-    let centre = Point::new(rect.x0 - OUTSET + 2.0, rect.y0 - OUTSET + 2.0);
-    let disc = Circle::new(centre, 10.0);
-    scene.fill(Fill::NonZero, transform, colors.intent.accent, None, &disc);
     let label = number.to_string();
-    let (w, h) = text.measure_style(&label, None, &style);
-    text.draw_style(
-        scene,
-        &label,
-        colors.intent.on_accent,
-        transform
-            .pre_translate((centre.x - f64::from(w) / 2.0, centre.y - f64::from(h) / 2.0).into()),
-        None,
-        &style,
-    );
+    let height = BadgeFace::height(theme);
+    let width = BadgeFace::intrinsic_width(&label, text, theme).max(height);
+    let centre = Point::new(rect.x0 - OUTSET + 2.0, rect.y0 - OUTSET + 2.0);
+    BadgeFace::new(Rect::from_center_size(centre, (width, height)), &label)
+        .style(ChipStyle::Accent)
+        .paint(scene, transform, text, theme);
 }
 
 /// What the lit part is, just above it (inside its top when it touches the

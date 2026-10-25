@@ -1019,8 +1019,9 @@ open list, a focused button).
 
 One family, styled by `ChipStyle`: `Neutral` (quiet, raised; a selected chip
 is a lift), `Tinted(Tone)` (a status or a person, a faint wash with neutral
-ink) and `Live` (the one filled pill, in your colour: an unread count, a
-mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
+ink), `Live` (filled in your colour: an unread count, a mention,
+something live) and `Accent` (filled in the accent with its own label: what
+you picked, numbered). Danger red is only a status: `Tinted(Tone::Danger)`.
 `Tone` is the shared `ui::widget::Tone`: `Neutral`, `Info`, `Success`,
 `Warning`, `Danger`, or a person with `Tone::of_identity(id)` /
 `Tone::Presence(hue)` (yourself: `Tone::Presence(colors.you)`).
