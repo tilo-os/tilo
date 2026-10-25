@@ -284,6 +284,7 @@ mod tree_harvest;
 mod wifi_password;
 mod window_focus;
 mod workspace_content;
+mod ws_emoji;
 mod ws_settings;
 
 use capture::{instant_screen_capture, instant_window_capture, magnifier_step};
@@ -750,6 +751,9 @@ pub struct ShellOverlayHost {
     /// Workspace-settings transition, geometry, painting chrome, and typed
     /// hit targets. Policy outcomes are applied by this host.
     workspace_settings_overlay: WorkspaceSettingsOverlay,
+    /// The active workspace's emoji as workspace settings' Emoji tab holds
+    /// them, opened on first use.
+    ws_emoji: Option<ws_emoji::WsEmoji>,
     /// A rename submit owns its held Enter repeats and release after the draft closes.
     workspace_rename_submit_held: bool,
     palette_was_visible: bool,

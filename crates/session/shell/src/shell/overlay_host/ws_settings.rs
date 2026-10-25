@@ -388,6 +388,11 @@ impl ShellOverlayHost {
                     }
                 }
             }
+            WorkspaceSettingsOutcome::AddEmoji => self.choose_workspace_emoji(),
+            WorkspaceSettingsOutcome::RemoveEmoji(name, how) => {
+                self.remove_workspace_emoji(&name, how);
+            }
+            WorkspaceSettingsOutcome::DismissEmojiNotice => self.dismiss_workspace_emoji_notice(),
             WorkspaceSettingsOutcome::CommitName => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     chrome.borrow_mut().commit_workspace_name();
@@ -463,10 +468,12 @@ impl ShellOverlayHost {
         ) else {
             return;
         };
+        let emoji_grants = self.prepare_ws_emoji();
         if let Some(chrome) = self.chrome.as_ref() {
             let state = chrome.borrow();
             let tree = state.tree();
             let acting_user = state.active_local_user_in(&tree);
+            let emoji = ws_emoji::pane_model(self.ws_emoji.as_ref(), emoji_grants, &acting_user);
             let governs_active_room = tree
                 .desktop
                 .active_workspace()
@@ -541,6 +548,7 @@ impl ShellOverlayHost {
                     devices: &devices,
                     public: &public,
                     archived: &archived,
+                    emoji,
                 },
             );
         }

@@ -584,6 +584,29 @@ workspace-settings-tab-privacy-security = Datenschutz & Sicherheit
 workspace-settings-tab-privacy = Datenschutz
 workspace-settings-tab-apps-files = Apps & Dateien
 workspace-settings-tab-apps = Apps
+workspace-settings-tab-emoji = Emoji
+workspace-settings-emoji-count = { $count ->
+    [0] Eigene Emoji dieses Arbeitsbereichs
+    [one] 1 Emoji dieses Arbeitsbereichs
+   *[other] { $count } Emoji dieses Arbeitsbereichs
+}
+workspace-settings-emoji-help = Schreibe :Name: in einer beliebigen App dieses Arbeitsbereichs oder wähle eines bei den Emoji einer Reaktion.
+workspace-settings-emoji-add = Emoji hinzufügen
+workspace-settings-emoji-empty-title = Dieser Arbeitsbereich hat noch keine eigenen Emoji
+workspace-settings-emoji-empty-detail = Wähle „Emoji hinzufügen“ und ein Bild: Sein Dateiname wird der Name des Emoji.
+workspace-settings-emoji-empty-detail-viewer = Wer diesen Arbeitsbereich bearbeiten darf, kann welche hinzufügen.
+workspace-settings-emoji-unavailable = Die Emoji dieses Arbeitsbereichs sind auf diesem Gerät nicht verfügbar.
+workspace-settings-emoji-editors-add = Nur wer diesen Arbeitsbereich bearbeiten darf, kann Emoji hinzufügen.
+workspace-settings-emoji-added-by = Hinzugefügt von { $name }
+workspace-settings-emoji-added-by-you = Von dir hinzugefügt
+workspace-settings-emoji-remove = :{ $name }: entfernen
+workspace-settings-emoji-not-chosen = Es wurde kein Bild ausgewählt
+workspace-settings-emoji-not-added = { $file } wurde nicht als Emoji hinzugefügt
+workspace-settings-emoji-not-removed = :{ $name }: wurde nicht entfernt
+workspace-settings-emoji-tools-loading = Die Bildwerkzeuge werden noch geladen. Versuche es gleich noch einmal.
+workspace-settings-emoji-not-a-picture = Nur PNG-, JPEG- und WebP-Bilder können Emoji werden.
+workspace-settings-emoji-too-detailed = Das Bild ist zu detailreich, um in Emoji-Größe scharf zu bleiben. Versuche ein einfacheres.
+workspace-settings-emoji-no-name = Sein Dateiname enthält keine Buchstaben oder Ziffern, nach denen ein Emoji heißen könnte.
 workspace-settings-role-owner = Eigentümer
 workspace-settings-role-moderator = Moderator
 workspace-settings-role-editor = Bearbeiter
