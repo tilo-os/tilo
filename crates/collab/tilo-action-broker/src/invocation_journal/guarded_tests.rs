@@ -183,8 +183,26 @@ fn guarded_journal_real_requirement_and_terminal_barriers_poison_without_redispa
                 journal.require_guarded_read(&key, [0x11; 32])
             };
             assert!(outcome.is_err());
-            assert!(journal.lookup(&key).is_err());
-            assert!(journal.admit(key.clone(), json!({}), 2).is_err());
+            if failure == BarrierFailure::Directory {
+                // The rename may have made it durable: nothing more is written
+                // until recovery reads the store back.
+                assert!(journal.lookup(&key).is_err());
+                assert!(journal.admit(key.clone(), json!({}), 2).is_err());
+            } else {
+                // A withdrawn write left the store as it was, so the journal
+                // goes on: the same requirement may be staged again.
+                assert!(!journal.failed(), "a withdrawn write poisoned nothing");
+                if !terminal_stage {
+                    // The disk may be free again: the injection is one
+                    // scenario, not a permanent state.
+                    journal.fail_at = None;
+                    assert!(
+                        journal.require_guarded_read(&key, [0x11; 32]).is_ok(),
+                        "the requirement may be staged again"
+                    );
+                }
+                assert!(!journal.failed(), "staging it again still finds a writer");
+            }
             drop(journal);
             let mut reopened = InvocationJournal::open(&root).unwrap();
             assert!(!reopened.admit(key.clone(), json!({}), 2).unwrap());
@@ -201,6 +219,9 @@ fn guarded_journal_real_requirement_and_terminal_barriers_poison_without_redispa
                     matches!(row.update,InvocationUpdate::Failed{error,..} if error.code=="action_read_payload_unavailable")
                 );
             } else {
+                // Neither stage was durable: the store still has the accepted
+                // invocation they were staged for, and recovery makes that
+                // uncertain, so it is never selected again.
                 assert!(row.uncertain);
                 assert!(
                     matches!(row.update,InvocationUpdate::Failed{error,..} if error.code=="action_outcome_unknown")
