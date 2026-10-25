@@ -49,10 +49,19 @@
 //!   `Region::Inspector`, the overview and content on the window ground;
 //!   each column's children draw with that region's theme.
 //! - **Motion:** hide, show and push move with `motion.durations.base`;
-//!   under reduced motion they cross-fade. A resize that switches the layout
-//!   (docked ↔ one column at a time) moves the columns on from where they
-//!   stood, so nothing jumps under the person during a live resize; under
-//!   reduced motion the columns that moved fade in at their new place.
+//!   under reduced motion they cross-fade. A layout the person switches at a
+//!   fixed size (a toggle, a choice, a text-scale change) moves its columns
+//!   on from where they stood, so nothing jumps; a layout a **resize**
+//!   switches lands at once, because the window's rect is the truth that
+//!   frame draws — a window dragged narrow shows its narrow layout, never the
+//!   wide one sliding out of view.
+//!
+//! The class of the rect the shell last laid out in is
+//! [`NavGeometry::size_class`] ([`Breakpoint`]): the shell derives it every
+//! layout pass, holding it through
+//! [`Metrics::layout_hysteresis`] so a window resting on a threshold does not
+//! flutter. An app reads it instead of comparing a width to a number of its
+//! own, and nothing — app or host — seeds it.
 //!
 //! There is no width, breakpoint, colour or padding to pass: the shell is
 //! semantic. A filter field for the sidebar's list goes in
@@ -85,6 +94,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
+use crate::tokens::{Breakpoint, BreakpointTracker};
 use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy, MeasureConstraint};
 use crate::widget::window_header::{HistoryControl, WindowHeader};
@@ -105,10 +115,11 @@ mod sidebar_resize;
 mod status_action;
 mod window_header;
 mod window_toolbar;
+use crate::widget::OverflowDoor;
 #[cfg(test)]
 use crate::widget::toast::ToastKind;
 use band::plan;
-use header_parts::{HeaderTitle, MoreActions};
+use header_parts::HeaderTitle;
 use inspector::inspector_layout_of;
 pub use inspector::{InspectorFrame, InspectorLink};
 use sidebar_resize::AdaptiveSidebar;
@@ -323,7 +334,7 @@ struct Header {
     title: HeaderTitle,
     binding: Option<LocalBinding<String>>,
     actions: Vec<Element>,
-    more: MoreActions,
+    more: OverflowDoor,
     leading: Option<Element>,
 }
 
@@ -333,7 +344,7 @@ impl Header {
             title: HeaderTitle::new(),
             binding: None,
             actions: Vec::new(),
-            more: MoreActions::new(&format!("nav-shell-more-{}", column.key())),
+            more: OverflowDoor::new(&format!("nav-shell-more-{}", column.key())),
             leading: None,
         }
     }
@@ -690,6 +701,14 @@ pub struct NavGeometry {
     pub header_height: f64,
     /// Width at or above which the sidebar docks.
     pub breakpoint: f64,
+    /// The class the rect this geometry was solved in asks for
+    /// ([`Breakpoint`], hysteresis held across passes). Read it instead of
+    /// comparing a width to a number the app keeps.
+    pub size_class: Breakpoint,
+    /// The size of the rect this plan was solved for. Two passes that differ
+    /// here are a **resize** — the window's own edge moved — and a plan that
+    /// switches between them lands at once ([`NavShell::reconcile_size_class`]).
+    pub size: Vec2,
     /// Each column's visible area (header and body); a drawer's panel.
     pub sidebar_column: Rect,
     pub overview_column: Rect,
@@ -1007,6 +1026,8 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     let content_min = inputs.content_min();
     let content_need = ow + content_min;
     let rail_sidebar = inputs.mode == NavMode::Docked;
+
+    g.size = Vec2::new(w, h);
 
     // 1. The sidebar docks while it fits beside the content's real minimum,
     //    shrinking from its width toward its own minimum first. Below that
@@ -1651,6 +1672,9 @@ pub struct NavShell {
 
     rect: Rect,
     geometry: NavGeometry,
+    /// The size class of the rect the last layout was solved in
+    /// ([`Breakpoint`], held across passes through the hysteresis band).
+    size_class: BreakpointTracker,
     last_stack: Option<Vec<NavPane>>,
     /// The push stack and front screen the tree was built for before any
     /// layout said how wide the shell is: the first layout rebuilds the tree
@@ -1782,6 +1806,7 @@ impl NavShell {
             conventions: PlatformConventions::default(),
             rect: Rect::ZERO,
             geometry: NavGeometry::default(),
+            size_class: BreakpointTracker::new(),
             last_stack: None,
             planned: None,
             pane_chosen: false,
@@ -3054,7 +3079,15 @@ impl NavShell {
     }
 
     fn refresh_geometry(&mut self) {
-        let local = plan(&self.inputs.borrow(), self.rect.width(), self.rect.height());
+        // The class this pass's rect asks for, held through the hysteresis
+        // band: derived from the rect every pass, never stored by an app or
+        // seeded by the host. Larger text holds less in the same width, so the
+        // rect is compared in the space its tokens are measured in.
+        let growth = f64::from(self.layout_theme.text_growth()).max(f64::from(f32::EPSILON));
+        let tokens = self.layout_theme.tokens.metrics;
+        let size_class = self.size_class.derive(self.rect.width() / growth, &tokens);
+        let mut local = plan(&self.inputs.borrow(), self.rect.width(), self.rect.height());
+        local.size_class = size_class;
         self.geometry = local.translated(Vec2::new(self.rect.x0, self.rect.y0));
         self.place_sheet();
     }
@@ -3120,7 +3153,15 @@ impl NavShell {
             inputs.push.snap(at);
             let pane = inputs.pane;
             drop(inputs);
-            if switched {
+            // A layout the person switched at a fixed size carries its
+            // columns from where they stood. A layout a **resize** switched
+            // lands at once: the rect this pass was given is the truth this
+            // frame draws, so a window narrowed across the breakpoint shows
+            // the one-column layout immediately — never the wide one sliding
+            // out, clipped at the new edge (and, in a capture whose clock is
+            // pinned, never landing at all).
+            let resized = before.size != self.geometry.size;
+            if switched && !resized {
                 self.move_into_layout(before);
             }
             // The tree a first layout finds was built for the screens it
@@ -3136,9 +3177,10 @@ impl NavShell {
     }
 
     /// Carry the columns from where they stood (`before`, in the shell's
-    /// own coordinates) into the layout a resize switched to, so nothing
-    /// jumps under the person during a live resize (motion,
-    /// `motion.durations.base`):
+    /// own coordinates) into the layout a switch at one size made, so nothing
+    /// jumps under the person (motion, `motion.durations.base`). A switch a
+    /// resize makes never takes this path ([`Self::reconcile_size_class`]):
+    /// the new rect's layout is drawn at once.
     ///
     /// - Narrowing into one column at a time, the screen in front slides
     ///   from where it stood beside the sidebar to fill the window, the
@@ -3828,15 +3870,12 @@ fn place_header(
             Some(index) => measure(ctx, index, None)?.0,
             None => 0.0,
         };
-        let mut k = items.len();
-        while k > 0 {
-            let used = run(compact.get(..k).unwrap_or(&[])) + gap + more_w;
-            if used <= band {
-                break;
-            }
-            k = k.saturating_sub(1);
-        }
-        (true, k)
+        // The toolkit's one overflow rule: how many of the row's controls fit
+        // beside the door's own button. What does not fit is named in the
+        // menu, never dropped from the row.
+        let planned =
+            crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w);
+        (true, planned.shown())
     };
     fit.compact = use_compact;
     fit.shown = Some(shown);
