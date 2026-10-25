@@ -718,12 +718,6 @@ impl Rooms {
     /// # Errors
     /// Refuses a member the room does not let make the change, a malformed
     /// command, and a change that could not commit.
-    ///
-    /// [`WorkspaceMembershipCommand::InstallBot`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::InstallBot
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the room remains locked through the committed and published administration decision"
-    )]
     pub async fn govern_room_membership(
         &self,
         room: &str,
