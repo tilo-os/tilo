@@ -27,6 +27,12 @@ impl JobId {
     pub const fn number(self) -> u64 {
         self.0
     }
+
+    /// The id a [`crate::attention::Target::Job`] carries back to it.
+    #[must_use]
+    pub const fn from_number(number: u64) -> Self {
+        Self(number)
+    }
 }
 
 /// What a job counts: the unit its progress is read in.

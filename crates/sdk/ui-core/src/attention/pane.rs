@@ -138,6 +138,12 @@ impl Presses {
         }
     }
 
+    /// Record `press` as the person's: what a row's control does, and what a
+    /// host that stands for the row (a chord, a test) does.
+    pub fn pressed(&self, press: Press) {
+        self.pressed.borrow_mut().push(press);
+    }
+
     fn press(&self, press: Press) {
         self.pressed.borrow_mut().push(press);
     }
@@ -288,7 +294,12 @@ impl Stack {
     /// An empty stack that fills itself from the registry.
     #[must_use]
     pub fn new() -> Self {
-        let presses = Presses::new();
+        Self::with_presses(Presses::new())
+    }
+
+    /// A stack sharing `presses` with the app that reads them.
+    #[must_use]
+    pub fn with_presses(presses: Presses) -> Self {
         let inner = pane(&presses);
         Self {
             inner,

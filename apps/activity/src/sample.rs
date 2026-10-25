@@ -186,6 +186,30 @@ fn summary(caught_up: bool) -> wire::Summary {
     }
 }
 
+/// The ledger's outcomes beside the workspace's changes: what this device
+/// did that needed nobody.
+fn seed_ledger() {
+    let owner = |app: &str, name: &str| {
+        let icon = match name {
+            "Print centre" => ui::icons::Icon::Printer,
+            "Store" => ui::icons::Icon::Download,
+            _ => ui::icons::Icon::Folder,
+        };
+        ui::attention::Owner::new(app, name).with_icon(icon)
+    };
+    for (app, name, what) in [
+        (
+            "so.tilo.print-centre",
+            "Print centre",
+            "Printed 3 pages of Travel itinerary",
+        ),
+        ("so.tilo.store", "Store", "Installed LibreOffice 7.6"),
+        ("so.tilo.files", "Files", "Moved 3 files to Trash"),
+    ] {
+        ui::attention::publish(ui::attention::Notice::did(owner(app, name), what));
+    }
+}
+
 fn detail() -> wire::Detail {
     wire::Detail {
         title: "Press release pass".to_owned(),
@@ -220,6 +244,18 @@ fn detail() -> wire::Detail {
                 "Added 2 paragraphs".to_owned(),
             ],
         }),
+        changes: vec![
+            wire::FieldChange {
+                field: "Launch date".to_owned(),
+                before: "14 May".to_owned(),
+                after: "21 May".to_owned(),
+            },
+            wire::FieldChange {
+                field: "Title".to_owned(),
+                before: "Press release".to_owned(),
+                after: "Press release, final".to_owned(),
+            },
+        ],
         gone: false,
     }
 }
@@ -274,6 +310,7 @@ fn replay() -> wire::Replay {
 
 /// The answers a capture's reads get.
 pub(crate) fn fixture(fixture: &mut Fixture<Filter>) {
+    seed_ledger();
     let caught_up = fixture.scenario() == Some("caught-up");
     fixture.answer(&wire::target(wire::SUMMARY), &summary(caught_up));
     fixture.answer(&wire::target(wire::FEED), &feed());
