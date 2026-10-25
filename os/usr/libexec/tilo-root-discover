@@ -36,6 +36,8 @@ sibling_bin="${TILO_ROOT_SIBLING_UNLOCK:-tilo-sibling-unlock}"
 systemctl_bin="${TILO_ROOT_SYSTEMCTL:-systemctl}"
 
 die() { printf 'tilo-root: %s\n' "$*" >&2; exit 1; }
+# Each step of opening the root says what it does, in the journal.
+note() { printf 'tilo-root: %s\n' "$*" >&2; }
 
 loader_var="${TILO_ROOT_LOADER_PARTUUID:-}"
 if [ -z "$loader_var" ]; then
@@ -114,7 +116,9 @@ if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
   agent_stopped=0
   resume_agent() {
     if [ "$agent_stopped" -eq 1 ]; then
-      "$systemctl_bin" start systemd-ask-password-plymouth.path 2>/dev/null || true
+      note "starting Plymouth's password agent again"
+      "$systemctl_bin" start systemd-ask-password-plymouth.path \
+        || note "Plymouth's password agent did not start again"
     fi
     agent_stopped=0
   }
@@ -154,22 +158,32 @@ if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
     signed_in=0
     offer_back=0
     if [ -x "$signin_bin" ]; then
-      if "$signin_bin" --device "$root" --volume root; then
-        signed_in=1
-      elif [ $? -eq 3 ]; then
-        offer_back=1
-      fi
+      note "sign-in screen"
+      signin=0
+      "$signin_bin" --device "$root" --volume root || signin=$?
+      case "$signin" in
+        0) signed_in=1; note "signed in" ;;
+        3) offer_back=1; note "another way in was chosen" ;;
+        *) note "nobody signs in here (sign-in screen exited $signin)" ;;
+      esac
     fi
     if [ "$signed_in" -eq 0 ]; then
+      note "TPM PIN prompt, if the volume has a tilo-rollback token"
       "$unlock_bin" "$root" root || true
       if "$sibling_bin" probe "$root" >/dev/null 2>&1; then
         sibling_unit="tilo-sibling-unlock@$(systemd-escape --path "$root").service"
+        note "asking another of the owner's devices ($sibling_unit)"
         "$systemctl_bin" start --no-block "$sibling_unit" || sibling_unit=""
       fi
     fi
-    if [ "$offer_back" -eq 1 ] && "$systemctl_bin" stop \
-         systemd-ask-password-plymouth.path systemd-ask-password-plymouth.service 2>/dev/null; then
-      agent_stopped=1
+    if [ "$offer_back" -eq 1 ]; then
+      if "$systemctl_bin" stop \
+           systemd-ask-password-plymouth.path systemd-ask-password-plymouth.service; then
+        agent_stopped=1
+        note "Plymouth's password agent stopped; the sign-in screen asks the volume's questions"
+      else
+        note "Plymouth's password agent could not be stopped; no way back from these questions"
+      fi
     fi
     # Keep the graphical prompt available after a typo. Do not recycle a
     # failed passphrase from the agent cache into the remaining attempts.
@@ -184,10 +198,13 @@ if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
       >&"$log_fd" 2>&1 &
     attach_pid=$!
     exec {log_fd}>&-
+    note "attaching the volume (systemd-cryptsetup $attach_pid)"
     if [ "$agent_stopped" -eq 1 ]; then
       relayed=0
       "$signin_bin" other-ways --device "$root" --pid "$attach_pid" || relayed=$?
+      note "the sign-in screen's agent ended ($relayed)"
       if [ "$relayed" -eq 3 ]; then
+        note "back to the sign-in screen"
         stop_attach
         wait "$log_pid" 2>/dev/null || true
         stop_sibling
@@ -204,6 +221,7 @@ if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
     attach_pid=""
     wait "$log_pid" 2>/dev/null || true
     [ "$attached" -eq 0 ] || die "encrypted Tilo root did not unlock"
+    note "the volume is open"
     break
   done
   stop_sibling
