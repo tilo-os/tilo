@@ -16,6 +16,7 @@ activity-resume-heading = Where you left off
 activity-resume-context = { $app }, { $when }
 activity-resume-button = Resume
 activity-brief-open-explorer = Open this work session in History
+activity-brief-no-changes = No content differences in this work session
 activity-morning-heading = Morning sources
 activity-morning-refresh = Refresh source
 activity-morning-remove = Remove morning source
