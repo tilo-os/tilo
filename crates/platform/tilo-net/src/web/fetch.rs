@@ -52,6 +52,9 @@ struct Route {
 }
 
 fn route(request: &Request) -> Result<Route, NetError> {
+    if request.peer {
+        return peer_route(request);
+    }
     let cross_origin = super::page_origin().is_none_or(|origin| origin != request.url.origin());
     if cross_origin
         && request.proxy == Some(ProxyUse::CrossOrigin)
@@ -70,6 +73,25 @@ fn route(request: &Request) -> Result<Route, NetError> {
         headers: request.headers.clone(),
         proxied: false,
         cross_origin,
+    })
+}
+
+/// A request for a path on the machine that admitted this page's person:
+/// it goes through that host's proxy, which reads the path as the file it
+/// is on its own disk. There is nowhere else it could go, so a page with no
+/// proxy is told so rather than fetching the path itself.
+fn peer_route(request: &Request) -> Result<Route, NetError> {
+    let Some(proxy) = proxy::current() else {
+        return Err(NetError::InvalidRequest(
+            "no workspace host to read this machine's files from".to_owned(),
+        ));
+    };
+    let (url, headers) = proxy::peer_route(&proxy, request.url.path(), &request.headers)?;
+    Ok(Route {
+        url,
+        headers,
+        proxied: true,
+        cross_origin: false,
     })
 }
 
