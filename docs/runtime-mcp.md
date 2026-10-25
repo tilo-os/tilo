@@ -162,7 +162,10 @@ after the compositor restarts; the opaque ids the broker mints per publication
 (`tilo-ui-bound:v1:<uuid>:<uuid>:<hex>`) are never shown and need never be
 sent. A resource published beside its owner rather than inside it (a note's
 body) is found under the owner when its key names the owner's id; where a title
-fits two resources the owner gets it.
+fits two resources the owner gets it. Each name is asked of the app under the
+resource before it, so reading or changing one note costs the same in a
+notebook of two notes or two thousand; only a key, the start of a title or a
+title several resources share has the level listed to decide.
 
 | Tool | Answers | Example |
 | --- | --- | --- |
@@ -225,10 +228,13 @@ under the running ones.
 narrows to one app by the name `tilo_ls` lists (`notes`) or its id
 (`so.tilo.notes`), and an app that is neither running nor installed is an
 error naming the apps there are, or saying the installed apps could not be
-read when they could not. It searches apps by name, then resources, then actions named as searched, then
-actions described so; it does not search files. It asks every running app at
-once, and an app that does not answer is named as not searched rather than
-failing the search; a search that no app answered fails and says so. Listings
+read when they could not. It searches apps by name, then resources, then
+actions named as searched, then actions described so; it does not search
+files. A query of several words is looked for as one phrase, and its words
+apart only when the phrase names nothing, so finding a note by its title costs
+the rows that carry it. It asks every running app at once, and an app that
+does not answer is named as not searched rather than failing the search; a
+search that no app answered fails and says so. Listings
 carry names and one-line labels only; `tilo_ls path#action` gives an action's
 parameters when it is wanted. Results are text, with no structured copy beside them. Measured (the
 `mcp_agent` tests keep these in bounds): the agent tool list is 2,900 bytes of

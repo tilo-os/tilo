@@ -3297,18 +3297,48 @@ fn validate_directory_query_input(
         DIRECTORY_MAX_LABEL_BYTES,
         false,
     )?;
-    // A name lookup is one whole answer about the top level: it neither
-    // continues a page nor narrows another filter.
-    if !query.resource_name.is_empty()
-        && (!query.cursor.is_empty()
-            || !query.needle.is_empty()
-            || !query.parent_resource.is_empty())
-    {
+    // A name lookup is one whole answer about one level (the top, or one
+    // parent's children): it neither continues a page nor narrows a needle.
+    if !query.resource_name.is_empty() && (!query.cursor.is_empty() || !query.needle.is_empty()) {
         return Err(capnp::Error::failed(
-            "a resource name lookup takes no cursor, needle or parent".into(),
+            "a resource name lookup takes no cursor or needle".into(),
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod directory_query_input_tests {
+    use super::validate_directory_query_input;
+
+    fn named(parent: &str) -> runtime_collab::ActionDirectoryQuery {
+        runtime_collab::ActionDirectoryQuery {
+            peer_id: 1,
+            revision: String::new(),
+            cursor: Vec::new(),
+            needle: String::new(),
+            parent_resource: parent.into(),
+            max_results: 8,
+            max_bytes: 65536,
+            max_work: 1,
+            max_depth: 1,
+            resource_name: "Todo".into(),
+        }
+    }
+
+    /// A name is asked at the top level or among one parent's children,
+    /// whole: never continued by a cursor or narrowed by a needle.
+    #[test]
+    fn a_name_is_asked_at_one_level_whole() {
+        assert!(validate_directory_query_input(&named("")).is_ok());
+        assert!(validate_directory_query_input(&named("notes.notebook")).is_ok());
+        let mut continued = named("notes.notebook");
+        continued.cursor = b"next".to_vec();
+        assert!(validate_directory_query_input(&continued).is_err());
+        let mut narrowed = named("");
+        narrowed.needle = "milk".into();
+        assert!(validate_directory_query_input(&narrowed).is_err());
+    }
 }
 
 fn validate_directory_target_input(
