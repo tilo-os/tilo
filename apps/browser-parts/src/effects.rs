@@ -41,9 +41,13 @@ fn pointer_step(text: &str) -> Option<PointerStep> {
         "up" => PointerStepKind::Up,
         _ => return None,
     };
-    let at = match element.is_some() {
-        true => PointerPoint::InElement { x: x?, y: y? },
-        false => PointerPoint::Viewport { x: x?, y: y? },
+    // A step naming an element is placed inside its box; every other step is
+    // already a viewport position.
+    let (x, y) = (x?, y?);
+    let at = if element.is_some() {
+        PointerPoint::InElement { x, y }
+    } else {
+        PointerPoint::Viewport { x, y }
     };
     Some(PointerStep { kind, at, element })
 }
