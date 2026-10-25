@@ -1428,5 +1428,50 @@ class AppResourceActionContractTests(unittest.TestCase):
             self.assertEqual(banned(new), [])
 
 
+class PublicSurfaceTests(unittest.TestCase):
+    def fixture(self, *, main: str, manifest: str = "", surface: bool = False) -> Path:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        app = root / "apps" / "sample"
+        (app / "src").mkdir(parents=True)
+        (app / "src" / "main.rs").write_text(main, encoding="utf-8")
+        (app / "tilo-app.toml").write_text(
+            '[package]\nid = "so.example.sample"\n' + manifest, encoding="utf-8"
+        )
+        if surface:
+            (app / "surface.toml").write_text("", encoding="utf-8")
+        return root
+
+    def reported(self, root: Path) -> list[str]:
+        return [v.reason for v in contract.audit_public_surfaces(root)]
+
+    def test_a_windowed_app_without_its_surface_is_reported(self):
+        root = self.fixture(main="ui::main!(sample::App);\n", manifest='[entrypoint]\ntype = "gui"\n')
+        self.assertEqual(len(self.reported(root)), 1)
+        self.assertIn("commits its public surface", self.reported(root)[0])
+
+    def test_a_windowed_app_committing_its_surface_passes(self):
+        root = self.fixture(
+            main="ui::main!(sample::App);\n",
+            manifest='[entrypoint]\ntype = "gui"\n',
+            surface=True,
+        )
+        self.assertEqual(self.reported(root), [])
+
+    def test_a_shared_definition_is_no_surface_of_its_own(self):
+        # `ui::main!(definition = ..)` registers a definition the browser
+        # draws: the windowed host that runs it commits the surface.
+        root = self.fixture(
+            main="ui::main!(definition = sample::definition);\n",
+            manifest='[entrypoint]\ntype = "gui"\n',
+        )
+        self.assertEqual(self.reported(root), [])
+
+    def test_an_app_without_a_window_publishes_nothing(self):
+        root = self.fixture(main="fn main() { run_batch(); }\n", manifest='[entrypoint]\ntype = "cli"\n')
+        self.assertEqual(self.reported(root), [])
+
+
 if __name__ == "__main__":
     unittest.main()
