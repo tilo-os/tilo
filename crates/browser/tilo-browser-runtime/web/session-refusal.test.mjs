@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 
-import {followRefusal, REJOIN_WINDOW_MS, REJOINED, refusalText, rejoinedName, rejoinedRecently, retryRejoin} from './session-refusal.mjs';
+import {followRefusal, hostUnreachable, reachedHost, REJOIN_WINDOW_MS, REJOINED, refusalText, rejoinedName, rejoinedRecently, retryRejoin, retryUnreachable, UNREACHED} from './session-refusal.mjs';
 
 /** A peer whose snapshots the test sends; records recover requests. */
 function fakePeer({recover = async () => {}} = {}) {
@@ -19,7 +19,7 @@ function fakePeer({recover = async () => {}} = {}) {
 
 function memoryStorage() {
   const map = new Map();
-  return {getItem: key => map.get(key) ?? null, setItem: (key, value) => { map.set(key, String(value)); }, map};
+  return {getItem: key => map.get(key) ?? null, setItem: (key, value) => { map.set(key, String(value)); }, removeItem: key => { map.delete(key); }, map};
 }
 
 const failed = errorCode => ({phase: 'failed', errorCode});
@@ -118,4 +118,24 @@ test('a door that does not answer yet after joining again is tried again a bound
   for (let wait = retryRejoin({storage, now: 2}); wait !== null; wait = retryRejoin({storage, now: 2})) waits.push(wait);
   assert.deepEqual(waits, [1000, 2000, 4000, 8000, 15_000, 15_000, 15_000, 15_000]);
   assert.equal(rejoinedName({storage, now: 2}), 'Brave Otter');
+});
+
+test('a host that does not answer before the page got in is asked again, later each time, a bounded number of times', () => {
+  const storage = memoryStorage();
+  const waits = [];
+  for (let wait = retryUnreachable({storage, now: 10}); wait !== null; wait = retryUnreachable({storage, now: 20})) waits.push(wait);
+  assert.deepEqual(waits, [1000, 2000, 4000, 8000, 15_000, 15_000, 15_000, 15_000]);
+  assert.equal(retryUnreachable({storage, now: 10 + 10 * 60 * 1000}), 1000, 'tries long ago count no more');
+  reachedHost({storage});
+  assert.equal(storage.getItem(UNREACHED), null, 'getting in starts them over');
+});
+
+test('only a host not answering at all is unreachable, never its refusal', () => {
+  assert.ok(hostUnreachable(new TypeError('Failed to fetch')));
+  assert.ok(hostUnreachable(new Error('fetch failed')));
+  assert.ok(hostUnreachable(new TypeError('NetworkError when attempting to fetch resource.')));
+  assert.ok(hostUnreachable(Object.assign(new Error('join: HTTP 503'), {name: 'HostAdmissionError', code: 'unavailable'})));
+  assert.ok(!hostUnreachable(Object.assign(new Error('needs an invitation'), {name: 'HostAdmissionError', code: 'invitation-only'})));
+  assert.ok(!hostUnreachable(Object.assign(new Error('refused'), {name: 'AdmissionError', code: 'refused'})));
+  assert.ok(!hostUnreachable(null));
 });

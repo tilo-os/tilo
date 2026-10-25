@@ -307,6 +307,15 @@ test('a host that has not answered a kept membership yet keeps it and is not ask
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
 });
 
+test('a host that does not answer a kept membership at all (restarting) keeps it and is not asked to admit again', async () => {
+  const membership = {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)};
+  const {calls, options, store} = harness({person: identity(0x11), membership});
+  options.connect = async () => { throw new Error('fetch failed'); };
+  await assert.rejects(joinViaHost(options), {message: 'fetch failed'});
+  assert.equal(calls.posted.length, 0);
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);
+});
+
 test('a second tab is a new device of the person, admitted through the door once', async () => {
   // Its device key is one no host has seen: the room admits each device
   // once, so it asks the door for the same person rather than fail to connect.
