@@ -48,6 +48,28 @@ The macOS runner's `--help` lists its supported options.
 `--shots /path/to/shell.png` renders one PNG and exits; it expects a filename,
 not a directory. Linux flags such as `--backend drm` do not apply.
 
+## Debug responsiveness
+
+Dev and test builds keep application and toolkit code unoptimised. The compositor
+uses `opt-level = 1` for UI traversal and serialization monomorphised inside it,
+with full debugger information, debug assertions and overflow checks. Renderer,
+geometry and GPU command-processing dependencies are optimised separately; GPU
+validation stays enabled. Release profiles are unchanged.
+
+Some compositor locals can be optimised out. For exact stepping, build with
+`cargo build --config 'profile.dev.package.shell.opt-level=0' --locked -p shell --bin shell`.
+Measure event processing as well as rendering: fast GPU submission cannot
+compensate for unnecessary work before input. The
+[performance scripts](../../scripts/perf/README.md#windowed-desktop-input) compare
+private sessions without driving the user's desktop.
+
+Lock verification and refusal feedback have a separately bounded status row:
+the answer cross-fades in place, a refusal gives one brief nudge, and reduced
+motion suppresses that movement. The field and row keep their geometry, and no
+animation ticks after the answer rests. Lock edges, display changes and
+unproven scene differences remain full-frame boundaries; retained rendering
+never relies on a swapchain image retaining pixels.
+
 ## Need a different test surface?
 
 - [Development VM](dev-vms.md): the Linux OS, services, DRM and virtual input.

@@ -13930,7 +13930,8 @@ pub fn run() {
         );
         let keepalive_due = false;
         let lock_clock_due =
-            lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh);
+            lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh)
+                || (session.is_locked() && retained_lock.feedback_frame_due(iter_t0));
         if session.is_locked() {
             if iter_t0.saturating_duration_since(last_lock_media_poll) >= LOCK_MEDIA_REFRESH {
                 last_lock_media_poll = iter_t0;
@@ -14056,7 +14057,10 @@ pub fn run() {
         let cadence_needed = cadence_wait_needed(
             pipe_ready,
             (content_changed && !cadence_due)
-                || (!session.is_locked() && !display_dark && animating),
+                || (!session.is_locked() && !display_dark && animating)
+                || (session.is_locked()
+                    && !display_dark
+                    && retained_lock.feedback_frame_due(iter_t0)),
         );
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
@@ -15139,6 +15143,9 @@ pub fn run() {
         let lock_clock_deadline = (session.is_locked() && !session.is_blanked())
             .then(|| last_lock_clock_refresh.checked_add(LOCK_CLOCK_REFRESH))
             .flatten();
+        let lock_feedback_deadline = (session.is_locked() && !session.is_blanked())
+            .then(|| retained_lock.next_feedback_deadline())
+            .flatten();
         // Follow the players while the lock is visible; a blanked display
         // shows nothing, so it does not wake for them.
         let lock_media_deadline = (session.is_locked() && !session.is_blanked())
@@ -15152,7 +15159,14 @@ pub fn run() {
         let cadence_needed = cadence_needed
             || cadence_wait_needed(
                 pipe_ready,
-                injected_redraw_pending || (set_going_by_paint && !session.is_locked()),
+                injected_redraw_pending
+                    || (set_going_by_paint && !session.is_locked())
+                    // A newly observed answer starts moving in the lock's
+                    // draw, after the earlier cadence decision. Its very next
+                    // frame must be a cadence tick, not only the resting deadline.
+                    || (session.is_locked()
+                        && !session.is_blanked()
+                        && retained_lock.feedback_frame_due(park_now)),
             );
         // Nothing changed on screen and no frame is waiting, here or behind
         // the presenter: the inputs handled so far are done without a frame.
@@ -15189,6 +15203,7 @@ pub fn run() {
             [
                 ("widget", app_tick.park_deadline(&frame_builder, pipe_ready)),
                 ("lock-clock", lock_clock_deadline),
+                ("lock-feedback", lock_feedback_deadline),
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
                 ("profile-end", metrics::profile::deadline()),

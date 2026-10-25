@@ -2,11 +2,11 @@
 //! them.
 //!
 //! Every row comes from the action door itself: the broker's catalogue for
-//! the local person in the active workspace, narrowed to the shortcuts app.
-//! Invoking a row invokes that same published action through the broker, so
-//! the palette reaches exactly what an agent, a peer or the MCP bridge
-//! reaches, with the same authority checks — and a run shows up as a broker
-//! job like any other background action.
+//! the local person in the active workspace, narrowed to the shortcuts app
+//! before the broker pages it. Invoking a row invokes that same published
+//! action through the broker, so the palette reaches exactly what an agent, a
+//! peer or the MCP bridge reaches, with the same authority checks — and a run
+//! shows up as a broker job like any other background action.
 //!
 //! While the palette searches inside one resource
 //! ([`SearchResourceScope`]), it offers instead the shortcuts that run on
@@ -262,6 +262,10 @@ impl SearchProvider for ShortcutsProvider {
             &caller,
             CatalogueQuery {
                 provider: Some(provider),
+                // The host builds and pages only the shortcuts app's rows, so
+                // the governance, keyboard and other applications' descriptors
+                // a keypress would otherwise pay for are never built.
+                app_id: Some(SHORTCUTS_APP_ID.into()),
                 max_results: MAX_CATALOGUE_PAGE,
                 ..CatalogueQuery::default()
             },
@@ -273,6 +277,8 @@ impl SearchProvider for ShortcutsProvider {
         let (rows, fields): (Vec<SearchResult>, Vec<_>) = page
             .rows
             .into_iter()
+            // Defensive: the host already narrowed to this app, and a row of
+            // another application is never offered as a shortcut.
             .filter(|row| row.app_id == SHORTCUTS_APP_ID)
             .filter_map(|row| {
                 let descriptor = row.action.as_ref()?;
@@ -451,6 +457,144 @@ mod tests {
             output.value,
             Some(serde_json::json!("files.entry.image:0123")),
             "the run received the resource through its first input"
+        );
+    }
+
+    /// The page the broker's action door answers `caller` with.
+    fn broker_page(
+        broker: &AppActionBroker,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> tilo_actions::remote::CataloguePage {
+        let mut pending = BrokerActionHost::new(broker.clone()).query(caller, query);
+        let PendingPoll::Ready(Ok(page)) = pending.poll_ready() else {
+            panic!("an eager catalogue answers at once");
+        };
+        page
+    }
+
+    /// The room and local person of `chrome`'s active workspace.
+    fn room_and_caller(chrome: &Chrome) -> (String, Caller) {
+        let state = chrome.borrow();
+        let room = state
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(Workspace::room)
+            .expect("a workspace");
+        let caller =
+            Caller::local_person(state.local_user_for_room(&room)).in_room(room.to_string());
+        (room.to_string(), caller)
+    }
+
+    #[test]
+    fn an_app_scoped_query_answers_the_same_shortcut_rows_as_a_filtered_catalogue() {
+        let chrome = chrome_with_file_shortcut();
+        let (room, caller) = room_and_caller(&chrome);
+        let broker = crate::shell::broker_services::test_broker_with_membership(
+            chrome.borrow().tree_handle(),
+        );
+        let provider = workspace_provider(&room);
+        let scoped = broker_page(
+            &broker,
+            &caller,
+            CatalogueQuery {
+                provider: Some(provider.clone()),
+                app_id: Some(SHORTCUTS_APP_ID.into()),
+                max_results: MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        );
+        let unfiltered = broker_page(
+            &broker,
+            &caller,
+            CatalogueQuery {
+                provider: Some(provider.clone()),
+                max_results: MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        );
+        assert_eq!(
+            scoped.rows,
+            unfiltered
+                .rows
+                .iter()
+                .filter(|row| row.app_id == SHORTCUTS_APP_ID)
+                .cloned()
+                .collect::<Vec<_>>(),
+            "the host narrows before paging, so the same shortcut rows come back"
+        );
+        let mut run_resources: Vec<&str> = scoped
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .filter(|action| action.address.action == "run")
+            .map(|action| action.address.resource.as_str())
+            .collect();
+        run_resources.sort_unstable();
+        assert_eq!(
+            run_resources,
+            ["shortcuts.shortcut:archive-file", "shortcuts.shortcut:tidy"],
+            "both of the workspace's shortcuts are offered"
+        );
+        assert!(
+            unfiltered.rows.len() > scoped.rows.len(),
+            "the unscoped catalogue also offers other applications' rows"
+        );
+
+        // Naming no provider still answers the aggregate catalogue, narrowed
+        // to the app: the workspace provider stays discoverable that way.
+        let aggregate = broker_page(
+            &broker,
+            &caller,
+            CatalogueQuery {
+                app_id: Some(SHORTCUTS_APP_ID.into()),
+                max_results: MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        );
+        drop(broker);
+        assert!(
+            aggregate
+                .rows
+                .iter()
+                .all(|row| row.app_id == SHORTCUTS_APP_ID),
+            "no other application's rows are offered"
+        );
+        assert_eq!(
+            aggregate
+                .rows
+                .iter()
+                .filter(|row| row.provider == provider)
+                .cloned()
+                .collect::<Vec<_>>(),
+            scoped.rows,
+            "the workspace provider's rows are the same with no provider named"
+        );
+    }
+
+    #[test]
+    fn an_app_scoped_query_still_denies_a_stranger() {
+        let chrome = chrome_with_file_shortcut();
+        let (room, _) = room_and_caller(&chrome);
+        let broker = crate::shell::broker_services::test_broker_with_membership(
+            chrome.borrow().tree_handle(),
+        );
+        let stranger = Caller::authenticated([9; 32], [8; 32]).in_room(room.clone());
+        let page = broker_page(
+            &broker,
+            &stranger,
+            CatalogueQuery {
+                provider: Some(workspace_provider(&room)),
+                app_id: Some(SHORTCUTS_APP_ID.into()),
+                max_results: MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        );
+        drop(broker);
+        assert!(
+            page.rows.is_empty(),
+            "narrowing by app never offers a caller without a role anything"
         );
     }
 }

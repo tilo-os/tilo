@@ -414,23 +414,45 @@ type RetainedAddresses = std::collections::HashSet<(String, String, String)>;
 
 /// Which rows a [`CapnpBrokerState::eager_catalogue`] pass builds. Every
 /// scope lists the same providers and puts each row it builds through the
-/// same checks; a narrower one only skips the rows of providers nobody asked
-/// about.
+/// same checks; a narrower one only skips rows nobody asked about — another
+/// provider's, or another application's.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum RowScope<'a> {
     /// Who publishes, and no rows.
     None,
     /// Every row the caller is offered.
     All,
+    /// Every row of one provider.
     Provider(&'a str),
+    /// Every row of one application, within `provider` when one is named.
+    App {
+        app_id: &'a str,
+        provider: Option<&'a str>,
+    },
 }
 
 impl RowScope<'_> {
     fn wants(self, provider: &str) -> bool {
         match self {
             Self::None => false,
-            Self::All => true,
-            Self::Provider(wanted) => wanted == provider,
+            Self::All | Self::App { provider: None, .. } => true,
+            Self::Provider(wanted)
+            | Self::App {
+                provider: Some(wanted),
+                ..
+            } => wanted == provider,
+        }
+    }
+
+    /// Whether rows published by application `app_id` may be built. A
+    /// provider publishing several applications (a workspace's) narrows to
+    /// the one asked for; one application's own provider publishes its own
+    /// rows either way.
+    fn wants_app(self, app_id: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::All | Self::Provider(_) => true,
+            Self::App { app_id: wanted, .. } => wanted == app_id,
         }
     }
 
@@ -440,8 +462,12 @@ impl RowScope<'_> {
     fn wants_application_providers(self) -> bool {
         match self {
             Self::None => false,
-            Self::All => true,
-            Self::Provider(wanted) => application_provider(wanted).is_some(),
+            Self::All | Self::App { provider: None, .. } => true,
+            Self::Provider(wanted)
+            | Self::App {
+                provider: Some(wanted),
+                ..
+            } => application_provider(wanted).is_some(),
         }
     }
 
@@ -449,8 +475,12 @@ impl RowScope<'_> {
     fn wants_peer(self, peer_id: u64) -> bool {
         match self {
             Self::None => false,
-            Self::All => true,
-            Self::Provider(wanted) => wanted == peer_id.to_string(),
+            Self::All | Self::App { provider: None, .. } => true,
+            Self::Provider(wanted)
+            | Self::App {
+                provider: Some(wanted),
+                ..
+            } => wanted == peer_id.to_string(),
         }
     }
 }
@@ -863,7 +893,9 @@ impl CapnpBrokerState {
                         peer_id: surface.peer_id,
                         app_id: surface.app_id.clone(),
                         route: surface.route.clone(),
-                        actions: if scope.wants_peer(surface.peer_id) {
+                        actions: if scope.wants_peer(surface.peer_id)
+                            && scope.wants_app(&surface.app_id)
+                        {
                             surface.actions.clone()
                         } else {
                             Vec::new()
@@ -885,11 +917,12 @@ impl CapnpBrokerState {
     /// open. An action the caller may not use is absent. Alongside them, the
     /// publishers the caller may browse or invoke, whatever the scope.
     ///
-    /// A narrower scope only leaves other providers' rows out: each row it
-    /// builds passes the same checks, and comes out the same, as in
-    /// [`RowScope::All`]. The installed applications and the keyboard
-    /// shortcut settings are read at most once, and only when a workspace
-    /// provider's rows are built.
+    /// A narrower scope only leaves other providers' rows, or other
+    /// applications' rows, out: each row it builds passes the same checks,
+    /// and comes out the same, as in [`RowScope::All`]. The installed
+    /// applications and the keyboard shortcut settings are read at most once,
+    /// and only when a workspace provider's rows of an application the scope
+    /// asks for are built.
     pub(super) fn eager_catalogue(
         &self,
         caller: &Caller,
@@ -947,7 +980,7 @@ impl CapnpBrokerState {
                     record_id: surface.route.record_id.clone(),
                     browsable: roots.iter().any(|root| root.peer_id == surface.peer_id),
                 });
-                if !scope.wants_peer(surface.peer_id) {
+                if !scope.wants_peer(surface.peer_id) || !scope.wants_app(&surface.app_id) {
                     continue;
                 }
                 rows.extend(
@@ -1019,10 +1052,9 @@ impl CapnpBrokerState {
                 });
             }
             if caller.room() == Some(room.as_str()) {
-                for steps in host_steps
-                    .iter()
-                    .filter(|steps| scope.wants(steps.provider()))
-                {
+                for steps in host_steps.iter().filter(|steps| {
+                    scope.wants(steps.provider()) && scope.wants_app(steps.app_id())
+                }) {
                     Self::host_step_rows((&workspace, &policy, now), steps.as_ref(), &mut rows);
                 }
             }
@@ -1030,7 +1062,12 @@ impl CapnpBrokerState {
             if !scope.wants(&provider) {
                 continue;
             }
-            if let Some(governance) = self.services.workspace_governance.as_ref() {
+            if let Some(governance) = self
+                .services
+                .workspace_governance
+                .as_ref()
+                .filter(|governance| scope.wants_app(governance.app_id()))
+            {
                 rows.extend(
                     governance
                         .descriptors(&workspace)
@@ -1058,7 +1095,7 @@ impl CapnpBrokerState {
                         }),
                 );
             }
-            if self.services.shortcut_library.is_some() {
+            if self.services.shortcut_library.is_some() && scope.wants_app(SHORTCUTS_APP_ID) {
                 rows.extend(
                     automation::descriptors(&workspace)
                         .into_iter()
@@ -1081,7 +1118,7 @@ impl CapnpBrokerState {
                         }),
                 );
             }
-            if let Some(service) = keyboard {
+            if let Some(service) = keyboard.filter(|service| scope.wants_app(service.app_id())) {
                 let keymap =
                     keymap.get_or_insert_with(settings_store::hardware::ShortcutConfig::load);
                 rows.extend(
@@ -1117,11 +1154,13 @@ impl CapnpBrokerState {
                 // it may not open by name alone: an empty list would tell it
                 // there are none, and it could only guess why. Its own
                 // process reads the same list from disk; a remote caller is
-                // told only what it may open.
+                // told only what it may open. A scope asking for one
+                // application is told only that one's.
                 let names_unopened = matches!(caller.principal(), CallerPrincipal::Agent(_))
                     && caller.device_public_key().is_none();
                 for app in applications
                     .iter()
+                    .filter(|app| scope.wants_app(&app.package_id))
                     .filter(|app| !live_apps.contains(&app.package_id))
                 {
                     if policy.may_in(
@@ -1142,6 +1181,7 @@ impl CapnpBrokerState {
                 rows.extend(
                     applications
                         .iter()
+                        .filter(|app| scope.wants_app(&app.package_id))
                         .filter(|_| closes_applications)
                         .filter(|app| live_apps.contains(&app.package_id))
                         .filter(|app| {
@@ -1280,7 +1320,7 @@ impl CapnpBrokerState {
                 )
         }) {
             let provider = launchable_provider(&surface);
-            if scope.wants(&provider) {
+            if scope.wants(&provider) && scope.wants_app(&surface.app_id) {
                 rows.extend(
                     surface
                         .actions
@@ -1330,7 +1370,8 @@ impl CapnpBrokerState {
     ) {
         let room = workspace.room().to_string();
         for app in applications.iter().filter(|app| {
-            !app.unconfined
+            scope.wants_app(&app.package_id)
+                && !app.unconfined
                 && !app.offers.is_empty()
                 && !live_apps.contains(&app.package_id)
                 && policy.may_in(
@@ -1439,11 +1480,19 @@ impl CapnpBrokerState {
             return self.query_directory(caller, &root, query);
         }
         // `max_results: 0` asks only who publishes, and a named provider
-        // only its own rows: build no row nobody asked for.
-        let scope = match query.provider.as_deref() {
-            Some(provider) => RowScope::Provider(provider),
-            None if query.max_results == 0 => RowScope::None,
-            None => RowScope::All,
+        // or application only its own rows: build no row nobody asked for.
+        let scope = match (query.provider.as_deref(), query.app_id.as_deref()) {
+            (Some(provider), Some(app_id)) => RowScope::App {
+                app_id,
+                provider: Some(provider),
+            },
+            (Some(provider), None) => RowScope::Provider(provider),
+            (None, _) if query.max_results == 0 => RowScope::None,
+            (None, Some(app_id)) => RowScope::App {
+                app_id,
+                provider: None,
+            },
+            (None, None) => RowScope::All,
         };
         let (rows, providers) = self.eager_catalogue_with_origin(caller, origin, scope);
         // Nothing at all may mean the room holds nothing, or that this
@@ -3367,6 +3416,10 @@ mod app_close_tests {
         assert!(launcher.closed.lock().unwrap().is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "action_host/app_scope_tests.rs"]
+mod app_scope_tests;
 
 #[cfg(test)]
 mod argument_size_tests {

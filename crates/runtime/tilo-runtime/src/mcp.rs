@@ -1523,6 +1523,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             view_resource: None,
             resource_name: None,
             provider: Some(provider),
+            app_id: None,
             parent_resource: (!parent.is_empty()).then_some(parent),
             // A host matches one substring; the longest word narrows most,
             // and the rest are matched here.
