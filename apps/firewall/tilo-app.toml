@@ -1,8 +1,10 @@
 # Firewall — Tilo application manifest.
 #
-# Double-gated: it only applies a plan when `firewall-cmd` is on PATH
-# AND `TILO_FIREWALL_APPLY=1`. It never touches nft/iptables directly,
-# and it opens no socket of its own — a firewall UI needs no egress.
+# It applies through firewalld, which authorises each mutation with the
+# host's policy agent; the app declares the `network.firewall` capability
+# and never infers permission from `$PATH` or an environment variable. It
+# never touches nft/iptables directly, and opens no socket of its own — a
+# firewall UI needs no egress.
 #
 
 
