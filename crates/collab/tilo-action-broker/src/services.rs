@@ -569,6 +569,15 @@ pub trait LauncherServices: Send + Sync {
     /// neither challenge bytes nor credentials, document or application output.
     fn observe_executing_binding(&self, _observation: u64, _phase: ExecutingBindingPhase) {}
     fn applications(&self) -> Vec<LaunchableApplication>;
+    /// The same installed entries as `applications`, narrowed to an exact ID.
+    /// Hosts may avoid constructing unrelated entries. This is discovery only;
+    /// the broker still decides which rows the caller may see or invoke.
+    fn applications_for(&self, app_id: &str) -> Vec<LaunchableApplication> {
+        self.applications()
+            .into_iter()
+            .filter(|app| app.package_id == app_id)
+            .collect()
+    }
     /// Whether the person's own input is behind what app `app_id` asks for
     /// now: a press of theirs (never an agent's) reached one of its windows
     /// within the activation window, and has not proved another open
