@@ -523,6 +523,7 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
         ("--chat-channel", persistent.chat_channels.as_slice()),
         ("--feedback-channel", persistent.feedback_channel.as_slice()),
         ("--strip", &persistent.strips),
+        ("--discussion", &persistent.discussions),
         ("--owner", &persistent.owners),
         ("--moderator", &persistent.moderators),
         ("--seed-app", &persistent.seed_apps),
@@ -2196,6 +2197,26 @@ mod tests {
                 &[("TILO_ROOMS_CHAT_CHANNELS", "general,show-and-tell")]
             ),
             ["general", "show-and-tell"]
+        );
+    }
+
+    /// The texts the operator announces reach the relay as the threads it
+    /// opens for them, one flag each, in the order they were written.
+    #[test]
+    fn the_relay_opens_a_thread_for_each_text_the_operator_announces() {
+        assert!(relay_args("--discussion", &[]).is_empty());
+        assert_eq!(
+            relay_args(
+                "--discussion",
+                &[(
+                    "TILO_ROOMS_DISCUSSIONS",
+                    "https://tilo.so/blog/a-post=A post;https://tilo.so/blog/two=Second one"
+                )]
+            ),
+            [
+                "https://tilo.so/blog/a-post=A post",
+                "https://tilo.so/blog/two=Second one"
+            ]
         );
     }
 
