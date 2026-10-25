@@ -5,7 +5,6 @@ run = "rb02f0dfe59"
 aarch64 = 131072
 
 [apps."so.tilo.code-editor"]
-x86_64 = 196608
 aarch64 = 131072
 
 [apps."so.tilo.disks"]
