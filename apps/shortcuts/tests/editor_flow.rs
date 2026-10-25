@@ -235,7 +235,6 @@ fn rule(action: &str, kind: tilo_action_policy::ActionKind) -> Value {
             action: action.into(),
             kind,
             label: String::new(),
-            at: None,
         }
         .rule(),
     )
@@ -762,7 +761,6 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
                 action: "refresh".into(),
                 kind: ActionKind::Read,
                 label: String::new(),
-                at: None,
             }
             .rule()
         ]

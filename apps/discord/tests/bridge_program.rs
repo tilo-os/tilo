@@ -113,9 +113,8 @@ fn message(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Ste
 
 /// The framework's `op` field edit (`react` or `unreact`) of the reactions
 /// of the loop item's message, with its emoji, as the Discord member it
-/// shows. The path is spelled out so the grant reaches that field and no
-/// other: the bridge reacts for Discord people, and edits nothing else of
-/// anyone's message.
+/// shows. The path is spelled out so every check decides the step where the
+/// room does, at the message's reactions.
 fn reaction(id: &str, op: &str) -> Step {
     let step = |kind: &str, binding: Binding| {
         Binding::Object(BTreeMap::from([(kind.to_owned(), binding)]))
@@ -721,11 +720,11 @@ fn the_bridge_program_checks_against_chat_and_discord_and_is_current() {
     );
 }
 
-/// The bridge reacts for Discord people through the field edit of a
-/// message's reactions, and its grant reaches that field of a message and
-/// no other field of Chat's.
+/// The bridge reacts for Discord people through the field edit of Chat's
+/// messages, and no other record of Chat's: the messages' other fields are
+/// read-only, so a reaction is all that field edit reaches.
 #[test]
-fn the_bridge_may_edit_a_messages_reactions_and_nothing_else_of_it() {
+fn the_bridge_field_edits_only_chats_messages() {
     let shortcut = program();
     let grant = tilo_automation::grant::derived_rules(&shortcut, &catalog());
     let field_edits: Vec<String> = grant
@@ -735,24 +734,25 @@ fn the_bridge_may_edit_a_messages_reactions_and_nothing_else_of_it() {
         .collect();
     assert_eq!(
         field_edits,
-        [
-            "room:*/app:so.tilo.chat/kind:chat.messages/resource:*/item:*/field:reactions/action:field-edit"
-        ]
+        ["room:*/app:so.tilo.chat/kind:chat.messages/resource:*/**/action:field-edit"]
     );
-    // What the room decides a reaction at, and what it decides another
-    // edit of the same message at.
-    let decided = |field: &str| {
-        let node = ui::permissions::TreePath::room("room")
-            .app(CHAT_APP)
-            .kind(MESSAGES_KIND)
-            .resource("part-0")
-            .item("m1")
-            .field(field)
-            .action(FIELD_EDIT);
-        tilo_automation::grant_answer(&grant, &node, ui::permissions::ActionKind::Undoable).answer
+    // Where the bot's own door offers and admits the field edit (the
+    // resource), and where the room decides a reaction (its field).
+    let messages = ui::permissions::TreePath::room("room")
+        .app(CHAT_APP)
+        .kind(MESSAGES_KIND)
+        .resource("part-0");
+    let decided = |node: &ui::permissions::TreePath| {
+        tilo_automation::grant_answer(&grant, node, ui::permissions::ActionKind::Undoable).answer
     };
-    assert_eq!(decided("reactions"), ui::permissions::Answer::Allow);
-    assert_eq!(decided("text"), ui::permissions::Answer::Deny);
+    assert_eq!(
+        decided(&messages.clone().action(FIELD_EDIT)),
+        ui::permissions::Answer::Allow
+    );
+    assert_eq!(
+        decided(&messages.item("m1").field("reactions").action(FIELD_EDIT)),
+        ui::permissions::Answer::Allow
+    );
 }
 
 #[test]

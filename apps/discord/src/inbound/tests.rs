@@ -457,6 +457,33 @@ fn a_unicode_reaction_takes_the_spelling_the_message_already_has() {
 }
 
 #[test]
+fn a_reaction_taken_off_by_id_alone_keeps_the_name_it_was_given() {
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    let chat = json!({"messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "x",
+        "reactions": [{"emoji": "🎉", "by": "bot", "persona": "discord/u8", "name": "Bo", "at": 1}]}}]});
+    // Discord's removal names the member by id, without their name.
+    let removed = ReactionChanged {
+        message_id: "dm1".into(),
+        user_id: "u8".into(),
+        emoji: "🎉".into(),
+        ..ReactionChanged::default()
+    };
+    let plan = plan_reaction(&g, &removed, &chat, false);
+    assert_eq!(plan.unreacts[0].appearance.name, "Bo");
+    let unknown = ReactionChanged {
+        user_id: "u9".into(),
+        ..removed
+    };
+    assert_eq!(
+        plan_reaction(&g, &unknown, &chat, false).unreacts[0]
+            .appearance
+            .name,
+        "u9"
+    );
+}
+
+#[test]
 fn the_bots_own_reactions_are_echoes() {
     let mut g = guild();
     g.bot_user = "b0".into();
