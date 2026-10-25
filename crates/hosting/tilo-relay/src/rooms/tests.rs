@@ -1468,6 +1468,7 @@ fn bridge_program() -> String {
                 appearance: None,
             },
         )],
+        step_timeout_secs: None,
         output: None,
         grant: vec![rule],
         triggers: vec![],
