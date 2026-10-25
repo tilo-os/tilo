@@ -230,7 +230,7 @@ fn a_task_names_the_person_who_acted_through_it() {
             for_reader: false,
             is_reader: false,
             task: Some(&Task {
-                id: &task.id,
+                id: task.id,
                 label: " ",
             }),
         }),
