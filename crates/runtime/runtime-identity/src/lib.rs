@@ -244,6 +244,10 @@ pub mod wire {
         Removed,
         /// The channel cannot be provisioned on this device right now.
         Unavailable,
+        /// This device has no secret store open, and only rooms its own
+        /// room host stewards have keys without one. Appended so earlier
+        /// answers keep their encoding.
+        NoSecretStore,
     }
 
     #[derive(Debug, Serialize, Deserialize)]
