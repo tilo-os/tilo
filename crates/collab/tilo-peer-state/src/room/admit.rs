@@ -202,9 +202,12 @@ pub fn admit_room_changes(
         may_write(input.before, input.room, &input.source, input.caps_now)?;
     }
     match super::base::lineage(input.before, changes) {
-        super::base::Lineage::Same(changes) => {
-            let candidate =
-                super::candidate(input.before, &changes).map_err(RoomRefusal::Malformed)?;
+        super::base::Lineage::Same { changes, replaced } => {
+            // Changes waiting in the document that the batch shows to be of
+            // another history go before the batch is applied.
+            let pruned = super::base::pruned(input.before, replaced);
+            let candidate = super::candidate(pruned.as_ref().or(input.before), &changes)
+                .map_err(RoomRefusal::Malformed)?;
             let media = check_candidate(&input, &candidate)?;
             Ok(AdmittedRoom {
                 candidate,
@@ -212,8 +215,8 @@ pub fn admit_room_changes(
                 rebased: false,
             })
         }
-        super::base::Lineage::Newer if governs => {
-            let candidate = super::candidate(None, changes).map_err(RoomRefusal::Malformed)?;
+        super::base::Lineage::Newer(changes) if governs => {
+            let candidate = super::candidate(None, &changes).map_err(RoomRefusal::Malformed)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
             let media = checked(&input, &candidate, false)?;
@@ -223,7 +226,7 @@ pub fn admit_room_changes(
                 rebased: true,
             })
         }
-        super::base::Lineage::Newer => Err(RoomRefusal::GovernanceWriter),
+        super::base::Lineage::Newer(_) => Err(RoomRefusal::GovernanceWriter),
     }
 }
 

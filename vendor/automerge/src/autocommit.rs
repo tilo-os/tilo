@@ -661,6 +661,12 @@ impl AutoCommit {
         self.doc.save_after(heads)
     }
 
+    /// TILO(history-of-a-change): [`Automerge::discard_queued`]
+    /// (vendor/automerge/TILO-PATCH.md).
+    pub fn discard_queued(&mut self, hashes: impl IntoIterator<Item = ChangeHash>) {
+        self.doc.discard_queued(hashes);
+    }
+
     pub fn get_missing_deps(&mut self, heads: &[ChangeHash]) -> Vec<ChangeHash> {
         self.ensure_transaction_closed();
         self.doc.get_missing_deps(heads)
