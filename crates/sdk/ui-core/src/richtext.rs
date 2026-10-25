@@ -1130,8 +1130,7 @@ impl RichTextLayout {
         bounded: bool,
     ) -> Option<(f32, f32, f32)> {
         let mut byte_fallback = None;
-        let line = self.cursor_at(position.byte).line;
-        for run in self.rows_of_lines(line..line.saturating_add(1)) {
+        for run in self.rows_of_lines(self.lines_holding_stops(position.byte)) {
             // A missing affinity may require a byte-only fallback. Do not
             // construct and sort the grapheme stops of a row while looking
             // for an exact match that cannot exist there.
@@ -1289,7 +1288,10 @@ impl RichTextLayout {
 
     /// Move one shaped caret stop toward the visual left or right. Stops are
     /// derived from grapheme boundaries inside each glyph cluster, so this
-    /// respects ligatures, combining sequences, and `BiDi` reordering.
+    /// respects ligatures, combining sequences, and `BiDi` reordering. At
+    /// the edge of a row the caret moves on to the row it reads into: the
+    /// next row's start, or the previous row's end, in the paragraph's
+    /// direction, so an arrow key crosses a soft wrap or a line break.
     pub fn visual_motion_position(&self, position: TextPosition, right: bool) -> TextPosition {
         let position = TextPosition {
             byte: position.byte.min(self.text_len),
@@ -1298,36 +1300,71 @@ impl RichTextLayout {
         // Every stop of a byte lies in the rows of its own paragraph, as in
         // `resolved_caret_geometry`: building and sorting the stops of every
         // row above it made one arrow key cost the whole document.
-        let line = self.cursor_at(position.byte).line;
         let mut rows = Vec::new();
-        for run in self.rows_of_lines(line..line.saturating_add(1)) {
+        let mut found = None;
+        for run in self.rows_of_lines(self.lines_holding_stops(position.byte)) {
             if !self.row_may_hold_stop(&run, position.byte) {
                 continue;
             }
+            let row = (run.line_i, run.line_top, run.rtl);
             let stops = self.caret_stops(&run);
             if let Some(index) = stops.iter().position(|(_, stop)| *stop == position) {
-                return stops
-                    .get(Self::visual_step(&stops, index, right))
-                    .map_or(position, |(_, stop)| *stop);
+                found = Some((row, stops, index));
+                break;
             }
-            rows.push(stops);
+            rows.push((row, stops));
         }
 
         // Byte-only callers conventionally enter with Before affinity. At a
         // boundary where only the other side exists, choose that stop and
         // continue in the requested visual direction.
-        for stops in &rows {
-            let Some(index) = stops
-                .iter()
-                .position(|(_, stop)| stop.byte == position.byte)
-            else {
-                continue;
-            };
-            return stops
-                .get(Self::visual_step(stops, index, right))
-                .map_or(position, |(_, stop)| *stop);
+        let found = found.or_else(|| {
+            rows.into_iter().find_map(|(row, stops)| {
+                let index = stops
+                    .iter()
+                    .position(|(_, stop)| stop.byte == position.byte)?;
+                Some((row, stops, index))
+            })
+        });
+        let Some(((line, top, rtl), stops, index)) = found else {
+            return position;
+        };
+        let target = Self::visual_step(&stops, index, right);
+        let (Some((from, _)), Some((to, stop))) = (stops.get(index), stops.get(target)) else {
+            return position;
+        };
+        if (to - from).abs() > 0.5 {
+            return *stop;
         }
-        position
+        // The row's edge: no stop on it lies further this way.
+        self.adjacent_row_stop(line, top, right != rtl, right)
+            .filter(|next| *next != position)
+            .unwrap_or(*stop)
+    }
+
+    /// The stop a caret enters on the row after (`forward`) or before the
+    /// row of line `line` at `top`: its left edge when moving right, its
+    /// right edge when moving left. `None` at either end of the text.
+    fn adjacent_row_stop(
+        &self,
+        line: usize,
+        top: f32,
+        forward: bool,
+        right: bool,
+    ) -> Option<TextPosition> {
+        let is_current =
+            |run: &cosmic_text::LayoutRun<'_>| run.line_i == line && run.line_top >= top;
+        let run = if forward {
+            self.rows_of_lines(line..usize::MAX)
+                .find(|run| run.line_i > line || run.line_top > top)
+        } else {
+            self.rows_of_lines(line.saturating_sub(1)..line.saturating_add(1))
+                .take_while(|run| !is_current(run))
+                .last()
+        }?;
+        let stops = self.caret_stops(&run);
+        let entry = if right { stops.first() } else { stops.last() };
+        entry.map(|(_, stop)| *stop)
     }
 
     /// The stop one visual step from `index`: the next one at another place
@@ -1362,6 +1399,28 @@ impl RichTextLayout {
     pub fn visual_motion(&self, byte: usize, right: bool) -> usize {
         self.visual_motion_position(TextPosition::new(byte), right)
             .byte
+    }
+
+    /// The shaped lines whose rows can hold a caret stop at source byte
+    /// `byte`: its own paragraph's line and, where a huge paragraph was
+    /// shaped in chunks, the chunk ending there. A chunk boundary is a soft
+    /// wrap whose two sides are two shaped lines; the end of the earlier one
+    /// maps to the same source byte as the start of the later one, and the
+    /// caret must find it there as it finds the end of a wrapped row.
+    fn lines_holding_stops(&self, byte: usize) -> std::ops::Range<usize> {
+        let line = self.cursor_at(byte).line;
+        let end = line.saturating_add(1);
+        match line.checked_sub(1) {
+            Some(previous)
+                if self.global_byte(Cursor::new(
+                    previous,
+                    self.line_lens.get(previous).copied().unwrap_or(0),
+                )) == byte =>
+            {
+                previous..end
+            }
+            _ => line..end,
+        }
     }
 
     /// Whether [`Self::caret_stops`] of `run` can hold a stop at source

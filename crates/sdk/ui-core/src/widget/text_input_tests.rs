@@ -5402,3 +5402,35 @@ fn cant_and_wont_are_corrected_and_backspace_takes_a_correction_back_for_good() 
         );
     }
 }
+
+#[test]
+fn arrow_keys_cross_the_rows_a_paragraph_wraps_onto() {
+    let _settled = crate::motion::testing::settled();
+    let text = "alpha beta gamma delta epsilon zeta eta theta";
+    let mut ti = TextInput::local().multiline(true).with_initial_value(text);
+    ti.set_focus(true);
+    ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, 400.0));
+    draw_to_populate(&mut ti);
+    assert!(ti.multiline_shaped);
+    let rows = ti
+        .single_layout
+        .as_ref()
+        .map_or(0, |layout| layout.buffer.layout_runs().count());
+    assert!(rows > 2, "the paragraph wraps onto {rows} rows");
+    let mut doc = AutoCommit::new();
+    ti.set_cursor_pos(0);
+    for (key, end) in [(NamedKey::ArrowRight, text.len()), (NamedKey::ArrowLeft, 0)] {
+        let mut presses = 0;
+        while ti.cursor_pos() != end && presses <= 2 * text.len() {
+            let before = ti.cursor_pos();
+            drive(&mut ti, &mut doc, &named_key(key), mods(false, false));
+            presses += 1;
+            assert_ne!(
+                ti.cursor_pos(),
+                before,
+                "{key:?} stopped at byte {before} after {presses} presses"
+            );
+        }
+        assert_eq!(ti.cursor_pos(), end, "{key:?} reaches the end of the text");
+    }
+}
