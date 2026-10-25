@@ -262,14 +262,6 @@ impl WorkspaceState {
         }
     }
 
-    /// Ask the window for another refresh: for work that waits on
-    /// something that wakes nobody when it answers.
-    pub(crate) fn wake(&self) {
-        if let Some(wake) = &self.wake {
-            wake.wake();
-        }
-    }
-
     /// The window's app.
     pub(crate) fn app_id(&self) -> &'static str {
         self.app_id
