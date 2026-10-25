@@ -424,7 +424,13 @@ impl EmojiPicker {
                 .collect();
             section(&mut self.items, None, found);
         }
-        self.selected = 0;
+        // The first emoji, not the add tile: Enter right after opening picks
+        // an emoji rather than asking for a file.
+        self.selected = self
+            .items
+            .iter()
+            .position(|item| matches!(item, Item::Emoji(_)))
+            .unwrap_or(0);
         self.tones = None;
         self.press = None;
         self.scroll.set_offset(Vec2::ZERO);
@@ -1174,19 +1180,22 @@ fn geometry_of(theme: &Theme, framed: bool) -> Geometry {
     let gap = f64::from(spacing.s2);
     let width = f64::from(theme.tokens.metrics.panel_width_utility);
     let inner = width - pad * 2.0;
-    let cell = (inner / f64_of_usize(COLUMNS)).floor();
+    // The overlaid scroll bar gets a lane of its own at the grid's right, so
+    // it never covers the last column.
+    let lane = f64::from(spacing.s2);
+    let cell = ((inner - lane) / f64_of_usize(COLUMNS)).floor();
     let field_h = super::ButtonFace::height(ControlSize::Regular, theme);
     let tabs_h = SegmentedFace::height(ControlSize::Regular, theme);
     let footer_h = f64::from(theme.tokens.metrics.selector_height);
     let grid_w = cell * f64_of_usize(COLUMNS);
-    let x0 = pad + (inner - grid_w) / 2.0;
+    let x0 = pad + (inner - lane - grid_w) / 2.0;
     let field = Rect::new(pad, pad, width - pad, pad + field_h);
     let tabs_y = field.y1 + gap;
     let grid_y = tabs_y + tabs_h + gap;
     let grid = Rect::new(
         x0,
         grid_y,
-        x0 + grid_w,
+        x0 + grid_w + lane,
         grid_y + cell * f64_of_usize(GRID_ROWS),
     );
     let footer = Rect::new(pad, grid.y1 + gap, width - pad, grid.y1 + gap + footer_h);
