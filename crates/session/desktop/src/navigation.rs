@@ -311,9 +311,14 @@ impl DesktopSurface {
             }
             if let Some(row) = self.row_mut(strip) {
                 if let Some(opened) = beside {
-                    row.scroll_groups_into_view_animated(group, opened, ui::time::now(), source);
+                    row.scroll_groups_into_view_animated(
+                        group,
+                        opened,
+                        ui::motion::frame_now(),
+                        source,
+                    );
                 } else {
-                    row.scroll_group_into_view_animated(group, ui::time::now(), source);
+                    row.scroll_group_into_view_animated(group, ui::motion::frame_now(), source);
                 }
             }
             if opened.is_some() {

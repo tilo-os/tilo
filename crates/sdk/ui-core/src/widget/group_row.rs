@@ -151,82 +151,19 @@ pub fn wheel_jump_detents(delta: &MouseScrollDelta) -> f64 {
     }
 }
 
-/// One group's drawn x relative to its laid-out x, springing to 0 on the
-/// critically damped `motion.springs.heavy`. `from` and `velocity` are the
-/// offset (px, negative = left of home) and its rate at `started`. Closed
-/// form rather than a stepped integrator: a held capture and every frame
-/// rate read the same curve, and a retarget restarts from the exact drawn
-/// position and velocity.
-#[derive(Clone, Copy, Debug)]
-struct GroupMove {
-    from: f64,
-    velocity: f64,
-    started: Instant,
+/// A pan or a group's drawn offset at rest at `at`, arriving within a
+/// quarter pixel once sent somewhere.
+fn strip_motion(at: f64) -> crate::motion::MotionValue<f64> {
+    crate::motion::MotionValue::new(at).with_tolerance(MOVE_SETTLED_PX)
 }
 
-impl GroupMove {
-    /// Offset and velocity `elapsed` after `started`, for natural
-    /// frequency `omega` (rad/s).
-    fn at(self, elapsed: Duration, omega: f64) -> (f64, f64) {
-        crate::motion::SpringSpec::critical(omega).state(
-            self.from,
-            self.velocity,
-            elapsed.as_secs_f64(),
-        )
-    }
-}
-
-/// Natural frequency of a critically damped spring; `motion.springs.heavy`
-/// is pinned to ζ = 1 by its token test.
-fn spring_omega(params: crate::tokens::SpringParams) -> f64 {
-    (f64::from(params.stiffness) / f64::from(params.mass.max(0.0001))).sqrt()
-}
-
-/// Rate (1/s) at which a thrown strip slows: the inverse of the gesture
-/// token's coast time, so the glide covers `velocity × coast` and its
-/// velocity decays exponentially from the fingers' own.
-fn fling_omega() -> f64 {
-    1000.0 / f64::from(crate::tokens::Gesture::default().fling_projection_ms.max(1))
-}
-
-/// The pan travelling on its own toward `to` on a critically damped spring:
-/// a thrown strip coasting, an overpull settling, a reveal. Carries its
-/// velocity, so a retarget (the next wheel notch, fingers landing again)
-/// continues the motion instead of restarting a curve from rest.
-#[derive(Clone, Copy, Debug)]
-struct Glide {
-    to: f64,
-    /// Offset from `to` and its velocity when the glide started.
-    motion: GroupMove,
-    omega: f64,
-}
-
-impl Glide {
-    fn start(from: f64, velocity: f64, to: f64, omega: f64, now: Instant) -> Self {
-        Self {
-            to,
-            motion: GroupMove {
-                from: from - to,
-                velocity,
-                started: now,
-            },
-            omega,
-        }
-    }
-
-    /// Position and velocity (px/s) at `now`.
-    fn at(self, now: Instant) -> (f64, f64) {
-        let (offset, velocity) = self.motion.at(
-            now.saturating_duration_since(self.motion.started),
-            self.omega,
-        );
-        (self.to + offset, velocity)
-    }
-
-    fn settled_at(self, now: Instant) -> bool {
-        let (position, velocity) = self.at(now);
-        (position - self.to).abs() < MOVE_SETTLED_PX && velocity.abs() < MOVE_SETTLED_PX_PER_S
-    }
+/// The pan at rest at `from`, to snap to `to` on a [`crate::motion::Snap`]
+/// timing: it arrives within a thousandth of its travel (a quarter pixel at
+/// least), as a token spring run once does, so a snap is over within its
+/// token however far it goes.
+fn snap_motion(from: f64, to: f64) -> crate::motion::MotionValue<f64> {
+    crate::motion::MotionValue::new(from)
+        .with_tolerance(MOVE_SETTLED_PX.max((to - from).abs() * 1e-3))
 }
 
 /// How the pan settles on a group's edge, on [`crate::motion::Snap`]: its
@@ -243,31 +180,6 @@ impl SnapTiming {
         let timing = spec.timing(enter, motion, source);
         let settles = spec.settle_time(enter, motion, source);
         Self { timing, settles }
-    }
-}
-
-/// In-flight snap animation; cleared when the curve settles or the user
-/// starts wheeling again.
-#[derive(Clone, Copy, Debug)]
-struct SnapAnim {
-    from: f64,
-    to: f64,
-    started: Instant,
-    timing: SnapTiming,
-}
-
-impl SnapAnim {
-    /// Position and velocity (px/s) at `now` on the snap's spring.
-    fn at(self, now: Instant) -> (f64, f64) {
-        let crate::motion::Timing::Spring(spring) = self.timing.timing else {
-            return (self.to, 0.0);
-        };
-        let (offset, velocity) = spring.state(
-            self.from - self.to,
-            0.0,
-            now.saturating_duration_since(self.started).as_secs_f64(),
-        );
-        (self.to + offset, velocity)
     }
 }
 
@@ -464,9 +376,9 @@ pub struct GroupRow {
     edge_hover: Option<(EdgeGrab, bool)>,
     /// An edge resize in flight.
     edge_drag: Option<RowEdgeDrag>,
-    /// A held group a drag let go of, springing back: its id, how far it
-    /// was pulled, and when it was let go.
-    group_resist_back: Option<(u64, vello::kurbo::Vec2, Instant)>,
+    /// A held group a drag let go of, springing back as a let-go surface
+    /// settles ([`crate::motion::Snap`]): its id and how far it is pulled.
+    group_resist_back: Option<(u64, crate::motion::MotionValue<vello::kurbo::Vec2>)>,
     /// One-finger swipe on the tab bar that is panning the strip.
     touch_pan: Option<TouchPan>,
     /// A mouse press on the canvas between and around windows: dragging it
@@ -494,18 +406,19 @@ pub struct GroupRow {
     /// keyed by id — a move's "where it used to be".
     last_laid_x: HashMap<u64, f64>,
     /// Set when an insert, close or reorder moves groups along; the next
-    /// layout turns prior positions into [`GroupMove`]s and clears this.
+    /// layout turns prior positions into moves and clears this.
     shift_armed: bool,
-    moves: Vec<(u64, GroupMove)>,
+    /// Each moved group's drawn offset from its laid-out x (px, negative =
+    /// left of home), springing to 0 on [`crate::motion::WindowMotion::MOVE`].
+    /// All of them start in the layout that moved them.
+    moves: Vec<(u64, crate::motion::MotionValue<f64>)>,
     /// Groups another surface draws for now, as one shared element: the
     /// overview flying a window's picture between its strip and its place
     /// in the overview ([`Self::set_shown_elsewhere`]). Not painted here
     /// meanwhile, so the window is never on screen twice.
     shown_elsewhere: Vec<u64>,
-    /// `motion.springs.heavy` as last laid out, as a natural frequency.
-    move_omega: f64,
-    /// Capture-harness clock override for every move's elapsed time;
-    /// always `None` in a running shell.
+    /// Capture-harness pose for every move: how far into its run it is
+    /// drawn ([`Self::hold_shift_at`]); always `None` in a running shell.
     shift_hold: Option<Duration>,
     /// `theme.reduce_motion` as last laid out or drawn: the strip's snaps
     /// and make-space slides jump to where they were going.
@@ -787,8 +700,11 @@ pub struct Pan {
     /// ([`FingerPath::resampled`]); release reads its velocity
     /// ([`FingerPath::release_velocity`]).
     finger_path: super::finger_path::FingerPath,
-    /// A throw, overpull settle or reveal in flight.
-    glide: Option<Glide>,
+    /// The pan travelling on its own: a throw coasting, an overpull
+    /// settling, a reveal, a wheel's snap to a group's edge. It carries its
+    /// velocity, so a retarget (the next wheel notch, a further reveal)
+    /// continues the motion instead of restarting a curve from rest.
+    motion: Option<crate::motion::MotionValue<f64>>,
     /// Total content width incl. gaps; cached so the wheel handler can
     /// clamp `scroll_x` without re-summing children.
     content_w: f64,
@@ -797,7 +713,6 @@ pub struct Pan {
     /// Timestamp of the last wheel event; `tick_snap` waits
     /// `SNAP_IDLE_MS` of quiet here before starting the snap animation.
     last_wheel_at: Option<Instant>,
-    snap_anim: Option<SnapAnim>,
     /// Each group's `(id, left, right)` canvas-x extent as last laid out.
     /// Measured off taffy rather than re-derived from stored widths: a
     /// group taffy shrank to fit is that width on screen regardless of its
@@ -871,8 +786,7 @@ impl Pan {
     fn begin_strip_pan(&mut self) {
         self.strip_pan_origin = Some(self.scroll_x);
         self.finger_path.clear();
-        self.snap_anim = None;
-        self.glide = None;
+        self.stop_motion();
         self.last_wheel_at = None;
     }
 
@@ -932,8 +846,7 @@ impl Pan {
         let origin = *self.strip_pan_origin.get_or_insert(self.scroll_x);
         self.finger_path.push(at, travel);
         let next = self.rubber_banded(origin + travel);
-        self.snap_anim = None;
-        self.glide = None;
+        self.stop_motion();
         self.last_wheel_at = None;
         if (next - self.scroll_x).abs() <= f64::EPSILON {
             return false;
@@ -943,11 +856,19 @@ impl Pan {
     }
 
     /// The fingers lifted at `now`. With `throw`, a strip still moving
-    /// keeps the fingers' velocity and coasts to a stop; one released in
-    /// elastic overpull, or thrown past an end, settles on that end on
-    /// `settle_omega`. A strip released at rest within the canvas stays
-    /// exactly where it is.
-    fn end_strip_pan(&mut self, now: Instant, throw: bool, settle_omega: f64) -> bool {
+    /// keeps the fingers' velocity and coasts to a stop ([`Snap::COAST`]);
+    /// one released in elastic overpull, or thrown past an end, settles on
+    /// that end on `settle`. A strip released at rest within the canvas
+    /// stays exactly where it is.
+    ///
+    /// [`Snap::COAST`]: crate::motion::Snap::COAST
+    fn end_strip_pan(
+        &mut self,
+        now: Instant,
+        throw: bool,
+        motion: crate::tokens::EffectiveMotion,
+        settle: crate::motion::Timing,
+    ) -> bool {
         let from = match (self.strip_pan_origin, self.resampled_travel(now)) {
             (Some(origin), Some(travel)) => self.rubber_banded(origin + travel),
             _ => self.scroll_x,
@@ -962,22 +883,33 @@ impl Pan {
         self.last_wheel_at = None;
         self.scroll_x = from;
         let max = self.pan_max_scroll_x();
-        let coast = from + velocity / fling_omega();
+        let coast = crate::motion::Snap::rest_for(from, velocity, motion);
         let to = coast.clamp(0.0, max);
         self.past_windows = to > self.max_scroll_x() + 0.5;
         if velocity.abs() < FLING_MIN_VELOCITY && (to - from).abs() <= SNAP_SETTLED_PX {
             self.scroll_x = to;
             return false;
         }
-        // Within the canvas the glide's velocity decays exponentially, the
-        // coast the gesture token describes. Past an end it lands on that
-        // end at the settle rate, a short give rather than a long crawl.
-        let omega = if (coast - to).abs() <= f64::EPSILON {
-            fling_omega()
+        // Within the canvas the throw coasts on, its velocity decaying
+        // exponentially over the gesture token's coast. Past an end it lands
+        // on that end at the settle rate, a short give rather than a long
+        // crawl.
+        let timing = if (coast - to).abs() <= f64::EPSILON {
+            crate::motion::Snap::COAST.timing(
+                crate::motion::Direction::Enter,
+                motion,
+                MotionSource::Gesture,
+            )
         } else {
-            settle_omega
+            settle
         };
-        self.glide = Some(Glide::start(from, velocity, to, omega, now));
+        if timing.is_instant() {
+            self.scroll_x = to;
+            return true;
+        }
+        let mut pan = strip_motion(from);
+        pan.release(to, velocity, timing, now);
+        self.motion = Some(pan);
         true
     }
 
@@ -1041,43 +973,52 @@ impl Pan {
 
     fn jump_to(&mut self, sx: f64) {
         self.scroll_x = sx;
-        self.snap_anim = None;
-        self.glide = None;
+        self.stop_motion();
         self.last_wheel_at = None;
     }
 
-    /// Whether the pan is travelling on its own (a snap or a glide).
-    fn animating(&self) -> bool {
-        self.snap_anim.is_some() || self.glide.is_some()
+    /// Stop the pan's own motion where the pan is: it asks for no more
+    /// frames.
+    fn stop_motion(&mut self) {
+        if let Some(mut motion) = self.motion.take() {
+            motion.snap(motion.target());
+        }
     }
 
-    /// Glide to `sx` on `omega`, from where the pan is at `now` and at the
+    /// Whether the pan is travelling on its own (a snap or a glide) and
+    /// its frames have not yet shown it at rest.
+    fn animating(&self) -> bool {
+        self.motion.is_some()
+    }
+
+    /// Whether the pan's own motion still moves at `now`.
+    fn motion_moving(&self, now: Instant) -> bool {
+        self.motion.is_some_and(|motion| motion.is_moving(now))
+    }
+
+    /// Glide to `sx` on `timing`, from where the pan is at `now` and at the
     /// speed it is moving, so a stream of retargets (one per wheel notch)
     /// reads as one continuous motion rather than a curve restarting from
     /// rest at every step. Re-asking for the target already in flight
     /// changes nothing, and a sub-pixel move is not worth a frame.
-    fn glide_to(&mut self, sx: f64, now: Instant, omega: f64) {
-        if let Some(glide) = self.glide
-            && (glide.to - sx).abs() <= SNAP_SETTLED_PX
-        {
-            return;
-        }
-        if let Some(anim) = self.snap_anim
-            && (anim.to - sx).abs() <= SNAP_SETTLED_PX
-        {
-            return;
-        }
-        let (from, velocity) = match (self.glide, self.snap_anim) {
-            (Some(glide), _) => glide.at(now),
-            (None, Some(anim)) => anim.at(now),
-            (None, None) => (self.scroll_x, 0.0),
-        };
-        if !self.animating() && (sx - from).abs() <= SNAP_SETTLED_PX {
+    fn glide_to(&mut self, sx: f64, now: Instant, timing: crate::motion::Timing) {
+        if timing.is_instant() {
             self.jump_to(sx);
             return;
         }
-        self.snap_anim = None;
-        self.glide = Some(Glide::start(from, velocity, sx, omega, now));
+        match self.motion.as_mut() {
+            Some(motion) if (motion.target() - sx).abs() <= SNAP_SETTLED_PX => return,
+            Some(motion) => motion.set(sx, timing, now),
+            None if (sx - self.scroll_x).abs() <= SNAP_SETTLED_PX => {
+                self.jump_to(sx);
+                return;
+            }
+            None => {
+                let mut motion = strip_motion(self.scroll_x);
+                motion.set(sx, timing, now);
+                self.motion = Some(motion);
+            }
+        }
         self.last_wheel_at = None;
     }
 
@@ -1101,13 +1042,14 @@ impl Pan {
     /// the idle threshold and the `snap` that follows it); keeps the
     /// shell's redraw chain pumping.
     fn snap_in_flight(&self, snap: SnapTiming) -> bool {
-        if self.animating() || self.direct_pan_moving(crate::time::now()) {
+        let now = crate::motion::frame_now();
+        if self.motion_moving(now) || self.direct_pan_moving(now) {
             return true;
         }
         // Pending snap: idle gate hasn't fired yet. Keep redraws pumping
         // so `tick_snap` runs the moment it clears.
         if let Some(t) = self.last_wheel_at
-            && crate::time::now().saturating_duration_since(t)
+            && now.saturating_duration_since(t)
                 < Duration::from_millis(u64::from(SNAP_IDLE_MS)) + snap.settles
             && !self.is_aligned_to_group()
         {
@@ -1152,10 +1094,10 @@ impl Pan {
     }
 
     /// Advance the snap state to `now`; a wheel's snap settles on `snap`,
-    /// and under reduced motion a snap lands on the tick it starts. Returns
-    /// whether `scroll_x` moved.
-    fn tick_snap_at(&mut self, now: Instant, snap: SnapTiming) -> bool {
-        let reduce_motion = snap.settles.is_zero();
+    /// and under reduced motion a snap lands on the tick it starts. A
+    /// capture's `hold` poses the pan's motion that far into its run.
+    /// Returns whether `scroll_x` moved.
+    fn tick_snap_at(&mut self, now: Instant, snap: SnapTiming, hold: Option<Duration>) -> bool {
         let before = self.scroll_x;
         // Fingers down: show where they were at this frame.
         if let Some(origin) = self.strip_pan_origin {
@@ -1164,19 +1106,9 @@ impl Pan {
             }
             return (self.scroll_x - before).abs() > f64::EPSILON;
         }
-        if let Some(glide) = self.glide {
-            if reduce_motion || glide.settled_at(now) {
-                self.scroll_x = glide.to;
-                self.glide = None;
-            } else {
-                self.scroll_x = glide.at(now).0;
-            }
-            return (self.scroll_x - before).abs() > f64::EPSILON;
-        }
-        // Kicking a fresh snap off here, before the curve-advance branch
-        // below, lets this same call both start it and apply its first
-        // eased frame.
-        if self.snap_anim.is_none()
+        // Starting a fresh snap here, before the motion advances below, lets
+        // this same call both start it and show its first frame.
+        if self.motion.is_none()
             && let Some(last_wheel) = self.last_wheel_at
         {
             let idle = now.saturating_duration_since(last_wheel);
@@ -1188,36 +1120,36 @@ impl Pan {
                         self.scroll_x = target;
                         self.last_wheel_at = None;
                     } else {
-                        // Anchor `started` at the moment the idle
-                        // gate was met, not `now` — so the very tick
-                        // that detects idle already applies the
-                        // curve's first eased frame. Falls back to
-                        // `last_wheel` (skipping the idle delay) rather
-                        // than panicking in the astronomically unlikely
-                        // case this addition would overflow `Instant`.
+                        // The snap starts the moment the idle gate was met,
+                        // not `now`, so the tick that sees the idle already
+                        // shows how far it has come since. Falls back to
+                        // `last_wheel` (skipping the idle delay) in the
+                        // astronomically unlikely case this addition would
+                        // overflow `Instant`.
                         let started = last_wheel
                             .checked_add(Duration::from_millis(u64::from(SNAP_IDLE_MS)))
                             .unwrap_or(last_wheel);
-                        self.snap_anim = Some(SnapAnim {
-                            from: self.scroll_x,
-                            to: target,
-                            started,
-                            timing: snap,
-                        });
+                        let mut motion = snap_motion(self.scroll_x, target);
+                        motion.set(target, snap.timing, started);
+                        self.motion = Some(motion);
                     }
                 } else {
                     self.last_wheel_at = None;
                 }
             }
         }
-        if let Some(anim) = self.snap_anim {
-            let elapsed = now.saturating_duration_since(anim.started);
-            if reduce_motion || elapsed >= anim.timing.settles {
-                self.scroll_x = anim.to;
-                self.snap_anim = None;
-                self.last_wheel_at = None;
+        // Under reduced motion whatever was set moving (before the row
+        // learned the person's setting, say) lands on this tick.
+        let reduce_motion = snap.settles.is_zero();
+        if let Some(motion) = self.motion {
+            if let Some(hold) = hold {
+                self.scroll_x = motion.sampled_after(hold).0;
+            } else if !reduce_motion && motion.is_moving(now) {
+                self.scroll_x = motion.get(now);
             } else {
-                self.scroll_x = anim.at(now).0;
+                self.scroll_x = motion.target();
+                self.stop_motion();
+                self.last_wheel_at = None;
             }
         }
         (self.scroll_x - before).abs() > f64::EPSILON
@@ -1226,33 +1158,31 @@ impl Pan {
     /// Ease on the snap curve from `from` to where the pan now is, on
     /// `timing`, rather than cutting there.
     fn slide_scroll_from(&mut self, from: f64, now: Instant, timing: SnapTiming) {
-        self.snap_anim = Some(SnapAnim {
-            from,
-            to: self.scroll_x,
-            started: now,
-            timing,
-        });
+        if timing.timing.is_instant() {
+            return;
+        }
+        let mut motion = snap_motion(from, self.scroll_x);
+        motion.set(self.scroll_x, timing.timing, now);
+        self.motion = Some(motion);
         self.scroll_x = from;
     }
 
     /// Slide to `sx` on `timing` from where the pan is drawn at `now`: a
     /// shortcut's reveal, which may only say where the target went and must
-    /// be over within its budget. A press mid-slide retargets from the drawn
-    /// position, so presses never queue.
+    /// be over within its budget, so it starts from rest. A press mid-slide
+    /// retargets from the drawn position, so presses never queue.
     fn slide_to(&mut self, sx: f64, now: Instant, timing: SnapTiming) {
-        let from = match (self.glide, self.snap_anim) {
-            (Some(glide), _) => glide.at(now).0,
-            (None, Some(anim)) => anim.at(now).0,
-            (None, None) => self.scroll_x,
-        };
-        self.glide = None;
         self.last_wheel_at = None;
-        if timing.settles.is_zero() || (sx - from).abs() <= SNAP_SETTLED_PX {
+        let drawn = self.motion.map_or(self.scroll_x, |motion| motion.get(now));
+        if timing.settles.is_zero() || (sx - drawn).abs() <= SNAP_SETTLED_PX {
             self.jump_to(sx);
             return;
         }
-        self.scroll_x = sx;
-        self.slide_scroll_from(from, now, timing);
+        self.stop_motion();
+        let mut motion = snap_motion(drawn, sx);
+        motion.set(sx, timing.timing, now);
+        self.motion = Some(motion);
+        self.scroll_x = drawn;
     }
 
     /// Note where the run's groups were laid out. The pan stays where it
@@ -1312,12 +1242,8 @@ impl Pan {
         if let Some(origin) = self.strip_pan_origin.as_mut() {
             *origin += delta;
         }
-        if let Some(glide) = self.glide.as_mut() {
-            glide.to += delta;
-        }
-        if let Some(anim) = self.snap_anim.as_mut() {
-            anim.from += delta;
-            anim.to += delta;
+        if let Some(motion) = self.motion.as_mut() {
+            motion.shift_by(delta);
         }
     }
 }
@@ -1476,7 +1402,6 @@ impl GroupRow {
             shift_armed: false,
             shown_elsewhere: Vec::new(),
             moves: Vec::new(),
-            move_omega: spring_omega(crate::tokens::SpringPresets::default().heavy),
             shift_hold: None,
             reduce_motion: false,
             motion_source: MotionSource::default(),
@@ -2373,25 +2298,17 @@ impl GroupRow {
         true
     }
 
-    fn move_elapsed(&self, m: GroupMove, now: Instant) -> Duration {
-        self.shift_hold
-            .unwrap_or_else(|| now.saturating_duration_since(m.started))
-    }
-
     /// `group_id`'s drawn offset from its laid-out x and that offset's
-    /// velocity (px/s) at `now`; `(0, 0)` for a group at rest.
+    /// velocity (px/s) at `now`; `(0, 0)` for a group at rest. A capture's
+    /// hold poses it that far into its run, still.
     fn move_state_at(&self, group_id: u64, now: Instant) -> (f64, f64) {
         self.moves
             .iter()
             .find(|(id, _)| *id == group_id)
-            .map_or((0.0, 0.0), |&(_, m)| {
-                m.at(self.move_elapsed(m, now), self.move_omega)
+            .map_or((0.0, 0.0), |(_, m)| match self.shift_hold {
+                Some(hold) => m.sampled_after(hold),
+                None => (m.get(now), m.velocity(now)),
             })
-    }
-
-    fn move_settled(&self, m: GroupMove, now: Instant) -> bool {
-        let (x, v) = m.at(self.move_elapsed(m, now), self.move_omega);
-        x.abs() < MOVE_SETTLED_PX && v.abs() < MOVE_SETTLED_PX_PER_S
     }
 
     /// How far right of its laid-out position `group_id` should be
@@ -2399,13 +2316,30 @@ impl GroupRow {
     /// the final one, so hit-testing and the app's configure size are
     /// never mid-flight — same choice the per-group spawn fade makes.
     pub fn shift_offset_for(&self, group_id: u64) -> f64 {
-        self.move_state_at(group_id, crate::time::now()).0
+        self.move_state_at(group_id, crate::motion::frame_now()).0
     }
 
-    /// True while any group is still travelling.
+    /// True while any group is still travelling. A capture's held pose
+    /// stands still.
     fn shift_in_flight(&self) -> bool {
-        let now = crate::time::now();
-        self.moves.iter().any(|&(_, m)| !self.move_settled(m, now))
+        let now = crate::motion::frame_now();
+        self.shift_hold.is_none() && self.moves.iter().any(|(_, m)| m.is_moving(now))
+    }
+
+    /// Land every group's move: the groups are drawn at home and ask for
+    /// no more frames.
+    fn land_moves(&mut self) {
+        for (_, offset) in &mut self.moves {
+            offset.snap(0.0);
+        }
+        self.moves.clear();
+    }
+
+    /// How a group's rect, or the pan carrying the strip's windows, moves
+    /// when `source` moved it.
+    fn move_timing(&self, source: MotionSource) -> crate::motion::Timing {
+        let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
+        crate::motion::WindowMotion::MOVE.timing(crate::motion::Direction::Enter, motion, source)
     }
 
     /// Freeze the in-flight slide at `elapsed`, reporting whether there
@@ -2753,10 +2687,11 @@ impl GroupRow {
     }
 
     fn finish_strip_pan(&mut self, now: Instant, throw: bool) -> bool {
-        let omega = self.move_omega;
+        let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
+        let settle = self.move_timing(MotionSource::Gesture);
         let settling = self
             .pan_of_lane_mut(self.focus_lane)
-            .end_strip_pan(now, throw, omega);
+            .end_strip_pan(now, throw, motion, settle);
         if settling {
             self.scroll_dirty = true;
         }
@@ -2817,8 +2752,8 @@ impl GroupRow {
             let slide = self.snap_timing(source);
             self.pan_of_group_mut(group_id).slide_to(sx, now, slide);
         } else {
-            let omega = self.move_omega;
-            self.pan_of_group_mut(group_id).glide_to(sx, now, omega);
+            let timing = self.move_timing(source);
+            self.pan_of_group_mut(group_id).glide_to(sx, now, timing);
         }
         self.scroll_dirty = true;
         true
@@ -2902,8 +2837,8 @@ impl GroupRow {
             let slide = self.snap_timing(source);
             self.pan_of_group_mut(keep).slide_to(sx, now, slide);
         } else {
-            let omega = self.move_omega;
-            self.pan_of_group_mut(keep).glide_to(sx, now, omega);
+            let timing = self.move_timing(source);
+            self.pan_of_group_mut(keep).glide_to(sx, now, timing);
         }
         self.scroll_dirty = true;
         true
@@ -2977,11 +2912,14 @@ impl GroupRow {
     pub fn tick_snap_at(&mut self, now: Instant) {
         let mut moved = false;
         let snap = self.snap_timing(MotionSource::Pointer);
+        // A capture's hold poses the pan with the group moves it started
+        // alongside.
+        let hold = self.shift_hold.filter(|_| !self.moves.is_empty());
         if self.lanes.is_empty() {
-            moved = self.pan.tick_snap_at(now, snap);
+            moved = self.pan.tick_snap_at(now, snap, hold);
         }
         for lane in &mut self.lanes {
-            moved |= lane.pan.tick_snap_at(now, snap);
+            moved |= lane.pan.tick_snap_at(now, snap, hold);
         }
         // Must invalidate the parent's subtree cache or needs_redraw()
         // stays false and it re-emits the pre-snap cached scene.
@@ -3007,15 +2945,6 @@ impl GroupRow {
         self.pans()
             .iter()
             .any(|pan| pan.strip_pan_origin.is_some() || pan.snap_in_flight(snap))
-    }
-
-    /// The time the pan's motion is read at for a frame at `now`: a capture
-    /// hold freezes it with the group moves it started alongside.
-    fn snap_clock(&self, now: Instant) -> Instant {
-        match (self.shift_hold, self.moves.first()) {
-            (Some(hold), Some(&(_, m))) => m.started.checked_add(hold).unwrap_or(now),
-            _ => now,
-        }
     }
 
     /// Leave the pan at `x` as a person's own pan would.
@@ -3759,7 +3688,15 @@ impl GroupRow {
             // Under reduced motion the held group is back in place at once.
             if drag.moved && !self.reduce_motion {
                 let pull = resisted(self.last_cursor - drag.start);
-                self.group_resist_back = Some((drag.group_id, pull, crate::time::now()));
+                let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
+                let back = crate::motion::Snap::SPEC.timing(
+                    crate::motion::Direction::Enter,
+                    motion,
+                    MotionSource::Gesture,
+                );
+                let mut pulled = crate::motion::MotionValue::new(pull);
+                pulled.set(vello::kurbo::Vec2::ZERO, back, crate::time::now());
+                self.group_resist_back = Some((drag.group_id, pulled));
             }
             self.group_reorder_target = None;
             self.group_reorder_lane = None;
@@ -3785,24 +3722,9 @@ impl GroupRow {
         {
             return Some(resisted(self.last_cursor - drag.start));
         }
-        let (group, pull, at) = self.group_resist_back?;
-        // It springs back as a let-go surface settles (`motion::Snap`).
-        let elapsed = crate::time::now().saturating_duration_since(at);
-        let back = crate::motion::Snap::SPEC.settle_time(
-            crate::motion::Direction::Enter,
-            crate::tokens::EffectiveMotion::default(),
-            crate::tokens::MotionSource::Gesture,
-        );
-        if group != id || elapsed >= back {
-            return None;
-        }
-        let returned = crate::motion::Snap::SPEC.progress_after(
-            crate::motion::Direction::Enter,
-            crate::tokens::EffectiveMotion::default(),
-            crate::tokens::MotionSource::Gesture,
-            elapsed,
-        );
-        Some(pull * (1.0 - returned))
+        let (group, pulled) = self.group_resist_back?;
+        let now = crate::motion::frame_now();
+        (group == id && pulled.is_moving(now)).then(|| pulled.get(now))
     }
 
     /// A finger on the tab bar (pills or ground) may become a strip pan.
@@ -4417,10 +4339,10 @@ impl Widget for GroupRow {
             if self.node_ids.len() == self.groups.len() {
                 self.prune_closed_groups();
             }
-            let now = self.snap_clock(crate::time::now());
+            let now = crate::motion::frame_now();
             self.tick_snap_at(now);
-            self.advance_drag_reach(crate::time::now());
-            self.advance_edge_autoscroll(crate::time::now());
+            self.advance_drag_reach(now);
+            self.advance_edge_autoscroll(now);
         }
         let mut any = false;
         for g in &mut self.groups {
@@ -4444,7 +4366,6 @@ impl Widget for GroupRow {
         self.reduce_motion = theme.reduce_motion;
         self.motion = theme.tokens.motion;
         self.sync_sibling_fade(theme);
-        self.move_omega = spring_omega(theme.tokens.motion.springs.heavy);
         let usable_per_group = self.usable_per_group();
         let alone = self.alone_per_group();
         for ((g, &usable), alone) in self
@@ -4803,7 +4724,7 @@ impl Widget for GroupRow {
         let edge_resizing = self.edge_drag.is_some();
         let ease_reframe = self.shift_armed && !self.reduce_motion;
         let reframe = self.snap_timing(self.motion_source);
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         let dest_w: Vec<f64> = (0..runs).map(|k| self.dest_content_w(k)).collect();
         let going: Vec<u64> = self
             .groups
@@ -4857,10 +4778,8 @@ impl Widget for GroupRow {
             }
         }
         // Done AFTER the clamp so a structural mutation that snapped
-        // scroll_x to max doesn't get re-eased. A capture hold freezes the
-        // re-frame with the moves it started alongside.
-        let snap_now = self.snap_clock(now);
-        self.tick_snap_at(snap_now);
+        // scroll_x to max doesn't get re-eased.
+        self.tick_snap_at(now);
         // A maximized or fullscreen-promoted group drops the leading gutter
         // and any prior pan, pinning it flush at its viewport's left edge.
         let collapsed: Vec<bool> = (0..runs)
@@ -5360,7 +5279,7 @@ impl Widget for GroupRow {
             || self.group_drag.is_some_and(|drag| drag.moved && !drag.held)
             || self
                 .group_resist_back
-                .is_some_and(|(id, _, _)| self.group_pull(id).is_some())
+                .is_some_and(|(id, _)| self.group_pull(id).is_some())
             || self.sibling_fade_needs_frame()
             || self
                 .groups
@@ -5426,37 +5345,32 @@ impl GroupRow {
             .map(|g| (g.id, g.get_rect().x0))
             .collect();
         let armed = std::mem::take(&mut self.shift_armed);
-        if self.reduce_motion || self.motion_source.lands_at_once() {
-            self.moves.clear();
+        let timing = self.move_timing(self.motion_source);
+        if timing.is_instant() {
+            self.land_moves();
         } else if armed {
-            let moves: Vec<(u64, GroupMove)> = laid_x
+            let moves: Vec<(u64, crate::motion::MotionValue<f64>)> = laid_x
                 .iter()
                 .filter_map(|&(id, laid)| {
                     let jump = self.last_laid_x.get(&id).map_or(0.0, |was| was - laid);
                     let (drawn, velocity) = self.move_state_at(id, now);
                     let from = drawn + jump;
                     // Sub-pixel motion is not motion.
-                    (from.abs() > 0.5 || velocity.abs() > MOVE_SETTLED_PX_PER_S).then_some((
-                        id,
-                        GroupMove {
-                            from,
-                            velocity,
-                            started: now,
-                        },
-                    ))
+                    if from.abs() <= 0.5 && velocity.abs() <= MOVE_SETTLED_PX_PER_S {
+                        return None;
+                    }
+                    let mut offset = strip_motion(from);
+                    offset.release(0.0, velocity, timing, now);
+                    Some((id, offset))
                 })
                 .collect();
+            self.land_moves();
             self.moves = moves;
             self.shift_hold = None;
         } else if self.shift_hold.is_none() {
             let groups: Vec<u64> = self.groups.iter().map(|g| g.id).collect();
-            let settled: Vec<u64> = self
-                .moves
-                .iter()
-                .filter(|&&(id, m)| !groups.contains(&id) || self.move_settled(m, now))
-                .map(|&(id, _)| id)
-                .collect();
-            self.moves.retain(|(id, _)| !settled.contains(id));
+            self.moves
+                .retain(|(id, m)| groups.contains(id) && m.is_moving(now));
         }
         self.last_laid_x = laid_x.into_iter().collect();
     }
@@ -5517,7 +5431,7 @@ impl GroupRow {
             // or content; at rest nothing else of the strip paints. They
             // fade back in on restore, on the tiled path below (`fade_hero`).
             let fade_alpha =
-                crate::motion::unit_opacity(self.sibling_fade.progress(crate::time::now()));
+                crate::motion::unit_opacity(self.sibling_fade.progress(crate::motion::frame_now()));
             if fade_alpha > f32::EPSILON {
                 for i in 0..self.groups.len() {
                     let sibling = &mut self.groups[i];
@@ -5551,7 +5465,7 @@ impl GroupRow {
         // A group an insert, close or reorder moved paints where it was
         // and springs to its new spot, so the strip is seen opening or
         // closing a gap rather than having always had one.
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         let fade_alpha = crate::motion::unit_opacity(self.sibling_fade.progress(now));
         // Only the hero's own run fades: on a strip spread across displays
         // the others keep their windows.
@@ -6002,7 +5916,7 @@ impl GroupRow {
         if any_drag || maximized_idx.is_some() {
             return;
         }
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         let offsets: Vec<f64> = self
             .groups
             .iter()
@@ -9756,7 +9670,7 @@ mod tests {
             row.set_last_wheel_at_for_test(earlier(base, 250));
             row.tick_snap_at(base);
             assert!(
-                row.pan.snap_anim.is_some(),
+                row.pan.motion.is_some(),
                 "precondition: snap must be in flight",
             );
 
@@ -9785,7 +9699,7 @@ mod tests {
             );
             let anim = row
                 .pan
-                .snap_anim
+                .motion
                 .expect("the in-flight snap must survive a bare wheel notch");
             // Was easing toward the stop nearest 300; must not be re-targeted.
             let edges = row.group_left_edges_for_test().to_vec();
@@ -9795,10 +9709,10 @@ mod tests {
                 .min_by(|a, b| (a - 300.0).abs().partial_cmp(&(b - 300.0).abs()).unwrap())
                 .unwrap();
             assert!(
-                (anim.to - expected).abs() < 0.5,
+                (anim.target() - expected).abs() < 0.5,
                 "the snap must still target the stop nearest its origin \
              ({expected}); got {}",
-                anim.to
+                anim.target()
             );
             row.tick_snap_at(crate::motion::frame_now() + Duration::from_millis(400));
             assert!(
