@@ -870,3 +870,71 @@ fn go_to_clip_takes_the_next_clip_then_the_previous() {
         .fold(f64::NEG_INFINITY, f64::max);
     assert_eq!(app.go_to_clip_target(), Some(last), "else the previous one");
 }
+
+/// A strip too narrow to draw Undo and Redo does not take them away: the
+/// bar's overflow menu carries them, named, disabled exactly when the strip's
+/// own pair would have been. A capability is never lost to a width.
+#[test]
+fn a_strip_too_narrow_for_undo_offers_it_in_the_bar() {
+    use super::{REDO, UNDO};
+    // Wide enough for the transport's own pair: the bar does not repeat them.
+    let wide = sample(1280.0);
+    let r = wide.regions();
+    assert!(
+        !wide.history_buttons(&r).is_empty(),
+        "a wide strip draws its own Undo and Redo"
+    );
+    let bar = wide.window_toolbar();
+    assert!(
+        !bar.actions.iter().any(|a| a.id == UNDO || a.id == REDO),
+        "the bar does not offer a second Undo beside the strip's"
+    );
+
+    // Narrower than the strip needs: the pair moves into the bar's menu.
+    let narrow = [320.0_f64, 360.0, 400.0, 420.0, 480.0, 560.0]
+        .into_iter()
+        .map(sample)
+        .find(|app| app.history_buttons(&app.regions()).is_empty())
+        .expect("a narrow strip gives the buttons up before the playhead time");
+    let bar = narrow.window_toolbar();
+    let undo = bar_action(&bar, UNDO);
+    let redo = bar_action(&bar, REDO);
+    assert_eq!(undo.name, "Undo");
+    assert_eq!(redo.name, "Redo");
+    assert!(
+        undo.menu && redo.menu,
+        "menu-only, so the bar's own row does not change with a resize"
+    );
+    assert_eq!(
+        undo.enabled,
+        narrow.undo.can(ui::UndoRequest::Undo),
+        "offered exactly when the strip's pair would act"
+    );
+
+    // And they act: the bar's press asks the host for the step, exactly as
+    // the strip's own button does (and, like it, raises nothing while the
+    // host says there is nothing to undo).
+    let mut narrow = narrow;
+    narrow.run_window_bar_event(&action(UNDO));
+    assert_eq!(
+        narrow.undo.take_request(),
+        None,
+        "an unavailable step raises no request, from the bar as from the strip"
+    );
+    ui::undo::set_undo_status(&mut narrow, &mut || ui::UndoStatus {
+        can_undo: true,
+        undo_summary: Some("2 fields".into()),
+        ..Default::default()
+    });
+    let bar = narrow.window_toolbar();
+    assert!(
+        bar_action(&bar, UNDO).enabled,
+        "the bar's Undo is live when the host says it can undo"
+    );
+    narrow.run_window_bar_event(&action(UNDO));
+    assert_eq!(
+        narrow.undo.take_request(),
+        Some(ui::UndoRequest::Undo),
+        "one press, one request"
+    );
+}
