@@ -547,7 +547,7 @@ fn a_fullscreen_windows_bar_fades_over_the_content_and_reduced_motion_cuts() {
             lay_out(&mut g, &theme);
             content = g.active_host().map(Widget::get_rect).unwrap_or(Rect::ZERO);
             assert!(!g.navigation_bar_visible(), "fullscreen, the bar hides");
-            g.set_fullscreen_bar_revealed(true);
+            g.set_fullscreen_bar_revealed(true, crate::tokens::MotionSource::Pointer);
             lay_out(&mut g, &theme);
         });
         let drawn =
@@ -558,7 +558,7 @@ fn a_fullscreen_windows_bar_fades_over_the_content_and_reduced_motion_cuts() {
                 (true, Some(content)),
                 "over it, nothing moved"
             );
-            g.set_fullscreen_bar_revealed(false);
+            g.set_fullscreen_bar_revealed(false, crate::tokens::MotionSource::Pointer);
         });
         at(1030, &mut || {
             lay_out(&mut g, &theme);
@@ -574,4 +574,38 @@ fn a_fullscreen_windows_bar_fades_over_the_content_and_reduced_motion_cuts() {
             assert!(!g.navigation_bar_visible(), "nor laid out to take input");
         });
     }
+}
+
+/// The motions of a fullscreen window's bar still asking for frames.
+fn bar_wishes(now: crate::time::Instant) -> Vec<String> {
+    crate::motion::frames_wanted_by(now)
+        .into_iter()
+        .filter(|at| at.contains("window_group_fullscreen_bar"))
+        .collect()
+}
+
+/// A key that shows or hides a fullscreen window's bar (entering fullscreen
+/// by Super+F, Super alone) lands it at once: drawn whole on the next frame,
+/// gone on the next, and nothing asks for a frame after.
+#[test]
+fn a_fullscreen_windows_bar_shown_by_a_key_lands_at_once() {
+    let theme = Theme::dark();
+    let mut g = pages(1);
+    g.set_fullscreen_presentation(true);
+    lay_out(&mut g, &theme);
+    let now = crate::time::now();
+    g.set_fullscreen_bar_revealed(true, crate::tokens::MotionSource::Keyboard);
+    lay_out(&mut g, &theme);
+    assert!(g.bar_over_content(), "shown over the content");
+    assert!(
+        (g.fullscreen_bar.fade.progress(now) - 1.0).abs() < f64::EPSILON,
+        "whole at once"
+    );
+    assert!(!g.fullscreen_bar_fading(), "nothing left to fade");
+    assert_eq!(bar_wishes(now), Vec::<String>::new());
+    g.set_fullscreen_bar_revealed(false, crate::tokens::MotionSource::Keyboard);
+    lay_out(&mut g, &theme);
+    assert!(!g.bar_over_content(), "gone at once");
+    assert!(!g.fullscreen_bar_fading());
+    assert_eq!(bar_wishes(now), Vec::<String>::new());
 }
