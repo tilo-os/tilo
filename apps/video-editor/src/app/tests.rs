@@ -6814,7 +6814,7 @@ fn filmstrip_cells_request_and_draw_the_same_frames() {
                 if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
                     continue;
                 }
-                let inner = clip_inner_rect(cr);
+                let inner = clip_inner_rect(cr, app.clip_header_rect(cr).height());
                 if inner.height() <= 4.0 || inner.width() <= 4.0 {
                     continue;
                 }
@@ -9536,6 +9536,14 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
                 assert!(
                     head.height() >= 18.0 * app.chrome_scale() - 0.01 && head.y1 <= body.y1,
                     "a scaled clip title has a bounded header band: {head:?} in {body:?}"
+                );
+                // The filmstrip starts under that band. It used to cut at an
+                // unscaled 18px, so at a raised scale the frames were painted
+                // up through the doubled title.
+                let inner = clip_inner_rect(body, head.height());
+                assert!(
+                    inner.y0 >= head.y1 - 0.01,
+                    "the filmstrip begins below the scaled title: {inner:?} under {head:?}"
                 );
             }
         }
