@@ -1401,11 +1401,15 @@ fn path_in(node: &Node, pool: &[Node]) -> String {
 /// The ids of the apps `name` names among those `running` and `installed`:
 /// its whole id or the name `tilo_ls` lists it by, any case. An error naming
 /// the apps there are when it names none, so a search narrowed to an app
-/// that is not there does not answer that nothing matches.
+/// that is not there does not answer that nothing matches. `unread` is why
+/// the installed apps could not be read, when they could not: an app that
+/// is not running may then be installed, and the error says why the agent
+/// cannot know rather than that there is no such app.
 fn searched_apps(
     name: &str,
     running: &[String],
     installed: &[InstalledApp],
+    unread: Option<&str>,
 ) -> Result<Vec<String>, String> {
     let known = running
         .iter()
@@ -1423,6 +1427,11 @@ fn searched_apps(
     }
     if !meant.is_empty() {
         return Ok(meant);
+    }
+    if let Some(reason) = unread {
+        return Err(format!(
+            "no running app is named {name}, and the installed apps could not be read: {reason}"
+        ));
     }
     let listed = app_names(&all);
     Err(if listed.is_empty() {
@@ -1929,7 +1938,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // Apps are found by name among those the workspace lists; a list
         // that could not be read leaves them out but still searches the
         // running apps.
-        let installed = self.installed().await.unwrap_or_default();
+        let installed = self.installed().await;
+        let unread = installed.as_ref().err().cloned();
+        let installed = installed.unwrap_or_default();
         let mut hits: Vec<Hit> = Vec::new();
         // Apps by name.
         let mut seen: Vec<String> = Vec::new();
@@ -1946,7 +1957,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .map(str::trim)
             .filter(|app| !app.is_empty())
         {
-            Some(app) => Some(searched_apps(app, &seen, &installed)?),
+            Some(app) => Some(searched_apps(app, &seen, &installed, unread.as_deref())?),
             None => None,
         };
         for InstalledApp { app_id, label, .. } in &installed {
