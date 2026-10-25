@@ -503,6 +503,7 @@ suites = [
   "dist/rpm/test-rename-contract.sh",
   "dist/rpm/test-rpmbuild-route.sh",
   "dist/rpm/test-rpmlint-config.py",
+  "dist/rpm/test-ostree-package-conflicts.sh",
 ]
 
 [[group]]
