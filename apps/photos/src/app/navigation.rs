@@ -3,7 +3,7 @@
 //! selection.
 
 use crate::actions::PhotosEffect;
-use crate::strings::{tr, tr_args};
+use crate::strings::{tr, tr_args, tr_with};
 use crate::timeline_projection::TimelinePhoto;
 use ui::ArgValue;
 use ui::widget::{Button, DateIndexIntent, DateIndexedScrollbar, Widget};
@@ -11,7 +11,7 @@ use vello::kurbo::Vec2;
 
 use super::{
     COLLECTION_PAGE_SIZE, CollectionPageHit, LIBRARY_PAGE_SIZE, LibraryDestination, PhotosApp,
-    SELECTION_ALBUMS_PER_PAGE, SelectionHit, bound, capture_day,
+    SELECTION_ALBUMS_PER_PAGE, SLIDE_SHOW_DWELL, SelectionHit, bound, capture_day,
 };
 
 impl PhotosApp {
@@ -417,6 +417,129 @@ impl PhotosApp {
     pub(super) fn show_photo(&mut self, photo_id: &str) {
         self.open_photo = Some(photo_id.to_owned());
         self.library_mode = false;
+    }
+
+    /// The photographs this window steps through, in the chronology's order:
+    /// the same order the timeline shows them in.
+    pub(super) fn photo_order(&self) -> Vec<String> {
+        let ids = self.timeline_projection.ordered_ids();
+        if !ids.is_empty() {
+            return ids;
+        }
+        let mut ids: Vec<String> = self
+            .presented()
+            .all_photos()
+            .map(|photo| photo.id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Move to the photograph `forward` of the open one, wrapping at either
+    /// end so a slide show never stops at the last picture. Returns whether
+    /// it moved.
+    pub(super) fn step_photo(&mut self, forward: bool) -> bool {
+        let order = self.photo_order();
+        if order.is_empty() {
+            return false;
+        }
+        let current = self
+            .open_photo
+            .as_deref()
+            .and_then(|open| order.iter().position(|id| id == open));
+        let next = match (current, forward) {
+            (Some(index), true) => (index + 1) % order.len(),
+            (Some(index), false) => index.checked_sub(1).unwrap_or(order.len() - 1),
+            (None, true) => 0,
+            (None, false) => order.len() - 1,
+        };
+        let Some(id) = order.get(next) else {
+            return false;
+        };
+        if self.open_photo.as_deref() == Some(id.as_str()) && !self.library_mode {
+            return false;
+        }
+        self.show_photo(id);
+        self.restart_slide_show();
+        true
+    }
+
+    /// Zoom the open photograph one step, as a window's Zoom in, Zoom out and
+    /// Actual size reach it: the picture's own size, never the window's text
+    /// scale, because the photograph is what is being looked at. Answers the
+    /// factor shown.
+    pub(super) fn zoom_photo(&mut self, step: ui::content_zoom::ZoomStep) -> f32 {
+        let factor = self.viewer_zoom.step(step);
+        if let Some(viewer) = self.viewer.as_mut() {
+            viewer.set_zoom(factor);
+        }
+        // The window's bar says the level, as it does for any content zoom.
+        self.notice = Some(tr_with(
+            "photos-zoom-level",
+            "percent",
+            &ui::format::percent(f64::from(factor)),
+        ));
+        factor
+    }
+
+    /// Show the open photograph full screen, or stop.
+    pub(super) fn toggle_presentation(&mut self) {
+        if self.library_mode || self.viewer.is_none() {
+            return;
+        }
+        self.presenting = !self.presenting;
+        if !self.presenting {
+            self.slide_show = None;
+        }
+    }
+
+    /// Run the slide show (advancing through the collection, full screen), or
+    /// stop it where it is.
+    pub(super) fn toggle_slide_show(&mut self) {
+        if self.library_mode || self.viewer.is_none() {
+            return;
+        }
+        if self.slide_show.take().is_some() {
+            return;
+        }
+        // A slide show is a presentation: the chrome goes and the picture has
+        // the screen, which is what showing photographs to someone means.
+        self.presenting = true;
+        self.slide_show = Some(ui::time::now() + SLIDE_SHOW_DWELL);
+    }
+
+    /// Whether the slide show is running.
+    pub(super) fn slide_show_running(&self) -> bool {
+        self.slide_show.is_some()
+    }
+
+    /// Start the interval of the running slide show again: each photograph is
+    /// shown for the same while.
+    pub(super) fn restart_slide_show(&mut self) {
+        if self.slide_show.is_some() {
+            self.slide_show = Some(ui::time::now() + SLIDE_SHOW_DWELL);
+        }
+    }
+
+    /// Advance the slide show if its interval is up. Returns whether the
+    /// window must repaint.
+    pub(super) fn tick_slide_show(&mut self) -> bool {
+        let Some(at) = self.slide_show else {
+            return false;
+        };
+        if ui::time::now() < at {
+            return false;
+        }
+        let order = self.photo_order();
+        if order.len() <= 1 {
+            // Nothing to advance to: a one-photograph library is not a slide
+            // show.
+            self.slide_show = None;
+            return true;
+        }
+        self.step_photo(true);
+        self.slide_show = Some(ui::time::now() + SLIDE_SHOW_DWELL);
+        true
     }
 
     /// Move through the bounded library shelf without changing any shared

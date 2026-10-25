@@ -219,9 +219,18 @@ impl ui::search::SearchProvider for TestSearch {
 
     fn search_scopes(&self) -> Vec<ui::search::ScopeDecl> {
         vec![
-            ui::search::ScopeDecl::new(crate::actions::HISTORY_SCOPE, "History"),
-            ui::search::ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
-            ui::search::ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
+            ui::search::ScopeDecl::new(
+                crate::actions::HISTORY_SCOPE,
+                crate::resource::CATALOG.t("browser-library-section-history"),
+            ),
+            ui::search::ScopeDecl::new(
+                crate::actions::BOOKMARKS_SCOPE,
+                crate::resource::CATALOG.t("browser-library-section-bookmarks"),
+            ),
+            ui::search::ScopeDecl::new(
+                crate::actions::DOWNLOADS_SCOPE,
+                crate::resource::CATALOG.t("browser-library-section-downloads"),
+            ),
         ]
     }
 }

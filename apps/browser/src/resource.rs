@@ -124,9 +124,18 @@ impl Browser {
     /// The library's sections a search can be narrowed to.
     fn scopes(_: &Self) -> Vec<ScopeDecl> {
         vec![
-            ScopeDecl::new(crate::actions::HISTORY_SCOPE, "History"),
-            ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
-            ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
+            ScopeDecl::new(
+                crate::actions::HISTORY_SCOPE,
+                CATALOG.t("browser-library-section-history"),
+            ),
+            ScopeDecl::new(
+                crate::actions::BOOKMARKS_SCOPE,
+                CATALOG.t("browser-library-section-bookmarks"),
+            ),
+            ScopeDecl::new(
+                crate::actions::DOWNLOADS_SCOPE,
+                CATALOG.t("browser-library-section-downloads"),
+            ),
         ]
     }
 

@@ -95,11 +95,16 @@ fn a_watch_page_without_a_player_answer_still_has_its_video() {
 
 #[test]
 fn the_player_names_its_progressive_stream_or_says_why_not() {
-    let stream = stream(&fixture(PLAYER)).expect("a stream");
+    let stream = stream(&fixture(PLAYER), None).expect("a stream");
     assert_eq!(stream.quality, "360p");
     assert!(stream.url.contains("itag=18"), "{}", stream.url);
 
-    let refused = super::stream(&fixture(PLAYER_BOT_CHECK)).expect_err("a bot check");
+    // The height the person chose decides which stream is served, so a
+    // smaller choice is not silently ignored.
+    let capped = super::stream(&fixture(PLAYER), Some(240)).expect("the smallest stream");
+    assert_eq!(capped.quality, "360p", "nothing smaller exists than 360p");
+
+    let refused = super::stream(&fixture(PLAYER_BOT_CHECK), None).expect_err("a bot check");
     assert!(refused.starts_with("LOGIN_REQUIRED"), "{refused}");
 
     // What YouTube said is kept, for the watch page to pass on.
