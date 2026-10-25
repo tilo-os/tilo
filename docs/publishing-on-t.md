@@ -386,7 +386,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 | ~~`os-dev.yml`, `os-dev-x86.yml`, `os-dev-arm.yml`~~ | PR with a label, dispatch | none (called workflows get no OIDC) | as above | development images | retired: `os-dev-image-<arch>` builds the development image |
 | ~~`dev-disk.yml`~~ | dispatch | `GITHUB_TOKEN`, `REGISTRY_TOKEN` | `disk-100g` both arches, KVM | `tilo-vm` disks and `latest` (from main or `v*` only) | retired: `publish-os-dev-<arch>` publishes the gated dev disks |
 | `os-dev-installer.yml`, `dev-disk-boot-diagnostic.yml` | dispatch | none | arm64/`disk-100g`, KVM, loop | artifacts only | `dev-installer-medium-<arch>` builds the self-install medium without capture or signing inputs (`t outputs`); the Windows-direct variants still need their own checks |
-| ~~`extension-manifests.yml`~~ | daily, dispatch | `REGISTRY_TOKEN`; Cosign through a separate role and key for extension manifests (OIDC) | podman with the OS image, both arches | signed manifests in generic packages | moved to t (above) |
+| ~~`extension-manifests.yml`~~ | daily, dispatch | `TILO_PACKAGES_TOKEN`; an identity token for the extension-manifest audience, whose role holds the KMS key | podman with the OS image, both arches | signed manifests in generic packages | retired: `extension-manifests-<arch>` resolves and `publish-extension-manifests` signs and publishes, on t's issuer and audience (`tilo-extension-manifests`, above) |
 
 ### Apps, desktop and models
 
