@@ -85,6 +85,19 @@ failed step names its own remedy: **Offline** is the network, a missing name is
 pairing, and a pointer that crosses but types nowhere is the automatic-input
 switch.
 
+## What Quinten needs to do on the day
+
+Everything above is someone else's job. The shoot itself is one take and one
+drop, about thirty seconds of work:
+
+1. Both laptops on the desk, screens facing the phone, unlocked, same
+   workspace open on each.
+2. Move the pointer across the gap once, slowly, and let the other pointer
+   answer. Do not narrate; the voiceover is recorded after.
+3. Keep the phone rolling for the same three actions the screen recordings
+   capture, so the cut has something to land on.
+4. Drop the raw phone file in the shoot folder. Nothing is edited on the phone.
+
 ## The shot, in three steps
 
 1. **Phone take.** Two laptops side by side on the desk, screens visible. Move
