@@ -319,6 +319,10 @@ fields = [
   { path = "messages.*.appearance.persona.service", type = "String" },
   { path = "messages.*.appearance.persona.account", type = "String" },
   { path = "messages.*.appearance.persona.linked", type = "Option<String>" },
+  { path = "messages.*.share", type = "Option<WindowShare>", readonly = true, stored = "record" },
+  { path = "messages.*.share.access", type = "ShareAccess" },
+  { path = "messages.*.share.open", type = "bool" },
+  { path = "messages.*.share.ended", type = "bool" },
 ]
 
 [[resources.verbs]]
@@ -358,6 +362,34 @@ params = [
   { name = "text", required = false, schema = { type = ["string", "null"] } },
   { name = "source_provider", required = false, schema = { type = ["string", "null"] } },
   { name = "mentions", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
+]
+
+[[resources.verbs]]
+id = "share-window"
+incoming_message = true
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "reference", required = true, schema = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, span = { type = ["object", "null"], additionalProperties = false, properties = { end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, unit = { type = "string" } }, required = ["start", "end", "unit"] } }, required = ["kind", "id", "label"] } },
+  { name = "source_provider", required = true, schema = { type = "string" } },
+  { name = "access", required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "view" }, { type = "string", const = "edit" }] }] } },
+  { name = "text", required = false, schema = { type = ["string", "null"] } },
+  { name = "mentions", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
+]
+
+[[resources.verbs]]
+id = "stop-sharing"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "share-open"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "open", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]

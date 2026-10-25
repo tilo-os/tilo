@@ -317,6 +317,8 @@ pub struct Message {
     /// The name and avatar a bot showed for this message instead of its own
     /// (a bridge posting an outside user's line). The author stays the bot.
     pub appearance: Option<tilo_actions::Appearance>,
+    /// The window it shares live, and whether it still does.
+    pub share: Option<crate::record::WindowShare>,
 }
 
 impl Message {
@@ -781,6 +783,7 @@ mod tests {
             pinned: false,
             work: None,
             appearance: None,
+            share: None,
         }
     }
 
