@@ -77,8 +77,6 @@ const CALENDAR_ROW: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 const MONITOR_GLANCE: Size = Size::new(176.0, 40.0);
 const MONITOR_HEADER: f64 = ui::tokens::Layout::BASE.row_header as f64;
 const MONITOR_ROW: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
-/// A press that moves this far becomes a drag to another edge.
-const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
 
 /// How the Super surface was opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,13 +92,8 @@ pub enum SuperSurface {
     Pinned,
 }
 
-/// A press on a widget, and the drag it may become.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Press {
-    id: WidgetId,
-    at: Point,
-    dragging: bool,
-}
+/// A press on a widget, and the drag to another edge it may become.
+type Press = layout::EdgeDrag<WidgetId>;
 
 /// What the host keeps for the desk between frames.
 pub(crate) struct DeskState {
@@ -693,11 +686,8 @@ impl ShellOverlayHost {
     /// A pointer sample at `p`, in desktop coordinates.
     pub(crate) fn desk_pointer(&mut self, p: Point, now: Instant) {
         self.desk.board.on_pointer(p, now, &self.desk.slots);
-        if let Some(press) = self.desk.press.as_mut()
-            && !press.dragging
-            && (p - press.at).hypot() > DRAG_SLOP
-        {
-            press.dragging = true;
+        if let Some(press) = self.desk.press.as_mut() {
+            press.moved(p);
         }
         if self.update_desk(now) || self.desk.press.is_some_and(|press| press.dragging) {
             self.bump_chrome();
@@ -744,19 +734,14 @@ impl ShellOverlayHost {
                 if form == Form::Open && self.desk_open_click(id, rect, p) {
                     return true;
                 }
-                self.desk.press = Some(Press {
-                    id,
-                    at: p,
-                    dragging: false,
-                });
+                self.desk.press = Some(Press::new(id, p));
                 true
             }
             ElementState::Released => {
                 let Some(press) = self.desk.press.take() else {
                     return false;
                 };
-                if press.dragging {
-                    let edge = layout::nearest_edge(self.overlay_area(), p);
+                if let Some(edge) = press.release(self.overlay_area(), p) {
                     self.set_widget_edge(press.id, edge);
                 } else if self.desk.board.form(press.id) == Form::Glance {
                     self.desk.board.open(press.id);
@@ -888,9 +873,8 @@ impl ShellOverlayHost {
         let drag = self
             .desk
             .press
-            .filter(|press| press.dragging)
             .zip(self.last_cursor)
-            .map(|(press, p)| (press.id, p - press.at));
+            .and_then(|(press, p)| Some((press.id, press.shift(p)?)));
         // The strip switcher's labels are where the person is looking: a
         // widget glance under them steps aside while they are open.
         let switcher_card = self

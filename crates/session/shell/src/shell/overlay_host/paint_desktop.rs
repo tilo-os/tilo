@@ -35,7 +35,7 @@ impl ShellOverlayHost {
             self.draw_follow_chip(scene, transform, text_renderer, theme);
             // Everything is inside a layer clipped to the chip, which slides
             // down 10 px as it opens.
-            let chip = self.follow_chip_rect;
+            let chip = self.follow_banner.chip_rect();
             if chip.is_zero_area() {
                 return Vec::new();
             }
@@ -84,7 +84,7 @@ impl ShellOverlayHost {
             self.notification_stack.set_viewport(viewport);
             // Banners share the transients' zone with the follow bar: below
             // it while it is up, and below any window bar they would cover.
-            let follow = self.follow_chip_rect;
+            let follow = self.follow_banner.chip_rect();
             self.notification_stack
                 .set_clear_top(if follow.is_zero_area() {
                     0.0

@@ -57,6 +57,7 @@ fn paint_here(
             unavailable: None,
             exposure: None,
             may_invite: false,
+            may_pin: false,
             followed_id: None,
             following_pairs: &[],
             expanded_id,

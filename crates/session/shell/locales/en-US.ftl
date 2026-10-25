@@ -837,11 +837,6 @@ overview-site-here = { $count ->
 }
 a11y-leave-workspace = Leave { $name }
 
-# Following someone's view
-follow-label = Following { $person }
-follow-stopped = Stopped following
-follow-stop = Stop
-
 # Search filter chips
 search-filter-all = All
 search-filter-more = More

@@ -20,7 +20,12 @@
 //! Who is here comes from the page ([`crate::here`]): their avatars join
 //! the bar's from a copy of the tree, the bar's avatars open the People
 //! popover with each person's place, status and recent summary, and the
-//! windows they are in carry their faces.
+//! windows they are in carry their faces. Pinned, the roster floats over
+//! the windows as the people overlay, and following someone tracks their
+//! view ([`people`]).
+
+mod people;
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -359,7 +364,8 @@ fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
                 entry: None,
             })
             .collect(),
-        followable: false,
+        // Following brings forward, here, the window of what they are in.
+        followable: true,
         availability: ui::Availability::Available,
         call: None,
         join: None,
@@ -487,6 +493,8 @@ pub(crate) struct BrowserShell {
     /// The People popover the bar's avatars open.
     people: CollaboratorsOverlay,
     people_open: bool,
+    /// The roster pinned out of the popover, and following someone.
+    pinned: people::PagePeople,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -584,6 +592,7 @@ impl BrowserShell {
             profile: ProfileCard::new(),
             people: CollaboratorsOverlay::default(),
             people_open: false,
+            pinned: people::PagePeople::new(),
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             expanded: None,
@@ -633,7 +642,8 @@ impl BrowserShell {
                 unavailable: None,
                 exposure: None,
                 may_invite: self.chrome.may_invite(),
-                followed_id: None,
+                may_pin: !self.pinned.is_pinned(),
+                followed_id: self.pinned.followed(),
                 following_pairs: &[],
                 expanded_id: self.expanded.as_deref(),
                 watching,
@@ -642,6 +652,101 @@ impl BrowserShell {
             },
             self.cursor,
         );
+    }
+
+    /// The pinned roster and the following banner, over the windows and
+    /// under what the bar opens. While following, the window of what they
+    /// are in comes forward here first.
+    fn draw_pinned_people(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tree = self.handle.read(Clone::clone);
+        let people = self.chrome.people(&tree);
+        if self.pinned.track(&people, &self.handle) {
+            (self.chrome.wake)();
+        }
+        let rows: Vec<RosterRow> = people
+            .iter()
+            .map(|person| roster_row(person, theme))
+            .collect();
+        let records: Vec<(TabId, String, String)> = self
+            .chrome
+            .shared
+            .bound_records()
+            .into_iter()
+            .filter_map(|(tab, _)| {
+                let (app, record) = self.chrome.shared.live_record_of(&tree, tab)?;
+                Some((tab, app, record))
+            })
+            .collect();
+        self.pinned.draw(
+            scene,
+            transform,
+            text,
+            theme,
+            &people::Frame {
+                rect: self.rect,
+                rows: &rows,
+                people: &people,
+                tree: &tree,
+                records: &records,
+                cursor: self.cursor,
+            },
+        );
+    }
+
+    /// The pinned roster's and following's share of `event`: what lands on
+    /// the overlay or the banner, the message box's keys, and the person's
+    /// own input, which takes their view back from whom they follow.
+    /// Returns whether the event was taken.
+    fn pinned_people_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        let (taken, hit) = self.pinned.key(event, ctx.modifiers);
+        if let Some(hit) = hit {
+            self.apply_pinned_hit(hit);
+        }
+        if taken {
+            *ctx.handled = true;
+            return true;
+        }
+        let mut handled = false;
+        if let Some(hit) =
+            self.pinned
+                .handle_event(event, ctx.scale_factor, self.cursor, &mut handled)
+        {
+            self.apply_pinned_hit(hit);
+        }
+        if handled {
+            *ctx.handled = true;
+            return true;
+        }
+        // A press on the desktop itself, not the bar: the person's own.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } = event
+            && self
+                .cursor
+                .is_some_and(|point| point.y >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX))
+        {
+            self.pinned.pressed_elsewhere();
+        }
+        false
+    }
+
+    fn apply_pinned_hit(&mut self, hit: tilo_desktop::people_overlay::PeopleHit) {
+        use tilo_desktop::people_overlay::PeopleHit;
+        match hit {
+            PeopleHit::ToggleFollow(id) => self.pinned.toggle_follow(&id),
+            PeopleHit::Unpin => self.pinned.pin(false),
+            // The page has no direct messages: the box says so instead of
+            // offering to send, and the edge was kept as it moved.
+            PeopleHit::Send { .. } | PeopleHit::Moved(_) => {}
+        }
+        (self.chrome.wake)();
     }
 
     fn apply_people_hit(&mut self, hit: CollaboratorsHit) {
@@ -670,9 +775,17 @@ impl BrowserShell {
                     (self.chrome.wake)();
                 }
             }
-            CollaboratorsHit::ToggleFollow(_)
-            | CollaboratorsHit::JoinCall(_)
-            | CollaboratorsHit::Absorb => {}
+            CollaboratorsHit::ToggleFollow(index) => {
+                if let Some(id) = self.people.follow_target(index).map(str::to_owned) {
+                    self.pinned.toggle_follow(&id);
+                }
+            }
+            CollaboratorsHit::Pin => {
+                self.people_open = false;
+                self.people.clear();
+                self.pinned.pin(true);
+            }
+            CollaboratorsHit::JoinCall(_) | CollaboratorsHit::Absorb => {}
         }
     }
 
@@ -1735,6 +1848,7 @@ impl Widget for BrowserShell {
         self.overview.draw(scene, transform, text, theme, presence);
         // Last, so what the bar opens below its band stays above windows.
         self.bar.draw(scene, transform, text, theme, presence);
+        self.draw_pinned_people(scene, transform, text, theme);
         if self.people_open {
             self.draw_people(scene, transform, text, theme);
         } else {
@@ -1784,6 +1898,9 @@ impl Widget for BrowserShell {
             if *ctx.handled {
                 return;
             }
+        }
+        if self.pinned_people_event(event, ctx) {
+            return;
         }
         // The workspace menu and the profile card, like the Tilo menu, take
         // what they cover, the keyboard and the press that dismisses them.
@@ -1846,6 +1963,8 @@ impl Widget for BrowserShell {
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         !self.people_open
             && !self.people.wants_pointer_capture()
+            && !self.pinned.wants_pointer_capture()
+            && self.cursor.is_none_or(|point| !self.pinned.contains(point))
             && !self.tilo_menu.is_open()
             && !self.workspace_menu.is_open()
             && !self.profile.is_open()
@@ -1901,6 +2020,7 @@ impl Widget for BrowserShell {
     fn needs_redraw(&self) -> bool {
         self.drawn_minute.get() != minute()
             || (self.people_open && self.people.needs_animation_frame())
+            || self.pinned.needs_animation_frame()
             || self.navigator.needs_animation_frame(ui::time::now())
             || [
                 &self.backdrop as &dyn Widget,
@@ -1934,6 +2054,7 @@ impl Widget for BrowserShell {
                 .then(|| self.people.next_wake_deadline())
                 .flatten(),
         )
+        .chain(self.pinned.next_wake_deadline())
         .chain(
             self.navigator
                 .next_wake_deadline(&self.navigator_frame, ui::time::now()),

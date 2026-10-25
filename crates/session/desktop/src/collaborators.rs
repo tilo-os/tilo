@@ -43,6 +43,9 @@ const TRAILING_GAP: f64 = 4.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CollaboratorsHit {
     Invite,
+    /// Keep the list on screen: the host pins it out of the bar as the
+    /// people overlay.
+    Pin,
     /// Follow the person at this row index, or stop following them.
     ToggleFollow(usize),
     /// Wave at the person at this row index.
@@ -163,6 +166,9 @@ pub struct CollaboratorsModel<'a> {
     /// while it is true: it leads the list.
     pub exposure: Option<&'a str>,
     pub may_invite: bool,
+    /// The host can keep the list on screen as the people overlay: the
+    /// header offers to.
+    pub may_pin: bool,
     pub followed_id: Option<&'a str>,
     /// Ephemeral room-local attachments, expressed using roster ids.
     pub following_pairs: &'a [(String, String)],
@@ -263,6 +269,8 @@ pub struct CollaboratorsOverlay {
     exposure: Rect,
     shown_exposure: Option<String>,
     invite: Rect,
+    /// The header's Keep on screen button.
+    pin: Rect,
     /// The trailing slot every row reserves for Wave and Follow, and Join
     /// where anyone has a call to join.
     trailing_w: f64,
@@ -491,6 +499,16 @@ impl CollaboratorsOverlay {
         self.panel = Rect::new(right - width, anchor_top, right, anchor_top + panel_h);
         let parts = face.layout(self.panel, theme);
         self.header = parts.header;
+        self.pin = if model.may_pin {
+            Rect::new(
+                parts.header.x1 - control,
+                parts.header.center().y - control / 2.0,
+                parts.header.x1,
+                parts.header.center().y + control / 2.0,
+            )
+        } else {
+            Rect::ZERO
+        };
         self.body = parts.body;
         self.viewport = self.panel;
         self.invite = if model.may_invite {
@@ -767,12 +785,34 @@ impl CollaboratorsOverlay {
             model.watching,
             model.spectating,
         );
+        let title = if self.pin.area() > 0.0 {
+            Rect::new(
+                self.header.x0,
+                self.header.y0,
+                self.pin.x0 - f64::from(theme.tokens.spacing.s2),
+                self.header.y1,
+            )
+        } else {
+            self.header
+        };
         ui::widget::TextStackFace::new(model.workspace)
             .secondary(&here_text)
             .paint(
                 &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
-                self.header,
+                title,
             );
+        if self.pin.area() > 0.0 {
+            let label = t("people-panel-pin");
+            ui::widget::Button::paint(
+                scene,
+                transform,
+                text,
+                theme,
+                &ButtonFace::icon_only(self.pin, Icon::Pin, &label)
+                    .hovered(cursor.is_some_and(|p| self.pin.contains(p)))
+                    .focused(self.keyboard_focus == Some(CollaboratorsHit::Pin)),
+            );
+        }
 
         // The body scrolls under the header and above the footer.
         scene.push_layer(
@@ -1108,7 +1148,7 @@ impl CollaboratorsOverlay {
         }
         for hit in self.focus_order() {
             if let (Some(id), Some(rect)) = (self.target_id(hit), self.rect_for_hit(hit)) {
-                let rect = if hit == CollaboratorsHit::Invite {
+                let rect = if matches!(hit, CollaboratorsHit::Invite | CollaboratorsHit::Pin) {
                     rect
                 } else {
                     self.view_rect(rect)
@@ -1409,6 +1449,9 @@ impl CollaboratorsOverlay {
         if self.invite.contains(point) {
             return CollaboratorsHit::Invite;
         }
+        if self.pin.contains(point) {
+            return CollaboratorsHit::Pin;
+        }
         if !self.body.contains(point) {
             return CollaboratorsHit::Absorb;
         }
@@ -1443,10 +1486,13 @@ impl CollaboratorsOverlay {
         CollaboratorsHit::Absorb
     }
 
-    /// Every control in reading order: each row's body, Wave and Follow,
-    /// its changes link when open, then Invite.
+    /// Every control in reading order: Keep on screen in the header, each
+    /// row's body, Wave and Follow, its changes link when open, then Invite.
     fn focus_order(&self) -> Vec<CollaboratorsHit> {
         let mut order = Vec::new();
+        if self.pin.area() > 0.0 {
+            order.push(CollaboratorsHit::Pin);
+        }
         for place in &self.rows {
             if self.details_target(place.index).is_some() {
                 order.push(CollaboratorsHit::ToggleDetails(place.index));
@@ -1476,11 +1522,12 @@ impl CollaboratorsOverlay {
         order
     }
 
-    /// Where `hit` is, in content coordinates (Invite: on screen).
+    /// Where `hit` is, in content coordinates (Invite and Pin: on screen).
     fn rect_for_hit(&self, hit: CollaboratorsHit) -> Option<Rect> {
         let place = |index: usize| self.rows.iter().find(|place| place.index == index);
         match hit {
             CollaboratorsHit::Invite => Some(self.invite),
+            CollaboratorsHit::Pin => Some(self.pin),
             CollaboratorsHit::ToggleFollow(index) => place(index).map(|place| place.follow),
             CollaboratorsHit::Wave(index) => place(index).map(|place| place.wave),
             CollaboratorsHit::JoinCall(index) => place(index).map(|place| place.join),
@@ -1498,7 +1545,7 @@ impl CollaboratorsOverlay {
     fn reveal_focus(&mut self) {
         let Some(rect) = self
             .keyboard_focus
-            .filter(|hit| *hit != CollaboratorsHit::Invite)
+            .filter(|hit| !matches!(hit, CollaboratorsHit::Invite | CollaboratorsHit::Pin))
             .and_then(|hit| self.rect_for_hit(hit))
         else {
             return;
@@ -1656,6 +1703,7 @@ impl CollaboratorsOverlay {
                 CollaboratorsHit::Invite => {
                     (t("a11y-shell-invite"), t("a11y-shell-invite-description"))
                 }
+                CollaboratorsHit::Pin => (t("people-panel-pin"), t("a11y-people-pin")),
                 CollaboratorsHit::Absorb | CollaboratorsHit::Dismiss => continue,
             };
             let mut state = AccessState::new().focusable(true).focused(focused);
@@ -2095,6 +2143,7 @@ mod tests {
                 unavailable: None,
                 exposure: None,
                 may_invite: true,
+                may_pin: false,
                 followed_id: None,
                 following_pairs: &[],
                 expanded_id: expanded,
@@ -2125,6 +2174,7 @@ mod tests {
                 unavailable: None,
                 exposure: None,
                 may_invite: true,
+                may_pin: false,
                 followed_id: None,
                 following_pairs: &[],
                 expanded_id: None,
@@ -2281,6 +2331,7 @@ mod tests {
             unavailable: None,
             exposure: None,
             may_invite: false,
+            may_pin: false,
             followed_id: None,
             following_pairs: &pairs,
             expanded_id: None,

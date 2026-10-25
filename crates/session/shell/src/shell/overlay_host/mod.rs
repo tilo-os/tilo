@@ -307,10 +307,6 @@ use room_activity::{
 };
 use shortcut_config::{DesktopControlsSource, SHORTCUT_GUIDE_ROWS, ShortcutGuideFocus};
 
-/// How long the follow bar says "Stopped following" after the person's own
-/// input ended it.
-const FOLLOW_STOPPED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
 type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<PeerSyncResponse, String>>;
@@ -1002,19 +998,13 @@ pub struct ShellOverlayHost {
     /// from the live workspace prevents a later workspace switch from
     /// releasing the wrong set of local app views.
     followed_room: Option<crate::shell::state::RoomId>,
-    /// Keeps the local follow dock and its tether visible long enough to
-    /// arrive and release gracefully instead of snapping between states.
-    follow_transition: ui::motion::Presence,
-    /// Last resolved identity, retained only for the short exit animation.
-    follow_visual: Option<RosterRow>,
-    /// Persistent follow-mode banner painted while following.
-    follow_chip_rect: Rect,
-    /// When following stopped because the person did something of their
-    /// own: the bar says "Stopped following" for [`FOLLOW_STOPPED_FOR`].
-    follow_stopped: Option<Instant>,
-    /// Explicit stop target within [`Self::follow_chip_rect`]. The rest of
-    /// the banner is informative, not a surprising destructive target.
-    follow_stop_rect: Rect,
+    /// The "Following Ada" banner the browser paints too: it arrives and
+    /// leaves gracefully instead of snapping between states, and only its
+    /// Stop is a target.
+    follow_banner: tilo_desktop::follow_banner::FollowBanner,
+    /// The next end of following is the person's own input taking their
+    /// view back: the banner says "Stopped following" a moment.
+    follow_ended_by_own_input: bool,
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,

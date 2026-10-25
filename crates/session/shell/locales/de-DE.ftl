@@ -836,11 +836,6 @@ overview-site-here = { $count ->
 }
 a11y-leave-workspace = { $name } verlassen
 
-# Der Ansicht einer Person folgen
-follow-label = Du folgst { $person }
-follow-stopped = Folgen beendet
-follow-stop = Beenden
-
 # Filterchips der Suche
 search-filter-all = Alle
 search-filter-more = Mehr

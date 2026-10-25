@@ -38,7 +38,7 @@ impl ShellOverlayHost {
                 dictation: layers.dictation.is_animating(now),
                 emoji_picker: layers.emoji_picker.is_animating(now),
                 display_confirm: layers.display_confirm.is_animating(now),
-                follow: self.follow_transition.is_moving(now),
+                follow: self.follow_banner.is_moving(now),
                 projection: self.projection_overlay.needs_animation_frame(now)
                     || self.display_identify.needs_frame(now),
                 content: self.content.needs_animation_frame(),
