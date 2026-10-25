@@ -295,7 +295,8 @@ impl WindowSlots {
 
     /// Look at the windows of the apps the host shows in its own process,
     /// `windows` being every one of them by tab: show the slots each
-    /// declared in its tab's bar, run its asks to edit its location or open
+    /// declared in its tab's bar, with the notice and reactions its window
+    /// shows, run its asks to edit its location or open
     /// its search, and hand it what the person did with its slots. A tab
     /// whose window is no longer among `windows` loses its slots. Run it
     /// every frame, after the groups took the frame's input.
@@ -325,7 +326,7 @@ impl WindowSlots {
             let revision = window.revision();
             if seen != Some(revision) {
                 self.hosted_seen.insert(*tab, (window.clone(), revision));
-                if self.declare(*tab, IN_PROCESS, window.declared()) {
+                if self.declare(*tab, IN_PROCESS, window.shown()) {
                     sync.changed = true;
                     sync.declared.push(*tab);
                 }
