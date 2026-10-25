@@ -6,7 +6,7 @@
 
 #[cfg(test)]
 use automerge::AutoCommit;
-use vello::kurbo::Point;
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -1117,7 +1117,7 @@ impl ChatApp {
 
     /// Open the picker fresh: an empty query on the first group, with the
     /// search field taking the keyboard so typing filters at once.
-    fn open_emoji_picker(&mut self, target: Option<Id>, anchor: Point) {
+    fn open_emoji_picker(&mut self, target: Option<Id>, anchor: Rect) {
         self.emoji_open = true;
         self.emoji_target = target;
         self.emoji_anchor = anchor;
@@ -1219,7 +1219,7 @@ impl ChatApp {
             MenuTarget::Category(id) => self.apply_category_action(&id, action, doc),
             MenuTarget::Message(id) => match action {
                 MenuAction::AddReaction => {
-                    let anchor = self.last_mouse;
+                    let anchor = Rect::from_origin_size(self.last_mouse, (1.0, 1.0));
                     self.open_emoji_picker(Some(id), anchor);
                 }
                 MenuAction::ReplyInThread => {
