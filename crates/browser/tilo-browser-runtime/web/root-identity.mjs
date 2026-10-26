@@ -658,15 +658,20 @@ export async function fetchEnvelope(rootPublicKeyHex, origins, {fetch: fetcher =
  * and of each the newest the root signed. Needs no kept identity: a device
  * paired to this one reads it from the same hosts.
  */
-export async function publishProfile({origin, identity = currentIdentity(), displayName, photo = null, status = '', sharing = '', now = Date.now(), fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
+export async function publishProfile({origin, identity = currentIdentity(), displayName, photo = null, status = '', sharing = '',
+  photoFrom = null, linked = [], now = Date.now(), fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
   if (!identity?.sign || identity.locked) throw new IdentityError('locked', 'Unlock the identity first');
   const name = fitDisplayName(displayName);
   if (!name) throw new IdentityError('malformed', 'A profile needs a name');
   // The picture they chose (a `data:` URL, `profile-photos.mjs`) rides
   // along; without one their initials show. So do what they say they are
-  // doing and how they share it, which each of their devices shows.
+  // doing and how they share it, which each of their devices shows, and
+  // their linked accounts (`[{service, handle}]`), with the service whose
+  // account the picture is (`photoFrom`) when they did not upload it.
+  const named = (Array.isArray(linked) ? linked : []).slice(0, 4).map(({service, handle}) => ({service, handle}));
   const json = JSON.stringify({version: 1, user_public_key: identity.userPublicKey, display_name: name,
-    ...(photo ? {photo} : {}), ...(status ? {status} : {}), ...(sharing ? {sharing} : {})});
+    ...(photo ? {photo} : {}), ...(status ? {status} : {}), ...(sharing ? {sharing} : {}),
+    ...(photo && photoFrom ? {photo_from: photoFrom} : {}), ...(named.length ? {linked: named} : {})});
   await keepSigned({origin, identity, path: '/peer/v1/profile', field: 'profile', label: PROFILE_LABEL, json, now, fetcher});
 }
 
