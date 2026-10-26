@@ -187,8 +187,10 @@ fn first_difference(before: &[u8], after: &[u8]) -> String {
         .position(|(a, b)| a != b)
         .unwrap_or_else(|| before.len().min(after.len()));
     let around = |bytes: &[u8]| {
-        String::from_utf8_lossy(&bytes[first.saturating_sub(120)..(first + 120).min(bytes.len())])
-            .into_owned()
+        String::from_utf8_lossy(
+            &bytes[first.saturating_sub(120)..first.saturating_add(120).min(bytes.len())],
+        )
+        .into_owned()
     };
     format!(
         "{} bytes became {}, first at {first}: {:?} became {:?}",
