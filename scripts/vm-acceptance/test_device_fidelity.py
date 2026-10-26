@@ -399,6 +399,23 @@ class InputDeviceParsers(unittest.TestCase):
         props = input_devices.parse_properties("ID_INPUT=1\nID_INPUT_TOUCHPAD=1\nID_INPUT_WIDTH_MM=130\n")
         self.assertEqual(props["ID_INPUT_WIDTH_MM"], "130")
 
+    def test_a_lost_super_space_names_the_keyboards_the_compositor_opened(self):
+        written = {}
+        state = {"devices": [{"name": "tilo-vm keyboard (seat-acceptance)"}],
+                 "active_keyboard": "tilo-vm keyboard"}
+        vm = SimpleNamespace(
+            exec=lambda script, **k: json.dumps(state),
+            root_exec=lambda script, **k: YOGA_DEVICES if "proc/bus" in script
+            else "ID_INPUT_KEYBOARD=1\nID_SEAT=seat-acceptance\nDEVNAME=/dev/input/event1\n")
+        ctx = SimpleNamespace(vm=vm, current=SimpleNamespace(id="I02"),
+                              write=lambda name, text: written.update({name: text}))
+        why = input_devices.keyboard_diagnosis(ctx)
+        self.assertIn("has not opened the profile keyboard", why)
+        self.assertIn("'tilo-vm keyboard'", why)
+        self.assertIn("ID_SEAT", why)
+        self.assertNotIn("DEVNAME", why)
+        self.assertIn("I02-keyboards.json", written)
+
     def test_every_check_has_a_registered_order_and_area(self):
         from run import ORDER  # noqa: PLC0415
         ids = {c.id for c in core.REGISTRY if c.area in ("agent", "input")}
