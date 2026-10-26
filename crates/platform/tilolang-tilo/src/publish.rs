@@ -506,8 +506,12 @@ impl Publications {
                 at.membership(tree, field, &mut rework.items);
             }
             at.rebuild(tree, &rework.items);
-            if rework.relabel {
-                let (label, named_by) = at.label();
+            let relabelled = match &rework.relabel {
+                Relabel::Kept => None,
+                Relabel::Within(top) => Some(at.label_within(top).unwrap_or_else(|| at.label())),
+                Relabel::Whole => Some(at.label()),
+            };
+            if let Some((label, named_by)) = relabelled {
                 tree.label = label;
                 self.named_by.insert(doc.clone(), named_by);
             }
@@ -565,7 +569,20 @@ struct Rework {
     /// The record's collections whose membership or order changed.
     collections: std::collections::BTreeSet<String>,
     /// Whether the text that names the record may have changed.
-    relabel: bool,
+    relabel: Relabel,
+}
+
+/// Where to look again for the text that names a record (the first text of its fields in id
+/// order, a collection's items in order: [`crate::reads::first_text`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Relabel {
+    /// Nothing changed at or before the text that names it.
+    Kept,
+    /// Only the top-level item that holds the name changed: if it still has a text, the first is
+    /// the name, as the items and fields before it hold none; else the whole record is read.
+    Within(String),
+    /// A field at or before the one that names it changed.
+    Whole,
 }
 
 /// One record being republished.
@@ -591,6 +608,13 @@ impl Published<'_> {
         (label, named.map(|(_, at)| at))
     }
 
+    /// The first text of the top-level item `top`, which named the record, and where it is.
+    fn label_within(&self, top: &str) -> Option<(String, Option<String>)> {
+        let at = tilolang_runtime::value::ResourceRef::parse_id(top, self.schema.id.clone())?;
+        let (text, held) = self.store.first_text(&at)?;
+        Some((text, Some(held)))
+    }
+
     fn rework(
         &self,
         fields: &std::collections::BTreeSet<tilolang_runtime::store::FieldKey>,
@@ -599,18 +623,27 @@ impl Published<'_> {
         let mut rework = Rework {
             items: std::collections::BTreeSet::new(),
             collections: std::collections::BTreeSet::new(),
-            relabel: false,
+            relabel: Relabel::Kept,
         };
+        // The field of the record the name is read through, when an item holds it: fields after
+        // it in id order cannot name the record while it does.
+        let naming_field = named_by
+            .and_then(|at| at.strip_prefix(self.doc)?.strip_prefix('/'))
+            .and_then(|rest| rest.split(':').next());
         for key in fields {
             if key.resource == self.doc {
                 let kind = self.schema.field(&key.field).map(|f| f.kind);
                 if kind == Some(crate::schema::MergeKind::Collection) {
                     rework.collections.insert(key.field.clone());
                 }
-                rework.relabel = true;
+                if naming_field.is_none_or(|f| key.field.as_str() <= f) {
+                    rework.relabel = Relabel::Whole;
+                }
             } else if let Some(top) = top_item(self.doc, &key.resource) {
-                if named_by.is_some_and(|at| at == top || at.starts_with(&format!("{top}/"))) {
-                    rework.relabel = true;
+                if rework.relabel == Relabel::Kept
+                    && named_by.is_some_and(|at| at == top || at.starts_with(&format!("{top}/")))
+                {
+                    rework.relabel = Relabel::Within(top.clone());
                 }
                 rework.items.insert(top);
             }

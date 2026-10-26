@@ -121,6 +121,9 @@ struct Inner {
     /// the record, and this device alone settles them.
     device: String,
     counter: u64,
+    /// The last snapshot taken, while the mirror has not changed since: what search and
+    /// publication starting in one frame share rather than copying the mirror twice.
+    snapshot: std::sync::Weak<Snapshot>,
 }
 
 /// The mirror as it was when taken, to read on another thread: what search and publication read
@@ -301,7 +304,7 @@ impl TiloStore {
     #[must_use]
     pub fn on_device(record: &Doc, device: &str) -> Self {
         let store = Self::new(record);
-        device.clone_into(&mut store.inner.borrow_mut().device);
+        device.clone_into(&mut store.mutate().device);
         store
     }
 
@@ -342,6 +345,7 @@ impl TiloStore {
                 device: instance.clone(),
                 instance,
                 counter: 0,
+                snapshot: std::sync::Weak::new(),
             })),
         }
     }
@@ -352,7 +356,7 @@ impl TiloStore {
     /// which resources changed. Returns whether the record had moved.
     pub fn sync_from(&self, record: &Doc) -> bool {
         let heads = record.committed_document().get_heads();
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         if inner.seen == heads {
             return false;
         }
@@ -403,7 +407,7 @@ impl TiloStore {
     /// available by ticket ([`Self::committed`]) until the door has answered ([`Self::take_ticket`]).
     #[must_use]
     pub fn take_committed(&self) -> Vec<Committed> {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         let taken: Vec<Committed> = inner.committed.drain(..).collect();
         for entry in &taken {
             inner.handed.insert(entry.ticket, entry.action.clone());
@@ -415,7 +419,7 @@ impl TiloStore {
     /// what one invocation committed, leaving the rest queued.
     #[must_use]
     pub fn take_committed_from(&self, first: u64) -> Vec<Committed> {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         let (mut taken, mut kept) = (Vec::new(), VecDeque::new());
         for entry in std::mem::take(&mut inner.committed) {
             if entry.ticket >= first {
@@ -446,7 +450,7 @@ impl TiloStore {
 
     /// Forget the action committed under `ticket`: the door has answered for it.
     pub fn take_ticket(&self, ticket: u64) -> Option<DynAction> {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         if let Some(action) = inner.handed.remove(&ticket) {
             return Some(action);
         }
@@ -468,7 +472,7 @@ impl TiloStore {
     /// commit makes a change.
     #[must_use]
     pub fn checkpoint(&self) -> Checkpoint {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         inner.trials = inner.trials.saturating_add(1);
         Checkpoint {
             held: inner.held.len(),
@@ -483,7 +487,7 @@ impl TiloStore {
     /// either: planning an action, as publishing every item's actions does, changes nothing
     /// anyone follows.
     pub fn rewind(&self, checkpoint: Checkpoint) {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         let kept = checkpoint.local.min(inner.local.len());
         inner.local.truncate(kept);
         inner.reapply();
@@ -509,7 +513,7 @@ impl TiloStore {
     /// Take every action committed under a ticket of `first` or later, oldest first.
     #[must_use]
     pub fn take_from(&self, first: u64) -> Vec<Committed> {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         let (mut taken, mut kept) = (Vec::new(), VecDeque::new());
         for entry in std::mem::take(&mut inner.committed) {
             if entry.ticket >= first {
@@ -572,14 +576,27 @@ impl TiloStore {
         read_resource(&inner.mirror, app, doc).map_err(backend)
     }
 
-    /// The mirror as it is now, to read on another thread.
+    /// The mirror as it is now, to read on another thread: one copy for every reader until the
+    /// mirror changes.
     #[must_use]
-    pub fn snapshot(&self) -> Snapshot {
-        let inner = self.inner.borrow();
-        Snapshot {
+    pub fn snapshot(&self) -> std::sync::Arc<Snapshot> {
+        let mut inner = self.inner.borrow_mut();
+        if let Some(taken) = inner.snapshot.upgrade() {
+            return taken;
+        }
+        let taken = std::sync::Arc::new(Snapshot {
             mirror: inner.mirror.clone(),
             index: inner.index.clone(),
-        }
+        });
+        inner.snapshot = std::sync::Arc::downgrade(&taken);
+        taken
+    }
+
+    /// The store, to change: a snapshot taken before no longer stands for the mirror.
+    fn mutate(&self) -> std::cell::RefMut<'_, Inner> {
+        let mut inner = self.inner.borrow_mut();
+        inner.snapshot = std::sync::Weak::new();
+        inner
     }
 
     /// The mirror's record of the resource at `at` (a document or an item in one), as the
@@ -614,7 +631,7 @@ impl TiloStore {
     /// # Errors
     /// The type is not registered, or the resource already exists.
     pub fn create_with_id(&self, record: &NewRecord, id: &str) -> Result<ResourceRef, StoreError> {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         if inner.index.contains_key(id) {
             return Err(invalid(format!("resource {id} exists")));
         }
@@ -833,11 +850,11 @@ fn edit_of(
 
 impl Store for TiloStore {
     fn fresh_id(&mut self, prefix: &str) -> String {
-        self.inner.borrow_mut().fresh(prefix)
+        self.mutate().fresh(prefix)
     }
 
     fn create(&mut self, record: &NewRecord) -> Result<ResourceRef, StoreError> {
-        let id = self.inner.borrow_mut().fresh("r");
+        let id = self.mutate().fresh("r");
         self.create_with_id(record, &id)
     }
 
@@ -853,7 +870,7 @@ impl Store for TiloStore {
     }
 
     fn begin(&mut self) -> Result<Txn, StoreError> {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         let id = inner.next_txn;
         inner.next_txn = inner.next_txn.wrapping_add(1);
         let start = inner.local.len();
@@ -868,7 +885,7 @@ impl Store for TiloStore {
     }
 
     fn apply(&mut self, txn: Txn, at: &ResourceRef, m: &Mutation) -> Result<Applied, StoreError> {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         if !inner.txns.contains_key(&txn.0) {
             return Err(invalid("no such transaction"));
         }
@@ -929,7 +946,7 @@ impl Store for TiloStore {
     }
 
     fn commit(&mut self, txn: Txn, note: &ChangeNote) -> Result<(), StoreError> {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         let state = inner
             .txns
             .remove(&txn.0)
@@ -972,7 +989,7 @@ impl Store for TiloStore {
     }
 
     fn rollback(&mut self, txn: Txn) {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         if let Some(state) = inner.txns.remove(&txn.0) {
             let start = state.start.min(inner.local.len());
             inner.local.truncate(start);
@@ -1000,7 +1017,7 @@ impl Store for TiloStore {
     }
 
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         let id = SubId(inner.next_sub);
         inner.next_sub = inner.next_sub.wrapping_add(1);
         inner.subs.push(Subscription {
@@ -1012,7 +1029,7 @@ impl Store for TiloStore {
     }
 
     fn unsubscribe(&mut self, sub: SubId) {
-        self.inner.borrow_mut().subs.retain(|held| held.id != sub);
+        self.mutate().subs.retain(|held| held.id != sub);
     }
 
     fn outbox_pending(&self) -> Vec<OutboxEntry> {
@@ -1034,7 +1051,7 @@ impl Store for TiloStore {
     }
 
     fn outbox_settle(&mut self, entry: &OutboxEntry, note: &ChangeNote) -> Result<(), StoreError> {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.mutate();
         let (app, ty) = inner
             .index
             .get(&entry.doc)
