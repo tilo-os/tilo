@@ -1322,19 +1322,17 @@ impl RoomStatusSource {
     }
 }
 
-/// Where `room` stands for the apps on this device. On this device only, or
-/// a join that failed or needs the person, is refused; a room still being
-/// joined or placed on its host waits, saying what last held its placement
-/// up.
+/// Where `room` stands for the apps on this device. A join that failed or
+/// needs the person is refused; a room still being joined or placed on its
+/// host waits, saying what last held its placement up.
 fn room_status(
     tree: &WorkspaceTreeHandle,
     network: Option<&super::network::ShellNetwork>,
     room: super::state::RoomId,
 ) -> runtime_collab::RoomStatus {
-    let (on_this_device_only, placing, unavailable) = {
+    let (placing, unavailable) = {
         let tree = tree.read();
         (
-            tree.on_this_device_only(room),
             tree.pending_placements.contains(&room),
             tree.documents_unavailable(room),
         )
@@ -1342,9 +1340,6 @@ fn room_status(
     let Some(reason) = unavailable else {
         return runtime_collab::RoomStatus::Ready;
     };
-    if on_this_device_only {
-        return runtime_collab::RoomStatus::Refused(super::i18n::t(reason));
-    }
     // A placement that failed is placed again once what it depends on
     // changes: it waits. A join that failed waits for the person.
     if !placing && let Some(refusal) = network.and_then(|network| network.join_refusal(room)) {

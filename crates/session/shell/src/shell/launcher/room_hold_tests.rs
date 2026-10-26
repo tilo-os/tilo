@@ -137,10 +137,16 @@ fn closing_the_window_of_a_held_launch_lets_it_go_so_nothing_starts_later() {
     drop(session);
 }
 
+/// A workspace from before rooms had hosts waits for this device's host as
+/// a new one does: a launch into it is held, never refused, and starts once
+/// the room is placed.
 #[test]
-fn a_held_launch_whose_room_will_not_be_ready_is_reported_with_the_reason() {
+fn a_launch_into_a_workspace_from_before_hosts_starts_once_it_is_placed() {
     let mut tree = WorkspaceTree::default();
     let (_, room) = tree.create_hosted_workspace("Plans");
+    // As a desktop saved before rooms had hosts loads: nothing waits.
+    tree.pending_placements.clear();
+    tree.claim_own_unhosted_rooms(|_| "me".to_owned());
     assert!(tree.pending_placements.contains(&room));
     let tree = tree.shared();
     let session = session_over(&tree);
@@ -152,23 +158,15 @@ fn a_held_launch_whose_room_will_not_be_ready_is_reported_with_the_reason() {
     );
 
     tree.write().pending_placements.remove(&room);
-    tilo_test_env::wait_until("the room's launch to be reported", || {
+    tilo_test_env::wait_until("the room's launch to start", || {
         !lock(&session.events).is_empty()
     });
-    let reported = session.take();
+    let started = session.take();
     drop(session);
-    assert_eq!(reported.len(), 1, "{reported:?}");
-    let reason = crate::shell::i18n::t("workspace-on-this-device-only-no-documents");
+    assert_eq!(started.len(), 1, "{started:?}");
     assert!(
-        matches!(
-            &reported[0].kind,
-            LaunchEventKind::SpawnFailed { reason: LaunchFailure::RoomRefused, detail } if *detail == reason
-        ),
-        "{:?}",
-        reported[0].kind
-    );
-    assert_eq!(
-        reported[0].failure_notice().map(|notice| notice.body),
-        Some(reason)
+        matches!(started[0].kind, LaunchEventKind::Exited),
+        "the launch started: {:?}",
+        started[0].kind
     );
 }

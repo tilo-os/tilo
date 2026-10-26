@@ -2343,10 +2343,13 @@ fn cancelling_the_sheet_stops_the_run_with_nothing_applied() {
     assert!(sheet_gone);
 }
 
-/// A workspace from before rooms had hosts is on this device only: an app
-/// launched there is told so as it joins, plainly, and nothing else.
-#[test]
-fn an_app_in_a_workspace_on_this_device_only_is_told_so() {
+/// A broker over a room that waits to be placed on this device's host, as
+/// `wait_for_placement` leaves it, with the host's own identity in place.
+/// An app launched into it is held, not refused, and joins once the room is
+/// placed.
+fn an_app_joins_once_its_room_is_placed(
+    wait_for_placement: impl FnOnce(&crate::shell::state::WorkspaceTreeHandle),
+) {
     let dir = tempfile::tempdir().expect("socket directory");
     std::fs::set_permissions(
         dir.path(),
@@ -2364,77 +2367,66 @@ fn an_app_in_a_workspace_on_this_device_only_is_told_so() {
     )
     .expect("the host's own identity");
     let socket = dir.path().join("collab.sock");
-    // The broker's room is no host's: it is on this device only.
     let (_broker, membership) = spawn_broker(&socket);
     let room = crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
-    assert!(membership.read().on_this_device_only(room));
+    wait_for_placement(&membership);
+    assert!(
+        membership.read().pending_placements.contains(&room),
+        "the room waits to be placed on this device's host"
+    );
+    assert_eq!(
+        membership.read().documents_unavailable(room),
+        Some("workspace-not-ready-no-documents")
+    );
 
-    let refused = CollaborationManager::for_route_fd_with_identity(
-        launched(&socket, FIXTURE).into_raw_fd(),
-        FIXTURE,
-        ROOM,
-        Some(RECORD.to_string()),
-        Some(FIXTURE_HANDLE.to_string()),
-        endpoint_identity(FIXTURE_HANDLE),
-    )
-    .err()
-    .expect("an app opens no document in a room on this device only");
-    let reason = crate::shell::i18n::t("workspace-on-this-device-only-no-documents");
-    assert!(
-        format!("{refused:?}").contains(&reason),
-        "the app hears why: {refused:?}"
-    );
-    assert!(
-        membership.read().pending_placements.is_empty(),
-        "and nothing is queued to try again"
-    );
+    let route = launched(&socket, FIXTURE).into_raw_fd();
+    let joining = std::thread::spawn(move || {
+        CollaborationManager::for_route_fd_with_identity(
+            route,
+            FIXTURE,
+            ROOM,
+            Some(RECORD.to_string()),
+            Some(FIXTURE_HANDLE.to_string()),
+            endpoint_identity(FIXTURE_HANDLE),
+        )
+        .map(drop)
+        .map_err(|error| format!("{error:?}"))
+    });
+    tilo_test_env::wait_until("the app's join to wait for its room", || {
+        membership.room_readiness().watched()
+    });
+    assert!(!joining.is_finished(), "the join is held, not refused");
+
+    // Placed, the room is held and waits no more.
+    membership.write().pending_placements.remove(&room);
+    joining
+        .join()
+        .expect("the joining thread")
+        .expect("the app joins its room once it is placed");
+}
+
+/// A workspace from before rooms had hosts is this person's, and is placed
+/// on this device's host as a new one is: an app launched there waits for
+/// it, and is never told it cannot open documents there.
+#[test]
+fn an_app_in_a_workspace_from_before_hosts_waits_for_its_placement() {
+    an_app_joins_once_its_room_is_placed(|membership| {
+        let mut tree = membership.write();
+        assert!(
+            !tree
+                .native_authority
+                .requires(crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"))
+        );
+        tree.claim_own_unhosted_rooms(|_| owner_principal());
+    });
 }
 
 /// A workspace still being placed on its host holds no records yet: an app
-/// launched there is told the workspace is not ready, never a failure from
-/// deeper in.
+/// launched there waits for it, never a failure from deeper in.
 #[test]
-fn an_app_in_a_workspace_still_being_placed_is_told_it_is_not_ready() {
-    let dir = tempfile::tempdir().expect("socket directory");
-    std::fs::set_permissions(
-        dir.path(),
-        std::os::unix::fs::PermissionsExt::from_mode(0o700),
-    )
-    .expect("owner-only socket directory");
-    let mut host_identity = tilo_test_env::ScopedEnv::new();
-    host_identity
-        .set("XDG_CONFIG_HOME", dir.path().join("config"))
-        .set("TILO_IDENTITY_ROOT", dir.path().join("system"))
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-    crate::firstboot::ensure_throwaway_test_identity(
-        &runtime_identity::identity_dir_from_env().expect("the identity directory"),
-        &crate::firstboot::collaboration_identity_paths(),
-    )
-    .expect("the host's own identity");
-    let socket = dir.path().join("collab.sock");
-    // The broker's room waits to be placed on this device's host.
-    let (_broker, membership) = spawn_broker(&socket);
-    let room = crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
-    membership.write().pending_placements.insert(room);
-    assert!(!membership.read().on_this_device_only(room));
-
-    let refused = CollaborationManager::for_route_fd_with_identity(
-        launched(&socket, FIXTURE).into_raw_fd(),
-        FIXTURE,
-        ROOM,
-        Some(RECORD.to_string()),
-        Some(FIXTURE_HANDLE.to_string()),
-        endpoint_identity(FIXTURE_HANDLE),
-    )
-    .err()
-    .expect("an app opens no document in a room not placed yet");
-    let reason = crate::shell::i18n::t("workspace-not-ready-no-documents");
-    assert!(
-        format!("{refused:?}").contains(&reason),
-        "the app hears why: {refused:?}"
-    );
-    assert!(
-        !format!("{refused:?}").contains("custody"),
-        "and not a custody failure: {refused:?}"
-    );
+fn an_app_in_a_workspace_still_being_placed_waits_until_it_is() {
+    an_app_joins_once_its_room_is_placed(|membership| {
+        let room = crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
+        membership.write().pending_placements.insert(room);
+    });
 }

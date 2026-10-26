@@ -42,17 +42,19 @@ fn a_room_being_joined_is_answered_once_it_is_ready() {
     drop(rooms);
 }
 
-/// A room no host holds, with its workspace only here, is refused with the
-/// reason, at once.
+/// A workspace this device made, or one from before rooms had hosts, that
+/// no host holds waits to be placed on this device's host: an app asking for
+/// it waits, and is never refused.
 #[test]
-fn a_room_on_this_device_only_is_refused_with_the_reason() {
+fn a_room_no_host_holds_waits_for_its_placement() {
     let mut tree = WorkspaceTree::default();
     let (_, room) = tree.create_hosted_workspace("Plans");
-    assert!(tree.pending_placements.remove(&room));
+    // As a desktop saved before rooms had hosts loads: nothing waits.
+    tree.pending_placements.clear();
+    tree.claim_own_unhosted_rooms(|_| "me".to_owned());
+    assert!(tree.pending_placements.contains(&room));
     assert_eq!(
         RoomStatusSource::new(tree.shared(), None).status(room),
-        RoomStatus::Refused(crate::shell::i18n::t(
-            "workspace-on-this-device-only-no-documents"
-        ))
+        waiting()
     );
 }
