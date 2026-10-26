@@ -19,7 +19,7 @@ use ui::widget::{
 };
 
 use crate::apply::AppearanceChoice;
-use crate::preview::ThemePreview;
+use crate::preview::{Show, ThemePreview};
 use crate::studio::{Rung, Studio, Theme};
 
 /// What the content pane shows.
@@ -271,7 +271,7 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
         live: cx.live().clone(),
         shown: window_bar::Shown::default(),
     };
-    crate::effects::install(cx, &ui.notice);
+    crate::effects::install(cx, &ui.notice, &ui.page, &ui.pane);
     {
         let ui = ui.clone();
         cx.on_stage(move |scenario| {
@@ -670,14 +670,53 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> Element {
         let editing = editing.clone();
         cx.value(move |studio: &Studio| editing.read(studio, |theme| theme.document(&raw)))
     };
-    let preview = ModelView::from_state(&document, |document: &Option<ThemeDocument>| {
-        document.as_ref().map_or_else(
-            || -> Element { Box::new(Text::new("themes-missing")) },
-            |document| -> Element {
-                Box::new(ThemePreview::new(document, 260.0).with_id("theme-preview"))
-            },
-        )
-    });
+    let preview_view = LocalState::new(t("themes-preview-desktop"));
+    let preview = {
+        let source = document.clone();
+        ModelView::from_state(&preview_view, move |picked: &String| {
+            let source = source.clone();
+            let picked = picked.clone();
+            Box::new(ModelView::from_state(
+                &source,
+                move |document: &Option<ThemeDocument>| -> Element {
+                    let show = match picked.as_str() {
+                        "List" => Show::List,
+                        "Dialog" => Show::Dialog,
+                        "Presence" => Show::Presence,
+                        _ => Show::Desktop,
+                    };
+                    document.as_ref().map_or_else(
+                        || -> Element { Box::new(Text::new("themes-missing")) },
+                        |document| -> Element {
+                            Box::new(
+                                ThemePreview::new(document, 260.0)
+                                    .show(show)
+                                    .with_id("theme-preview"),
+                            )
+                        },
+                    )
+                },
+            )) as Element
+        })
+    };
+    let preview_switch = {
+        let mode = preview_view.clone();
+        Row::new().with_padding_rhythm(None, None).push(Box::new(
+            Dropdown::from_state(
+                [
+                    t("themes-preview-desktop"),
+                    t("themes-preview-list"),
+                    t("themes-preview-dialog"),
+                    t("themes-preview-presence"),
+                ]
+                .to_vec(),
+                &preview_view,
+            )
+            .on_change(move |picked| mode.set(picked.to_owned()))
+            .with_id("theme-preview-view")
+            .with_accessible_name(t("themes-preview")),
+        ))
+    };
     let presence = ModelView::from_state(&document, |document: &Option<ThemeDocument>| {
         document.as_ref().map_or_else(
             || -> Element { Box::new(Spacer::new()) },
@@ -859,6 +898,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> Element {
             .fill_parent_height()
             .with_child(Box::new(ui::column![
                 preview,
+                preview_switch,
                 editor_notice(ui, editing),
                 form,
             ])),
