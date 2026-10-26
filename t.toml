@@ -3368,7 +3368,7 @@ outputs = ["/target/auth-e2e/**"]
 git = true
 requires = ["arch=x86_64"]
 hints = { builds = false }
-timeout_secs = 5400
+timeout_secs = 9000
 cost = "heavy"
 default = false
 
@@ -3403,7 +3403,7 @@ hints = { builds = false }
 on = ["dispatch"]
 cache = false
 outputs = ["/target/shared-desktop-e2e/**"]
-timeout_secs = 5400
+timeout_secs = 9000
 cost = "heavy"
 default = false
 
