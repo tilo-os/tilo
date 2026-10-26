@@ -238,6 +238,12 @@ pub trait CollabTransport: Send {
         true
     }
 
+    /// Why the last join of `channel` failed, until a join of it succeeds.
+    fn route_join_failure(&self, channel: &str) -> Option<String> {
+        let _ = channel;
+        None
+    }
+
     /// Independently sampled read phases, for bounded test diagnostics only.
     /// These observations never authorize publication or acknowledge a read.
     #[cfg(any(test, feature = "test-support"))]

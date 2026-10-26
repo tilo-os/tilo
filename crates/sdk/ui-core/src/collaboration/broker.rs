@@ -796,7 +796,16 @@ impl CollabTransport for BrokerTransport {
             "staged": phase.staged,
             "applied": phase.applied,
             "refresh_requested": phase.refresh_requested,
+            "join_failure": self.route_join_failure(channel),
         }))
+    }
+
+    fn route_join_failure(&self, channel: &str) -> Option<String> {
+        self.state
+            .route_join_failures
+            .lock_recover()
+            .get(channel)
+            .cloned()
     }
 
     fn take_action_surface_failed(&mut self) -> bool {
@@ -2015,6 +2024,9 @@ struct BridgeState {
         >,
     >,
     document_reads: committed_document::Reads,
+    /// Why each route whose last join failed failed, by channel: a route
+    /// that never joined says so instead of staying unready without a word.
+    route_join_failures: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
     /// The broker refused or failed an action-surface publication; the owner
@@ -2185,6 +2197,7 @@ impl BridgeState {
         Self {
             connection_snapshots: Arc::default(),
             document_reads: committed_document::Reads::default(),
+            route_join_failures: Arc::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
             action_surface_failed: Arc::new(AtomicBool::new(false)),
@@ -4593,7 +4606,7 @@ async fn drive_shovel(
                 }
             }
             SdkCommand::Join(spec, record_kind) => {
-                let _ = ensure_sdk_route(
+                let joined = ensure_sdk_route(
                     &SdkJoinContext {
                         asks_channel_keys,
                         key_signals: &key_signals,
@@ -4610,6 +4623,7 @@ async fn drive_shovel(
                     record_kind.as_deref().unwrap_or(""),
                 )
                 .await;
+                note_route_join(&inbound_tx.state, &spec, joined);
             }
             SdkCommand::ToRoute(spec, request) => {
                 let key = spec.channel_id();
@@ -4630,9 +4644,8 @@ async fn drive_shovel(
                     "",
                 )
                 .await;
-                if joined.is_ok()
-                    && let Some(route) = routes.get_mut(&key)
-                {
+                let joined = note_route_join(&inbound_tx.state, &spec, joined);
+                if joined && let Some(route) = routes.get_mut(&key) {
                     published =
                         dispatch_sdk_request(route, request, &mut signer, &inbound_tx).await;
                     if !inbound_tx.state.is_healthy() {
@@ -4995,6 +5008,29 @@ async fn person_room_presentation(
     .encode()
     .ok()?;
     Some((room, bytes))
+}
+
+/// Keep `joined`, the outcome of joining `spec`, where the route's owner and
+/// diagnostics read it ([`CollabTransport::route_join_failure`]): a failed
+/// join's reason until a later join of the route succeeds. Whether it joined.
+fn note_route_join(state: &BridgeState, spec: &RouteSpec, joined: Result<(), String>) -> bool {
+    let mut failures = state.route_join_failures.lock_recover();
+    match joined {
+        Ok(()) => {
+            failures.remove(&spec.channel_id());
+            true
+        }
+        Err(reason) => {
+            tracing::warn!(
+                app = %spec.app_id,
+                record = spec.record.as_deref().unwrap_or(""),
+                %reason,
+                "collab: route did not join"
+            );
+            failures.insert(spec.channel_id(), reason);
+            false
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -9799,6 +9835,42 @@ mod tests {
         );
         drop(manager);
         thread.join().unwrap();
+    }
+
+    /// A route kept beside the window's own whose join the broker refuses
+    /// (here its committed read) says why on the route, where diagnostics
+    /// and the window read it, instead of staying unready without a word.
+    #[test]
+    #[cfg(unix)]
+    fn a_refused_route_join_says_why() {
+        let room = Uuid::new_v4();
+        let primary = RouteSpec::record("so.tilo.notes", room, "tab:0000000000000001");
+        let beside = RouteSpec::record(
+            "so.tilo.chat",
+            room,
+            collab_types::workspace_record_id("tilo.workspace.emoji"),
+        );
+        let (mut manager, _) =
+            CollaborationManager::native_initial_named_invocation_fixture_for_test(
+                primary.clone(),
+                automerge::AutoCommit::new().save(),
+                std::slice::from_ref(&beside),
+            );
+        assert_eq!(manager.route_join_failure(&beside), None);
+        manager.join_route(beside.clone());
+        tilo_test_env::wait_until("the refused join to say why", || {
+            manager.route_join_failure(&beside).is_some()
+        });
+        let reason = manager.route_join_failure(&beside).unwrap();
+        assert!(
+            reason.contains("committed read custody refused for this route"),
+            "{reason}"
+        );
+        assert_eq!(
+            manager.route_join_failure(&primary),
+            None,
+            "the window's own route joined"
+        );
     }
 
     #[test]
