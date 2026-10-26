@@ -22,7 +22,7 @@ pub use arranged::{Arranged, Layout, Resolved, Slot};
 pub use flex::{FlexLayout, Row, Stack};
 pub use grid::{Columns, Grid, GridLayout};
 pub use layers::{Layers, LayersLayout};
-pub use page::{MEASURE_REM, Page, PageLayout};
+pub use page::{MEASURE_REM, Page, PageLayout, PageRowEdges};
 pub use split::{Collapse, Navigation, Pane, Side, Split, SplitLayout};
 pub use units::{
     Align, Arrangement, At, Axis, Direction, Distribute, Fit, Length, Orientation, Sizing, Space,

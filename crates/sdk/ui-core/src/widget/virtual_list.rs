@@ -340,6 +340,18 @@ impl From<ListRowState<'_>> for MountedRowState {
     }
 }
 
+/// The space a list leaves above its first row and below its last
+/// ([`VirtualList::with_edges`]), part of what it scrolls: a page's top and
+/// bottom spacing around rows that are a page's content, one by one.
+pub trait ListEdges {
+    /// Read what the edges depend on from the theme of a layout.
+    fn theme(&mut self, theme: &Theme);
+
+    /// The space above the first row and below the last, for rows `width`
+    /// wide.
+    fn edges(&mut self, width: f64) -> (f64, f64);
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "focus, drag threshold, fetch, structural, and layout invalidation are independent widget states"
@@ -384,6 +396,10 @@ pub struct VirtualList<M: ListModel> {
     /// layout's theme.
     gutter: f64,
     bleed: f64,
+    /// The rows span the list, without a lift's bleed ([`Self::flush`]).
+    flush: bool,
+    /// The space above the first row and below the last ([`Self::with_edges`]).
+    edges: Option<Box<dyn ListEdges>>,
     /// Whether the rows were last laid out beside a scroll bar.
     rows_beside_bar: bool,
     /// The list takes its parent's height, and its viewport follows it.
@@ -521,6 +537,8 @@ impl<M: ListModel> VirtualList<M> {
             vbar: Scrollbar::vertical(),
             gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
+            flush: false,
+            edges: None,
             rows_beside_bar: false,
             fill_height: false,
             follow_end: false,
@@ -580,6 +598,40 @@ impl<M: ListModel> VirtualList<M> {
         self.viewport.set_viewport(f64::from(height));
         self.keep_end();
         self.visible_window_changed();
+    }
+
+    /// Rows span the list, edge to edge: for rows that bring their own insets
+    /// and lift no selection, as a page's rows do, so their content shares
+    /// the edge of the page around the list. Rows of a list stand one lift's
+    /// bleed in from its edges otherwise.
+    #[must_use]
+    pub const fn flush(mut self) -> Self {
+        self.flush = true;
+        self
+    }
+
+    /// Leave the space `edges` asks for above the first row and below the
+    /// last. It scrolls with the rows, as a page's spacing does.
+    #[must_use]
+    pub fn with_edges(mut self, edges: impl ListEdges + 'static) -> Self {
+        self.edges = Some(Box::new(edges));
+        self
+    }
+
+    /// Bring the space above the first row and below the last in line with
+    /// the rows' width. Whether it changed.
+    fn update_edges(&mut self) -> bool {
+        let Some(edges) = self.edges.as_mut() else {
+            return false;
+        };
+        let bar = if self.rows_beside_bar {
+            self.gutter
+        } else {
+            0.0
+        };
+        let width = (self.rect.width() - 2.0 * self.bleed - bar).max(0.0);
+        let (lead, trail) = edges.edges(width);
+        self.viewport.set_edges(lead, trail)
     }
 
     /// Take the parent's full height (a pane's one list) instead of a fixed
@@ -1625,7 +1677,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             self.momentum.stop();
         }
         self.gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
-        self.bleed = crate::chrome::row_bleed(theme);
+        self.bleed = if self.flush {
+            0.0
+        } else {
+            crate::chrome::row_bleed(theme)
+        };
+        if let Some(edges) = self.edges.as_mut() {
+            edges.theme(theme);
+        }
+        self.update_edges();
         if self.keep_end() {
             self.refresh_anchor();
         }
@@ -1704,7 +1764,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             row.widget.apply_layout(taffy, child, child_origin);
             measurements.push((row.index, row.key.clone(), row.widget.get_rect().height()));
         }
-        let mut measured = false;
+        // The width the rows take is known now: the space around them follows it.
+        let mut measured = self.update_edges();
         for (index, key, height) in measurements {
             // A first measurement equal to the estimate moves nothing: the
             // rows a scroll brought near keep the frame described.
@@ -3223,6 +3284,58 @@ mod tests {
         let row = short.mounted[0].widget.get_rect();
         assert!((row.x1 - (300.0 - bleed)).abs() < 0.5);
         assert!(short.scrollbar_track().is_none());
+    }
+
+    /// The rect of the first widget under `widget` that holds no other.
+    fn first_leaf(widget: &dyn Widget) -> Rect {
+        widget
+            .children()
+            .first()
+            .map_or_else(|| widget.get_rect(), |child| first_leaf(*child))
+    }
+
+    #[test]
+    fn flush_page_rows_with_page_edges_stand_where_a_page_puts_its_content() {
+        use crate::widget::arrange::{Page, PageRowEdges};
+        let text = |n: u32| Box::new(crate::widget::Text::new(&format!("row {n}"))) as Element;
+        let mut list = VirtualList::from_items(
+            vec![0_u32, 1, 2],
+            40.0,
+            |item| *item,
+            move |item, _, _| Box::new(Page::full().row().push(text(*item))) as Element,
+        )
+        .unwrap()
+        .with_viewport_height(400.0)
+        .flush()
+        .with_edges(PageRowEdges::new());
+        // The first layout learns the rows' width, the second places them by it.
+        let _ = lay_out(&mut list, 600.0);
+        let _ = lay_out(&mut list, 600.0);
+        let row = first_leaf(list.mounted[0].widget.as_ref());
+
+        let mut page = Page::full().push(text(0));
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let node = page.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(600.0),
+                    height: AvailableSpace::Definite(400.0),
+                },
+            )
+            .unwrap();
+        page.apply_layout(&taffy, node, Point::ZERO);
+        let alone = first_leaf(&page);
+        assert!(
+            (row.x0 - alone.x0).abs() < 0.5,
+            "one content edge: {row:?} {alone:?}"
+        );
+        assert!(
+            (row.y0 - alone.y0).abs() < 0.5,
+            "the page's top spacing: {row:?} {alone:?}"
+        );
     }
 
     #[test]

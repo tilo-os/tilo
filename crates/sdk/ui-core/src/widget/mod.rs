@@ -3277,7 +3277,7 @@ pub use tree_view::{
 };
 pub mod virtual_list;
 pub use virtual_list::{
-    DuplicateListKey, ListModel, ListRowState, RowSelection, VecListModel, VirtualList,
+    DuplicateListKey, ListEdges, ListModel, ListRowState, RowSelection, VecListModel, VirtualList,
 };
 mod activation;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};

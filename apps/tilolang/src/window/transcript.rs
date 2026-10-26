@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilolang_tilo::runtime::{UiNode, ViewInstance};
-use ui::widget::arrange::{Page, Slot};
+use ui::widget::arrange::{Page, PageRowEdges, Slot};
 use ui::widget::{Element, Spacer, VirtualList};
 
 use super::list::{RowRead, Rows};
@@ -51,7 +51,8 @@ impl RowRead for ThreadSource {
 pub type Thread = VirtualList<Rows<ThreadSource>>;
 
 /// The transcript of `source`'s list, its rows built by `reconciler`, each in the column of the
-/// page the composer is in.
+/// page the composer is in: the rows span the list, so their content shares the composer's
+/// edge, and the page's top and bottom spacing stand above the first row and below the last.
 pub fn thread(source: Rc<ThreadSource>, mut reconciler: Reconciler) -> Thread {
     VirtualList::new(Rows::of(source), ESTIMATED_ROW, move |rows, _, key| {
         rows.find(key).map_or_else(
@@ -65,6 +66,8 @@ pub fn thread(source: Rc<ThreadSource>, mut reconciler: Reconciler) -> Thread {
             },
         )
     })
+    .flush()
+    .with_edges(PageRowEdges::new())
     .filling()
     .following_end()
     .with_id("tilolang.transcript")
