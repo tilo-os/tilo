@@ -1105,8 +1105,9 @@ impl ProfileCard {
 
     /// What came of a linked account's choice (a link made its code, an
     /// account was linked or unlinked): the open card shows `linked` now.
+    /// They are the person's own, so someone else's card stays as it is.
     pub fn set_linked(&mut self, linked: Vec<LinkedAccount>) {
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model.as_mut().filter(|model| model.other.is_none()) else {
             return;
         };
         if model.linked == linked {
@@ -1593,6 +1594,10 @@ mod tests {
             self.card.update(state, path) | changed
         }
 
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+            self.card.handle_event(event, ctx);
+        }
+
         fn children(&self) -> Vec<&dyn Widget> {
             vec![&self.card]
         }
@@ -1647,6 +1652,49 @@ mod tests {
             "the frame lays the rebuilt card out again instead of keeping the old layout"
         );
         assert!(harness.inspection_json().unwrap().contains("@ada.l"));
+    }
+
+    /// The linked accounts the host hears about are the person's own. While
+    /// someone else's card is open (opened from an author in Chat) they keep
+    /// arriving, the first answer a couple of seconds after opening: the
+    /// card is not built again under the pointer for them, it stays open
+    /// as it was and goes on answering presses.
+    #[test]
+    fn someone_elses_card_stays_as_it_was_when_your_linked_accounts_arrive() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &ada(true, crate::collaborators::LineSource::Generated),
+            Rect::new(600.0, 300.0, 602.0, 302.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        let next = Rc::new(RefCell::new(None));
+        let shell = Shell {
+            card,
+            next: Rc::clone(&next),
+        };
+        let mut frame =
+            ui::headless::Framed::new(ui::State::new(), shell, (1280, 720), Theme::dark());
+        let harness = ui::headless::Framed::harness_mut(&mut frame);
+        harness.poll_frame().unwrap();
+        let before = harness.rebuilt_frames();
+        *next.borrow_mut() = Some(vec![discord(LinkState::Unlinked)]);
+        harness.poll_frame().unwrap();
+        assert_eq!(
+            harness.rebuilt_frames(),
+            before,
+            "nothing of the card was built again"
+        );
+        let said = harness.inspection_json().unwrap();
+        assert!(!said.contains("Linked accounts"), "{said}");
+        harness.click_named("profile-follow").unwrap();
+        harness.poll_frame().unwrap();
+        let card = &mut frame.card;
+        assert!(card.is_open(), "the card stays open");
+        assert_eq!(
+            card.take_choice(),
+            Some(ProfileChoice::Follow("ada-device".into()))
+        );
     }
 
     /// Where the host keeps only how what they do is shared (a page), the

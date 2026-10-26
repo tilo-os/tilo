@@ -1600,9 +1600,10 @@ impl BrowserShell {
                 .follow_anchor(self.bar.own_avatar_rect(), self.rect);
         }
         // Before the requests are taken, so the asks it makes go out now.
+        // Only the person's own card shows their linked accounts.
         self.linking.follow(
             &self.chrome.shared.linked,
-            self.profile.is_open(),
+            self.profile.is_open() && self.profile_of.is_none(),
             ui::time::now(),
         );
         let asked = self.chrome.shared.room_actions.take_requests();
