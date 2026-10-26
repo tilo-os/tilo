@@ -154,9 +154,24 @@ impl Widget for PendingWindow {
     }
 
     fn arrives_from(&self) -> Source {
-        self.downloading()
-            .and_then(registry_host)
-            .map_or(Source::Local, Source::host)
+        if let Some(downloading) = self.downloading() {
+            return registry_host(downloading).map_or(Source::Local, Source::host);
+        }
+        // A launch held until its room is ready comes from the room: the
+        // host it is being placed on, or the room being joined.
+        #[cfg(any(test, target_os = "linux"))]
+        if let Some(wait) = self
+            .package
+            .as_deref()
+            .and_then(crate::shell::launcher::room_hold::room_wait)
+        {
+            use crate::shell::launcher::room_hold::RoomWait;
+            return Source::host(crate::shell::i18n::t(match wait {
+                RoomWait::Placing => "pending-window-from-own-host",
+                RoomWait::Joining => "pending-window-from-room",
+            }));
+        }
+        Source::Local
     }
 
     fn arrival_progress(&self) -> Option<Progress> {
