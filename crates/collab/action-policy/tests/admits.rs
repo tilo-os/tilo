@@ -3,8 +3,8 @@
 //! one, so a catalogue never lists what invoking refuses.
 
 use tilo_action_policy::{
-    ActionKind, Admission, Answer, Caller, CatalogueEntry, Context, Grant, GrantId, KindSet, Level,
-    Lifetime, Role, RoomPolicy, Subject, TreePath, admit_catalogue, roles,
+    ActionKind, Answer, Bound, Caller, CatalogueEntry, Context, DoorAnswer, Grant, GrantId,
+    KindSet, Level, Lifetime, Role, RoomPolicy, Subject, TreePath, admit_catalogue, roles,
 };
 
 const NOW: u64 = 1_000_000;
@@ -57,18 +57,35 @@ fn a_persons_own_gesture_answers_their_own_ask() {
     let asked = Caller::person(MEMBER).in_room(&policy);
     assert!(
         asked
-            .admit(&post(), ActionKind::Undoable, false, &cx())
+            .admit(&post(), ActionKind::Undoable, false, false, &cx())
             .is_admitted(),
         "a person acting themselves is the answer to their ask"
     );
 }
 
+/// A delegation whose preset allows `node`: what the tests below need for a
+/// bound that is not itself the reason an answer refuses.
+fn delegation_at(node: &TreePath) -> Bound {
+    let agent = Subject::agent("agent-1");
+    Bound {
+        subject: agent.clone(),
+        grants: vec![Grant::new(
+            "delegated",
+            agent,
+            TreePath::room(ROOM).joined(node),
+            KindSet::ALL,
+            Answer::Allow,
+            Subject::person(MEMBER),
+        )],
+    }
+}
+
 #[test]
 fn a_delegates_ask_waits_for_the_person() {
     let policy = policy_granting(Subject::person(MEMBER), &post(), Answer::Ask);
-    let agent = Caller::person(MEMBER).bounded_by(roles::agent_delegation(ROOM, "agent-1", MEMBER));
+    let agent = Caller::person(MEMBER).bounded_by(delegation_at(&post()));
     let asked = agent.in_room(&policy);
-    let admission = asked.admit(&post(), ActionKind::Undoable, false, &cx());
+    let admission = asked.admit(&post(), ActionKind::Undoable, false, false, &cx());
     assert!(
         admission.is_ask(),
         "an agent's ask is the person's to answer, not its own"
@@ -79,12 +96,89 @@ fn a_delegates_ask_waits_for_the_person() {
     );
 }
 
+/// The person's host on their own device answers their ask, putting it to
+/// them: their own gesture is not the only way an ask is answered.
+#[test]
+fn a_host_witnessed_ask_runs_once_the_person_answers() {
+    let policy = policy_granting(Subject::person(MEMBER), &post(), Answer::Ask);
+    let witnessed = Caller::person(MEMBER).hosted().in_room(&policy);
+    assert!(
+        witnessed
+            .admit(&post(), ActionKind::Undoable, false, false, &cx())
+            .is_admitted(),
+        "the host asks them and hands the answered invocation on"
+    );
+    let unwitnessed = Caller::person(MEMBER).in_room(&policy);
+    assert!(
+        !unwitnessed
+            .admit(&post(), ActionKind::Undoable, false, false, &cx())
+            .is_ask(),
+        "on their own device the person's gesture is the answer"
+    );
+}
+
+/// A door that cannot reach the person does not hold their ask: it refuses.
+#[test]
+fn an_ask_nobody_can_answer_refuses() {
+    let policy = policy_granting(Subject::person(MEMBER), &post(), Answer::Ask);
+    let asking = Caller::person(MEMBER).bounded_by(delegation_at(&post()));
+    assert!(
+        asking
+            .in_room(&policy)
+            .admit(&post(), ActionKind::Undoable, false, false, &cx())
+            .is_ask(),
+        "a delegation's host puts the ask to its person"
+    );
+    let alone = asking.unreachable().in_room(&policy);
+    let refused = alone.admit(&post(), ActionKind::Undoable, false, false, &cx());
+    assert!(
+        matches!(refused, DoorAnswer::Refused(_)),
+        "nobody is there to answer, so it does not run"
+    );
+    assert_eq!(refused.answer(), Answer::Deny);
+}
+
+/// A record with no grant at all is refused outright, ask or not.
+#[test]
+fn no_grant_is_refused_rather_than_asked() {
+    let policy = room_with(Role::Editor);
+    let stranger = Caller::person("c0ffee").in_room(&policy);
+    assert_eq!(
+        stranger
+            .admit(&post(), ActionKind::Undoable, false, false, &cx())
+            .answer(),
+        Answer::Deny
+    );
+}
+
+#[test]
+fn an_attended_action_asks_a_delegate_even_when_its_grants_allow() {
+    let policy = policy_granting(Subject::person(MEMBER), &post(), Answer::Allow);
+    let agent = Caller::person(MEMBER).bounded_by(delegation_at(&post()));
+    let asked = agent.in_room(&policy);
+    assert!(
+        asked
+            .admit(&post(), ActionKind::Undoable, false, true, &cx())
+            .is_ask(),
+        "an attended action waits for its person"
+    );
+    assert!(
+        asked
+            .admit(&post(), ActionKind::Undoable, false, false, &cx())
+            .is_admitted(),
+        "what does not wait for them runs on its grants"
+    );
+}
+
 #[test]
 fn a_person_on_a_foreign_device_answers_their_ask_through_their_host() {
     let policy = policy_granting(Subject::person(MEMBER), &post(), Answer::Ask);
-    let away = Caller::person(MEMBER).on_foreign_device().in_room(&policy);
+    let away = Caller::person(MEMBER)
+        .bounded_by(delegation_at(&post()))
+        .on_foreign_device()
+        .in_room(&policy);
     assert!(
-        away.admit(&post(), ActionKind::Undoable, false, &cx())
+        away.admit(&post(), ActionKind::Undoable, false, false, &cx())
             .is_ask(),
         "a device that is not theirs cannot answer for them"
     );
@@ -97,7 +191,7 @@ fn a_delegation_never_reaches_past_its_person() {
     assert_eq!(
         agent
             .in_room(&policy)
-            .admit(&post(), ActionKind::Undoable, false, &cx())
+            .admit(&post(), ActionKind::Undoable, false, false, &cx())
             .answer(),
         Answer::Deny,
         "the person's deny bounds the delegation"
@@ -110,7 +204,7 @@ fn a_privileged_action_needs_the_persons_own_allow() {
     assert_eq!(
         Caller::person(MEMBER)
             .in_room(&policy)
-            .admit(&post(), ActionKind::Outside, true, &cx())
+            .admit(&post(), ActionKind::Outside, true, false, &cx())
             .answer(),
         Answer::Deny,
         "an ask is no authority the person lacks, so it cannot stand for one"
@@ -148,7 +242,9 @@ fn discovery_marks_exactly_what_the_door_answers() {
     assert_eq!(marks, vec![Answer::Ask, Answer::Deny]);
     for (entry, mark) in entries.iter().zip(marks) {
         assert_eq!(
-            asked.admit(entry.node, entry.kind, false, &cx()).answer(),
+            asked
+                .admit(entry.node, entry.kind, false, false, &cx())
+                .answer(),
             mark,
             "a listing and the door agree on {}",
             entry.node
@@ -174,7 +270,7 @@ fn an_admitted_run_spends_its_once_grant_and_a_refused_one_keeps_it() {
         grant.lifetime = Lifetime::Once;
     }
     let asked = Caller::person(MEMBER).in_room(&once);
-    let admission = asked.admit(&post(), ActionKind::Undoable, false, &cx());
+    let admission = asked.admit(&post(), ActionKind::Undoable, false, false, &cx());
     assert!(admission.is_admitted());
     assert_eq!(
         admission.spent(),
@@ -185,8 +281,8 @@ fn an_admitted_run_spends_its_once_grant_and_a_refused_one_keeps_it() {
     // A privileged action on another app's node: nothing grants it, and no
     // ask could stand in for the person's own allow.
     let elsewhere = TreePath::room(ROOM).app("so.tilo.notes").action("erase");
-    let refused = asked.admit(&elsewhere, ActionKind::Outside, true, &cx());
-    assert!(matches!(refused, Admission::Refused(_)));
+    let refused = asked.admit(&elsewhere, ActionKind::Outside, true, false, &cx());
+    assert!(matches!(refused, DoorAnswer::Refused(_)));
     assert!(refused.spent().is_empty(), "a refused run spends nothing");
     assert_eq!(refused.answer(), Answer::Deny);
 }
@@ -197,7 +293,7 @@ fn a_non_member_is_refused_by_the_same_door() {
     let stranger = Caller::person("c0ffee").in_room(&policy);
     assert_eq!(
         stranger
-            .admit(&post(), ActionKind::Read, false, &cx())
+            .admit(&post(), ActionKind::Read, false, false, &cx())
             .answer(),
         Answer::Deny
     );
