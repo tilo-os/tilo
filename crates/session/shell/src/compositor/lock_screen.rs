@@ -1216,19 +1216,22 @@ fn draw_lock_widget(
         &panel,
     );
 
-    draw_lock_icon(scene, layout, theme);
+    // Everything on the card stands on the Panel ground, not the window's:
+    // the field's well, the button faces and the ink are measured from it.
+    let on_card = &ui::chrome::shell::on_panel(theme);
+    draw_lock_icon(scene, layout, on_card);
     draw_centered_text(
         scene,
         text,
         &ui::i18n::I18nManager::lookup_plain("lock-welcome-back"),
-        scaled_text_size(type_scale.size(ui::TextRole::Title), layout.scale, theme),
-        theme.text_primary,
+        scaled_text_size(type_scale.size(ui::TextRole::Title), layout.scale, on_card),
+        on_card.text_primary,
         layout.title,
     );
     if let Some(prompt) = view.prompt {
         // The prompt sizes its own type: the renderer's text scale is its.
         text.set_text_scale(renderer_scale);
-        draw_lock_prompt_part(scene, theme, text, prompt, now);
+        draw_lock_prompt_part(scene, on_card, text, prompt, now);
         text.set_text_scale(1.0);
     }
     if let (Some(player), Some(media)) =
@@ -1242,8 +1245,12 @@ fn draw_lock_widget(
             scene,
             text,
             &label,
-            scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme),
-            theme.text_dim,
+            scaled_text_size(
+                type_scale.size(ui::TextRole::Caption),
+                layout.scale,
+                on_card,
+            ),
+            on_card.text_dim,
             notifications,
         );
     }
@@ -1278,6 +1285,8 @@ fn draw_lock_media(
         None,
         &card,
     );
+    // The artwork, song and transport stand on the card's Panel ground.
+    let theme = &ui::chrome::shell::on_panel(theme);
     let type_scale = ui::tokens::Typography::default();
     let title = ui::text_render::TextStyle::new(scaled_text_size(
         type_scale.size(ui::TextRole::Caption),
@@ -1650,6 +1659,70 @@ mod tests {
             size: (w, h),
             scale: 1.0,
         }]
+    }
+
+    /// The empty password field stands off the credential card the way a
+    /// field stands off the window, on every shipped theme: its well is
+    /// measured from the card's Panel ground, so it never sinks into it.
+    #[test]
+    fn the_empty_field_stands_off_the_credential_card_on_every_theme() {
+        use tilo_cpu_raster::{CpuRasterizer, Options, Target};
+        use ui::color::Oklch;
+        use vello::peniko::Color;
+        const W: u32 = 1280;
+        const H: u32 = 800;
+        const STRIDE: usize = W as usize * 4;
+        const LEN: usize = STRIDE * H as usize;
+        let lightness = |color: Color| Oklch::from_color(color).l;
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("a shipped theme");
+            let colors = &theme.tokens.colors;
+            let step = lightness(colors.surfaces.raised) - lightness(colors.surfaces.content);
+            let outputs = single(f64::from(W), f64::from(H));
+            let mut text = TextRenderer::new();
+            let prompt = LockPrompt::new();
+            let shown = LockView {
+                prompt: Some(&prompt),
+                ..view()
+            };
+            let scene = draw_lock_scene(&outputs, &theme, &mut text, &shown);
+            let mut pixels = vec![0_u8; LEN];
+            {
+                let mut target = Target::new(&mut pixels, W, H, STRIDE).expect("a raster target");
+                CpuRasterizer::new(Options::default()).render(
+                    scene.encoding(),
+                    &mut target,
+                    None,
+                    colors.surfaces.base,
+                );
+            }
+            // Between the caret and the reveal toggle: only the well shows.
+            let scale = prompt.scale();
+            let field = prompt.borrow().layout().fields[0];
+            let probe = (
+                (field.x0 + field.width() * 0.5) * scale,
+                field.center().y * scale,
+            );
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the probe is inside a positive output"
+            )]
+            let (red, green, blue, _) = ui::offscreen::OffscreenRenderer::sample(
+                &pixels,
+                W,
+                probe.0 as u32,
+                probe.1 as u32,
+            );
+            let well = Color::from_rgba8(red, green, blue, 255);
+            let card = ui::chrome::shell::panel_ground(&theme);
+            let off = (lightness(well) - lightness(card)).abs();
+            assert!(
+                off + 0.005 >= step.abs() / 2.0,
+                "{name}: the empty field ({well:?}) stands {off:.3} off the card ({card:?}); \
+                 a field stands {step:.3} off the window"
+            );
+        }
     }
 
     /// A refusal mid-shake and a check mid-fade change only the prompt's
