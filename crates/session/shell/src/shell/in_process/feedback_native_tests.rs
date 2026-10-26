@@ -168,8 +168,8 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
     let after = std::fs::read(&path).unwrap();
     assert!(
         after == before,
-        "startup creates no enrollment, grant or document write; changed: {:?}",
-        changed_fields(&before, &after)
+        "startup creates no enrollment, grant or document write; {}",
+        first_difference(&before, &after)
     );
     restored.native_owner().unwrap().fence_all();
     assert!(
@@ -178,13 +178,9 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
     );
     assert!(Delivery::new(restored, destination(), &author).is_err());
 }
-/// The top-level fields of two state files that differ, to name what a
-/// write changed.
-fn changed_fields(before: &[u8], after: &[u8]) -> Vec<String> {
-    let parse = |bytes: &[u8]| {
-        serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(bytes)
-            .unwrap_or_default()
-    };
+/// Where two state files first differ, with the text around it, to name
+/// what a write changed.
+fn first_difference(before: &[u8], after: &[u8]) -> String {
     let first = before
         .iter()
         .zip(after)
@@ -194,24 +190,13 @@ fn changed_fields(before: &[u8], after: &[u8]) -> Vec<String> {
         String::from_utf8_lossy(&bytes[first.saturating_sub(120)..(first + 120).min(bytes.len())])
             .into_owned()
     };
-    let at = format!(
-        "{} vs {} bytes, first difference at {first}: {:?} became {:?}",
+    format!(
+        "{} bytes became {}, first at {first}: {:?} became {:?}",
         before.len(),
         after.len(),
         around(before),
         around(after)
-    );
-    let (before, after) = (parse(before), parse(after));
-    std::iter::once(at)
-        .chain(
-            before
-                .keys()
-                .chain(after.keys())
-                .filter(|key| before.get(*key) != after.get(*key))
-                .cloned()
-                .collect::<std::collections::BTreeSet<_>>(),
-        )
-        .collect()
+    )
 }
 /// An admission stands only while the room's sandbox is the one it was
 /// given under, as well as the reporter's standing.
