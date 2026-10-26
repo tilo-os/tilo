@@ -591,6 +591,19 @@ pub enum BrowserEffect {
         #[param("The question's id")]
         dialog: u32,
     },
+    /// Answer the site's permission request
+    ///
+    /// What its Allow or Block button does: the site's request for a
+    /// capability, such as its location, is granted or refused, and the page
+    /// goes on from there. Granting or refusing reaches the site's own
+    /// privacy boundary, so it is asked first like the person's prompt is.
+    #[effect(row, privileged, returns)]
+    AnswerPermission {
+        #[param("The request's id from the page's outline")]
+        request: u32,
+        #[param("Allow the site the capability (true) or refuse it (false)")]
+        allow: bool,
+    },
     /// Move the pointer on the page
     ///
     /// Runs one gesture of real pointer input, as a hand makes it: steps in
@@ -771,6 +784,9 @@ impl BrowserEffect {
                 accept: false,
                 text: None,
             },
+            Self::AnswerPermission { request, allow } => {
+                BrowserOperation::AnswerPermission { request, allow }
+            }
             Self::ReadPage { frame } => page(PageRequest::Outline {
                 frame: page_frame(frame),
             }),
@@ -1014,6 +1030,12 @@ pub enum BrowserOperation {
         dialog: u32,
         accept: bool,
         text: Option<String>,
+    },
+    /// Answer the site's permission request `request`: allow it when
+    /// `allow`, else deny it.
+    AnswerPermission {
+        request: u32,
+        allow: bool,
     },
     Extension(ExtensionRequest),
     /// Offer the Web Store item on the page, as Add to Tilo Browser does.
