@@ -16,6 +16,20 @@ These are the user's decisions, not up for re-litigation:
   workspace with one member), not in a hidden mode inside a shared one.
 - **A resource is state.** Its views and actions are associated with it but distinct from it.
 
+## 0.1 The same concepts in the code
+
+These are the concepts already in the code. A design or an implementation uses these, by these
+names, and never builds a parallel one:
+
+| Here | In the code |
+|---|---|
+| Workspace | `tilo_desktop_model` workspace (`crates/session/desktop-model`); room and governance in the shell |
+| Strip | `tilo_desktop_model::layout::Strip`: an ordered row of window groups, shown by `ui::widget::StripView` |
+| Window | a `layout::Tab` in a `layout::WindowGroup`: one app window, whose `TileContent` says what it holds |
+| App | an installed app (`AppKind`, the launcher's manifest); a tilolang app is one, with its own id and process |
+| Resource, action | `tilo-actions` (`crates/collab/actions`): the app's published resources and actions |
+| Window state, lens | not yet in `layout`; added there, not beside it |
+
 ## 1. The model in one table
 
 Everything a person sees is made of six things. Each has one owner and one lifetime.
@@ -27,7 +41,7 @@ Everything a person sees is made of six things. Each has one owner and one lifet
 | **Window** | The workspace's single place for one resource. It shows the resource through a view. | Yes. Everyone in the workspace sees the same windows. | Until closed. |
 | **Window state** | How the workspace presents that resource: which view, sort, filter, grouping, the window's preferred size. | Yes. | As long as the window. |
 | **Lens** | How *one person* is looking: scroll, cursor, selection, reading position, which section is expanded, focus. | Personal, but visible as presence. | Per person and window. Follows you to your other devices. |
-| **Lane** | An ordered sequence of windows that belong together: a line of work. A workspace has several lanes. | Yes. | Until closed or archived. |
+| **Strip** | An ordered sequence of windows that belong together: a line of work. A workspace has several strips. | Yes. | Until closed or archived. |
 
 Three layers of state follow from the table. Every piece of state in an app sits in exactly one of
 them, and the author says which:
@@ -72,13 +86,13 @@ process, a window or a place.
 
 - If `r` has a window, your lens moves to that window. Someone else may already be in it. Then you
   are now working together, without a separate mode for it.
-- Otherwise a window for `r` is created. It's placed in the lane of the window you opened it from,
+- Otherwise a window for `r` is created. It's placed in the strip of the window you opened it from,
   directly after that window. That is how a trail forms: notebook, then note, then a linked note.
-- `open(r, in: new_lane)` starts a new line of work instead.
+- `open(r, in: new_strip)` starts a new line of work instead.
 
 **List and detail are two windows.** A notebook window lists notes. Pressing a note runs `open(n)`,
 and the note's window appears next to the notebook's. The app keeps no "selected note" state at
-all; that question was never the notebook's to answer. On a narrow screen the lane shows one window
+all; that question was never the notebook's to answer. On a narrow screen the strip shows one window
 at a time, and back goes to the previous one (§5).
 
 **Closing.**
@@ -86,7 +100,7 @@ at a time, and back goes to the previous one (§5).
 - `close` removes the window for everyone. It's a shared change, attributed and undoable: "Alex
   closed *Q3 plan*". Closing never touches the resource.
 - Windows nobody has looked at for a while **recede**: they collapse into a compact entry at the
-  end of their lane instead of taking space. Opening them again restores them.
+  end of their strip instead of taking space. Opening them again restores them.
 
 Together these answer the clutter question without anyone having to tidy up.
 
@@ -106,30 +120,30 @@ Together these answer the clutter question without anyone having to tidy up.
   have no window state of their own. Opening anything from them runs `open(r)`, which goes to that
   resource's window.
 
-## 5. Lanes and screens
+## 5. Strips and screens
 
 **The arrangement is structure, not geometry.**
 
-- The workspace stores **lanes**: ordered sequences of windows. It stores no pixel positions.
+- The workspace stores **strips**: ordered sequences of windows. It stores no pixel positions.
 - Every screen lays the structure out for itself, using the windows' size preferences in `rem`
   (layout.md):
-  - an ultrawide shows several windows of a lane side by side;
+  - an ultrawide shows several windows of a strip side by side;
   - a laptop shows two or three;
-  - a phone shows one, and swipes along the lane.
+  - a phone shows one, and swipes along the strip.
 - A shared arrangement can work across different screens only if it is structural. A free 2D canvas
   can't be laid out per device and still be "the same" for everyone.
 
-**Your viewport is part of your lens.** Which lane and which window you're looking at is personal
-and published as presence. The workspace overview shows all lanes with everyone's position on
+**Your viewport is part of your lens.** Which strip and which window you're looking at is personal
+and published as presence. The workspace overview shows all strips with everyone's position on
 them.
 
-**What a lane is.** A lane is a **line of work**: a topic or a task, not a person. People and agents
-work in the same lanes. When an agent starts a task, it works in a lane named for the task. Opening
+**What a strip is.** A strip is a **line of work**: a topic or a task, not a person. People and agents
+work in the same strips. When an agent starts a task, it works in a strip named for the task. Opening
 a window that already exists brings it to that window (§3), so its presence shows up inside windows
 other people are looking at.
 
-**When a task finishes,** its lane collapses to the task's result: an answer, a summary of what
-changed. Its windows recede. Nothing is lost: the windows come back when opened, and the lane can
+**When a task finishes,** its strip collapses to the task's result: an answer, a summary of what
+changed. Its windows recede. Nothing is lost: the windows come back when opened, and the strip can
 be expanded.
 
 ## 6. Actions
@@ -138,13 +152,13 @@ be expanded.
   - **in its views** as primary controls;
   - **in the command surface** for whatever has focus (every action of the focused resource);
   - **in the agent catalogue.**
-- **The room has actions too.** `open`, `close`, moving a window to another lane, starting a lane
+- **The room has actions too.** `open`, `close`, moving a window to another strip, starting a strip
   and following are actions on the workspace resource. Agents can invoke them like any action
   ("put the notes next to the chat"), under the same authority rules.
 - **Visible change** (from the representation design):
   - every invocation shows **in place** as presence and provenance in the windows that show the
     affected resource;
-  - **elsewhere** as an invocation card in the lane where it happened;
+  - **elsewhere** as an invocation card in the strip where it happened;
   - **as a suggestion**, through the action's proposal view, when it waits for approval.
 
 ## 7. What this changes in the language
@@ -169,7 +183,7 @@ view note_list(nb: Notebook) {
 - Scroll, focus, cursor and text selection are lens state the platform keeps by itself. Views don't
   declare them.
 
-**`open(r)`** (and `open(r, view: v)`, `open(r, in: new_lane)`) is a platform action, usable from
+**`open(r)`** (and `open(r, view: v)`, `open(r, in: new_strip)`) is a platform action, usable from
 views (as an action reference on a control) and from flows.
 
 **Package-level declarations:**
@@ -187,7 +201,7 @@ and its queue. List and detail are two windows, not a split.
 
 ## 8. The workspace is a resource
 
-- The arrangement is itself typed state: a `Workspace` has lanes, a lane has windows, and a window
+- The arrangement is itself typed state: a `Workspace` has strips, a strip has windows, and a window
   has a resource reference, a view and window state. It syncs like everything else, and its
   history says who opened, moved and closed what.
 - Lenses are per-person state next to it.
@@ -200,10 +214,10 @@ and its queue. List and detail are two windows, not a split.
 1. **Drafts.** They are resources with an owner (decided). The open question is whether others see
    their contents live or only that someone is typing. Under §0, it's visible; the chat view
    decides what to render (a typing indicator, not the text). Confirm.
-2. **Lane naming and creation.** Agents name their task lanes. Do people create lanes explicitly,
-   or does a lane start implicitly when you open something from the launcher or a search rather
+2. **Strip naming and creation.** Agents name their task strips. Do people create strips explicitly,
+   or does a strip start implicitly when you open something from the launcher or a search rather
    than from a window?
 3. **Receding.** It's driven by attention: nobody has looked at the window for a while. What counts
    as a while, and does it differ per kind of window?
 4. **Several workspaces at once.** Is a person always in exactly one workspace on a screen? Or can
-   lanes from two workspaces sit side by side (a personal notes lane next to a team lane)?
+   strips from two workspaces sit side by side (a personal notes strip next to a team strip)?

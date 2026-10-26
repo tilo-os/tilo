@@ -116,7 +116,7 @@ is generally useful, not special to `std`:
    `std` builds headers and context menus, and any author can do the same.
 2. **Lens access.** The viewer's lens and other people's lenses on a resource, for presence on
    any component.
-3. **`open`, `close`, lanes:** already platform actions.
+3. **`open`, `close`, strips:** already platform actions.
 4. **Resource metadata:** title field, type name, icon.
 
 An app that wants something `std` doesn't do (a reader, a canvas, a timeline) composes `ui.*`
