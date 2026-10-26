@@ -419,16 +419,21 @@ pub struct DeleteEmojiOp {
     pub tilo: String,
 }
 
-/// Copy a file from Discord's CDN into the room's content store.
+/// Copy a file from Discord's CDN into the room's content store, or answer
+/// a small picture inline.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct FetchAssetOp {
-    /// An `https://cdn.discordapp.com/…` or `https://media.discordapp.net/…` URL; anything else is refused.
+    /// An `https://cdn.discordapp.com/…` or `https://media.discordapp.net/…` URL, or a path on the worker's own CDN (`avatars/<user>/<hash>.png?size=64`); anything else is refused.
     pub url: String,
     pub max_bytes: u64,
     /// The Chat attachment this becomes, `blob` filled in by the result.
     #[serde(default)]
     pub attachment: Option<InAttachment>,
+    /// Answer the picture as a `data:` URL (the result's `data_url`)
+    /// instead of keeping it in the content store: one a record holds.
+    #[serde(default)]
+    pub inline: bool,
 }
 
 /// A Chat attachment as `chat.post` takes it (`AttachmentUpdate`).
@@ -491,6 +496,9 @@ pub enum DiscordResult {
         content_type: String,
         #[serde(default)]
         attachment: Option<InAttachment>,
+        /// The picture as a `data:` URL, for an inline fetch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_url: Option<String>,
     },
     #[default]
     Done,

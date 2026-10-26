@@ -185,6 +185,7 @@ pub fn my_link(guild: &Guild, me: Option<&str>) -> Reading {
             user_name: link.user_name.clone(),
             display_name: link.display_name.clone(),
         }),
+        picture: link.and_then(|link| link.photo.clone()),
         connect: guild
             .sign_in_page
             .is_some()
