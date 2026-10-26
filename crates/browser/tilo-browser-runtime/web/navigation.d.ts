@@ -4,15 +4,10 @@
  */
 export interface DesktopRoute { workspace: string; strip: string; group: string; tab: string }
 export type WorkspaceActivityView = 'catch-up' | 'explore' | 'replay';
-/** `inSurface`: the runtime draws this view over the desktop itself (the shared history pane), so the page shows none of its own. */
-export type WorkspaceActivityState = {workspace: string; view: WorkspaceActivityView; playing: boolean; coverage: 'complete' | 'partial'; inSurface: boolean} | null;
-/** Last authoritative close in this generation; reset to null when a pane opens.
- * Only dismissed permits returning focus to an external opener. */
-export type WorkspaceActivityCloseReason = 'dismissed' | 'workspace-changed' | 'resource-opened';
 export interface DesktopNavigationSnapshot {
   version: 1;
   generation: string;
-  /** `app`: the package id the window shows, as links name it; null for a surface of no app. */
+  /** `app`: the package id the window shows, as links name it; null for a window that shows no app of its own. The Activity app (`so.tilo.activity`) is one such window. */
   entries: Array<{route: DesktopRoute; app: string | null; label: string; stripLabel: string; workspaceLabel: string}>;
   workspaces: Array<{id: string; label: string; room: string; owner: string | null; strips: Array<{id: string; label: string}>}>;
   /** What `launch` can open. */
@@ -32,8 +27,6 @@ export interface DesktopNavigationSnapshot {
     notifications: boolean;
   };
   desktopPan: {workspace: string; strip: string; offset: number; viewport: number; content: number; max: number} | null;
-  workspaceActivity: WorkspaceActivityState;
-  workspaceActivityCloseReason: WorkspaceActivityCloseReason | null;
   /** Back and forward through the active tab's own history. */
   history: {canBack: boolean; canForward: boolean} | null;
   scroll: {region: string; offset: number; viewport: number; content: number; max: number} | null;
@@ -43,8 +36,9 @@ export interface DesktopNavigationSnapshot {
 export type DesktopScrollAction = {kind: "line" | "page"; value: -1 | 1} | {kind: "absolute"; value: number} | {kind: "start" | "end"};
 export type DesktopNavigationCommand = {generation: string} & (
   {kind: "workspace"; workspace: string} |
-  /** `author`: show only what this person did, as History names them. */
+  /** Open the Activity app at `view`, or bring its window forward; `author`: show only what this person did, as History names them. */
   {kind: "workspace-activity"; workspace: string; view: WorkspaceActivityView; author?: string} |
+  /** Close the Activity app's windows in the workspace. */
   {kind: "close-workspace-activity"; workspace: string} |
   /** Open or close the notification centre over the desktop. */
   {kind: "notification-center"; open: boolean} |

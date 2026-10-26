@@ -67,8 +67,9 @@ pub(super) struct MediaGridHost {
     pub(super) host: Placed<MediaGrid>,
     key: Vec<CardKey>,
     asked: Asked,
-    /// The grid shows this many loading cards instead of covers.
-    loading: Option<usize>,
+    /// The grid shows this many cards on their way, asked then, instead
+    /// of covers.
+    loading: Option<(usize, ui::time::Instant)>,
 }
 
 impl MediaGridHost {
@@ -81,16 +82,24 @@ impl MediaGridHost {
         }
     }
 
-    /// Show `count` loading cards: the shape of the covers on their way.
-    pub(super) fn update_loading(&mut self, count: usize) {
+    /// Show `count` cards on their way from `from`, asked at `since`: the
+    /// shape of the covers to come, through the framework's placeholder.
+    pub(super) fn update_arriving(
+        &mut self,
+        count: usize,
+        from: &ui::arriving::Source,
+        since: ui::time::Instant,
+    ) {
         self.host.unplace();
-        if self.loading == Some(count) {
+        if self.loading == Some((count, since)) {
             return;
         }
-        self.loading = Some(count);
+        self.loading = Some((count, since));
         self.key.clear();
-        self.host
-            .replace(MediaGrid::loading(count, MediaAspect::Square).with_size(MediaSize::Small));
+        self.host.replace(
+            MediaGrid::arriving(count, MediaAspect::Square, from, since)
+                .with_size(MediaSize::Small),
+        );
     }
 
     /// Bring the grid up to date with this frame's cards.

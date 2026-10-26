@@ -668,8 +668,28 @@ scanout tranche need the importer to accept them first.
 
 **Verifying on hardware.** CI's llvmpipe cannot exercise KMS planes; the
 decision logic is unit-tested (`scanout_candidate`, `client_scanout`, the
-fullscreen phases in `shell::frame`). On a `tilo-vm` slot with a real GPU —
-a `device` target (`tilo device vm add`) or a VM with the GPU passed through:
+fullscreen phases in `shell::frame`). The reference GPU target is the Lenovo
+83ED registered as `tilo device vm yoga`
+(`docs/benchmarks/reference-hardware.md`); book it as a slot, on the
+internal panel at 60 Hz, and ask a person to look at anything that has no
+line in the session log. `scripts/perf/drm_hardware_checks.py` runs the
+log-only checks in one pass and writes them as a
+`drm.presentation-checks` record — one sample per check, fail never skip:
+
+```sh
+TILO_VM=yoga tilo device vm status            # the booted image digest
+python3 scripts/perf/drm_hardware_checks.py --device yoga --slot device \
+  --commit <deployed shell commit> --image-digest sha256:<digest> \
+  --out target/drm-hardware
+```
+
+It grades `atomic-flips`, `no-page-flip-errors`, `vblank-pacing` and
+`client-buffer-release`, and reports `client-scanout` without grading it (a
+run may scan no client out). A session started with `TILO_KMS_ATOMIC=0`
+cannot be graded from the same log, so run it on its own and check it by
+hand against step 5 below, and so is the `B8G8R8A8` client of step 3 and the
+`WAYLAND_DEBUG=1` feedback batches, which need a person at the panel. The
+rest is driven from a person's seat on the same slot:
 
 1. `tilo device swap shell` from the branch, then play a 4K60 video fullscreen
    in an opaque client (`mpv --fs`, or `vkcube` made fullscreen). With

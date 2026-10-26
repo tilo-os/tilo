@@ -174,6 +174,7 @@ pub(crate) fn program_invoking(action: tilo_actions::ActionKey, grant: Vec<Rule>
                 appearance: None,
             },
         )],
+        step_timeout_secs: None,
         output: None,
         grant,
         triggers: vec![],

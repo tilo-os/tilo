@@ -62,6 +62,31 @@ fn words_problem(problem: runtime_identity::RecoveryWordsError) -> String {
     }
 }
 
+/// Which word is wrong, as typed, and the word probably meant when one
+/// stands out: the person fixes it without hunting through the list.
+fn typo(phrase: &str, position: usize) -> String {
+    let Some(word) = runtime_identity::unknown_recovery_words(phrase)
+        .first()
+        .and_then(|range| phrase.get(range.clone()))
+    else {
+        return words_problem(runtime_identity::RecoveryWordsError::UnknownWord { position });
+    };
+    match runtime_identity::closest_recovery_word(word) {
+        Some(suggestion) => t_args(
+            "onboarding-recovery-key-suggestion",
+            &[
+                ("position", position.into()),
+                ("word", word.into()),
+                ("suggestion", suggestion.into()),
+            ],
+        ),
+        None => t_args(
+            "onboarding-recovery-key-typo",
+            &[("position", position.into()), ("word", word.into())],
+        ),
+    }
+}
+
 /// What the words typed so far amount to, for feedback while typing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum WordsCheck {
@@ -88,9 +113,7 @@ impl WordsCheck {
             return Self::Empty;
         }
         if let Some(position) = progress.unknown_word {
-            return Self::Problem(words_problem(
-                runtime_identity::RecoveryWordsError::UnknownWord { position },
-            ));
+            return Self::Problem(typo(phrase, position));
         }
         if progress.words < runtime_identity::RECOVERY_WORD_COUNT {
             return Self::Typing {
@@ -190,6 +213,23 @@ fn recovery_key_checks() -> [usize; RECOVERY_KEY_CHECKS] {
     })
 }
 
+/// Marks a typed-back word once it can no longer become `expected`, so a
+/// slip shows while the key is still on screen to compare against.
+fn wrong_answer(expected: Zeroizing<String>) -> impl Fn(&str) -> Vec<std::ops::Range<usize>> {
+    move |typed| {
+        let answer = typed.trim();
+        let start = typed.len().saturating_sub(typed.trim_start().len());
+        let fits = expected
+            .get(..answer.len())
+            .is_some_and(|begun| begun.eq_ignore_ascii_case(answer));
+        if fits {
+            Vec::new()
+        } else {
+            std::iter::once(start..start.saturating_add(answer.len())).collect()
+        }
+    }
+}
+
 /// The 24 words, numbered in reading order, and three of them to type
 /// back once they are written down.
 pub(super) fn recovery_key_copy_page(theme: &Theme, copy: &RecoveryKeyCopy) -> Box<dyn Widget> {
@@ -236,6 +276,22 @@ pub(super) fn recovery_key_copy_page(theme: &Theme, copy: &RecoveryKeyCopy) -> B
         }
         grid = grid.push(Box::new(line));
     }
+    let answers = recovery_key_answers(theme, copy);
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s4)
+            .push(heading(&t("onboarding-recovery-key-copy-title"), theme))
+            .push(paragraph(&t("onboarding-recovery-key-copy-body"), theme))
+            .push(Box::new(Section::new(vec![Box::new(grid)])))
+            .push(Box::new(answers)),
+    )
+}
+
+/// The words to type back, each in its own field under its number.
+fn recovery_key_answers(theme: &Theme, copy: &RecoveryKeyCopy) -> Column {
+    let spacing = &theme.tokens.spacing;
     let mut answers = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -261,10 +317,12 @@ pub(super) fn recovery_key_copy_page(theme: &Theme, copy: &RecoveryKeyCopy) -> B
             .with_id(&format!("onboarding.backup.recovery-key.word-{position}"))
             .with_external_buffer(Arc::clone(answer))
             .with_accessible_name(label.clone())
-            .with_placeholder(label.clone())
             .with_mono()
             .with_spellcheck(false)
-            .with_autocorrect(false);
+            .with_autocorrect(false)
+            .with_mistakes(wrong_answer(Zeroizing::new(
+                copy.word(*position).to_owned(),
+            )));
         if let Ok(value) = answer.lock() {
             input = input.with_initial_value(&value);
         }
@@ -285,16 +343,7 @@ pub(super) fn recovery_key_copy_page(theme: &Theme, copy: &RecoveryKeyCopy) -> B
         ));
     }
     answers = answers.push(Box::new(fields));
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(spacing.s4)
-            .push(heading(&t("onboarding-recovery-key-copy-title"), theme))
-            .push(paragraph(&t("onboarding-recovery-key-copy-body"), theme))
-            .push(Box::new(Section::new(vec![Box::new(grid)])))
-            .push(Box::new(answers)),
-    )
+    answers
 }
 
 impl OnboardingView {
@@ -331,7 +380,7 @@ impl OnboardingView {
             .push(paragraph(&t("onboarding-recovery-key-body"), theme));
         if let Some(error) = &self.error {
             body = body.push(spaced_banner(
-                Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
+                Banner::error(t("onboarding-recovery-key-failed")).with_message(error.clone()),
                 theme,
             ));
         }
@@ -344,7 +393,11 @@ impl OnboardingView {
             .with_spellcheck(false)
             .with_autocorrect(false)
             .multiline(true)
-            .with_min_lines(4);
+            .with_min_lines(4)
+            // Each mistyped word is marked where it is, not only named.
+            .with_mistakes(runtime_identity::unknown_recovery_words)
+            // The words stay put while they are being restored.
+            .with_read_only(self.identity_work.is_some());
         if let Ok(value) = self.recovery_words.lock() {
             words = words.with_initial_value(&value);
         }
@@ -570,7 +623,16 @@ mod tests {
         assert_eq!(view.recovery_check, WordsCheck::Typing { words: 2 });
         set(&view, "abandon abil ");
         view.sync(&doc, &automerge::ROOT);
-        assert!(matches!(view.recovery_check, WordsCheck::Problem(_)));
+        let WordsCheck::Problem(problem) = &view.recovery_check else {
+            panic!(
+                "a finished unknown word is a problem: {:?}",
+                view.recovery_check
+            );
+        };
+        assert!(
+            problem.contains("abil") && problem.contains("ability"),
+            "names the word as typed and the word probably meant: {problem}"
+        );
 
         // Restore is refused until the words are a valid key.
         press(&view, &mut doc, KEY_RECOVERY_KEY_RESTORE);
@@ -628,6 +690,16 @@ mod tests {
         );
         assert!(view.recovery_key_written);
         assert!(view.backup_was_verified);
+    }
+
+    #[test]
+    fn a_typed_back_word_is_marked_once_it_cannot_match() {
+        let mark = wrong_answer(Zeroizing::new("ability".to_owned()));
+        assert!(mark("").is_empty());
+        assert!(mark(" Abil").is_empty(), "still on its way to the word");
+        assert!(mark("ability ").is_empty());
+        assert_eq!(mark(" abel"), vec![1..5]);
+        assert_eq!(mark("abilityx"), vec![0..8]);
     }
 
     #[test]

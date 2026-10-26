@@ -16,7 +16,7 @@ use std::sync::{Arc, LazyLock};
 use tilo_sort::CompactSort as _;
 
 use crate::color_compat::ColorCompat;
-use crate::richtext::RichSpan;
+use crate::richtext::{RichSpan, inline_emoji};
 use crate::widget::text_input::SingleLineAttributes;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -173,6 +173,10 @@ pub struct RichTextLine {
     author_runs: Vec<(usize, usize, String)>,
     /// The colours mentions are painted in; accent ink when unset.
     mention_paint: Option<marks::MentionPaint>,
+    /// The revision of the window's workspace emoji the line's runs were
+    /// last built against: when it moves, a `:name:` may have become a
+    /// picture or stopped being one.
+    emoji_revision: Option<u64>,
 }
 
 impl RichTextLine {
@@ -209,6 +213,7 @@ impl RichTextLine {
             closed: None,
             author_runs: Vec::new(),
             mention_paint: None,
+            emoji_revision: None,
         }
     }
 
@@ -768,7 +773,14 @@ impl RichTextLine {
                     .color(color)
                     .background(mention_band);
                 span.kind = mark_kind(&segment);
-                attributes.spans.push(span);
+                // Prose draws its workspace emoji; code keeps `:name:`.
+                if segment.code || !self.inline_formatting || !slice.contains(':') {
+                    attributes.spans.push(span);
+                } else {
+                    attributes
+                        .spans
+                        .extend(inline_emoji::split_spans_in_window(vec![span]));
+                }
             }
             if segment.underline {
                 attributes.underlines.push(range);
@@ -886,12 +898,20 @@ impl RichTextLine {
             self.inner.set_rich_spans(Some(spans));
             return;
         }
-        if !self.wrap || !self.inline_formatting || self.marks.is_empty() {
+        self.emoji_revision = window_emoji_revision();
+        if !self.wrap || !self.inline_formatting {
             self.inner.set_rich_spans(None);
             return;
         }
+        if self.marks.is_empty() {
+            let text = self.value();
+            let spans = inline_emoji::writes_window_emoji(text)
+                .then(|| inline_emoji::split_spans_in_window(vec![RichSpan::new(text)]));
+            self.inner.set_rich_spans(spans);
+            return;
+        }
         let text = self.value();
-        let spans = marks::segments_for(text.len(), &self.marks)
+        let spans: Vec<RichSpan> = marks::segments_for(text.len(), &self.marks)
             .into_iter()
             .filter_map(|segment| {
                 let source = text.get(segment.range.clone())?;
@@ -909,14 +929,32 @@ impl RichTextLine {
                     let background = theme.tokens.colors.surfaces.raised;
                     span.background = Some([background.r(), background.g(), background.b()]);
                 }
-                if segment.code || segment.link.is_some() || segment.external_link {
+                if segment.code
+                    || segment.link.is_some()
+                    || segment.external_link
+                    || segment.resource_link.is_some()
+                {
                     let color = theme.tokens.colors.text_primary;
                     span.color = Some([color.r(), color.g(), color.b()]);
                 }
                 Some(span)
             })
             .collect();
+        let spans = if text.contains(':') {
+            inline_emoji::split_spans_in_window(spans)
+        } else {
+            spans
+        };
         self.inner.set_rich_spans(Some(spans));
+    }
+
+    /// Whether the window's workspace emoji changed since the line's runs
+    /// were built, for a line that writes a `:name:` at all. Asked where no
+    /// window's code runs, nothing moved.
+    fn emoji_moved(&self) -> bool {
+        self.inline_formatting
+            && self.value().contains(':')
+            && window_emoji_revision().is_some_and(|now| self.emoji_revision != Some(now))
     }
 
     fn draw_wrapped_mark_decorations(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
@@ -925,10 +963,11 @@ impl RichTextLine {
         }
         for span in &self.marks {
             let (color, strike) = match span.mark {
-                Mark::Link(_) | Mark::Transclusion(_) | Mark::ExternalLink(_) => {
-                    (theme.tokens.colors.text_primary, false)
-                }
-                Mark::Underline => (theme.tokens.colors.text_primary, false),
+                Mark::Link(_)
+                | Mark::Transclusion(_)
+                | Mark::ExternalLink(_)
+                | Mark::ResourceLink(_)
+                | Mark::Underline => (theme.tokens.colors.text_primary, false),
                 Mark::Strikethrough => (theme.tokens.colors.text_primary, true),
                 _ => continue,
             };
@@ -1163,13 +1202,14 @@ impl Widget for RichTextLine {
     }
 
     fn layout_needs_measure(&self) -> bool {
-        (self.wrap && self.dirty.styled_layout) || self.inner.layout_needs_measure()
+        (self.wrap && (self.dirty.styled_layout || self.emoji_moved()))
+            || self.inner.layout_needs_measure()
     }
 
     /// A line's height follows its text and its inline marks, both of which
     /// `measure` re-applies; the childless default would dirty every line.
     fn is_layout_dirty(&self) -> bool {
-        self.dirty.styled_layout || self.inner.is_layout_dirty()
+        self.dirty.styled_layout || self.emoji_moved() || self.inner.is_layout_dirty()
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -1446,6 +1486,11 @@ impl Widget for RichTextLine {
         }
         handled
     }
+}
+
+/// The revision of the window's workspace emoji, if its host registered any.
+fn window_emoji_revision() -> Option<u64> {
+    crate::workspace_emoji::current().map(|source| source.revision())
 }
 
 fn transient_color(theme: &Theme, kind: TokenKind) -> vello::peniko::Color {
@@ -2080,5 +2125,86 @@ mod tests {
     }
     fn _placeholder_for_modifiers_key_state() -> ModifiersKeyState {
         ModifiersKeyState::Unknown
+    }
+
+    /// A line in a window whose workspace has an emoji draws its picture,
+    /// wrapped or not, marked or not; it stops once the workspace drops it.
+    #[test]
+    fn a_workspace_emoji_draws_as_its_picture_until_the_workspace_drops_it() {
+        use crate::richtext::inline_emoji::tests::{Fixed, workspace};
+        let draws_picture = |scene: &Scene| {
+            scene
+                .encoding()
+                .draw_tags
+                .contains(&vello_encoding::DrawTag::IMAGE)
+        };
+        let theme = Theme::dark();
+        let text = "nice :party_parrot: work";
+        let at = text.find(':').unwrap();
+        let emoji = at..at + ":party_parrot:".len();
+
+        assert!(
+            !draws_picture(&layout_and_draw(
+                &mut RichTextLine::new().with_text(text),
+                &theme,
+                400.0
+            )),
+            "outside a window the name is text"
+        );
+
+        let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let source = std::rc::Rc::new(Fixed::new(workspace()));
+        crate::workspace_emoji::register(&scope.handle(), source.clone());
+        for (wrap, marked) in [(false, false), (true, false), (true, true), (false, true)] {
+            let mut line = RichTextLine::new().with_text(text);
+            line.set_wrap(wrap);
+            if marked {
+                line.set_marks(vec![MarkSpan {
+                    range: 0..4,
+                    mark: Mark::Bold,
+                }]);
+            }
+            assert!(
+                draws_picture(&layout_and_draw(&mut line, &theme, 400.0)),
+                "wrap {wrap}, marked {marked}"
+            );
+            let rects = line.mark_rects(&theme, emoji.clone());
+            let advance = f64::from(crate::richtext::inline_emoji::ADVANCE_EM * line.font_size);
+            assert_eq!(rects.len(), 1);
+            assert!(
+                (rects[0].width() - advance).abs() < 0.5,
+                "one emoji wide: {} vs {advance}",
+                rects[0].width()
+            );
+            assert_eq!(line.value(), text, "the text is unchanged");
+            assert!(!line.emoji_moved(), "drawn against the emoji now");
+
+            source.set(crate::workspace_emoji::WorkspaceEmoji::default());
+            assert!(
+                line.emoji_moved() && line.is_layout_dirty(),
+                "the workspace's emoji moved"
+            );
+            assert!(!draws_picture(&layout_and_draw(&mut line, &theme, 400.0)));
+            let rects = line.mark_rects(&theme, emoji.clone());
+            assert!(
+                rects[0].width() > advance * 2.0,
+                "`:party_parrot:` is text again"
+            );
+            source.set(workspace());
+        }
+
+        let mut code = RichTextLine::new().with_text(":tilo:");
+        code.set_marks(vec![MarkSpan {
+            range: 0..6,
+            mark: Mark::Code,
+        }]);
+        for wrap in [false, true] {
+            code.set_wrap(wrap);
+            assert!(
+                !draws_picture(&layout_and_draw(&mut code, &theme, 400.0)),
+                "inline code keeps `:tilo:`, wrap {wrap}"
+            );
+        }
     }
 }

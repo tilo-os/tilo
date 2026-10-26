@@ -147,6 +147,9 @@ pub struct Run {
     pub truncated: bool,
     /// The tool whose parser read it.
     pub tool: Atom,
+    /// It changed something a later action can put back, so the history
+    /// can undo it ([`crate::undoability`]).
+    pub undoable: bool,
     /// What its parsers found.
     pub items: Vec<RunItem>,
 }
@@ -187,6 +190,9 @@ pub struct Finished {
     pub output_len: u64,
     pub truncated: bool,
     pub tool: String,
+    /// Whether what it changed can be undone later: read from the command
+    /// when it ended ([`crate::undoability`]).
+    pub undoable: bool,
     pub items: Vec<RunItem>,
     /// The request it carried out, if `run` asked for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -350,6 +356,7 @@ impl Terminal {
                 output,
                 truncated: run.truncated,
                 tool: Atom(run.tool),
+                undoable: run.undoable,
                 items,
             },
         );
@@ -887,3 +894,26 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::TerminalShell::scenarios() {
+            let mut app = TestApp::<super::TerminalShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

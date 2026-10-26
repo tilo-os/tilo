@@ -1,0 +1,4 @@
+{"manifest_version": 3, "name": "Copier", "version": "1.0",
+ "action": {"default_title": "Copy this page's address"},
+ "permissions": ["offscreen", "clipboardWrite", "activeTab", "scripting"],
+ "background": {"service_worker": "worker.js"}}

@@ -403,10 +403,18 @@ pub struct ResponseData {
     pub status: u16,
     pub status_text: String,
     pub duration_ms: u64,
-    /// Size of the response body in bytes.
+    /// Size of the response body in bytes: what arrived, or the length the
+    /// server declared when only its start was downloaded.
     pub size_bytes: usize,
+    /// Whether `size_bytes` is the body's size, rather than how much of a
+    /// body of undeclared length arrived before the download stopped.
+    pub size_exact: bool,
+    /// How many of the body's bytes `body` shows.
+    pub shown_bytes: usize,
+    /// Whether the body is binary, so `body` is a hex dump of its start.
+    pub binary: bool,
     pub headers: Vec<KeyValue>,
-    /// The raw response body text.
+    /// The body as text: as received, or a hex dump when it is binary.
     pub body: String,
     /// Best-effort content type pulled from the response headers.
     pub content_type: String,
@@ -416,9 +424,10 @@ impl ResponseData {
     /// Whether the body is JSON (so the viewer should pretty-print +
     /// syntax-highlight it).
     pub fn is_json(&self) -> bool {
-        self.content_type.contains("json")
-            || self.body.trim_start().starts_with('{')
-            || self.body.trim_start().starts_with('[')
+        !self.binary
+            && (self.content_type.contains("json")
+                || self.body.trim_start().starts_with('{')
+                || self.body.trim_start().starts_with('['))
     }
 
     /// A short human label for the HTTP status family — drives the status
@@ -485,6 +494,9 @@ mod tests {
             status_text: "OK".into(),
             duration_ms: 1,
             size_bytes: 0,
+            size_exact: true,
+            shown_bytes: 0,
+            binary: false,
             headers: vec![],
             body: String::new(),
             content_type: String::new(),

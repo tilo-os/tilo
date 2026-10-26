@@ -124,7 +124,8 @@ impl std::io::Write for BoundedReply {
 }
 
 fn check_snapshot_bound(messages: usize, bytes: usize) -> Result<(), String> {
-    if bytes > 512 * 1024 || messages > 2000 {
+    use tilo_relay_protocol::rooms::private::{MAX_WHOLE_MESSAGES, MAX_WHOLE_TEXT_BYTES};
+    if bytes > MAX_WHOLE_TEXT_BYTES || messages > MAX_WHOLE_MESSAGES {
         return Err("private conversation snapshot exceeds bound".into());
     }
     Ok(())

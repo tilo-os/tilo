@@ -1050,6 +1050,10 @@ fn validate_import_destination(destination: &ImportDestination) -> Result<(), Re
     Ok(())
 }
 
+/// Longest an agent's change waits to be attributed before writing anyway:
+/// the host answers at once, so this only bounds a host that went away.
+const WRITE_ATTRIBUTION_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Whether `op` runs on a worker with progress and Cancel: a copy, a move
 /// into an existing folder, an extraction or a packing.
 fn runs_tracked(op: &FileOp) -> bool {
@@ -1089,6 +1093,28 @@ fn carry_out_tracked(
     Effected::settled(&crate::file_ops::execute_tracked(
         &task.op, reverting, &report,
     ))
+}
+
+/// Carry out `task` on a worker once the host answered its attribution:
+/// whatever it answered, the writes go ahead.
+fn carry_out_attributed(
+    (task, reverting, attribution): (
+        FileTask,
+        Option<Vec<Change>>,
+        Option<ui::invocation_scope::WriteAttributionReceipt>,
+    ),
+    progress: &ui::framework::Progress,
+) -> Effected {
+    if let Some(attribution) = attribution
+        && let Err(error) = attribution.wait(WRITE_ATTRIBUTION_WAIT)
+    {
+        tracing::debug!(%error, "these writes stay the person's");
+    }
+    if runs_tracked(&task.op) {
+        carry_out_tracked(&task, reverting.as_deref(), progress)
+    } else {
+        carry_out(&task, reverting.as_deref())
+    }
 }
 
 fn carry_out(task: &FileTask, reverting: Option<&[Change]>) -> Effected {
@@ -1215,13 +1241,19 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                                 |(), answer, _| Ok(answer),
                             ));
                         }
-                        if runs_tracked(&task.op) {
+                        // An agent's change names the paths it writes before
+                        // writing them, so their versions record the agent,
+                        // for its person; the host takes who acted from its
+                        // own custody of the invocation.
+                        let attribution =
+                            cx.attribute_writes(task.op.written_paths(reverting.as_deref()));
+                        if runs_tracked(&task.op) || attribution.is_some() {
                             // Copies and moves can take minutes: off the UI
-                            // thread, with progress and Cancel.
+                            // thread, with progress and Cancel. So is a
+                            // change waiting for its attribution.
+                            let work = (task, reverting, attribution);
                             return Ok(cx.thread(
-                                move |progress| {
-                                    carry_out_tracked(&task, reverting.as_deref(), &progress)
-                                },
+                                move |progress| carry_out_attributed(work, &progress),
                                 |(), answer, _| Ok(answer),
                             ));
                         }
@@ -1451,3 +1483,26 @@ fn host_person_only(effect: &FilesEffect) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::FileExplorerShell::scenarios() {
+            let mut app = TestApp::<super::FileExplorerShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

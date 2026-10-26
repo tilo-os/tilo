@@ -58,6 +58,8 @@ pub use detail::RETRY_KEY;
 
 /// How long a recently-typed query stays "fresh" before we fire a geocode.
 const GEOCODE_DEBOUNCE: Duration = Duration::from_millis(220);
+/// Where places typed into the search come from, as a placeholder names it.
+const GEOCODER: &str = "Open-Meteo";
 
 /// An intent the overview raises for the shell to act on (push the detail
 /// in). Consumed by the root widget after routing an event.
@@ -169,6 +171,10 @@ pub struct Core {
     search_results: Vec<SavedLocation>,
     search_seq: u64,
     pending_query_at: Option<Instant>,
+    /// Since when the places being typed are on their way: the first
+    /// keystroke of a search with no matches shown yet. Their placeholder
+    /// steps on from then, however many keys follow.
+    search_asked: Option<Instant>,
     geocode_cache: HashMap<String, Vec<SavedLocation>>,
     geocode_inflight: bool,
 
@@ -251,6 +257,7 @@ impl Core {
             search_results: Vec::new(),
             search_seq: 0,
             pending_query_at: None,
+            search_asked: None,
             geocode_cache: HashMap::new(),
             geocode_inflight: false,
             detail_rect: Rect::ZERO,
@@ -460,9 +467,9 @@ impl Core {
         self.inflight > 0
     }
 
-    /// Whether a geocode is armed or in flight. The app keeps pumping frames
-    /// while this holds so the result is drained and shown promptly (rather
-    /// than the loop parking on "Searching…" until the next input event).
+    /// Whether a geocode is armed or in flight: the places typed are on
+    /// their way. The armed one fires at [`Self::search_deadline`], and the
+    /// answer wakes the app when it lands.
     pub fn search_pending(&self) -> bool {
         self.geocode_inflight || self.pending_query_at.is_some()
     }
@@ -742,7 +749,8 @@ impl Core {
                     // A failed geocode must resolve the dropdown's spinner into
                     // an honest state rather than spin forever.
                     self.search_results.clear();
-                    self.search.set_busy(false);
+                    self.search_asked = None;
+                    self.search.set_arriving(None);
                     self.search.set_status(Some(
                         "Couldn't search for places. Check your connection.".into(),
                     ));
@@ -761,8 +769,17 @@ impl Core {
         }
         let q = self.search_query.trim().to_string();
         let pending = self.search_pending();
-        self.search
-            .set_busy(!q.is_empty() && self.search_results.is_empty() && pending);
+        let waiting = !q.is_empty() && self.search_results.is_empty() && pending;
+        if !waiting {
+            self.search_asked = None;
+        } else if self.search_asked.is_none() {
+            self.search_asked = Some(ui::time::now());
+        }
+        // The places come from the geocoder; the dropdown's placeholder
+        // says so once they take a while.
+        self.search.set_arriving(self.search_asked.map(|asked| {
+            ui::arriving::ArrivalClock::new(asked, ui::arriving::Source::host(GEOCODER))
+        }));
         if q.is_empty() {
             self.search.set_suggestions(Vec::new());
             self.search.set_status(None);
@@ -782,7 +799,7 @@ impl Core {
             self.search.set_status(None);
         } else if pending {
             self.search.set_suggestions(Vec::new());
-            self.search.set_status(Some("Searching…".to_string()));
+            self.search.set_status(None);
         } else {
             self.search.set_suggestions(Vec::new());
             self.search

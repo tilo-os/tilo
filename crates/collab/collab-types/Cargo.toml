@@ -5,7 +5,7 @@ name = "collab-types"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The cryptographic identifiers and wire types of Tilo Spaces."
@@ -27,6 +27,8 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
+# Sorts without a copy of std's sort per call site (presence colours).
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 getrandom.workspace = true
 web-time = { version = "1", features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }

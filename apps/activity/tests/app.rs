@@ -22,6 +22,15 @@ fn shows(app: &mut TestApp<App>, target: &str) -> bool {
     app.harness().targets().contains_key(target)
 }
 
+/// Whether the window says `text`, as a name or description a screen
+/// reader reads.
+fn says(app: &mut TestApp<App>, text: &str) -> bool {
+    app.harness().a11y_nodes().iter().any(|(_, node)| {
+        node.label().is_some_and(|label| label.contains(text))
+            || node.description().is_some_and(|said| said.contains(text))
+    })
+}
+
 #[test]
 fn every_scenario_shows_its_place_built_from_components() {
     english();
@@ -30,7 +39,7 @@ fn every_scenario_shows_its_place_built_from_components() {
             "whats-new",
             &["activity-brief-0", "activity-brief-1", "activity-resume"],
         ),
-        ("caught-up", &["activity-caught-up", "activity-resume"]),
+        ("caught-up", &["activity-see-history", "activity-resume"]),
         (
             "history",
             &[
@@ -189,7 +198,10 @@ fn a_refused_read_says_so_instead_of_showing_history() {
             },
         });
     app.frame();
-    assert!(shows(&mut app, "activity-whats-new-unread"));
+    assert!(
+        says(&mut app, "Only members read this workspace's history"),
+        "the refusal says why"
+    );
     assert!(!shows(&mut app, "activity-brief-0"));
 }
 
@@ -253,4 +265,28 @@ fn a_view_asked_for_outside_opens_that_place() {
     let requests = asked(&mut app);
     read(&requests, wire::REPLAY);
     read(&requests, wire::FOCUSED);
+}
+
+/// Whether the window bar offers "Mark as viewed" as an action to take.
+fn mark_viewed_offered(scenario: &str) -> bool {
+    let mut app = TestApp::<App>::capture(Some(scenario)).expect("capture");
+    app.harness().present_in_window_bar();
+    let _ = app.harness().poll_frame();
+    let _ = app.harness().poll_frame();
+    let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+    let mark = bar
+        .actions
+        .iter()
+        .find(|action| action.id == "activity-mark-viewed")
+        .expect("the bar holds Mark as viewed");
+    mark.enabled
+}
+
+/// The bar's Mark as viewed acts while there is something new, and is
+/// disabled once What's new is caught up.
+#[test]
+fn mark_as_viewed_is_offered_only_while_there_is_something_new() {
+    english();
+    assert!(mark_viewed_offered("whats-new"));
+    assert!(!mark_viewed_offered("caught-up"));
 }

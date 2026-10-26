@@ -731,6 +731,25 @@ impl<R, T: Model, O: Serialize + serde::de::DeserializeOwned + Default + 'static
     }
 }
 
+impl<R> Path<R, crate::Reactions> {
+    /// React with `emoji` (a Unicode emoji, or a workspace emoji as
+    /// `:name:`), as whoever invokes the edit.
+    #[must_use]
+    pub fn react(&self, emoji: impl Into<String>) -> Edit<R> {
+        self.edit(EditOp::React {
+            emoji: emoji.into(),
+        })
+    }
+
+    /// Take back the invoker's reaction with `emoji`.
+    #[must_use]
+    pub fn unreact(&self, emoji: impl Into<String>) -> Edit<R> {
+        self.edit(EditOp::Unreact {
+            emoji: emoji.into(),
+        })
+    }
+}
+
 /// What an [`Edit`] does at its path. Text positions count characters.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
@@ -825,6 +844,15 @@ pub enum EditOp {
     /// Forget a settled outbox entry.
     Forget {
         id: Id,
+    },
+    /// React with `emoji` to what holds a [`Reactions`](crate::Reactions)
+    /// field, as whoever invokes the edit.
+    React {
+        emoji: String,
+    },
+    /// Take back the invoker's reaction with `emoji`.
+    Unreact {
+        emoji: String,
     },
     /// An edit of a type with its own vocabulary ([`Operations`]: rich text
     /// marks and blocks), in that type's JSON form.
@@ -924,6 +952,12 @@ enum EditOpWire {
     Forget {
         id: Id,
     },
+    React {
+        emoji: String,
+    },
+    Unreact {
+        emoji: String,
+    },
     Rich {
         rich: serde_json::Value,
     },
@@ -958,6 +992,8 @@ impl From<EditOpWire> for EditOp {
             EditOpWire::RemoveColumn { id } => Self::RemoveColumn { id },
             EditOpWire::Settle { id, outcome } => Self::Settle { id, outcome },
             EditOpWire::Forget { id } => Self::Forget { id },
+            EditOpWire::React { emoji } => Self::React { emoji },
+            EditOpWire::Unreact { emoji } => Self::Unreact { emoji },
             EditOpWire::Rich { rich } => Self::Rich { rich },
         }
     }
@@ -1003,6 +1039,8 @@ impl EditOp {
             Self::RemoveColumn { .. } => "remove-column",
             Self::Settle { .. } => "settle",
             Self::Forget { .. } => "forget",
+            Self::React { .. } => "react",
+            Self::Unreact { .. } => "unreact",
             Self::Rich { .. } => "rich",
         }
     }
@@ -1077,46 +1115,11 @@ impl<R> Edit<R> {
     where
         R: Model,
     {
-        if self.path != next.path {
-            return false;
-        }
-        match (&self.op, &next.op) {
-            (EditOp::Rich { rich: previous }, EditOp::Rich { rich: next }) => {
-                R::op_coalesces(&self.path, previous, next).unwrap_or(false)
-            }
-            (EditOp::Set { .. }, EditOp::Set { .. }) | (EditOp::Add { .. }, EditOp::Add { .. }) => {
-                true
-            }
-            (EditOp::Replace { text: previous }, EditOp::Replace { text: next }) => {
-                replace_continues(previous, next)
-            }
-            (
-                EditOp::Splice {
-                    at, delete, insert, ..
-                },
-                EditOp::Splice {
-                    at: next_at,
-                    delete: next_delete,
-                    insert: next_insert,
-                },
-            ) => {
-                let typed = insert.chars().count();
-                // Typing on after the previous insertion, within one word:
-                // a space ends the word it follows, so undo takes back
-                // `world` and leaves `hello `.
-                let typing = *delete == 0
-                    && *next_delete == 0
-                    && !next_insert.is_empty()
-                    && *next_at == at.saturating_add(typed)
-                    && !insert.ends_with(char::is_whitespace);
-                // Deleting backwards from where the previous deletion was.
-                let erasing = insert.is_empty()
-                    && next_insert.is_empty()
-                    && next_at.saturating_add(*next_delete) == *at;
-                typing || erasing
-            }
-            _ => false,
-        }
+        edits_coalesce(
+            (&self.path, &self.op),
+            (&next.path, &next.op),
+            R::op_coalesces,
+        )
     }
 
     /// How much harm this edit can do: removing an item of a collection is
@@ -1194,6 +1197,55 @@ impl<R> Edit<R> {
         R: crate::Fields,
     {
         R::edit_fields(doc, &automerge::ROOT, &self.path, &self.op, cx)
+    }
+}
+
+/// [`Edit::coalesces`] of the edit `previous` (its path and operation) and
+/// `next`, an edit in a type's own vocabulary continuing as `rich` says:
+/// compiled once rather than for every record type.
+#[inline(never)]
+fn edits_coalesce(
+    (previous_path, previous_op): (&[Segment], &EditOp),
+    (next_path, next_op): (&[Segment], &EditOp),
+    rich: fn(&[Segment], &serde_json::Value, &serde_json::Value) -> Option<bool>,
+) -> bool {
+    if previous_path != next_path {
+        return false;
+    }
+    match (previous_op, next_op) {
+        (EditOp::Rich { rich: previous }, EditOp::Rich { rich: next }) => {
+            rich(previous_path, previous, next).unwrap_or(false)
+        }
+        (EditOp::Set { .. }, EditOp::Set { .. }) | (EditOp::Add { .. }, EditOp::Add { .. }) => true,
+        (EditOp::Replace { text: previous }, EditOp::Replace { text: next }) => {
+            replace_continues(previous, next)
+        }
+        (
+            EditOp::Splice {
+                at, delete, insert, ..
+            },
+            EditOp::Splice {
+                at: next_at,
+                delete: next_delete,
+                insert: next_insert,
+            },
+        ) => {
+            let typed = insert.chars().count();
+            // Typing on after the previous insertion, within one word:
+            // a space ends the word it follows, so undo takes back
+            // `world` and leaves `hello `.
+            let typing = *delete == 0
+                && *next_delete == 0
+                && !next_insert.is_empty()
+                && *next_at == at.saturating_add(typed)
+                && !insert.ends_with(char::is_whitespace);
+            // Deleting backwards from where the previous deletion was.
+            let erasing = insert.is_empty()
+                && next_insert.is_empty()
+                && next_at.saturating_add(*next_delete) == *at;
+            typing || erasing
+        }
+        _ => false,
     }
 }
 
@@ -1289,7 +1341,8 @@ fn edit_schema() -> serde_json::Value {
             "op": {"type": "string", "enum": [
                 "set", "splice", "replace", "add", "insert", "remove", "insert-item",
                 "upsert-item", "remove-item", "move-to", "remove-key", "set-cell", "insert-row",
-                "insert-column", "remove-row", "remove-column", "settle", "rich",
+                "insert-column", "remove-row", "remove-column", "settle", "react", "unreact",
+                "rich",
             ]},
         },
         "required": ["path", "op"],

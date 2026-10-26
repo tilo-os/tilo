@@ -1005,7 +1005,8 @@ fn ended_session_banner_reserves_its_own_band_above_the_grid() {
 }
 
 /// Find honours the bar's options: literal by default only in that case counts,
-/// and a whole word is not matched inside a longer one.
+/// a whole word is not matched inside a longer one, and a regular expression
+/// matches as one.
 #[test]
 fn find_matches_follow_case_and_whole_word_options() {
     use ui::widget::{FindOptions, Findable};
@@ -1039,6 +1040,27 @@ fn find_matches_follow_case_and_whole_word_options() {
             }
         ),
         3
+    );
+    let regex = FindOptions {
+        mode: ui::widget::FindMode::Regex,
+        ..FindOptions::default()
+    };
+    assert_eq!(Findable::find(&mut widget, "^c.t", regex).len(), 2);
+    assert_eq!(
+        Findable::find(
+            &mut widget,
+            "c.t",
+            FindOptions {
+                whole_word: true,
+                ..regex
+            }
+        )
+        .len(),
+        3
+    );
+    assert!(
+        Findable::find(&mut widget, "(", regex).is_empty(),
+        "a pattern that does not compile finds nothing"
     );
     Findable::clear_find(&mut widget);
     assert!(widget.find_test_matches().is_empty());
@@ -1534,7 +1556,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
     let mut app =
         ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
     let writes = app
-        .with_surface(|terminal: &mut TerminalWidget| {
+        .with_surface(|terminal: &mut crate::TerminalView| {
             terminal.accept_input_for_test();
             terminal.attach_input_probe()
         })
@@ -1543,7 +1565,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
 
     // Diagnostics: the framework's own-gesture verdict and the direct path.
     let (own, direct) = app
-        .with_surface(|terminal: &mut TerminalWidget| {
+        .with_surface(|terminal: &mut crate::TerminalView| {
             let probe = TerminalEffect::Paste { text: "d".into() };
             (
                 terminal.own_gesture_verdict(&probe),
@@ -1556,7 +1578,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
 
     // Case `ctrl_shift_v_pastes_without_confirmation`.
     ui::clipboard_copy("person shortcut paste");
-    app.with_surface(|terminal: &mut TerminalWidget| {
+    app.with_surface(|terminal: &mut crate::TerminalView| {
         use winit::keyboard::{Key, NamedKey, SmolStr};
         let mut doc = AutoCommit::new();
         terminal.set_focus(true);
@@ -1585,7 +1607,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
 
     // Case `context_menu_paste_pastes_without_confirmation`.
     ui::clipboard_copy("person menu paste");
-    app.with_surface(|terminal: &mut TerminalWidget| {
+    app.with_surface(|terminal: &mut crate::TerminalView| {
         terminal.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
         terminal.open_context_menu_at(Point::new(20.0, 20.0));
         let paste = terminal
@@ -1812,14 +1834,17 @@ fn scrollback_viewport_and_scrollbar_track_output() {
     }
 }
 
-/// Local find: shortcut routing, discoverability, matches and reflow.
+/// Local find: the terminal's chord and its context menu open the window
+/// bar's search, a plain Ctrl+F stays the program's, and the matches stay
+/// local while the terminal reveals them.
 #[test]
 #[expect(
     clippy::too_many_lines,
     reason = "cases merged from separate tests; each case stays self-contained"
 )]
-fn find_in_terminal_is_local_discoverable_and_reflows() {
+fn find_in_terminal_is_local_discoverable_and_reveals() {
     use crate::TerminalView;
+    use ui::window_toolbar::{SearchOpening, take_search_request};
 
     // Case `find_shortcut_preserves_foreground_control_f_on_every_platform`.
     {
@@ -1838,24 +1863,26 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                 let mut view = TerminalView::new(widget);
                 view.set_platform_conventions(PlatformConventions::new(platform));
                 let mut doc = AutoCommit::new();
+                let _ = take_search_request();
                 send_key_with_modifiers(&mut view, &mut doc, Key::Character("f".into()), modifiers);
                 assert_eq!(
                     drain_writes(&writes),
                     expected,
                     "{platform:?}: shell editing bytes"
                 );
-                assert!(
-                    !view.find_is_open(),
+                assert_eq!(
+                    take_search_request(),
+                    None,
                     "{platform:?}: shell chord must not open Find"
                 );
             }
         }
     }
 
-    // Case `find_shortcut_opens_local_search_and_escape_restores_terminal_input`.
+    // Case `find_shortcut_opens_the_window_bars_search_without_typing_into_the_process`.
     {
         use ui::{Platform, PlatformConventions};
-        use winit::keyboard::{Key, ModifiersState, NamedKey};
+        use winit::keyboard::{Key, ModifiersState};
 
         for (platform, modifiers) in [
             (
@@ -1875,43 +1902,17 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             let mut view = TerminalView::new(widget);
             view.set_platform_conventions(PlatformConventions::new(platform));
             let mut doc = AutoCommit::new();
+            let _ = take_search_request();
             send_key_with_modifiers(&mut view, &mut doc, Key::Character("F".into()), modifiers);
-            assert!(
-                view.find_is_open(),
-                "{platform:?}: the find scope's terminal chord"
+            assert_eq!(
+                take_search_request(),
+                Some(SearchOpening::Find),
+                "{platform:?}: the terminal's chord opens the window bar's search"
             );
             assert!(
                 drain_writes(&writes).is_empty(),
                 "Find must not type into the process"
             );
-            send_key(
-                &mut view,
-                &mut doc,
-                Key::Character("query".into()),
-                false,
-                false,
-            );
-            assert!(
-                drain_writes(&writes).is_empty(),
-                "private Find query must not reach the process"
-            );
-            // A key the query has no use for stays the bar's too.
-            send_key(
-                &mut view,
-                &mut doc,
-                Key::Named(NamedKey::ArrowUp),
-                false,
-                false,
-            );
-            assert!(drain_writes(&writes).is_empty());
-            send_key(
-                &mut view,
-                &mut doc,
-                Key::Named(NamedKey::Escape),
-                false,
-                false,
-            );
-            assert!(!view.find_is_open());
             send_key(&mut view, &mut doc, Key::Character("f".into()), true, false);
             assert_eq!(drain_writes(&writes), vec![0x06]);
         }
@@ -1958,6 +1959,7 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             .iter()
             .find(|item| item.name.as_deref() == Some(find_label.as_str()))
             .expect("Find entry");
+        let _ = take_search_request();
         assert!(view.terminal_mut().perform_semantic_action(
             find.action_target.as_deref().expect("Find target"),
             &Action::Activate,
@@ -1965,40 +1967,16 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
             &ROOT,
         ));
         view.sync(&doc, &ROOT);
-        assert!(view.find_is_open());
-        let mut state = State::new();
-        assert!(state.adopt_doc(doc));
-        let mut framed = ui::headless::Framed::new(state, view, (800, 480), ui::Theme::dark());
-        let harness = ui::headless::Framed::harness_mut(&mut framed);
-        let query = harness
-            .a11y_nodes()
-            .into_iter()
-            .find(|(_, node)| node.role() == ui::accesskit::Role::TextInput)
-            .map(|(id, _)| id)
-            .expect("Find publishes its actual retained text input");
-        harness
-            .perform_a11y_action(query, &Action::SetValue("private search".into()))
-            .expect("the hosted Find query owns its text-edit action");
+        assert_eq!(take_search_request(), Some(SearchOpening::Find));
         assert!(
             drain_writes(&writes).is_empty(),
             "Find never writes shell commands"
         );
-        let (view, state) = ui::headless::Framed::split(&mut framed);
         assert_eq!(
             heads_before,
-            state.doc.get_heads(),
+            doc.get_heads(),
             "Find remains private local view state"
         );
-        assert!(
-            !view.terminal_mut().perform_semantic_action(
-                transcript.action_target.as_deref().unwrap(),
-                &Action::SetValue("unreviewed command".into()),
-                &mut ui::widget::Edits::lend(&mut state.doc),
-                &ROOT,
-            ),
-            "transcript actions still cannot execute arbitrary text"
-        );
-        assert!(drain_writes(&writes).is_empty());
     }
 
     // Case `fresh_output_tells_an_open_find_bar_to_find_again`.
@@ -2019,9 +1997,9 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         );
     }
 
-    // Case `find_in_scrollback_is_local_reveals_matches_and_reflows_at_large_text`.
+    // Case `the_window_bars_search_reveals_matches_in_scrollback_locally`.
     {
-        use ui::{Theme, a11y::Action};
+        use ui::widget::{InPlace, SearchDriver};
 
         let (mut widget, writes) = build_test_widget();
         let mut doc = AutoCommit::new();
@@ -2034,86 +2012,39 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         );
         let heads_before = doc.get_heads();
         let mut view = TerminalView::new(widget);
-
-        view.open_find();
-        view.set_find_query("build step 020");
-        assert!(view.find_is_open());
+        assert_eq!(InPlace::of(&mut view), InPlace::Document);
+        let mut driver = SearchDriver::default();
+        driver.open(InPlace::Document);
+        let options = ui::widget::FindOptions::default();
+        driver.drive(&mut view, "build step 020", options, None, false);
         assert_eq!(view.find_test_matches(), vec![20]);
+        assert_eq!(driver.position(), Some((1, 1)));
         assert!(
             view.scroll_offset() > 0,
             "find reveals a distant history row"
+        );
+        let abilities = driver.abilities();
+        assert!(abilities.regex, "the bar offers regular expressions");
+        assert!(!abilities.replace, "scrollback is not edited");
+        let regex = ui::widget::FindOptions {
+            mode: ui::widget::FindMode::Regex,
+            ..options
+        };
+        driver.drive(&mut view, "step 04[2-3]", regex, None, false);
+        assert_eq!(view.find_test_matches(), vec![42, 43]);
+        driver.drive(&mut view, "step 04[2-3]", regex, None, true);
+        assert!(
+            view.find_test_matches().is_empty(),
+            "closing forgets the matches"
+        );
+        assert!(
+            drain_writes(&writes).is_empty(),
+            "Find never writes to the PTY"
         );
         assert_eq!(
             doc.get_heads(),
             heads_before,
             "find text/matches stay local rather than mutating the collaborative transcript"
-        );
-
-        // The real layout and draw at 200%: the scope stands its band above
-        // the terminal, inside the viewport, and the grid starts under it.
-        let theme = Theme::high_contrast().with_text_scale(2.0);
-        let mut state = State::new();
-        assert!(state.adopt_doc(doc));
-        let mut framed = ui::headless::Framed::new(state, view, (390, 844), theme);
-        assert!(
-            !ui::headless::Framed::harness(&framed)
-                .scene()
-                .encoding()
-                .is_empty(),
-            "the real large-text host renders the terminal and its find band"
-        );
-        let view = &framed;
-        let band = view.find_band().expect("find band");
-        assert!(band.x0 >= viewport.x0 && band.x1 <= viewport.x1);
-        assert!(band.y0 >= viewport.y0 && band.y1 <= viewport.y1);
-        assert!(band.height() > 0.0);
-        assert!(
-            view.grid_rect().y0 >= band.y1,
-            "the grid starts under the find band"
-        );
-        assert_eq!(
-            view.find_counter(),
-            Some(("build step 020".to_string(), Some((1, 1))))
-        );
-
-        // Assistive activation resolves the exported controls to their real
-        // FindBar owner rather than sending child targets to TerminalView.
-        let control = |harness: &ui::headless::FrameHarness, key: &str| {
-            let label = crate::i18n::t(key);
-            harness
-                .a11y_nodes()
-                .into_iter()
-                .find(|(_, node)| node.label() == Some(label.as_str()))
-                .map_or_else(
-                    || panic!("missing exported Find control {label}"),
-                    |(id, _)| id,
-                )
-        };
-        let harness = ui::headless::Framed::harness_mut(&mut framed);
-        let next = control(harness, "find-bar-next");
-        harness
-            .perform_a11y_action(next, &Action::Activate)
-            .expect("the exported next-match control enters the real find scope");
-        let query = control(harness, "find-bar-placeholder");
-        harness
-            .perform_a11y_action(query, &Action::SetValue("build step 042".into()))
-            .expect("the exported query edits local Find state");
-        assert_eq!(framed.find_test_matches(), vec![42]);
-        let harness = ui::headless::Framed::harness_mut(&mut framed);
-        let close = control(harness, "find-bar-close");
-        harness
-            .perform_a11y_action(close, &Action::Activate)
-            .expect("the exported close control closes the real find scope");
-        assert!(!framed.find_is_open());
-        assert!(
-            drain_writes(&writes).is_empty(),
-            "Find never writes to the PTY"
-        );
-        let (_, state) = ui::headless::Framed::split(&mut framed);
-        assert_eq!(
-            state.doc.get_heads(),
-            heads_before,
-            "hosted Find actions leave the collaborative transcript unchanged"
         );
     }
 }
@@ -2199,7 +2130,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             );
             assert!(
                 widget.take_find_request(),
-                "the Find row asks the hosting find scope for its bar"
+                "the Find row asks the hosting view for the window bar's search"
             );
             assert!(
                 ui::widget::controls::take_control_invocation(&mut widget).is_none(),
@@ -3023,7 +2954,7 @@ fn terminal_resource_identity_convergence_and_presence() {
         use ui::presence::PresenceKey;
         let mut a = ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new()
             .expect("terminal");
-        a.with_surface(|terminal: &mut TerminalWidget| terminal.feed(b"peer-a-line-one\r\n"))
+        a.with_surface(|terminal: &mut crate::TerminalView| terminal.feed(b"peer-a-line-one\r\n"))
             .expect("hosted terminal");
         a.settle();
         let joined = crate::resource::Terminal::read(&a.peer_document()).unwrap();
@@ -3038,7 +2969,7 @@ fn terminal_resource_identity_convergence_and_presence() {
             b.grid_text()
         );
         let a_key = a
-            .with_surface(|terminal: &mut TerminalWidget| {
+            .with_surface(|terminal: &mut crate::TerminalView| {
                 ui::presence::capability::presence_key(terminal)
             })
             .expect("hosted terminal");
@@ -3719,6 +3650,38 @@ fn keyboard_encoding_sends_expected_sequences() {
             false,
         );
         assert_eq!(drain_writes(&rx), b"\x1b[Z", "Shift+Tab = CSI Z (back-tab)");
+        // The desktop's tab chords pass through to it: no bytes for the
+        // shell, so the app hands them on and the window's tabs step.
+        for (key, shift) in [
+            (Key::Named(NamedKey::Tab), false),
+            (Key::Named(NamedKey::Tab), true),
+            (Key::Character("T".into()), true),
+        ] {
+            send_key_mods(&mut w, &mut doc, key.clone(), true, shift, false);
+            assert!(
+                drain_writes(&rx).is_empty(),
+                "{key:?} with Ctrl (Shift {shift}) is the desktop's, not the shell's"
+            );
+        }
+        // Ctrl+T and Ctrl+W stay the shell's line-editing control bytes.
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Character("t".into()),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(drain_writes(&rx), [0x14], "Ctrl+T = ^T");
+        send_key_mods(
+            &mut w,
+            &mut doc,
+            Key::Character("w".into()),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(drain_writes(&rx), [0x17], "Ctrl+W = ^W");
     }
 
     // Case `alt_letter_sends_meta_escape_but_altgr_symbols_pass_through`.
@@ -4774,5 +4737,86 @@ fn typing_damages_only_its_row_and_the_cursor() {
         area * 4.0 < viewport.area(),
         "typing repaints a sliver of the terminal, not {area} of {} px: {damage:?}",
         viewport.area()
+    );
+}
+
+/// Fingers move the scrollback pixel by pixel, and a host that copies what
+/// a scroll keeps on screen copies the rows they only moved: the frame
+/// repaints the strip that came into view, not the grid.
+#[test]
+fn fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows() {
+    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+    use vello::{Scene, kurbo::Affine};
+    use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
+
+    let (mut widget, _) = build_test_widget();
+    let viewport = Rect::new(0.0, 0.0, 800.0, 400.0);
+    widget.force_geometry(viewport, 10.0, 20.0);
+    let mut output = Vec::new();
+    for line in 0..200 {
+        output.extend_from_slice(format!("line {line:03}\r\n").as_bytes());
+    }
+    widget.feed(&output);
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut frame = |widget: &mut TerminalWidget| {
+        widget.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+    };
+    // The first draw measures the cell and resizes the grid to the
+    // viewport; the next output applies that size.
+    frame(&mut widget);
+    widget.feed(b"");
+    frame(&mut widget);
+    widget.mark_drawn();
+    let mut doc = AutoCommit::new();
+    let mut fingers = |widget: &mut TerminalWidget, dy: f64| {
+        let event = WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, dy)),
+            phase: TouchPhase::Moved,
+        };
+        ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .send(widget, &event);
+    };
+    let centre = viewport.center();
+    ui::testing::Dispatch::new().send(
+        &mut widget,
+        &WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
+        },
+    );
+    fingers(&mut widget, 7.0);
+    assert_eq!(
+        widget.scroll_offset(),
+        1,
+        "seven pixels back show part of the row above the live screen"
+    );
+    frame(&mut widget);
+    let mut regions = Vec::new();
+    let offers = ui::scroll_copy::accepting(|| widget.collect_damage(&mut regions));
+    assert_eq!(offers.len(), 1, "the scroll is offered as a copy");
+    assert_eq!(offers[0].delta(), vello::kurbo::Vec2::new(0.0, 7.0));
+    let area: f64 = regions.iter().map(Rect::area).sum();
+    assert!(
+        area * 4.0 < viewport.area(),
+        "a scroll repaints a strip of the terminal, not {area} of {} px: {regions:?}",
+        viewport.area()
+    );
+    widget.mark_drawn();
+    // Back to the live output, exactly: the rows stand where they started.
+    fingers(&mut widget, -7.0);
+    assert_eq!(widget.scroll_offset(), 0);
+    let lines = widget.visible_lines();
+    assert!(
+        lines.iter().any(|line| line.contains("line 199")),
+        "the live output is in view: {lines:?}"
     );
 }

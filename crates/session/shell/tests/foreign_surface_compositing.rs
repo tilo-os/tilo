@@ -181,12 +181,13 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
             "a fitting buffer must not pin animation cadence after presentation settles"
         );
 
-        // The dissolve is 180 ms, so the very next frame is still mostly card.
+        // The cross-fade in takes a moment, so the very next frame is still
+        // mostly the placeholder.
         quiesce(&mut fb, surface_id);
         let scene = frame(&mut fb);
         let after = shot("foreign-with-client-frame", &mut renderer, &scene);
         // The focused foreign group can still finish its strip pan while its
-        // opening card is up. Sample the rect painted by this frame, not the
+        // place is reserved. Sample the rect painted by this frame, not the
         // pre-commit position captured above.
         let rect = tile_rect(&mut fb, surface_id);
         let (cx, cy) = (u32_of_f64(rect.center().x), u32_of_f64(rect.center().y));
@@ -250,7 +251,7 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
         let before = store().import_count();
         store().publish_rgba(surface_id, &solid(bw, bh, (0x30, 0x90, 0xD0)), bw, bh);
 
-        // That dissolve is a legitimate 180 ms animation, so "the client is idle"
+        // Its cross-fade in is a legitimate animation, so "the client is idle"
         // is only answerable once it has finished.
         quiesce(&mut fb, surface_id);
 
@@ -460,11 +461,11 @@ fn last_window_close_keeps_every_produced_frame_nonblack() {
 
 /// Paint until the widget tree reaches a steady state.
 ///
-/// Splicing a tab plays the spawn fade, which legitimately keeps
-/// `needs_animation_frame()` true for a couple hundred ms. A still-opening
-/// tile paints a spinner and never reports idle while it does (by design),
-/// so "steady" means "nothing animating, or only a tab still starting" —
-/// a test needing to tell those apart must get its client to present first.
+/// Splicing a tab plays the window's open motion, which legitimately keeps
+/// `needs_animation_frame()` true for a couple hundred ms. A tab whose
+/// window has not drawn yet counts as steady too: its place waits on
+/// deadlines, and a test needing to tell it apart must get its client to
+/// present first.
 fn settle(fb: &mut FrameBuilder) {
     // Always paint once: the first pass is what splices pending tabs into
     // the live tree and lays them out, so it must run even when nothing
@@ -475,7 +476,7 @@ fn settle(fb: &mut FrameBuilder) {
         .checked_add(std::time::Duration::from_millis(500))
         .unwrap_or(started);
     let deadline = tilo_test_env::hang_deadline();
-    let settled = |fb: &mut FrameBuilder| !fb.needs_animation_frame() || fb.any_tile_opening();
+    let settled = |fb: &mut FrameBuilder| !fb.needs_animation_frame() || fb.any_tile_arriving();
     while (std::time::Instant::now() < minimum || !settled(fb))
         && std::time::Instant::now() < deadline
     {
@@ -490,16 +491,16 @@ fn settle(fb: &mut FrameBuilder) {
 
 /// Paint until nothing is animating at all, once every tab has drawn.
 /// Stricter than [`settle`], usable only after a client's buffer is in
-/// the store: handing a placeholder to its window is a 180 ms cross-fade,
-/// so the frame right after a commit is mostly still the card — sampling
-/// there measures the dissolve, not the client's pixels.
+/// the store: a window's first frame cross-fades in over its placeholder,
+/// so the frame right after a commit is mostly still the placeholder, and
+/// sampling there measures the cross-fade, not the client's pixels.
 fn quiesce(fb: &mut FrameBuilder, surface_id: u64) {
     let deadline = tilo_test_env::hang_deadline();
     // First wait for this exact client to latch as presented. A configure or
     // strip-layout change can delay that edge; measuring the dissolve from
-    // publication would then spend the entire allowance on the opening card.
+    // publication would then spend the entire allowance on the placeholder.
     while !store().is_presented(surface_id) && std::time::Instant::now() < deadline {
-        let _ = fb.any_tile_opening();
+        let _ = fb.any_tile_arriving();
         let _ = frame(fb);
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
@@ -507,7 +508,7 @@ fn quiesce(fb: &mut FrameBuilder, surface_id: u64) {
         store().is_presented(surface_id),
         "the committed foreign surface never became presented"
     );
-    // Now paint past the host's 180ms handover. Global animation demand is
+    // Now paint past the first frame's cross-fade in. Global animation demand is
     // intentionally not the exit condition: another shell group may still be
     // opening and is unrelated to this surface's dissolve.
     // The last frame starts after the handover has ended, however long the
@@ -691,7 +692,7 @@ fn foreign_toplevel_lifecycle_drives_configure_unmap_and_tab_removal() {
         store().publish_rgba(surface_id, &rgba, bw, bh);
         assert!(store().snapshot(surface_id).is_some());
 
-        // Sample after the 180 ms dissolve, or the fixture is still mostly card.
+        // Sample after the cross-fade in, or the fixture is still mostly placeholder.
         quiesce(&mut fb, surface_id);
         let mut renderer = OffscreenRenderer::new(W, H);
         let scene = frame(&mut fb);

@@ -35,7 +35,7 @@ impl ShellOverlayHost {
             self.draw_follow_chip(scene, transform, text_renderer, theme);
             // Everything is inside a layer clipped to the chip, which slides
             // down 10 px as it opens.
-            let chip = self.follow_chip_rect;
+            let chip = self.follow_banner.chip_rect();
             if chip.is_zero_area() {
                 return Vec::new();
             }
@@ -45,26 +45,6 @@ impl ShellOverlayHost {
                 chip.x1,
                 chip.y1,
             ))]
-        });
-        // The arrival line belongs to the desktop, not to the overlays: it
-        // is drawn here, beneath Quick Settings, menus, popovers, the
-        // palette and the capture bar, on the display the person is working
-        // on. It says what the top bar says (the workspace and who is
-        // here), so an overlay opening takes it away rather than leaving
-        // it under the overlay or beside it.
-        self.settle_arrival_line_under_overlays();
-        let display = self.overlay_area();
-        part_drawn(scene, PartKey::new("shell.arrival", ()), |scene| {
-            if !self.arrival_line.visible() {
-                return Vec::new();
-            }
-            self.arrival_line
-                .draw(display, scene, transform, text_renderer, theme);
-            self.arrival_line
-                .painted_bounds()
-                .map(|bounds| transform.transform_rect_bbox(bounds))
-                .into_iter()
-                .collect()
         });
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
@@ -92,7 +72,8 @@ impl ShellOverlayHost {
 
         // Above desktop content, below modal overlays and the permission
         // prompt, so a prompt always wins focus. Top inset keeps toasts
-        // off the clock/tray, and the windows' bars keep them lower still.
+        // off the clock/tray.
+        let window_bars = self.window_bar_rects();
         if let Some(chrome) = self.chrome.as_ref() {
             let viewport = Rect::new(
                 area.x0,
@@ -101,11 +82,16 @@ impl ShellOverlayHost {
                 area.y1,
             );
             self.notification_stack.set_viewport(viewport);
-            // Under the top bar is where the windows' bars are: banners
-            // start below the ones under the corner, so an incoming call
-            // never hides a window's History, maximize or close.
-            let bars = self.window_bars_on_screen();
-            self.notification_stack.keep_clear_of(&bars);
+            // Banners share the transients' zone with the follow bar: below
+            // it while it is up, and below any window bar they would cover.
+            let follow = self.follow_banner.chip_rect();
+            self.notification_stack
+                .set_clear_top(if follow.is_zero_area() {
+                    0.0
+                } else {
+                    follow.y1
+                });
+            self.notification_stack.set_window_bars(window_bars);
             let stack = &mut self.notification_stack;
             part_drawn(scene, PartKey::new("shell.notifications", ()), |scene| {
                 stack.draw(
@@ -190,6 +176,7 @@ impl ShellOverlayHost {
         {
             let ringing = NotificationStack::call_ringing(&ChromeNotifications::new(chrome));
             let top = f64::from(self.chrome_top_y);
+            let window_bars = self.window_bar_rects();
             let banners = &mut self.machine_banners;
             let edges = &mut self.call_edges;
             overlay_part(scene, "shell.machine-notices", desktop, |scene| {
@@ -201,7 +188,7 @@ impl ShellOverlayHost {
                         transform,
                         text_renderer,
                         theme,
-                        viewport,
+                        (viewport, &window_bars),
                     );
                     if !banner.is_zero_area() {
                         banners.push(banner);
@@ -388,10 +375,6 @@ impl ShellOverlayHost {
 
     /// Paint the roster at rest, in the host's coordinates, and lay out its
     /// targets.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the single paint pass keeps roster decoration, action geometry, and overlay rendering synchronized"
-    )]
     fn paint_collaborators_roster(
         &mut self,
         scene: &mut Scene,
@@ -400,6 +383,47 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) {
         let transform = Affine::IDENTITY;
+        let RosterFrame {
+            rows,
+            workspace,
+            unavailable,
+            exposure,
+        } = self.roster_frame(presence);
+        let may_invite = self.may_invite_here();
+        let following_pairs = self.roster_following_pairs(presence, &rows);
+        self.collaborators_overlay.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &CollaboratorsModel {
+                host: self.overlay_area(),
+                workspace: &workspace,
+                rows: &rows,
+                unavailable: unavailable.as_deref(),
+                exposure: exposure.as_deref(),
+                may_invite,
+                may_pin: !self.people_overlay.is_visible(),
+                followed_id: self.followed_peer.as_deref(),
+                following_pairs: &following_pairs,
+                expanded_id: self.expanded_collaborator.as_deref(),
+                // Native presence has no spectator role yet.
+                watching: 0,
+                waved: &self.self_presence.waved_recently(std::time::Instant::now()),
+                spectating: false,
+            },
+            self.last_cursor,
+        );
+    }
+
+    /// Who is here as the roster shows them: each row decorated with their
+    /// status, availability, call, place and recent changes. The dropdown
+    /// and the pinned people overlay both list these.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass keeps each row's status, availability, call, place and changes from the same reading"
+    )]
+    pub(super) fn roster_frame(&self, presence: &PresenceCtx) -> RosterFrame {
         // The name this person goes by, numbered like anyone else's when
         // someone here shares it; never "You", never their key.
         let own_name = ui::local_identity::load()
@@ -467,31 +491,28 @@ impl ShellOverlayHost {
         // Who is in which voice channel, as the room's calls say, and the
         // Join each row offers.
         self.decorate_calls(&mut rows, presence);
-        let may_invite = self.may_invite_here();
-        let following_pairs = self.roster_following_pairs(presence, &rows);
-        self.collaborators_overlay.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &CollaboratorsModel {
-                host: self.overlay_area(),
-                workspace: &workspace,
-                rows: &rows,
-                unavailable: unavailable.as_deref(),
-                exposure: exposure.as_deref(),
-                may_invite,
-                followed_id: self.followed_peer.as_deref(),
-                following_pairs: &following_pairs,
-                expanded_id: self.expanded_collaborator.as_deref(),
-                // Native presence has no spectator role yet.
-                watching: 0,
-                waved: &self.self_presence.waved_recently(std::time::Instant::now()),
-                spectating: false,
-            },
-            self.last_cursor,
+        // Whom each follows, as every roster here says it.
+        let following = self.roster_following_pairs(presence, &rows);
+        tilo_desktop::collaborators::note_following(
+            &mut rows,
+            &following,
+            Some(super::follow::OWN_ROSTER_ID),
         );
+        RosterFrame {
+            rows,
+            workspace,
+            unavailable,
+            exposure,
+        }
     }
+}
+
+/// Who is here, and what the roster says around them.
+pub(super) struct RosterFrame {
+    pub(super) rows: Vec<tilo_desktop::collaborators::RosterRow>,
+    pub(super) workspace: String,
+    pub(super) unavailable: Option<String>,
+    pub(super) exposure: Option<String>,
 }
 
 /// Where each of `rows` is when no window here shows it, as in a room

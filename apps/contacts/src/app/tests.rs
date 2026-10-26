@@ -1922,6 +1922,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let before = h.app.store.len();
         // Invoke the palette's delete through the door, bypassing the app's
         // own affordances (exactly as the shell's Ctrl+K palette would).
+        // Undo takes a deletion back, so it runs at once.
         h.app
             .app
             .call_on(
@@ -1929,8 +1930,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
                 "delete-contact",
                 serde_json::json!({}),
             )
-            .expect_err("deleting asks for confirmation");
-        h.app.app.invoke_confirmed(Contacts::delete(id)).unwrap();
+            .expect("an undoable delete runs at once");
         h.app.settle();
         assert!(
             h.app.store.contact(id).is_none(),
@@ -3924,13 +3924,13 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
     assert!(matches!(app.dialog, Some((DialogKey::Duplicate(..), _))));
     opened.choose(crate::actions::MergeField::Organization, true);
 
+    // Undo takes a merge back, so it lands at once: nobody is asked first.
     ask(&mut app, Request::Dialog(DialogChoice::Primary));
     app.settle();
     assert!(
-        app.duplicate_review.is_some(),
-        "the review stays up behind the host's question"
+        !host_confirmation_is_up(&mut app),
+        "an undoable merge asks nothing"
     );
-    confirm_on_host(&mut app);
     assert!(app.duplicate_review.is_none(), "a landed merge closes it");
     let book = app.book();
     assert!(
@@ -3941,6 +3941,12 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
         book.iter().find(|c| c.id == ada.id).unwrap().org,
         "Babbage & Co.",
         "the merge kept the chosen value"
+    );
+    assert!(app.app.undo(), "the merge is the person's undo step");
+    app.settle();
+    assert!(
+        app.book().iter().any(|c| c.id == copy.id),
+        "Undo brings the copy back"
     );
 }
 
@@ -4579,7 +4585,12 @@ fn narrow_sort_row_has_full_aligned_control_without_extra_gutters() {
         assert!(control.width() > 0.0 && control.height() >= 32.0);
         assert!(control.x0 >= row.x0 && control.x1 <= row.x1);
         assert!(control.y0 >= row.y0 && control.y1 <= row.y1);
-        assert_eq!(control.x0, row.x0, "sort aligns with its overview rail");
+        let theme = Theme::light().with_text_scale(scale);
+        assert_eq!(
+            control.x0,
+            row.x0 + f64::from(theme.tokens.spacing.rhythm.tight),
+            "sort starts where the list rows' faces do"
+        );
         assert_eq!(
             control.y0 - row.y0,
             f64::from(Theme::light().tokens.spacing.s2),
@@ -4616,7 +4627,7 @@ fn confirm_on_host(app: &mut Live) {
     app.settle();
 }
 
-/// A surface that closes its own dialog in the same event its destructive
+/// A surface that closes its own dialog in the same event its sensitive
 /// action asks the host to confirm: the host remembers where focus returns
 /// from the window as it now stands, never from the dialog that is gone.
 #[test]
@@ -4647,16 +4658,23 @@ fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
         .perform_a11y_action(merge, &ui::a11y::Action::Focus)
         .unwrap();
     // In one event: the review closes, so its focused Merge button is
-    // dropped, and the merge goes to the host, which asks to confirm.
+    // dropped, and an export of the contact (private data leaving the room,
+    // which asks even though nothing is lost) goes to the host, which asks
+    // to confirm.
     app.with_widget(|surface: &mut ContactsApp| {
         surface.duplicate_review = None;
         surface.dirty = true;
-        surface
-            .submit(Contacts::merge(survivor.id, source.id, []))
-            .unwrap();
+        surface.dispatcher.as_ref().unwrap().effect(
+            &crate::actions::ContactsEffect::ExportContact {
+                contact: survivor.id,
+            },
+        );
     });
     app.settle();
-    assert!(app.asking().is_some(), "the host asks to confirm the merge");
+    assert!(
+        app.asking().is_some(),
+        "the host asks to confirm the export"
+    );
 }
 
 /// A narrow window opens on the list, which stands alone: an empty book says
@@ -4736,4 +4754,38 @@ fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
     let state = exported_node(&mut viewer, "No contacts yet")
         .expect("the list beside a viewer's form names the empty book");
     assert_eq!(state.description(), Some(VIEW_ONLY_MESSAGE));
+}
+
+#[test]
+fn the_contact_form_leaves_its_title_to_the_window_bar() {
+    let mut app = synced();
+    let shown = selected_contact(&app);
+    let bar_action = |id: &str| {
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.actions.into_iter().find(|action| action.id == id))
+            .unwrap_or_else(|| panic!("the bar offers {id}"))
+    };
+    assert_eq!(
+        bar_action(BAR_EDIT).name,
+        "Edit contact",
+        "the bar's Edit is named for the whole contact, apart from each field's pencil"
+    );
+    press_bar(&mut app, BAR_EDIT);
+    assert_eq!(app.mode, Mode::Edit, "the person is being edited");
+    assert_ne!(
+        bar_action(BAR_CANCEL).icon,
+        "x",
+        "Cancel does not wear the window's own close"
+    );
+    assert_eq!(
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.location)
+            .map(|location| location.label),
+        Some(shown.display_name()),
+        "the window bar names the person being edited"
+    );
+    assert!(
+        !named(&app, "Edit contact"),
+        "the form draws no title of its own"
+    );
 }

@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The sanctioned monotonic and wall clocks on every target, Unix-time helpers, and an injectable millisecond Clock with fixed and manual test clocks."
 
 [features]
-# Scoped monotonic readings for deterministic input and deadline tests only.
+# Scoped monotonic and wall readings for deterministic tests only.
 test-support = []
 
 [lib]
@@ -22,6 +22,10 @@ path = "src/lib.rs"
 # clocks back the same re-exported types through `web-time`. A `tilo_no_js`
 # build has no page to ask and keeps `std::time`'s types.
 [dependencies]
+
+# Tests that pin the process-wide wall clock run in a process of their own.
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 
 [target.'cfg(all(target_family = "wasm", not(tilo_no_js)))'.dependencies]
 web-time = "1"

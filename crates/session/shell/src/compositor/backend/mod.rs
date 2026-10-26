@@ -11,6 +11,33 @@ use vello::Scene;
 // would otherwise shadow the external `winit` crate.
 use ::winit::event::{Modifiers, WindowEvent};
 
+/// One stage of lighting an output: what each output's wake check judges
+/// (`drm::wake_check`), and what a test-control wake fault names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeStage {
+    /// The driver took the commit that lights the CRTC.
+    Commit,
+    /// A vblank followed the modeset: the link to the display is up.
+    Link,
+    /// The CRTC reads back active, showing a mode.
+    Crtc,
+    /// The built-in panel's backlight is unblanked.
+    Backlight,
+}
+
+impl WakeStage {
+    /// Its name in the flight record and the test-control fault.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Commit => "commit",
+            Self::Link => "link",
+            Self::Crtc => "crtc",
+            Self::Backlight => "backlight",
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub mod drm;
 #[cfg(not(target_os = "linux"))]
@@ -926,14 +953,14 @@ pub trait Backend {
         false
     }
 
-    /// Take the wake stage named `stage` as failed in every output's next
-    /// wake, whatever it observes: the test-control fault that proves the
-    /// wake's recovery on hardware that never fails.
+    /// Take `stage` as failed in every output's next wake, whatever it
+    /// observes: the test-control fault that proves the wake's recovery on
+    /// hardware that never fails.
     ///
     /// # Errors
     ///
-    /// The backend has no outputs to wake, or `stage` names no stage.
-    fn inject_wake_fault(&mut self, _stage: &str) -> Result<(), String> {
+    /// The backend has no outputs to wake.
+    fn inject_wake_fault(&mut self, _stage: WakeStage) -> Result<(), String> {
         Err("this backend has no display outputs to wake".to_owned())
     }
 

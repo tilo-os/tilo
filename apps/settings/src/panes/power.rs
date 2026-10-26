@@ -17,6 +17,10 @@
 //!   truly differ is the selected profile's timer the one, shown with the
 //!   profile. While "Suspend when idle" is off, every timer that depends on
 //!   it is disabled and says why.
+//! - **Password after sleep** lives beside the lock timer because it is the
+//!   other way the lock screen appears: off, a machine that went to sleep
+//!   unlocked comes back to what its owner left on screen, while a lock from
+//!   the idle timer or the lock command is kept as it was.
 
 mod history_chart;
 
@@ -1075,6 +1079,12 @@ impl PowerPane {
                 lock_label,
                 paths.lock_minutes,
             ),
+            self.cx
+                .row(t("power-lock-on-sleep"))
+                .id("power.lock_on_sleep")
+                .described(t("power-lock-on-sleep-caption"))
+                .of(&self.prefs, paths.lock_on_sleep)
+                .toggle(),
             note(&t("power-idle-caption")),
         ]);
         section(&t("power-idle-title"), rows(body))
@@ -1154,6 +1164,16 @@ pub(crate) fn auto_suspend(cx: &PaneCx, prefs: &Followed<PowerPrefs>) -> Item {
     cx.row(t("power-suspend-idle"))
         .id("power.auto_suspend")
         .of(prefs, PowerPrefs::paths().auto_suspend)
+        .toggle()
+}
+
+/// Whether waking from sleep asks for the password, as this pane's own row
+/// (and Settings' search) shows it.
+pub(crate) fn lock_on_sleep(cx: &PaneCx, prefs: &Followed<PowerPrefs>) -> Item {
+    cx.row(t("power-lock-on-sleep"))
+        .id("power.lock_on_sleep")
+        .described(t("power-lock-on-sleep-caption"))
+        .of(prefs, PowerPrefs::paths().lock_on_sleep)
         .toggle()
 }
 

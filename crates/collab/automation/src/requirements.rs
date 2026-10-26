@@ -93,6 +93,7 @@ mod tests {
             name: "P".into(),
             inputs: Vec::new(),
             steps,
+            step_timeout_secs: None,
             output: None,
             grant: Vec::new(),
             triggers,

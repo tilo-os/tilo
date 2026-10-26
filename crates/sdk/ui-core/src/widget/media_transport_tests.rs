@@ -414,3 +414,26 @@ fn the_volume_is_reachable_at_every_width() {
         assert_eq!(feed.take_events(), Vec::new());
     }
 }
+
+/// The knob overhangs the slider's ends: resting at either end it keeps
+/// the related gap to the elapsed and total times, never covering them.
+#[test]
+fn the_knob_at_either_end_clears_the_times() {
+    let mut m = Metrics::of(&Theme::dark());
+    m.time = 32.0;
+    let reach = crate::widget::SliderFace::overhang();
+    for width in [360.0, 900.0, 1400.0] {
+        let (form, rects, _) = layout(&playing(), &handed(&actions()), &m, width);
+        let scrub = rects[SCRUBBER];
+        assert!(
+            scrub.x0 - reach >= rects[ELAPSED].x1 + m.related - 0.5,
+            "{form:?} at {width}: the knob at 0:00 ({scrub:?}) clears {:?}",
+            rects[ELAPSED]
+        );
+        assert!(
+            scrub.x1 + reach <= rects[TOTAL].x0 - m.related + 0.5,
+            "{form:?} at {width}: the knob at the end ({scrub:?}) clears {:?}",
+            rects[TOTAL]
+        );
+    }
+}

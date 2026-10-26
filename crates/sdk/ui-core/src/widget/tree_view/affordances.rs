@@ -5,7 +5,7 @@
 //! of each; the host supplies content and receives intents.
 
 use super::{
-    Affine, Icon, NodeId, Point, Rect, Scene, TextRenderer, Theme, TreeModel, TreeRowKey, TreeView,
+    Affine, Icon, NodeId, Point, Rect, Scene, TextRenderer, Theme, TreeImpl, TreeModel, TreeRowKey,
 };
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::num::f32_of_f64;
@@ -99,7 +99,7 @@ fn is_button_target(target: &str) -> bool {
         || target.starts_with("move:")
 }
 
-impl<T, M: TreeModel> TreeView<T, M> {
+impl<T, M: TreeModel> TreeImpl<T, M> {
     /// Offer a context menu: right click on a row (which selects it) or on
     /// empty space (`None`), the `Menu` key or `Shift+F10` on the focused
     /// row, a row action that [opens the menu](TreeRowAction::opens_context_menu),

@@ -199,6 +199,7 @@ shortcut-name-power-menu = Power menu
 shortcut-name-next-input-source = Next keyboard layout
 shortcut-name-emoji-picker = Emoji
 shortcut-name-say-something = Say something here
+shortcut-name-report-problem = Report a problem
 shortcut-name-ask-agent = Ask agent about selection
 
 # The groups desktop shortcuts are listed in
@@ -520,6 +521,13 @@ portal-a11y-name = Name
 portal-a11y-answer = Answer
 portal-secret-required = Fill in every required field.
 portal-secret-wifi-length = A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.
+portal-sim-unlock = Unlock
+portal-sim-unlocking = Unlocking the SIM…
+portal-sim-unlock-failed = The SIM could not be unlocked. Try again.
+portal-sim-pin-wrong = That PIN is wrong.
+portal-sim-puk-title = SIM locked
+portal-sim-puk-lead = Too many wrong PINs locked the SIM for “{ $network }”. Enter the PUK from the SIM’s card holder and choose a new PIN.
+portal-sim-puk-wrong = That PUK is wrong.
 portal-network-heading = Network
 portal-network-this-network = this network
 portal-network-password = Password
@@ -554,7 +562,6 @@ topbar-clocks-notification-body = Time is up
 # Workspace activity: what a collaborator is doing right now
 host-activity-working-on = Working on { $target }
 host-activity-workspace-not-shown = Switch to this workspace to change its history.
-host-activity-personal-only = Only the person at this device can do this.
 host-activity-action-feed = Read history
 host-activity-action-summary = Read what's new
 host-activity-action-replay = Replay layout
@@ -603,6 +610,11 @@ host-source-app-actions = Application actions
 # App launches and session actions
 host-app-did-not-open-title = Application did not open
 host-app-did-not-open-body = The app started but did not create a window. Check the session log and try again.
+# A live view of a resource shared into a conversation, when it cannot show.
+live-view-not-installed = Its app isn't on this computer
+live-view-gone = It is no longer there
+live-view-did-not-open = It didn't open here
+live-view-closed = Its app closed
 host-session-action-failed = Session action failed
 host-session-lock-failed = Couldn’t lock the session. Check the session log and try again.
 host-session-logout-failed = Couldn’t log out. Check the session log and try again.
@@ -831,11 +843,6 @@ overview-site-here = { $count ->
    *[other] { $count } people here
 }
 a11y-leave-workspace = Leave { $name }
-
-# Following someone's view
-follow-label = Following { $person }
-follow-stopped = Stopped following
-follow-stop = Stop
 
 # Search filter chips
 search-filter-all = All
@@ -1401,6 +1408,8 @@ search-answer-bad-address = That address can’t be opened.
 search-people-invited = Invited
 search-action-emoji-picker = Choose an emoji
 search-action-emoji-picker-subtitle = Insert it where you’re typing
+search-action-next-input-source-subtitle = Type with the next layout in your list
+input-source-next-none = Add another keyboard layout in Settings to switch between them
 search-provider-host-apps = Host apps
 search-provider-app-actions = Application resources and actions
 
@@ -1440,7 +1449,7 @@ search-app-job-streaming = streaming
 search-app-job-succeeded = succeeded
 search-app-job-failed = failed
 search-app-job-cancelled = cancelled
-search-app-resource-contains = contains resources
+search-app-content-contains = contains resources
 
 # Search: session actions
 search-session-logout = Log out of Tilo
@@ -1596,12 +1605,24 @@ search-action-group-move-to-strip-previous = Move window group to the strip abov
 search-action-group-move-to-strip-previous-subtitle = Carry the focused window group into the strip above
 search-action-group-move-to-strip-next = Move window group to the strip below
 search-action-group-move-to-strip-next-subtitle = Carry the focused window group into the strip below
+search-action-group-move-to-strip = Move window group to a strip…
+search-action-group-move-to-strip-subtitle = Carry the focused window group into the strip you choose
+search-action-group-close = Close this window
+search-action-group-close-subtitle = Close the focused window and all its tabs
+search-action-window-none = There is no window to act on.
+search-action-window-unchanged = Nothing changed. The window is already there.
+search-action-window-unchanged-edge = Nothing changed. The window can't move any further that way.
+search-action-window-unchanged-maximized = Nothing changed. The window is already maximized.
+search-action-window-unchanged-restored = Nothing changed. The window isn't maximized.
+search-action-window-unchanged-narrowest = Nothing changed. The window is already as narrow as it goes.
+search-action-window-unchanged-widest = Nothing changed. The window is already as wide as it goes.
+search-action-tab-unchanged-edge = Nothing changed. There is no window on that side to move the tab into.
 search-action-group-move-to-display-previous = Move window group to the previous display
 search-action-group-move-to-display-previous-subtitle = Move the focused window group onto the display to the left
 search-action-group-move-to-display-next = Move window group to the next display
 search-action-group-move-to-display-next-subtitle = Move the focused window group onto the display to the right
-search-action-group-maximize = Maximize or restore the window group
-search-action-group-maximize-subtitle = Make the focused window group fill its display, or restore it
+search-action-group-maximize = Maximize the window group
+search-action-group-maximize-subtitle = Make the focused window group fill its display
 search-action-group-restore = Restore the window group
 search-action-group-restore-subtitle = Return the focused maximized window group to its place in the strip
 search-action-group-fullscreen = Full screen or restore
@@ -1957,7 +1978,7 @@ onboarding-recovery-identity = This computer's identity: { $fingerprint }
 onboarding-backup-recovery-key = Write down a recovery key
 onboarding-backup-recovery-key-detail = 24 words on paper bring this identity back. No file or passphrase needed.
 onboarding-recovery-key-copy-title = Write down your recovery key
-onboarding-recovery-key-copy-body = Write these 24 words on paper, in order, and keep it somewhere safe. Anyone who has them can become you, so don't photograph them or store them in a shared place.
+onboarding-recovery-key-copy-body = Write them on paper, in order. Anyone with these words can become you, so don't photograph them.
 onboarding-recovery-key-confirm = To check your copy, type words { $first }, { $second } and { $third }.
 onboarding-recovery-key-word = Word { $position }
 onboarding-recovery-key-confirm-button = I wrote it down
@@ -1970,13 +1991,16 @@ onboarding-recovery-key-placeholder = word1 word2 word3 …
 onboarding-recovery-key-progress = { $count } of { $total } words
 onboarding-recovery-key-count = A recovery key has 24 words; this has { $found }.
 onboarding-recovery-key-unknown-word = Word { $position } isn't a recovery-key word. Check its spelling.
+onboarding-recovery-key-typo = Word { $position }, “{ $word }”, isn't a recovery-key word. Check its spelling.
+onboarding-recovery-key-suggestion = Word { $position }, “{ $word }”, isn't a recovery-key word. Did you mean “{ $suggestion }”?
 onboarding-recovery-key-checksum = These words don't form a recovery key. One is probably mistyped or out of order.
 onboarding-recovery-key-ready = Recovery key for identity { $fingerprint }
 onboarding-recovery-key-ready-detail = Choose Restore identity to use it on this computer.
-onboarding-recovery-key-matches = This is this computer's identity. Choose Restore identity to bring it back.
+onboarding-recovery-key-matches = It matches this computer's identity. Choose Restore identity to bring it back.
 onboarding-recovery-key-different = These words belong to a different identity
-onboarding-recovery-key-different-detail = They restore { $found }, but this computer belongs to { $expected }. Check that you're using the recovery key of this computer's identity.
+onboarding-recovery-key-different-detail = They restore { $found }, but this computer belongs to { $expected }, so check that you're using this computer's recovery key.
 onboarding-recovery-key-restoring = Restoring your identity…
+onboarding-recovery-key-failed = Couldn't restore from this recovery key
 onboarding-choice-restore-detail = Open an encrypted identity backup file
 onboarding-restore-title = Restore from a backup
 onboarding-restore-body = Choose the encrypted backup you saved from Tilo and enter its passphrase.
@@ -2032,7 +2056,7 @@ onboarding-nearby-connected = Connected. Your workspaces will appear automatical
 # First-login identity setup: encrypted backup
 onboarding-backup-title = Back up your Tilo identity
 onboarding-backup-identity-created = Your local identity was created
-onboarding-backup-explanation = Or save an encrypted copy somewhere else. Keep its file and passphrase separately; together they restore this identity.
+onboarding-backup-explanation = Or save an encrypted backup file and keep it apart from its passphrase.
 onboarding-backup-passphrase = New backup passphrase
 onboarding-backup-passphrase-placeholder = At least 12 characters, long and unique
 onboarding-backup-confirmation = Confirm new backup passphrase
@@ -2273,16 +2297,6 @@ overview-items-shared = { $count ->
 }
 
 # Windows and documents the shell hosts
-shell-window-restoring = Restoring this window…
-shell-window-opening = Opening…
-shell-window-opening-slow = Opening { $app }… taking longer than usual
-shell-window-installing-slow = Installing { $app }… taking longer than usual
-shell-window-installing-of = Installing { $app }… { $received } of { $total }
-shell-window-installing-received = Installing { $app }… { $received }
-shell-window-updating = Updating { $app }…
-shell-window-updating-slow = Updating { $app }… taking longer than usual
-shell-window-updating-of = Updating { $app }… { $received } of { $total }
-shell-window-updating-received = Updating { $app }… { $received }
 peer-window-not-installed = Not installed on this device.
 peer-window-install = Install { $app }
 peer-window-installing = Installing { $app }…
@@ -2380,6 +2394,17 @@ search-action-workspace-create-invalid-name = Enter a workspace name of 1 to 120
 search-action-workspace-rename = Rename this workspace
 search-action-workspace-rename-subtitle = Give the workspace on screen a new name
 search-action-workspace-rename-refused = Only the people who run this workspace can rename it.
+search-action-workspace-delete = Delete this workspace
+search-action-workspace-delete-subtitle = Delete the workspace on screen here and on your other devices
+search-action-workspace-delete-confirm = Delete workspace
+search-action-workspace-delete-last = This is your only workspace. Create another one before deleting it.
+search-action-workspace-delete-failed = Couldn't delete this workspace. Try again.
+search-action-workspace-move-earlier = Move this workspace up
+search-action-workspace-move-earlier-subtitle = Move the workspace on screen one place earlier in your list
+search-action-workspace-move-later = Move this workspace down
+search-action-workspace-move-later-subtitle = Move the workspace on screen one place later in your list
+search-action-workspace-move-first = This workspace is already first in your list.
+search-action-workspace-move-last = This workspace is already last in your list.
 search-action-strip-create = Create a strip
 search-action-strip-create-subtitle = Add a named strip to this workspace and go to it
 search-action-strip-create-default-name = New strip
@@ -2424,7 +2449,6 @@ pad-map-dial-brightness = Brightness
 
 # Peer views, opening documents, identity backup and invitations
 peer-view-surface-title = Peer surface #{ $id }
-peer-view-awaiting = Awaiting peer surface…
 doc-open-no-handler = no app on this desktop opens .{ $ext } files ({ $name })
 doc-open-no-file-type = { $name } has no file type to open it by
 doc-open-no-workspace = there is no active workspace to open it in
@@ -2813,6 +2837,7 @@ shell-launch-registry-unavailable = The app process registry is unavailable.
 shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.
 
 shell-window-restore-interrupted = This saved window did not finish reopening.
+shell-window-open-failed = This window didn’t open
 shell-window-retry = Reopen
 shell-window-app-missing = { $app } isn't on this computer
 shell-window-get-app = Get { $app }
@@ -2968,7 +2993,7 @@ onboarding-backup-unavailable = A personal identity backup can’t be created on
 
 onboarding-ready-welcome = Welcome to Tilo
 
-onboarding-ready-next = Make yourself at home, or take a quick tour first.
+onboarding-ready-next = The desktop is ready. Start with anything: open an app, search for what you need, or invite someone to a workspace.
 
 onboarding-migration-cleanup-pending = Your things are ready in Tilo. Some temporary files still need to be removed.
 
@@ -3197,6 +3222,13 @@ crash-notice-app-name = Desktop
 crash-notice-title = The desktop restarted
 crash-notice-froze-body = It stopped responding at { $time }. A record of what happened stays on this computer.
 crash-notice-crashed-body = It stopped unexpectedly at { $time }. A record of what happened stays on this computer.
+crash-notice-stopped-title = The computer restarted
+crash-notice-stopped-body = It stopped unexpectedly before this start. A record of what happened stays on this computer.
+host-crash-records-resource = Problems
+host-crash-records-list = List problems
+host-crash-records-list-detail = When the desktop or the computer stopped, newest first, without the details.
+host-crash-records-read = Read a problem's details
+host-crash-records-read-detail = Everything the record of one problem holds. It stays on this computer.
 
 ## Desk widgets
 
@@ -3324,20 +3356,16 @@ directory-reported = Workspace reported
 directory-reported-body = The people who run it have been told.
 directory-report-failed = The report didn't go through
 directory-moved = { $name } moved to your host, so anyone can find and join it.
-arrival-others = { $count ->
-    [one] and 1 other
-   *[other] and { $count } others
-}
 
 # Cursor chat: a short message beside your pointer, shown to everyone in that window.
 cursor-chat-placeholder = Say something
 cursor-chat-you = You
 
-# The line under the top bar when you arrive where people are, or someone waves.
-presence-arrival-intro-where = People here see your name, your colour and where you are in this workspace
-presence-arrival-intro-here = People here see your name and your colour, never where you are
-presence-arrival-intro-nothing = People here don't see you, and you don't see their pointers
-presence-arrival-change = Change
+# The top bar's status when you arrive in a public workspace the first time:
+# what its people see of you, in a few words.
+presence-arrival-seen-where = They see where you are
+presence-arrival-seen-here = They see you're here
+presence-arrival-seen-nothing = They don't see you
 profile-name-not-saved = Your name wasn’t saved
 profile-action-say-something = Say something here
 cursor-chat-no-window = Point at a shared window to say something
@@ -3382,3 +3410,7 @@ search-action-app-remove-from-apps = Remove an app from your apps…
 search-action-app-remove-from-apps-subtitle = It stays on this computer
 search-apps-uninstall = Uninstall
 search-apps-remove-from-apps = Remove from apps
+
+# The pinned people overlay's message box
+people-overlay-messages-unavailable = Direct messages are not available right now
+people-overlay-message-failed = The message to { $name } did not go

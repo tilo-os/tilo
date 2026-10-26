@@ -27,7 +27,7 @@
     });
     const reply = await response.json();
     if (reply.error) throw new Error(reply.error);
-    return reply.result;
+    return reply.unanswered ? undefined : reply.result;
   };
 
   // Calls not answered yet. In Chrome a call is on its way once made, so a
@@ -293,6 +293,20 @@
     return {native, pageOf, read, opensOnClick: () => opensOnClick};
   })();
 
+  // An offscreen document copies for the extension (Chromium gives a worker
+  // no clipboard), and where the engine has no clipboard of its own the
+  // copy stays in it. Once the document is made, the host gives it what
+  // carries a copy to the Browser, for an extension that may write the
+  // clipboard (page_clipboard.h).
+  const offscreen = globalThis.chrome.offscreen;
+  if (offscreen && typeof offscreen.createDocument === 'function' && (manifest.permissions || []).includes('clipboardWrite')) {
+    const createDocument = offscreen.createDocument.bind(offscreen);
+    replace(offscreen, 'createDocument', async (parameters) => {
+      await createDocument(parameters);
+      await call('offscreen.clipboard').catch(() => {});
+    });
+  }
+
   // The worker's first script has run once this task ends: its listeners
   // are registered, and an event may reach them.
   let ready = false;
@@ -490,6 +504,20 @@
   event(chrome.webNavigation, 'onCreatedNavigationTarget', 'webNavigation.onCreatedNavigationTarget');
   event(action, 'onClicked', 'action.onClicked');
   event(chrome.browserAction, 'onClicked', 'action.onClicked');
+  // The side panel opening and closing beside a page: the host tells of
+  // both, as Chromium shows no panel of its own to tell of.
+  if (sidePanel) {
+    for (const key of ['onOpened', 'onClosed']) {
+      if (!chrome.sidePanel[key]) {
+        try {
+          chrome.sidePanel[key] = {};
+        } catch (ignored) {
+          // Read-only here: the extension cannot listen for it either.
+        }
+      }
+      event(chrome.sidePanel, key, 'sidePanel.' + key);
+    }
+  }
 
   // The toolbar button's look, which the Browser draws. For every tab
   // Chromium keeps it and answers for it; each change it accepted is told to
@@ -772,8 +800,12 @@
   // The outcome is asked for in turns the host holds a while, and between
   // them a call to Chromium keeps a worker awake, as Chrome keeps it awake
   // while the call is under way. No one signs in to the Browser itself, so
-  // getAuthToken, which asks the Browser's account, says so.
-  if (!chrome.identity && (manifest.permissions || []).includes('identity')) chrome.identity = {};
+  // getAuthToken, which asks the Browser's account, says so. One that asks
+  // for signing in later (`optional_permissions`) gets it here too, as
+  // Chromium knows nothing of what the person granted it: the host lets it
+  // sign in once it holds the permission.
+  const signs = (manifest.permissions || []).concat(manifest.optional_permissions || []);
+  if (!chrome.identity && signs.includes('identity')) chrome.identity = {};
   const identity = chrome.identity;
   if (identity) {
     if (typeof identity.getRedirectURL !== 'function') {

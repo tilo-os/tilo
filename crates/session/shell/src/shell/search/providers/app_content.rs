@@ -211,15 +211,14 @@ impl AppContentProvider {
         }
     }
 
-    /// Whether this provider has a row for `resource` of `app` in `room`:
-    /// the live provider's row for it gives way, so one resource is one
-    /// row.
+    /// Whether this provider finds `resource` of `app` in `room`, whether or
+    /// not the app runs: every resource the index holds is this provider's
+    /// row, so a window's own row for it gives way and its kind gives way
+    /// with it. One resource is one row.
     pub fn covers(&self, app: &str, room: &str, resource: &str) -> bool {
-        self.snapshot.borrow().as_ref().is_some_and(|snapshot| {
-            snapshot
-                .covered
-                .contains(&(app.to_owned(), room.to_owned(), resource.to_owned()))
-        })
+        self.current()
+            .covered
+            .contains(&(app.to_owned(), room.to_owned(), resource.to_owned()))
     }
 
     fn row(&self, indexed: &IndexedEntry, score: i32) -> SearchResult {

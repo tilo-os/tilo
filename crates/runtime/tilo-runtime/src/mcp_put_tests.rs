@@ -51,8 +51,8 @@ impl ActionHost for Shelf {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        Err(ActionHostError::UnknownInvocation)
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
     }
 
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {

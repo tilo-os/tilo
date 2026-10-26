@@ -59,23 +59,29 @@ pub(crate) fn period(view: View, anchor: NaiveDate) -> Option<Period> {
 }
 
 /// The window's location for `view` around `anchor`: its period, in the
-/// widest form the bar has room for, or the task list's title.
-fn location(view: View, anchor: NaiveDate) -> ToolbarLocation {
+/// widest form the bar has room for, or on Tasks the list shown
+/// (`tasks_list`).
+fn location(view: View, anchor: NaiveDate, tasks_list: &str) -> ToolbarLocation {
     period(view, anchor).map_or_else(
         || ToolbarLocation {
-            label: crate::resource::t("calendar-tasks-title"),
+            label: tasks_list.to_owned(),
             ..ToolbarLocation::default()
         },
         ToolbarLocation::period,
     )
 }
 
-/// The window bar's slots for `view` around `anchor`, the sidebar shown or
-/// not.
-pub(crate) fn window_toolbar(view: View, anchor: NaiveDate, sidebar_open: bool) -> WindowToolbar {
+/// The window bar's slots for `view` around `anchor` (on Tasks the list
+/// `tasks_list`), the sidebar shown or not.
+pub(crate) fn window_toolbar(
+    view: View,
+    anchor: NaiveDate,
+    tasks_list: &str,
+    sidebar_open: bool,
+) -> WindowToolbar {
     let mut toolbar = WindowToolbar {
         sidebar: Some(sidebar_open),
-        location: Some(location(view, anchor)),
+        location: Some(location(view, anchor, tasks_list)),
         views: Some(ToolbarViews {
             name: "View".into(),
             choices: View::ALL
@@ -146,7 +152,7 @@ mod tests {
 
     #[test]
     fn the_calendars_controls_are_the_window_bars_slots() {
-        let toolbar = window_toolbar(View::Week, anchor(), true);
+        let toolbar = window_toolbar(View::Week, anchor(), "Inbox", true);
         assert_eq!(toolbar.sidebar, Some(true));
         let leading: Vec<&str> = toolbar.leading.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(leading, [PREVIOUS, NEXT, TODAY]);
@@ -169,10 +175,15 @@ mod tests {
             "the period is the window's location"
         );
 
-        let tasks = window_toolbar(View::Tasks, anchor(), false);
+        let tasks = window_toolbar(View::Tasks, anchor(), "Garden", false);
         assert!(
             tasks.leading.is_empty(),
             "Tasks has no period to step through"
+        );
+        assert_eq!(
+            tasks.location.map(|location| location.label).as_deref(),
+            Some("Garden"),
+            "on Tasks the location names the list shown"
         );
 
         for choice in &views.choices {

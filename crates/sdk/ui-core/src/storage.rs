@@ -25,7 +25,6 @@
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -173,10 +172,59 @@ pub trait SettingsSchema: Serialize + DeserializeOwned + Default + 'static {
         let _ = device;
         true
     }
+
+    /// The setting `value` holds, as JSON stores it. Generic code reading
+    /// a setting compiles this, and serde's whole decoder for the type,
+    /// into each crate that names the type; a large type's own crate can
+    /// compile it once instead with [`settings_codec!`](crate::settings_codec).
+    ///
+    /// # Errors
+    ///
+    /// When `value` is not one.
+    fn from_settings_value(value: Value) -> serde_json::Result<Self> {
+        serde_json::from_value(value)
+    }
+
+    /// The setting as JSON stores it; see [`Self::from_settings_value`].
+    ///
+    /// # Errors
+    ///
+    /// When it does not serialize.
+    fn to_settings_value(&self) -> serde_json::Result<Value> {
+        serde_json::to_value(self)
+    }
+}
+
+#[doc(hidden)]
+pub use serde_json as __serde_json;
+
+/// [`SettingsSchema::from_settings_value`] and
+/// [`SettingsSchema::to_settings_value`] compiled where the impl is, never in
+/// the crates that read the setting: for a large settings type whose crate
+/// is in the shared runtime or an engine, every app or pane reading it
+/// otherwise carries its own copy of serde's decoder. Use it inside the
+/// `impl SettingsSchema`.
+#[macro_export]
+macro_rules! settings_codec {
+    () => {
+        #[inline(never)]
+        fn from_settings_value(
+            value: $crate::storage::__serde_json::Value,
+        ) -> $crate::storage::__serde_json::Result<Self> {
+            $crate::storage::__serde_json::from_value(value)
+        }
+
+        #[inline(never)]
+        fn to_settings_value(
+            &self,
+        ) -> $crate::storage::__serde_json::Result<$crate::storage::__serde_json::Value> {
+            $crate::storage::__serde_json::to_value(self)
+        }
+    };
 }
 
 /// Which settings document a host gives its apps.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SettingsDocument {
     /// The person's session document: the one the host installed
     /// (`settings_store::install_source`), else the local `settings.json`.
@@ -186,9 +234,24 @@ pub enum SettingsDocument {
     File(PathBuf),
 }
 
-/// Bumped by every write through this module, so a reader in the same
-/// process sees a write even within one file-time tick.
-static WRITES: AtomicU64 = AtomicU64::new(0);
+/// How many writes through this module each document has taken, so a
+/// reader in the same process sees a write to its document even within one
+/// file-time tick, and is not sent to read it again by another document's.
+static WRITES: std::sync::Mutex<std::collections::BTreeMap<SettingsDocument, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn writes() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<SettingsDocument, u64>> {
+    WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Count a write to `document` ([`WRITES`]).
+fn note_write(document: &SettingsDocument) {
+    let mut writes = writes();
+    let count = writes.entry(document.clone()).or_default();
+    *count = count.wrapping_add(1);
+}
 
 /// One version of a settings document, for readers that follow it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,7 +372,7 @@ impl SettingsDocument {
                 (Self::File(path), _) => settings_store::update_section_at(path, name, values),
             }
         };
-        WRITES.fetch_add(1, Ordering::AcqRel);
+        note_write(self);
         written
     }
 
@@ -321,7 +384,7 @@ impl SettingsDocument {
                 Self::Session => settings_store::stamp(),
                 Self::File(path) => settings_store::stamp_at(path),
             },
-            writes: WRITES.load(Ordering::Acquire),
+            writes: writes().get(self).copied().unwrap_or_default(),
         }
     }
 }
@@ -479,7 +542,11 @@ fn store_pending(only: Option<&SettingsDocument>) {
         }
         queue.retired = queue.retired.wrapping_add(1);
         queue.writing = false;
-        WRITES.fetch_add(1, Ordering::AcqRel);
+        for (at, change) in batch.iter().enumerate() {
+            if !batch[..at].iter().any(|c| c.document == change.document) {
+                note_write(&change.document);
+            }
+        }
         if failed && let Some(wake) = queue.wake.take() {
             wake.wake();
         }
@@ -641,27 +708,16 @@ impl<T: SettingsSchema> Settings<T> {
         value: &T,
         origin: Option<&settings_store::ChangeOrigin>,
     ) -> std::io::Result<()> {
-        let value = serde_json::to_value(value).map_err(std::io::Error::other)?;
-        // Only what differs from what is read now is written. A key the
-        // person never set reads as `T`'s default; writing the whole value
-        // would store that default as their choice, and a field edit in one
-        // place (a text size) would pin every other field of the section to
-        // whatever default this build has (the theme mode among them),
-        // replacing what another writer meant by leaving it unset.
-        let current = serde_json::to_value(self.get()).ok();
-        let value = match (value, current) {
-            (Value::Object(values), Some(Value::Object(current))) => Value::Object(
-                values
-                    .into_iter()
-                    .filter(|(key, value)| current.get(key) != Some(value))
-                    .collect(),
-            ),
-            (value, _) => value,
-        };
-        if value.as_object().is_some_and(Map::is_empty) {
-            return Ok(());
-        }
-        store_in(&self.document, &self.app_id, T::SCOPE, value, origin)
+        let value = value.to_settings_value().map_err(std::io::Error::other)?;
+        let current = self.get().to_settings_value().ok();
+        store_changed(
+            &self.document,
+            &self.app_id,
+            T::SCOPE,
+            value,
+            current,
+            origin,
+        )
     }
 
     /// Change the current value with `change` and store it, returning what
@@ -685,13 +741,45 @@ impl<T: SettingsSchema> Settings<T> {
     }
 }
 
+/// Store the keys of `value` that differ from `current`, what is read now:
+/// [`Settings::set_by`] once both are JSON. Not generic, so the toolkit
+/// compiles it once rather than every app once per settings type.
+fn store_changed(
+    document: &SettingsDocument,
+    app_id: &str,
+    scope: Scope,
+    value: Value,
+    current: Option<Value>,
+    origin: Option<&settings_store::ChangeOrigin>,
+) -> std::io::Result<()> {
+    // Only what differs from what is read now is written. A key the
+    // person never set reads as `T`'s default; writing the whole value
+    // would store that default as their choice, and a field edit in one
+    // place (a text size) would pin every other field of the section to
+    // whatever default this build has (the theme mode among them),
+    // replacing what another writer meant by leaving it unset.
+    let value = match (value, current) {
+        (Value::Object(values), Some(Value::Object(current))) => Value::Object(
+            values
+                .into_iter()
+                .filter(|(key, value)| current.get(key) != Some(value))
+                .collect(),
+        ),
+        (value, _) => value,
+    };
+    if value.as_object().is_some_and(Map::is_empty) {
+        return Ok(());
+    }
+    store_in(document, app_id, scope, value, origin)
+}
+
 /// Decode `stored` over `T`'s defaults on `device` one key at a time, so a key that
 /// does not decode (an older shape, a hand edit) reads as its default
 /// instead of discarding every other key.
 fn decode<T: SettingsSchema>(stored: Map<String, Value>, device: DeviceClass) -> T {
-    let defaults = serde_json::to_value(T::defaults_on(device));
-    let decodes = |value: &Value| serde_json::from_value::<T>(value.clone()).is_ok();
-    serde_json::from_value(decoded(defaults.ok(), stored, &decodes))
+    let defaults = T::defaults_on(device).to_settings_value();
+    let decodes = |value: &Value| T::from_settings_value(value.clone()).is_ok();
+    T::from_settings_value(decoded(defaults.ok(), stored, &decodes))
         .unwrap_or_else(|_| T::defaults_on(device))
 }
 
@@ -1235,9 +1323,15 @@ mod tests {
             stored(),
             Some(serde_json::json!({"confirm": true, "interval_ms": 900}))
         );
-        // Setting what is already there writes nothing.
+        // Setting what is already there writes nothing, and a write to
+        // another document is not a change of this one.
         let revision = prefs.revision();
         prefs.set(&prefs.get()).unwrap();
+        let elsewhere = dir.path().join("other.json");
+        Settings::<Prefs>::for_app("so.tilo.example")
+            .in_file(&elsewhere)
+            .update(|prefs| prefs.interval_ms = 700)
+            .unwrap();
         assert_eq!(prefs.revision(), revision);
     }
 

@@ -115,6 +115,8 @@ head_of() { curl -fsS --max-time 20 -o /dev/null -D - "${@:2}" "http://127.0.0.1
 lower_names() { awk '{ i = index($0, ":"); if (i) $0 = tolower(substr($0, 1, i)) substr($0, i + 1); print }'; }
 
 entry TILO_WEB_HOME_NAME=X && fail "a home name without a host must refuse to start"
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_FEEDBACK='c"x' \
+  && fail "a feedback channel that is not an id must refuse to start"
 entry TILO_WEB_ABOUT_COMMUNITY=javascript:x && fail "an About link that is not https must refuse to start"
 for bad in http://site.example https://site.example/path "https://a b"; do
   entry "TILO_WEB_EMBEDDER=$bad" && fail "an embedder that is not an https:// origin must refuse to start: $bad"

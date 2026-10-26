@@ -613,6 +613,34 @@ mod tests {
         })
     }
 
+    /// Deleting a playlist runs at once, since Undo takes it back: the host
+    /// asks nothing, and one Undo brings the playlist back with its songs.
+    #[test]
+    fn deleting_a_playlist_runs_at_once_and_one_undo_brings_it_back() {
+        let mut app = TestApp::<MusicShell>::new().unwrap();
+        app.invoke(imported("yt:abc123")).unwrap();
+        app.invoke(Library::CREATE_PLAYLIST.with(library::CreatePlaylist {
+            name: "Road mix".into(),
+            track: Some("yt:abc123".into()),
+        }))
+        .unwrap();
+        let mix = app.state().playlists().next().unwrap().id.clone();
+
+        app.invoke(Library::DELETE_PLAYLIST.with(Id::from_raw(mix.as_str())))
+            .expect("an undoable delete asks nothing");
+        assert!(app.asking().is_none(), "the host asks nothing");
+        assert!(
+            app.state().playlist(&mix).is_none(),
+            "the delete lands at once"
+        );
+
+        assert!(app.undo(), "the delete is one undo step");
+        let state = app.state();
+        let back = state.playlist(&mix).expect("Undo brings the playlist back");
+        assert_eq!(back.name, "Road mix");
+        assert_eq!(back.track_ids(), ["yt:abc123"], "and its songs with it");
+    }
+
     #[test]
     fn effects_reach_the_surface_through_the_door_and_ride_their_rows() {
         let mut app = TestApp::<MusicShell>::new().unwrap();
@@ -959,3 +987,63 @@ mod tests {
 
 #[cfg(test)]
 mod model_tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// The walk's slices: a drive of one scenario walks dozens of actions,
+    /// so each slice is its own test and they run side by side.
+    const SLICES: usize = 6;
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// every `SLICES`th scenario from `slice`: none is advertised yet
+    /// handled only by a click. The scenarios stage fixtures; the app
+    /// someone opens acts on this machine, so it is not walked.
+    fn walk(slice: usize) {
+        for scenario in super::MusicShell::scenarios()
+            .iter()
+            .skip(slice)
+            .step_by(SLICES)
+        {
+            let mut app = TestApp::<super::MusicShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_0() {
+        walk(0);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_1() {
+        walk(1);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_2() {
+        walk(2);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_3() {
+        walk(3);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_4() {
+        walk(4);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_5() {
+        walk(5);
+    }
+}

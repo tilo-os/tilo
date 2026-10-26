@@ -940,7 +940,14 @@ impl SemanticTree {
                     } else {
                         spec
                     };
-                    resource.actions.push(spec);
+                    // A control's own verbs (focus it, press it, set it) are
+                    // how agents and scripts drive what a person presses
+                    // directly: never a row of their own in people's lists,
+                    // where they would repeat the app's actions as
+                    // "New folder — Focus".
+                    resource
+                        .actions
+                        .push(spec.for_audience(tilo_actions::Audience::Agents));
                 }
                 Some(resource)
             })

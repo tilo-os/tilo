@@ -189,6 +189,9 @@ pub struct Text {
     /// per-frame translate so the cache follows its widget without
     /// re-encoding.
     cache_rect: vello::kurbo::Rect,
+    /// Whether the label is a message of the app's catalogue, as of the
+    /// catalogue revision it was looked up at.
+    interface: std::cell::Cell<Option<(u64, bool)>>,
 }
 
 /// How assistive technology meets a [`Text`].
@@ -241,7 +244,26 @@ impl Text {
             dirty: true,
             layout_dirty: false,
             cache_rect: vello::kurbo::Rect::ZERO,
+            interface: std::cell::Cell::new(None),
         }
+    }
+
+    /// Whether this text is the app's own copy: a message of its catalogue
+    /// with nothing of the moment in it. A bound value, an argument or a
+    /// literal string is content.
+    fn interface_copy(&self) -> bool {
+        if self.spoken.is_some() || self.source.is_some() || !self.args.is_empty() {
+            return false;
+        }
+        let revision = crate::i18n::I18nManager::revision();
+        if let Some((seen, interface)) = self.interface.get()
+            && seen == revision
+        {
+            return interface;
+        }
+        let interface = crate::i18n::I18nManager::has_message(&self.label);
+        self.interface.set(Some((revision, interface)));
+        interface
     }
 
     /// Give this retained text node a stable address for inspection and
@@ -380,12 +402,32 @@ impl Text {
 
     fn observe_i18n_revision(&mut self) {
         let revision = crate::i18n::I18nManager::revision();
-        if revision != self.i18n_revision {
-            self.i18n_revision = revision;
+        if revision == self.i18n_revision {
+            return;
+        }
+        let stale = self.shows_stale_copy();
+        self.i18n_revision = revision;
+        if stale {
             self.dirty = true;
             self.layout_dirty = true;
             self.prepared_input = None;
         }
+    }
+
+    /// Whether the language, its catalogue or the formats moved since this
+    /// text last looked and it now reads differently. Most text reads the
+    /// same after a formats change (only numbers and dates in its message
+    /// move), so what it shaped and drew stays: every label redrawn and
+    /// relaid on that change repainted every view that showed one.
+    fn shows_stale_copy(&self) -> bool {
+        if self.i18n_revision == crate::i18n::I18nManager::revision() {
+            return false;
+        }
+        let shown = self
+            .prepared_input
+            .as_ref()
+            .filter(|_| self.layout_engine.is_none());
+        shown.is_none_or(|shown| shown.text() != self.resolved_label())
     }
 
     /// Say what this text is. The role picks face, size, weight and leading
@@ -1085,7 +1127,7 @@ impl Widget for Text {
     /// invalidated by a rect change. The App's redraw gate uses this to
     /// skip frames where no Text widget changed.
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.i18n_revision != crate::i18n::I18nManager::revision()
+        self.dirty || self.shows_stale_copy()
     }
 
     /// Clears the cache-stale flag after the App consumes the scene.
@@ -1101,7 +1143,7 @@ impl Widget for Text {
     fn is_layout_dirty(&self) -> bool {
         (self.rect == vello::kurbo::Rect::ZERO && !self.collapsed())
             || self.layout_dirty
-            || self.i18n_revision != crate::i18n::I18nManager::revision()
+            || self.shows_stale_copy()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1132,7 +1174,9 @@ impl Widget for Text {
             self.accessible_heading_level()
                 .map_or(Role::StaticText, |level| Role::Heading { level })
         };
-        let mut node = AccessNode::new(role).with_name(label);
+        let mut node = AccessNode::new(role)
+            .with_name(label)
+            .with_interface_name(self.interface_copy());
         if let Some(politeness) = self.live {
             node = node.with_live(politeness);
         }
@@ -1790,6 +1834,39 @@ mod tests {
 
     // The i18n manager is a thread-local, so these tests are isolated per test
     // thread; each re-inits a fresh bundle and asserts only on its own keys.
+
+    /// A catalogue change redraws and relays out the text it rewords, and
+    /// leaves the text that reads the same as it was drawn.
+    #[test]
+    fn a_revision_that_does_not_reword_a_text_keeps_what_it_drew() {
+        I18nManager::init("en-US");
+        let theme = Theme::light();
+        let mut renderer = TextRenderer::new();
+        let mut plain = Text::new("Row 7: the quick brown fox");
+        let mut reworded = Text::new("tilo-test-greeting");
+        for text in [&mut plain, &mut reworded] {
+            let _ = build_measure_draw(text, &theme, &mut renderer);
+            Widget::mark_drawn(text);
+            assert!(!Widget::needs_redraw(text) && !Widget::is_layout_dirty(text));
+        }
+        I18nManager::add_resource("en-US", "tilo-test-greeting = Good morning".to_string());
+        assert!(
+            !Widget::needs_redraw(&plain),
+            "the plain label reads the same"
+        );
+        assert!(!Widget::is_layout_dirty(&plain));
+        assert!(Widget::needs_redraw(&reworded), "the greeting now resolves");
+        assert!(Widget::is_layout_dirty(&reworded));
+        let (_, scene) = build_measure_draw(&mut plain, &theme, &mut renderer);
+        assert!(
+            !Widget::needs_redraw(&plain),
+            "drawing it again kept it drawn"
+        );
+        assert!(!scene.encoding().resources.glyph_runs.is_empty());
+        let _ = build_measure_draw(&mut reworded, &theme, &mut renderer);
+        let node = Widget::accessibility(&reworded).expect("resolved");
+        assert_eq!(node.name.as_deref(), Some("Good morning"));
+    }
 
     #[test]
     fn fluent_text_interpolates_degrades_and_follows_locale() {

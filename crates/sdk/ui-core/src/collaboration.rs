@@ -48,6 +48,8 @@ pub mod browser_service_sessions;
 #[cfg(feature = "broker-transport")]
 pub(crate) mod external_moderation;
 #[cfg(feature = "broker-transport")]
+pub(crate) mod write_attribution_lane;
+#[cfg(feature = "broker-transport")]
 pub(crate) use broker::{person_chat_command, subscribe_person_chat};
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
@@ -138,9 +140,10 @@ pub use runtime_collab::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, NetworkWakeStatus,
     PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
-pub use runtime_collab::{file_clipboard, open_selected};
+pub use runtime_collab::{file_clipboard, open_selected, write_attribution};
 
 use crate::presence::PresenceKey;
+pub use collab_types::presence::{Collaborator, PresencePayload};
 
 use std::sync::mpsc;
 
@@ -577,18 +580,7 @@ pub enum ActionDirectoryRequest {
 /// carries: the one exported-action shape, shared with the broker.
 pub use runtime_collab::{ExportedAction, ExportedInput};
 
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct BrokerActionSurface {
-    pub peer_id: u64,
-    /// Stable route for retained offers; not a connection or trusted publisher.
-    #[serde(default)]
-    pub provider: Option<String>,
-    pub app_id: String,
-    pub cluster_id: String,
-    pub record_id: String,
-    pub live: bool,
-    pub actions: Vec<ExportedAction>,
-}
+pub use runtime_collab::BrokerActionSurface;
 
 #[derive(serde::Deserialize)]
 #[cfg(feature = "broker-transport")]
@@ -596,415 +588,23 @@ pub(crate) struct BrokerActionCatalogueWire {
     pub(crate) surfaces: Vec<BrokerActionSurface>,
 }
 
-/// An explicit typed collaboration route.
-///
-/// A manager has one primary route (announced by its initial `Hello`) and may
-/// retain additional routes for discovery or cross-app work. Callers must name
-/// an additional route again when publishing, which prevents a cluster-wide
-/// discovery subscription from becoming an accidental mutation target.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RouteSpec {
-    pub app_id: String,
-    pub cluster_id: Uuid,
-    pub record: Option<String>,
-}
+pub use runtime_collab::route::{ChannelAccessState, RouteSpec};
 
-impl RouteSpec {
-    /// The single channel id this route is joined under on the broker.
-    pub(crate) fn channel_id(&self) -> String {
-        channel_key::format(
-            &self.app_id,
-            &self.cluster_id.to_string(),
-            self.record.as_deref().unwrap_or(""),
-        )
-    }
+/// The custody types only this toolkit's endpoint mints: the committed
+/// captures and managed invocation results its collaboration events carry.
+#[derive(Clone, Copy, Debug)]
+pub enum SdkCustody {}
 
-    pub fn cluster(cluster_id: Uuid) -> Self {
-        Self {
-            app_id: String::new(),
-            cluster_id,
-            record: None,
-        }
-    }
-
-    pub fn app(app_id: impl Into<String>, cluster_id: Uuid) -> Self {
-        Self {
-            app_id: app_id.into(),
-            cluster_id,
-            record: None,
-        }
-    }
-
-    pub fn record(app_id: impl Into<String>, cluster_id: Uuid, record: impl Into<String>) -> Self {
-        Self {
-            app_id: app_id.into(),
-            cluster_id,
-            record: Some(record.into()),
-        }
-    }
-}
-
-/// What an endpoint's route can do with content, as apps see it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChannelAccessState {
-    /// No channel encryption applies to this endpoint (a test harness).
-    Unencrypted,
-    /// End-to-end encrypted; content flows.
-    Encrypted,
-    /// This device asked for access and has not been admitted yet, so no
-    /// content can be read or written. Edits wait on the device.
-    WaitingForAccess,
-    /// This device was removed from the channel.
-    Removed,
-    /// This device cannot join the channel right now: the room's governor
-    /// is unknown here. Edits wait on the device.
-    Unavailable,
-    /// This device has no secret store open, so it cannot hold keys of a
-    /// room hosted elsewhere. Edits wait on the device.
-    NoSecretStore,
-}
-
-impl ChannelAccessState {
-    /// Whether content currently flows.
-    pub fn is_open(self) -> bool {
-        matches!(self, Self::Unencrypted | Self::Encrypted)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum CollabEvent {
-    SelectedDiscoveryResult {
-        request_id: u64,
-        result: Result<runtime_collab::open_selected::discovery::Reply, String>,
-    },
-    OpenSelectedV2Result {
-        request_id: u64,
-        result: Result<runtime_collab::open_selected::v2::ObservedReply, String>,
-    },
-    OpenSelectedResult {
-        request_id: u64,
-        result: Result<runtime_collab::open_selected::RootReceipt, String>,
-    },
-
-    LocalFileClipboardResult {
-        request_id: u64,
-        result: Result<runtime_collab::file_clipboard::Reply, String>,
-    },
-    /// Original committed history from this SDK channel, applied by its document owner.
-    CommittedDocument {
-        route: RouteSpec,
-        read: CommittedDocument,
-    },
-    Context {
-        collaborators: Vec<Collaborator>,
-        permissions: Vec<String>,
-    },
-    /// The delegated agents on `cluster_id`'s roster whose person's root
-    /// signed the delegation for exactly that device, as the session
-    /// verified them: who the app's history names for changes their own
-    /// device keys signed. Session-local and presentation only.
-    HistoryAgents {
-        cluster_id: String,
-        agents: Vec<crate::history_source::RosterAgent>,
-    },
-    /// Records of this application's trees (a chain's next part, a
-    /// container's child) that a peer wrote and no window here holds:
-    /// whatever follows those trees holds them. Session-local.
-    RecordsArrived {
-        records: Vec<String>,
-    },
-    /// Session chrome asked this app to bind its viewport/view mode to a
-    /// participant, or release that binding. This is local session control:
-    /// it is never published to collaboration peers.
-    FollowChanged {
-        peer_id: Option<String>,
-    },
-    /// The broker selected this connection as the sole snapshot responder for
-    /// a late joiner on the same document route.
-    DocumentSnapshotRequested {
-        route: RouteSpec,
-    },
-    /// The shell asked this instance for a step of moving its window to
-    /// another workspace. Session-local control; never from a peer.
-    Handoff {
-        request: handoff::HandoffRequest,
-    },
-    RemoteCursorMoved {
-        user_id: String,
-        x: f32,
-        y: f32,
-    },
-    RemotePresenceUpdate {
-        user_id: String,
-        key: PresenceKey,
-        payload: PresencePayload,
-    },
-    /// A typed action another app in this room published, delivered to every
-    /// connection. A receiver decodes it via its own
-    /// [`ActionRegistry`](tilo_actions::ActionRegistry); an action for a
-    /// different app decodes to nothing, making room-wide fan-out safe.
-    ///
-    /// `from_user_id` is who *sent* the frame, not necessarily who the
-    /// action says authored it.
-    ActionArrived {
-        type_id: String,
-        payload: Vec<u8>,
-        from_user_id: String,
-    },
-    /// What this endpoint can do with one route's end-to-end encrypted
-    /// content changed: it was admitted, is waiting for access (a new device
-    /// before its welcome arrives), was removed, or cannot join. While a
-    /// route is not open the SDK holds edits and incoming ciphertext on the
-    /// device instead of dropping them; apps show the state.
-    ChannelAccess {
-        route: RouteSpec,
-        state: ChannelAccessState,
-    },
-    /// A validated signed document envelope from another peer. For cleartext
-    /// routes the mutation kind is inside the outer signed payload. For an
-    /// MLS route, `envelope.payload` remains the original signed ciphertext
-    /// and `decrypted_payload` holds endpoint-only plaintext after the inner
-    /// MLS authentication succeeds. A mutation too large for one frame
-    /// arrives as several signed segments; the SDK delivers it once, after
-    /// every segment arrived and the reassembled bytes matched their signed
-    /// digest, with `envelope` set to the final segment.
-    Document {
-        envelope: Box<SignedOp>,
-        from_user_id: String,
-        /// Endpoint-verified typed mutation bytes when they differ from
-        /// `envelope.payload`: MLS plaintext, or a mutation reassembled from
-        /// segments. `None` for single-frame cleartext envelopes (read
-        /// directly from `envelope.payload`) and for broker events, which
-        /// never possess MLS keys.
-        decrypted_payload: Option<Vec<u8>>,
-    },
-    /// Response to a [`CollabRequest::FetchScrollback`]: a page of
-    /// previously-validated ops plus `exhausted`.
-    ///
-    /// Targeted send — unlike every other event here, the broker writes
-    /// this only to the connection that issued the matching request.
-    ScrollbackBatch {
-        /// Echoes `FetchScrollback::artifact` so multiple in-flight
-        /// fetches route to the right history view.
-        artifact: collab_types::ArtifactId,
-        /// Ascending seq order. Empty when the broker has no matching
-        /// range (typically evicted by compaction).
-        ops: Vec<Box<SignedOp>>,
-        /// Endpoint-decrypted payload parallel to `ops`. Brokers leave this
-        /// empty because they have no MLS keys; SDK endpoints populate one
-        /// slot per op and drop undecryptable encrypted entries.
-        decrypted_payloads: Vec<Option<Vec<u8>>>,
-        /// Oldest `seq` the host returned, before the endpoint dropped ops
-        /// it could not use yet (an incomplete segment), so paging resumes
-        /// below it rather than re-fetching or stopping early.
-        oldest_seq: Option<u64>,
-        exhausted: bool,
-    },
-    /// One capability-checked invocation addressed to this application
-    /// connection by the session action broker.
-    Invocation {
-        id: u64,
-        invocation: tilo_actions::InvocationId,
-        resource: String,
-        action: String,
-        argument: Option<String>,
-        actor: String,
-        /// Broker-owned task/session provenance. The concrete application
-        /// resource and action remain authoritative; this only supplies the
-        /// surrounding purpose and work-group for durable history.
-        context: Option<Box<tilo_actions::ActionContext>>,
-    },
-    /// The invocation owner requested cooperative cancellation. Delivered at
-    /// most once; the app-side job decides the next safe stopping boundary.
-    InvocationCancellation {
-        id: u64,
-    },
-    /// The session's answer to a [`CollabRequest::RemoteAction`].
-    RemoteAction {
-        message: tilo_actions::remote::RemoteActionMessage,
-    },
-    ActionCatalogue {
-        surfaces: Vec<BrokerActionSurface>,
-    },
-    ActionDirectoryPage {
-        request_id: u64,
-        result: Result<runtime_collab::ActionDirectoryPage, String>,
-    },
-    PublishedActionResolution {
-        request_id: u64,
-        result: Result<runtime_collab::ActionDirectoryResolution, String>,
-    },
-    /// Original attempt custody remains with this result through final clone
-    /// destruction. Only the sender's physical barrier can acknowledge it.
+impl runtime_collab::event::EndpointCustody for SdkCustody {
+    type CommittedRead = CommittedDocument;
     #[cfg(unix)]
-    ManagedInvocationObservation {
-        result: crate::host_worker::managed_sender::ManagedAttemptResult,
-    },
-    /// Private admission/status or refusal, never a document publication permit.
-    LocalDocumentActionReported {
-        request_id: u64,
-        result: Result<
-            runtime_collab::PublishedInvocationObservation,
-            runtime_collab::LocalDocumentActionError,
-        >,
-    },
-    PublishedInvocationResult {
-        request_id: u64,
-        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
-    },
-    InstalledApplicationLaunchResult {
-        request_id: u64,
-        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
-    },
-    /// A run addressed to this admitted agent. The envelope is broker-minted
-    /// and contains a lease, not a caller-selected authority token.
-    TaskRun(runtime_collab::TaskRunEnvelope),
-    TaskActionInvocationResult {
-        request_id: u64,
-        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
-    },
-    TaskRunCancellation {
-        request_id: u64,
-        result: Result<bool, String>,
-    },
-    TaskRunControl {
-        request_id: u64,
-        control: runtime_collab::TaskRunControl,
-    },
-    TaskRunReportResult {
-        request_id: u64,
-        result: Result<(), String>,
-    },
-    WorkspaceControl {
-        session_id: u64,
-        event: runtime_collab::WorkspaceControlEvent,
-    },
-    NativeMediaCommandResult {
-        request_id: u64,
-        result: Result<runtime_collab::native_media::Snapshot, String>,
-    },
-    /// Content the record on `route` references arrived: an answer to
-    /// [`CollabRequest::WantContent`], or content another app on the record
-    /// offered. The bytes are verified against `hash` before use.
-    RecordContent {
-        route: RouteSpec,
-        hash: String,
-        bytes: Vec<u8>,
-    },
-    /// Where a [`CollabRequest::WantContent`] of `hash` on `route` has got
-    /// to while the content is not here: fetched from a connected device
-    /// ([`ContentState::Pending`](tilo_content::ContentState::Pending)),
-    /// waiting for one that could hand it over to connect, or unavailable
-    /// from every connected one. It changes as devices come and go.
-    RecordContentState {
-        route: RouteSpec,
-        hash: String,
-        state: tilo_content::ContentState,
-    },
-    RealtimeCommandResult {
-        request_id: u64,
-        result: Result<crate::realtime_continuity::RealtimeReply, String>,
-    },
-    NearbyTransferCommandResult {
-        request_id: u64,
-        result: Result<runtime_collab::NearbyTransferReply, String>,
-    },
-    /// What a Nearby Send snapshot would show this app may have changed: a
-    /// device came or went, an offer arrived, a transfer moved on. It names
-    /// nothing; the app asks for a fresh
-    /// [`NearbyTransferCommand::Snapshot`]
-    /// instead of asking on a timer. The first arrives once the route joins,
-    /// so it also starts the app's view. Only the certified Files route
-    /// receives these.
-    NearbyTransferChanged,
-    /// What a speaker snapshot would show may have changed: a device came or
-    /// went, a member answered, a calibration moved on. It names nothing;
-    /// Settings asks for a fresh
-    /// [`SpeakerCommand::Snapshot`](runtime_collab::SpeakerCommand::Snapshot)
-    /// instead of asking on a timer. The first arrives once the route joins,
-    /// so it also starts the view. Only the certified Settings route
-    /// receives these.
-    SpeakersChanged,
-    Realtime(crate::realtime_continuity::RealtimeEvent),
+    type ManagedResult = crate::host_worker::managed_sender::ManagedAttemptResult;
 }
 
-impl CollabEvent {
-    /// Decode the typed payload of a validated document event. Returns `None`
-    /// for presence, context, action, and scrollback events.
-    pub fn document_mutation(
-        &self,
-    ) -> Option<Result<DocumentMutation, collab_types::DocumentMutationError>> {
-        let Self::Document {
-            envelope,
-            decrypted_payload,
-            ..
-        } = self
-        else {
-            return None;
-        };
-        Some(DocumentMutation::decode(
-            decrypted_payload.as_deref().unwrap_or(&envelope.payload),
-        ))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PresencePayload {
-    Pointer {
-        x: f32,
-        y: f32,
-    },
-    Caret {
-        pos: usize,
-    },
-    Selection {
-        start: usize,
-        end: usize,
-    },
-    /// The local user just inserted `start..end` under scope `key`; peers
-    /// render a fading "just typed" swipe (see
-    /// [`crate::presence::PresenceCtx::record_peer_typing`]). Unlike
-    /// `Caret`/`Selection` this is an *event*, published once and decayed
-    /// on the receiver.
-    Typing {
-        start: usize,
-        end: usize,
-    },
-    Arrived,
-    Left,
-    /// A room-scoped, transient follow relationship announced by the
-    /// authenticated sender. It is a visual presence cue only; the local
-    /// Follow command remains private to the follower's session.
-    Following {
-        target: Option<String>,
-    },
-    /// Truthful action/resource activity. Identity is supplied by the
-    /// authenticated event envelope; this payload never describes a mouse or
-    /// keyboard gesture and therefore cannot create a synthetic cursor.
-    Interaction(Box<tilo_actions::SemanticInteraction>),
-    /// Short room-scoped intention. `automatic` distinguishes a local-model
-    /// suggestion from participant-authored words; empty text clears it.
-    Status {
-        text: String,
-        automatic: bool,
-    },
-    /// How available the authenticated sender is, and the voice channel
-    /// they are in, if any. Desktop presence: the shell shows it on faces
-    /// and in the roster; it never reaches an app ([`Self::reaches_apps`]).
-    Availability {
-        state: crate::Availability,
-        call: Option<String>,
-    },
-}
-
-impl PresencePayload {
-    /// Whether apps receive this: everything but the desktop's own
-    /// presence (availability), which only the shell shows.
-    #[must_use]
-    pub const fn reaches_apps(&self) -> bool {
-        !matches!(self, Self::Availability { .. })
-    }
-}
+/// One event this endpoint receives, carrying the toolkit's own custody
+/// types. The vocabulary is defined in [`runtime_collab::event`], which the
+/// session's brokers share.
+pub type CollabEvent = runtime_collab::event::CollabEvent<SdkCustody>;
 
 /// Explicit correlation supplied by owner-backed membership, never decoded
 /// from a participant label or an actor-id prefix.
@@ -1014,68 +614,15 @@ pub struct CertifiedAgentIdentity {
     pub agent_key: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct Collaborator {
-    pub id: String,
-    pub name: String,
-    /// The colour this participant wears, as they chose it or as their
-    /// stable identity derives it. `None` when the room has not heard it;
-    /// they are then painted in the colour their id derives
-    /// ([`crate::presence::user_color`]).
-    pub colour: Option<crate::tokens::PresenceHue>,
-    /// Whether this participant is an agent rather than a person.
-    pub is_agent: bool,
-    /// Whether this row is the receiving machine's own participant.
-    /// Apps can't derive this themselves: `id` is the address *other*
-    /// machines use, and a machine never announces its own to its own apps.
-    pub is_self: bool,
-    /// When the room admitted this participant, Unix milliseconds, as its
-    /// membership records it; `None` for an agent or a member admitted
-    /// before rooms recorded it. People who share a name are numbered in
-    /// this order ([`crate::presence::ParticipantLabels::by_joining`]).
-    pub joined_at: Option<u64>,
-}
-
-impl Collaborator {
-    /// [`Self::joined_at`] as the roster's wire carries it: `u64::MAX` for
-    /// none.
-    #[must_use]
-    pub fn packed_joined_at(&self) -> u64 {
-        self.joined_at.unwrap_or(u64::MAX)
+/// The colour a roster row's packed `0x00RRGGBB` names: the presence
+/// hue nearest it, `None` for `0` or a grey.
+#[must_use]
+pub fn colour_from_packed(packed: u32) -> Option<crate::tokens::PresenceHue> {
+    if packed == 0 {
+        return None;
     }
-
-    /// The admission time a roster row's packed value names: `None` for
-    /// `u64::MAX`.
-    #[must_use]
-    pub const fn joined_at_from_packed(packed: u64) -> Option<u64> {
-        if packed == u64::MAX {
-            None
-        } else {
-            Some(packed)
-        }
-    }
-
-    /// [`Self::colour`] as the roster's wire carries it: the presence
-    /// colour's sRGB packed `0x00RRGGBB`, `0` for none (no presence colour
-    /// is black).
-    #[must_use]
-    pub fn packed_colour(&self) -> u32 {
-        self.colour.map_or(0, |hue| {
-            let (r, g, b) = crate::presence::identity_rgb(hue);
-            (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
-        })
-    }
-
-    /// The colour a roster row's packed `0x00RRGGBB` names: the presence
-    /// hue nearest it, `None` for `0` or a grey.
-    #[must_use]
-    pub fn colour_from_packed(packed: u32) -> Option<crate::tokens::PresenceHue> {
-        if packed == 0 {
-            return None;
-        }
-        let [_, r, g, b] = packed.to_be_bytes();
-        crate::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
-    }
+    let [_, r, g, b] = packed.to_be_bytes();
+    crate::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(r, g, b))
 }
 
 /// Failure modes for [`CollaborationManager::send_signed_op`].
@@ -1203,6 +750,17 @@ impl CollaborationState {
     /// Whether requests currently reach peers.
     pub fn is_ready(&self) -> bool {
         matches!(self, Self::Ready)
+    }
+
+    /// Why requests do not currently reach peers: the transport's own reason
+    /// when it is offline, and what is still outstanding otherwise. A host
+    /// reporting a refusal can name the cause instead of leaving it unknown.
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Ready => "connected",
+            Self::Connecting => "still connecting",
+            Self::Offline(reason) => reason,
+        }
     }
 }
 
@@ -2082,109 +1640,7 @@ pub fn presence_handle_env() -> Option<String> {
         .find_map(|handle| handle.clone().filter(|v| !v.trim().is_empty()))
 }
 
-/// The routing key one connection names on the capnp transport.
-///
-/// An app's traffic is addressed by `(app_id, cluster_id, record_id)`,
-/// but capnp's `joinChannel(channelId, identity)` carries a single
-/// string, so the triple travels *inside* the channel id. This pair of
-/// functions is the only place the encoding is written down, so the two
-/// halves cannot drift apart.
-///
-/// # Shape
-///
-/// ```text
-/// <cluster>[#app:<app_id>][#record:<record_id>]
-/// ```
-///
-/// A uuid contains no `#`. `#record:` is stripped first and takes
-/// everything after it, so a `#`-containing record id (a file path may
-/// have one) stays intact. Both suffixes are optional, so a missing
-/// `#app:` yields an empty app id rather than failing to parse — needed
-/// for the earlier two-field keys chrome traffic still rides.
-///
-/// Without the app id in this key, every packaged app would publish
-/// deltas cluster-scoped — one app's changes delivered to every app in
-/// the room.
-pub mod channel_key {
-    /// Encode a route triple into one channel id.
-    pub fn format(app_id: &str, cluster_id: &str, record_id: &str) -> String {
-        let mut key = String::from(cluster_id);
-        if !app_id.is_empty() {
-            key.push_str("#app:");
-            key.push_str(app_id);
-        }
-        if !record_id.is_empty() {
-            key.push_str("#record:");
-            key.push_str(record_id);
-        }
-        key
-    }
-
-    /// Decode a channel id into `(app_id, cluster_id, record_id)`. Total:
-    /// every string decodes, and one naming no marker is a bare cluster.
-    pub fn parse(key: &str) -> (String, String, String) {
-        let (head, record_id) = match key.split_once("#record:") {
-            Some((head, record)) => (head, record.to_string()),
-            None => (key, String::new()),
-        };
-        let (cluster, app_id) = match head.split_once("#app:") {
-            Some((cluster, app)) => (cluster, app.to_string()),
-            None => (head, String::new()),
-        };
-        (app_id, cluster.to_string(), record_id)
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn channel_keys_round_trip_every_field_combination_and_legacy_form() {
-            // Case `round_trips_every_combination_of_present_fields`.
-            {
-                for (app, cluster, record) in [
-                    ("", "c", ""),
-                    ("app", "c", ""),
-                    ("", "c", "rec"),
-                    ("app", "c", "rec"),
-                ] {
-                    let key = format(app, cluster, record);
-                    assert_eq!(
-                        parse(&key),
-                        (app.to_string(), cluster.to_string(), record.to_string()),
-                        "key {key:?} did not round-trip",
-                    );
-                }
-            }
-
-            // Case `keys_written_before_the_app_segment_still_parse`.
-            {
-                // Both must decode to a cluster-scoped address rather than
-                // nothing, or an app that hasn't been rebuilt stops routing.
-                assert_eq!(
-                    parse("cluster-1"),
-                    (String::new(), "cluster-1".into(), String::new()),
-                );
-                assert_eq!(
-                    parse("cluster-1#record:/notes/a.md"),
-                    (String::new(), "cluster-1".into(), "/notes/a.md".into()),
-                );
-            }
-
-            // Case `a_record_id_containing_a_hash_survives`.
-            {
-                // Record ids are file paths and a path may contain `#`.
-                // Stripping `#record:` first and keeping the whole tail is
-                // what makes that safe.
-                let key = format("app", "c", "/notes/draft#2.md");
-                assert_eq!(
-                    parse(&key),
-                    ("app".into(), "c".into(), "/notes/draft#2.md".into()),
-                );
-            }
-        }
-    }
-}
+pub use runtime_collab::route::channel_key;
 
 /// The `(app_id, cluster_id)` pair this process announces in
 /// [`CollabRequest::Hello`] — the broker delivers a CRDT delta only to

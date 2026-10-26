@@ -7,9 +7,12 @@
 //! people; the host's
 //! model commands and creating a channel in its menu. Search is the bar's
 //! own. Each slot runs the window's own [`Hit`], as a press on the control
-//! the conversation used to draw did.
+//! the conversation used to draw did. A thread that fills the window is the
+//! window's location, with Back to the conversation.
 
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
+use ui::window_toolbar::{
+    ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarNavigation, WindowToolbar,
+};
 
 use crate::app::{ChatApp, Hit};
 
@@ -86,7 +89,7 @@ impl ChatApp {
         if self.direct_person.is_none() && self.has_other_collaborator() {
             let pins = self.pins_open && self.right_flap_open() && self.thread_open.is_none();
             actions.push((
-                ToolbarAction::new("pins", "pin", "Pinned messages").on(pins),
+                ToolbarAction::new("pins", "pin", crate::i18n::t("chat-pins")).on(pins),
                 Hit::TogglePins,
             ));
             let people = self.right_flap_open() && self.thread_open.is_none() && !self.pins_open;
@@ -110,7 +113,7 @@ impl ChatApp {
         }
         if self.keeps_layout() && self.direct_person.is_none() {
             actions.push((
-                ToolbarAction::new("create", "plus", "Create channel or category").in_menu(),
+                ToolbarAction::new("create", "plus", crate::i18n::t("chat-create-menu")).in_menu(),
                 Hit::AddCategory,
             ));
         }
@@ -126,10 +129,17 @@ impl ChatApp {
             .as_ref()
             .map(ui::widget::WindowBarLink::slots)
             .unwrap_or_default();
-        if self.thread_is_page() {
-            // A thread pushed over a narrow window is the whole page: its
-            // own Back leads it.
+        let page = self.thread_is_page();
+        if page {
+            // A thread pushed over a narrow window is the whole page: Back
+            // to the conversation leads it, and the thread is the location.
             bar.sidebar = None;
+            bar.leading
+                .retain(|action| action.id != ui::widget::WINDOW_BACK);
+            bar.navigation = Some(ToolbarNavigation {
+                back: true,
+                forward: false,
+            });
         }
         // The location is what the window shows: the call while its stage
         // fills the window, as the channels' chosen row says.
@@ -139,8 +149,13 @@ impl ChatApp {
                     .map(|channel| channel.name.clone())
             })
             .flatten();
+        let label = if page {
+            self.thread_title()
+        } else {
+            call.unwrap_or(identity.name)
+        };
         bar.location = Some(ToolbarLocation {
-            label: call.unwrap_or(identity.name),
+            label,
             ..ToolbarLocation::default()
         });
         bar.actions = self
@@ -158,6 +173,13 @@ impl ChatApp {
     /// Run what the person did in the window's bar as the window's own hits.
     pub(crate) fn apply_window_toolbar(&mut self, doc: &mut ui::widget::Edits<'_>) {
         for event in ui::window_toolbar::take_events() {
+            // A thread that fills the window: its Back returns to the
+            // conversation, not to the shell's screen behind it.
+            if matches!(event, ToolbarEvent::Back) && self.thread_is_page() {
+                self.on_hit(Hit::CloseThread, doc);
+                self.canonical_dirty = true;
+                continue;
+            }
             if self.bar.as_ref().is_some_and(|bar| bar.event(&event)) {
                 self.canonical_dirty = true;
                 continue;

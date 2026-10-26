@@ -592,6 +592,18 @@ impl Snap {
         reduced: Reduced::Lands,
         shortcut: Shortcut::Context,
     };
+    /// A thrown surface coasting on after the fingers lift (a strip flung
+    /// sideways): released with the fingers' velocity toward where the
+    /// release projects ([`Self::rest_for`]), it slows exponentially over
+    /// the gesture token's coast and comes to rest there without turning
+    /// back. Reduced motion: it stops where the fingers left it, so it
+    /// lands. Only a gesture throws; a shortcut lands.
+    pub const COAST: MotionSpec = MotionSpec {
+        enter: Pace::Coast,
+        exit: Pace::Coast,
+        reduced: Reduced::Lands,
+        shortcut: Shortcut::Lands,
+    };
 
     /// Where a release at `position` moving at `velocity` (per second) would
     /// come to rest: the projection a flick is judged by.

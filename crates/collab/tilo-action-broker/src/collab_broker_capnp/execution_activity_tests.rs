@@ -486,12 +486,18 @@ async fn cancellation_is_a_request_until_the_application_confirms_it() {
         .poll_ready();
     let delivered = app.try_recv().unwrap();
     events.try_recv().unwrap();
-    assert!(state.action_cancel(&caller, &request.invocation).is_ok());
+    assert!(
+        crate::collab_broker_capnp::answered(state.action_cancel(&caller, &request.invocation))
+            .is_ok()
+    );
     assert_eq!(
         events.try_recv().unwrap().status,
         ExecutionStatus::CancellationRequested
     );
-    assert!(state.action_cancel(&caller, &request.invocation).is_ok());
+    assert!(
+        crate::collab_broker_capnp::answered(state.action_cancel(&caller, &request.invocation))
+            .is_ok()
+    );
     assert!(
         events.try_recv().is_err(),
         "a repeated cancel does not create another activity"
@@ -792,6 +798,8 @@ fn an_invocation_id_two_callers_share_continues_neither() {
                 },
                 None,
             )
+            .unwrap()
+            .start_blocking(&state)
             .unwrap();
         caller
     };
@@ -880,9 +888,10 @@ fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
             .is_none()
     );
     assert!(
-        state
-            .action_cancel(&retained, &scoped_request.invocation)
-            .is_err()
+        crate::collab_broker_capnp::answered(
+            state.action_cancel(&retained, &scoped_request.invocation)
+        )
+        .is_err()
     );
     assert!(
         state
@@ -918,9 +927,10 @@ fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
             .is_some()
     );
     assert!(
-        state
-            .action_cancel(&legacy, &legacy_request.invocation)
-            .is_ok()
+        crate::collab_broker_capnp::answered(
+            state.action_cancel(&legacy, &legacy_request.invocation)
+        )
+        .is_ok()
     );
 }
 
@@ -960,7 +970,7 @@ impl ActionHost for CountedDoor {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
         self.door.cancel(caller, id)
     }
 }
@@ -1002,6 +1012,7 @@ fn export_shortcut() -> tilo_automation::Shortcut {
                 appearance: None,
             },
         )],
+        step_timeout_secs: None,
         output: None,
         grant: vec![policy::Rule::new(
             policy::TreePath::root()
@@ -1032,6 +1043,8 @@ async fn shortcut_step_observes_once_per_change() {
     let hooks = NoPolling(crate::automation::DoorHooks::new(
         None,
         tokio::runtime::Handle::current(),
+        crate::automation::RunningRuns::default(),
+        tilo_automation::RunId::new(),
     ));
     let running = tokio::spawn({
         let state = Arc::clone(&state);

@@ -22,7 +22,7 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 
 use iroh_base::{EndpointId, SecretKey};
@@ -31,7 +31,7 @@ use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Blob, Fill, ImageBrush, ImageData as PenikoImage};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
 use ui::icons::Icon;
@@ -116,27 +116,31 @@ struct TiloSession {
     /// Tilo collaboration events arrive on the UI thread. Keep their H.264
     /// payloads bounded and hand decoding to this private worker so a hostile
     /// or merely busy peer cannot make event dispatch stutter.
-    /// Encoded units in arrival order with their sequence numbers, plus a
-    /// capacity-one wake channel. Every unit is kept, since a delta
-    /// references the ones before it; past [`TILO_UNIT_BACKLOG`] the backlog
-    /// is dropped and the worker waits for a keyframe.
+    /// Encoded units in arrival order, plus a capacity-one wake channel.
+    /// Every admitted unit is kept, since a delta references the ones before
+    /// it; past [`TILO_UNIT_BACKLOG`] the backlog is dropped and the chain
+    /// waits for a keyframe.
     encoded: Arc<Mutex<UnitBacklog>>,
     encoded_wake: SyncSender<()>,
     decoder_available: Arc<AtomicBool>,
     decoded: Arc<Mutex<Option<tilo_callstream::DecodedFrame>>>,
-    /// The unit the worker could not decode, plus one, when it wants the
-    /// target to send a keyframe; `0` when it does not.
-    keyframe_wanted: Arc<AtomicU64>,
+    /// The stream's reference chain, judged as each unit arrives rather than
+    /// when the worker reaches it: a decoder still starting up, or busy with
+    /// a slow unit, must not delay noticing a gap and asking for a keyframe.
+    chain: tilo_callstream::unit_chain::UnitChain,
+    /// When a keyframe was last asked for, while one is awaited.
+    asked: Option<std::time::Instant>,
 }
 
-/// Encoded units waiting for the decode worker, each with its sequence number.
-type UnitBacklog = std::collections::VecDeque<(u64, Vec<u8>)>;
+/// Encoded units waiting for the decode worker, in the order they continue
+/// the chain.
+type UnitBacklog = std::collections::VecDeque<Vec<u8>>;
 
 /// Encoded units waiting for the decode worker before the backlog is
 /// dropped: two seconds of a 30 fps stream.
 const TILO_UNIT_BACKLOG: usize = 60;
 
-/// How long the decode worker waits for an asked-for keyframe before asking
+/// How long the session waits for an asked-for keyframe before asking
 /// again, in case the request or the keyframe was lost too.
 const TILO_KEYFRAME_RETRY: std::time::Duration = std::time::Duration::from_millis(300);
 
@@ -147,8 +151,6 @@ impl TiloSession {
         let encoded_worker = Arc::clone(&encoded);
         let decoder_available = Arc::new(AtomicBool::new(true));
         let decoder_available_worker = Arc::clone(&decoder_available);
-        let keyframe_wanted = Arc::new(AtomicU64::new(0));
-        let keyframe_wanted_worker = Arc::clone(&keyframe_wanted);
         // A replace-only latest slot bounds GPU-upload backlog and guarantees
         // the UI never paints an older decoded frame after a newer one exists.
         let decoded = Arc::new(Mutex::new(None));
@@ -157,35 +159,11 @@ impl TiloSession {
             .name("remote-tilo-decode".into())
             .spawn(move || {
                 let mut h264_decoder = tilo_callstream::VideoDecoder::default();
-                let mut chain = tilo_callstream::unit_chain::UnitChain::default();
-                let mut asked: Option<std::time::Instant> = None;
                 while encoded_rx.recv().is_ok() {
                     let units = std::mem::take(&mut *encoded_worker.lock_recover());
-                    for (seq, encoded) in units {
-                        let keyframe = tilo_callstream::is_keyframe(
-                            tilo_callstream::StreamCodec::H264,
-                            &encoded,
-                        );
-                        match chain.admit(seq, keyframe) {
-                            tilo_callstream::unit_chain::Admission::Decode => {
-                                if keyframe {
-                                    asked = None;
-                                    keyframe_wanted_worker.store(0, Ordering::Release);
-                                }
-                                if let Some(frame) = h264_decoder.decode(&encoded) {
-                                    *decoded_worker.lock_recover() = Some(frame);
-                                }
-                            }
-                            tilo_callstream::unit_chain::Admission::Stale => {}
-                            tilo_callstream::unit_chain::Admission::AwaitingKeyframe { broke } => {
-                                if broke
-                                    || asked.is_none_or(|at| at.elapsed() >= TILO_KEYFRAME_RETRY)
-                                {
-                                    asked = Some(std::time::Instant::now());
-                                    keyframe_wanted_worker
-                                        .store(seq.saturating_add(1), Ordering::Release);
-                                }
-                            }
+                    for encoded in units {
+                        if let Some(frame) = h264_decoder.decode(&encoded) {
+                            *decoded_worker.lock_recover() = Some(frame);
                         }
                     }
                 }
@@ -200,38 +178,61 @@ impl TiloSession {
             encoded_wake,
             decoder_available,
             decoded,
-            keyframe_wanted,
+            chain: tilo_callstream::unit_chain::UnitChain::default(),
+            asked: None,
         })
     }
 
-    fn queue_frame(&self, seq: u64, encoded: Vec<u8>) -> Result<(), String> {
+    /// Hand unit `seq` to the decode worker if it continues the chain.
+    /// `Ok(Some(seq))` names the unit after which the target is asked for a
+    /// keyframe: a unit went missing, the worker fell behind, or an earlier
+    /// request went unanswered.
+    fn queue_frame(&mut self, seq: u64, encoded: Vec<u8>) -> Result<Option<u64>, String> {
         if !self.decoder_available.load(Ordering::Acquire) {
             return Err("Tilo frame decoder is unavailable".into());
         }
-        {
+        let keyframe = tilo_callstream::is_keyframe(tilo_callstream::StreamCodec::H264, &encoded);
+        let fell_behind = {
             let mut queued = self.encoded.lock_recover();
-            if queued.len() >= TILO_UNIT_BACKLOG {
-                // The worker cannot keep up: the units it skips leave a gap
-                // it answers by asking for a keyframe.
+            let full = queued.len() >= TILO_UNIT_BACKLOG;
+            if full {
+                // The worker cannot keep up: the units it skips break the
+                // chain, which waits for a keyframe.
                 queued.clear();
             }
-            queued.push_back((seq, encoded));
+            drop(queued);
+            full
+        };
+        if fell_behind {
+            self.chain.lose();
+        }
+        match self.chain.admit(seq, keyframe) {
+            tilo_callstream::unit_chain::Admission::Decode => {
+                if keyframe {
+                    self.asked = None;
+                }
+                self.encoded.lock_recover().push_back(encoded);
+            }
+            tilo_callstream::unit_chain::Admission::Stale => return Ok(None),
+            tilo_callstream::unit_chain::Admission::AwaitingKeyframe { broke } => {
+                let ask = broke
+                    || fell_behind
+                    || self
+                        .asked
+                        .is_none_or(|at| at.elapsed() >= TILO_KEYFRAME_RETRY);
+                if ask {
+                    self.asked = Some(std::time::Instant::now());
+                }
+                return Ok(ask.then_some(seq));
+            }
         }
         match self.encoded_wake.try_send(()) {
-            Ok(()) | Err(TrySendError::Full(())) => Ok(()),
+            Ok(()) | Err(TrySendError::Full(())) => Ok(None),
             Err(TrySendError::Disconnected(())) => {
                 self.decoder_available.store(false, Ordering::Release);
                 Err("Tilo frame decoder stopped".into())
             }
         }
-    }
-
-    /// The unit the decode worker could not use, once, when it wants the
-    /// target to send a keyframe.
-    fn take_keyframe_request(&self) -> Option<u64> {
-        self.keyframe_wanted
-            .swap(0, Ordering::AcqRel)
-            .checked_sub(1)
     }
 
     fn take_latest_frame(&self) -> Option<tilo_callstream::DecodedFrame> {
@@ -360,6 +361,14 @@ struct SessionCore {
     fb_canvas: Option<Rect>,
     /// Current VNC pointer button mask (bit 0 = left, 1 = middle, 2 = right).
     vnc_buttons: u8,
+    /// The keys this pane pressed on the remote machine and has not released
+    /// there yet, by the physical key: the evdev keycode for a Tilo session,
+    /// the keysym for VNC. Released together when the pane loses the
+    /// keyboard, so no key stays held on the remote side.
+    held_keys: Vec<(PhysicalKey, u32)>,
+    /// Wheel movement not yet sent to a VNC desktop, in wheel clicks: a
+    /// trackpad scrolls in pixels, a desktop in whole clicks.
+    vnc_wheel: (f64, f64),
     /// Whether the remote desktop is scaled to fit (vs. its own size).
     scale_to_fit: bool,
     /// Last pointer position over the pane.
@@ -378,6 +387,8 @@ impl Default for SessionCore {
             fb_image: None,
             fb_canvas: None,
             vnc_buttons: 0,
+            held_keys: Vec::new(),
+            vnc_wheel: (0.0, 0.0),
             scale_to_fit: true,
             pointer: Point::ZERO,
             collab_outbox: Vec::new(),
@@ -448,6 +459,76 @@ impl SessionCore {
         let fy = ((p.y - canvas.y0) / canvas.height() * f64::from(h)).clamp(0.0, f64::from(h - 1))
             as u16;
         Some((fx, fy))
+    }
+
+    /// Release on the remote machine every key this pane still holds there:
+    /// the pane lost the keyboard, and the release will not reach it.
+    fn release_held_keys(&mut self) {
+        for (_, key) in std::mem::take(&mut self.held_keys) {
+            self.send_release(key);
+        }
+    }
+
+    /// Release on the remote machine the key this pane pressed there as
+    /// `physical`, if it still holds it: the key came up, whether or not its
+    /// release reaches the pane.
+    fn release_key(&mut self, physical: PhysicalKey) {
+        if let Some(at) = self.held_keys.iter().position(|(key, _)| *key == physical) {
+            let (_, key) = self.held_keys.remove(at);
+            self.send_release(key);
+        }
+    }
+
+    /// Send the release of `key`, as its press sent it: a keysym to a VNC
+    /// desktop, an evdev keycode to a Tilo session.
+    fn send_release(&mut self, key: u32) {
+        if let Some(s) = self.vnc_session() {
+            let _ = s.send_input(VncInput::Key { down: false, key });
+        } else {
+            self.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
+                keycode: key,
+                pressed: false,
+                modifiers: 0,
+            });
+        }
+    }
+
+    /// Note that `key` was pressed (`Some`) or released on the remote
+    /// machine; a release answers with what its press sent.
+    fn track_key(&mut self, physical: PhysicalKey, pressed: Option<u32>) -> Option<u32> {
+        let at = self.held_keys.iter().position(|(key, _)| *key == physical);
+        let released = at.map(|at| self.held_keys.remove(at).1);
+        if let Some(sent) = pressed {
+            self.held_keys.push((physical, sent));
+            return Some(sent);
+        }
+        released
+    }
+
+    /// Scroll the live remote desktop under `p` by `delta`: each whole wheel
+    /// click is a press and release of the wheel's button (RFB 6143 §7.5.5),
+    /// at most [`VNC_WHEEL_BURST`] of them per event. `false` when the
+    /// pointer is not over the desktop. A trackpad clicks every
+    /// `wheel_line` logical pixels.
+    fn forward_vnc_wheel(
+        &mut self,
+        p: Point,
+        delta: &MouseScrollDelta,
+        scale_factor: f64,
+        wheel_line: f64,
+    ) -> bool {
+        let Some((x, y)) = self.vnc_pointer_target(p) else {
+            return false;
+        };
+        let clicks = vnc_wheel_clicks(&mut self.vnc_wheel, delta, scale_factor, wheel_line);
+        if let Some(s) = self.vnc_session() {
+            for button in clicks {
+                for button_mask in [self.vnc_buttons | button, self.vnc_buttons] {
+                    let _ = s.send_input(VncInput::Pointer { button_mask, x, y });
+                }
+            }
+        }
+        true
     }
 
     /// Send the current button mask at `p` to the live remote desktop, if
@@ -968,17 +1049,26 @@ impl RemoteApp {
         // Asked already, in this window's own dialog.
         let saved = crate::model::Remote::paths().connections;
         self.submit(Invoke::edit(&saved.remove(&crate::model::Remote::item(id))));
-        // The connection's credentials go with it.
-        if let Some(secrets) = &self.secrets {
-            for purpose in [SSH_PASSWORD, KEY_PASSPHRASE, VNC_PASSWORD] {
-                let _ = secrets.item(purpose, &id.to_string()).delete_blocking();
-            }
-        }
+        self.forget_credentials(id);
         if self.selected == Some(id) {
             self.selected = None;
         }
         if matches!(self.screen, Screen::Form { editing: Some(editing) } if editing == id) {
             self.screen = Screen::List;
+        }
+    }
+
+    /// Forget the passwords and passphrase this device saved for a
+    /// connection that is gone, whichever door or device deleted it. A
+    /// capture never forgets one.
+    fn forget_credentials(&self, id: ConnectionId) {
+        if self.capture {
+            return;
+        }
+        if let Some(secrets) = &self.secrets {
+            for purpose in [SSH_PASSWORD, KEY_PASSPHRASE, VNC_PASSWORD] {
+                let _ = secrets.item(purpose, &id.to_string()).delete_blocking();
+            }
         }
     }
 
@@ -1271,6 +1361,8 @@ impl RemoteApp {
             session.fb_image = None;
             session.fb_canvas = None;
             session.vnc_buttons = 0;
+            session.held_keys.clear();
+            session.vnc_wheel = (0.0, 0.0);
             session.live = None;
         }
         let readiness = connection_readiness(&c);
@@ -1530,6 +1622,19 @@ impl RemoteApp {
     pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Connection]) {
         if self.workspace.connections() == state {
             return;
+        }
+        // A connection deleted elsewhere (the palette, an agent, another
+        // device) takes this device's credentials with it, as deleting it
+        // here does.
+        let gone: Vec<ConnectionId> = self
+            .workspace
+            .connections()
+            .iter()
+            .filter(|old| state.iter().all(|now| now.id != old.id))
+            .map(|old| old.id)
+            .collect();
+        for id in gone {
+            self.forget_credentials(id);
         }
         self.workspace.connections = state.to_vec();
         self.forget_vanished();
@@ -1952,12 +2057,10 @@ impl Collaborative for RemoteApp {
             }
             runtime_collab::WorkspaceControlEvent::Frame {
                 encoded_h264, seq, ..
-            } => {
-                if let Err(error) = session.queue_frame(*seq, encoded_h264.clone()) {
-                    session.status = SessionStatus::Failed(error);
-                }
-                keyframe_request = session.take_keyframe_request();
-            }
+            } => match session.queue_frame(*seq, encoded_h264.clone()) {
+                Ok(request) => keyframe_request = request,
+                Err(error) => session.status = SessionStatus::Failed(error),
+            },
             runtime_collab::WorkspaceControlEvent::Closed(reason) => {
                 session.status = SessionStatus::Failed(match reason {
                     runtime_collab::WorkspaceControlCloseReason::Denied(message) => message.clone(),
@@ -2079,6 +2182,23 @@ impl Widget for RemoteApp {
             .min()
     }
 
+    // Seen ahead of the framework's shortcuts, the action palette and a
+    // dialog, which keep keys from the session pane: a key the pane pressed
+    // on the remote machine is released there when it comes up, even when
+    // its release goes to the palette, so Ctrl+K leaves no Ctrl held there.
+    fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {
+        match input {
+            ui::widget::PhysicalInput::Key {
+                key,
+                state: ElementState::Released,
+            } => self.session.borrow_mut().release_key(key),
+            ui::widget::PhysicalInput::Focused(false) => {
+                self.session.borrow_mut().release_held_keys();
+            }
+            _ => {}
+        }
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // A confirmation is modal: nothing reaches the window behind it.
         if let Some(dialog) = self.dialog.as_mut() {
@@ -2163,6 +2283,18 @@ impl Widget for RemoteApp {
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.body().is_layout_dirty()
+    }
+
+    // Rebuilding the views (the connections or the screen changed, full
+    // screen swapped the body) replaces this widget's children. Say so, or
+    // the host re-places the old tree and the change shows only once
+    // something else asks for a rebuild: a collaborator's deletion left
+    // its row on screen.
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = self.layout_dirty;
+        self.children_mut()
+            .into_iter()
+            .fold(own, |dirty, child| child.take_structure_dirty() || dirty)
     }
 
     fn layout_needs_measure(&self) -> bool {
@@ -2516,6 +2648,9 @@ pub(crate) struct SessionPane {
     session: SharedSession,
     rect: Rect,
     focused: bool,
+    /// How far one wheel notch scrolls, from the theme the pane was last
+    /// laid out with: a trackpad clicks a VNC desktop's wheel this often.
+    wheel_line: f64,
 }
 
 impl SessionPane {
@@ -2524,6 +2659,7 @@ impl SessionPane {
             session,
             rect: Rect::ZERO,
             focused: true,
+            wheel_line: f64::from(ui::tokens::metrics::Metrics::BASE.wheel_line),
         }
     }
 
@@ -2690,6 +2826,10 @@ impl SessionPane {
                 }
                 false
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let p = core.pointer;
+                core.forward_vnc_wheel(p, delta, scale_factor, self.wheel_line)
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 let p = core.pointer;
                 if core.tilo_pointer_target(p).is_some() {
@@ -2742,52 +2882,61 @@ impl SessionPane {
             core.live.as_ref(),
             Some(LiveSession::Tilo(session)) if session.status == SessionStatus::Connected
         );
+        let pressed = event.state == ElementState::Pressed;
         if tilo_connected {
             if let PhysicalKey::Code(code) = event.physical_key
                 && let Some(keycode) = ui::evdev::from_key_code(code)
             {
-                core.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
-                    keycode,
-                    pressed: event.state == ElementState::Pressed,
-                    modifiers: 0,
-                });
+                // A release goes only for a key still held there: one the
+                // window took on its way here was released already.
+                if let Some(keycode) =
+                    core.track_key(event.physical_key, pressed.then_some(keycode))
+                {
+                    core.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
+                        keycode,
+                        pressed,
+                        modifiers: 0,
+                    });
+                }
                 return true;
             }
             return false;
         }
-        if event.state != ElementState::Pressed {
+        if core.vnc_session().is_some() {
+            // Down on the press and up on the release, modifiers included,
+            // so a held Ctrl or Shift reaches the remote desktop with the key
+            // it modifies.
+            let Some(key) = core.track_key(
+                event.physical_key,
+                pressed.then(|| vnc_keysym(&event.logical_key)).flatten(),
+            ) else {
+                return false;
+            };
+            if let Some(s) = core.vnc_session() {
+                let _ = s.send_input(VncInput::Key { down: pressed, key });
+            }
+            core.changed = true;
+            return true;
+        }
+        if !pressed {
             return false;
         }
         let text = event.text.as_ref().map(winit::keyboard::SmolStr::as_str);
-        match &core.live {
-            Some(LiveSession::Ssh(s)) if s.status() == SessionStatus::Connected => {
-                if let Some(bytes) = ssh_key_bytes(&event.logical_key, text, mods) {
-                    // Interactive key events are best-effort when the
-                    // bounded queue is full; the resource action path
-                    // reports that condition exactly to agents.
-                    let _ = s.send_input(bytes);
-                    core.changed = true;
-                    return true;
-                }
-                false
-            }
-            Some(LiveSession::Vnc(s)) if s.status() == SessionStatus::Connected => {
-                if let Some(sym) = vnc_keysym(&event.logical_key, text) {
-                    let _ = s.send_input(VncInput::Key {
-                        down: true,
-                        key: sym,
-                    });
-                    let _ = s.send_input(VncInput::Key {
-                        down: false,
-                        key: sym,
-                    });
-                    core.changed = true;
-                    return true;
-                }
-                false
-            }
-            _ => false,
+        let Some(LiveSession::Ssh(s)) = &core.live else {
+            return false;
+        };
+        if s.status() != SessionStatus::Connected {
+            return false;
         }
+        let Some(bytes) = ssh_key_bytes(&event.logical_key, text, mods) else {
+            return false;
+        };
+        // Interactive key events are best-effort when the bounded queue is
+        // full; the resource action path reports that condition exactly to
+        // agents.
+        let _ = s.send_input(bytes);
+        core.changed = true;
+        true
     }
 }
 
@@ -2795,9 +2944,10 @@ impl Widget for SessionPane {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.wheel_line = f64::from(theme.tokens.metrics.wheel_line);
         let style = Style {
             flex_grow: 1.0,
             size: Size::from_percent(1.0, 1.0),
@@ -2826,7 +2976,9 @@ impl Widget for SessionPane {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let handled = match event {
-            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } => {
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. } => {
                 if matches!(
                     event,
                     WindowEvent::MouseInput {
@@ -2834,12 +2986,19 @@ impl Widget for SessionPane {
                         ..
                     }
                 ) {
-                    self.focused = self.rect.contains(self.session.borrow().pointer);
+                    let focused = self.rect.contains(self.session.borrow().pointer);
+                    self.set_focus(focused);
                 }
                 self.handle_pointer(event, ctx.scale_factor)
             }
             WindowEvent::KeyboardInput { event, .. } if self.focused => {
                 self.handle_key(event, ctx.modifiers.state())
+            }
+            // The window lost the keyboard: what is held here is released
+            // somewhere else.
+            WindowEvent::Focused(false) => {
+                self.session.borrow_mut().release_held_keys();
+                false
             }
             _ => false,
         };
@@ -2857,6 +3016,9 @@ impl Widget for SessionPane {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        if !focused {
+            self.session.borrow_mut().release_held_keys();
+        }
         self.focused = focused;
     }
 
@@ -2927,22 +3089,109 @@ fn ssh_key_bytes(key: &Key, text: Option<&str>, mods: ModifiersState) -> Option<
     }
 }
 
-/// Map a key press to an X11 keysym for VNC `KeyEvent`s (ASCII + a few
-/// named keys — enough for basic remote typing).
-fn vnc_keysym(key: &Key, text: Option<&str>) -> Option<u32> {
-    match key {
-        Key::Named(NamedKey::Enter) => Some(0xff0d),
-        Key::Named(NamedKey::Backspace) => Some(0xff08),
-        Key::Named(NamedKey::Tab) => Some(0xff09),
-        Key::Named(NamedKey::Escape) => Some(0xff1b),
-        Key::Named(NamedKey::Space) => Some(0x20),
-        Key::Named(NamedKey::ArrowUp) => Some(0xff52),
-        Key::Named(NamedKey::ArrowDown) => Some(0xff54),
-        Key::Named(NamedKey::ArrowLeft) => Some(0xff51),
-        Key::Named(NamedKey::ArrowRight) => Some(0xff53),
-        Key::Named(NamedKey::Delete) => Some(0xffff),
-        _ => text.and_then(|t| t.chars().next()).map(|c| c as u32),
+/// The most wheel clicks one wheel event sends a VNC desktop, so a fling
+/// cannot fill the session's bounded input queue.
+const VNC_WHEEL_BURST: usize = 10;
+
+/// The wheel buttons to click on a VNC desktop for `delta`, carrying what is
+/// short of a whole click in `pending`. RFB's buttons 4 to 7 (mask bits 3 to
+/// 6) scroll up, down, left and right; winit's positive deltas move the
+/// content right and down, which is scrolling left and up.
+///
+/// A trackpad's pixels make a click every `wheel_line` logical pixels, the
+/// theme's distance for one notch of a line-stepping wheel.
+fn vnc_wheel_clicks(
+    pending: &mut (f64, f64),
+    delta: &MouseScrollDelta,
+    scale_factor: f64,
+    wheel_line: f64,
+) -> Vec<u8> {
+    let (dx, dy) = match delta {
+        MouseScrollDelta::LineDelta(x, y) => (f64::from(*x), f64::from(*y)),
+        MouseScrollDelta::PixelDelta(position) => {
+            let per_click = wheel_line.max(1.0) * scale_factor.max(f64::MIN_POSITIVE);
+            (position.x / per_click, position.y / per_click)
+        }
+    };
+    let mut clicks = Vec::new();
+    for (moved, pending, toward, away) in [
+        (dy, &mut pending.1, 0x08_u8, 0x10_u8),
+        (dx, &mut pending.0, 0x20_u8, 0x40_u8),
+    ] {
+        if !moved.is_finite() {
+            continue;
+        }
+        *pending += moved;
+        let mut whole = pending.trunc();
+        *pending -= whole;
+        let button = if whole > 0.0 { toward } else { away };
+        for _ in 0..VNC_WHEEL_BURST {
+            if whole.abs() < 1.0 {
+                break;
+            }
+            clicks.push(button);
+            whole -= whole.signum();
+        }
     }
+    clicks
+}
+
+/// The X11 keysym a VNC `KeyEvent` sends for a logical key: a character,
+/// or a named key from editing, navigation, the modifiers and F1 to F12.
+fn vnc_keysym(key: &Key) -> Option<u32> {
+    let named = match key {
+        Key::Named(named) => named,
+        // A character's keysym is its Latin-1 code, or the Unicode keysym
+        // for anything past it (RFB 6143 §7.5.4, X11 keysym encoding). The
+        // logical key, not the text: Ctrl+C has the text of a control
+        // character but is the C key held with Ctrl.
+        Key::Character(text) => {
+            let mut chars = text.chars();
+            let c = u32::from(chars.next()?);
+            if chars.next().is_some() {
+                return None;
+            }
+            return Some(if c <= 0xff { c } else { 0x0100_0000 | c });
+        }
+        _ => return None,
+    };
+    let sym = match named {
+        NamedKey::Enter => 0xff0d,
+        NamedKey::Backspace => 0xff08,
+        NamedKey::Tab => 0xff09,
+        NamedKey::Escape => 0xff1b,
+        NamedKey::Space => 0x20,
+        NamedKey::ArrowUp => 0xff52,
+        NamedKey::ArrowDown => 0xff54,
+        NamedKey::ArrowLeft => 0xff51,
+        NamedKey::ArrowRight => 0xff53,
+        NamedKey::Delete => 0xffff,
+        NamedKey::Insert => 0xff63,
+        NamedKey::Home => 0xff50,
+        NamedKey::End => 0xff57,
+        NamedKey::PageUp => 0xff55,
+        NamedKey::PageDown => 0xff56,
+        NamedKey::Shift => 0xffe1,
+        NamedKey::Control => 0xffe3,
+        NamedKey::Alt => 0xffe9,
+        NamedKey::AltGraph => 0xfe03,
+        NamedKey::Super | NamedKey::Meta => 0xffeb,
+        NamedKey::CapsLock => 0xffe5,
+        NamedKey::F1 => 0xffbe,
+        NamedKey::F2 => 0xffbf,
+        NamedKey::F3 => 0xffc0,
+        NamedKey::F4 => 0xffc1,
+        NamedKey::F5 => 0xffc2,
+        NamedKey::F6 => 0xffc3,
+        NamedKey::F7 => 0xffc4,
+        NamedKey::F8 => 0xffc5,
+        NamedKey::F9 => 0xffc6,
+        NamedKey::F10 => 0xffc7,
+        NamedKey::F11 => 0xffc8,
+        NamedKey::F12 => 0xffc9,
+        _ => return None,
+    };
+    Some(sym)
 }
 
 // ===========================================================================

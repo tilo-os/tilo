@@ -176,6 +176,15 @@ class Budgets(unittest.TestCase):
         self.assertEqual((row.status, row.failing), ("new", True))
         self.assertIn("over budget: p99 20 > 16.7 ms", row.note)
 
+    def test_an_enforced_miss_says_so_beside_a_quiet_status(self):
+        rows = compare.compare([make(20, 1)], [], self.budgets(True), set(), set())
+        self.assertTrue(rows[0].over_budget)
+        text = compare.summary(rows)
+        # The status alone would read `new`, which looks like a run that
+        # changed nothing; the run it is in fails.
+        self.assertIn("**over budget** (new)", text)
+        self.assertIn("1 results, 1 failing (1 over budget).", text)
+
     def test_a_target_miss_is_reported_only(self):
         [row] = compare.compare([make(20, 1)], [], self.budgets(False), set(), set())
         self.assertFalse(row.failing)

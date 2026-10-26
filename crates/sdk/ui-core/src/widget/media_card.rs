@@ -86,6 +86,10 @@ pub enum MediaArt<'a> {
     Paint(ArtPainter<'a>),
     /// No art (yet): the generated gradient and initials.
     Placeholder,
+    /// Art on its way ([`crate::arriving`]), at its placeholder step: the
+    /// card's ground until the skeleton shows, then the skeleton's tone in
+    /// the art's place, so the card keeps its geometry as the art lands.
+    Arriving(crate::arriving::Step),
 }
 
 impl std::fmt::Debug for MediaArt<'_> {
@@ -97,6 +101,7 @@ impl std::fmt::Debug for MediaArt<'_> {
             Self::Kind(icon) => write!(f, "Kind({icon:?})"),
             Self::Paint(_) => f.write_str("Paint"),
             Self::Placeholder => f.write_str("Placeholder"),
+            Self::Arriving(step) => write!(f, "Arriving({step:?})"),
         }
     }
 }
@@ -638,6 +643,21 @@ fn paint_art(
         MediaArt::Mosaic(_) | MediaArt::Placeholder => {
             paint_placeholder(ctx, m, art, radius, title);
         }
+        MediaArt::Arriving(step) => {
+            if matches!(
+                step,
+                crate::arriving::Step::Skeleton | crate::arriving::Step::Named
+            ) {
+                let tone = crate::widget::skeleton_tone(ctx.theme.tokens.colors.surfaces.content);
+                ctx.scene.fill(
+                    Fill::NonZero,
+                    ctx.transform,
+                    tone,
+                    None,
+                    &RoundedRect::from_rect(art, radius),
+                );
+            }
+        }
     }
 }
 
@@ -920,6 +940,12 @@ pub struct MediaCard {
 
 impl MediaCard {
     pub fn new(id: impl Into<String>, source: MediaSource) -> Self {
+        Self::new_owned(id.into(), source)
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, source: MediaSource) -> Self {
         let loaded = match &source {
             MediaSource::Image(image) => Some(image.clone()),
             _ => None,
@@ -1111,8 +1137,17 @@ impl MediaCard {
     }
 }
 
+impl crate::widget::ReservedShape for MediaCard {
+    fn reserved_shape(&self) -> crate::widget::SkeletonShape {
+        crate::widget::SkeletonShape::Media(self.aspect)
+    }
+}
+
 impl Widget for MediaCard {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::widget::ReservedShape
+    );
 
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
         if let Some(creator) = &mut self.creator
@@ -1445,17 +1480,34 @@ impl MediaGrid {
         card_columns(width, self.extent, self.column_gap)
     }
 
-    /// `count` loading cards at `aspect`: skeletons with the art and the
-    /// full text block of a card (a title and a meta line).
-    pub fn loading(count: usize, aspect: MediaAspect) -> Self {
+    /// `count` cards at `aspect` on their way from `from`, asked at
+    /// `since`: each reserves a card's art and text block and steps through
+    /// the framework's placeholder ([`crate::widget::ArrivingView`]). The
+    /// cards stand in one region, so the grid names its source once.
+    pub fn arriving(
+        count: usize,
+        aspect: MediaAspect,
+        from: &crate::arriving::Source,
+        since: crate::time::Instant,
+    ) -> Self {
+        Self::of(
+            (0..count)
+                .map(|_| {
+                    crate::widget::ArrivingView::placeholder_since(
+                        from.clone(),
+                        since,
+                        crate::widget::SkeletonShape::Media(aspect),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// A grid of `cards` that are not all [`MediaCard`]s yet: cards on
+    /// their way, each an [`crate::widget::ArrivingView`] shaped as a card.
+    pub fn of(cards: Vec<Element>) -> Self {
         let mut grid = Self::new(Vec::new());
-        grid.cards = (0..count)
-            .map(|_| {
-                Box::new(crate::widget::Skeleton::new(
-                    crate::widget::SkeletonShape::Media(aspect),
-                )) as Element
-            })
-            .collect();
+        grid.cards = cards;
         grid
     }
 }

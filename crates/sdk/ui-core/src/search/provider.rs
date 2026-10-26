@@ -763,9 +763,9 @@ pub struct SearchResult {
     /// Optional secondary line rendered dimmer under the title (e.g. an email
     /// address, a file path, a command description).
     pub subtitle: Option<String>,
-    /// Plain-text detail rendered by the shared result surface for the
-    /// selected or hovered row without changing row geometry.
-    pub preview: Option<String>,
+    /// What the shared result surface shows of the selected or hovered row,
+    /// in the preview band under the list, without changing row geometry.
+    pub preview: Option<super::SearchPreview>,
     /// Grouping label, e.g. `"Contacts"`, `"Files"`, `"Commands"`. Rows sharing
     /// a `kind` are bucketed together under this label in the results overlay,
     /// so a mixed query reads as sectioned groups rather than one flat list.
@@ -857,8 +857,9 @@ impl SearchResult {
     }
 
     #[must_use]
-    pub fn with_preview(mut self, preview: impl Into<String>) -> Self {
-        self.preview = Some(preview.into());
+    pub fn with_preview(mut self, preview: impl Into<super::SearchPreview>) -> Self {
+        let preview = preview.into();
+        self.preview = (!preview.is_empty()).then_some(preview);
         self
     }
 

@@ -13,9 +13,16 @@ use tilo_actions::{ActionAddress, ControlInvocation, DoorError, OperationKind, R
     reason = "normalize owned and borrowed error types into a refusal"
 )]
 fn refused(code: &str, reason: impl ToString) -> DoorError {
+    refusal(code, reason.to_string())
+}
+
+/// [`refused`] once its reason is text. The traversals that refuse are
+/// generic over the widget they visit, and apps compile them for the
+/// toolkit's own widgets, so building the error stays here.
+fn refusal(code: &str, reason: String) -> DoorError {
     DoorError::Unavailable {
         code: code.into(),
-        reason: reason.to_string(),
+        reason,
     }
 }
 #[derive(Clone)]

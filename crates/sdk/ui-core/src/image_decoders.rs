@@ -23,6 +23,10 @@ pub struct ImageDecoders {
     /// Encoded bytes to RGBA no wider or taller than the given dimension,
     /// for an image store.
     pub bounded: fn(&[u8], u32) -> Option<DecodedImage>,
+    /// Encoded bytes made a PNG no wider or taller than the given
+    /// dimension (a picture a workspace emoji keeps): the encoder rides
+    /// with the decoders, out of a browser's start module.
+    pub small_png: fn(&[u8], u32) -> Option<Vec<u8>>,
 }
 
 /// Hands over the decoders, for `install_image_decoders`.
@@ -44,7 +48,15 @@ pub fn builtin_image_decoders() -> ImageDecoders {
         .decode_native()
         .ok()
     }
-    ImageDecoders { page, bounded }
+    fn small_png(encoded: &[u8], max_dimension: u32) -> Option<Vec<u8>> {
+        let small = bounded(encoded, max_dimension)?;
+        crate::png::encode_rgba8(small.width, small.height, &small.rgba).ok()
+    }
+    ImageDecoders {
+        page,
+        bounded,
+        small_png,
+    }
 }
 
 #[cfg(not(feature = "lazy-image-decode"))]

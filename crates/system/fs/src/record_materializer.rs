@@ -578,6 +578,12 @@ impl RecordMaterializer {
                 .verify()
                 .map_err(|_| RecordMaterializerError::InvalidEnvelope)?;
         }
+        // Who caused a version lives in the signed record alone: history
+        // reads read it from there, so nothing projects into the namespace or
+        // the history store, and a record deleted since still keeps it.
+        if matches!(envelope.operation, RecordOperationV1::AttributeVersion(_)) {
+            return Ok(());
+        }
 
         // Resolve and validate liveness before either operation. History for a
         // deleted or unknown namespace record must not be guessed into place.
@@ -817,10 +823,11 @@ impl RecordMaterializer {
                 }
             }
             RecordOperationV1::PrepareTransaction(_)
-            | RecordOperationV1::CommitTransaction { .. } => {
+            | RecordOperationV1::CommitTransaction { .. }
+            | RecordOperationV1::AttributeVersion(_) => {
                 // A record-local arrival is deliberately invisible. Only the
                 // repository-wide complete-participant materializer may
-                // project a transaction.
+                // project a transaction; an attribution never projects.
                 drop(namespace);
             }
         }
@@ -1024,6 +1031,7 @@ mod tests {
                     content_revision: None,
                     versions: vec![],
                     conflicts: vec![],
+                    attributions: vec![],
                 },
                 RecordOperationV1::SetMetadata(metadata) => RecordSnapshot {
                     record_id: self.record,
@@ -1032,6 +1040,7 @@ mod tests {
                     content_revision: None,
                     versions: vec![],
                     conflicts: vec![],
+                    attributions: vec![],
                 },
                 RecordOperationV1::AppendVersion(version) => RecordSnapshot {
                     record_id: self.record,
@@ -1040,6 +1049,7 @@ mod tests {
                     content_revision: None,
                     versions: vec![version.clone()],
                     conflicts: vec![],
+                    attributions: vec![],
                 },
                 RecordOperationV1::AppendConflict(conflict) => RecordSnapshot {
                     record_id: self.record,
@@ -1048,16 +1058,19 @@ mod tests {
                     content_revision: None,
                     versions: vec![],
                     conflicts: vec![conflict.clone()],
+                    attributions: vec![],
                 },
                 RecordOperationV1::ResolveConflict { .. }
                 | RecordOperationV1::PrepareTransaction(_)
-                | RecordOperationV1::CommitTransaction { .. } => RecordSnapshot {
+                | RecordOperationV1::CommitTransaction { .. }
+                | RecordOperationV1::AttributeVersion(_) => RecordSnapshot {
                     record_id: self.record,
                     binding: None,
                     metadata: None,
                     content_revision: None,
                     versions: vec![],
                     conflicts: vec![],
+                    attributions: vec![],
                 },
                 RecordOperationV1::SetContentRevision(revision) => RecordSnapshot {
                     record_id: self.record,
@@ -1066,6 +1079,7 @@ mod tests {
                     content_revision: Some(*revision),
                     versions: vec![],
                     conflicts: vec![],
+                    attributions: vec![],
                 },
             }
         }
@@ -1208,6 +1222,7 @@ mod tests {
                         content_revision: None,
                         versions: vec![],
                         conflicts: vec![],
+                        attributions: vec![],
                     },
                 )
                 .unwrap();
@@ -1245,6 +1260,7 @@ mod tests {
                 content_revision: None,
                 versions: vec![],
                 conflicts: vec![],
+                attributions: vec![],
             };
             fixture
                 .materializer

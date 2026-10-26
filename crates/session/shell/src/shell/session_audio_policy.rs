@@ -11,7 +11,11 @@
 //! It also watches for hotplug: when the output sound was going to
 //! was a headset, headphones or a Bluetooth sink and it disappears, playing
 //! media is paused rather than suddenly coming out of the speakers — as on a
-//! phone. Plugging the device back in never resumes it.
+//! phone. Plugging the device back in never resumes it. A headset,
+//! headphones or Bluetooth sink that arrives becomes the output, as on a
+//! phone: `WirePlumber` alone keeps an output the person once chose for as
+//! long as it exists, so a newly connected headset stayed silent while the
+//! speakers played on.
 //!
 //! Observation is event-driven. A native registry watch
 //! ([`media::audio_watch`]) reports device changes within
@@ -109,6 +113,8 @@ trait PolicyEnv {
     fn load_preferences(&mut self) -> PersistentAudioPreferences;
     /// Pause every playing player; `false` when that failed.
     fn pause_playing_players(&mut self) -> bool;
+    /// Make sink `node_id` the default output.
+    fn set_default_sink(&mut self, node_id: u32) -> Result<(), String>;
     /// Apply `preferences` to `graph`.
     fn reconcile(
         &mut self,
@@ -277,7 +283,12 @@ impl PolicyWorker {
         for event in self.devices.observe(&graph) {
             env.device_sound(event);
         }
+        // Both readings must have seen the graph: after a reading that did
+        // not (`PipeWire` restarting, or `pw-dump` failing once), every
+        // device would look as if it had just arrived, and a connected
+        // headset the person had moved away from would take the sound.
         if let Some(previous) = self.last_graph.as_ref()
+            && enumerated(previous)
             && enumerated(&graph)
         {
             let delta = AudioGraph::diff(previous, &graph);
@@ -285,6 +296,15 @@ impl PolicyWorker {
                 tracing::warn!(
                     target: "tilo::audio_policy",
                     "private output removed but players could not be paused"
+                );
+            }
+            if let Some(arrived) = follow_on_arrival(previous, &delta)
+                && let Err(error) = env.set_default_sink(arrived)
+            {
+                tracing::warn!(
+                    target: "tilo::audio_policy",
+                    %error,
+                    "a private output arrived but could not become the default"
                 );
             }
         }
@@ -361,6 +381,10 @@ impl PolicyEnv for LiveEnv {
 
     fn pause_playing_players(&mut self) -> bool {
         crate::shell::mpris::pause_playing_players()
+    }
+
+    fn set_default_sink(&mut self, node_id: u32) -> Result<(), String> {
+        media::audio::real_control().set_default_sink(node_id)
     }
 
     fn reconcile(
@@ -597,6 +621,39 @@ pub(crate) fn pause_on_removal(previous: &AudioGraph, delta: &GraphDelta) -> boo
         && private_output(default)
 }
 
+/// The hotplug decision the other way: the output to switch to when `delta`
+/// brings a private one that was not here before. One already made the
+/// default needs nothing, and a node replacing one of the same device (a
+/// Bluetooth headset changing profile) is not an arrival. A speaker set in
+/// use keeps the sound: earbuds connecting on their own as they leave their
+/// case must not silence the rooms.
+pub(crate) fn follow_on_arrival(previous: &AudioGraph, delta: &GraphDelta) -> Option<u32> {
+    if previous
+        .default_sink()
+        .is_some_and(|sink| sink.name == media::audio::SPEAKER_GROUP_SINK)
+    {
+        return None;
+    }
+    delta
+        .added_sinks
+        .iter()
+        .find(|arrived| {
+            !arrived.is_default
+                && private_output(arrived)
+                && !previous
+                    .sinks
+                    .iter()
+                    .any(|before| device_stem(&before.name) == device_stem(&arrived.name))
+        })
+        .map(|arrived| arrived.id)
+}
+
+/// A node name without its profile suffix: `bluez_output.AA_BB.1` and
+/// `bluez_output.AA_BB.headset-head-unit` are one headset.
+fn device_stem(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(stem, _)| stem)
+}
+
 fn load_preferences() -> PersistentAudioPreferences {
     let doc = settings_store::load();
     preferences_from(&doc)
@@ -709,6 +766,93 @@ mod tests {
     }
 
     #[test]
+    fn a_private_output_that_arrives_becomes_the_default_and_nothing_else_does() {
+        let at = |id: u32, mut device: AudioDevice| {
+            device.id = id;
+            device
+        };
+        let speakers = |default| {
+            at(
+                1,
+                sink(
+                    "alsa_output.pci-0000_00_1f.3.analog-stereo",
+                    "Built-in Audio Analog Stereo",
+                    default,
+                ),
+            )
+        };
+        let hdmi = || {
+            at(
+                2,
+                sink("alsa_output.pci-0000_01_00.1.hdmi-stereo", "HDMI", false),
+            )
+        };
+        let buds = |suffix: &str, default| {
+            let mut device = at(
+                3,
+                sink(&format!("bluez_output.AA_BB.{suffix}"), "Buds", default),
+            );
+            device.codec = Some("AAC".into());
+            device
+        };
+        let headset = |default| {
+            at(
+                4,
+                sink(
+                    "alsa_output.usb-Logi_USB_Headset-00.analog-stereo",
+                    "USB Headset",
+                    default,
+                ),
+            )
+        };
+        let group = || {
+            at(
+                5,
+                sink(media::audio::SPEAKER_GROUP_SINK, "Speaker group", true),
+            )
+        };
+        // (before, after, the output switched to)
+        let table = [
+            // Earbuds connect, or a headset is plugged in, while the speakers play.
+            (
+                vec![speakers(true)],
+                vec![speakers(true), buds("1", false)],
+                Some(3),
+            ),
+            (
+                vec![speakers(true)],
+                vec![speakers(true), headset(false)],
+                Some(4),
+            ),
+            // WirePlumber made it the default already.
+            (
+                vec![speakers(false)],
+                vec![speakers(false), headset(true)],
+                None,
+            ),
+            // A screen's speakers are not private.
+            (vec![speakers(true)], vec![speakers(true), hdmi()], None),
+            // The earbuds the person moved away from change profile.
+            (
+                vec![speakers(true), buds("1", false)],
+                vec![speakers(true), buds("headset-head-unit", false)],
+                None,
+            ),
+            // A speaker set is playing.
+            (
+                vec![speakers(false), group()],
+                vec![speakers(false), group(), buds("1", false)],
+                None,
+            ),
+        ];
+        for (index, (before, after, switched)) in table.into_iter().enumerate() {
+            let before = sinks_graph(before);
+            let delta = AudioGraph::diff(&before, &sinks_graph(after));
+            assert_eq!(follow_on_arrival(&before, &delta), switched, "row {index}");
+        }
+    }
+
+    #[test]
     fn a_failed_enumeration_is_not_an_unplug() {
         assert!(!enumerated(&AudioGraph::default()));
         assert!(enumerated(&sinks_graph(vec![sink("a", "A", true)])));
@@ -801,6 +945,7 @@ mod tests {
         pauses: usize,
         reconciles: usize,
         sounds: Vec<SystemSoundEvent>,
+        defaults: Vec<u32>,
     }
 
     impl FakeEnv {
@@ -817,6 +962,7 @@ mod tests {
                 pauses: 0,
                 reconciles: 0,
                 sounds: Vec::new(),
+                defaults: Vec::new(),
             }
         }
     }
@@ -836,6 +982,10 @@ mod tests {
         fn pause_playing_players(&mut self) -> bool {
             self.pauses = self.pauses.saturating_add(1);
             true
+        }
+        fn set_default_sink(&mut self, node_id: u32) -> Result<(), String> {
+            self.defaults.push(node_id);
+            Ok(())
         }
         fn reconcile(
             &mut self,
@@ -915,6 +1065,47 @@ mod tests {
             "unplugging the headset after the graph settled must pause playback"
         );
         assert_eq!(env.sounds, [SystemSoundEvent::DeviceDisconnected]);
+    }
+
+    #[test]
+    fn a_headset_plugged_in_while_the_speakers_play_becomes_the_output() {
+        let mut arrived = laptop(true);
+        for sink in &mut arrived.sinks {
+            sink.id = if sink.name.contains("Headset") { 7 } else { 1 };
+            // WirePlumber keeps the output the person chose earlier.
+            sink.is_default = sink.id == 1;
+        }
+        let mut env = FakeEnv::new([laptop(false), arrived]);
+        let mut worker = PolicyWorker::start(&mut env);
+        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+        assert!(env.defaults.is_empty(), "the baseline switches nothing");
+        worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+        assert_eq!(env.defaults, [7], "sound moves to the headset");
+        assert_eq!(env.pauses, 0);
+    }
+
+    #[test]
+    fn a_reading_that_saw_no_graph_is_not_the_base_for_an_arrival() {
+        // The person chose the speakers while the headset stayed plugged in.
+        let mut chosen = laptop(true);
+        for sink in &mut chosen.sinks {
+            sink.id = if sink.name.contains("Headset") { 7 } else { 1 };
+            sink.is_default = sink.id == 1;
+        }
+        // `PipeWire` restarts: one reading sees nothing, the next sees the
+        // same devices again.
+        let mut env = FakeEnv::new([chosen.clone(), AudioGraph::default(), chosen]);
+        let mut worker = PolicyWorker::start(&mut env);
+        for _ in 0..3 {
+            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+        }
+        assert_eq!(env.enumerations, 3);
+        assert!(
+            env.defaults.is_empty(),
+            "the headset was there all along and must not take the sound: {:?}",
+            env.defaults
+        );
+        assert_eq!(env.pauses, 0);
     }
 
     #[test]

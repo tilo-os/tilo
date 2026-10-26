@@ -103,6 +103,12 @@ export TILO_QCOW2_COMPRESS=1
 export TILO_PODMAN_BUILD_NETWORK="${TILO_PODMAN_BUILD_NETWORK:-host}"
 # This is not a release build and carries no EFI/PCR signer.
 export TILO_REQUIRE_PCR_PREDICTION=0 TILO_ALLOW_LOCAL_PCR_SIGNING=0
+# With no prediction its target can't pass the installer's authority preflight, so the medium
+# carries the unverified-VM marker. tilo-install honours the marker only in a VM that has the
+# org.tilo.vm-install-proof port (`vm.sh boot-installer --install-proof`, or
+# `tilo-vm scenario install` with TILO_UNVERIFIED_VM_INSTALL=1); on hardware the
+# preflight still runs and refuses.
+export TILO_UNVERIFIED_VM_INSTALL=1
 export TMPDIR="$out/tmp"
 mkdir -p "$TMPDIR"
 podman tag "$id" "$TILO_IMAGE"

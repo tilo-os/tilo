@@ -193,3 +193,30 @@ fn tab_reaches_every_toolbar_control_and_enter_activates_the_one_it_is_on() {
     assert_eq!(h.root::<ScreenshotMarkup>().tool, MarkupTool::Arrow);
     assert_eq!(focused_label(&h).as_deref(), Some("Arrow tools"));
 }
+
+#[test]
+fn a_picker_closed_by_a_press_outside_returns_the_keyboard_to_its_button() {
+    let mut h = harness(1200);
+    tab_to(&mut h, "Pen tools");
+    h.key("Space");
+    h.key("Tab");
+    assert_eq!(focused_label(&h).as_deref(), Some("Pen"));
+
+    // A press on the header, away from every control, closes the picker.
+    let header = h.root::<ScreenshotMarkup>().rect;
+    h.click_at(header.x0 + 4.0, header.y0 + 4.0);
+    assert!(!h.root::<ScreenshotMarkup>().tool_picker_open);
+    assert_eq!(
+        focused_label(&h).as_deref(),
+        Some("Pen tools"),
+        "the keyboard returns to the button that opened the picker"
+    );
+
+    // So Enter presses that button again rather than saving and closing.
+    h.key("Enter");
+    assert!(
+        h.root_mut::<ScreenshotMarkup>().take_commands().is_empty(),
+        "Enter does not save while the keyboard is on a control"
+    );
+    assert!(h.root::<ScreenshotMarkup>().tool_picker_open);
+}

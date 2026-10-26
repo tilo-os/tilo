@@ -36,8 +36,10 @@ python3 tools/dev/install-git-hooks.py
   annoying to break (`tools/ci/pre_push.py`), of what the commit touches (`t scope --rev`):
   - `fmt-changed`, rustfmt of the Rust files the commit changes;
   - the policy steps (`policy/*`) and the generated-file and manifest checks (`t-toml`,
-    `codemap`, `sdk-policy`, `workspace-layout`, `lockfile`, `hakari`, `deny`) whose inputs it
-    touches; the policy suite's own tests only when it touches `tools/policy/`;
+    `codemap`, `sdk-policy`, `lockfile`, `hakari`, `deny`) whose inputs it touches; the policy
+    suite's own tests only when it touches `tools/policy/`. A policy step runs when
+    `tools/policy/steps.toml` marks it `pre_push = true`, which it may only be when it builds
+    nothing and reads no Git index of the tree: those take minutes each and wait for main;
   - `changes`, the diff gates (allow reasons, commit messages, interfaces);
   - clippy of the packages whose files it changes, not of their dependents;
   - the aarch64 size check of each app whose files it changes (`app-size/<app>-aarch64`), about a
@@ -51,16 +53,18 @@ python3 tools/dev/install-git-hooks.py
   opt-in checks `t suggest` says the change touches, and runs none of them. A failure the change
   causes refuses the push; one that `main` has too, at the commit the push branched from,
   doesn't. A check red on `main` runs all the same and is compared with `main`'s one finding at
-  a time: each lint of `clippy/*` by lint and file, each problem a `policy/*` step prints by its
-  line (`tools/policy/findings.py`), so a push that adds one is refused however red `main` is. A
-  check that fails as a whole (a compile error, a stale generated file) is compared as a whole,
-  and the hook names each one that passed that way; a test check whose tests did not run is
-  refused instead, since main failing it as a whole says nothing of which tests the change
-  breaks. A test check is compared test by test: cargo's and nextest's tests, and each test of
-  the policy suite's Python tests (`tools/policy/run_unit_tests.py`). A failure that a check's `fix`
-  repairs is fixed for you to commit, never amended: into your working tree when you push
-  `HEAD` (files you edited since are left alone), else as a patch in `.git/t-fix.patch`. Inputs
-  the change doesn't touch are cached, so a push after a rebase costs little.
+  a time: each lint of `clippy/*` by lint and file, each problem a `policy/*` step prints by the
+  file it is about (`tools/policy/findings.py`), so a push that adds one is refused however red
+  `main` is -- a file pushed over a limit is its own finding even when `main` is already red for
+  other files. A check that fails as a whole (a compile error, a stale generated file) is
+  compared as a whole, and the hook names each one that passed that way; a test check whose
+  tests did not run is refused instead, since main failing it as a whole says nothing of which
+  tests the change breaks. A test check is compared test by test: cargo's and nextest's tests,
+  and each test of the policy suite's Python tests (`tools/policy/run_unit_tests.py`). A failure
+  that a check's `fix` repairs is fixed for you to commit, never amended: into your working
+  tree when you push `HEAD` (files you edited since are left alone), else as a patch in
+  `.git/t-fix.patch`. Inputs the change doesn't touch are cached, so a push after a rebase costs
+  little.
 - **CI on `main`** runs every default check on each new commit, finds the commit a failure began
   with and tells whoever is behind it (`t inbox`). `main` is sometimes red; whoever broke it fixes
   it forward. Nothing is reverted.
@@ -111,6 +115,14 @@ still runs it when it has room, and tells you if your commit broke it. Results n
 could have affected come back at
 once from the cache.
 
+The extensive checks (the OS images and their layers, the macOS checks, the VM suites) hold
+scarce machines for hours: the one Mac, the KVM and large-disk nodes. Run one when you change
+what it tests: an image layer's files, the runtime or an app on macOS, a VM scenario. Don't run
+them for a small unrelated change: `main` runs them anyway (on its heads, when it has room, or
+nightly) and bisects a failure to the commit that caused it, and `stable` runs them all on each
+release candidate. `t test` runs only what you name, and `t test $(t scope --names)` only the
+default checks your change touches.
+
 Exit codes: `0` passed; `1` something failed that may be yours; `3` everything that failed also
 fails on `main`; `2` t couldn't do what was asked. Each failure comes with its relevant output and
 the command that reruns it.
@@ -127,6 +139,9 @@ t claim <item>   t release <item>     # say you are fixing a failure, or stopped
 ```
 
 Fix your own failures on `main` forward. Claim someone else's before you work on it.
+Claude Code sessions in this repository see new `t inbox` notices as they arrive:
+`.claude/settings.json` runs `t inbox --hook claude` at session start, on each prompt and after
+each Bash command.
 
 Agents use the same commands, or `t mcp` for MCP. Sessions are recognized by their session id
 (`CLAUDE_CODE_SESSION_ID`, `PI_SESSION_ID`, `CODEX_THREAD_ID`); `t session name <name>` names one.

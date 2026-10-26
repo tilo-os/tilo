@@ -50,6 +50,9 @@ use crate::widget::{ActionEmitter, ControlBindingMetadata, ControlSize, TaffyTre
 
 #[path = "toggle_group_fold.rs"]
 mod fold;
+#[path = "toggle_group_layout.rs"]
+mod layout;
+use layout::{flow, packed, partition, partition_sized, stack, tab_fit};
 
 /// No segment chosen: what [`ToggleGroup::selected`] and
 /// [`SegmentedFace::new`] use for "none" ([`ToggleGroup::selection`] says
@@ -661,11 +664,17 @@ impl ToggleGroup {
     /// Panics only if the framework-generated integer action contract cannot
     /// encode its own generated payload.
     #[must_use]
+    pub fn on_view<F: FnMut(usize) + 'static>(self, id: &str, f: F) -> Self {
+        self.on_view_boxed(id, Box::new(f))
+    }
+
+    /// [`Self::on_view`] once the handler is boxed: the toolkit compiles
+    /// publishing the choice once, rather than every app once per closure.
     #[expect(
         clippy::expect_used,
         reason = "the generated integer schema and action are internally consistent"
     )]
-    pub fn on_view<F: FnMut(usize) + 'static>(mut self, id: &str, f: F) -> Self {
+    fn on_view_boxed(mut self, id: &str, f: Box<dyn FnMut(usize)>) -> Self {
         use crate::tilo_actions::{
             ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
             Resource,
@@ -704,7 +713,7 @@ impl ToggleGroup {
         .expect("segment index matches the generated integer parameter");
         self.action = Some(ActionEmitter::new(binding));
         self.native_resource = Some(resource);
-        self.on_change = Some(ChangeCallback::One(Box::new(f)));
+        self.on_change = Some(ChangeCallback::One(f));
         self
     }
 
@@ -814,6 +823,13 @@ impl ToggleGroup {
         self.place(rect);
     }
 
+    /// Where the segment at `index` stands since the last layout, for a
+    /// host that names or hit-tests the segments it placed by hand.
+    #[must_use]
+    pub fn segment_rect(&self, index: usize) -> Option<Rect> {
+        self.segment_rects.get(index).copied()
+    }
+
     /// Lay the widget out in `outer`: the caption on top, the strip below.
     fn place(&mut self, outer: Rect) {
         self.outer = outer;
@@ -841,12 +857,10 @@ impl ToggleGroup {
             self.rows = rows;
             (rects, vec![false; self.segments.len()])
         } else if self.style == SegmentedStyle::Tabs && measured {
-            let content: f64 = self.naturals.iter().map(|(full, _)| full).sum();
+            let (widths, use_short) = tab_fit(rect.width(), &self.naturals);
+            let content: f64 = widths.iter().map(|(width, _)| width).sum();
             self.scroll_x = self.scroll_x.clamp(0.0, (content - rect.width()).max(0.0));
-            (
-                packed(rect, &self.naturals, self.scroll_x),
-                vec![false; self.segments.len()],
-            )
+            (packed(rect, &widths, self.scroll_x), use_short)
         } else if measured {
             partition_sized(rect, &self.naturals)
         } else {
@@ -879,8 +893,9 @@ impl ToggleGroup {
         if self.style != SegmentedStyle::Tabs || self.naturals.len() != self.segments.len() {
             return;
         }
-        let start: f64 = self.naturals.iter().take(index).map(|(full, _)| full).sum();
-        let Some((width, _)) = self.naturals.get(index) else {
+        let (widths, _) = tab_fit(self.rect.width(), &self.naturals);
+        let start: f64 = widths.iter().take(index).map(|(width, _)| width).sum();
+        let Some(&(width, _)) = widths.get(index) else {
             return;
         };
         let room = self.rect.width();
@@ -900,7 +915,12 @@ impl ToggleGroup {
     /// Whether the tab strip is longer than its room.
     fn overflows(&self) -> bool {
         self.style == SegmentedStyle::Tabs
-            && self.naturals.iter().map(|(full, _)| full).sum::<f64>() > self.rect.width() + 0.5
+            && tab_fit(self.rect.width(), &self.naturals)
+                .0
+                .iter()
+                .map(|(width, _)| width)
+                .sum::<f64>()
+                > self.rect.width() + 0.5
     }
 
     /// The number of separators the strip draws at rest: one between each
@@ -939,133 +959,6 @@ impl ToggleGroup {
             self.metrics.height
         }
     }
-}
-
-/// `rect` stacked into `n` square segments as wide as it is, the gaps
-/// between them sharing the height left over.
-fn stack(rect: Rect, n: usize) -> Vec<Rect> {
-    let side = rect.width();
-    let gaps = f64_of_usize(n.saturating_sub(1)).max(1.0);
-    let gap = ((rect.height() - side * f64_of_usize(n)) / gaps).max(0.0);
-    (0..n)
-        .map(|i| {
-            let y = rect.y0 + f64_of_usize(i) * (side + gap);
-            Rect::new(rect.x0, y, rect.x1, y + side)
-        })
-        .collect()
-}
-
-/// `rect` split into `n` equal segments, the last one anchored to the right
-/// edge so accumulated rounding leaves no hairline gap.
-fn partition(rect: Rect, n: usize) -> Vec<Rect> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let seg_w = rect.width() / f64_of_usize(n);
-    let last = n.saturating_sub(1);
-    (0..n)
-        .map(|i| {
-            let x0 = rect.x0 + f64_of_usize(i) * seg_w;
-            let x1 = if i == last {
-                rect.x1
-            } else {
-                rect.x0 + f64_of_usize(i.saturating_add(1)) * seg_w
-            };
-            Rect::new(x0, rect.y0, x1, rect.y1)
-        })
-        .collect()
-}
-
-/// Tabs packed from the leading edge, each as wide as its label needs,
-/// shifted left by `scroll`.
-fn packed(rect: Rect, naturals: &[(f64, f64)], scroll: f64) -> Vec<Rect> {
-    let mut x = rect.x0 - scroll;
-    naturals
-        .iter()
-        .map(|(full, _)| {
-            let seg = Rect::new(x, rect.y0, x + full, rect.y1);
-            x += full;
-            seg
-        })
-        .collect()
-}
-
-/// Segments of a multi-select strip, each its natural width, `gap` apart,
-/// wrapping onto rows `height` tall. Returns the rects and the row count.
-fn flow(rect: Rect, naturals: &[(f64, f64)], height: f64, gap: f64) -> (Vec<Rect>, usize) {
-    let mut rows = 1usize;
-    let mut x = rect.x0;
-    let mut y = rect.y0;
-    let rects = naturals
-        .iter()
-        .map(|(full, _)| {
-            if x > rect.x0 && x + full > rect.x1 + 0.5 {
-                x = rect.x0;
-                y += height + gap;
-                rows = rows.saturating_add(1);
-            }
-            let seg = Rect::new(x, y, x + full, y + height);
-            x += full + gap;
-            seg
-        })
-        .collect();
-    (rects, rows)
-}
-
-/// `rect` split among segments of natural widths `naturals` (full label,
-/// short label): equal segments while every full label fits an equal share;
-/// otherwise each segment as wide as its label needs with the room left
-/// shared equally; only when the full labels cannot all fit, the short forms
-/// where a segment has one; and only past that, shares in proportion (the
-/// labels then elide). Returns the rects and, per segment, whether it shows
-/// its short form.
-fn partition_sized(rect: Rect, naturals: &[(f64, f64)]) -> (Vec<Rect>, Vec<bool>) {
-    let n = naturals.len();
-    if n == 0 {
-        return (Vec::new(), Vec::new());
-    }
-    let avail = rect.width().max(0.0);
-    let count = f64_of_usize(n);
-    let full: Vec<f64> = naturals.iter().map(|(full, _)| *full).collect();
-    let widest = full.iter().copied().fold(0.0, f64::max);
-    if widest * count <= avail + 1e-6 {
-        return (partition(rect, n), vec![false; n]);
-    }
-    let fitted = |widths: &[f64]| -> Option<Vec<f64>> {
-        let sum: f64 = widths.iter().sum();
-        (sum <= avail + 1e-6).then(|| {
-            let extra = (avail - sum) / count;
-            widths.iter().map(|w| w + extra).collect()
-        })
-    };
-    let (widths, use_short) = if let Some(widths) = fitted(&full) {
-        (widths, vec![false; n])
-    } else {
-        let short: Vec<f64> = naturals
-            .iter()
-            .map(|(full, short)| full.min(*short))
-            .collect();
-        let use_short: Vec<bool> = naturals.iter().map(|(full, short)| short < full).collect();
-        if let Some(widths) = fitted(&short) {
-            (widths, use_short)
-        } else {
-            let sum: f64 = short.iter().sum::<f64>().max(1.0);
-            (short.iter().map(|w| w * avail / sum).collect(), use_short)
-        }
-    };
-    let last = n.saturating_sub(1);
-    let mut x = rect.x0;
-    let rects = widths
-        .iter()
-        .enumerate()
-        .map(|(i, w)| {
-            let x1 = if i == last { rect.x1 } else { x + w };
-            let seg = Rect::new(x, rect.y0, x1, rect.y1);
-            x = x1;
-            seg
-        })
-        .collect();
-    (rects, use_short)
 }
 
 /// The indices `i` whose right edge carries a separator: between two
@@ -1186,7 +1079,11 @@ impl StripMetrics {
             .map(|segment| {
                 if style == SegmentedStyle::Tabs && segment.icon.is_none() {
                     let full = self.tab_natural(&segment.label, text);
-                    return (full, full);
+                    let short = segment
+                        .short
+                        .as_deref()
+                        .map_or(full, |short| self.tab_natural(short, text));
+                    return (full, short);
                 }
                 let icon = segment.icon.is_some();
                 let full = self.natural(&segment.label, icon, text);
@@ -3953,7 +3850,7 @@ mod tests {
             );
 
             let mut g = ToggleGroup::new(labels, 4).with_style(SegmentedStyle::Tabs);
-            g.metrics = metrics;
+            g.metrics = metrics.clone();
             g.measure_naturals(&mut text);
             g.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 32.0));
             assert!(g.overflows());
@@ -3963,6 +3860,33 @@ mod tests {
                 last.x1 <= 200.0 + 1e-6 && last.x0 >= 0.0,
                 "the chosen tab scrolls into view: {last:?}"
             );
+
+            // Tabs with short labels take them before they scroll.
+            let named = |short: bool| -> Vec<Segment> {
+                [("Privacy & Security", "Privacy"), ("Apps & Files", "Apps")]
+                    .iter()
+                    .map(|(full, brief)| {
+                        let tab = Segment::new(*full);
+                        if short { tab.short(*brief) } else { tab }
+                    })
+                    .collect()
+            };
+            let mut g = ToggleGroup::new(named(true), 0).with_style(SegmentedStyle::Tabs);
+            g.metrics = metrics.clone();
+            g.measure_naturals(&mut text);
+            g.apply_layout_external(Rect::new(0.0, 0.0, 600.0, 32.0));
+            assert_eq!(g.shown_labels(), ["Privacy & Security", "Apps & Files"]);
+            let full_width = g.segment_rects[1].x1;
+            let room = full_width - 1.0;
+            g.apply_layout_external(Rect::new(0.0, 0.0, room, 32.0));
+            assert_eq!(g.shown_labels(), ["Privacy", "Apps"]);
+            assert!(!g.overflows(), "the short labels fit");
+            assert!(g.segment_rects[1].x1 <= room + 1e-6);
+            let mut plain = ToggleGroup::new(named(false), 0).with_style(SegmentedStyle::Tabs);
+            plain.metrics = metrics;
+            plain.measure_naturals(&mut text);
+            plain.apply_layout_external(Rect::new(0.0, 0.0, room, 32.0));
+            assert!(plain.overflows(), "without short labels the strip scrolls");
         }
 
         fn a_caption_names_the_strip_and_sits_above_it() {

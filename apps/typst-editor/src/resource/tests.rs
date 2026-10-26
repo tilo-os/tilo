@@ -106,15 +106,10 @@ fn verbs_and_field_edits_change_one_file() {
         ("picked.typ", None, "= Picked\n")
     );
 
-    assert!(
-        workspace
-            .apply(Workspace::CLOSE_FILE.with(id.clone()))
-            .is_err(),
-        "closing asks for confirmation"
-    );
+    // Undo takes a closed file back, so closing runs at once.
     workspace
-        .apply_confirmed(Workspace::CLOSE_FILE.with(id.clone()))
-        .unwrap();
+        .apply(Workspace::CLOSE_FILE.with(id.clone()))
+        .expect("an undoable close runs at once");
     assert!(workspace.state().unwrap().files.is_empty());
     assert!(
         workspace
@@ -292,18 +287,13 @@ fn an_agent_edits_the_workspace_one_call_each() {
     .unwrap();
     assert_eq!(app.state().files.len(), 2);
 
+    // Undo takes a closed file back, so closing runs at once.
     app.call_on(
         &file_resource_id(&file),
         "close-file",
         serde_json::json!({}),
     )
-    .expect_err("closing asks for confirmation");
-    app.call_confirmed_on(
-        &file_resource_id(&file),
-        "close-file",
-        serde_json::json!({}),
-    )
-    .unwrap();
+    .expect("an undoable close runs at once");
     assert_eq!(only(&app).name.0, "appendix.typ");
 }
 

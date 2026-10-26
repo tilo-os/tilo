@@ -399,10 +399,8 @@ impl StoreApp {
                 .take(self.shown)
                 .map(|item| self.card(item))
                 .collect();
-            children.push(Box::new(
-                Section::new(vec![Box::new(CardGrid::new(cards))])
-                    .with_header(SectionHeader::heading(self.page_title()).count(ids.len())),
-            ));
+            // The window bar's location names the repository.
+            children.push(Box::new(Section::new(vec![Box::new(CardGrid::new(cards))])));
             children.extend(self.show_more(ids.len()));
         }
         self.page(theme, Measure::Catalogue, true, children)
@@ -1470,10 +1468,6 @@ impl StoreApp {
         {
             add = add.on_action(binding);
         }
-        let mut refresh = Button::new("store.remote.refresh", &ui::i18n!("store-remote-refresh"));
-        if let Some(binding) = bindings::effect(&StoreEffect::RefreshRemotes) {
-            refresh = refresh.on_action(binding);
-        }
         let form = Form::new()
             .section(
                 FormSection::new(ui::i18n!("store-remote-add-title"))
@@ -1495,7 +1489,7 @@ impl StoreApp {
                         .with_help(ui::i18n!("store-remote-url-help")),
                     ),
             )
-            .with_actions(Actions::new(add).secondary(refresh));
+            .with_actions(Actions::new(add));
 
         let rows: Vec<Element> = self
             .remotes

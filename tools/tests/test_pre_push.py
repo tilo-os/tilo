@@ -64,16 +64,39 @@ class SelectTests(unittest.TestCase):
 
     def test_policy_tests_run_only_when_the_policy_tools_change(self):
         scope = {"base": "b" * 40, "checks": ["policy/formats", "policy/tests/unit"]}
-        self.assertEqual(pre_push.select(scope, ["apps/notes/src/lib.rs"])["run"],
+        self.assertEqual(pre_push.select(scope, ["apps/notes/src/lib.rs"], steps={"policy/formats"})["run"],
                          ["fmt-changed", "changes", "policy/formats"])
         self.assertIn("policy/tests/unit",
-                      pre_push.select(scope, ["tools/policy/check_formats.py"])["run"])
+                      pre_push.select(scope, ["tools/policy/check_formats.py"], steps=set())["run"])
+
+    def test_a_push_runs_the_policy_steps_steps_toml_marks_and_the_rest_wait_for_main(self):
+        # The steps that index the whole tree through Git take minutes on a loaded node: a push
+        # waits for none of them, and t runs them on the commit anyway.
+        steps = pre_push.policy_steps(ROOT)
+        self.assertTrue(steps)
+        scope = {"base": "b" * 40, "checks": [*sorted(steps), "policy/source-file-size", "policy/setup-neutral"]}
+        # The policy suite's own tests run only when the change touches tools/policy/.
+        marked = {name for name in steps if not name.startswith(pre_push.POLICY_TESTS)}
+        chosen = pre_push.select(scope, ["crates/session/shell/src/lib.rs"], steps=steps)
+        self.assertEqual(sorted(chosen["run"]), sorted(["fmt-changed", "changes", *marked]))
+        self.assertNotIn("policy/setup-neutral", chosen["run"])
+        self.assertNotIn("policy/source-file-size", chosen["run"])
+        checks = {check["name"]: check for check in t_matrix.load(ROOT)["check"]}
+        for name in sorted(marked):
+            with self.subTest(check=name):
+                # A check that needs a Git index of the whole tree, or builds, is main's.
+                self.assertIn(name, checks)
+                check = checks[name]
+                self.assertNotIn("**", check["inputs"])
+                self.assertLessEqual(check["requirement"]["cores"], 8)
+                self.assertFalse(check.get("cargo_packages"))
 
     def test_a_check_red_on_main_runs_all_the_same(self):
         # t compares its failures with main's: a push that adds one is refused however red main is.
-        scope = {"base": "base", "checks": ["clippy/shell", "policy/source-file-size"]}
-        self.assertEqual(pre_push.select(scope, ["crates/session/shell/src/lib.rs"])["run"],
-                         ["fmt-changed", "changes", "clippy/shell", "policy/source-file-size"])
+        scope = {"base": "base", "checks": ["clippy/shell", "policy/local-context-anchor"]}
+        self.assertEqual(pre_push.select(scope, ["crates/session/shell/src/lib.rs"],
+                                         steps={"policy/local-context-anchor"})["run"],
+                         ["fmt-changed", "changes", "clippy/shell", "policy/local-context-anchor"])
 
     def test_a_change_to_a_library_lints_that_library_and_none_of_its_dependents(self):
         # t names the lint of every package whose key the change moves: the library's
@@ -224,7 +247,7 @@ if command == "test" and "--help" in args:
 elif command == "scope":
     print(json.dumps({"base": os.environ["FAKE_BASE"], "checks": [
         "test-x86_64/shell", "test/notes", "clippy/shell", "clippy/notes", "security", "suite-os",
-        "desktop-preflight", "policy/formats", "fmt", "changes"]}))
+        "desktop-preflight", "policy/formats", "policy/source-file-size", "fmt", "changes"]}))
 elif command == "suggest":
     print(json.dumps({"checks": [{"check": "test-x86_64/shell", "reason": "opt-in; your change touches it"}]}))
 elif command == "test":
@@ -253,7 +276,7 @@ class HookTests(unittest.TestCase):
         self.log = root / "t.log"
         self.git("init", "-q", "--bare", "-b", "main", str(remote), cwd=root)
         self.git("init", "-q", "-b", "main", str(self.work), cwd=root)
-        for path in (".githooks/pre-push", "tools/ci/pre_push.py"):
+        for path in (".githooks/pre-push", "tools/ci/pre_push.py", "tools/policy/steps.toml"):
             (self.work / path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / path, self.work / path)
         for package in ("shell", "notes"):

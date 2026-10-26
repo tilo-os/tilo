@@ -154,6 +154,14 @@ impl ShellOverlayHost {
                     state.bump();
                 }
             }
+            CollaboratorsHit::Pin => {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut state = chrome.borrow_mut();
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                self.pin_people_overlay(true);
+            }
             CollaboratorsHit::Absorb => {}
         }
     }

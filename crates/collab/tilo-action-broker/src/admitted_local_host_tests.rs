@@ -908,8 +908,10 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
                         .is_none()
                 );
                 assert!(matches!(
-                    host.cancel(&ui_caller, &ui_request.invocation),
-                    Err(tilo_actions::remote::ActionHostError::UnknownInvocation)
+                    host.cancel(&ui_caller, &ui_request.invocation).poll_ready(),
+                    tilo_actions::remote::PendingPoll::Ready(Err(
+                        tilo_actions::remote::ActionHostError::UnknownInvocation
+                    ))
                 ));
                 // Keep both pending answers alive: the duplicate must reuse the
                 // eventual job; the fresh UUID must enqueue without waiting.

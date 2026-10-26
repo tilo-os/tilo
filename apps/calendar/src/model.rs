@@ -18,6 +18,12 @@ use vello::peniko::Color;
 use ui::theme::Theme;
 use ui::tokens::colors::PresenceHue;
 
+#[cfg(test)]
+thread_local! {
+    /// The days [`Event::occurrences_in`] has stepped through on this thread.
+    pub(crate) static DAYS_WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 pub type Id = Uuid;
 
 /// The five top-level screens. `Agenda` is the flat "upcoming" list of
@@ -669,34 +675,32 @@ impl Event {
         let seed = self.start.date();
         let mut out = Vec::new();
         let interval = self.recurrence_interval.max(1);
-        let last_original = self
-            .occurrence_overrides
-            .iter()
-            .map(|edit| edit.original_date)
-            .max()
-            .unwrap_or(to)
-            .max(to);
-        let mut generated = 0_u32;
-        // Unbounded series jump directly to the requested window; the modular
-        // predicates below stay anchored on `seed`. A finite COUNT needs its
-        // ordinal, so it starts at the seed but can never inspect more than the
-        // explicitly bounded series plus interval gaps.
-        let moved_original = self
-            .occurrence_overrides
-            .iter()
-            .filter(|edit| {
-                edit.start
-                    .is_some_and(|start| start.date() >= from && start.date() <= to)
-            })
-            .map(|edit| edit.original_date)
-            .min();
-        let window_start = moved_original.unwrap_or(from).min(from).max(seed);
-        let mut day = if self.recurrence_count.is_some() {
-            seed
+        // The walk covers the requested window, widened to the original
+        // dates of occurrences moved into it; the modular predicates below
+        // stay anchored on `seed`. A finite COUNT needs each occurrence's
+        // ordinal, which `occurrences_before` counts without walking the days
+        // before the window, so the cost follows the window and not the
+        // series' age.
+        let moved_originals = || {
+            self.occurrence_overrides
+                .iter()
+                .filter(|edit| {
+                    edit.start
+                        .is_some_and(|start| start.date() >= from && start.date() <= to)
+                })
+                .map(|edit| edit.original_date)
+        };
+        let last_original = moved_originals().max().unwrap_or(to).max(to);
+        let window_start = moved_originals().min().unwrap_or(from).min(from).max(seed);
+        let mut day = window_start;
+        let mut generated = if self.recurrence_count.is_some() {
+            u32::try_from(self.occurrences_before(window_start)).unwrap_or(u32::MAX)
         } else {
-            window_start
+            0
         };
         while day <= last_original {
+            #[cfg(test)]
+            DAYS_WALKED.with(|walked| walked.set(walked.get() + 1));
             let days = (day - seed).num_days();
             let months = (day.year() - seed.year()) * 12
                 + (i32::try_from(day.month()).unwrap_or(0)
@@ -754,6 +758,88 @@ impl Event {
         out.sort_unstable();
         out.dedup();
         out
+    }
+
+    /// How many original occurrences the rule generates before `day`, from
+    /// the seed on: exclusions and edits aside, as COUNT counts them.
+    /// Arithmetic for every rule but a monthly one on the 29th to 31st and a
+    /// yearly one on 29 February, which step through their occurrences.
+    pub(crate) fn occurrences_before(&self, day: NaiveDate) -> u64 {
+        let seed = self.start.date();
+        let days = (day - seed).num_days();
+        if days <= 0 {
+            return 0;
+        }
+        let interval = i64::from(self.recurrence_interval.max(1));
+        let multiples_below = |n: i64, step: i64| u64::try_from((n + step - 1) / step).unwrap_or(0);
+        match self.recurrence {
+            Recurrence::None => 1,
+            Recurrence::Daily => multiples_below(days, interval),
+            Recurrence::Weekly => multiples_below(days, 7 * interval),
+            Recurrence::Weekdays => {
+                // Each week counted from the seed holds five weekdays; only
+                // every `interval`th week repeats.
+                let weeks = days / 7;
+                let mut count = multiples_below(weeks, interval) * 5;
+                if weeks % interval == 0 {
+                    count += (weeks * 7..days)
+                        .filter(|offset| {
+                            (seed + Duration::days(*offset))
+                                .weekday()
+                                .num_days_from_monday()
+                                < 5
+                        })
+                        .count() as u64;
+                }
+                count
+            }
+            Recurrence::Monthly => {
+                let months = i64::from(day.year() - seed.year()) * 12 + i64::from(day.month())
+                    - i64::from(seed.month());
+                if seed.day() <= 28 {
+                    // Every month has the day: months 0..reached, every
+                    // `interval`th.
+                    let reached = months + i64::from(day.day() > seed.day());
+                    return multiples_below(reached, interval);
+                }
+                let mut count = 0;
+                let mut offset = 0;
+                while offset <= months {
+                    let total = i64::from(seed.month0()) + offset;
+                    let year = seed.year() + i32::try_from(total.div_euclid(12)).unwrap_or(0);
+                    let month = u32::try_from(total.rem_euclid(12)).unwrap_or(0) + 1;
+                    if let Some(date) = NaiveDate::from_ymd_opt(year, month, seed.day()) {
+                        if date >= day {
+                            break;
+                        }
+                        count += 1;
+                    }
+                    offset += interval;
+                }
+                count
+            }
+            Recurrence::Yearly => {
+                let years = i64::from(day.year() - seed.year());
+                if (seed.month(), seed.day()) != (2, 29) {
+                    let reached =
+                        years + i64::from((day.month(), day.day()) > (seed.month(), seed.day()));
+                    return multiples_below(reached, interval);
+                }
+                let mut count = 0;
+                let mut offset = 0;
+                while offset <= years {
+                    let year = seed.year() + i32::try_from(offset).unwrap_or(0);
+                    if let Some(date) = NaiveDate::from_ymd_opt(year, 2, 29) {
+                        if date >= day {
+                            break;
+                        }
+                        count += 1;
+                    }
+                    offset += interval;
+                }
+                count
+            }
+        }
     }
 
     pub fn occurs_on(&self, date: NaiveDate) -> bool {
@@ -1556,5 +1642,84 @@ mod tests {
             end: start_date.and_time(NaiveTime::from_hms_opt(10, 0, 0).unwrap()),
             ..Event::default()
         }
+    }
+
+    /// The ordinal COUNT needs is the number of days the rule matches from
+    /// the seed on, for every rule, interval and awkward seed day.
+    #[test]
+    fn occurrences_before_counts_what_the_rule_matches() {
+        let seeds = [
+            date(2024, 1, 31),
+            date(2024, 2, 29),
+            date(2026, 6, 15),
+            date(2026, 6, 20),
+            date(2026, 3, 29),
+        ];
+        let rules = [
+            Recurrence::None,
+            Recurrence::Daily,
+            Recurrence::Weekdays,
+            Recurrence::Weekly,
+            Recurrence::Monthly,
+            Recurrence::Yearly,
+        ];
+        for seed in seeds {
+            for recurrence in rules {
+                for interval in 1..=3 {
+                    let mut event = sample_event(seed);
+                    event.recurrence = recurrence;
+                    event.recurrence_interval = interval;
+                    let mut matched = 0;
+                    for offset in 0..1500 {
+                        let day = seed + Duration::days(offset);
+                        assert_eq!(
+                            event.occurrences_before(day),
+                            matched,
+                            "{recurrence:?} every {interval} from {seed}, before {day}"
+                        );
+                        if event.occurs_on(day) {
+                            matched += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Month view asks every shown day whether a series occurs; a counted
+    /// series begun decades ago costs what one begun this month does.
+    #[test]
+    fn a_counted_series_costs_its_window_not_its_age() {
+        let grid: Vec<NaiveDate> = (0..42)
+            .map(|day| date(2026, 9, 28) + Duration::days(day))
+            .collect();
+        let walked_for = |event: &Event| {
+            DAYS_WALKED.with(|walked| walked.set(0));
+            let shown: Vec<NaiveDate> = grid
+                .iter()
+                .copied()
+                .filter(|day| event.occurs_on(*day))
+                .collect();
+            (shown, DAYS_WALKED.with(std::cell::Cell::get))
+        };
+        let weekly = |seed: NaiveDate, count| {
+            let mut event = sample_event(seed);
+            event.recurrence = Recurrence::Weekly;
+            event.recurrence_count = Some(count);
+            event
+        };
+        // Mondays both: 1 June 2026 and 3 June 1996.
+        let (young, young_cost) = walked_for(&weekly(date(2026, 6, 1), 10_000));
+        let (old, old_cost) = walked_for(&weekly(date(1996, 6, 3), 10_000));
+        assert_eq!(young.len(), 6);
+        assert_eq!(old, young);
+        assert_eq!(old_cost, young_cost);
+        assert!(
+            old_cost <= 42,
+            "one day stepped per day asked, not {old_cost}"
+        );
+        // Its 1584th Monday is 5 October 2026: COUNT still ends it there.
+        let (ended, _) = walked_for(&weekly(date(1996, 6, 3), 1584));
+        assert_eq!(ended, vec![date(2026, 9, 28), date(2026, 10, 5)]);
     }
 }

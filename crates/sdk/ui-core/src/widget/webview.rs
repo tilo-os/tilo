@@ -53,6 +53,7 @@ use crate::theme::Theme;
 use crate::webview::{KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::control_size::ControlSize;
 
 /// Pixels scrolled per mouse-wheel line tick, in logical units (scaled
 /// by the display factor before being sent to the engine).
@@ -113,6 +114,17 @@ pub struct WebView {
     /// host has replaced yet.
     preseeded: bool,
     focused: bool,
+    /// An input method is composing in the page's focused field.
+    composing: bool,
+    /// The input method emptied its composition. Whether that withdraws it
+    /// or makes way for its commit is known only from what follows in the
+    /// same batch of events ([`Self::settle_composition`]).
+    composition_emptied: bool,
+    /// How much of a focused field's top the input method is told the caret
+    /// takes, in logical pixels, when the engine knows the field but not its
+    /// caret: a line of text with room around it, the theme's regular control
+    /// height as of the last layout. Before any layout it is the whole field.
+    field_line_height: Option<f64>,
     last_mouse: Point,
     /// The buttons pressed on the page and not yet released: the page keeps
     /// the pointer until they are, wherever it goes, as a drag does.
@@ -132,6 +144,15 @@ pub struct WebView {
     cached_image: Option<PenikoImage>,
     cached_trace_id: Option<u64>,
     cached_key: (usize, u32, u32),
+    /// What the cached frame changed from the frames before it.
+    cached_damage: Option<crate::webview::FrameDamage>,
+    /// What the last draw put on screen, and what the last frame that
+    /// reached the screen showed ([`Widget::mark_drawn`]).
+    drawing: Option<Drawn>,
+    submitted: Option<Drawn>,
+    /// Where the last draw differs from `submitted`, in layout coordinates;
+    /// `None` for the whole view.
+    damage: Option<Vec<Rect>>,
     /// The frames the view may show ([`Self::accept_frames`]); `None`
     /// shows every frame that fits.
     accepts: Option<fn(&crate::webview::Frame) -> bool>,
@@ -139,6 +160,70 @@ pub struct WebView {
     page: crate::webview::paint::PageRenderer,
     test_id: String,
     accessible_name: String,
+}
+
+/// What one draw of the view put on screen of a page frame, to tell where
+/// the next draw differs from it.
+#[derive(Clone)]
+struct Drawn {
+    rect: Rect,
+    transform: Affine,
+    /// The colour around and under the frame.
+    backing: vello::peniko::Color,
+    /// The frame's pixels, held so their allocation is not another frame's.
+    frame: Blob<u8>,
+    damage: Option<crate::webview::FrameDamage>,
+    /// Logical pixels per frame pixel, as bits.
+    scale_bits: u64,
+    size: (u32, u32),
+}
+
+impl Drawn {
+    /// Where this draw differs from `before`, in layout coordinates: nothing
+    /// when it drew the same frame the same way, the frame's changed rects
+    /// when only the frame changed and it knows what changed since
+    /// `before`'s, and `None` (all of it) otherwise.
+    fn damage_since(&self, before: &Self) -> Option<Vec<Rect>> {
+        if self.rect != before.rect
+            || self.transform != before.transform
+            || self.backing != before.backing
+            || self.scale_bits != before.scale_bits
+            || self.size != before.size
+        {
+            return None;
+        }
+        if self.frame.id() == before.frame.id() {
+            return Some(Vec::new());
+        }
+        let generation = before.damage.as_ref()?.generation;
+        let changed = self.damage.as_ref()?.since(generation)?;
+        let scale = f64::from_bits(self.scale_bits);
+        let painted = self.rect.intersect(Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x0 + f64::from(self.size.0) * scale,
+            self.rect.y0 + f64::from(self.size.1) * scale,
+        ));
+        Some(
+            changed
+                .iter()
+                .filter_map(|rect| {
+                    let at = |pixels: u32| f64::from(pixels) * scale;
+                    // A pixel's neighbours sample it when the frame is
+                    // scaled or lands between device pixels.
+                    let rect = Rect::new(
+                        self.rect.x0 + at(rect.x),
+                        self.rect.y0 + at(rect.y),
+                        self.rect.x0 + at(rect.x.saturating_add(rect.width)),
+                        self.rect.y0 + at(rect.y.saturating_add(rect.height)),
+                    )
+                    .inflate(1.0, 1.0)
+                    .intersect(painted);
+                    (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
+                })
+                .collect(),
+        )
+    }
 }
 
 impl WebView {
@@ -152,6 +237,9 @@ impl WebView {
             host_scaled: false,
             preseeded: false,
             focused: false,
+            composing: false,
+            composition_emptied: false,
+            field_line_height: None,
             last_mouse: Point::ZERO,
             held: Vec::new(),
             pointer_inside: false,
@@ -162,6 +250,10 @@ impl WebView {
             cached_image: None,
             cached_trace_id: None,
             cached_key: (0, 0, 0),
+            cached_damage: None,
+            drawing: None,
+            submitted: None,
+            damage: None,
             accepts: None,
             page: crate::webview::paint::PageRenderer::new(),
             test_id: "webview".to_string(),
@@ -333,16 +425,134 @@ impl WebView {
                 .saturating_mul(frame.height as usize)
                 .saturating_mul(4);
             if frame.rgba.len() == expected && expected > 0 {
-                self.cached_image = Some(crate::raster::rgba8(
-                    Blob::new(frame.rgba.clone()),
-                    frame.width,
-                    frame.height,
-                ));
+                let image =
+                    crate::raster::rgba8(Blob::new(frame.rgba.clone()), frame.width, frame.height);
+                self.note_image_delta(&image, frame.damage.as_ref());
+                self.cached_image = Some(image);
                 self.cached_key = key;
                 self.cached_trace_id = frame.trace_id;
+                self.cached_damage = frame.damage;
             }
         }
         None
+    }
+
+    /// Draws the page: its frame when the engine has one that fits, its
+    /// placeholder otherwise. Returns what it drew of a frame, for
+    /// [`Drawn::damage_since`].
+    fn draw_page(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<Drawn> {
+        // Placeholder before the first frame, letterbox backing afterwards.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
+
+        self.engine.presented();
+        self.share_page();
+        // A display list replaces pixels: draw it like any other widget
+        // content, in this toolkit's own text and Vello.
+        if let Some(page) = self.engine.paint_frame() {
+            let engine = Arc::clone(&self.engine);
+            let blobs = move |hash: &[u8; 32]| engine.paint_blob(hash);
+            let mut canvas = crate::webview::paint::PageCanvas {
+                scene,
+                transform: transform * Affine::translate((self.rect.x0, self.rect.y0)),
+                text: text_renderer,
+                blobs: &blobs,
+            };
+            self.page.draw(&mut canvas, &page);
+            crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
+            return None;
+        }
+
+        if let Some(stale) = self.adopt_frame() {
+            crate::webview::profile::record_draw(
+                self.rect.width(),
+                self.rect.height(),
+                Some(stale),
+            );
+            return None;
+        }
+
+        if let Some(img) = self.cached_image.clone() {
+            let (_, iw, ih) = self.cached_key;
+            crate::webview::profile::record_draw(
+                self.rect.width(),
+                self.rect.height(),
+                Some((iw, ih)),
+            );
+            if iw == 0 || ih == 0 {
+                return None;
+            }
+            // The engine renders at physical resolution for our logical rect
+            // — scale down so hi-DPI frames map 1:1 to device pixels.
+            // Keep the last frame at its physical pixel size while a resize
+            // awaits paint. Stretching each axis independently distorts text.
+            let scale = 1.0 / f64::from(self.engine_scale());
+            let brush_transform = Affine::translate((self.rect.x0, self.rect.y0)).pre_scale(scale);
+            let painted = self.rect.intersect(Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x0 + f64::from(iw) * scale,
+                self.rect.y0 + f64::from(ih) * scale,
+            ));
+            crate::webview::frame_trace::drawn(self.cached_trace_id);
+            let frame = img.data.clone();
+            let brush = vello::peniko::ImageBrush::new(img);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                &brush,
+                Some(brush_transform),
+                &painted,
+            );
+            return Some(Drawn {
+                rect: self.rect,
+                transform,
+                backing: theme.tokens.colors.surfaces.base,
+                frame,
+                damage: self.cached_damage.clone(),
+                scale_bits: scale.to_bits(),
+                size: (iw, ih),
+            });
+        }
+        crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
+        None
+    }
+
+    /// Tell the renderer that `image`, the frame about to replace the cached
+    /// one, differs from it only where `damage` says, so the renderer that
+    /// holds the cached frame uploads just those rects of the new one.
+    fn note_image_delta(&self, image: &PenikoImage, damage: Option<&crate::webview::FrameDamage>) {
+        let Some(previous) = self
+            .cached_image
+            .as_ref()
+            .filter(|previous| (previous.width, previous.height) == (image.width, image.height))
+        else {
+            return;
+        };
+        let Some(changed) = self
+            .cached_damage
+            .as_ref()
+            .zip(damage)
+            .and_then(|(drawn, damage)| damage.since(drawn.generation))
+        else {
+            return;
+        };
+        let rects: Vec<vello::ImageRect> = changed
+            .iter()
+            .map(|rect| [rect.x, rect.y, rect.width, rect.height])
+            .collect();
+        vello::register_image_delta(previous.data.id(), image.data.id(), &rects);
     }
 
     /// Forget the page's last frame, for a host loading another document
@@ -460,10 +670,88 @@ impl WebView {
         false
     }
 
+    /// The page's focused field holds a lease for deferred text (dictation).
+    fn deferred_ready(&self) -> bool {
+        self.focused && self.engine.supports_text_input() && self.text_input.ready()
+    }
+
+    /// The page's focused field while this view has the keyboard and its
+    /// engine takes compositions.
+    fn page_field(&self) -> Option<crate::webview::TextField> {
+        (self.focused && self.engine.supports_composition())
+            .then(|| self.engine.text_field())
+            .flatten()
+    }
+
+    /// A page box the engine reported, in physical view pixels, in this
+    /// view's logical coordinates and inside it; `None` once it is out of
+    /// sight.
+    fn engine_to_view(&self, page: Rect) -> Option<Rect> {
+        let scale = f64::from(self.engine_scale());
+        let placed = Rect::new(
+            self.rect.x0 + page.x0 / scale,
+            self.rect.y0 + page.y0 / scale,
+            self.rect.x0 + page.x1 / scale,
+            self.rect.y0 + page.y1 / scale,
+        )
+        .intersect(self.rect);
+        // A box with no width (a caret) stays one; any other must show.
+        (placed.height() > 0.0 && (placed.width() > 0.0 || page.width() <= 0.0)).then_some(placed)
+    }
+
+    /// An emptied composition nothing committed in the same batch was
+    /// withdrawn: the page drops its text. Runs before anything else
+    /// reaches the page, and on every frame.
+    fn settle_composition(&mut self) {
+        if std::mem::take(&mut self.composition_emptied) && self.composing {
+            self.composing = false;
+            self.engine.send(WebViewCommand::ImeCancel);
+        }
+    }
+
+    /// The platform input method's preedit and commits, into the page's
+    /// focused field as a composition, the way a native field takes them.
+    fn input_method(&mut self, ime: &winit::event::Ime) {
+        match ime {
+            winit::event::Ime::Preedit(text, _) if text.is_empty() => {
+                self.composition_emptied = self.composing;
+            }
+            winit::event::Ime::Preedit(text, cursor) => {
+                // Composing edits the page: an original-field speech
+                // reservation retires as it does for a key press.
+                self.text_input.invalidate(&self.engine);
+                self.composing = true;
+                self.composition_emptied = false;
+                self.engine.send(WebViewCommand::ImeComposition {
+                    text: text.clone(),
+                    cursor: *cursor,
+                });
+            }
+            winit::event::Ime::Commit(text) => {
+                self.text_input.invalidate(&self.engine);
+                self.composing = false;
+                self.composition_emptied = false;
+                if !text.is_empty() {
+                    self.engine.send(WebViewCommand::ImeCommit(text.clone()));
+                }
+            }
+            winit::event::Ime::Disabled => {
+                self.composition_emptied = false;
+                if std::mem::take(&mut self.composing) {
+                    self.engine.send(WebViewCommand::ImeFinish);
+                }
+            }
+            winit::event::Ime::Enabled => {}
+        }
+    }
+
     /// Map a winit logical key to the engine's key model. Pure so tests can
     /// pin the table without synthesising `winit::KeyEvent`s (whose
     /// platform fields aren't portably constructible).
-    fn map_key(key: &WKey) -> Option<KeyInput> {
+    /// The key a page is forwarded for `key`, if a page takes it: a
+    /// character, or one of the named keys it knows.
+    #[must_use]
+    pub fn map_key(key: &WKey) -> Option<KeyInput> {
         match key {
             WKey::Character(c) => Some(KeyInput::Character(c.to_string())),
             WKey::Named(WNamedKey::Space) => Some(KeyInput::Character(" ".to_string())),
@@ -571,6 +859,7 @@ impl Widget for WebView {
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.settle_composition();
         self.text_input.pump(
             &self.engine,
             self.focused && self.engine.supports_text_input(),
@@ -578,35 +867,78 @@ impl Widget for WebView {
     }
 
     fn ime_content(&self) -> Option<crate::ime::InputContent> {
-        (self.focused && self.engine.supports_text_input() && self.text_input.ready())
+        if let Some(field) = self.page_field() {
+            // A password never reaches the input method: its keys go to
+            // the page as they are, as in a native password field.
+            return (field.purpose != crate::ime::InputPurpose::Password).then(|| {
+                crate::ime::InputContent {
+                    purpose: field.purpose,
+                    hints: crate::ime::InputHints {
+                        multiline: field.multiline,
+                        ..crate::ime::InputHints::default()
+                    },
+                }
+            });
+        }
+        self.deferred_ready()
             .then_some(crate::ime::InputContent::TEXT)
     }
 
     fn ime_multiline(&self) -> bool {
-        self.ime_content().is_some() && self.text_input.multiline()
+        self.ime_content().is_some()
+            && (self.page_field().is_some_and(|field| field.multiline)
+                || self.text_input.multiline())
     }
 
+    /// Where the person types: the text being composed while an input
+    /// method composes, else the top line of the focused field, so the
+    /// input method's candidates open beside it. An engine that cannot
+    /// place the field leaves the view's bottom-left corner.
     fn ime_cursor_rect(&self) -> Option<Rect> {
         self.ime_content()?;
-        Some(Rect::new(
+        let field = self.page_field();
+        let composition = field
+            .and_then(|field| field.composition)
+            .filter(|_| self.composing)
+            .and_then(|page| self.engine_to_view(page));
+        let line = field.and_then(|field| field.bounds).and_then(|page| {
+            let placed = self.engine_to_view(page)?;
+            // A tall field (a text area, an editable document) is placed by
+            // its first line, not below its whole box.
+            Some(Rect::new(
+                placed.x0,
+                placed.y0,
+                placed.x1,
+                self.field_line_height
+                    .map_or(placed.y1, |line| placed.y1.min(placed.y0 + line)),
+            ))
+        });
+        Some(composition.or(line).unwrap_or(Rect::new(
             self.rect.x0,
             self.rect.y1 - 1.0,
             self.rect.x0 + 1.0,
             self.rect.y1,
-        ))
+        )))
     }
 
+    /// Only a field leased for deferred text has a stamp: the input method
+    /// may serve a page field without one, but dictation needs the lease.
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         self.ime_content()?;
-        self.text_input.stamp(key)
+        self.deferred_ready()
+            .then(|| self.text_input.stamp(key))
+            .flatten()
     }
 
     fn ime_requires_deferred_ack(&self) -> bool {
         true
     }
 
+    /// A page that takes compositions takes an input method's commits as
+    /// a native field does; one that does not takes text only through
+    /// deferred receipts.
     fn ime_refuses_ordinary_commits(&self) -> bool {
-        true
+        !self.engine.supports_composition()
     }
 
     fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
@@ -638,9 +970,10 @@ impl Widget for WebView {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.field_line_height = Some(ControlSize::Regular.height(theme));
         let style = Style {
             size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
@@ -663,79 +996,34 @@ impl Widget for WebView {
         _presence: &PresenceCtx,
     ) {
         self.lands_at(transform);
-        // Placeholder before the first frame, letterbox backing afterwards.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
+        let drawn = self.draw_page(scene, transform, text_renderer, theme);
+        self.damage = drawn
+            .as_ref()
+            .zip(self.submitted.as_ref())
+            .and_then(|(now, before)| now.damage_since(before));
+        self.drawing = drawn;
+    }
 
-        self.engine.presented();
-        self.share_page();
-        // A display list replaces pixels: draw it like any other widget
-        // content, in this toolkit's own text and Vello.
-        if let Some(page) = self.engine.paint_frame() {
-            let engine = Arc::clone(&self.engine);
-            let blobs = move |hash: &[u8; 32]| engine.paint_blob(hash);
-            let mut canvas = crate::webview::paint::PageCanvas {
-                scene,
-                transform: transform * Affine::translate((self.rect.x0, self.rect.y0)),
-                text: text_renderer,
-                blobs: &blobs,
-            };
-            self.page.draw(&mut canvas, &page);
-            crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
-            return;
-        }
-
-        if let Some(stale) = self.adopt_frame() {
-            crate::webview::profile::record_draw(
-                self.rect.width(),
-                self.rect.height(),
-                Some(stale),
-            );
-            return;
-        }
-
-        if let Some(img) = self.cached_image.clone() {
-            let (_, iw, ih) = self.cached_key;
-            crate::webview::profile::record_draw(
-                self.rect.width(),
-                self.rect.height(),
-                Some((iw, ih)),
-            );
-            if iw == 0 || ih == 0 {
-                return;
-            }
-            // The engine renders at physical resolution for our logical rect
-            // — scale down so hi-DPI frames map 1:1 to device pixels.
-            // Keep the last frame at its physical pixel size while a resize
-            // awaits paint. Stretching each axis independently distorts text.
-            let scale = 1.0 / f64::from(self.engine_scale());
-            let brush_transform = Affine::translate((self.rect.x0, self.rect.y0)).pre_scale(scale);
-            let painted = self.rect.intersect(Rect::new(
-                self.rect.x0,
-                self.rect.y0,
-                self.rect.x0 + f64::from(iw) * scale,
-                self.rect.y0 + f64::from(ih) * scale,
-            ));
-            crate::webview::frame_trace::drawn(self.cached_trace_id);
-            let brush = vello::peniko::ImageBrush::new(img);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                &brush,
-                Some(brush_transform),
-                &painted,
-            );
-        } else {
-            crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        match &self.damage {
+            Some(rects) => regions.extend_from_slice(rects),
+            None => regions.push(self.rect),
         }
     }
 
+    fn mark_drawn(&mut self) {
+        self.submitted.clone_from(&self.drawing);
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let WindowEvent::Ime(ime) = event {
+            if self.focused && self.engine.supports_composition() {
+                self.input_method(ime);
+                *ctx.handled = true;
+            }
+            return;
+        }
+        self.settle_composition();
         // Someone is using the page: it is on screen, whether or not a frame
         // has been drawn since it came back.
         if matches!(
@@ -917,6 +1205,7 @@ impl Widget for WebView {
                             alt: m.alt_key(),
                             meta: m.super_key(),
                         },
+                        code: crate::webview::key_code::dom_code(key_event.physical_key),
                     });
                     *ctx.handled = true;
                 }
@@ -991,6 +1280,9 @@ impl Widget for WebView {
 
     fn set_focus(&mut self, focused: bool) {
         if self.focused != focused {
+            self.settle_composition();
+            // The page ends a composition its field loses the focus with.
+            self.composing = false;
             self.text_input.invalidate(&self.engine);
             self.focused = focused;
             self.engine.send(WebViewCommand::SetFocused(focused));
@@ -1392,7 +1684,7 @@ mod tests {
         }
     }
 
-    fn laid_out(engine: SharedEngine) -> (WebView, TaffyTree<()>, NodeId) {
+    pub(super) fn laid_out(engine: SharedEngine) -> (WebView, TaffyTree<()>, NodeId) {
         let mut w = WebView::new(engine);
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
@@ -1448,7 +1740,12 @@ mod tests {
         );
     }
 
-    fn dispatch(w: &mut WebView, tree: &TaffyTree<()>, node: NodeId, event: &WindowEvent) {
+    pub(super) fn dispatch(
+        w: &mut WebView,
+        tree: &TaffyTree<()>,
+        node: NodeId,
+        event: &WindowEvent,
+    ) {
         Dispatch::new().layout(tree, node).send(w, event);
     }
 
@@ -1757,6 +2054,7 @@ mod tests {
 
             *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
                 trace_id: None,
+                damage: None,
                 rgba: Arc::new(vec![255; physical.0 as usize * physical.1 as usize * 4]),
                 width: physical.0,
                 height: physical.1,
@@ -1847,6 +2145,7 @@ mod tests {
             let current = engine.frames().lock().unwrap().clone().unwrap();
             let stale = crate::webview::Frame {
                 trace_id: None,
+                damage: None,
                 rgba: Arc::new(vec![255; 400 * 300 * 4]),
                 width: 400,
                 height: 300,
@@ -1878,6 +2177,216 @@ mod tests {
                 assert_eq!(engine.commands().len(), initial + retries);
             }
         }
+    }
+
+    #[test]
+    fn a_caret_that_blinks_damages_and_uploads_only_the_caret() {
+        use crate::webview::{Frame, FrameDamage, PixelRect};
+        let engine = TestEngine::new();
+        let mut view = WebView::new(engine.clone());
+        // 200x100 logical at 2x: a 400x200 frame.
+        view.set_viewport(Rect::new(10.0, 20.0, 210.0, 120.0), 2.0);
+        let frame = |generation, recent: Vec<(u64, Vec<PixelRect>)>, shade| Frame {
+            trace_id: None,
+            rgba: Arc::new(vec![shade; 400 * 200 * 4]),
+            width: 400,
+            height: 200,
+            damage: Some(FrameDamage {
+                generation,
+                recent: recent
+                    .into_iter()
+                    .map(|(generation, rects)| (generation, Arc::from(rects)))
+                    .collect(),
+            }),
+        };
+        let show = |frame| *engine.frames().lock().unwrap() = Some(frame);
+        let damage_of = |view: &mut WebView| {
+            draw_at(view, Affine::scale(2.0));
+            let mut damage = Vec::new();
+            view.collect_damage(&mut damage);
+            view.mark_drawn();
+            damage
+        };
+
+        show(frame(1, Vec::new(), 200));
+        assert_eq!(
+            damage_of(&mut view),
+            [view.rect],
+            "the first frame is all new"
+        );
+        assert!(
+            damage_of(&mut view).is_empty(),
+            "the same frame is no change"
+        );
+
+        let caret = PixelRect {
+            x: 100,
+            y: 40,
+            width: 4,
+            height: 32,
+        };
+        let drawn = view.cached_image.as_ref().unwrap().data.id();
+        show(frame(2, vec![(2, vec![caret])], 0));
+        assert_eq!(
+            damage_of(&mut view),
+            [Rect::new(59.0, 39.0, 63.0, 57.0)],
+            "the caret, in layout coordinates, with a pixel for sampling"
+        );
+        let shown = view.cached_image.as_ref().unwrap().data.id();
+        assert_eq!(
+            vello::image_delta(shown).map(|(from, rects)| (from, rects.to_vec())),
+            Some((drawn, vec![[100, 40, 4, 32]])),
+            "the renderer uploads just the caret"
+        );
+
+        // A frame whose rects do not reach back to the one on screen, and a
+        // view that moved, repaint all of it.
+        show(frame(5, vec![(5, vec![caret])], 1));
+        assert_eq!(damage_of(&mut view), [view.rect]);
+        show(frame(6, vec![(6, vec![caret]), (5, vec![caret])], 2));
+        view.set_viewport(Rect::new(12.0, 20.0, 212.0, 120.0), 2.0);
+        assert_eq!(damage_of(&mut view), [view.rect]);
+    }
+
+    /// A frame of `width`x`height` opaque pixels, grey `shade` throughout
+    /// but for `marked`, which is black, in generation `generation` after the
+    /// generations `recent` describe.
+    fn shaded_frame(
+        (width, height): (u32, u32),
+        shade: u8,
+        marked: Option<crate::webview::PixelRect>,
+        generation: u64,
+        recent: &[(u64, crate::webview::PixelRect)],
+    ) -> crate::webview::Frame {
+        let mut rgba = [shade, shade, shade, 255].repeat(width as usize * height as usize);
+        if let Some(rect) = marked {
+            for y in rect.y..rect.y + rect.height {
+                for x in rect.x..rect.x + rect.width {
+                    let at = (y as usize * width as usize + x as usize) * 4;
+                    rgba[at..at + 4].copy_from_slice(&[0, 0, 0, 255]);
+                }
+            }
+        }
+        crate::webview::Frame {
+            trace_id: None,
+            rgba: Arc::new(rgba),
+            width,
+            height,
+            damage: Some(crate::webview::FrameDamage {
+                generation,
+                recent: recent
+                    .iter()
+                    .map(|(generation, rect)| (*generation, Arc::from(vec![*rect])))
+                    .collect(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_caret_frame_uploads_only_the_caret_to_the_gpu() {
+        use crate::offscreen::OffscreenRenderer;
+        use crate::webview::PixelRect;
+        let background = vello::peniko::Color::from_rgba8(0, 0, 255, 255);
+        let pixel = |rendered: &[u8], x, y| OffscreenRenderer::sample(rendered, 64, x, y);
+        {
+            let engine = TestEngine::new();
+            let mut view = WebView::new(engine.clone());
+            view.set_viewport(Rect::new(0.0, 0.0, 64.0, 48.0), 1.0);
+            let mut renderer = OffscreenRenderer::new(64, 48);
+            let show = |view: &mut WebView, renderer: &mut OffscreenRenderer, frame| {
+                *engine.frames().lock().unwrap() = Some(frame);
+                renderer.render(&draw_at(view, Affine::IDENTITY), background)
+            };
+            let first = show(
+                &mut view,
+                &mut renderer,
+                shaded_frame((64, 48), 255, None, 1, &[]),
+            );
+            assert_eq!(pixel(&first, 30, 20), (255, 255, 255, 255));
+
+            // The next frame says only its caret changed, though every
+            // other pixel of it is grey: a renderer that uploads only the
+            // caret shows the caret over the first frame's white.
+            let caret = PixelRect {
+                x: 20,
+                y: 10,
+                width: 2,
+                height: 16,
+            };
+            let next = show(
+                &mut view,
+                &mut renderer,
+                shaded_frame((64, 48), 128, Some(caret), 2, &[(2, caret)]),
+            );
+            assert_eq!(
+                pixel(&next, 20, 10),
+                (0, 0, 0, 255),
+                "the caret is uploaded"
+            );
+            assert_eq!(pixel(&next, 21, 25), (0, 0, 0, 255));
+            for (x, y) in [(19, 10), (22, 10), (20, 9), (20, 26), (0, 0), (63, 47)] {
+                assert_eq!(
+                    pixel(&next, x, y),
+                    (255, 255, 255, 255),
+                    "({x}, {y}) is never uploaded again"
+                );
+            }
+
+            // A frame that says nothing of what changed is uploaded whole.
+            let whole = show(
+                &mut view,
+                &mut renderer,
+                shaded_frame((64, 48), 128, None, 9, &[]),
+            );
+            assert_eq!(pixel(&whole, 0, 0), (128, 128, 128, 255));
+            assert_eq!(pixel(&whole, 20, 10), (128, 128, 128, 255));
+        }
+
+        // What a caret blink costs the renderer on a 2560x1600 page, drawn
+        // small so the upload, not the raster, is what is measured.
+        let engine = TestEngine::new();
+        let mut view = WebView::new(engine.clone());
+        view.set_viewport(Rect::new(0.0, 0.0, 1280.0, 800.0), 2.0);
+        let mut renderer = OffscreenRenderer::new(64, 40);
+        let caret = PixelRect {
+            x: 400,
+            y: 300,
+            width: 2,
+            height: 40,
+        };
+        let mut generation = 1;
+        *engine.frames().lock().unwrap() =
+            Some(shaded_frame((2560, 1600), 255, None, generation, &[]));
+        renderer.render_gpu_wait(&draw_at(&mut view, Affine::scale(0.05)), background);
+        let mut blink = |rects: bool| {
+            let mut spent = Vec::new();
+            for blink in 0..12 {
+                generation += 1;
+                let recent = [(generation, caret)];
+                *engine.frames().lock().unwrap() = Some(shaded_frame(
+                    (2560, 1600),
+                    255,
+                    (blink % 2 == 0).then_some(caret),
+                    generation,
+                    if rects { &recent[..] } else { &[] },
+                ));
+                let scene = draw_at(&mut view, Affine::scale(0.05));
+                let started = crate::time::now();
+                renderer.render_gpu_wait(&scene, background);
+                spent.push(started.elapsed());
+            }
+            spent.sort();
+            spent[spent.len() / 2]
+        };
+        let whole = blink(false);
+        let rects = blink(true);
+        println!(
+            "perf webview caret blink on a 2560x1600 page: {:.2} ms to render with the frame \
+             uploaded whole (16 MB), {:.2} ms with its caret uploaded ({} bytes)",
+            whole.as_secs_f64() * 1000.0,
+            rects.as_secs_f64() * 1000.0,
+            caret.width * caret.height * 4,
+        );
     }
 
     #[test]
@@ -1943,6 +2452,7 @@ mod tests {
                 );
                 *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
                     trace_id: None,
+                    damage: None,
                     rgba: Arc::new(vec![255; painted.0 as usize * painted.1 as usize * 4]),
                     width: painted.0,
                     height: painted.1,
@@ -1974,6 +2484,7 @@ mod tests {
             view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
             let frame = crate::webview::Frame {
                 trace_id: Some(101),
+                damage: None,
                 rgba: Arc::new(vec![255; 16 * 16 * 4]),
                 width: 16,
                 height: 16,
@@ -2002,6 +2513,7 @@ mod tests {
             }
             *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
                 trace_id: Some(102),
+                damage: None,
                 rgba: Arc::new(vec![255; 8 * 8 * 4]),
                 width: 8,
                 height: 8,
@@ -2032,6 +2544,7 @@ mod tests {
             view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
             *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
                 trace_id: Some(201),
+                damage: None,
                 rgba: Arc::new(vec![255; 16 * 16 * 4]),
                 width: 16,
                 height: 16,
@@ -2045,6 +2558,7 @@ mod tests {
                 } else if pass == 2 {
                     *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
                         trace_id: Some(202),
+                        damage: None,
                         rgba: Arc::new(vec![128; 16 * 16 * 4]),
                         width: 16,
                         height: 16,
@@ -2399,3 +2913,7 @@ impl crate::widget::AppWidget for WebView {
         Some(crate::widget::AppKind::Browser)
     }
 }
+
+#[cfg(test)]
+#[path = "webview_ime_tests.rs"]
+mod ime_tests;

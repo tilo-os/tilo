@@ -390,13 +390,16 @@ impl SuspendedLocalControls {
     ) -> Option<PreparedContinuation> {
         let item = self.items.iter().find(|item| item.id == token.item_id)?;
         let policy = item.witness.as_ref().ok()?.confirmation();
-        let expected = match policy {
+        // The click on Confirm is the confirmation; only a phrase naming
+        // what is destroyed must also be typed.
+        match policy {
             tilo_actions::ConfirmationPolicy::None => return None,
-            tilo_actions::ConfirmationPolicy::Confirm => "CONFIRM",
-            tilo_actions::ConfirmationPolicy::Phrase { phrase } => phrase,
-        };
-        if value.trim() != expected {
-            return None;
+            tilo_actions::ConfirmationPolicy::Confirm => {}
+            tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
+                if value.trim() != phrase.trim() {
+                    return None;
+                }
+            }
         }
         self.prepare(token, true)
     }

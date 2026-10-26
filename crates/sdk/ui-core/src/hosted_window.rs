@@ -47,6 +47,12 @@ struct State {
     notice: Option<crate::window_toolbar::ToolbarNotice>,
     /// The notices' buttons pressed, not yet taken by their posters.
     notice_presses: Vec<String>,
+    /// The reactions shown ([`crate::window_toolbar::show_reactions`]).
+    reactions: Option<crate::window_toolbar::ToolbarReactions>,
+    /// The emoji pressed among them, not yet taken by their shower.
+    reaction_presses: Vec<String>,
+    /// Whether its person may only look ([`crate::window_toolbar::show_view_only`]).
+    view_only: bool,
     /// Bumped by every declaration that changed the slots.
     revision: u64,
     events: VecDeque<ToolbarEvent>,
@@ -55,11 +61,17 @@ struct State {
     /// it to the app: how the host knows which tab a program typed in a
     /// terminal belongs to.
     session: Option<String>,
+    /// The workspace the window is in, as its host knows it: an app that
+    /// shares its process with other windows has no workspace of its own.
+    workspace: Option<String>,
     /// The app asked to edit its location (its Ctrl+L).
     edit: bool,
     /// The app asked to open the window's search (its Ctrl+F, or Ctrl+H
     /// for the replacement field).
     search: Option<crate::window_toolbar::SearchOpening>,
+    /// Where the app wants other apps' views of resources drawn, and how
+    /// each is coming along ([`crate::window_share`]).
+    embeds: crate::window_share::Embeds,
     /// What the host runs when the app declared or asked to close, so it
     /// looks again even while nothing else is happening.
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -153,6 +165,51 @@ impl HostedWindow {
         self.state().notice.clone()
     }
 
+    /// Show `reactions` at the bar's end (`None`: none), bounded as
+    /// [`crate::window_toolbar::show_reactions`] bounds them. Cheap when
+    /// nothing changed.
+    pub fn show_reactions(&self, reactions: Option<crate::window_toolbar::ToolbarReactions>) {
+        let wake = {
+            let mut state = self.state();
+            if state.reactions == reactions {
+                return;
+            }
+            state.reactions = reactions;
+            state.revision = state.revision.wrapping_add(1);
+            state.wake.clone()
+        };
+        Self::wake(wake);
+    }
+
+    /// Say whether the window's person may only look at what it shows.
+    /// Said while the app syncs, inside a frame of its host's: the host
+    /// reads the bar after that sync, so this wakes no further frame.
+    pub fn show_view_only(&self, view_only: bool) {
+        let mut state = self.state();
+        if state.view_only != view_only {
+            state.view_only = view_only;
+            state.revision = state.revision.wrapping_add(1);
+        }
+    }
+
+    /// Whether the window's person may only look.
+    #[must_use]
+    pub fn view_only(&self) -> bool {
+        self.state().view_only
+    }
+
+    /// The reactions shown.
+    #[must_use]
+    pub fn reactions(&self) -> Option<crate::window_toolbar::ToolbarReactions> {
+        self.state().reactions.clone()
+    }
+
+    /// The emoji pressed among the reactions since the last call.
+    #[must_use]
+    pub fn take_reaction_presses(&self) -> Vec<String> {
+        std::mem::take(&mut self.state().reaction_presses)
+    }
+
     /// What the person did with the slots since the last call, oldest
     /// first.
     #[must_use]
@@ -180,10 +237,35 @@ impl HostedWindow {
         self.state().session = session;
     }
 
+    /// Put the window in the workspace `room` (a workspace id).
+    pub fn set_workspace(&self, room: Option<String>) {
+        self.state().workspace = room;
+    }
+
+    /// The workspace the window is in, when its host said.
+    #[must_use]
+    pub fn workspace(&self) -> Option<String> {
+        self.state().workspace.clone()
+    }
+
     /// The slots as last declared.
     #[must_use]
     pub fn declared(&self) -> Option<WindowToolbar> {
         self.state().toolbar.clone()
+    }
+
+    /// What the window's bar shows: the slots as declared, with the
+    /// notice up and the reactions at the end, which are the window's own
+    /// ([`Self::notify`], [`Self::show_reactions`]).
+    #[must_use]
+    pub fn shown(&self) -> Option<WindowToolbar> {
+        let state = self.state();
+        crate::window_toolbar::with_window_owned(
+            state.toolbar.clone(),
+            state.notice.clone(),
+            state.reactions.clone(),
+            state.view_only,
+        )
     }
 
     /// Bumped by every declaration that changed the slots.
@@ -213,7 +295,44 @@ impl HostedWindow {
         Self::wake(wake);
     }
 
+    /// Ask for `embeds` in this window ([`crate::window_share::declare`]).
+    /// Cheap when nothing changed.
+    pub fn declare_embeds(&self, embeds: Vec<crate::window_share::Embed>) {
+        let wake = {
+            let mut state = self.state();
+            if !state.embeds.declare(embeds) {
+                return;
+            }
+            state.wake.clone()
+        };
+        Self::wake(wake);
+    }
+
+    /// How the host said `key`'s embed is coming along.
+    #[must_use]
+    pub fn embed_state(&self, key: &str) -> Option<crate::window_share::EmbedState> {
+        self.state().embeds.states.get(key).cloned()
+    }
+
     // --- the host's side
+    /// The embeds the app asks for, as last declared.
+    #[must_use]
+    pub fn embeds(&self) -> Vec<crate::window_share::Embed> {
+        self.state().embeds.declared.clone()
+    }
+
+    /// Say how `key`'s embed is coming along.
+    pub fn set_embed_state(&self, key: &str, embed: crate::window_share::EmbedState) {
+        let mut state = self.state();
+        if state
+            .embeds
+            .declared
+            .iter()
+            .any(|declared| declared.key == key)
+        {
+            state.embeds.states.insert(key.to_owned(), embed);
+        }
+    }
 
     /// The session-supervisor session the tab runs, as the app named it.
     #[must_use]
@@ -249,13 +368,8 @@ impl HostedWindow {
     /// one the host last showed; `None`: it showed none yet).
     #[must_use]
     pub fn toolbar_since(&self, seen: Option<u64>) -> Option<(u64, Option<WindowToolbar>)> {
-        let state = self.state();
-        (seen != Some(state.revision)).then(|| {
-            (
-                state.revision,
-                crate::window_toolbar::with_notice(state.toolbar.clone(), state.notice.clone()),
-            )
-        })
+        let revision = self.revision();
+        (seen != Some(revision)).then(|| (revision, self.shown()))
     }
 
     /// Hand the app what the person did with its slots.
@@ -264,6 +378,15 @@ impl HostedWindow {
         if let Some(id) = crate::window_toolbar::notice_press(state.notice.as_ref(), &event) {
             if state.notice_presses.len() < MAX_PENDING {
                 state.notice_presses.push(id);
+            }
+            return;
+        }
+        if let Some(press) = crate::window_toolbar::reaction_press(state.reactions.as_ref(), &event)
+        {
+            if let crate::window_toolbar::ReactionPress::Emoji(emoji) = press
+                && state.reaction_presses.len() < MAX_PENDING
+            {
+                state.reaction_presses.push(emoji);
             }
             return;
         }
@@ -331,5 +454,19 @@ mod tests {
             .expect("the reader thread");
         assert!(window.take_close());
         assert!(!window.take_close(), "one close per ask");
+    }
+
+    /// Apps sharing one process (the browser's) each learn their window's
+    /// workspace from it, not from the process.
+    #[test]
+    fn an_app_is_in_the_workspace_its_window_is_in() {
+        let window = HostedWindow::new();
+        window.set_workspace(Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979".into()));
+        assert_eq!(crate::window_toolbar::workspace(), None, "outside it");
+        let _running = crate::window_toolbar::enter(Some(&window));
+        assert_eq!(
+            crate::window_toolbar::workspace().as_deref(),
+            Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979")
+        );
     }
 }

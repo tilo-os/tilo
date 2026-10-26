@@ -10,7 +10,8 @@ use tilo_actions::remote::{
 };
 use tilo_relay_session::rooms::{
     CLAIM_TOPOLOGY_NAMESPACE, MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD,
-    RECORD_EFFECT_RECEIPT, SAVE_SHORTCUT, member_resource,
+    RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS, SAVE_SHORTCUT, SHARE_RESOURCE, UNSHARE_RESOURCE,
+    member_resource,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -92,7 +93,10 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
             CLAIM_TOPOLOGY_NAMESPACE,
             RECORD_EFFECT_RECEIPT,
             PREPARE_APPLICATION_RECORD,
-            SAVE_SHORTCUT
+            SAVE_SHORTCUT,
+            SHARE_RESOURCE,
+            UNSHARE_RESOURCE,
+            RESOURCE_PERMITS
         ]
         .map(str::to_owned)
     );
@@ -210,6 +214,7 @@ fn shortcut(id: &str) -> tilo_automation::Shortcut {
         name: id.into(),
         inputs: Vec::new(),
         steps: Vec::new(),
+        step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
         triggers: Vec::new(),
@@ -259,4 +264,274 @@ async fn a_member_saves_a_shortcut_only_as_themselves() {
         .unwrap();
     assert!(saved["generation"].as_u64().is_some(), "{saved}");
     assert_eq!(held().await, vec![own]);
+}
+
+/// An item of Notes' own record of `room`, by its id.
+fn note(room: &str, id: &str) -> String {
+    tilo_action_policy::TreePath::room(room)
+        .app("so.tilo.notes")
+        .kind("notes.notebook")
+        .any(tilo_action_policy::Level::Resource)
+        .item(id)
+        .to_string()
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one share told whole, through both doors, in order"
+)]
+async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
+    use tilo_relay_protocol::rooms::{RoomsReply, RoomsRequest};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
+    let (room, workspace, host) = governed(rooms).await;
+    let ada = admit(rooms, &room, &owner, 1).await;
+    let bo = admit(rooms, &room, &owner, 2).await;
+    rooms
+        .set_member_role(
+            &room,
+            &owner,
+            crate::rooms::SetMemberRoleRequest {
+                request_id: [40; 32],
+                user_public_key: bo.user_public_key,
+                role: tilo_peer_state::join::MemberRole::Viewer,
+            },
+        )
+        .await
+        .unwrap();
+    let (p1, p2) = (note(&room, "p1"), note(&room, "p2"));
+    let permits = |node: &str| member_request(&room, RESOURCE_PERMITS, json!({ "node": node }));
+    let share = |access: &str| {
+        member_request(
+            &room,
+            SHARE_RESOURCE,
+            json!({ "share": "m1", "node": p1, "access": access }),
+        )
+    };
+    let unshare = || member_request(&room, UNSHARE_RESOURCE, json!({ "share": "m1" }));
+    let bo_writes = |node: &str| {
+        let request = permits(node);
+        let host = &host;
+        let bo = &bo;
+        async move {
+            invoke(host, workspace, bo, request).await.unwrap()["undoable"]
+                .as_bool()
+                .unwrap()
+        }
+    };
+
+    // Bo, a Viewer, reads the note and writes nothing.
+    let before = invoke(&host, workspace, &bo, permits(&p1)).await.unwrap();
+    assert_eq!(before, json!({ "read": true, "undoable": false }));
+
+    // Bo cannot hand out more than he holds.
+    assert!(matches!(
+        invoke(&host, workspace, &bo, share("edit")).await,
+        Err(ActionHostError::Refused { .. })
+    ));
+
+    // A view share gives no writes.
+    let viewed = invoke(&host, workspace, &ada, share("view")).await.unwrap();
+    assert_eq!(viewed, json!({ "grants": 4 }));
+    assert!(!bo_writes(&p1).await);
+
+    // Ada, an Editor, shares it to edit: Bo writes that note, not its sibling.
+    invoke(&host, workspace, &ada, share("edit")).await.unwrap();
+    assert!(bo_writes(&p1).await);
+    assert!(
+        !bo_writes(&p2).await,
+        "a sibling note stays as Bo's role has it"
+    );
+    assert_eq!(
+        invoke(&host, workspace, &ada, share("edit")).await.unwrap(),
+        json!({ "grants": 4 }),
+        "a repeat is the same share"
+    );
+    // The page door decides the same.
+    assert_eq!(
+        rooms
+            .page_rooms(
+                &bo,
+                RoomsRequest::Permits {
+                    room: room.clone(),
+                    node: p1.clone(),
+                },
+            )
+            .await,
+        RoomsReply::Permits(true)
+    );
+
+    // Only its sharer ends it.
+    assert_eq!(
+        invoke(&host, workspace, &bo, unshare()).await.unwrap(),
+        json!({ "revoked": 0 })
+    );
+    assert!(bo_writes(&p1).await);
+    assert_eq!(
+        invoke(&host, workspace, &ada, unshare()).await.unwrap(),
+        json!({ "revoked": 4 })
+    );
+    assert!(!bo_writes(&p1).await);
+
+    // Shared again through a page's door, and ended there.
+    let shared = rooms
+        .page_rooms(
+            &ada,
+            RoomsRequest::Share {
+                room: room.clone(),
+                share: "m1".into(),
+                node: p1.clone(),
+                access: "edit".into(),
+            },
+        )
+        .await;
+    assert_eq!(shared, RoomsReply::Shared(4));
+    assert!(bo_writes(&p1).await);
+    let every = tilo_action_policy::TreePath::room(&room)
+        .app("so.tilo.notes")
+        .kind("notes.notebook")
+        .any(tilo_action_policy::Level::Resource)
+        .to_string();
+    assert!(matches!(
+        rooms
+            .page_rooms(
+                &ada,
+                RoomsRequest::Share {
+                    room: room.clone(),
+                    share: "m2".into(),
+                    node: every,
+                    access: "view".into(),
+                },
+            )
+            .await,
+        RoomsReply::Refused(_)
+    ));
+    assert_eq!(
+        rooms
+            .page_rooms(
+                &ada,
+                RoomsRequest::Unshare {
+                    room: room.clone(),
+                    share: "m1".into(),
+                },
+            )
+            .await,
+        RoomsReply::Shared(4)
+    );
+    assert!(!bo_writes(&p1).await);
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_share_to_edit_lifts_no_restriction() {
+    use tilo_relay_protocol::rooms::{RoomsReply, RoomsRequest};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
+    let (room, workspace, host) = governed(rooms).await;
+    let ada = admit(rooms, &room, &owner, 1).await;
+    let bo = admit(rooms, &room, &owner, 2).await;
+    rooms
+        .set_member_role(
+            &room,
+            &owner,
+            crate::rooms::SetMemberRoleRequest {
+                request_id: [40; 32],
+                user_public_key: bo.user_public_key,
+                role: tilo_peer_state::join::MemberRole::Viewer,
+            },
+        )
+        .await
+        .unwrap();
+    let p1 = note(&room, "p1");
+    let shared = json!({ "share": "m1", "node": p1, "access": "edit" });
+    invoke(
+        &host,
+        workspace,
+        &ada,
+        member_request(&room, SHARE_RESOURCE, shared),
+    )
+    .await
+    .unwrap();
+    let permits = || {
+        invoke(
+            &host,
+            workspace,
+            &bo,
+            member_request(&room, RESOURCE_PERMITS, json!({ "node": p1 })),
+        )
+    };
+    assert_eq!(
+        permits().await.unwrap(),
+        json!({ "read": true, "undoable": true })
+    );
+
+    // Restricted, Bo writes nothing, the note shared to edit included, and
+    // still reads it.
+    let until = tilo_clock::unix_now_ms() + 30 * 60_000;
+    rooms
+        .restrict_member(
+            &room,
+            &owner,
+            crate::rooms::RemoveMemberRequest {
+                request_id: [41; 32],
+                user_public_key: bo.user_public_key,
+            },
+            until,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        permits().await.unwrap(),
+        json!({ "read": true, "undoable": false })
+    );
+    assert_eq!(
+        rooms
+            .page_rooms(
+                &bo,
+                RoomsRequest::Permits {
+                    room: room.clone(),
+                    node: p1.clone(),
+                },
+            )
+            .await,
+        RoomsReply::Permits(false),
+        "the page door decides the same"
+    );
+    // Nor may he hand out what his restriction keeps from him.
+    let reshare = json!({ "share": "m2", "node": p1, "access": "view" });
+    assert!(matches!(
+        invoke(
+            &host,
+            workspace,
+            &bo,
+            member_request(&room, SHARE_RESOURCE, reshare),
+        )
+        .await,
+        Err(ActionHostError::Refused { .. })
+    ));
+
+    // Lifted, the share lets him write again.
+    rooms
+        .unrestrict_member(
+            &room,
+            &owner,
+            crate::rooms::RemoveMemberRequest {
+                request_id: [42; 32],
+                user_public_key: bo.user_public_key,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        permits().await.unwrap(),
+        json!({ "read": true, "undoable": true })
+    );
+    relay.shutdown().await;
 }

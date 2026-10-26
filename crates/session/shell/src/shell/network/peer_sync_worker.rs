@@ -40,6 +40,9 @@ enum Work {
     /// Enter the rooms a configured host lists (each, when `None`).
     HostRooms(Option<iroh::EndpointId>),
     SyncRound,
+    /// Reconcile the person's workspace list with the tree
+    /// ([`ShellNetwork::reconcile_personal_workspaces`]).
+    PersonalWorkspaces,
     Outbox(Vec<crate::shell::state::Outgoing>),
     /// Ask a room's host whether it is public, for what its people see of
     /// this person ([`ShellNetwork::presence_visibility`]).
@@ -88,6 +91,8 @@ impl ShellNetwork {
                     // - following the person's list, entering a host's rooms:
                     //   the tree; enrollments wake on landing.
                     // - a sync round: sends only, via the actor.
+                    // - reconciling the person's workspace list: the tree,
+                    //   when it wrote it.
                     // - governance and receipts: the tree when one is refused
                     //   or waits again; their gates only make the loop ask
                     //   for less, and what a governor applies arrives as an
@@ -122,6 +127,15 @@ impl ShellNetwork {
                                 sync_queued.store(false, Ordering::Release);
                                 network.publish_sync_requests_now();
                                 false
+                            }
+                            // Only a reconcile that wrote the tree has
+                            // anything to draw: an idle one wakes nothing.
+                            Work::PersonalWorkspaces => {
+                                network
+                                    .personal_reconcile
+                                    .queued
+                                    .store(false, Ordering::Release);
+                                network.reconcile_personal_workspaces()
                             }
                             Work::Outbox(entries) => {
                                 network.send_outbox(&entries);
@@ -328,6 +342,7 @@ impl ShellNetwork {
                 | Work::FollowList(_)
                 | Work::HostRooms(_)
                 | Work::SyncRound
+                | Work::PersonalWorkspaces
                 | Work::Outbox(_)
                 | Work::Publication(_),
             )) => Ok(()),
@@ -462,6 +477,24 @@ impl ShellNetwork {
             return true;
         }
         if worker.send(Work::SyncRound).is_err() {
+            queued.store(false, Ordering::Release);
+            return false;
+        }
+        true
+    }
+
+    /// Queue a reconcile of the person's workspace list on the peer-sync
+    /// worker: whether there is one to run it. A reconcile already queued
+    /// covers this ask.
+    pub(super) fn reconcile_personal_workspaces_off_loop(&self) -> bool {
+        let Some(worker) = self.peer_sync_worker.worker.get() else {
+            return false;
+        };
+        let queued = &self.personal_reconcile.queued;
+        if queued.swap(true, Ordering::AcqRel) {
+            return true;
+        }
+        if worker.send(Work::PersonalWorkspaces).is_err() {
             queued.store(false, Ordering::Release);
             return false;
         }

@@ -53,6 +53,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = "runtime-dylib"
+# The runtime's manifest: the file each finding about its graph names.
+MANIFEST = "crates/runtime/runtime-dylib/Cargo.toml"
 TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
 # Crates the toolkit itself needs: if the resolved runtime lacks them, the
 # check is not looking at the runtime and must fail rather than pass.
@@ -74,8 +76,8 @@ DENIED = {
     "shell": "the compositor",
     "ush": "the user shell daemon",
     "compat-service": "the Windows compatibility service",
-    "local-model-service": "the on-device model service the model gateway runs (apps use "
-                           "tilo-model-gateway without its default service feature)",
+    "tilo-model-gateway": "the model service implementation (apps use tilo-model-client)",
+    "local-model-service": "the on-device model service the model gateway runs",
     "rten": "the subject model's runtime, which runs in the model gateway daemon",
 }
 # Crates of an engine that is a library of its own beside the runtime
@@ -157,7 +159,7 @@ ENGINES = {
     "settings-rare": "the Settings panes people rarely open, which Settings loads from "
                      "libtilo_settings_engine.so",
     "tilo-emoji-engine": "the emoji catalogue's engine library (libtilo_emoji_engine.so)",
-    "emoji": "the emoji catalogue, which Chat and the on-screen keyboard load from "
+    "emoji": "the emoji catalogue, which Chat, Notes and the on-screen keyboard load from "
              "libtilo_emoji_engine.so",
     "browser-parts": "the parts of Browser people rarely use, which Browser loads from "
                      "libtilo_browser_import_engine.so",
@@ -424,11 +426,11 @@ def main() -> int:
         for target in TARGETS:
             found = violations(resolve(apps, features, target), apps, target, links)
             for message in found:
-                print(message, file=sys.stderr)
+                print(f"{MANIFEST}: {message}")
             failed = failed or bool(found)
             if not found:
                 print(f"{RUNTIME} ({target}): no OS internals, moved engines or app-linked C libraries, "
-                      "every crate used by an app")
+                      "every crate used by an app", file=sys.stderr)
     except RuntimeError as error:
         print(error, file=sys.stderr)
         return 1

@@ -15,7 +15,7 @@ import tomllib
 # version, the one os/usr/share/tilo/system-interfaces.toml serves
 # (docs/architecture/compatibility.md; tools/tests/test_stage_sdk_services.py
 # holds the two equal).
-IDENTITY_REQUIREMENT = "optional@8"
+IDENTITY_REQUIREMENT = "optional@10"
 
 
 def stage(manifest: Path) -> None:

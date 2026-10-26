@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use discord_wire::event::{ChannelInfo, OverwriteInfo, RoleInfo};
+use discord_wire::event::{ChannelInfo, EmojiInfo, OverwriteInfo, RoleInfo};
 use discord_wire::op::{
     ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelOp, DeleteOp, DeleteRoleOp, DiscordOp,
     DiscordResult, EditOp, FetchAssetOp, MemberOp, MemberRolesOp, OverwriteKind, OverwriteOp,
@@ -47,6 +47,10 @@ pub struct Guild {
     /// Discord's channels as the bot last observed them.
     pub channels: Keyed<DChannel>,
     pub roles: Keyed<DRole>,
+    /// The server's custom emoji, name → id, as the bot last observed them:
+    /// a Tilo reaction with a workspace emoji of one of these names is
+    /// mirrored as it.
+    pub emojis: BTreeMap<String, String>,
     /// Tilo id ⇄ Discord id, keyed `kind:tilo`.
     pub map: Keyed<Mapping>,
     pub links: Keyed<Link>,
@@ -401,6 +405,22 @@ impl Guild {
             })
             .collect();
     }
+
+    /// The server's custom emoji as Discord reported them. Two of one name
+    /// (Discord allows it) are one: the first reported.
+    pub fn observe_emojis(&mut self, emojis: Vec<EmojiInfo>) {
+        let mut by_name = BTreeMap::new();
+        for emoji in emojis {
+            by_name.entry(emoji.name).or_insert(emoji.id);
+        }
+        self.emojis = by_name;
+    }
+
+    /// The id of the server's custom emoji `name`, when it has one.
+    #[must_use]
+    pub fn emoji(&self, name: &str) -> Option<&str> {
+        self.emojis.get(name).map(String::as_str)
+    }
 }
 
 impl Guild {
@@ -514,9 +534,11 @@ impl Guild {
         #[param("The bot user's id")] bot_user: String,
         #[param("Every channel")] channels: Vec<ChannelInfo>,
         #[param("Every role")] roles: Vec<RoleInfo>,
+        #[param("Every custom emoji")] emojis: Vec<EmojiInfo>,
     ) -> Result<(), Refusal> {
         guard::bot(cx)?;
         self.observe(bot_user, channels, roles);
+        self.observe_emojis(emojis);
         Ok(())
     }
 

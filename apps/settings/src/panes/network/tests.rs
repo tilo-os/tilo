@@ -14,6 +14,7 @@ use super::vpn::VpnEffect;
 use super::*;
 
 mod device_vpn;
+mod vpn_kill_switch;
 
 #[test]
 fn network_pane_relabels_retained_controls_when_locale_changes() -> Result<(), String> {
@@ -62,7 +63,7 @@ fn network_editor_retains_caret_through_window_resize() -> Result<(), String> {
     let fake = Arc::new(FakeNetwork::default());
     let mut network = model(&fake);
     network.open_page(PAGE_ADVANCED, t("net-advanced"));
-    network.enterprise_open = true;
+    network.enterprise_setup.set_open(true);
     let profile = network.enterprise.profile.clone();
     let root = ModelPane::new(Rc::new(RefCell::new(network)));
     let mut app = Framed::new(
@@ -88,6 +89,87 @@ fn network_editor_retains_caret_through_window_resize() -> Result<(), String> {
     Ok(())
 }
 
+/// The work or school network's setup in the composition: its row, and
+/// whether that row is open.
+fn enterprise_setup_open(widget: &dyn Widget) -> Option<(bool, vello::kurbo::Rect)> {
+    if let Some(row) = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<DisclosureRow>())
+        && row
+            .accessibility()
+            .and_then(|node| node.name)
+            .is_some_and(|name| name.starts_with(&t("net-enterprise-entry")))
+    {
+        return Some((row.is_open(), row.get_rect()));
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(enterprise_setup_open)
+}
+
+/// The work or school network's setup opens in place under its row on the
+/// standard disclose motion. Its action and a press on the row open the
+/// same row: an agent and a person land in the same place.
+#[test]
+fn the_work_or_school_setup_opens_under_its_row() -> Result<(), String> {
+    use crate::panes::model::ModelPane;
+    use ui::headless::{Framed, viewport};
+
+    let fake = Arc::new(FakeNetwork::default());
+    let network = Rc::new(RefCell::new(model(&fake)));
+    network
+        .borrow_mut()
+        .open_page(PAGE_ADVANCED, t("net-advanced"));
+    let shown_open = |network: &Rc<RefCell<NetworkModel>>| {
+        let composed = network.borrow().build_composition();
+        enterprise_setup_open(composed.as_ref()).map(|(open, _)| open)
+    };
+    if shown_open(&network) != Some(false) {
+        return Err("the setup starts closed, under a disclosure row".into());
+    }
+    run(
+        &mut network.borrow_mut(),
+        NetworkEffect::ShowEnterpriseSetup,
+    )?;
+    if shown_open(&network) != Some(true) {
+        return Err("the action opens the row".into());
+    }
+    run(
+        &mut network.borrow_mut(),
+        NetworkEffect::ShowEnterpriseSetup,
+    )?;
+    if network.borrow().enterprise_setup.is_open() {
+        return Err("the action closes the row again".into());
+    }
+
+    let root = ModelPane::new(Rc::clone(&network));
+    let mut app = Framed::new(
+        ui::State::new(),
+        root,
+        viewport((1000.0, 1800.0)),
+        ui::Theme::dark(),
+    );
+    let host = Framed::harness_mut(&mut app);
+    let (open, rect) =
+        enterprise_setup_open(host.root_widget()).ok_or("the setup's row is on the page")?;
+    if open {
+        return Err("the setup is closed before the press".into());
+    }
+    host.click_at(rect.center().x, rect.y0 + 12.0);
+    if !network.borrow().enterprise_setup.is_open() {
+        return Err("a press on the row opens the setup the action opens".into());
+    }
+    host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+        .map_err(|error| error.to_string())?;
+    host.click_named("network.enterprise.profile")?;
+    host.type_text("Campus");
+    if network.borrow().enterprise.profile.get() != "Campus" {
+        return Err("the opened setup takes typing".into());
+    }
+    Ok(())
+}
+
 #[test]
 fn network_pane_adopts_model_changes_after_layout_reuse() -> Result<(), String> {
     use crate::panes::model::ModelPane;
@@ -108,7 +190,7 @@ fn network_pane_adopts_model_changes_after_layout_reuse() -> Result<(), String> 
     {
         let mut model = network.borrow_mut();
         model.open_page(PAGE_ADVANCED, t("net-advanced"));
-        model.enterprise_open = true;
+        model.enterprise_setup.set_open(true);
         model.changed = true;
     }
     host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
@@ -276,6 +358,11 @@ struct FakeNetwork {
     scan_refusal: Mutex<Option<String>>,
     /// What the session publishes of the person's devices as VPNs.
     device_vpn: Mutex<Option<settings_store::device_vpn::DeviceVpnStatus>>,
+    /// Whether the device can be followed, as `NetworkManager` can.
+    follows: std::sync::atomic::AtomicBool,
+    /// What tells the model of a change, while it follows the device.
+    follower: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    status_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl FakeNetwork {
@@ -370,6 +457,9 @@ impl FakeNetwork {
                     if let Some(mtu) = patch.mtu {
                         held.mtu = mtu;
                     }
+                    if let Some(addresses) = &patch.allowed_ips {
+                        held.allowed_ips.clone_from(addresses);
+                    }
                 }
             }
             NetworkChange::VpnDelete { uuid, .. } => {
@@ -431,6 +521,7 @@ impl NetworkService for FakeNetwork {
                 profiles: Some(failed(&reason)),
                 profile_settings: HashMap::new(),
                 wake_settings: HashMap::new(),
+                profile_list: None,
                 hotspot_clients: Some(failed(&reason)),
                 vpns: Some(failed(&reason)),
                 link: None,
@@ -452,6 +543,25 @@ impl NetworkService for FakeNetwork {
 
     fn device_vpn(&self) -> Option<settings_store::device_vpn::DeviceVpnStatus> {
         self.device_vpn.lock().unwrap().clone()
+    }
+
+    fn status(&self) -> NetworkSnapshot {
+        self.status_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut snapshot = NetworkSnapshot::of_networks(self.networks.lock().unwrap().clone());
+        snapshot.vpns = Some(Ok(self.vpns.lock().unwrap().clone()));
+        snapshot.profiles = None;
+        snapshot.profile_list = Some(Ok(self.profiles.lock().unwrap().clone()));
+        snapshot.plugins = None;
+        snapshot
+    }
+
+    fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        if !self.follows.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        *self.follower.lock().unwrap() = Some(Arc::from(changed));
+        Some(Box::new(()))
     }
 
     fn change(&self, change: &NetworkChange) -> Result<(), String> {
@@ -656,8 +766,8 @@ fn settle_until(
 fn declared_network_inspection_reads_the_mounted_model_without_rescanning() {
     let fake = Arc::new(FakeNetwork::default());
     *fake.networks.lock().unwrap() = networks();
-    let mut observed = model(&fake);
-    observed.enterprise_open = true;
+    let observed = model(&fake);
+    observed.enterprise_setup.set_open(true);
     *observed.hotspot_password.lock().unwrap() = "private-hotspot-input".into();
     let mut app =
         ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
@@ -2202,6 +2312,64 @@ fn a_vpn_is_switched_edited_and_deleted() {
     assert_eq!(changes.last().map(String::as_str), Some("vpn-delete Work"));
 }
 
+/// While what the device made of a change is read back, a VPN's page keeps
+/// its settings and its row keeps offering them, so a second change can
+/// follow the first at once; what is read back last holds both.
+#[test]
+fn a_vpns_settings_stay_offered_while_a_change_is_read_back() {
+    let fake = Arc::new(FakeNetwork::default());
+    let vpn = work_vpn();
+    *fake.vpns.lock().unwrap() = vec![vpn.clone()];
+    fake.vpn_settings.lock().unwrap().insert(
+        vpn.uuid.clone(),
+        SampleNetwork::vpn_settings(SAMPLE_VPN_HOME).unwrap(),
+    );
+    let mut model = model(&fake);
+    run_vpn(&mut model, VpnEffect::ShowVpns).unwrap();
+    run_vpn(
+        &mut model,
+        VpnEffect::ShowVpnProfile {
+            connection: vpn.uuid.clone(),
+        },
+    )
+    .unwrap();
+    settle(&mut model);
+    for server in ["9.9.9.9", "2620:fe::fe"] {
+        run_vpn(
+            &mut model,
+            VpnEffect::AddVpnDnsServer {
+                connection: vpn.uuid.clone(),
+                server: server.into(),
+            },
+        )
+        .unwrap();
+        assert!(!model.jobs.is_empty(), "the read back has not landed yet");
+        let row = model.vpn_rows().remove(0).into_resource();
+        assert!(
+            row.actions
+                .iter()
+                .any(|action| action.id == "add-vpn-dns-server"),
+            "the row still offers its name servers after adding {server}"
+        );
+        let text = shown(&model);
+        assert!(
+            !text.contains(&t("net-pending")),
+            "the page keeps its settings: {text:#?}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains(server)),
+            "the page shows {server} as added: {text:#?}"
+        );
+    }
+    let both = ["10.7.0.1", "9.9.9.9", "2620:fe::fe"];
+    assert_eq!(fake.vpn_settings.lock().unwrap()[&vpn.uuid].dns, both);
+    settle(&mut model);
+    assert_eq!(
+        model.vpn.settings[&vpn.uuid].dns, both,
+        "read back as the device holds it"
+    );
+}
+
 /// A plugin's tunnel is called by the protocol its service type names,
 /// before its page is opened and without its plugin installed here.
 #[test]
@@ -2499,5 +2667,178 @@ fn the_vpn_tool_opens_settings_where_it_asks() {
     assert_eq!(
         model.page_key(),
         Some(super::vpn::profile_page_key(&work_vpn().uuid))
+    );
+}
+
+/// A change the device reports while Network is shown is read at once: a
+/// VPN brought up or down from quick settings or `nmcli` shows without
+/// reopening the page, and only the status is read again, not every saved
+/// profile's settings. Showing the page reads what changed while nothing
+/// followed; once no pane shows the model, nothing is read.
+#[test]
+fn a_change_the_device_reports_shows_while_network_is_open() {
+    let fake = Arc::new(FakeNetwork::default());
+    fake.vpns.lock().unwrap().push(work_vpn());
+    fake.follows
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut network = model(&fake);
+    // The networks were just looked for: no periodic scan comes between.
+    network.scanned_at = Some(ui::time::now());
+    assert_eq!(network.vpn_summary(), t("net-vpn-off"));
+    let snapshots = fake
+        .snapshot_reads
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let status_reads = || fake.status_reads.load(std::sync::atomic::Ordering::Relaxed);
+    // Poll as the window does until the pane shows `summary`; whether a
+    // poll asked the pane to show something new.
+    let poll_until = |network: &mut NetworkModel, summary: &str| {
+        let deadline = tilo_test_env::hang_deadline();
+        let mut recomposed = false;
+        while network.vpn_summary() != summary {
+            recomposed |= network.poll();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the device was never read again"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        recomposed
+    };
+
+    // Brought up while no pane showed the model.
+    fake.vpns.lock().unwrap()[0].active = true;
+    let following = PaneModel::follow(&mut network).expect("a shown pane follows the device");
+    let changed = fake
+        .follower
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the device is followed while the pane shows it");
+    assert!(poll_until(&mut network, "Work"), "the pane shows it");
+    assert_eq!(status_reads(), 1, "showing the page reads the status once");
+
+    // Brought down while the page is open.
+    fake.vpns.lock().unwrap()[0].active = false;
+    changed();
+    assert!(
+        poll_until(&mut network, &t("net-vpn-off")),
+        "the pane shows the change"
+    );
+    assert_eq!(status_reads(), 2, "one change, one status read");
+    assert_eq!(
+        fake.snapshot_reads
+            .load(std::sync::atomic::Ordering::Relaxed),
+        snapshots,
+        "a reported change does not read every profile's settings again"
+    );
+
+    drop(following);
+    changed();
+    network.poll();
+    assert!(network.snapshot.is_none(), "a closed pane reads nothing");
+    assert_eq!(status_reads(), 2);
+}
+
+/// A network joined from quick settings or forgotten with `nmcli` while
+/// Network is open is listed and forgotten here too: a saved profile added
+/// or removed elsewhere has the page read everything again, its settings
+/// with it, so the new network's page offers them and the known list drops
+/// the forgotten one. The same profiles read nothing more than the status.
+#[test]
+fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
+    let fake = Arc::new(FakeNetwork::default());
+    *fake.profiles.lock().unwrap() = vec![saved("home-uuid", "Home_Network", 300)];
+    fake.follows
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut network = model(&fake);
+    // The networks were just looked for: no periodic scan comes between.
+    network.scanned_at = Some(ui::time::now());
+    let _following = PaneModel::follow(&mut network).expect("a shown pane follows the device");
+    let changed = fake
+        .follower
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the device is followed while the pane shows it");
+    let saved_names = |network: &NetworkModel| -> Vec<String> {
+        network
+            .saved_wifi()
+            .map(|profile| profile.name.clone())
+            .collect()
+    };
+    let poll_until = |network: &mut NetworkModel, names: &[&str]| {
+        let deadline = tilo_test_env::hang_deadline();
+        while saved_names(network) != names || network.snapshot.is_some() {
+            network.poll();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the saved networks were never read again: {:?}",
+                saved_names(network)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    // Showing the page reads the status once; the same profiles read
+    // nothing more.
+    network.poll();
+    poll_until(&mut network, &["Home_Network"]);
+    let whole_reads = || {
+        fake.snapshot_reads
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let before = whole_reads();
+
+    // Joined from quick settings: NetworkManager saves a profile for it.
+    fake.profiles
+        .lock()
+        .unwrap()
+        .push(saved("cafe-uuid", "Cafe", 400));
+    fake.settings.lock().unwrap().insert(
+        "cafe-uuid".into(),
+        os_actions::ConnectionProfileSettings::default(),
+    );
+    changed();
+    poll_until(&mut network, &["Home_Network", "Cafe"]);
+    assert_eq!(
+        whole_reads(),
+        before + 1,
+        "a new profile reads everything once"
+    );
+    assert!(
+        network.wifi_profile("Cafe").is_ok(),
+        "the new network's settings are read with it"
+    );
+
+    // Forgotten elsewhere.
+    fake.profiles
+        .lock()
+        .unwrap()
+        .retain(|profile| profile.uuid != "home-uuid");
+    changed();
+    poll_until(&mut network, &["Cafe"]);
+    assert_eq!(
+        whole_reads(),
+        before + 2,
+        "a profile gone reads everything once"
+    );
+
+    // A change that leaves the profiles as they are reads only the status.
+    changed();
+    let statuses = fake.status_reads.load(std::sync::atomic::Ordering::Relaxed);
+    let deadline = tilo_test_env::hang_deadline();
+    while fake.status_reads.load(std::sync::atomic::Ordering::Relaxed) == statuses
+        || network.snapshot.is_some()
+    {
+        network.poll();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the status was never read"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        whole_reads(),
+        before + 2,
+        "the same profiles read only the status"
     );
 }

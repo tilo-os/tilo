@@ -12,7 +12,9 @@ use vello::kurbo::Rect;
 use super::{BooksApp, Pane, ReaderPageGeometry};
 use crate::layout_worker::{LayoutJob, LayoutWorker};
 use crate::model::{Book, ReadMode};
-use crate::paginate::{ChapterLayout, ChapterLayoutRequest, LayoutKey, layout_chapter};
+use crate::paginate::{
+    ChapterLayout, ChapterLayoutRequest, ChapterLayouter, LayoutKey, layout_chapter,
+};
 use crate::reader_theme::ReaderPalette;
 
 /// A layout and the request it answers: stretches the worker hands over
@@ -34,6 +36,10 @@ pub(super) struct ChapterLayouts {
     shown: u64,
     /// The layout the reader last wanted on screen.
     wanted: Option<LayoutKey>,
+    /// The layout on screen is the part of this one the reader set itself
+    /// to show the reader's place at once: it stands in until the worker's
+    /// layout of the same chapter reaches that place.
+    standin: Option<LayoutKey>,
     next_ticket: u64,
 }
 
@@ -46,6 +52,7 @@ impl Default for ChapterLayouts {
             held: Vec::new(),
             shown: 0,
             wanted: None,
+            standin: None,
             next_ticket: 1,
         }
     }
@@ -178,11 +185,16 @@ impl BooksApp {
         }
         self.absorb_layout_chunks();
         let previous = self.layout.as_ref().map(|l| l.key);
-        if previous != Some(key) {
+        let standing_in = self.layouts.standin == Some(key) && previous == Some(key);
+        if !standing_in {
+            self.layouts.standin = None;
+        }
+        if previous != Some(key) || standing_in {
             // The same chapter laid out again (a resize, a new text size or
             // font): keep the paragraph the reader was at on screen, rather
             // than a page number that now holds other text.
-            if previous.is_some_and(|old| old.chapter == self.chapter)
+            if !standing_in
+                && previous.is_some_and(|old| old.chapter == self.chapter)
                 && self.pending_jump_block.is_none()
                 && self.pending_seek_fraction.is_none()
                 && !self.pending_last_page
@@ -197,6 +209,9 @@ impl BooksApp {
                     if previous.is_some_and(|old| old.chapter != self.chapter) {
                         self.retire_layout();
                     }
+                    // The part set to stand in goes: the worker's layout
+                    // has the same text from the chapter's start.
+                    self.layouts.standin = None;
                     self.layouts.shown = next.ticket;
                     self.layout = Some(next.layout);
                 } else {
@@ -212,9 +227,53 @@ impl BooksApp {
             other => {
                 self.layout = other;
                 self.retire_layout();
-                unset(key)
+                self.lay_out_place(tr, inputs, key)
             }
         }
+    }
+
+    /// Set as much of the chapter as the reader's place needs, here and
+    /// now, from its start: a chapter is text on this device, so the frame
+    /// shows its lines however far the worker has got. The worker goes on
+    /// setting the whole chapter, and its layout takes over once it reaches
+    /// the place ([`Self::layout_settles`]).
+    fn lay_out_place(
+        &mut self,
+        tr: &mut TextRenderer,
+        inputs: &LayoutInputs<'_>,
+        key: LayoutKey,
+    ) -> ChapterLayout {
+        let blocks = inputs
+            .book
+            .chapters
+            .get(self.chapter)
+            .map_or(&[][..], |chapter| &chapter.blocks);
+        let request = ChapterLayoutRequest {
+            blocks,
+            content_width: inputs.geom.content_w,
+            content_height: inputs.geom.content_h,
+            settings: &self.settings,
+            chapter: key.chapter,
+            language: &inputs.book.language,
+            base_family: inputs.base_family,
+            font_multiplier: inputs.font_mult,
+            font_signature: inputs.font_sig,
+        };
+        let mut layouter = ChapterLayouter::new(&request, tr.text_scale());
+        let mut place = unset(key);
+        while !self.layout_settles(&place, inputs.geom.content_h) {
+            let Some(block) = layouter.next_block(tr) else {
+                place.pages.extend(layouter.finish_pages());
+                place.total_height = layouter.height();
+                place.complete = true;
+                return place;
+            };
+            place.blocks.push(block);
+            place.pages.extend(layouter.take_pages());
+            place.total_height = layouter.height();
+        }
+        self.layouts.standin = Some(key);
+        place
     }
 
     fn layout_inline(
@@ -291,9 +350,10 @@ impl BooksApp {
             .held
             .retain(|held| wanted.contains(&held.layout.key));
         let mut jobs = Vec::new();
+        let standin = self.layouts.standin;
         for want in wanted {
             let ticket = match self.layout.as_ref() {
-                Some(layout) if layout.key == want => {
+                Some(layout) if layout.key == want && standin != Some(want) => {
                     if layout.complete {
                         continue;
                     }

@@ -34,3 +34,14 @@ passes its cached plan and features through `harfrust::ShapeOptions`, the
 form `Shaper::shape` takes in harfrust 0.12.
 
 Drop this once an upstream release depends on these versions.
+
+## Seeking the layout runs of one line
+
+`LayoutRunIter::skip_to_line` (`src/buffer.rs`) moves the iterator on to a
+logical line's first run, leaving it exactly as calling `next` past every
+earlier run would: the same tops, and the same end at an unshaped line or
+below the buffer's height. Tilo's caret, arrow key and selection queries read
+one paragraph of a long text; skipping the runs before it built a run for
+every row above that paragraph on each query.
+
+Drop this once upstream can start the runs at a line.

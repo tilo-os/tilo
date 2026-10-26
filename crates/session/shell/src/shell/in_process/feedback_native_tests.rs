@@ -69,6 +69,8 @@ fn answer(connection: &Connection) -> FeedbackAnswer {
                 .as_secs(),
         },
         receipt: None,
+        reviewer: None,
+        review: None,
     }
 }
 fn admit(delivery: &Delivery) {
@@ -594,7 +596,7 @@ fn a_cold_app_reads_the_records_a_sealed_room_already_holds() {
     let channels = records
         .read(&RecordId::package_primary(), |document| {
             vec![
-                chat::projection::read(&mut document.clone())
+                chat::projection::read(document)
                     .channel_rows()
                     .iter()
                     .map(|channel| channel.id.clone())

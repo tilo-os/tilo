@@ -663,6 +663,20 @@ fn scenarios_stage_the_document_through_actions() {
                     Some(&tilo_doc::snapshot::AttrVal::Int(300))
                 );
             }
+            "reactions" => {
+                let reactions = app.read_document(|doc| {
+                    <Document as ui::tilo_resource::Resource>::read(doc)
+                        .unwrap()
+                        .reactions
+                        .groups()
+                });
+                assert_eq!(
+                    reactions.len(),
+                    2,
+                    "the scenario's document carries two reactions"
+                );
+                assert_eq!(document.blocks[0].text, "Quarterly planning summary");
+            }
             "find" => assert!(
                 document
                     .blocks

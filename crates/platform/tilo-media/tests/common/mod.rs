@@ -254,6 +254,133 @@ pub fn fixture_source() -> tilo_media::Source {
     tilo_media::Source::LocalFile(require_fixture())
 }
 
+/// Caps of the H.264 fixture's stream.
+#[cfg(feature = "decode")]
+pub const H264_CAPS: &str = "video/x-h264";
+
+/// Pictures in the H.264 fixture: 1 s at 30 fps.
+#[cfg(feature = "decode")]
+pub const H264_FRAMES: u32 = 30;
+
+/// Why the H.264 subject could not be generated, or its path.
+///
+/// H.264 is the codec every phone and action camera writes, and the one a
+/// board's own codec block exists to decode — the image decodes it without
+/// shipping a single H.264 byte. Its encoder is the mirror image: both
+/// `x264enc` and Cisco's `openh264enc` live in the opt-in `media-codecs`
+/// system extension, so a stock image carries neither and no H.264 subject can
+/// exist there. That is an outcome the caller states, never an assumption it
+/// may make to get out of asserting: [`h264_fixture`] returns the reason.
+#[cfg(feature = "decode")]
+pub fn h264_fixture() -> Result<PathBuf, &'static str> {
+    gstreamer::init()
+        .map_err(|_| "GStreamer does not initialise, so no H.264 clip can be generated")?;
+    let cache = std::env::var_os("TILO_TEST_CACHE_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("tilo-media-test-fixtures");
+    std::fs::create_dir_all(&cache)
+        .map_err(|_| "the media fixture cache directory cannot be created")?;
+    // The encoder is part of the file name: a machine that gains `x264enc`
+    // after the extension is installed must not reuse a clip the other one
+    // wrote, and the two encoders' rate control differs enough to matter.
+    let cached = |encoder: &str| cache.join(format!("h264-{encoder}-1s-{H264_FRAMES}frames.mp4"));
+    if let Some(path) = H264_ENCODERS
+        .iter()
+        .map(|encoder| cached(encoder))
+        .find(|path| h264_fixture_is_ready(path))
+    {
+        return Ok(path);
+    }
+    let encoder = H264_ENCODERS
+        .iter()
+        .find(|encoder| gstreamer::ElementFactory::find(encoder).is_some())
+        .copied()
+        .ok_or(
+            "no H.264 encoder is installed (x264enc and openh264enc are both in the \
+             opt-in media-codecs extension), so no H.264 clip can be generated",
+        )?;
+
+    let published = cached(encoder);
+    let staging = cache.join(format!(
+        "{}.{}.part",
+        published.display(),
+        std::process::id()
+    ));
+    std::fs::remove_file(&staging).ok();
+    write_h264_clip(encoder, &staging)?;
+    match std::fs::rename(&staging, &published) {
+        Ok(()) => Ok(published),
+        // Another process test-runner started in parallel published first;
+        // its clip is the same stream from the same encoder.
+        Err(_) if h264_fixture_is_ready(&published) => Ok(published),
+        Err(_) => {
+            std::fs::remove_file(&staging).ok();
+            Err("the generated H.264 clip cannot be moved into the cache")
+        }
+    }
+}
+
+/// The H.264 encoders that can write the fixture, in preference order.
+#[cfg(feature = "decode")]
+const H264_ENCODERS: [&str; 2] = ["x264enc", "openh264enc"];
+
+/// Whether a published H.264 clip is there and not empty. An empty file is
+/// what a killed process leaves behind; the pipeline that decodes it is what
+/// proves the rest of it.
+#[cfg(feature = "decode")]
+fn h264_fixture_is_ready(path: &std::path::Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0)
+}
+
+#[cfg(feature = "decode")]
+fn write_h264_clip(encoder: &str, staging: &std::path::Path) -> Result<(), &'static str> {
+    // 384x216 matches the VP9 fixture's picture size: inside every H.264
+    // hardware decoder's minimum, and a multiple of 8 in both directions so no
+    // decoder crops a partial macroblock to take it.
+    let width = FIXTURE_WIDTH;
+    let height = FIXTURE_HEIGHT;
+    let fps = FIXTURE_FPS;
+    let description = format!(
+        "videotestsrc pattern=smpte num-buffers={H264_FRAMES} ! \
+         video/x-raw,format=I420,width={width},height={height},framerate={fps}/1 ! \
+         {encoder} ! h264parse ! mp4mux ! filesink name=h264_fixture_sink"
+    );
+    let pipeline = gstreamer::parse::launch(&description)
+        .map_err(|_| "the H.264 fixture pipeline cannot be constructed")?
+        .downcast::<gstreamer::Pipeline>()
+        .map_err(|_| "the H.264 fixture graph is not a pipeline")?;
+    pipeline
+        .by_name("h264_fixture_sink")
+        .ok_or("the H.264 fixture graph has no sink")?
+        .set_property("location", staging.to_string_lossy().as_ref());
+    pipeline
+        .set_state(gstreamer::State::Playing)
+        .map_err(|_| "the H.264 fixture encoder does not start")?;
+
+    let bus = pipeline.bus().ok_or("the H.264 fixture graph has no bus")?;
+    let deadline = tilo_test_env::hang_deadline();
+    let mut reached_eos = false;
+    while std::time::Instant::now() < deadline {
+        let Some(message) = bus.timed_pop(gstreamer::ClockTime::from_mseconds(500)) else {
+            continue;
+        };
+        match message.view() {
+            gstreamer::MessageView::Eos(_) => {
+                reached_eos = true;
+                break;
+            }
+            gstreamer::MessageView::Error(_) => break,
+            _ => {}
+        }
+    }
+    let _ = pipeline.set_state(gstreamer::State::Null);
+    if !reached_eos {
+        return Err("the H.264 fixture encoder did not finish the clip");
+    }
+    Ok(())
+}
+
 /// Serialise tests that open engines under different [`tilo_media::HwPolicy`]s.
 ///
 /// Decoder ranks live in the process-wide `GStreamer` registry, and an engine

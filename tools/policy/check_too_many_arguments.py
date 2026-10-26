@@ -131,10 +131,10 @@ def audit(root: Path) -> list[str]:
 def main() -> int:
     violations = audit(ROOT)
     for violation in violations:
-        print(violation, file=sys.stderr)
+        print(violation)
     if violations:
         return 1
-    print(f"parameter limit OK (no clippy::{LINT} escape hatch)")
+    print(f"parameter limit OK (no clippy::{LINT} escape hatch)", file=sys.stderr)
     return 0
 
 

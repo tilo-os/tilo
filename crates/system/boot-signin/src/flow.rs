@@ -2,6 +2,8 @@
 //! the person picks themselves (when several may open the volume), gives
 //! their secret until it opens the volume, or asks for another way in.
 
+use hmac::{Hmac, KeyInit, Mac};
+use sha2::Sha256;
 use zeroize::Zeroizing;
 
 use crate::people::{Person, SecretKind};
@@ -68,6 +70,10 @@ pub enum Note {
     Wait {
         seconds: u64,
     },
+    /// The entry is one already refused: it was not tried again.
+    Repeated {
+        secret: SecretKind,
+    },
 }
 
 impl Note {
@@ -85,7 +91,7 @@ impl Note {
     pub fn class(self) -> &'static str {
         match self {
             Self::None => "none",
-            Self::Wrong { .. } => "wrong",
+            Self::Wrong { .. } | Self::Repeated { .. } => "wrong",
             Self::Wait { .. } => "wait",
         }
     }
@@ -107,6 +113,9 @@ impl Note {
             } => format!("Incorrect {}. Try again.", secret.noun()),
             Self::Wait { seconds } => {
                 format!("Too many failed attempts. Try again in {}.", wait(seconds))
+            }
+            Self::Repeated { secret } => {
+                format!("You already tried that {}. Try another.", secret.noun())
             }
         }
     }
@@ -151,26 +160,61 @@ pub trait Auth {
 
 /// Wrong entries already tried this boot. Someone unsure whether an entry
 /// registered and typing it again spends no second try (sign-in.md §4.2).
-#[derive(Default)]
+///
+/// tilo-authd keeps this rule after boot; in the initramfs this process is
+/// the one that lives across entries. It keeps only an HMAC of each refused
+/// entry, under a key it makes when it starts. The key and the HMACs live in
+/// memory alone and are wiped when the volume opens and when it exits.
 struct Tried {
-    entries: Vec<(u32, Zeroizing<String>, Note)>,
+    /// `None` when no key could be made: then nothing is remembered, and
+    /// every entry is tried.
+    key: Option<Zeroizing<[u8; 32]>>,
+    entries: Vec<(u32, Zeroizing<[u8; 32]>)>,
 }
 
 impl Tried {
     const LIMIT: usize = 16;
 
-    fn note(&self, uid: u32, secret: &str) -> Option<Note> {
-        self.entries
-            .iter()
-            .find(|(owner, tried, _)| *owner == uid && tried.as_str() == secret)
-            .map(|(_, _, note)| *note)
+    fn new() -> Self {
+        let mut key = Zeroizing::new([0_u8; 32]);
+        let key = getrandom::fill(key.as_mut()).is_ok().then_some(key);
+        Self {
+            key,
+            entries: Vec::new(),
+        }
     }
 
-    fn remember(&mut self, uid: u32, secret: Zeroizing<String>, note: Note) {
+    fn mac(&self, uid: u32, secret: &str) -> Option<Zeroizing<[u8; 32]>> {
+        let key = self.key.as_ref()?;
+        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key.as_ref()).ok()?;
+        mac.update(&uid.to_le_bytes());
+        mac.update(secret.as_bytes());
+        let mut out = Zeroizing::new([0_u8; 32]);
+        out.copy_from_slice(&mac.finalize().into_bytes());
+        Some(out)
+    }
+
+    fn already(&self, uid: u32, secret: &str) -> bool {
+        self.mac(uid, secret).is_some_and(|mac| {
+            self.entries
+                .iter()
+                .any(|(owner, tried)| *owner == uid && tried.as_ref() == mac.as_ref())
+        })
+    }
+
+    fn remember(&mut self, uid: u32, secret: &str) {
+        let Some(mac) = self.mac(uid, secret) else {
+            return;
+        };
         if self.entries.len() >= Self::LIMIT {
             self.entries.remove(0);
         }
-        self.entries.push((uid, secret, note));
+        self.entries.push((uid, mac));
+    }
+
+    fn forget(&mut self) {
+        self.entries.clear();
+        self.key = None;
     }
 }
 
@@ -180,7 +224,7 @@ pub fn run(auth: &mut dyn Auth, screen: &mut dyn Screen) -> Exit {
         return Exit::NothingToTry;
     }
     let several = people.len() > 1;
-    let mut tried = Tried::default();
+    let mut tried = Tried::new();
     let mut highlighted = 0;
     loop {
         let index = if several {
@@ -225,19 +269,24 @@ fn sign_in(
             Entry::Empty if several => return None,
             Entry::Empty | Entry::Unavailable => return Some(Exit::OtherWays),
         };
-        if let Some(earlier) = tried.note(person.uid, &secret) {
-            note = earlier;
+        if tried.already(person.uid, &secret) {
+            note = Note::Repeated {
+                secret: person.secret,
+            };
             continue;
         }
         screen.checking(person);
         match auth.unlock(person, &secret) {
-            Unlock::Opened => return Some(Exit::Unlocked),
+            Unlock::Opened => {
+                tried.forget();
+                return Some(Exit::Unlocked);
+            }
             Unlock::Wrong(limit) => {
                 note = Note::after(limit, person.secret);
                 // A refusal during a wait never reached the check, so the
                 // same entry may still be right once the wait is over.
                 if limit.wait_seconds.unwrap_or(0) == 0 {
-                    tried.remember(person.uid, secret, note);
+                    tried.remember(person.uid, &secret);
                 }
             }
             Unlock::CouldNotTry => return Some(Exit::NothingToTry),
@@ -439,9 +488,19 @@ mod tests {
                 (1000, "correct horse".to_owned())
             ]
         );
+        let asks: Vec<&str> = screen
+            .seen
+            .iter()
+            .map(String::as_str)
+            .filter(|line| line.starts_with("ask"))
+            .collect();
         assert_eq!(
-            screen.seen.get(2).map(String::as_str),
-            Some("ask Anna Password [Incorrect password. 9 tries left.]")
+            asks,
+            [
+                "ask Anna Password []",
+                "ask Anna Password [Incorrect password. 9 tries left.]",
+                "ask Anna Password [You already tried that password. Try another.]",
+            ]
         );
     }
 

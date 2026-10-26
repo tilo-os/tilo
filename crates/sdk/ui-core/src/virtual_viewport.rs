@@ -88,12 +88,20 @@ pub fn glide_step(velocity: f64, seconds: f64) -> (f64, f64) {
     let keep = (-k * seconds).exp();
     let displacement = velocity * (1.0 - keep) / k;
     let remaining = velocity * keep;
-    let remaining = if remaining.abs() < GLIDE_REST_SPEED {
-        0.0
-    } else {
-        remaining
-    };
+    if remaining.abs() < GLIDE_REST_SPEED {
+        // Coming to rest, it covers the rest of the decay too: a glide
+        // lands where it was always going ([`glide_rest_distance`]).
+        return (velocity / k, 0.0);
+    }
     (displacement, remaining)
+}
+
+/// How far a glide at `velocity` travels before it rests: the whole
+/// integral of the decay, `v₀/k`, which its steps ([`glide_step`]) cover
+/// exactly whatever the frame rate.
+#[must_use]
+pub fn glide_rest_distance(velocity: f64) -> f64 {
+    finite_or_zero(velocity) / FLING_DECAY_PER_SECOND
 }
 
 /// Deterministic single-axis momentum used by virtualized collection widgets.
@@ -114,6 +122,19 @@ pub struct ScrollMomentum {
     device_per_unit: f64,
     /// What [`Self::advance`] has not yet moved: less than a device pixel.
     carry: f64,
+    /// The give past the ends while fingers pull the content there, and its
+    /// spring back once they let go ([`crate::motion::RubberBand`]).
+    band: crate::motion::RubberBand,
+    /// The view the give is measured against, whether the content scrolls
+    /// along it at all (no give otherwise), and the motion the person
+    /// allows ([`Self::set_view`]).
+    view: f64,
+    scrolls: bool,
+    motion: crate::tokens::EffectiveMotion,
+    /// The pixel delta the fingers moved in the event being applied, and
+    /// whether the give took some of it in.
+    hand: f64,
+    taken_in: bool,
 }
 
 impl Default for ScrollMomentum {
@@ -126,11 +147,47 @@ impl Default for ScrollMomentum {
             pending_pixel: false,
             device_per_unit: 1.0,
             carry: 0.0,
+            band: crate::motion::RubberBand::new(),
+            view: 0.0,
+            scrolls: false,
+            motion: crate::tokens::EffectiveMotion::default(),
+            hand: 0.0,
+            taken_in: false,
         }
     }
 }
 
 impl ScrollMomentum {
+    /// The view `extent` long the give past the ends is measured against,
+    /// whether the content `scrolls` along it (content that fits gives
+    /// nowhere), and the `motion` the person allows (reduced: no give).
+    pub fn set_view(&mut self, extent: f64, scrolls: bool, motion: crate::tokens::EffectiveMotion) {
+        self.view = extent.max(0.0);
+        self.scrolls = scrolls;
+        self.motion = motion;
+        if motion.reduced() || !scrolls {
+            self.band.stop();
+        }
+    }
+
+    /// How far past an end the content is drawn at `now`, in whole device
+    /// pixels: negative before the start.
+    #[must_use]
+    pub fn give(&self, now: Instant) -> f64 {
+        self.band.give(now, self.device_per_unit).y
+    }
+
+    /// Whether the give wants a frame: it springs back, or was drawn
+    /// otherwise than it stands now.
+    #[must_use]
+    pub fn give_needs_frame(&self, now: Instant) -> bool {
+        self.band.needs_frame(now, self.device_per_unit)
+    }
+
+    fn band_view(&self) -> vello::kurbo::Vec2 {
+        vello::kurbo::Vec2::new(0.0, self.view)
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -206,6 +263,18 @@ impl ScrollMomentum {
         whole
     }
 
+    /// How much further the glide moves before it rests, in logical
+    /// pixels, as [`Self::advance`] moves it: in whole device pixels, so
+    /// what was moved plus this is where it lands. 0 at rest.
+    #[must_use]
+    pub fn rest_distance(&self) -> f64 {
+        if !self.is_active() {
+            return 0.0;
+        }
+        let scale = self.device_per_unit;
+        ((glide_rest_distance(self.velocity) + self.carry) * scale).round() / scale
+    }
+
     /// The glide's speed, in logical pixels per second; 0 at rest.
     #[must_use]
     pub fn velocity(&self) -> f64 {
@@ -256,15 +325,39 @@ impl ScrollMomentum {
                 }
             }
             MouseScrollDelta::PixelDelta(position) => match phase {
-                TouchPhase::Ended => match self.kinetic.release(crate::time::now()) {
-                    Some((_, velocity)) if !reduce_motion => {
-                        self.fling(velocity);
-                        WheelStep::Fling
+                TouchPhase::Ended => {
+                    let release = self.kinetic.release(crate::time::now());
+                    let now = crate::motion::frame_now();
+                    // Let go past an end, the give springs back instead.
+                    if self.band.is_stretched(now) {
+                        let velocity = release.map_or(0.0, |(_, velocity)| velocity);
+                        self.band.release(
+                            vello::kurbo::Vec2::new(0.0, velocity),
+                            self.band_view(),
+                            self.motion,
+                            now,
+                        );
+                        return WheelStep::Fling;
                     }
-                    _ => WheelStep::Ignored,
-                },
+                    match release {
+                        Some((_, velocity)) if !reduce_motion => {
+                            self.fling(velocity);
+                            WheelStep::Fling
+                        }
+                        _ => WheelStep::Ignored,
+                    }
+                }
                 TouchPhase::Cancelled => {
                     self.kinetic.reset();
+                    let now = crate::motion::frame_now();
+                    if self.band.is_stretched(now) {
+                        self.band.release(
+                            vello::kurbo::Vec2::ZERO,
+                            self.band_view(),
+                            self.motion,
+                            now,
+                        );
+                    }
                     WheelStep::Ignored
                 }
                 TouchPhase::Started | TouchPhase::Moved => {
@@ -281,23 +374,53 @@ impl ScrollMomentum {
                         return WheelStep::Ignored;
                     }
                     self.pending_pixel = true;
-                    WheelStep::Scroll(delta)
+                    self.hand = delta;
+                    // Moving back toward the content takes a give in first.
+                    let rest = self
+                        .band
+                        .take_in(
+                            vello::kurbo::Vec2::new(0.0, delta),
+                            self.band_view(),
+                            self.motion,
+                            crate::motion::frame_now(),
+                        )
+                        .y;
+                    self.taken_in = rest.to_bits() != delta.to_bits();
+                    WheelStep::Scroll(rest)
                 }
             },
         }
     }
 
-    /// Report whether the [`WheelStep::Scroll`] delta moved the content. A
-    /// refused delta (at an edge) stops momentum and forgets the gesture so
-    /// an outer scroll region can take it over, fling included.
-    pub fn wheel_applied(&mut self, delta: f64, moved: bool) {
-        if !moved {
+    /// Report how far the [`WheelStep::Scroll`] delta moved the content;
+    /// returns whether the view moved, the content or its give. What
+    /// fingers asked past an end pulls the content through the rubber band
+    /// ([`Self::set_view`]); a delta refused whole with no give (at an edge,
+    /// under reduced motion) stops momentum and forgets the gesture so an
+    /// outer scroll region can take it over, fling included.
+    pub fn wheel_applied(&mut self, delta: f64, moved: f64) -> bool {
+        let pixel = std::mem::take(&mut self.pending_pixel);
+        let mut gave = std::mem::take(&mut self.taken_in);
+        let excess = delta - moved;
+        if pixel && self.scrolls && excess.abs() > 1e-9 {
+            let now = crate::motion::frame_now();
+            self.band.pull(
+                vello::kurbo::Vec2::new(0.0, excess),
+                self.band_view(),
+                self.motion,
+                now,
+            );
+            gave |= self.band.is_stretched(now);
+        }
+        if moved == 0.0 && !gave {
             self.stop();
             self.kinetic.reset();
-        } else if self.pending_pixel {
-            self.kinetic.record(0.0, delta, crate::time::now());
+            return false;
         }
-        self.pending_pixel = false;
+        if pixel {
+            self.kinetic.record(0.0, self.hand, crate::time::now());
+        }
+        true
     }
 
     #[must_use]
@@ -336,6 +459,16 @@ impl ScrollGlide {
 
     pub fn stop(&mut self) {
         self.x.stop();
+        self.y.stop();
+    }
+
+    /// Stop the glide across, and along it is left as it is.
+    pub fn stop_x(&mut self) {
+        self.x.stop();
+    }
+
+    /// Stop the glide up or down, and across it is left as it is.
+    pub fn stop_y(&mut self) {
         self.y.stop();
     }
 
@@ -434,11 +567,11 @@ impl KineticSampler {
 /// [`ScrollMomentum::wheel`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WheelStep {
-    /// Move the content by this many logical pixels now, then report whether
-    /// it moved through [`ScrollMomentum::wheel_applied`].
+    /// Move the content by this many logical pixels now, then report how
+    /// far it moved through [`ScrollMomentum::wheel_applied`].
     Scroll(f64),
-    /// A continuous gesture ended fast enough to keep gliding; the momentum
-    /// is now active and the event is consumed.
+    /// A continuous gesture ended fast enough to keep gliding, or past an
+    /// end, where its give springs back; the event is consumed.
     Fling,
     /// Nothing to do (a phase marker, or a gesture that ended at rest).
     Ignored,
@@ -1236,14 +1369,22 @@ where
 
     #[must_use]
     pub fn visible_range(&self) -> Range<usize> {
+        self.range_around(self.overscan, self.overscan)
+    }
+
+    /// Half-open item range intersecting the viewport stretched `above`
+    /// pixels up and `below` pixels down.
+    #[must_use]
+    pub fn range_around(&self, above: f64, below: f64) -> Range<usize> {
         if self.count == 0 {
             return 0..0;
         }
         if self.viewport <= 0.0 {
             return 0..self.count;
         }
-        let start_y = (self.offset - self.overscan).max(0.0);
-        let end_y = (self.offset + self.viewport + self.overscan).min(self.content_extent());
+        let start_y = (self.offset - finite_non_negative(above)).max(0.0);
+        let end_y =
+            (self.offset + self.viewport + finite_non_negative(below)).min(self.content_extent());
         let start = self.index_at_content_offset(start_y).unwrap_or(0);
         let end = if end_y >= self.content_extent() {
             self.count
@@ -1451,7 +1592,7 @@ mod tests {
                 for phase in [TouchPhase::Started, TouchPhase::Moved, TouchPhase::Moved] {
                     let step = momentum.wheel(&pixel(-20.0), phase, reduce_motion);
                     assert_eq!(step, WheelStep::Scroll(20.0));
-                    momentum.wheel_applied(20.0, true);
+                    momentum.wheel_applied(20.0, 20.0);
                     assert!(!momentum.is_active(), "pixel deltas track the fingers 1:1");
                 }
                 let end = momentum.wheel(&pixel(0.0), TouchPhase::Ended, reduce_motion);
@@ -1471,9 +1612,9 @@ mod tests {
             let pixel = |y| MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, y));
             let mut momentum = ScrollMomentum::new();
             let _ = momentum.wheel(&pixel(-20.0), TouchPhase::Started, false);
-            momentum.wheel_applied(20.0, true);
+            momentum.wheel_applied(20.0, 20.0);
             let _ = momentum.wheel(&pixel(-20.0), TouchPhase::Moved, false);
-            momentum.wheel_applied(20.0, false);
+            momentum.wheel_applied(20.0, 0.0);
             let end = momentum.wheel(&pixel(0.0), TouchPhase::Ended, false);
             assert_eq!(end, WheelStep::Ignored);
         }

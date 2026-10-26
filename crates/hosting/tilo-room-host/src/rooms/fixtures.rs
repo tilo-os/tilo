@@ -85,6 +85,34 @@ impl TestHost {
         self.host.compactor()
     }
 
+    /// Let visitors watch `workspace_id` read-only as `spectators`, as the
+    /// relay admits them: every device the spectator root certified reads
+    /// the room's state and writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// The room is not open here.
+    pub async fn admit_spectators(
+        &self,
+        workspace_id: u64,
+        spectators: crate::room_access::Spectators,
+    ) -> Result<(), String> {
+        let workspace = self
+            .rooms()
+            .inner
+            .host
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned()
+            .ok_or_else(|| format!("room {workspace_id} is not open here"))?;
+        workspace.lock().await.spectators = Some(spectators);
+        // Live subscriptions are audited again: fewer seats end the extra.
+        crate::authority_epoch::bump();
+        Ok(())
+    }
+
     /// Stop the host, then its router and endpoint.
     pub async fn shutdown(self) {
         self.host.shutdown().await;

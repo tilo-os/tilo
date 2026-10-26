@@ -10,7 +10,7 @@
 
 use std::rc::Rc;
 
-use super::{NodeId, Point, Rect, Scene, TextRenderer, Theme, TreeModel, TreeRowKey, TreeView};
+use super::{NodeId, Point, Rect, Scene, TextRenderer, Theme, TreeImpl, TreeModel, TreeRowKey};
 use crate::chrome::{
     NavCount, NavRowFace, NavRowStyle, NavSectionFace, SelectionState, nav_badge_column,
     nav_item_height, nav_rail_item_height, nav_rail_row_height, nav_row_height, nav_row_layout,
@@ -200,7 +200,7 @@ impl<M> NavPresentation<M> {
     }
 }
 
-impl<T, M: TreeModel> TreeView<T, M> {
+impl<T, M: TreeModel> TreeImpl<T, M> {
     /// Paint this tree as a navigation list. The rows take the navigation
     /// metrics at once, so sections handed over before the first layout
     /// already stand at their own heights.

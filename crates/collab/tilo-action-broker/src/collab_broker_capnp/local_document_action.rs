@@ -335,7 +335,7 @@ pub(super) fn admit(
                 &request.action,
             )
             .await;
-        let _admission = state
+        let admission = state
             .admission_lock
             .lock()
             .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
@@ -388,7 +388,7 @@ pub(super) fn admit(
         let invocation = tilo_actions::InvocationId(request.invocation);
         // No confirmation is synthesized from a report. Actions requiring it
         // fail closed at the same policy gate as ordinary invocation.
-        let job = state
+        let staged = state
             .admit_invocation_from_offered_owned(
                 peer,
                 offered,
@@ -415,7 +415,8 @@ pub(super) fn admit(
                 Some(&request),
             )
             .map_err(capnp::Error::failed)?;
-        drop(job);
+        drop(admission);
+        drop(staged.start(state).await.map_err(capnp::Error::failed)?);
         let key = InvocationKey {
             room: route.cluster_id,
             host: journal_host(state)?,

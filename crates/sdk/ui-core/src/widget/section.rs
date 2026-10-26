@@ -1183,6 +1183,7 @@ impl Widget for Section {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.motion = theme.motion();
+        self.share_trailing_column(theme);
         let rhythm = &theme.tokens.spacing.rhythm;
         let node = self.parts.build(
             Style {
@@ -1463,6 +1464,43 @@ impl Section {
             for child in self.parts.children.iter_mut().take(end).skip(start) {
                 if let Some(row) = Self::row_mut(child) {
                     row.set_shared_leading(shared);
+                }
+            }
+            start = end;
+        }
+    }
+
+    /// One column of trailing controls per run of consecutive list rows:
+    /// where a row's control has marks after it (a status dot, a check, a
+    /// chevron), every row's control keeps that room, and a run whose
+    /// controls have none keeps them on the edge.
+    fn share_trailing_column(&mut self, theme: &Theme) {
+        let marks: Vec<Option<f64>> = self
+            .parts
+            .children
+            .iter_mut()
+            .map(|child| Self::row_mut(child).map(|row| row.marks_after_trailing(theme)))
+            .collect();
+        let mut start = 0;
+        while start < marks.len() {
+            if marks.get(start).is_some_and(Option::is_none) {
+                start += 1;
+                continue;
+            }
+            let end = (start..marks.len())
+                .find(|&i| marks.get(i).is_some_and(Option::is_none))
+                .unwrap_or(marks.len());
+            let widest = marks
+                .get(start..end)
+                .unwrap_or_default()
+                .iter()
+                .flatten()
+                .copied()
+                .fold(0.0, f64::max);
+            let shared = (widest > 0.0).then_some(widest);
+            for child in self.parts.children.iter_mut().take(end).skip(start) {
+                if let Some(row) = Self::row_mut(child) {
+                    row.set_shared_after_trailing(shared);
                 }
             }
             start = end;

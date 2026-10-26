@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acceptance import gpu  # noqa: E402
+from acceptance import core, gpu  # noqa: E402
 from acceptance.vm import TiloVm, VmError  # noqa: E402
 from acceptance.checks import apps, daily_apps  # noqa: E402
 from acceptance.checks.apps import (FLAT_STDDEV, AppLaunch, Proc, app_launch,  # noqa: E402
@@ -106,6 +106,40 @@ class ChromiumPlatformTests(unittest.TestCase):
         ctx = SimpleNamespace(vm=SimpleNamespace(exec=unavailable))
         with self.assertRaisesRegex(VmError, "slot exec unavailable"):
             daily_apps._ozone_flag(ctx, SimpleNamespace(metrics={}), "wayland")
+
+
+class EnvironmentRefusalTests(unittest.TestCase):
+    # tilo-ush logs through tracing's default format, colours included.
+    REFUSED = ("\x1b[33m WARN\x1b[0m \x1b[2mush::supervisor\x1b[0m\x1b[2m:\x1b[0m ush: the environment "
+               "cannot be built \x1b[3mrecord\x1b[0m\x1b[2m=\x1b[0mdefault \x1b[3mreason\x1b[0m\x1b[2m=\x1b[0m"
+               "no environment can be built on this device: no env-runtime image is installed")
+
+    def test_the_last_refusal_names_why_no_shell_started(self):
+        journal = "\n".join(["Started tilo-ush.service.", self.REFUSED.replace("installed", "older"),
+                              self.REFUSED])
+        self.assertEqual(core.environment_refusal(journal),
+                         "no environment can be built on this device: no env-runtime image is installed")
+
+    def test_a_runtime_that_refused_nothing_names_nothing(self):
+        self.assertIsNone(core.environment_refusal("Started tilo-ush.service.\nush: session opened"))
+
+
+class TerminalWithoutShellTests(unittest.TestCase):
+    def test_no_shell_fails_with_the_refusal_and_types_nothing(self):
+        typed = []
+        ctx = SimpleNamespace(
+            vm=SimpleNamespace(control=lambda *args: typed.append(args),
+                               exec=lambda *a, **k: EnvironmentRefusalTests.REFUSED),
+            shot=lambda name: None, write=lambda name, text: None)
+        res = SimpleNamespace(metrics={})
+        with patch.object(apps, "_lifecycle", return_value=(1, {}, 0)), \
+                patch.object(core, "terminal_shells", return_value=set()), \
+                patch.object(core, "wait_new_terminal_shell", return_value=None), \
+                patch.object(core, "ush_diagnostics", return_value=""):
+            with self.assertRaisesRegex(apps.CheckFailed, "refused it: no environment can be built"):
+                apps.terminal(ctx, res)
+        self.assertEqual(typed, [], "Enter would take the offer of the device's own shell")
+        self.assertIsNone(res.metrics["seconds_to_shell"])
 
 
 class ParseProcsTests(unittest.TestCase):
@@ -615,9 +649,9 @@ class FirstFrameBudgetTests(unittest.TestCase):
         self.assertLessEqual({"A14", "R05"}, ids)
         self.assertLess(run.ORDER.index("A14"), run.ORDER.index("R02"))
         # R05 reads the adapter line of every app the run opened. K01 (it restarts the session
-        # with the clock set back) and R08 (it signs seat0's greeter in) open none in the slot,
-        # so only they and P03 may follow R05.
-        self.assertEqual(run.ORDER[-4:], ["R05", "K01", "R08", "P03"])
+        # with the clock set back), R08 (it signs seat0's greeter in) and C02 (it takes that
+        # account through first use) open none in the slot, so only they and P03 may follow R05.
+        self.assertEqual(run.ORDER[-5:], ["R05", "K01", "R08", "C02", "P03"])
         self.assertEqual(sorted(run.ORDER), sorted(ids - set(run.DE_PASS)))
 
 
@@ -637,6 +671,28 @@ class ListingTests(unittest.TestCase):
 
 
 class GuestAtspiProbeTests(unittest.TestCase):
+    # Stands in for tools/atspi_external_client.py where the guest's bus must answer a
+    # known way: one AT-SPI address, one connection of another process, walks refused.
+    STUB_CLIENT = (
+        "ROOT_PATH = '/org/a11y/atspi/accessible/root'\n"
+        "PATH_RE = None\n"
+        "def command(*args, check=True):\n"
+        "    return ''\n"
+        "def atspi_address():\n"
+        "    return 'unix:path=/run/user/1000/at-spi/bus'\n"
+        "def bus_pids(address):\n"
+        "    return {':1.4': 4101}\n"
+        "def app_process(pid):\n"
+        "    return pid\n"
+        "def process_command(pid):\n"
+        "    return '/usr/bin/other-app'\n"
+        "class AtspiClient:\n"
+        "    def __init__(self, address, bus):\n"
+        "        self.bus = bus\n"
+        "    def property(self, path, name):\n"
+        "        raise RuntimeError('stub refuses the walk')\n"
+    )
+
     def probe(self, client, no_commands):
         proc = subprocess.run(
             [sys.executable, "-", "file-explorer", "Files activity", "Files", "0"],
@@ -673,6 +729,20 @@ class GuestAtspiProbeTests(unittest.TestCase):
             probe = self.probe(client, empty)
         self.assertIn("failed to load: FileNotFoundError:", probe["error"])
         self.assertNotIn("no AT-SPI client", probe["error"])
+
+    def test_no_connection_of_the_program_reports_the_ones_the_bus_has(self):
+        # A bus that answers, holds one connection of another process and none of
+        # file-explorer: the report says so, names the connection it did find with its
+        # process, and leaves the listing unobserved rather than empty.
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "stub_client.py"
+            client.write_text(self.STUB_CLIENT)
+            probe = self.probe(client, empty)
+        self.assertIn("belongs to a file-explorer process", probe["error"])
+        self.assertEqual([(c["bus"], c["app_pid"], c["command"]) for c in probe["clients"]],
+                         [(":1.4", 4101, "/usr/bin/other-app")])
+        self.assertEqual(probe["clients"][0]["error"], "walk failed: stub refuses the walk")
+        self.assertEqual(judge_listing(probe, "m")[0], "unobservable")
 
 
 class GuestClientCopyTests(unittest.TestCase):

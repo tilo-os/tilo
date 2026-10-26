@@ -75,10 +75,18 @@ Roles are presets of grants on a room, kept as named grant sets:
 | Role | Grants on the room |
 |---|---|
 | Viewer | Read: Allow |
-| Commenter | Read: Allow; comment units and actions: Allow (Undoable) |
+| Commenter | Read: Allow; comment units and actions, reactions: Allow (Undoable) |
 | Editor | Read, Undoable: Allow; Outside: Ask; moderation: Deny |
 | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`: Allow on members below Moderator |
 | Owner | everything: Allow, and governance |
+
+A built-in role's rules have one definition, the code's (`roles::role_rules`).
+A room stores its roles' grants (`role:<role>:<index>`) so older builds read
+them, but every reader of a stored policy replaces them with the current
+definition (`RoomPolicy::with_current_roles`), so a role's change reaches
+rooms written before it. A room does not edit a built-in role: governance
+refuses to revoke or give a `role:` grant (`Refusal::BuiltInRole`). It adjusts
+a role with grants of its own on the role's subject, and those stay as given.
 
 The room is itself a resource in the tree. Inviting, removing members,
 changing roles and room settings are the room's actions; a role preset or a

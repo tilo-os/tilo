@@ -381,6 +381,9 @@ pub struct PlayerApp {
     library_max_scroll: f64,
     /// The area of the sheet its rows live in; rows outside it do not act.
     library_list_rect: Rect,
+    /// The way back to the picture while the library fills a narrow window's
+    /// content area ([`Self::library_takes_the_window`]).
+    library_back_rect: Rect,
     library_queue_tab_rect: Rect,
     library_recent_tab_rect: Rect,
     library_shared_tab_rect: Rect,
@@ -419,6 +422,10 @@ pub struct PlayerApp {
     /// Where the shared library's edits and the player's own controls go:
     /// the framework's door, handed over when the surface is attached.
     dispatcher: Option<Dispatcher<PlayerResource>>,
+    /// The shared library's verbs bound to what the player shows, published
+    /// for the view that hosts it: the view reads it, so it does not hold
+    /// the player.
+    playhead: Option<crate::resource::Playhead>,
     /// The shared library as last presented.
     shared_library: crate::shared::Library,
     /// What the window is built for: only a live one starts a decoder
@@ -819,7 +826,8 @@ impl PlayerApp {
             drawer: SidebarDrawer::new()
                 .left()
                 .closed()
-                .content_kind(ui::widget::ContentKind::Document),
+                .content_kind(ui::widget::ContentKind::Document)
+                .with_push(),
             content_inset: 0.0,
             content_inset_stale: false,
             transport_top: 0.0,
@@ -831,6 +839,7 @@ impl PlayerApp {
             library_shared_tab_rect: Rect::ZERO,
             library_row_hits: Vec::new(),
             library_clear_rect: Rect::ZERO,
+            library_back_rect: Rect::ZERO,
             shared_watch_later_rect: Rect::ZERO,
             shared_bookmark_rect: Rect::ZERO,
             shared_row_hits: Vec::new(),
@@ -851,6 +860,7 @@ impl PlayerApp {
             shot_loading: false,
             pending_pip: None,
             dispatcher: None,
+            playhead: None,
             shared_library: crate::shared::Library::default(),
             mode,
             capture_awaits: CaptureAwaits::Nothing,
@@ -1074,6 +1084,22 @@ impl PlayerApp {
             Some("fullscreen") => self.player.toggle_fullscreen(),
             _ => {}
         }
+    }
+
+    /// Publish what the playhead is on into `playhead`, which the view that
+    /// hosts this player reads.
+    pub(crate) fn share_playhead(&mut self, playhead: &crate::resource::Playhead) {
+        self.playhead = Some(playhead.clone());
+        self.publish_playhead();
+    }
+
+    /// Tell the view what the playhead is on now. Nothing happens before the
+    /// view hands over where to say it.
+    fn publish_playhead(&self) {
+        let Some(playhead) = &self.playhead else {
+            return;
+        };
+        *playhead.borrow_mut() = self.playhead_declarations();
     }
 
     /// Show the shared library the document holds.
@@ -1519,24 +1545,34 @@ impl PlayerApp {
     }
 
     /// Give the keyboard to the library sheet's control at `path`, the
-    /// order [`Widget::accessibility`] lists them in: the three tabs, then
-    /// the shared tab's actions and rows or the local rows.
+    /// order [`Widget::accessibility`] lists them in: "Back to video" where
+    /// the library fills the window, the three tabs, then the shared tab's
+    /// actions and rows or the local rows.
     fn focus_player_control(&mut self, path: &[usize]) -> bool {
         if !self.library_visible {
             return false;
         }
+        let back = self.library_back_rect.width() > 0.0;
+        let index = match path {
+            [0] if back => {
+                self.library_focus_id = Some("library-back".to_owned());
+                self.dirty = true;
+                return true;
+            }
+            [index] => index.saturating_sub(usize::from(back)),
+            _ => return false,
+        };
         let shared = self.library_tab == LibraryTab::Shared;
-        let focus = match path {
-            [0] => Some("library-tab-queue".to_owned()),
-            [1] => Some("library-tab-recent".to_owned()),
-            [2] => Some("library-tab-shared".to_owned()),
-            [3] if shared => Some("shared-watch-later".to_owned()),
-            [4] if shared => Some("shared-bookmark".to_owned()),
-            [index] if shared => shared_accessibility_targets(self)
+        let focus = match index {
+            0 => Some("library-tab-queue".to_owned()),
+            1 => Some("library-tab-recent".to_owned()),
+            2 => Some("library-tab-shared".to_owned()),
+            3 if shared => Some("shared-watch-later".to_owned()),
+            4 if shared => Some("shared-bookmark".to_owned()),
+            index if shared => shared_accessibility_targets(self)
                 .get(index.saturating_sub(5))
                 .map(|(focus, _, _)| focus.clone()),
-            [index] => self.local_row_focus(index.saturating_sub(3)),
-            _ => None,
+            index => self.local_row_focus(index.saturating_sub(3)),
         };
         let Some(focus) = focus else {
             return false;
@@ -1628,6 +1664,15 @@ impl PlayerApp {
 
     fn request_library_hide(&self) {
         self.request(&VideoEffect::HideLibrary);
+    }
+
+    /// Back to the picture from a library that fills the window: the library
+    /// is one action away again, through the bar's sidebar toggle, the
+    /// `L` shortcut or the palette.
+    fn request_video_show(&mut self) {
+        self.request_library_hide();
+        self.player.reveal_controls();
+        self.dirty = true;
     }
 
     fn request_library_tab(&self, tab: LibraryTab) {
@@ -2332,7 +2377,9 @@ impl PlayerApp {
         self.resolve_library();
         let in_list = self.library_list_rect.contains(self.last_cursor);
         if self.library_visible && self.drawer.sidebar_contains(self.last_cursor) {
-            if self.library_queue_tab_rect.contains(self.last_cursor) {
+            if self.library_back_rect.contains(self.last_cursor) {
+                self.request_video_show();
+            } else if self.library_queue_tab_rect.contains(self.last_cursor) {
                 self.request_library_tab(LibraryTab::Queue);
             } else if self.library_recent_tab_rect.contains(self.last_cursor) {
                 self.request_library_tab(LibraryTab::Recent);
@@ -2450,6 +2497,23 @@ impl PlayerApp {
         self.handle_app_shortcut_input(logical_key, state, modifiers)
             || self.player.handle_key_input(logical_key, state)
     }
+
+    /// Where the library's tab, action or row at `index` in
+    /// [`Widget::accessibility`]'s order (past "Back to video") stands.
+    fn library_control_rect(&self, index: usize) -> Option<Rect> {
+        let shared = self.library_tab == LibraryTab::Shared;
+        match index {
+            0 => Some(self.library_queue_tab_rect),
+            1 => Some(self.library_recent_tab_rect),
+            2 => Some(self.library_shared_tab_rect),
+            3 if shared => Some(self.shared_watch_later_rect),
+            4 if shared => Some(self.shared_bookmark_rect),
+            index if shared => shared_accessibility_targets(self)
+                .get(index.saturating_sub(5))
+                .map(|(_, _, rect)| *rect),
+            index => self.local_row_rect(index.saturating_sub(3)),
+        }
+    }
 }
 
 impl Default for PlayerApp {
@@ -2506,6 +2570,7 @@ impl Widget for PlayerApp {
         self.drain_player_settings();
         self.maybe_loop_current_media();
         self.poll_open_frame();
+        self.publish_playhead();
     }
 
     fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
@@ -2692,6 +2757,20 @@ impl Widget for PlayerApp {
         use ui::a11y::{AccessNode, AccessState, Role};
         let mut children = Vec::new();
         if self.library_visible {
+            if self.library_back_rect.width() > 0.0 {
+                children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Back to video")
+                        .with_description("Escape")
+                        .with_action_target("video-player.library.back")
+                        .with_bounds(self.library_back_rect)
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.library_focus_id.as_deref() == Some("library-back"),
+                            ..Default::default()
+                        }),
+                );
+            }
             children.extend([
                 AccessNode::new(Role::Tab)
                     .with_name("Queue")
@@ -2771,19 +2850,14 @@ impl Widget for PlayerApp {
         if !self.library_visible {
             return None;
         }
-        let shared = self.library_tab == LibraryTab::Shared;
-        match path {
-            [0] => Some(self.library_queue_tab_rect),
-            [1] => Some(self.library_recent_tab_rect),
-            [2] => Some(self.library_shared_tab_rect),
-            [3] if shared => Some(self.shared_watch_later_rect),
-            [4] if shared => Some(self.shared_bookmark_rect),
-            [index] if shared => shared_accessibility_targets(self)
-                .get(index.saturating_sub(5))
-                .map(|(_, _, rect)| *rect),
-            [index] => self.local_row_rect(index.saturating_sub(3)),
-            _ => None,
+        let back = self.library_back_rect.width() > 0.0;
+        if back && path == [0] {
+            return Some(self.library_back_rect);
         }
+        let [index] = path else {
+            return None;
+        };
+        self.library_control_rect(index.saturating_sub(usize::from(back)))
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
@@ -2815,6 +2889,11 @@ impl Widget for PlayerApp {
             && matches!(action, ui::a11y::Action::Activate)
         {
             self.request_library_play(item_id);
+            true
+        } else if target == "video-player.library.back"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.request_video_show();
             true
         } else if target == "video-player.library.tab.queue"
             && matches!(action, ui::a11y::Action::Activate)
@@ -2877,6 +2956,8 @@ impl Widget for PlayerApp {
         }
         if self.status_action_rect.contains(self.last_cursor) {
             Some("Open video (Ctrl+O)")
+        } else if self.library_visible && self.library_back_rect.contains(self.last_cursor) {
+            Some("Go back to the video")
         } else if self.library_visible && self.library_queue_tab_rect.contains(self.last_cursor) {
             Some("Show this device's queue")
         } else if self.library_visible && self.library_recent_tab_rect.contains(self.last_cursor) {
@@ -3398,6 +3479,38 @@ mod tests {
             app.perform(VideoEffect::HideLibrary).unwrap();
             assert!(!app.library_visible);
         }
+        // The library filling a narrow window leads with the way back, and
+        // pressing it (or its accessible node) returns to the picture.
+        {
+            let mut app = lay_out_still(
+                PlayerApp::for_shot_open(None, Some("library")),
+                (420.0, 800.0),
+                1.0,
+            );
+            Framed::harness_mut(&mut app).relayout();
+            let back = app.library_back_rect;
+            assert!(back.width() > 0.0, "the way back leads the library screen");
+            let tree = Widget::accessibility(&*app).expect("application accessibility tree");
+            let node = tree
+                .children
+                .iter()
+                .find(|node| node.action_target.as_deref() == Some("video-player.library.back"))
+                .expect("the way back is addressable");
+            assert_eq!(node.name.as_deref(), Some("Back to video"));
+            assert_eq!(node.bounds.map(ui::a11y::AccessBounds::to_rect), Some(back));
+            let mut doc = automerge::AutoCommit::new();
+            let mut edits = ui::widget::Edits::lend(&mut doc);
+            assert!(app.perform_semantic_action(
+                "video-player.library.back",
+                &ui::a11y::Action::Activate,
+                &mut edits,
+                &(),
+            ));
+            assert!(
+                app.library_visible,
+                "the library is one action away again, not lost"
+            );
+        }
         {
             let app = PlayerApp::for_shot(Some("shared"));
             assert!(
@@ -3563,8 +3676,8 @@ mod tests {
             surface(&mut app, |player| player.library_visible),
             "a press beside the docked library keeps it"
         );
-        // Narrow, it floats over the picture, and a press beside it puts it
-        // away.
+        // Narrower, it takes the window as a screen of its own; "Back to
+        // video" puts it away and the picture is one press away again.
         app.harness()
             .relayout_themed(
                 ui::headless::viewport((420.0, 800.0)),
@@ -3572,11 +3685,16 @@ mod tests {
             )
             .unwrap();
         app.settle();
-        app.harness().click_at(400.0, 400.0);
+        assert!(
+            surface(&mut app, |player| player.library_visible),
+            "a library too wide to share the window stays open over it"
+        );
+        let back = surface(&mut app, |player| player.library_back_rect.center());
+        app.harness().click_at(back.x, back.y);
         app.settle();
         assert!(
             !surface(&mut app, |player| player.library_visible),
-            "the scrim closes the actual hosted library"
+            "the way back closes the actual hosted library"
         );
         assert!(
             !surface(&mut app, |player| {
@@ -3678,8 +3796,9 @@ mod tests {
             }
         }
         // Case `library_never_covers_the_transport`: wide, the library docks
-        // beside the picture and the player lays out beside it; narrow, it
-        // floats over the picture and stops above the transport.
+        // at its own width beside the picture and the player lays out beside
+        // it; narrower than its own width plus the picture's, it takes the
+        // content area as a screen of its own and leads with the way back.
         {
             let mut app = lay_out_still(
                 PlayerApp::for_shot_open(None, Some("library")),
@@ -3700,14 +3819,34 @@ mod tests {
                 1.0,
             );
             Framed::harness_mut(&mut app).relayout();
-            let theme = Theme::dark().with_reduce_motion(true);
             let sheet = app.drawer.sidebar_rect();
-            let transport = app.player.transport_rect(&theme);
-            assert!(app.drawer.is_overlay(), "narrow, the library floats");
             assert!(
-                sheet.height() > 0.0 && sheet.y1 <= transport.y0,
-                "the library {sheet:?} stops above the transport {transport:?}"
+                app.drawer.is_push(),
+                "a picture too narrow to keep its library shows the library whole"
             );
+            assert_eq!(sheet, app.rect, "the library fills the content area");
+            let back = app.library_back_rect;
+            assert!(
+                back.width() > 0.0 && sheet.contains_rect(back),
+                "the way back to the picture {back:?} leads the library {sheet:?}"
+            );
+            assert!(
+                back.y1 <= app.library_queue_tab_rect.y0,
+                "it stands above the tabs it shares the sheet with"
+            );
+            let mut app = lay_out_still(
+                PlayerApp::for_shot_open(None, Some("library")),
+                (420.0, 800.0),
+                1.0,
+            );
+            Framed::harness_mut(&mut app).relayout();
+            app.perform(VideoEffect::HideLibrary).unwrap();
+            Framed::harness_mut(&mut app).relayout();
+            assert!(
+                !app.library_visible,
+                "the same toggle puts the picture back"
+            );
+            assert_eq!(app.library_back_rect, Rect::ZERO);
         }
         // Case `library_sheet_follows_its_drawer`: closing the library moves
         // no hit rect into the video.

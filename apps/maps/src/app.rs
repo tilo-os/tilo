@@ -44,6 +44,7 @@ use ui::widget::{FloatingSurfaceProvider, Widget};
 
 use crate::canvas::{self, MapPalette, MapView};
 use crate::draw;
+use crate::endpoint_editor::GEOCODER;
 use crate::endpoint_editor::{Endpoint, EndpointEditor, EndpointEffect, EndpointFrame};
 use crate::geo::{self, Projection};
 use crate::map_controls::{ColumnMetrics, MapControlAction, MapControls};
@@ -283,6 +284,10 @@ pub struct MapsApp {
     net_tx: NetSender,
     net_rx: Receiver<NetMsg>,
     pending: u32,
+    /// The places of a committed search on their way from the geocoder:
+    /// the query and when it was asked. Their placeholder rows stand under
+    /// the results until they land.
+    search_asked: Option<(String, Instant)>,
     /// Whether background network/portal work may be spawned. False for the
     /// offline `--shots`/test app so it never touches the wire or D-Bus.
     online: bool,
@@ -365,6 +370,11 @@ impl Default for MapsApp {
         Self::new()
     }
 }
+
+/// A search result's row: the place's name, its address or kind under it.
+const RESULT_ROW: ui::widget::RowShape = ui::widget::RowShape::TITLE.with_secondary(1);
+/// How many rows a committed search reserves for the geocoder's places.
+const ARRIVING_RESULTS: usize = 3;
 
 impl MapsApp {
     /// Compact live-navigation surface for the shell floating host. The source
@@ -596,6 +606,7 @@ impl MapsApp {
             net_tx,
             net_rx,
             pending: 0,
+            search_asked: None,
             online,
             location_rx: None,
             locating: false,
@@ -1334,11 +1345,11 @@ impl MapsApp {
     }
 
     fn spawn_search(&mut self, query: String) {
-        self.pending += 1;
-        self.model.status = "Searching…".to_string();
         if !self.online {
             return;
         }
+        self.pending += 1;
+        self.search_asked = Some((query.clone(), ui::time::now()));
         let tx = self.net_tx.clone();
         spawn_net(async move {
             let results = net::geocode(&query).await;
@@ -1368,13 +1379,12 @@ impl MapsApp {
 
     fn run_endpoint_search(&mut self, endpoint: Endpoint, query: String) {
         let local_results = self.local_matches(&query);
-        self.endpoints.set_results(endpoint, local_results);
+        self.endpoints.set_results(endpoint, local_results.clone());
         if query.trim().is_empty() {
             return;
         }
-        self.pending += 1;
-        self.model.status = "Searching…".to_string();
         if self.online {
+            self.pending += 1;
             let tx = self.net_tx.clone();
             let origin = endpoint == Endpoint::Origin;
             spawn_net(async move {
@@ -1385,6 +1395,9 @@ impl MapsApp {
                     results,
                 });
             });
+        } else {
+            // Nothing asks the geocoder: what is here is all there is.
+            self.endpoints.finish_search(endpoint, local_results);
         }
     }
 
@@ -1952,24 +1965,33 @@ impl MapsApp {
         while let Ok(msg) = self.net_rx.try_recv() {
             self.pending = self.pending.saturating_sub(1);
             match msg {
-                NetMsg::Search { query, results } => match results {
-                    Ok(found) if !found.is_empty() => {
-                        let mut ranked = found;
-                        self.accept_places(ranked.clone());
-                        self.rank_results(&mut ranked, &query);
-                        self.results_anchor = Some(self.search_anchor());
-                        // A committed search: list the results in the panel
-                        // and centre on the top (nearest) match.
-                        if let Some(first) = ranked.first() {
-                            self.model.center = first.pos;
-                            self.model.selected = Some(first.id.clone());
-                        }
-                        self.model.results = ranked.clone();
-                        self.model.status = format!("{} results for “{}”", ranked.len(), query);
+                NetMsg::Search { query, results } => {
+                    if self
+                        .search_asked
+                        .as_ref()
+                        .is_some_and(|(asked, _)| *asked == query)
+                    {
+                        self.search_asked = None;
                     }
-                    Ok(_) => self.model.status = format!("No results for “{query}”"),
-                    Err(e) => self.model.status = format!("Search failed: {e}"),
-                },
+                    match results {
+                        Ok(found) if !found.is_empty() => {
+                            let mut ranked = found;
+                            self.accept_places(ranked.clone());
+                            self.rank_results(&mut ranked, &query);
+                            self.results_anchor = Some(self.search_anchor());
+                            // A committed search: list the results in the panel
+                            // and centre on the top (nearest) match.
+                            if let Some(first) = ranked.first() {
+                                self.model.center = first.pos;
+                                self.model.selected = Some(first.id.clone());
+                            }
+                            self.model.results = ranked.clone();
+                            self.model.status = format!("{} results for “{}”", ranked.len(), query);
+                        }
+                        Ok(_) => self.model.status = format!("No results for “{query}”"),
+                        Err(e) => self.model.status = format!("Search failed: {e}"),
+                    }
+                }
                 NetMsg::PaletteSearch { query, results } => {
                     let mut found = results.unwrap_or_default();
                     self.rank_results(&mut found, &query);
@@ -3442,6 +3464,56 @@ impl MapsApp {
         rect.y1
     }
 
+    /// The geocoder's places on their way: rows of a result's kind, the
+    /// first saying where they come from once they take a while, under the
+    /// results (or their header, while there are none yet).
+    fn draw_arriving_results(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        mut y: f64,
+    ) -> f64 {
+        let Some(clock) = self.search_clock() else {
+            return y;
+        };
+        if self.model.results.is_empty() {
+            y = self.draw_group_header(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                content,
+                y,
+                "Results",
+                None,
+            );
+        }
+        let step = clock.step(ui::time::now());
+        let h = RESULT_ROW.height(tr, theme);
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
+        for row in 0..ARRIVING_RESULTS {
+            ui::widget::ArrivalFace::at_step(
+                ui::widget::SkeletonShape::Row(RESULT_ROW),
+                step,
+                clock.source(),
+            )
+            .naming(row == 0)
+            .paint(&mut ctx, Rect::new(content.x0, y, content.x1, y + h));
+            y += h;
+        }
+        self.mark_edge(y);
+        y
+    }
+
+    /// The timing of the places a committed search waits on.
+    fn search_clock(&self) -> Option<ui::arriving::ArrivalClock> {
+        let (_, asked) = self.search_asked.as_ref()?;
+        Some(ui::arriving::ArrivalClock::new(
+            *asked,
+            ui::arriving::Source::host(GEOCODER),
+        ))
+    }
+
     /// The Explore view: the selected place, then results, nearby places,
     /// saved places and recent searches — or, with nothing to show, one
     /// sentence and the way to search. Returns the y below the content.
@@ -3573,6 +3645,9 @@ impl MapsApp {
                     Hit::SelectPlace(p.id.clone()),
                 );
             }
+        }
+        y = self.draw_arriving_results(scene, t, tr, theme, content, y);
+        if !results.is_empty() || self.search_asked.is_some() {
             y += s3;
         }
 
@@ -5255,6 +5330,9 @@ impl Widget for MapsApp {
             self.offline_panel.query_deadline(),
             self.poi_debounce,
             self.status_notice.deadline(),
+            self.search_clock()
+                .and_then(|clock| clock.next_step_at(ui::time::now())),
+            self.endpoints.arriving_deadline(),
         ]
         .into_iter()
         .flatten()
@@ -5297,3 +5375,6 @@ fn host_location(outcome: LocationOutcome) -> LocationChannel {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod search_arrival_tests;

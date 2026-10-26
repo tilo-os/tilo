@@ -29,6 +29,7 @@ function fixture() {
   const signalling = {
     join: call => sent.push(['join', call]),
     leave: () => sent.push(['leave']),
+    reachable: () => sent.push(['reachable']),
     show: (camera, screen, muted, deafened) => shows.push({camera, screen, muted, deafened}),
     onEvent(next) { listener = next; return () => { listener = undefined; }; },
   };
@@ -53,7 +54,10 @@ function fixture() {
   };
   const carriers = [];
   const transport = {
-    async connect({grant}) {
+    opens: [],
+    async connect({grant, signal}) {
+      transport.opens.push({grant, signal});
+      if (transport.hold) await transport.hold;
       if (transport.refuse) throw new Error('media admission denied');
       let close;
       const carrier = {
@@ -165,6 +169,25 @@ test('a roster change or a renewed token keeps the carrier; a dropped carrier re
   await drain();
   assert.equal(carriers.length, 2);
   assert.equal(carriers[1].grant.token, '03', 'a new carrier presents the renewed token');
+  assert.equal(call.state.phase, 'live');
+});
+
+test('a grant re-sent while the carrier is being opened lets that opening finish', async () => {
+  const {carriers, call, event, transport} = fixture();
+  let open;
+  transport.hold = new Promise(resolve => { open = resolve; });
+  call.join(CALL);
+  await drain();
+  event({kind: 'granted', grant: grantFor()});
+  await drain();
+  event({kind: 'granted', grant: grantFor({token: '03'})});
+  event({kind: 'granted', grant: grantFor({others: [BOB, 'd'.repeat(64)]})});
+  await drain();
+  assert.equal(transport.opens.length, 1, 'one opening for the participation');
+  assert.equal(transport.opens[0].signal.aborted, false);
+  open();
+  await drain();
+  assert.equal(carriers.length, 1);
   assert.equal(call.state.phase, 'live');
 });
 
@@ -291,7 +314,7 @@ test('a call whose carrier lost its admission waits out an offline spell for the
   }
   await drain();
   assert.equal(offline.call.state.phase, 'reconnecting');
-  assert.deepEqual(offline.sent, [['join', CALL]], 'the participation is kept');
+  assert.deepEqual(offline.sent, [['join', CALL], ['reachable']], 'the participation is kept, and the session told the host answered');
   // Back online, the session joins afresh and the host grants again.
   offline.environment.navigator.onLine = true;
   offline.transport.connect = working;

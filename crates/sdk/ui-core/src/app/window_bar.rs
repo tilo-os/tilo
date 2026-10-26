@@ -244,6 +244,13 @@ impl App {
                 self.floating.window_bar.options = *options;
                 self.drive_window_search(None, false)
             }
+            ToolbarEvent::SearchCover { cover } => {
+                self.floating
+                    .window_bar
+                    .driver
+                    .set_cover(cover.map(crate::window_toolbar::WholeRect::rect));
+                self.drive_window_search(None, false)
+            }
             ToolbarEvent::SearchReplace { with, all } => {
                 let bar = &mut self.floating.window_bar;
                 let touched = bar.driver.replace(

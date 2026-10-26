@@ -196,6 +196,10 @@ impl OnboardingView {
                     if let Ok(mut answer) = copy.answers[0].lock() {
                         copy.word(3).clone_into(&mut answer);
                     }
+                    // A slip in the second answer shows how it is marked.
+                    if let Ok(mut answer) = copy.answers[1].lock() {
+                        "zoo".clone_into(&mut answer);
+                    }
                     self.recovery_key_copy = Some(copy);
                 } else {
                     self.recovery_key_written = true;

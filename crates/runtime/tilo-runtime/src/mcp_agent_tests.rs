@@ -37,12 +37,53 @@ struct Notes {
     /// read: while it is above zero the app's top level comes in two pages,
     /// and asking for the second finds the revision changed.
     moves: Arc<Mutex<u32>>,
+    /// Rows a search's page holds, when set: more come in a second page.
+    search_page: Arc<Mutex<Option<usize>>>,
+    /// How many times the app's directory moves on between a search's
+    /// pages, as a busy app's does: asking for the next page then finds the
+    /// revision changed. `u32::MAX` never holds still.
+    search_moves: Arc<Mutex<u32>>,
     /// What the directory was asked, in order: `apps` for which apps run,
     /// else the provider and the parent a listing is under.
     asked: Arc<Mutex<Vec<String>>>,
     /// Whether Sheets runs too, its directory never answering: the answers
     /// it was asked for are held here, unanswered.
     silent: Arc<Mutex<Option<Vec<Unanswered>>>>,
+    /// Lines in each of the two pages the Todo note reads in, when it is a
+    /// long one: the notebook's read then takes a cursor.
+    long: Arc<Mutex<Option<usize>>>,
+    /// What the workspace says of its installed apps.
+    workspace: Arc<Mutex<Installed>>,
+    /// Why the session cannot say which apps run, when it cannot.
+    unreachable: Arc<Mutex<Option<String>>>,
+    /// Notes the notebook holds beyond Todo and Groceries, each with its
+    /// body beside it: a notebook grown as an agent's work grows it.
+    more: Arc<Mutex<usize>>,
+    /// Rows the app's directory has answered, every query together: the
+    /// work a call makes the app and the broker do.
+    answered: Arc<Mutex<usize>>,
+    /// Shaped as Notes publishes today: the notebook alone at the top, its
+    /// notes inside it, each note reading itself and holding its body.
+    live: bool,
+    /// Whether a name lookup is answered among the parent it names; an app
+    /// from before parents were named answers among its top level.
+    names_parents: Arc<Mutex<bool>>,
+}
+
+/// What a workspace answers about its installed apps.
+#[derive(Clone, Copy, PartialEq)]
+enum Installed {
+    /// Notes and Sheets, both for this agent to open.
+    Openable,
+    /// Notes to open; Sheets named only, this agent may not open it.
+    SheetsClosedToAgent,
+    /// Notes to open; Sheets offered only to close, as the workspace offers
+    /// an app that runs before its directory is published for browsing.
+    SheetsOnlyCloses,
+    /// None at all.
+    Nothing,
+    /// It cannot be read.
+    Unreadable,
 }
 
 /// A directory answer that is never given.
@@ -55,9 +96,135 @@ impl Notes {
             publication: "2a4120d7-2f63-4578-aed8-11cb91ed3628",
             invoked: Arc::default(),
             moves: Arc::default(),
+            search_page: Arc::default(),
+            search_moves: Arc::default(),
             asked: Arc::default(),
             silent: Arc::default(),
+            long: Arc::default(),
+            workspace: Arc::new(Mutex::new(Installed::Openable)),
+            unreachable: Arc::default(),
+            more: Arc::default(),
+            answered: Arc::default(),
+            live: false,
+            names_parents: Arc::new(Mutex::new(true)),
         }
+    }
+
+    fn installed(self, installed: Installed) -> Self {
+        *self.workspace.lock().unwrap() = installed;
+        self
+    }
+
+    /// The same Notes, shaped as the live one publishes its notebook.
+    fn live(mut self) -> Self {
+        self.live = true;
+        self
+    }
+
+    /// A live note's key, from a fixture note's (`notes.page:<id>`).
+    fn live_key(page: &str) -> String {
+        format!(
+            "notes.notebook/pages/{}",
+            page.rsplit(':').next().unwrap_or(page)
+        )
+    }
+
+    /// The live shape's catalogue: the notebook at the top, with its actions
+    /// and its notes; a note with its actions, its own read among them, and
+    /// its body; the body with its block actions.
+    fn live_rows(&self) -> Vec<CatalogueRow> {
+        use tilo_actions::OperationKind::{Document, Effect, View};
+        let text = |name: &'static str, required: bool| {
+            if required {
+                ActionParam::required(name, ParamType::Text, "Text")
+            } else {
+                ActionParam::optional(name, ParamType::Text, "Text")
+            }
+        };
+        let mut rows = vec![
+            self.row("", NOTEBOOK, "notes.notebook", "Notebook", None, true),
+            self.row(
+                NOTEBOOK,
+                NOTEBOOK,
+                "notes.notebook",
+                "Notebook",
+                Some(("new-note", "New note", vec![text("title", false)], Effect)),
+                false,
+            ),
+        ];
+        for (page, _, label) in self.notes() {
+            let key = Self::live_key(&page);
+            let body = format!("{key}/body");
+            rows.push(self.row(NOTEBOOK, &key, "notes.notebook.pages", &label, None, true));
+            for (action, title, params, operation) in [
+                ("rename", "Rename note", vec![text("title", true)], Document),
+                ("delete", "Delete note", Vec::new(), Document),
+                ("read", "Read", Vec::new(), View),
+            ] {
+                rows.push(self.row(
+                    &key,
+                    &key,
+                    "notes.notebook.pages",
+                    &label,
+                    Some((action, title, params, operation)),
+                    false,
+                ));
+            }
+            rows.push(self.row(&key, &body, "tilo.rich-text", "Body", None, true));
+            rows.push(self.row(
+                &body,
+                &body,
+                "tilo.rich-text",
+                "Body",
+                Some((
+                    "append-paragraph",
+                    "Append paragraph",
+                    vec![text("text", true)],
+                    Document,
+                )),
+                false,
+            ));
+        }
+        rows
+    }
+
+    /// The same Notes with `count` more notes in its notebook.
+    fn with_notes(self, count: usize) -> Self {
+        *self.more.lock().unwrap() = count;
+        self
+    }
+
+    /// Count `rows` more answered.
+    fn count_answered(&self, rows: usize) {
+        let mut answered = self.answered.lock().unwrap();
+        *answered = answered.saturating_add(rows);
+    }
+
+    /// The rows the directory answered since this was last taken.
+    fn take_answered(&self) -> usize {
+        std::mem::take(&mut *self.answered.lock().unwrap())
+    }
+
+    /// Every note: its key, its body's key and its title.
+    fn notes(&self) -> Vec<(String, String, String)> {
+        let mut notes = vec![
+            (TODO.to_owned(), TODO_BODY.to_owned(), "Todo".to_owned()),
+            (
+                SHOP.to_owned(),
+                SHOP_BODY.to_owned(),
+                "Groceries".to_owned(),
+            ),
+        ];
+        let more = *self.more.lock().unwrap();
+        for index in 0..more {
+            let id = format!("{index:08x}-1111-4222-8333-000000000000");
+            notes.push((
+                format!("notes.page:{id}"),
+                format!("notes.notebook/page/{id}/body"),
+                format!("Bench note {index:03}"),
+            ));
+        }
+        notes
     }
 
     fn restarted(&self) -> Self {
@@ -153,6 +320,9 @@ impl Notes {
     )]
     fn rows(&self, provider: &str) -> Vec<CatalogueRow> {
         use tilo_actions::OperationKind::{Document, Effect, View};
+        if self.live && provider != WORKSPACE {
+            return self.live_rows();
+        }
         if provider == WORKSPACE {
             let open = |app: &str, label: &str| CatalogueRow {
                 provider: WORKSPACE.into(),
@@ -181,7 +351,24 @@ impl Notes {
                 has_children: false,
                 visibility: None,
             };
-            return vec![open(APP, "Notes"), open("so.tilo.sheets", "Sheets")];
+            let installed = *self.workspace.lock().unwrap();
+            return match installed {
+                Installed::Openable => vec![open(APP, "Notes"), open("so.tilo.sheets", "Sheets")],
+                Installed::SheetsClosedToAgent => {
+                    let mut sheets = open("so.tilo.sheets", "Sheets");
+                    sheets.action = None;
+                    vec![open(APP, "Notes"), sheets]
+                }
+                Installed::SheetsOnlyCloses => {
+                    let mut sheets = open("so.tilo.sheets", "Sheets");
+                    if let Some(action) = sheets.action.as_mut() {
+                        action.address.action = "close".into();
+                        action.action_label = "Close".into();
+                    }
+                    vec![open(APP, "Notes"), sheets]
+                }
+                Installed::Nothing | Installed::Unreadable => Vec::new(),
+            };
         }
         let text = |name: &'static str, required: bool| {
             if required {
@@ -190,10 +377,13 @@ impl Notes {
                 ActionParam::optional(name, ParamType::Text, "Text")
             }
         };
-        let mut rows = vec![
-            self.row("", NOTEBOOK, "notes.notebook", "Notebook", None, true),
-            self.row("", TODO_BODY, "tilo.rich-text", "Todo", None, false),
-            self.row("", SHOP_BODY, "tilo.rich-text", "Groceries", None, false),
+        let long = self.long.lock().unwrap().is_some();
+        let notes = self.notes();
+        let mut rows = vec![self.row("", NOTEBOOK, "notes.notebook", "Notebook", None, true)];
+        for (_, body, label) in &notes {
+            rows.push(self.row("", body, "tilo.rich-text", label, None, false));
+        }
+        rows.extend([
             self.row(
                 NOTEBOOK,
                 NOTEBOOK,
@@ -207,13 +397,23 @@ impl Notes {
                 NOTEBOOK,
                 "notes.notebook",
                 "Notebook",
-                Some(("read", "Read", vec![text("item", false)], View)),
+                Some((
+                    "read",
+                    "Read",
+                    if long {
+                        vec![text("item", false), text("cursor", false)]
+                    } else {
+                        vec![text("item", false)]
+                    },
+                    View,
+                )),
                 false,
             ),
-            self.row(NOTEBOOK, TODO, "notes.page", "Todo", None, true),
-            self.row(NOTEBOOK, SHOP, "notes.page", "Groceries", None, true),
-        ];
-        for (page, label) in [(TODO, "Todo"), (SHOP, "Groceries")] {
+        ]);
+        for (page, _, label) in &notes {
+            rows.push(self.row(NOTEBOOK, page, "notes.page", label, None, true));
+        }
+        for (page, _, label) in &notes {
             rows.push(self.row(
                 page,
                 page,
@@ -252,7 +452,7 @@ impl Notes {
                 false,
             ));
         }
-        for (body, label) in [(TODO_BODY, "Todo"), (SHOP_BODY, "Groceries")] {
+        for (_, body, label) in &notes {
             rows.push(self.row(
                 body,
                 body,
@@ -297,6 +497,23 @@ impl Notes {
     }
 }
 
+impl Notes {
+    /// Why the session does not answer `query`, when it does not: it cannot
+    /// say which apps run, or the workspace's installed apps cannot be read.
+    fn refused(&self, query: &CatalogueQuery) -> Option<ActionHostError> {
+        let unreachable = self.unreachable.lock().unwrap().clone();
+        if let Some(reason) = unreachable {
+            return Some(ActionHostError::Unavailable { reason });
+        }
+        let installed = *self.workspace.lock().unwrap();
+        (query.provider.as_deref() == Some(WORKSPACE) && installed == Installed::Unreadable).then(
+            || ActionHostError::Unavailable {
+                reason: "this session's workspaces cannot be read".into(),
+            },
+        )
+    }
+}
+
 fn host_matches(row: &CatalogueRow, needle: &str) -> bool {
     let needle = needle.to_lowercase();
     let mut fields = vec![row.resource.id.clone(), row.resource.label.clone()];
@@ -310,12 +527,13 @@ fn host_matches(row: &CatalogueRow, needle: &str) -> bool {
         .any(|field| field.to_lowercase().contains(&needle))
 }
 
-impl ActionHost for Notes {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+impl Notes {
+    /// What the session answers `query` once it answers at all.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the fixture's whole directory, one kind of query per arm, reads as data"
+    )]
+    fn answer(&self, query: &CatalogueQuery) -> Pending<Result<CataloguePage, ActionHostError>> {
         let running = *self.running.lock().unwrap();
         if query.target.is_none() && query.needle.is_empty() {
             self.asked
@@ -325,7 +543,12 @@ impl ActionHost for Notes {
                     || "apps".to_owned(),
                     |provider| {
                         format!(
-                            "{provider} under {}",
+                            "{provider} {}under {}",
+                            query
+                                .resource_name
+                                .as_deref()
+                                .map(|name| format!("named {name} "))
+                                .unwrap_or_default(),
                             query.parent_resource.as_deref().unwrap_or_default()
                         )
                     },
@@ -366,6 +589,21 @@ impl ActionHost for Notes {
         }
         if let Some(target) = &query.target {
             rows.retain(|row| row.action.as_ref().is_some_and(|a| a.address == *target));
+        } else if let Some(name) = &query.resource_name {
+            // A name is answered whole, among the parent's children (the
+            // top level's, from a host that names no parent): an app answers
+            // with the resources so named, the workspace's catalogue with
+            // their rows, actions too.
+            let parent = if *self.names_parents.lock().unwrap() {
+                query.parent_resource.clone().unwrap_or_default()
+            } else {
+                String::new()
+            };
+            rows.retain(|row| {
+                row.parent_resource == parent
+                    && (provider == WORKSPACE || row.action.is_none())
+                    && (row.resource.kind == *name || row.resource.label.eq_ignore_ascii_case(name))
+            });
         } else if query.needle.is_empty() {
             let parent = query.parent_resource.clone().unwrap_or_default();
             rows.retain(|row| row.parent_resource == parent);
@@ -373,6 +611,7 @@ impl ActionHost for Notes {
             if provider != WORKSPACE && parent.is_empty() && moves > 0 {
                 if query.cursor.is_empty() {
                     rows.truncate(1);
+                    self.count_answered(rows.len());
                     return Pending::ready(Ok(CataloguePage {
                         revision: format!("v{moves}"),
                         rows,
@@ -390,6 +629,35 @@ impl ActionHost for Notes {
             }
         } else {
             rows.retain(|row| host_matches(row, &query.needle));
+            let search_page = *self.search_page.lock().unwrap();
+            if let Some(page) = search_page {
+                if !query.cursor.is_empty() {
+                    let moves = *self.search_moves.lock().unwrap();
+                    if moves > 0 {
+                        if moves != u32::MAX {
+                            *self.search_moves.lock().unwrap() = moves.saturating_sub(1);
+                        }
+                        return Pending::ready(Ok(CataloguePage {
+                            revision: "v2".into(),
+                            stale_cursor: true,
+                            ..CataloguePage::default()
+                        }));
+                    }
+                    rows.drain(..page.min(rows.len()));
+                } else if rows.len() > page {
+                    rows.truncate(page);
+                    self.count_answered(rows.len());
+                    return Pending::ready(Ok(CataloguePage {
+                        revision: "v1".into(),
+                        rows,
+                        next_cursor: b"more".to_vec(),
+                        ..CataloguePage::default()
+                    }));
+                }
+            }
+        }
+        if provider != WORKSPACE {
+            self.count_answered(rows.len());
         }
         Pending::ready(Ok(CataloguePage {
             revision: "v1".into(),
@@ -397,6 +665,19 @@ impl ActionHost for Notes {
             exhausted: true,
             ..CataloguePage::default()
         }))
+    }
+}
+
+impl ActionHost for Notes {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        match self.refused(&query) {
+            Some(refused) => Pending::ready(Err(refused)),
+            None => self.answer(&query),
+        }
     }
 
     fn invoke(
@@ -428,7 +709,7 @@ impl ActionHost for Notes {
         _caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Option<InvocationState> {
-        let (action, arguments) = self
+        let (resource, action, arguments) = self
             .invoked
             .lock()
             .unwrap()
@@ -439,7 +720,11 @@ impl ActionHost for Notes {
                     InvokeArgument::Json(map) => map.clone(),
                     _ => serde_json::Map::new(),
                 };
-                (request.target.address.action.clone(), arguments)
+                (
+                    request.target.address.resource.clone(),
+                    request.target.address.action.clone(),
+                    arguments,
+                )
             })?;
         let failed = |code: &str, message: &str| InvocationUpdate::Failed {
             invocation: *id,
@@ -457,12 +742,15 @@ impl ActionHost for Notes {
                 ..tilo_actions::ActionOutput::default()
             },
         };
+        let long = *self.long.lock().unwrap();
         let update = match action.as_str() {
             "slow" => InvocationUpdate::Accepted { invocation: *id },
             "rename" if !arguments.contains_key("title") => {
                 failed("invalid_arguments", "argument `title` is required")
             }
             "read" => match arguments.get("item").and_then(Value::as_str) {
+                // A live note reads itself.
+                None if resource == self.id(&Self::live_key(TODO)) => succeeded(Some(todo_page())),
                 None => succeeded(Some(json!({
                     "kind": "notes.notebook",
                     "pages": [
@@ -471,7 +759,13 @@ impl ActionHost for Notes {
                     ],
                     "tags": [],
                 }))),
-                Some(TODO) => succeeded(Some(todo_page())),
+                Some(TODO) => match long {
+                    Some(lines) => {
+                        let cursor = arguments.get("cursor").and_then(Value::as_str);
+                        succeeded(Some(long_page(lines, cursor)))
+                    }
+                    None => succeeded(Some(todo_page())),
+                },
                 Some(other) => failed("not_found", &format!("no note `{other}`")),
             },
             "append-paragraph" => succeeded(Some(json!({"block": "b9", "note": null}))),
@@ -484,8 +778,8 @@ impl ActionHost for Notes {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        Ok(())
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 
@@ -506,6 +800,23 @@ fn todo_page() -> Value {
             {"id": "b4", "kind": {"heading": 2}, "text": "Later"},
         ],
     })
+}
+
+/// A page of a long Todo note, as Notes answers it: `lines` lines of the
+/// first half, with the cursor to the second, or of the second half when
+/// `cursor` asks for it.
+fn long_page(lines: usize, cursor: Option<&str>) -> Value {
+    let half = usize::from(cursor == Some("second"));
+    let markdown = (0..lines)
+        .map(|line| format!("- [ ] item {half}-{line:03} ^h{half}l{line:03}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut page =
+        json!({"kind": "notes.page", "item": TODO, "title": "Todo", "markdown": markdown});
+    if half == 0 {
+        page["nextCursor"] = json!("second");
+    }
+    page
 }
 
 fn run<F: std::future::Future>(future: F) -> F::Output {
@@ -616,6 +927,119 @@ fn the_apps_are_listed_by_name_running_first() {
         assert_eq!(
             text,
             "apps\nnotes  Notes  running\nsheets  Sheets  installed"
+        );
+    });
+}
+
+/// An empty list and one that could not be read are different answers: the
+/// first says there are no apps, the second says why the agent cannot know.
+#[test]
+fn no_apps_and_an_unreachable_session_are_told_apart() {
+    run(async {
+        let empty = Notes::new(false).installed(Installed::Nothing);
+        let (text, failed) = tool(&agent(&empty), "tilo_ls", json!({})).await;
+        assert!(!failed, "{text}");
+        assert_eq!(
+            text,
+            "apps\nnone: no app runs in this workspace and none is installed"
+        );
+        let (text, failed) = tool(&agent(&empty), "tilo_do", json!({"path": "notes#open"})).await;
+        assert!(
+            failed && text == "no app notes: running none; installed none",
+            "{text}"
+        );
+
+        // The session's actions do not answer for this agent: it is told
+        // why, not handed an empty list.
+        let unreachable = Notes::new(true);
+        *unreachable.unreachable.lock().unwrap() = Some(
+            "agent claude-code is no longer a member of workspace Home who may read it".into(),
+        );
+        let (text, failed) = tool(&agent(&unreachable), "tilo_ls", json!({})).await;
+        assert!(
+            failed && text.contains("no longer a member of workspace Home"),
+            "{text}"
+        );
+        let (text, failed) =
+            tool(&agent(&unreachable), "tilo_find", json!({"query": "notes"})).await;
+        assert!(failed && text.contains("no longer a member"), "{text}");
+
+        // The running apps answer and the installed list does not: what runs
+        // is listed, and the missing list says why.
+        let unreadable = Notes::new(true).installed(Installed::Unreadable);
+        let (text, failed) = tool(&agent(&unreadable), "tilo_ls", json!({})).await;
+        assert!(!failed, "{text}");
+        assert_eq!(
+            text,
+            "apps\nnotes    running\nthe installed apps could not be read: remote actions are unavailable: this session's workspaces cannot be read"
+        );
+        let (text, failed) = tool(&agent(&unreadable), "tilo_ls", json!({"path": "sheets"})).await;
+        assert!(
+            failed
+                && text.contains("no running app is named sheets")
+                && text.contains("installed apps could not be read"),
+            "{text}"
+        );
+    });
+}
+
+/// An installed app the agent may not open is still listed, saying so, and
+/// opening it says who decides rather than that there is no such app.
+#[test]
+fn an_app_the_agent_may_not_open_is_listed_and_says_who_decides() {
+    let host = Notes::new(true).installed(Installed::SheetsClosedToAgent);
+    run(async {
+        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({})).await;
+        assert!(!failed, "{text}");
+        assert_eq!(
+            text,
+            "apps\nnotes  Notes  running\nsheets  Sheets  installed, not yours to open\nthe person decides which apps an agent may open in this workspace"
+        );
+        let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
+        assert!(
+            failed && text.contains("this agent may not open sheets"),
+            "{text}"
+        );
+        assert!(
+            !host
+                .invoked()
+                .iter()
+                .any(|(resource, _, _)| resource.contains("sheets")),
+            "nothing was asked of the workspace on the agent's behalf"
+        );
+        let (text, _) = tool(&agent(&host), "tilo_ls", json!({"path": "sheets"})).await;
+        assert!(
+            text.contains("installed but not running") && text.contains("may not open"),
+            "{text}"
+        );
+    });
+}
+
+/// An app the workspace offers this agent only to close (it runs, but its
+/// directory is not yet there to browse) is one the agent may use: it is
+/// listed as installed, never as one the person has to grant.
+#[test]
+fn an_app_offered_only_to_close_is_still_the_agents_to_open() {
+    let host = Notes::new(true).installed(Installed::SheetsOnlyCloses);
+    run(async {
+        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({})).await;
+        assert!(!failed, "{text}");
+        assert_eq!(
+            text,
+            "apps\nnotes  Notes  running\nsheets  Sheets  installed"
+        );
+        let (text, _) = tool(&agent(&host), "tilo_ls", json!({"path": "sheets"})).await;
+        assert!(
+            text.contains("installed but not running") && !text.contains("may not open"),
+            "{text}"
+        );
+        let (text, _) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
+        assert!(!text.contains("may not open"), "{text}");
+        assert!(
+            host.invoked()
+                .iter()
+                .any(|(resource, action, _)| resource == "app.so.tilo.sheets" && action == "open"),
+            "the workspace was asked to open Sheets: {text}"
         );
     });
 }
@@ -1013,6 +1437,119 @@ fn a_search_ranks_apps_then_resources_then_actions_and_lists_ready_paths() {
     });
 }
 
+/// A search narrows to an app by the name `tilo_ls` lists or by its whole
+/// id, and an app that is not there is an error naming the ones that are,
+/// never an empty search.
+#[test]
+fn a_search_narrows_to_an_app_by_name_or_id_and_names_the_apps_when_none_is() {
+    let host = Notes::new(true);
+    run(async {
+        let query = |app: &str| json!({"query": "append paragraph", "app": app});
+        let (by_name, failed) = tool(&agent(&host), "tilo_find", query("notes")).await;
+        assert!(!failed, "{by_name}");
+        assert!(
+            by_name
+                .lines()
+                .any(|line| line.starts_with("notes/Todo/body#append-paragraph(text)")),
+            "{by_name}"
+        );
+        for app in [APP, "SO.TILO.NOTES", " Notes "] {
+            let (text, failed) = tool(&agent(&host), "tilo_find", query(app)).await;
+            assert_eq!((text.as_str(), failed), (by_name.as_str(), false), "{app}");
+        }
+        let (text, failed) = tool(&agent(&host), "tilo_find", query("so.tilo.nope")).await;
+        assert!(failed, "{text}");
+        assert_eq!(text, "no app so.tilo.nope; the apps: notes, sheets");
+    });
+}
+
+/// A search narrowed to an app that is not running, while the installed
+/// apps cannot be read, says why the agent cannot know whether it is
+/// installed: it is never told there is no such app. A running app named
+/// still searches.
+#[test]
+fn a_search_narrowed_to_an_app_says_when_the_installed_apps_could_not_be_read() {
+    run(async {
+        let query = |app: &str| json!({"query": "append paragraph", "app": app});
+        let stopped = Notes::new(false).installed(Installed::Unreadable);
+        let (text, failed) = tool(&agent(&stopped), "tilo_find", query("notes")).await;
+        assert!(failed, "{text}");
+        assert_eq!(
+            text,
+            "no running app is named notes, and the installed apps could not be read: remote actions are unavailable: this session's workspaces cannot be read"
+        );
+        let running = Notes::new(true).installed(Installed::Unreadable);
+        let (text, failed) = tool(&agent(&running), "tilo_find", query(APP)).await;
+        assert!(!failed, "{text}");
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("notes/Todo/body#append-paragraph(text)")),
+            "{text}"
+        );
+        let (text, failed) = tool(&agent(&running), "tilo_find", query("sheets")).await;
+        assert!(
+            failed
+                && text.starts_with("no running app is named sheets")
+                && text.contains("installed apps could not be read"),
+            "{text}"
+        );
+    });
+}
+
+/// A name searched whole is found even where its longest word fills more
+/// pages than a search reads: "paragraph" names both bodies' append and
+/// insert, and the second page is gone by the time it is asked for.
+#[test]
+fn a_search_finds_a_name_whose_longest_word_many_rows_share() {
+    let host = Notes::new(true);
+    *host.search_page.lock().unwrap() = Some(2);
+    run(async {
+        let (text, failed) = tool(
+            &agent(&host),
+            "tilo_find",
+            json!({"query": "insert paragraph"}),
+        )
+        .await;
+        assert!(!failed, "{text}");
+        for page in ["Todo", "Groceries"] {
+            assert!(
+                text.lines()
+                    .any(|line| line.starts_with(&format!("notes/{page}/body#insert-block"))),
+                "{page}'s insert is missing: {text}"
+            );
+        }
+    });
+}
+
+/// A search whose word fills more than one page reads every page at one
+/// revision: when a busy app's directory moves on between them, the search
+/// starts again at the new revision rather than ending at the first page
+/// with what it held.
+#[test]
+fn a_search_across_a_moving_directory_starts_again_and_finds_every_page() {
+    let host = Notes::new(true);
+    *host.search_page.lock().unwrap() = Some(2);
+    *host.search_moves.lock().unwrap() = 1;
+    run(async {
+        let (text, failed) = tool(&agent(&host), "tilo_find", json!({"query": "paragraph"})).await;
+        assert!(!failed, "{text}");
+        for page in ["Todo", "Groceries"] {
+            for action in ["append-paragraph", "insert-block"] {
+                assert!(
+                    text.lines()
+                        .any(|line| line.starts_with(&format!("notes/{page}/body#{action}"))),
+                    "{page}'s {action} is missing: {text}"
+                );
+            }
+        }
+    });
+    assert_eq!(
+        *host.search_moves.lock().unwrap(),
+        0,
+        "the move was read past"
+    );
+}
+
 #[test]
 fn bound_ids_decode_to_the_apps_own_name_and_nothing_else_does() {
     assert_eq!(
@@ -1037,6 +1574,96 @@ fn a_read_is_cut_at_a_line_and_says_how_much_is_left() {
     assert!(text.lines().all(|line| line.starts_with("line ")));
     let mut short = "a\nb".to_owned();
     assert_eq!(cut_at_line(&mut short, 200), None);
+}
+
+/// A read cut at `max_chars` ends in a cursor, and following the cursors
+/// answers the rest of the note once and in order, across the page the app
+/// itself paged to.
+#[test]
+fn a_cut_read_continues_from_its_cursor_through_the_apps_own_pages() {
+    let host = Notes::new(true);
+    *host.long.lock().unwrap() = Some(40);
+    run(async {
+        let mut cursor: Option<String> = None;
+        let mut read: Vec<String> = Vec::new();
+        let mut cursors: Vec<String> = Vec::new();
+        for _ in 0..40 {
+            let mut args = json!({"path": "notes/Todo", "max_chars": 200});
+            if let Some(cursor) = &cursor {
+                args["cursor"] = json!(cursor);
+            }
+            let (text, failed) = tool(&agent(&host), "tilo_read", args).await;
+            assert!(!failed, "{text}");
+            let (body, last) = text.rsplit_once('\n').unwrap_or((text.as_str(), ""));
+            cursor = last
+                .split_once("cursor \"")
+                .and_then(|(_, rest)| rest.strip_suffix('"'))
+                .map(str::to_owned);
+            let body = if cursor.is_some() {
+                body
+            } else {
+                text.as_str()
+            };
+            assert!(body.chars().count() <= 200, "{text}");
+            read.extend(
+                body.lines()
+                    .filter(|line| line.starts_with("- [ ]"))
+                    .map(str::to_owned),
+            );
+            match &cursor {
+                Some(next) => cursors.push(next.clone()),
+                None => break,
+            }
+        }
+        assert!(
+            cursor.is_none(),
+            "still a cursor after 40 reads: {cursors:?}"
+        );
+        let expected: Vec<String> = (0..2)
+            .flat_map(|half| {
+                (0..40).map(move |line| format!("- [ ] item {half}-{line:03} ^h{half}l{line:03}"))
+            })
+            .collect();
+        assert_eq!(read, expected, "cursors: {cursors:?}");
+        assert!(
+            cursors.iter().any(|cursor| cursor == "second"),
+            "{cursors:?}"
+        );
+        assert!(
+            cursors
+                .iter()
+                .any(|cursor| cursor.starts_with("read+") && cursor.ends_with("+second")),
+            "a cut of the app's second page keeps its cursor: {cursors:?}"
+        );
+        // The app is asked for its second page by its own cursor, never by one
+        // of the door's.
+        for (_, action, arguments) in host.invoked() {
+            if action == "read" {
+                let asked = arguments.get("cursor").and_then(Value::as_str);
+                assert!(asked.is_none_or(|asked| asked == "second"), "{arguments}");
+            }
+        }
+    });
+}
+
+#[test]
+fn a_read_cursor_names_what_was_answered_and_the_apps_cursor() {
+    assert_eq!(
+        parse_read_cursor(&read_cursor(120, None)),
+        Some((120, None))
+    );
+    assert_eq!(
+        parse_read_cursor(&read_cursor(7, Some("a+b"))),
+        Some((7, Some("a+b".to_owned())))
+    );
+    assert_eq!(parse_read_cursor("second"), None);
+    assert_eq!(parse_read_cursor("read+x"), None);
+    let mut text = "one\ntwo\nthree".to_owned();
+    assert_eq!(skip_answered(&mut text, 3), 4, "the line break goes too");
+    assert_eq!(text, "two\nthree");
+    let mut short = "ab".to_owned();
+    assert_eq!(skip_answered(&mut short, 10), 2);
+    assert_eq!(short, "");
 }
 
 #[test]
@@ -1093,14 +1720,55 @@ fn a_level_read_across_a_moving_directory_starts_again_at_the_new_revision() {
 }
 
 /// A directory that never holds still for one read is reported, once the
-/// time an action is waited for has passed.
+/// time an action is waited for has passed, and is read again with a pause
+/// that grows rather than as fast as it answers.
 #[test]
 fn a_directory_that_never_holds_still_is_reported() {
     let moving = Notes::new(true);
     *moving.moves.lock().unwrap() = u32::MAX;
-    let (text, failed) = run(tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})));
+    let (text, failed, waited) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap()
+        .block_on(async {
+            let started = tokio::time::Instant::now();
+            let (text, failed) = tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})).await;
+            (text, failed, started.elapsed())
+        });
     assert!(failed, "{text}");
     assert!(text.contains("kept changing"), "{text}");
+    assert!(
+        waited >= std::time::Duration::from_millis(DEFAULT_WAIT_MS),
+        "gave up after {waited:?}"
+    );
+    let reads = u32::MAX.saturating_sub(*moving.moves.lock().unwrap());
+    assert!(
+        (20..=50).contains(&reads),
+        "read {reads} times in {waited:?}"
+    );
+}
+
+#[test]
+fn a_changing_directory_is_read_again_at_once_then_after_a_growing_pause() {
+    let ms = std::time::Duration::from_millis;
+    let pauses: Vec<_> = (0..10).map(restart_pause).collect();
+    assert_eq!(
+        pauses,
+        [
+            ms(0),
+            ms(0),
+            ms(5),
+            ms(10),
+            ms(20),
+            ms(40),
+            ms(80),
+            ms(160),
+            ms(200),
+            ms(200)
+        ]
+    );
+    assert_eq!(restart_pause(u32::MAX), RESTART_PAUSE_MAX);
 }
 
 /// One call asks the app's directory for each level once and asks which apps
@@ -1163,4 +1831,124 @@ fn a_search_answers_from_the_apps_that_answer_and_names_the_one_that_did_not() {
         text.ends_with("\nnot searched, the app did not answer: sheets"),
         "{text}"
     );
+}
+
+/// A search no app answered found nothing because it looked nowhere: it
+/// fails and says so, rather than answering that nothing matches.
+#[test]
+fn a_search_no_app_answered_fails_rather_than_finding_nothing() {
+    let host = Notes::new(true);
+    *host.silent.lock().unwrap() = Some(Vec::new());
+    let (text, failed) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap()
+        .block_on(tool(
+            &agent(&host),
+            "tilo_find",
+            json!({"query": "append paragraph", "app": "sheets"}),
+        ));
+    assert!(failed, "{text}");
+    assert!(!text.contains("nothing matches"), "{text}");
+    assert_eq!(
+        text, "not searched, the app did not answer: sheets; try again",
+        "{text}"
+    );
+}
+
+/// What one call made the app's directory do: the queries it was asked and
+/// the rows it answered.
+fn work_of(host: &Notes, name: &str, arguments: &Value) -> (usize, usize, String) {
+    host.take_asked();
+    host.take_answered();
+    let (text, failed) = run(tool(&agent(host), name, arguments.clone()));
+    assert!(!failed, "{name} {arguments}: {text}");
+    (host.take_asked().len(), host.take_answered(), text)
+}
+
+/// Reading one note costs what it costs however many notes the notebook
+/// holds: a notebook grown from 2 notes to 32 asks the directory nothing
+/// more and is answered no more rows for one note's read.
+#[test]
+fn a_read_of_one_note_costs_the_same_in_a_notebook_of_any_size() {
+    let read = json!({"path": "notes/Notebook/Todo"});
+    let small = work_of(&Notes::new(true).live(), "tilo_read", &read);
+    let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_read", &read);
+    eprintln!("one read: {small:?} at 2 notes, {large:?} at 32");
+    assert_eq!(small.2, large.2, "the same note reads the same");
+    assert_eq!(
+        (small.0, small.1),
+        (large.0, large.1),
+        "queries and rows at 2 notes against 32"
+    );
+}
+
+/// Making a note through the notebook's action, or appending to one note's
+/// body, costs the same however many notes the notebook holds: the action is
+/// found by its address, not in a page of the notebook's notes.
+#[test]
+fn an_action_on_the_notebook_or_a_note_costs_the_same_in_a_notebook_of_any_size() {
+    for (path, args) in [
+        ("notes/Notebook#new-note", json!({"title": "Plan"})),
+        (
+            "notes/Notebook/Todo/Body#append-paragraph",
+            json!({"text": "milk"}),
+        ),
+    ] {
+        let call = json!({"path": path, "args": args});
+        let small = work_of(&Notes::new(true).live(), "tilo_do", &call);
+        let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_do", &call);
+        eprintln!("{path}: {small:?} at 2 notes, {large:?} at 32");
+        assert_eq!(small.2, large.2, "{path} answers the same");
+        assert_eq!(
+            (small.0, small.1),
+            (large.0, large.1),
+            "{path}: queries and rows at 2 notes against 32"
+        );
+    }
+}
+
+/// Finding a note by its title, or the action that makes one, costs the
+/// rows that name it however many notes the notebook holds.
+#[test]
+fn a_find_costs_what_it_finds_in_a_notebook_of_any_size() {
+    for query in ["Todo", "new note"] {
+        let find = json!({"query": query, "app": "notes"});
+        let small = work_of(&Notes::new(true).live(), "tilo_find", &find);
+        let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_find", &find);
+        eprintln!("find {query}: {small:?} at 2 notes, {large:?} at 32");
+        assert_eq!(small.2, large.2, "{query} finds the same");
+        assert_eq!(
+            (small.0, small.1),
+            (large.0, large.1),
+            "{query}: queries and rows at 2 notes against 32"
+        );
+    }
+    let (text, _) = run(tool(
+        &agent(&Notes::new(true).live().with_notes(30)),
+        "tilo_find",
+        json!({"query": "Todo", "app": "notes"}),
+    ));
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("notes/Notebook/Todo#read")),
+        "a note found by its title is named under its notebook: {text}"
+    );
+}
+
+/// An app from before a name could be asked under a parent answers it
+/// about its top level: the door reads the level instead, and the read
+/// still finds the note.
+#[test]
+fn a_read_in_an_app_that_names_only_its_top_level_reads_the_level() {
+    let host = Notes::new(true).live().with_notes(3);
+    *host.names_parents.lock().unwrap() = false;
+    let (text, failed) = run(tool(
+        &agent(&host),
+        "tilo_read",
+        json!({"path": "notes/Notebook/Todo"}),
+    ));
+    assert!(!failed, "{text}");
+    assert!(text.starts_with("# Todo\n"), "{text}");
 }

@@ -333,7 +333,7 @@ fn a_dialog_body_leaves_enter_and_escape_to_its_dialog() {
 }
 
 #[test]
-fn a_finger_gets_targets_of_at_least_44_px_and_the_pin_keypad() {
+fn a_finger_gets_touch_targets_and_the_pin_keypad() {
     let phone = Rect::new(0.0, 0.0, 390.0, 844.0);
     let mut prompt = focused(SecretKind::SimPin {
         attempts_left: None,
@@ -400,6 +400,33 @@ fn a_finger_gets_targets_of_at_least_44_px_and_the_pin_keypad() {
         !prompt.shows_keypad(),
         "a physical key puts the keypad away"
     );
+}
+
+#[test]
+fn a_pin_prompt_raised_while_touch_is_in_use_opens_with_its_keypad() {
+    let phone = Rect::new(0.0, 0.0, 390.0, 844.0);
+    let mut prompt = focused(SecretKind::SimPin {
+        attempts_left: Some(3),
+    });
+    let touch_in_use = InteractionEnvironment {
+        modality: InputModality::Touch,
+        ..InteractionEnvironment::default()
+    };
+    Widget::set_interaction_environment(&mut prompt, touch_in_use);
+    assert!(prompt.shows_keypad());
+    placed(&mut prompt, phone);
+    assert_eq!(prompt.layout().keypad.len(), 12);
+    // The same environment again changes nothing; a keyboard puts it away.
+    Widget::set_interaction_environment(&mut prompt, touch_in_use);
+    assert!(prompt.shows_keypad());
+    Widget::set_interaction_environment(
+        &mut prompt,
+        InteractionEnvironment {
+            modality: InputModality::Keyboard,
+            ..touch_in_use
+        },
+    );
+    assert!(!prompt.shows_keypad());
 }
 
 #[test]
@@ -532,4 +559,64 @@ fn choices_and_the_option_are_answered_with_the_secret() {
     assert_eq!(answer.choice, Some(1));
     assert_eq!(answer.option, Some(false));
     assert_eq!(answer.secret.as_str(), "pw");
+}
+
+#[test]
+fn a_prompt_built_afresh_keeps_what_was_typed_in_the_hosts_buffer() {
+    let buffer = Arc::new(Mutex::new(String::new()));
+    let mut prompt = focused(SecretKind::Secret).with_secret_buffer(Arc::clone(&buffer));
+    typed(&mut prompt, "hunter");
+    assert_eq!(buffer.lock().expect("buffer").as_str(), "hunter");
+    dispatch(&mut prompt, &named_key(NamedKey::Backspace));
+    assert_eq!(buffer.lock().expect("buffer").as_str(), "hunte");
+    drop(prompt);
+    assert_eq!(
+        buffer.lock().expect("buffer").as_str(),
+        "hunte",
+        "the host's buffer outlives the prompt"
+    );
+
+    // The next build starts from it; wiping the prompt wipes it.
+    let mut prompt = focused(SecretKind::Secret).with_secret_buffer(Arc::clone(&buffer));
+    assert_eq!(
+        prompt.field(FieldRole::Secret).map(TextInput::value),
+        Some("hunte")
+    );
+    prompt.wipe();
+    assert!(buffer.lock().expect("buffer").is_empty());
+}
+
+#[test]
+fn a_prompt_built_afresh_shows_the_hosts_error_busy_line_and_caps_lock() {
+    let prompt = focused(SecretKind::Secret).with_error(Some("Wrong password".into()));
+    assert_eq!(prompt.error(), Some("Wrong password"));
+    assert_eq!(
+        prompt.notice_line(),
+        Some(("Wrong password".to_owned(), NoticeTone::Error))
+    );
+
+    let mut prompt = focused(SecretKind::Secret).with_busy(Some("Signing in…".into()));
+    assert_eq!(prompt.busy(), Some("Signing in…"));
+    assert!(!prompt.can_submit());
+    typed(&mut prompt, "x");
+    assert_eq!(
+        prompt.field(FieldRole::Secret).map(TextInput::value),
+        Some(""),
+        "nothing is typed while the answer is in use"
+    );
+
+    let mut caps = CapsLockEstimate::new();
+    caps.observe('A', false);
+    let prompt = focused(SecretKind::Secret).with_caps_lock(caps);
+    assert!(prompt.caps_lock_on());
+
+    let mut prompt = focused(SecretKind::Secret).with_error(Some("Wrong password".into()));
+    prompt.clear_error();
+    assert_eq!(prompt.error(), None);
+    assert_eq!(
+        focused(SecretKind::Secret)
+            .with_notice(Some("Touch the key".into()))
+            .notice_line(),
+        Some(("Touch the key".to_owned(), NoticeTone::Quiet))
+    );
 }

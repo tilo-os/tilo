@@ -396,3 +396,32 @@ params = [
   { name = "account", required = true, schema = { type = "string" } },
 ]
 
+[[resources]]
+kind = "mail.copies"
+label = "Mail on your devices"
+version = 1
+person = true
+fields = [
+  { path = "copies", type = "Collection<KeptCopy>", readonly = true, stored = "collection" },
+  { path = "copies.*.account", type = "String" },
+  { path = "copies.*.content", type = "String" },
+  { path = "copies.*.minutes", type = "i64" },
+  { path = "copies.*.folder", type = "Folder" },
+  { path = "copies.*.uid", type = "u32" },
+  { path = "copies.*.uid_validity", type = "u32" },
+]
+
+[[resources.verbs]]
+id = "keep-copies"
+kind = "undoable"
+params = [
+  { name = "copies", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, content = { type = "string" }, folder = { oneOf = [{ type = "string", const = "inbox" }, { type = "string", const = "starred" }, { type = "string", const = "sent" }, { type = "string", const = "drafts" }, { type = "string", const = "archive" }, { type = "string", const = "trash" }, { type = "string", const = "junk" }] }, id = { type = "string" }, minutes = { type = "integer" }, uid = { type = "integer", maximum = 4294967295, minimum = 0 }, uid_validity = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["id", "account", "content", "minutes", "folder", "uid", "uid_validity"] } } },
+]
+
+[[resources.verbs]]
+id = "forget-copies"
+kind = "undoable"
+params = [
+  { name = "messages", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+

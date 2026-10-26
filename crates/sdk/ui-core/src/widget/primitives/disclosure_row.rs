@@ -52,6 +52,10 @@ struct Openness {
     /// Opened or closed since it was made: a first-build default
     /// ([`DisclosureRow::opened`]) no longer applies.
     touched: bool,
+    /// The motion the person allows, as the row last laid out under it: an
+    /// open or close the view asks for (an agent's action) keeps reduced
+    /// motion as the row's own press does.
+    motion: EffectiveMotion,
 }
 
 impl DisclosureState {
@@ -69,6 +73,7 @@ impl DisclosureState {
             reveal: Presence::opened(),
             body_height: 0.0,
             touched: false,
+            motion: EffectiveMotion::default(),
         })))
     }
 
@@ -79,10 +84,19 @@ impl DisclosureState {
     }
 
     /// Open or close a lone row's state from the view, on the disclose
-    /// motion; a keyed row opens through its group
+    /// motion as the person allows it; a keyed row opens through its group
     /// ([`DisclosureGroup::open`]).
     pub fn set_open(&self, open: bool) {
-        self.show(open, crate::tokens::EffectiveMotion::default());
+        self.show(open, self.motion());
+    }
+
+    /// The motion the row was last laid out under.
+    fn motion(&self) -> EffectiveMotion {
+        self.0.borrow().motion
+    }
+
+    fn set_motion(&self, motion: EffectiveMotion) {
+        self.0.borrow_mut().motion = motion;
     }
 
     /// Open or close on the disclose motion. Returns whether it changed.
@@ -178,15 +192,15 @@ impl DisclosureGroup {
     /// details), closing the group's other rows, on the disclose motion.
     pub fn open(&self, key: &str) {
         let state = self.state(key);
-        let motion = crate::tokens::EffectiveMotion::default();
+        let motion = state.motion();
         state.show(true, motion);
         self.opened(Member::Key(key.to_owned()), &state, motion);
     }
 
     pub fn close(&self, key: &str) {
         let member = Member::Key(key.to_owned());
-        self.state(key)
-            .show(false, crate::tokens::EffectiveMotion::default());
+        let state = self.state(key);
+        state.show(false, state.motion());
         self.closed(&member);
     }
 
@@ -233,16 +247,22 @@ impl DisclosureGroup {
 }
 
 /// What leads a row's title.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Leading {
     Icon(Icon),
     Signal(crate::widget::SignalLevel),
+    Avatar { name: String, identity: String },
 }
 
 /// A row that opens its body in place.
 pub struct DisclosureRow {
+    /// A stable name to find the row by in tests and tools.
+    id: Option<String>,
     title: String,
     secondary: String,
+    /// A quiet line at the far end of the title's line (who and when), so
+    /// the title keeps the width of its own words.
+    side: String,
     leading: Option<Leading>,
     /// One control on the header's trailing edge, before the chevron (a
     /// device's Connect): it acts without opening the row.
@@ -251,6 +271,9 @@ pub struct DisclosureRow {
     body: Box<dyn Widget>,
     state: DisclosureState,
     group: Option<(DisclosureGroup, Member)>,
+    /// Told which way the row was opened or closed, so a view that keeps
+    /// which rows are open can agree with it.
+    on_open_toggle: Option<Box<dyn FnMut(bool)>>,
     hovered: bool,
     pressed: bool,
     focused: bool,
@@ -270,14 +293,17 @@ impl DisclosureRow {
     #[must_use]
     pub fn new(title: impl Into<String>, body: Box<dyn Widget>) -> Self {
         Self {
+            id: None,
             title: title.into(),
             secondary: String::new(),
+            side: String::new(),
             leading: None,
             trailing: None,
             trailing_rect: Rect::ZERO,
             body,
             state: DisclosureState::new(),
             group: None,
+            on_open_toggle: None,
             hovered: false,
             pressed: false,
             focused: false,
@@ -313,10 +339,35 @@ impl DisclosureRow {
         self
     }
 
+    /// A stable name to find the row by in tests and tools.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
     /// A secondary line under the title.
     #[must_use]
     pub fn secondary(mut self, text: impl Into<String>) -> Self {
         self.secondary = text.into();
+        self
+    }
+
+    /// A quiet line at the far end of the title's line: who did the work and
+    /// when, read after the title.
+    #[must_use]
+    pub fn secondary_side(mut self, side: impl Into<String>) -> Self {
+        self.side = side.into();
+        self
+    }
+
+    /// A leading person: who did the work this row stands for.
+    #[must_use]
+    pub fn avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
+        self.leading = Some(Leading::Avatar {
+            name: name.into(),
+            identity: identity.into(),
+        });
         self
     }
 
@@ -344,6 +395,16 @@ impl DisclosureRow {
         self
     }
 
+    /// Run with the openness the row just took, whenever the row itself
+    /// opens or closes (a press on its header, Enter or Space, an assistive
+    /// action). A view that records which rows the person opened keeps up
+    /// with the row instead of guessing.
+    #[must_use]
+    pub fn on_open_toggle(mut self, told: impl FnMut(bool) + 'static) -> Self {
+        self.on_open_toggle = Some(Box::new(told));
+        self
+    }
+
     /// Start open, at rest. A keyed row or one with a kept state opens only
     /// the first time, while its state has never been changed.
     #[must_use]
@@ -353,11 +414,13 @@ impl DisclosureRow {
             !state.open && !state.touched
         };
         if fresh {
+            let motion = self.state.motion();
             *self.state.0.borrow_mut() = Openness {
                 open: true,
                 reveal: Presence::opened(),
                 body_height: 0.0,
                 touched: false,
+                motion,
             };
             if let Some((group, member)) = &self.group {
                 *group.open.borrow_mut() = Some(member.clone());
@@ -396,6 +459,9 @@ impl DisclosureRow {
                 group.closed(member);
             }
         }
+        if let Some(told) = &mut self.on_open_toggle {
+            told(open);
+        }
         self.dirty = true;
     }
 
@@ -429,11 +495,17 @@ impl DisclosureRow {
 
     /// Where the title's text column starts from the row's leading edge:
     /// past the icon and its gap. The open body lines up with it too.
-    fn text_inset(leading: Option<Leading>, theme: &Theme) -> f64 {
+    fn text_inset(leading: Option<&Leading>, theme: &Theme) -> f64 {
         leading.map_or(0.0, |_| {
             f64::from(theme.tokens.metrics.icon_control)
                 + f64::from(theme.tokens.spacing.rhythm.sibling)
         })
+    }
+
+    /// How much of a title line of `line` width the side line may take: its
+    /// own natural `wanted` width, up to two fifths of the line.
+    fn side_room(wanted: f64, line: f64) -> f64 {
+        wanted.min((line * 0.4).max(0.0))
     }
 
     fn chevron_rect(&self, theme: &Theme) -> Rect {
@@ -470,15 +542,34 @@ impl DisclosureRow {
         let icon = f64::from(m.icon_control);
         let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
         let cy = self.header.center().y;
-        let x = self.header.x0 + Self::text_inset(self.leading, theme);
+        let x = self.header.x0 + Self::text_inset(self.leading.as_ref(), theme);
         let chevron = self.chevron_rect(theme);
         let text_end = if self.trailing.is_some() && self.trailing_rect.width() > 0.0 {
             self.trailing_rect.x0
         } else {
             chevron.x0
         };
-        let text = Rect::new(x, self.header.y0, text_end - gap, self.header.y1);
-        if let Some(leading) = self.leading {
+        let mut text = Rect::new(x, self.header.y0, text_end - gap, self.header.y1);
+        if !self.side.is_empty() {
+            let style = theme.text(crate::TextRole::Caption);
+            let natural = f64::from(ctx.text.measure_style(&self.side, None, &style).0);
+            let room = Self::side_room(natural, text.width());
+            let start = text.x1 - room;
+            let shown =
+                ctx.text
+                    .elide_to_width_style(&self.side, crate::num::f32_of_f64(room), &style);
+            let top = self.face().title_top(text, ctx.text, theme);
+            ctx.text.draw_style(
+                ctx.scene,
+                &shown,
+                colors.text_dim,
+                ctx.transform.pre_translate((start, top).into()),
+                None,
+                &style,
+            );
+            text.x1 = start - gap;
+        }
+        if let Some(leading) = self.leading.as_ref() {
             // Beside two lines the icon belongs to the title, not to the
             // middle of the pair, where it reads as sitting low.
             let icon_cy = if self.secondary.is_empty() {
@@ -492,12 +583,17 @@ impl DisclosureRow {
                 Leading::Icon(glyph) => {
                     glyph.draw(ctx.scene, ctx.transform, slot, colors.text_dim);
                 }
-                Leading::Signal(level) => crate::widget::SignalMeterFace::new(level).paint(
+                Leading::Signal(level) => crate::widget::SignalMeterFace::new(*level).paint(
                     ctx.scene,
                     ctx.transform,
                     theme,
                     slot,
                 ),
+                Leading::Avatar { name, identity } => {
+                    crate::widget::AvatarFace::new(name, identity)
+                        .ringed_on(colors.surfaces.content)
+                        .paint(ctx, slot)
+                }
             }
         }
         self.face().paint(ctx, text);
@@ -530,7 +626,7 @@ impl DisclosureRow {
             return;
         }
         let theme = ctx.theme;
-        let x0 = self.header.x0 + Self::text_inset(self.leading, theme);
+        let x0 = self.header.x0 + Self::text_inset(self.leading.as_ref(), theme);
         crate::surface::separator(
             ctx.scene,
             ctx.transform,
@@ -555,6 +651,7 @@ impl Widget for DisclosureRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.motion = theme.motion();
+        self.state.set_motion(self.motion);
         self.follow_group();
         let icon = f64::from(theme.tokens.metrics.icon_control);
         let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
@@ -602,7 +699,7 @@ impl Widget for DisclosureRow {
             // The body starts on the title's text column, not under the icon.
             padding: taffy::Rect {
                 left: taffy::LengthPercentage::length(crate::num::f32_of_f64(Self::text_inset(
-                    self.leading,
+                    self.leading.as_ref(),
                     theme,
                 ))),
                 right: taffy::LengthPercentage::length(0.0),
@@ -892,6 +989,10 @@ impl Widget for DisclosureRow {
         "DisclosureRow"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -994,6 +1095,36 @@ mod tests {
         );
     }
 
+    /// A view opening its row (an agent's action) moves as the person
+    /// allows: under reduced motion the body lands at once, as it does for
+    /// the row's own press.
+    #[test]
+    fn a_view_opening_keeps_the_motion_its_row_was_laid_out_under() {
+        for (theme, moves) in [
+            (Theme::dark(), true),
+            (Theme::dark().with_reduce_motion(true), false),
+        ] {
+            let state = DisclosureState::new();
+            let mut row = DisclosureRow::new(
+                "Work or school network",
+                Box::new(crate::widget::Spacer::fixed(40.0)),
+            )
+            .with_state(&state);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            row.build_layout(&mut taffy, &theme, &mut nodes);
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            state.set_open(true);
+            assert!(state.is_open());
+            assert_eq!(
+                state.is_moving(),
+                moves,
+                "reduced motion: {}",
+                theme.motion().reduced()
+            );
+        }
+    }
+
     #[test]
     fn the_open_body_starts_on_the_titles_text_column() {
         let _settled = crate::motion::testing::settled();
@@ -1016,12 +1147,22 @@ mod tests {
             )
             .expect("layout");
         row.apply_layout(&taffy, node, Point::ZERO);
-        let inset = DisclosureRow::text_inset(Some(Leading::Icon(Icon::Bluetooth)), &theme);
+        let inset = DisclosureRow::text_inset(Some(&Leading::Icon(Icon::Bluetooth)), &theme);
         assert!(inset > 0.0);
         assert!(
             (row.body.get_rect().x0 - (row.header.x0 + inset)).abs() < 0.5,
             "the body lines up with the title, not the icon"
         );
+    }
+
+    #[test]
+    fn a_side_line_takes_its_room_from_the_end_of_the_titles_line() {
+        // What the side line may take of a title's line: never more than
+        // its own words need, and never more than two fifths of the line, so
+        // a long byline cannot crowd the title it belongs to.
+        assert_eq!(DisclosureRow::side_room(60.0, 300.0), 60.0);
+        assert_eq!(DisclosureRow::side_room(200.0, 300.0), 120.0);
+        assert_eq!(DisclosureRow::side_room(0.0, 0.0), 0.0);
     }
 
     #[test]

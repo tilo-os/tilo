@@ -74,8 +74,11 @@ fn body_editor(dispatcher: Option<&Dispatcher<Mail>>) -> BodyEditor {
         None => RichTextField::view_only(draft_body_object),
     };
     RichTextSurface::field(field).with_editor(
+        // A message is prose: its lines and list items sit at the text's
+        // own line height, not each padded like a form field.
         BlockEditor::new()
             .with_wrap_lines(true)
+            .with_compact_paragraph_spacing(true)
             .with_empty_hint("Write your message"),
     )
 }
@@ -94,15 +97,39 @@ struct BodyLayout {
     content_h: f64,
 }
 
+/// Whether `next` continues `previous` line by line in plain text: items of
+/// one list, lines of one quote, and a quote under the line of text that
+/// introduces it ("On Jun 30, Maya wrote:").
+fn runs_on(previous: &BlockKind, next: &BlockKind) -> bool {
+    let list = |kind: &BlockKind| {
+        matches!(
+            kind,
+            BlockKind::Bullet { .. } | BlockKind::Checklist { .. } | BlockKind::Numbered { .. }
+        )
+    };
+    (list(previous) && list(next))
+        || matches!(
+            (previous, next),
+            (BlockKind::Paragraph | BlockKind::Quote, BlockKind::Quote)
+        )
+}
+
 /// The body as the `text/plain` alternative: a line per paragraph, list
 /// items and quotes marked as a reader of plain text expects.
 fn plain_of(blocks: &[BlockContent]) -> String {
     let mut out = String::new();
     let mut number = 1_usize;
-    for (index, block) in blocks.iter().enumerate() {
-        if index > 0 {
+    let mut previous: Option<&BlockKind> = None;
+    for block in blocks {
+        if let Some(previous) = previous {
             out.push('\n');
+            // Paragraphs stand apart by a blank line, as plain-text mail
+            // writes them; a list's items and a quote's lines run on.
+            if !runs_on(previous, &block.kind) {
+                out.push('\n');
+            }
         }
+        previous = Some(&block.kind);
         match block.kind {
             BlockKind::Bullet { .. } | BlockKind::Checklist { .. } => out.push_str("• "),
             BlockKind::Numbered { .. } => {
@@ -1647,23 +1674,33 @@ impl ComposeWindow {
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
     }
 
+    /// Whether the composer draws a title bar of its own: only as a panel
+    /// over the app, where the bar is its drag handle. In the message
+    /// column or filling the window, the window bar names the message and
+    /// closes it.
+    fn shows_title_bar(&self) -> bool {
+        !self.in_pane() && !self.is_full_window_page()
+    }
+
     /// Lay out and register the title bar (drag handle and window
-    /// buttons), the To/Cc/Bcc/Subject fields and the Attach button.
-    /// Returns the y past the header, where the toolbar starts. Part of
-    /// [`Self::relayout_regions`].
+    /// buttons) where it shows, the To/Cc/Bcc/Subject fields and the Attach
+    /// button. Returns the y past the header, where the toolbar starts.
+    /// Part of [`Self::relayout_regions`].
     fn layout_header_hits(&mut self, r: Rect, lx: f64, rx: f64) -> f64 {
         let m = self.metrics;
         let field_x = lx + m.label_w;
-
-        // Title bar (drag handle) and its icon buttons, centred on it.
-        let title = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.title_h);
-        self.hits.push((title, ComposeHit::TitleBar));
         let side = m.icon_button;
-        let btn_y = title.center().y - side / 2.0;
-        let close = Rect::new(rx - side, btn_y, rx, btn_y + side);
-        self.hits.push((close, ComposeHit::Close));
 
-        let mut y = title.y1 + m.pad;
+        let mut y = r.y0 + m.pad;
+        if self.shows_title_bar() {
+            // Title bar (drag handle) and its icon buttons, centred on it.
+            let title = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.title_h);
+            self.hits.push((title, ComposeHit::TitleBar));
+            let btn_y = title.center().y - side / 2.0;
+            let close = Rect::new(rx - side, btn_y, rx, btn_y + side);
+            self.hits.push((close, ComposeHit::Close));
+            y = title.y1 + m.pad;
+        }
 
         // To row, with the Cc/Bcc button at its end.
         let to_rect = Rect::new(field_x, y, rx - m.cc_bcc_w - m.gap, y + m.control_h);
@@ -1735,12 +1772,16 @@ impl ComposeWindow {
 
         // Footer: Discard at the leading edge, Send at the trailing edge.
         // What is written is kept as a draft when the composer closes, so
-        // there is no Save draft button to remember.
+        // there is no Save draft button to remember. While the window bar
+        // hosts the window, Discard draft is the bar's.
         let bh = m.control_h;
-        self.hits.push((
-            Rect::new(lx, by, lx + m.discard_w, by + bh),
-            ComposeHit::Discard,
-        ));
+        if !ui::window_toolbar::is_hosted() {
+            // window-bar: fallback, the bar discards the draft while it hosts the window
+            self.hits.push((
+                Rect::new(lx, by, lx + m.discard_w, by + bh),
+                ComposeHit::Discard,
+            ));
+        }
         let send = Rect::new(rx - m.send_w, by, rx, by + bh);
         self.hits.push((send, ComposeHit::Send));
 
@@ -2380,7 +2421,9 @@ impl ComposeWindow {
         }
         // What is drawn on the panel reads against the panel's ground.
         let panel = theme.on_ground(self.ground(theme));
-        self.draw_title_bar(scene, t, tr, &panel);
+        if self.shows_title_bar() {
+            self.draw_title_bar(scene, t, tr, &panel);
+        }
         self.draw_header_fields(scene, t, tr, &panel);
         self.draw_body(scene, t, tr, &panel, presence);
         self.draw_staged_attachment_chips(scene, t, tr, &panel);
@@ -2746,6 +2789,28 @@ mod tests {
         ))
     }
 
+    /// Paragraphs stand apart by a blank line in the plain part; a list's
+    /// items and a quote's lines run on.
+    #[test]
+    fn the_plain_part_separates_paragraphs_by_a_blank_line() {
+        let block = |kind: BlockKind, text: &str| BlockContent {
+            kind,
+            ..BlockContent::paragraph(text, text)
+        };
+        let blocks = [
+            block(BlockKind::Paragraph, "Hi Ada,"),
+            block(BlockKind::Paragraph, "The plan:"),
+            block(BlockKind::Bullet { indent: 0 }, "website"),
+            block(BlockKind::Bullet { indent: 0 }, "press kit"),
+            block(BlockKind::Quote, "one"),
+            block(BlockKind::Quote, "two"),
+        ];
+        assert_eq!(
+            plain_of(&blocks),
+            "Hi Ada,\n\nThe plan:\n\n• website\n• press kit\n\n> one\n> two"
+        );
+    }
+
     fn win() -> ComposeWindow {
         let mut w = ComposeWindow::new(ComposeFormat::Html);
         w.attach_framework(ui::framework::testing::dispatcher("so.tilo.mail"));
@@ -2881,7 +2946,7 @@ mod tests {
                 ..Draft::default()
             });
             let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
-            assert_eq!(d.body, "Plan\n• ship it");
+            assert_eq!(d.body, "Plan\n\n• ship it");
             let html = d.html_body.unwrap();
             assert!(html.contains("<h2>Plan</h2>"), "got: {html}");
             assert!(html.contains("<strong>ship</strong>"), "got: {html}");
@@ -3059,7 +3124,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_compose_is_a_full_window_page_and_keeps_close_and_send_reachable() {
+    fn compact_compose_is_a_full_window_page_and_keeps_send_reachable() {
         for theme in [Theme::dark(), Theme::light()] {
             for bounds in [
                 Rect::new(0.0, 0.0, 360.0, 800.0),
@@ -3079,10 +3144,16 @@ mod tests {
                 );
                 assert_eq!(window.window_rect(), bounds);
                 assert!(window.body_rect().height() > 0.0);
-                for target in [ComposeHit::Close, ComposeHit::Send, ComposeHit::Discard] {
+                for target in [ComposeHit::Send, ComposeHit::Discard] {
                     assert!(
                         bounds.contains_rect(hit_rect(&window, target)),
                         "{target:?} remains reachable"
+                    );
+                }
+                for own in [ComposeHit::TitleBar, ComposeHit::Close] {
+                    assert!(
+                        window.hit_rect(own).is_none(),
+                        "the page draws no {own:?}: the window bar names and closes it"
                     );
                 }
                 assert!(window.resize_edge_at(bounds.center()).is_none());
@@ -3091,11 +3162,6 @@ mod tests {
                         .resize_edge_at(Point::new(bounds.x1 - 1.0, bounds.y1 - 1.0))
                         .is_none()
                 );
-                let close = hit_rect(&window, ComposeHit::Close).center();
-                let (handled, action) = press_at(&mut window, close);
-                assert!(handled);
-                assert!(matches!(action, ComposeAction::Close));
-                assert!(!window.open);
             }
         }
     }
@@ -3108,6 +3174,10 @@ mod tests {
         w.set_pane(Some(column));
         w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
         assert!(w.in_pane());
+        assert!(
+            w.hit_rect(ComposeHit::TitleBar).is_none() && w.hit_rect(ComposeHit::Close).is_none(),
+            "in the column the window bar names and closes the message"
+        );
         assert!(!w.is_modal(), "the list beside it stays usable");
         assert_eq!(w.window_rect(), column, "it takes the message column");
         assert!(

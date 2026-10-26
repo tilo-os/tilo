@@ -36,6 +36,10 @@ pub(crate) struct ResourceType {
     pub(crate) label: &'static str,
     /// [`Resource::READABLE`].
     pub(crate) readable: bool,
+    /// [`Resource::HAS_FACTS`].
+    pub(crate) facts: bool,
+    /// [`Resource::RECORD_TABLE`].
+    pub(crate) record_table: Option<&'static tilo_resource::table::ModelTable>,
     /// [`Resource::local_operations`].
     pub(crate) local_operations: fn() -> Vec<tilo_actions::ActionSpec>,
     /// Whether a resource id names one of the resource's items.
@@ -53,6 +57,8 @@ impl ResourceType {
             kind: R::KIND,
             label: R::LABEL,
             readable: R::READABLE,
+            facts: R::HAS_FACTS,
+            record_table: R::RECORD_TABLE,
             local_operations: R::local_operations,
             item_of: |id| tilo_resource::items::item_of_resource::<R>(id).is_some(),
             items: tilo_resource::items::for_each_item_child::<R>,
@@ -116,6 +122,10 @@ pub(crate) trait TypedRoot {
         action: &tilo_actions::EncodedAction,
     );
 
+    /// Note that `action` was applied here, through any door, for the
+    /// surfaces that follow what is applied ([`Live::follow_applied`]).
+    fn note_applied_here(&self, action: &tilo_actions::EncodedAction);
+
     /// [`Resource::publication_cache_epoch`] of `state`.
     fn cache_epoch(&self, state: &dyn Any) -> Option<String>;
 
@@ -168,6 +178,12 @@ pub(crate) trait TypedRoot {
         doc: &AutoCommit,
         item: Option<&str>,
     ) -> Result<serde_json::Value, String>;
+
+    /// [`Resource::facts`].
+    ///
+    /// # Errors
+    /// As [`Resource::facts`].
+    fn facts(&self, state: &dyn Any, doc: &AutoCommit) -> Result<serde_json::Value, String>;
 
     /// [`tilo_resource::child_by_id`] of `state`.
     fn child(&self, state: &dyn Any, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource>;
@@ -247,9 +263,33 @@ pub(crate) struct Typed<R: Resource> {
 fn state_of<R: Resource>(state: &dyn Any) -> Option<&R::State> {
     let typed = state.downcast_ref::<R::State>();
     if typed.is_none() {
-        tracing::error!(kind = R::KIND, "a root was handed another resource's state");
+        foreign_state(R::KIND);
     }
     typed
+}
+
+/// `resource` with each declaration `decl_at` gives, from the first until
+/// it gives none, bound ([`tilo_resource::bind_declaration`]): compiled once
+/// rather than in every app's root.
+#[inline(never)]
+fn bind_each<'a>(
+    mut resource: tilo_actions::Resource,
+    decl_at: &dyn Fn(usize) -> Option<&'a tilo_resource::Declaration>,
+) -> tilo_actions::Resource {
+    let mut at = 0usize;
+    while let Some(decl) = decl_at(at) {
+        resource = tilo_resource::bind_declaration(resource, decl);
+        at = at.saturating_add(1);
+    }
+    resource
+}
+
+/// Log that a root of `kind` was handed another resource's state: one
+/// event site in the runtime rather than one in every app for each root.
+#[cold]
+#[inline(never)]
+fn foreign_state(kind: &'static str) {
+    tracing::error!(kind, "a root was handed another resource's state");
 }
 
 /// The resource's own actions `encoded` applies: itself, or each member of
@@ -340,6 +380,16 @@ impl<R: Resource> TypedRoot for Typed<R> {
         }
     }
 
+    fn note_applied_here(&self, action: &tilo_actions::EncodedAction) {
+        // Decoded only for a surface that follows it.
+        if !self.live.follows_applied() {
+            return;
+        }
+        for applied in own_actions::<R>(action) {
+            self.live.note_applied_here(applied);
+        }
+    }
+
     fn cache_epoch(&self, state: &dyn Any) -> Option<String> {
         R::publication_cache_epoch(state_of::<R>(state)?)
     }
@@ -403,10 +453,8 @@ impl<R: Resource> TypedRoot for Typed<R> {
         mut resource: tilo_actions::Resource,
         declarations: Box<dyn Any>,
     ) -> tilo_actions::Resource {
-        if let Ok(declarations) = declarations.downcast::<Vec<ActionDecl<R>>>() {
-            for decl in *declarations {
-                resource = tilo_resource::bind_declaration(resource, &decl);
-            }
+        if let Some(declarations) = declarations.downcast_ref::<Vec<ActionDecl<R>>>() {
+            resource = bind_each(resource, &|at| declarations.get(at).map(|decl| &**decl));
         }
         resource
     }
@@ -420,6 +468,12 @@ impl<R: Resource> TypedRoot for Typed<R> {
         let state =
             state_of::<R>(state).ok_or_else(|| "the resource is not readable here".to_owned())?;
         R::read_content(state, doc, item)
+    }
+
+    fn facts(&self, state: &dyn Any, doc: &AutoCommit) -> Result<serde_json::Value, String> {
+        let state =
+            state_of::<R>(state).ok_or_else(|| "the resource states no facts here".to_owned())?;
+        R::facts(state, doc)
     }
 
     fn child(&self, state: &dyn Any, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {

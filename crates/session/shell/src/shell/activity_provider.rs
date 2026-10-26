@@ -119,26 +119,8 @@ pub(crate) fn broker_door() -> Arc<dyn HostStepServices> {
 
 struct BrokerDoor;
 
-/// The reads, followed live.
-const READS: [&str; 5] = [
-    wire::FEED,
-    wire::SUMMARY,
-    wire::REPLAY,
-    wire::DETAIL,
-    wire::FOCUS,
-];
-
-/// The writes only the person at this device asks for: what they saw,
-/// which sources they hear about each morning.
-const PERSONAL: [&str; 4] = [
-    wire::MARK_VIEWED,
-    wire::FOCUSED,
-    wire::CHOOSE_SOURCE,
-    wire::SOURCE,
-];
-
 fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescriptor {
-    let contract = if READS.contains(&action) {
+    let contract = if tilo_desktop::activity::is_read(action) {
         ActionContract::live_view(serde_json::json!({ "type": "object" }))
     } else if kind == OperationKind::View {
         ActionContract::view()
@@ -209,10 +191,12 @@ impl HostStepServices for BrokerDoor {
 
     fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
         let action = request.address.action.clone();
-        if PERSONAL.contains(&action.as_str()) && request.actor.is_agent() {
-            return Err(t("host-activity-personal-only"));
-        }
         let arguments = arguments_of(request.argument)?;
+        if request.actor.is_agent()
+            && let Some(refusal) = tilo_desktop::activity::refused_to_agent(&action, &arguments)
+        {
+            return Err(refusal);
+        }
         let room = request.room.to_owned();
         Ok(ask(move |host| {
             host.act_on_activity(&room, &action, &arguments)
@@ -221,18 +205,14 @@ impl HostStepServices for BrokerDoor {
 
     fn watch(&self, request: &HostStepRequest<'_>) -> Result<LiveView, String> {
         let action = request.address.action.clone();
-        if !READS.contains(&action.as_str()) {
+        if !tilo_desktop::activity::is_read(&action) {
             return Err("this step has no live result".into());
         }
         let arguments = arguments_of(request.argument)?;
-        if action == wire::FEED
-            && request.actor.is_agent()
-            && serde_json::from_value::<wire::FeedQuery>(serde_json::Value::Object(
-                arguments.clone(),
-            ))
-            .is_ok_and(|query| query.scope == wire::Scope::AllWorkspaces)
+        if request.actor.is_agent()
+            && let Some(refusal) = tilo_desktop::activity::refused_to_agent(&action, &arguments)
         {
-            return Err(t("host-activity-personal-only"));
+            return Err(refusal);
         }
         let room = request.room.to_owned();
         // Only the person reading what is new makes it seen; an agent that

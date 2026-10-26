@@ -1077,25 +1077,27 @@ mod tests {
                         .any(|action| action.name == "Back" && action.enabled),
                     "remotes: the window bar's Back returns to the catalogue: {toolbar:?}"
                 );
-            }
-            for name in match page {
-                "remotes" => &["Refresh repositories"][..],
-                _ => &[],
-            } {
-                let control = app
-                    .harness()
-                    .controls()
-                    .into_iter()
-                    .find(|control| control.name.as_deref() == Some(*name))
-                    .unwrap_or_else(|| panic!("{page}: missing control {name}"));
-                assert!(!control.disabled, "{page}: live owner control {name}");
+                assert!(
+                    toolbar
+                        .actions
+                        .iter()
+                        .any(|action| action.name == "Refresh repositories" && action.enabled),
+                    "remotes: refreshing the repositories is the window bar's: {toolbar:?}"
+                );
             }
             // The production audit resolves each binding against both the
             // mounted app and the real window-owned search/History doors.
             let audit = app.harness().native_app_audit();
             let bindings =
                 ui::widget::controls::control_action_bindings(app.harness().root_widget());
-            assert!(!bindings.is_empty(), "{page}");
+            if page == "catalogue" {
+                // An empty catalogue holds no control of its own: its search
+                // is the window bar's, which acts on the Store in place, and
+                // its other slots are the bar's (above).
+                assert_bar_search_reaches_the_store(&mut app);
+            } else {
+                assert!(!bindings.is_empty(), "{page}");
+            }
             for binding in bindings {
                 if let ui::widget::ControlBindingKind::Action(address) = &binding.kind {
                     assert!(
@@ -1111,7 +1113,10 @@ mod tests {
             }
             if page == "catalogue" {
                 let targets = app.harness().targets();
-                assert!(targets.contains_key("store.search"), "{targets:?}");
+                assert!(
+                    !targets.contains_key("store.search"),
+                    "search is the window bar's, not a field of the Store's: {targets:?}"
+                );
             }
         }
     }
@@ -1652,6 +1657,17 @@ mod tests {
         );
     }
 
+    /// The window bar's search acts on the Store in place, whatever the
+    /// slow repository is doing.
+    fn assert_bar_search_reaches_the_store(app: &mut TestApp<StoreShell>) {
+        app.settle();
+        assert_eq!(
+            app.with_surface::<StoreApp, _>(|surface| ui::widget::InPlace::of(surface)),
+            Some(ui::widget::InPlace::Query),
+            "the pending-source view keeps the window bar's search on the Store"
+        );
+    }
+
     #[test]
     fn slow_native_registry_does_not_block_configured_flatpak_browse_or_search() {
         let _offline = offline();
@@ -1709,7 +1725,7 @@ mod tests {
             .unwrap();
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
         assert_visible_owner_control(&mut app, "Editor");
-        assert_visible_owner_control(&mut app, "Filter");
+        assert_bar_search_reaches_the_store(&mut app);
         assert!(browses.load(std::sync::atomic::Ordering::SeqCst) > before);
         assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
         app.effect(&StoreEffect::SetSearch {
@@ -1748,7 +1764,7 @@ mod tests {
                 .unwrap()
         );
         assert_visible_owner_control(&mut app, "Editor");
-        assert_visible_owner_control(&mut app, "Filter");
+        assert_bar_search_reaches_the_store(&mut app);
         assert_background_refresh_keeps_its_locale(&mut app, remote, &contract, &gate);
         service.shutdown().unwrap();
     }
@@ -2599,15 +2615,11 @@ mod tests {
             let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
             let shown = frame(&mut app);
             assert!(!shown.contains("Use Flathub for my apps"));
-            if scenario == "account-setup" {
-                let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
-                assert!(
-                    toolbar.actions.iter().any(|action| action.name == control),
-                    "{scenario} exposes {control} in the window's bar: {toolbar:?}"
-                );
-            } else {
-                assert!(shown.contains(control), "{scenario} exposes {control}");
-            }
+            let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
+            assert!(
+                toolbar.actions.iter().any(|action| action.name == control),
+                "{scenario} exposes {control} in the window's bar: {toolbar:?}"
+            );
             if scenario == "account-remotes" {
                 assert!(shown.contains("Flathub"));
             }
@@ -2645,6 +2657,29 @@ mod tests {
             let shown = frame(&mut app);
             assert!(shown.contains(name));
             assert!(shown.contains(action));
+        }
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::StoreShell::scenarios() {
+            let mut app = TestApp::<super::StoreShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
         }
     }
 }

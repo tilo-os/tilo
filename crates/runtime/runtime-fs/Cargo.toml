@@ -7,17 +7,14 @@ publish = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Cap'n Proto client for the Tilo workspace filesystem proxy."
-
-# Tilo runtime — workspace filesystem client. Talks to the launcher's
-# in-process fs proxy over a Unix-socket Cap'n Proto channel passed
-# in by the launcher as TILO_SVC_FS_FD.
+description = "Host authority, native storage and servers for Tilo filesystem services."
 
 [lib]
 name = "runtime_fs"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-fs-client = { version = "0.1.0", path = "../tilo-fs-client" }
 fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
 ed25519-dalek.workspace = true
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }

@@ -14,16 +14,22 @@ use super::{
 };
 use crate::{Span, SpanUnit};
 
+/// The app that keeps a discussion thread for a published text.
+const CHAT_APP: &str = "so.tilo.chat";
+/// The kind of resource a discussion thread is, in the chat's own record.
+const THREAD_KIND: &str = "chat.channel";
+
 /// Parameters in their only order. `chars` and `bytes` share a slot: a span has one unit.
-const PARAMS: [(&str, u8); 8] = [
-    ("view", 0),
-    ("chars", 1),
-    ("bytes", 1),
-    ("invite", 2),
-    ("ticket", 3),
-    ("token", 4),
-    ("pair", 5),
-    ("install", 6),
+const PARAMS: [(&str, u8); 9] = [
+    ("discuss", 0),
+    ("view", 1),
+    ("chars", 2),
+    ("bytes", 2),
+    ("invite", 3),
+    ("ticket", 4),
+    ("token", 5),
+    ("pair", 6),
+    ("install", 7),
 ];
 
 #[derive(Clone, Copy)]
@@ -255,6 +261,7 @@ fn parse_route(route: &str, context: Context<'_>) -> Result<(LinkTarget, LinkSec
                 _ => last = Some(slot),
             }
             match name {
+                "discuss" => target.discuss = Some(Slug::parse(value)?),
                 "view" => target.view = Some(encode::decode_segment(value)?),
                 "chars" => span = Some(parse_span(value, SpanUnit::Chars)?),
                 "bytes" => span = Some(parse_span(value, SpanUnit::Bytes)?),
@@ -273,6 +280,36 @@ fn parse_route(route: &str, context: Context<'_>) -> Result<(LinkTarget, LinkSec
             resource.span = Some(span);
         }
     }
+    discuss_thread(&mut target)?;
     target.check()?;
     Ok((target, secrets))
+}
+
+/// A reader who arrived from a published text (`?discuss=<slug>`) and named
+/// no other place lands in that text's discussion thread: the chat's channel
+/// of that name, which the room keeps for what is published outside it (see
+/// `room_discussions` in `tilo-relay`).
+///
+/// A link that names its own place — an app, a record or an item — says where
+/// it points, and the parameter only says where its reader came from; it is
+/// left alone so the link keeps pointing where it was written.
+///
+/// # Errors
+/// [`LinkError::Incomplete`] when the link names an app or an item without the
+/// document a thread needs, which it cannot both name and supplement.
+fn discuss_thread(target: &mut LinkTarget) -> Result<(), LinkError> {
+    let Some(slug) = target.discuss.clone() else {
+        return Ok(());
+    };
+    if target.app.is_some() || target.record.is_some() || target.resource.is_some() {
+        return Ok(());
+    }
+    target.app = Some(AppId::new(CHAT_APP)?);
+    target.record = Some(RecordSegment::Primary);
+    target.resource = Some(ResourceAddress {
+        kind: THREAD_KIND.to_owned(),
+        id: format!("c_{}", slug.as_str().replace('-', "_")),
+        span: None,
+    });
+    Ok(())
 }

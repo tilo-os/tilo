@@ -487,6 +487,120 @@ p99_tolerance = 2.0
 min_delta = 0.5
 source = "per step: the held re-ask answers with news; only cancellation polls come back empty"
 
+# A whole agent task (scripts/perf/agent_task.py), as an agent in a terminal
+# of the login runs it: a scripted model streamed from a loopback fake at 0 ms
+# think time drives `tilo-runtime-mcp --connect` through the session's agent
+# door, admitted by the person and granted Notes; it finds Notes' new-note,
+# creates a note, finds the note by its title, looks inside it for its body,
+# appends the body and reads the note back. `tilo` is the time in the tool
+# calls (relay, door, broker, app and answer), `model` the fake's own
+# loopback overhead, `client` the loop's. The first release run on t (30
+# repetitions after 3, each adding a note to one notebook) measured a p50 of
+# 285 ms of wall, 278 ms of it in Tilo and 7 ms in the fake, in 7 turns with no
+# call asked again; p95 615 ms. The steps that search or read the notebook
+# grow with it: discover took 18 ms with two notes and 178 ms (p95) with
+# thirty. The ceilings are targets: the whole task in a quarter of a second of
+# Tilo time, a step in 80 ms. Reported, not enforced, and compared only once
+# three nightly records exist.
+[kpi."agent.task.notes.wall"]
+unit = "ms"
+p50 = 300.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 20.0
+source = "target: a five-step Notes task at 0 ms model time in 300 ms"
+
+[kpi."agent.task.notes.tilo"]
+unit = "ms"
+p50 = 250.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 20.0
+source = "target: the task's tool calls in 250 ms"
+
+[kpi."agent.task.notes.model"]
+unit = "ms"
+p50 = 100.0
+p50_tolerance = 2.0
+p99_tolerance = 2.5
+baseline_min_runs = 3
+min_delta = 20.0
+source = "the fake model's loopback overhead, kept small so the split stays Tilo's"
+
+[kpi."agent.task.notes.client"]
+unit = "ms"
+p50 = 10.0
+p50_tolerance = 2.0
+p99_tolerance = 2.5
+baseline_min_runs = 3
+min_delta = 5.0
+source = "the agent loop's own work, kept small so the split stays Tilo's"
+
+[kpi."agent.task.notes.turns"]
+unit = "count"
+p50 = 7.0
+p50_tolerance = 1.2
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 1.0
+source = "floor: six tool turns and the reply, when the new note is listed at once"
+
+[kpi."agent.task.notes.retries"]
+unit = "count"
+p50 = 0.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+baseline_min_runs = 3
+min_delta = 1.0
+source = "target: a note is listed and its text read back the moment the action that made it answers"
+
+[kpi."agent.task.notes.step.discover"]
+unit = "ms"
+p50 = 80.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 10.0
+source = "target: one search of the running apps in 80 ms"
+
+[kpi."agent.task.notes.step.create"]
+unit = "ms"
+p50 = 80.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 10.0
+source = "target: one app action, applied and answered, in 80 ms"
+
+[kpi."agent.task.notes.step.locate"]
+unit = "ms"
+p50 = 80.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 10.0
+source = "target: a search and one listing in 80 ms, with no search asked again"
+
+[kpi."agent.task.notes.step.write"]
+unit = "ms"
+p50 = 80.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 10.0
+source = "target: one app action, applied and answered, in 80 ms"
+
+[kpi."agent.task.notes.step.read"]
+unit = "ms"
+p50 = 80.0
+p50_tolerance = 1.3
+p99_tolerance = 1.5
+baseline_min_runs = 3
+min_delta = 10.0
+source = "target: one read of a short note in 80 ms"
+
 # Latency, compositor side (scripts/perf/latency_bench.py): a headless dev
 # build on the shared `runner` class, input through the control socket,
 # lavapipe. The ceilings are the KPIs' 60 Hz targets ("Input→photon
@@ -872,22 +986,20 @@ source = "KPI: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapi
 # like any pan frame instead of rasterising the backdrop, strips and chrome
 # whole (25.6 M px, 376-572 ms on this runner before). Each window group is a
 # damage part of its strip, so a window that changed off screen since the
-# warm (an app the warm drew for the first time presenting its content)
-# rasterises nothing: the strips' layer is no longer rasterised again in a
-# desktop's first pan (8.03 M px before, run 100092; 155,628 px at 100 %,
-# 231,684 at 150 %, 334,264 at 200 % after, run 100497). On two strips a
-# window on screen in the still strip changed between the warm and the first
-# pan (2.2-2.5 M px, its group's area): an in-process app's content, made on
-# its own thread, landed while the 4K warm ran, and the bench, which has no
-# event loop to draw it as it lands, left it to the pan's first frame. The
-# bench now rests and warms again until a frame after the warm changes
-# nothing, as a session reaches rest (`rest_and_warm`); the two-strip maxima
-# stay until a run measures that. The max is enforced about 50 % above
-# those. Frame time is reported like the pan frames'.
+# warm rasterises nothing (8.03 M px before, run 100092). The bench rests and
+# warms again until a frame after the warm changes nothing, and pumps the
+# apps before every frame, as a session's loop does: what an in-process app
+# made on its own thread during the rest is drawn before the pan, never by
+# its first frame (2.2-2.5 M px on two strips before). A first frame now
+# rasterises what any pan frame does: 36,380-38,520 px at 100 %, 55,380 at
+# 150 %, 72,080-74,200 at 200 %, on one strip or two, since each strip is a
+# screen of its own (t run r0757a798e8; 35,564, 53,508 and 70,840 on one
+# strip in run 101617). The max is enforced about 50 % above those. Frame
+# time is reported like the pan frames'.
 
 [kpi."render.shell.pan_start_pixels.4k"]
 unit = "pixels"
-max = 240000.0
+max = 58000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -904,7 +1016,7 @@ source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window p
 
 [kpi."render.shell.pan_start_pixels.4k_s150"]
 unit = "pixels"
-max = 350000.0
+max = 83000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -921,7 +1033,7 @@ source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window p
 
 [kpi."render.shell.pan_start_pixels.4k_s200"]
 unit = "pixels"
-max = 500000.0
+max = 112000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -938,7 +1050,7 @@ source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window p
 
 [kpi."render.shell.pan_start_pixels.4k_strips2"]
 unit = "pixels"
-max = 3700000.0
+max = 58000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -955,7 +1067,7 @@ source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K pan of two s
 
 [kpi."render.shell.pan_start_pixels.4k_s200_strips2"]
 unit = "pixels"
-max = 3700000.0
+max = 112000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -1004,7 +1116,12 @@ source = "KPI: Frame time p99 at 4K/144 Hz, full repaint (lavapipe; reported onl
 # rail). Every move is measured from a desktop at rest, the first one
 # included, so the max is a move too: a move that repaints the output
 # (8,294,400 px) fails at once. Raster pixels are enforced about 40 % above
-# the medians.
+# the medians. Each move now starts from a real rest, as pans do
+# (`rest_and_warm`), so the first move is measured like the others. Since
+# each strip is a screen of its own (the strip deck), a move shows another
+# screen and every move repaints the output: 8,294,400 px at each scale, the
+# first move and the settled ones alike (t run r0757a798e8). These maxima
+# hold until a move composites the next strip from warmed layers.
 
 [kpi."render.shell.strip_move_pixels.4k"]
 unit = "pixels"
@@ -1202,9 +1319,11 @@ source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 i
 # node re-enumerated History). The harness figure is its `focus_order` walk
 # after each added item: it no longer walks the order inside a call while
 # nothing can trap focus. The shared x86_64 runner takes two to three times as
-# long (0.54-0.66 / 1.55-1.59 / 5.5-6.3 ms, its p95 at 500 items up to 1.5 ms), so
-# the 500 item recomputations stay enforced at 2 ms p95, far under what a
-# per-node walk costs; the 1,000 and 2,500 item figures are reported.
+# long (1.3-2.0 / 5.5-13 ms at 1,000 and 2,500 items, its p95 at 1,000 items up
+# to 4.1 ms), so the 1,000 item recomputations are the enforced ceiling: the
+# smallest size the scheduled lane measures (500 items is not one of them, so a
+# ceiling there would be a budget that never runs), at 5 ms p95, far under what
+# a per-node walk costs; the 2,500 item figures are reported.
 #
 # Adding one item through an agent call targets a 16 ms frame at 1,000
 # items: 4.6 / 9.4 / 27 ms at 500 / 1,000 / 2,500 items on an M5 Max (from
@@ -1213,44 +1332,53 @@ source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 i
 # height as their available space). The shared x86_64 runner takes 13 / 31 /
 # 109 ms, so every figure is reported: enforcing the frame there would fail
 # every run, and the relative rule guards each against regressions.
+# Each walk the frame takes over the window's widgets (layout dirt, measure,
+# style adjustment, focus, the undo status) then entered every widget's
+# component scope on its own, about 20,000 / 39,000 / 98,000 entries for one
+# item added; the walks now stay in a scope while the widgets they ask share
+# it, and one added item enters a scope 99 times at any length (the
+# `add_item_work` test of tilo-app bounds it). In the test harness on the
+# shared x86_64 runner under load, side by side, best of 15: 10-11 / 21-23 /
+# 69-90 ms before, 4.2-5.9 / 8.7-10 / 32-36 ms after, so the 500 and 1,000
+# item targets are halved.
 
 [kpi."render.framework_focus.recompute_ms.500"]
 unit = "ms"
 p95 = 2.0
-enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation in the test harness, 500 items (about 2,000 widgets)"
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 500 items (about 2,000 widgets; measured when the lane is asked for it)"
 
 [kpi."render.framework_focus.native_recompute_ms.500"]
 unit = "ms"
 p95 = 2.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.1
+source = "framework-scaling focus, one focus-order recomputation of the live window, 500 items (about 2,000 widgets; measured when the lane is asked for it)"
+
+[kpi."render.framework_focus.recompute_ms.1k"]
+unit = "ms"
+p95 = 5.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation of the live window, 500 items (about 2,000 widgets)"
-
-[kpi."render.framework_focus.recompute_ms.1k"]
-unit = "ms"
-p50 = 0.6
-p50_tolerance = 1.5
-p99_tolerance = 2.0
-min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation in the test harness, 1,000 items (reported)"
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 1,000 items (about 4,000 widgets)"
 
 [kpi."render.framework_focus.native_recompute_ms.1k"]
 unit = "ms"
-p50 = 0.6
+p95 = 5.0
+enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.1
-source = "framework-scaling focus, one focus-order recomputation of the live window, 1,000 items (reported)"
+source = "framework-scaling focus, one focus-order recomputation of the live window, 1,000 items (about 4,000 widgets)"
 
 [kpi."render.framework_focus.recompute_ms.2500"]
 unit = "ms"
-p50 = 1.5
+p50 = 12.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.2
@@ -1258,7 +1386,7 @@ source = "framework-scaling focus, one focus-order recomputation in the test har
 
 [kpi."render.framework_focus.native_recompute_ms.2500"]
 unit = "ms"
-p50 = 1.5
+p50 = 12.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.2
@@ -1266,7 +1394,7 @@ source = "framework-scaling focus, one focus-order recomputation of the live win
 
 [kpi."render.framework_focus.add_item_ms.500"]
 unit = "ms"
-p50 = 6.0
+p50 = 3.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 1.0
@@ -1274,11 +1402,11 @@ source = "framework-scaling focus, an agent call adding one item end to end, 500
 
 [kpi."render.framework_focus.add_item_ms.1k"]
 unit = "ms"
-p50 = 16.0
+p50 = 8.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 2.0
-source = "framework-scaling focus, an agent call adding one item end to end, 1,000 items (one 16 ms frame; reported)"
+source = "framework-scaling focus, an agent call adding one item end to end, 1,000 items (half a 16 ms frame; reported)"
 
 [kpi."render.framework_focus.add_item_ms.2500"]
 unit = "ms"

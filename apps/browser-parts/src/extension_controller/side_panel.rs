@@ -1,9 +1,13 @@
 //! An extension's side panel (`chrome.sidePanel`) beside the window's page:
-//! what the extension asks of it, and the window's controls that show and
-//! close it.
+//! what the extension asks of it, the window's controls that show and close
+//! it, and the width the person drags it to. Also the extensions' keyboard
+//! shortcuts the window runs while its own field has the keyboard.
 
 use ui::icons::Icon;
-use ui::webview::{ExtensionSidePanelChange, SharedEngine, WebViewCommand, WebViewEvent};
+use ui::webview::{
+    ExtensionShortcut, ExtensionSidePanelChange, KeyInput, KeyModifiers, SharedEngine,
+    WebViewCommand, WebViewEvent,
+};
 use ui::widget::{Button, Container, Element, MenuItem};
 use ui::window_toolbar::ToolbarAction;
 
@@ -13,6 +17,8 @@ use crate::effects::ExtensionRequest;
 use crate::extension_toolbar::Installed;
 
 const SIDE_PANEL_BUTTON: &str = "browser.extension.side-panel";
+/// The side panel's page beside the window's page, by its test id.
+pub const SIDE_PANEL_PAGE: &str = "browser.extension.side-panel.page";
 /// The bar's button closing the side panel that shows.
 const BAR_CLOSE_SIDE_PANEL: &str = "extension-side-panel-close";
 
@@ -22,6 +28,29 @@ pub(super) struct SidePanel {
     pub(super) id: String,
     pub(super) url: String,
     pub(super) engine: SharedEngine,
+}
+
+/// The widths the person dragged extensions' side panels to, in logical
+/// pixels, by extension: kept in the app's settings on this device, since a
+/// width suits a screen.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SidePanelWidths {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    side_panel_widths: std::collections::BTreeMap<String, f32>,
+}
+
+impl ui::storage::SettingsSchema for SidePanelWidths {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
+
+/// How narrow and how wide the person may drag a side panel in `theme`: from
+/// a utility panel's width, about as narrow as Chrome lets a side panel go,
+/// to a readable column's.
+#[must_use]
+pub fn side_panel_bounds(theme: &ui::theme::Theme) -> (f32, f32) {
+    let metrics = &theme.tokens.metrics;
+    let narrowest = metrics.panel_width_utility;
+    (narrowest, metrics.readable_width.max(narrowest))
 }
 
 /// What an extension's side panel is called: "Notes side panel".
@@ -105,8 +134,9 @@ impl ExtensionController {
         }
         match engine.create_tab() {
             Ok(page) => {
-                // Its "current tab" is the page beside it.
-                page.send(WebViewCommand::ExtensionPanel { action: None });
+                // Its "current tab" is the page beside it, and the
+                // extension hears of the panel opening and closing.
+                page.send(WebViewCommand::ExtensionSidePanelPage { id: id.clone() });
                 page.send(WebViewCommand::Navigate(url.clone()));
                 self.side_panel = Some(SidePanel {
                     id,
@@ -138,6 +168,86 @@ impl ExtensionController {
         self.side_panel.as_ref().map(|panel| panel.id.as_str())
     }
 
+    /// Keep the widths the person drags side panels to in `store`, starting
+    /// from those kept there.
+    pub fn attach_side_panel_widths(&mut self, store: ui::storage::Settings<SidePanelWidths>) {
+        self.side_panel_widths = store
+            .get()
+            .side_panel_widths
+            .into_iter()
+            .filter(|(_, width)| width.is_finite() && *width > 0.0)
+            .collect();
+        self.side_panel_store = Some(store);
+    }
+
+    /// How wide the side panel that shows stands beside the page of a
+    /// window `room` wide in `theme`: as wide as the person dragged its
+    /// extension's panel, else the theme's width, within the bounds
+    /// ([`side_panel_bounds`]) and leaving the page a readable column.
+    #[must_use]
+    pub fn side_panel_extent(&self, theme: &ui::theme::Theme, room: f32) -> f32 {
+        let (narrowest, widest) = side_panel_bounds(theme);
+        let widest = widest
+            .min(room - theme.tokens.metrics.reading_min_width)
+            .max(narrowest);
+        self.side_panel_shown()
+            .and_then(|id| self.side_panel_widths.get(id))
+            .copied()
+            .unwrap_or_else(|| super::side_panel_width(theme))
+            .clamp(narrowest, widest)
+    }
+
+    /// The person dragged the side panel that shows to `width` logical
+    /// pixels, which the window's edge keeps within the bounds. Returns
+    /// whether it changed.
+    pub fn set_side_panel_width(&mut self, width: f32) -> bool {
+        let Some(id) = self.side_panel_shown().map(str::to_owned) else {
+            return false;
+        };
+        if !width.is_finite() || width <= 0.0 {
+            return false;
+        }
+        let before = self.side_panel_widths.insert(id, width);
+        before.is_none_or(|before| (before - width).abs() >= 0.5)
+    }
+
+    /// The person let go of the side panel's edge: its extension's panel
+    /// keeps that width, also in the windows to come.
+    pub fn remember_side_panel_width(&self) {
+        let (Some(store), Some(id)) = (&self.side_panel_store, self.side_panel_shown()) else {
+            return;
+        };
+        let Some(&width) = self.side_panel_widths.get(id) else {
+            return;
+        };
+        if let Err(error) = store.update(|kept| {
+            kept.side_panel_widths.insert(id.to_owned(), width);
+        }) {
+            tracing::debug!(%error, "the side panel's width could not be kept");
+        }
+    }
+
+    /// A key the person pressed while the window's own field (the address)
+    /// has the keyboard: when one of extensions' commands holds it, the
+    /// command runs over the window's page, as in Chrome, and the field
+    /// never sees the key. Returns whether a command took it.
+    pub fn command_key(
+        &self,
+        key: &KeyInput,
+        modifiers: KeyModifiers,
+        engine: &SharedEngine,
+    ) -> bool {
+        let held = ExtensionShortcut::pressed(key, modifiers)
+            .is_some_and(|pressed| self.shortcuts.contains(&pressed));
+        if held {
+            engine.send(WebViewCommand::ExtensionCommandKey {
+                key: key.clone(),
+                modifiers,
+            });
+        }
+        held
+    }
+
     /// The bar's button closing the side panel that shows, as a slot of the
     /// window's bar in a Tilo session.
     pub fn bar_side_panel(&self) -> Option<ToolbarAction> {
@@ -163,7 +273,7 @@ impl ExtensionController {
             .map_or("Extension", |extension| extension.name.as_str());
         let view = ui::widget::WebView::new(panel.engine.clone())
             .with_accessible_name(side_panel_name(name))
-            .with_test_id("browser.extension.side-panel");
+            .with_test_id(SIDE_PANEL_PAGE);
         Some(Box::new(
             Container::new()
                 .with_no_padding()
@@ -197,26 +307,34 @@ impl ExtensionController {
     }
 
     /// What the side panel's page did since the last frame: closed itself
-    /// (`window.close()`), or opened pages, which open beside the window as
-    /// from a popup. Returns whether the panel went.
-    pub(super) fn sync_side_panel(&mut self) -> bool {
+    /// (`window.close()`), asked for more access (`permissions.request`,
+    /// which the host puts to the page that asks), or opened pages, which
+    /// open beside the window as from a popup. Returns whether the window
+    /// changed.
+    pub(super) fn sync_side_panel(&mut self, engine: &SharedEngine) -> bool {
         let Some(panel) = &self.side_panel else {
             return false;
         };
-        let closed = panel
-            .engine
-            .drain_events()
-            .into_iter()
-            .any(|event| matches!(event, WebViewEvent::TabClosed));
-        for (url, background) in panel.engine.take_new_tab_requests() {
-            if url.starts_with("https://") || url.starts_with("http://") {
-                ui::shell_tabs::open_beside(Some(url), background);
+        let mut closed = false;
+        let mut asked = Vec::new();
+        for event in panel.engine.drain_events() {
+            match event {
+                WebViewEvent::TabClosed => closed = true,
+                // Its question is the window's to ask, as a popup's is.
+                event @ (WebViewEvent::ExtensionPermissionRequest { .. }
+                | WebViewEvent::ExtensionPermissions { .. }) => asked.push(event),
+                _ => {}
             }
         }
+        super::open_beside(&panel.engine);
         if closed {
             self.side_panel = None;
         }
-        closed
+        let mut changed = closed;
+        for event in asked {
+            changed |= self.on_engine_event(event, engine);
+        }
+        changed
     }
 
     /// The side panel of an extension turned off or removed closes with it.

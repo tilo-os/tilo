@@ -470,7 +470,13 @@ fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     d.resize((1280, 800)).unwrap();
     assert!(d.targets()["api.request-divider"].y0 > before.y0);
     d.click_named("api.reset-request-area").unwrap();
-    assert_eq!(d.targets()["api.request-divider"], before);
+    // A click asks for the reset, so the divider glides home
+    // (`motion::PanelSlide`); where it comes to rest is where it started.
+    {
+        let _arrived = ui::motion::testing::settled();
+        d.relayout();
+        assert_eq!(d.targets()["api.request-divider"], before);
+    }
     d.relayout();
     assert!(
         reset_disabled(d),

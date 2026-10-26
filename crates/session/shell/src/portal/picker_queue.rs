@@ -1,29 +1,30 @@
-//! The production [`FilePickerSpawner`]: a queue the compositor drains
-//! on its own thread, every frame.
+//! The production [`FilePickerSpawner`]: the chooser's door into the one
+//! queue of requests for the person.
 //!
 //! [`FilePickerSpawner::spawn`] is called from the zbus dispatcher — a
 //! tokio worker thread — but the dialog is a widget in the compositor's
 //! `Rc`/`RefCell` tree, owned by the frame thread and untouchable
-//! elsewhere. So the two sides meet at a mutex-guarded `Vec`, the same
-//! shape [`super::PromptQueueHandle`] uses: `spawn` pushes and returns
-//! immediately (the trait requires it not to block); the frame thread
-//! drains, mounts the dialog, and fulfils the reply.
+//! elsewhere. So the two sides meet at [`super::prompt::PromptQueue`], which
+//! `spawn` pushes onto and the frame thread drains: the same queue every
+//! other request for the person goes through, so a chooser and a capability
+//! prompt raised back to back keep the order they were raised in.
 //!
 //! Every queued request owns a `oneshot::Sender`. Dropping one resolves
 //! the awaiting D-Bus method as "cancelled" — correct for a dialog that
 //! can no longer be shown, but it must be a decision, not an accident:
-//! [`FilePickerQueue::drain`] hands the senders on to the frame thread,
-//! which answers rather than holds them if it can't render (no chrome yet).
+//! [`super::prompt::PromptQueue::take_pickers`] hands the senders on to the
+//! frame thread, which answers rather than holds them if it can't render
+//! (no chrome yet).
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 use super::file_picker_spawner::{FilePickerRequest, FilePickerSpawner};
+use super::prompt::{PromptQueue, PromptRequest};
 
-/// Shared buffer between the D-Bus dispatcher and the frame thread.
+/// The chooser service's handle on the session's prompt queue.
 #[derive(Clone, Default)]
 pub struct FilePickerQueue {
-    pending: Arc<Mutex<Vec<FilePickerRequest>>>,
+    prompts: PromptQueue,
 }
 
 impl FilePickerQueue {
@@ -31,34 +32,51 @@ impl FilePickerQueue {
         Self::default()
     }
 
-    /// Take everything queued so far; each entry still owns its reply channel — whoever drains is responsible for answering it.
+    /// The same queue, raised through the chooser's own door. The compositor
+    /// builds one and hands it to both the portal and the overlay that
+    /// draws, so there is one line and not two.
+    pub fn for_prompts(prompts: PromptQueue) -> Self {
+        Self { prompts }
+    }
+
+    /// The queue itself, for the surface that drains it.
+    pub fn prompts(&self) -> &PromptQueue {
+        &self.prompts
+    }
+
+    /// Give the queue up to the surface that draws it, once this door has
+    /// been handed over.
+    pub fn into_prompts(self) -> PromptQueue {
+        self.prompts
+    }
+
+    /// Take every chooser queued so far; each entry still owns its reply
+    /// channel — whoever drains is responsible for answering it.
     pub fn drain(&self) -> Vec<FilePickerRequest> {
-        match self.pending.lock() {
-            Ok(mut q) => std::mem::take(&mut *q),
-            // A poisoned lock means a panic happened while holding it — report
-            // nothing rather than a partial list; the senders drop with the mutex and callers see "cancelled", the safe answer.
-            Err(_) => Vec::new(),
-        }
+        self.prompts.take_pickers()
     }
 
     /// How many requests are waiting. For tests and for the state dump.
     pub fn len(&self) -> usize {
-        self.pending.lock().map_or(0, |q| q.len())
+        self.drain_len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Count without taking, so `len` costs nothing of the queue.
+    fn drain_len(&self) -> usize {
+        self.prompts.pickers_len()
+    }
 }
 
 impl FilePickerSpawner for FilePickerQueue {
     fn spawn(&self, req: FilePickerRequest) {
-        match self.pending.lock() {
-            Ok(mut q) => q.push(req),
-            // Can't queue it, so answer it — holding a sender we'll never read is the one outcome that hangs the app.
-            Err(_) => {
-                let _ = req.reply.send(None);
-            }
+        if !self.prompts.push(PromptRequest::Picker { request: req }) {
+            // The compositor is gone, so answer rather than hold a sender
+            // that nothing will read.
+            return;
         }
     }
 }

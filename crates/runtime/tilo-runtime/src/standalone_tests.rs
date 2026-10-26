@@ -134,8 +134,12 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let mut pending = host.invoke(&owner, request.clone());
     assert!(matches!(pending.poll_ready(), PendingPoll::Waiting));
     turn();
-    let outcome = pending.poll_ready();
-    let PendingPoll::Ready(Ok(receipt)) = outcome else {
+    // Answered once the admission is durable, from the journal's writer.
+    let outcome = pending
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten();
+    let Some(Ok(receipt)) = outcome else {
         panic!("the synthetic app must accept the invocation: {outcome:?}");
     };
     assert!(invocations.try_recv().is_ok());
@@ -146,7 +150,14 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let change = host
         .next_change(&owner, &id)
         .expect("the owner may wait on its invocation");
-    assert_eq!(host.cancel(&other, &id), Err(ActionHostError::NotPermitted));
+    assert_eq!(
+        host.cancel(&other, &id)
+            .wait_timeout(std::time::Duration::from_secs(30))
+            .ok()
+            .flatten()
+            .expect("the host answers"),
+        Err(ActionHostError::NotPermitted)
+    );
     assert!(matches!(
         host.invoke(&owner, request.clone()).poll_ready(),
         PendingPoll::Ready(Ok(retry)) if retry == receipt
@@ -159,7 +170,14 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         invocations.try_recv().is_err(),
         "retries must not dispatch again"
     );
-    assert_eq!(host.cancel(&owner, &id), Ok(()));
+    assert_eq!(
+        host.cancel(&owner, &id)
+            .wait_timeout(std::time::Duration::from_secs(30))
+            .ok()
+            .flatten()
+            .expect("the host answers"),
+        Ok(())
+    );
     // The cancellation request changed the invocation: the waiter wakes on
     // it, well before the broker's one-second safety interval. The paused
     // clock reaches that interval only once nothing else can run, so the
@@ -742,6 +760,7 @@ fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActi
         needs_confirmation: false,
         confirming: false,
         moderation: None,
+        preview: None,
         scope: None,
         draft: None,
     }

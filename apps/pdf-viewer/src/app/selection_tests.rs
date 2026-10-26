@@ -613,11 +613,40 @@ fn a_drag_held_at_the_canvas_edge_scrolls_and_keeps_selecting() {
         button: MouseButton::Left,
     });
     let canvas = app.canvas_rect;
-    move_to(&mut app, Point::new(from.x, canvas.y1 - 4.0));
+    let edge = Point::new(from.x, canvas.y1 - 4.0);
+    move_to(&mut app, edge);
     let before = app.scroll_y();
-    let held = ui::time::now();
-    settle(&mut app, |_| held.elapsed() > Duration::from_millis(500));
+    // The hold lasts a fixed number of 60 Hz frames on the frame clock, so
+    // how far it scrolls is the same on a loaded machine: far enough to
+    // bring the third page, whose text is not read yet, under the pointer.
+    let mut frame_clock = ui::time::now();
+    for _ in 0..HELD_FRAMES {
+        frame_clock += FRAME;
+        ui::time::testing::with_monotonic_time(frame_clock, || {
+            Framed::harness_mut(&mut app).relayout();
+        });
+    }
     let scrolled = app.scroll_y() - before;
+    let at_bottom = app.page_near(edge).unwrap();
+    assert_eq!(at_bottom, 3, "the hold scrolled the third page under it");
+    // Still held, with the clock still, until that page's text is read:
+    // the selection reaches it as it arrives.
+    let deadline = tilo_test_env::hang_deadline();
+    while !app.raster_text.contains_key(&at_bottom) {
+        assert!(
+            ui::time::now() < deadline,
+            "page {at_bottom}'s text never arrived"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        ui::time::testing::with_monotonic_time(frame_clock, || {
+            Framed::harness_mut(&mut app).relayout();
+        });
+    }
+    let still = app.scroll_y() - before;
+    assert!(
+        (still - scrolled).abs() < 1e-9,
+        "a still clock scrolls no further: {scrolled}px, then {still}px"
+    );
     Framed::harness_mut(&mut app).send(&WindowEvent::MouseInput {
         device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,
@@ -625,7 +654,6 @@ fn a_drag_held_at_the_canvas_edge_scrolls_and_keeps_selecting() {
     });
     assert!(scrolled > 50.0, "holding at the edge scrolls: {scrolled}px");
     let sel = app.selection.expect("the drag selected text");
-    let at_bottom = app.page_near(Point::new(from.x, canvas.y1 - 4.0)).unwrap();
     assert_eq!(
         sel.end().page,
         at_bottom,
@@ -633,3 +661,11 @@ fn a_drag_held_at_the_canvas_edge_scrolls_and_keeps_selecting() {
     );
     assert!(selected(&app).starts_with(&line_text(1, 2)));
 }
+
+/// A frame of a 60 Hz host.
+const FRAME: Duration = Duration::from_micros(16_667);
+
+/// How many frames [`a_drag_held_at_the_canvas_edge_scrolls_and_keeps_selecting`]
+/// holds at the edge: 0.8 s, well past where the third page comes under
+/// the pointer (about 0.5 s at the edge's speed).
+const HELD_FRAMES: usize = 48;

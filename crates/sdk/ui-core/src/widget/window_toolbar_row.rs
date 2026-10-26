@@ -34,7 +34,10 @@
 //! When the window shows another tab, the row's content cross-fades in place
 //! ([`crate::motion::CrossFade`]): the outgoing tab's slots fade out where
 //! they stood while the incoming ones fade in. Slots shown where none stood
-//! appear at once.
+//! appear at once. When the app changes the slots of the tab that shows, the
+//! slots move on the standard list change ([`crate::motion::ListChange`],
+//! `slot_change`): what it adds fades in, what it takes away fades out where
+//! it stood, and the slots that stay glide to their new places.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -62,9 +65,13 @@ mod layout;
 #[path = "window_toolbar_location_label.rs"]
 mod location_label;
 mod paint;
+mod reactions;
+mod slot_change;
 mod strip;
 use layout::{LocationForms, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome};
-use location_label::{LocationLabel, edited_word};
+#[cfg(test)]
+use location_label::edited_word;
+use location_label::{LocationLabel, trailing_word};
 #[cfg(test)]
 pub(crate) use paint::location_shown;
 #[cfg(test)]
@@ -142,6 +149,11 @@ pub(crate) struct ToolbarRow {
     fade: CrossFade<Option<u64>>,
     /// The outgoing tab's slots and where they stood, while they fade out.
     outgoing: Option<(WindowToolbar, Slots)>,
+    /// The slots the tab showed and where they stood before the app changed
+    /// them, until the next paint starts the change's motion.
+    changed_from: Option<(WindowToolbar, Slots)>,
+    /// The slots arriving, leaving and moving after the app changed them.
+    slot_changes: slot_change::SlotChanges,
     row: Rect,
     slots: Slots,
     hover: Option<Slot>,
@@ -186,6 +198,8 @@ pub(crate) struct ToolbarRow {
     /// the row ([`strip::NoticeStrip`]), not in the location's place.
     compact: bool,
     strip: strip::NoticeStrip,
+    /// The window's reactions at the row's end, and their emoji picker.
+    reactions: reactions::RowReactions,
 }
 
 impl Default for ToolbarRow {
@@ -200,6 +214,8 @@ impl ToolbarRow {
             shown: None,
             fade: CrossFade::new(None),
             outgoing: None,
+            changed_from: None,
+            slot_changes: slot_change::SlotChanges::default(),
             row: Rect::ZERO,
             slots: Slots::default(),
             hover: None,
@@ -222,6 +238,7 @@ impl ToolbarRow {
             drafts: Vec::new(),
             compact: false,
             strip: strip::NoticeStrip::default(),
+            reactions: reactions::RowReactions::default(),
         }
     }
 
@@ -281,6 +298,17 @@ impl ToolbarRow {
                 // only declared them asks for no frames of its own.
                 self.fade = CrossFade::new(next_tab);
             }
+            // The new tab's row cross-fades in whole.
+            self.changed_from = None;
+            self.slot_changes.clear();
+        } else if self.changed_from.is_none()
+            && self.row.area() > 0.0
+            && let (Some((_, was)), Some((_, toolbar))) = (self.shown.as_ref(), next.as_ref())
+            && was != toolbar
+        {
+            // The app changed the slots of the tab that shows: the next
+            // paint moves them from where they stood.
+            self.changed_from = Some((was.clone(), self.slots.clone()));
         }
         self.shown = next;
         self.sync_crumbs();
@@ -390,6 +418,12 @@ impl ToolbarRow {
     /// them, and lay the row out again when a size changed. Returns whether
     /// it did.
     pub(crate) fn measure_views(&mut self, theme: &Theme) -> bool {
+        if self.measure_reactions(theme) {
+            self.lay_out(self.row);
+            // The views measure against the row the reactions leave.
+            self.measure_views(theme);
+            return true;
+        }
         let labels: Vec<String> = self
             .toolbar()
             .and_then(|toolbar| toolbar.views.as_ref())
@@ -522,10 +556,15 @@ impl ToolbarRow {
             .map_or((None, &unmeasured, &[][..]), |measured| {
                 (measured.views, &measured.forms, measured.leading.as_slice())
             });
+        // The window's reactions stand at the row's end; the app's slots
+        // share what they leave.
+        let (app_row, reactions, reaction_add) = self.place_reactions(row);
         self.slots = self
             .toolbar()
-            .map(|toolbar| Slots::lay_out(toolbar, row, views, (forms, labels)))
+            .map(|toolbar| Slots::lay_out(toolbar, app_row, views, (forms, labels)))
             .unwrap_or_default();
+        self.slots.reactions = reactions;
+        self.slots.reaction_add = reaction_add;
         // The views are tabs, each as wide as its label (as `ViewTabs`
         // packs them), across the strip measured to hold them.
         if let Some(Measured { tabs, .. }) = self.views_size.as_ref()
@@ -711,7 +750,7 @@ impl ToolbarRow {
         if let Some(i) = self.strip.buttons().iter().position(|r| r.contains(p)) {
             return Some(Slot::Notice(i));
         }
-        self.slots.hit(p)
+        self.slot_at(p)
     }
 
     /// Whether the notice up stands whole in the location, as measured
@@ -903,6 +942,7 @@ impl ToolbarRow {
             Slot::Action(i) => toolbar.actions.get(*i).is_some_and(|a| a.enabled),
             Slot::Notice(i) => self.notice_action(*i).is_some_and(|a| a.enabled),
             Slot::Overflow => self.slots.overflow.area() > 0.0,
+            Slot::Reaction(_) | Slot::ReactionAdd => self.may_react(),
         }
     }
 
@@ -1156,6 +1196,7 @@ impl ToolbarRow {
             }
             Slot::Overflow => return self.open_overflow(),
             Slot::ViewsMenu => return self.open_views_menu(),
+            Slot::Reaction(_) | Slot::ReactionAdd => return self.activate_reaction(slot),
         }
         true
     }
@@ -1210,6 +1251,7 @@ impl ToolbarRow {
                 Some((rect, self.notice_action(i)?.name.clone()))
             }
             Slot::Overflow => Some((self.slots.overflow, lookup("window-toolbar-more"))),
+            Slot::Reaction(_) | Slot::ReactionAdd => self.reaction_tooltip(p),
             // A segment, the views menu and the location say what they are.
             Slot::View(_) | Slot::ViewsMenu | Slot::Location => None,
         }
@@ -1243,7 +1285,7 @@ impl ToolbarRow {
     }
 
     pub(crate) fn popup_open(&self) -> bool {
-        self.menu.is_open() || self.suggestions_open()
+        self.menu.is_open() || self.suggestions_open() || self.picking()
     }
 
     /// Hand a pointer event to an open menu (the overflow's, or the
@@ -1254,6 +1296,9 @@ impl ToolbarRow {
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
+        if self.picking() {
+            return self.picker_event(event, ctx);
+        }
         let pointer = matches!(
             event,
             WindowEvent::MouseInput { .. }
@@ -1424,7 +1469,13 @@ impl ToolbarRow {
     /// location field and the bar's menus take the keyboard themselves.
     pub(crate) fn pressing_app_slot(&self) -> bool {
         match &self.pressed {
-            Some(Slot::Sidebar | Slot::Leading(_) | Slot::View(_) | Slot::Notice(_)) => true,
+            Some(
+                Slot::Sidebar
+                | Slot::Leading(_)
+                | Slot::View(_)
+                | Slot::Notice(_)
+                | Slot::Reaction(_),
+            ) => true,
             Some(Slot::Action(i)) => self
                 .toolbar()
                 .and_then(|toolbar| toolbar.actions.get(*i))
@@ -1515,16 +1566,18 @@ impl ToolbarRow {
         handled || key
     }
 
-    /// Whether a frame must follow: the cross-fade, the field's caret, or
-    /// a menu arriving or leaving.
+    /// Whether a frame must follow: the cross-fade, slots arriving, leaving
+    /// or moving, the field's caret, or a menu arriving or leaving.
     pub(crate) fn needs_animation_frame(&self, now: Instant) -> bool {
         self.fade.is_moving(now)
             || self.strip.needs_frame()
+            || self.slot_changes.is_moving(now)
             || self
                 .field
                 .as_ref()
                 .is_some_and(Widget::needs_animation_frame)
             || self.menu.needs_animation_frame()
+            || self.reactions_moving()
     }
 
     /// The level of the location's breadcrumb at `p`, as its value: an
@@ -1548,6 +1601,22 @@ impl ToolbarRow {
             self.menu.close();
         }
         ran
+    }
+
+    /// The slot at `p`, where it is drawn: a slot gliding to its new place
+    /// is hit where the person sees it, before one arriving under it.
+    fn slot_at(&self, p: Point) -> Option<Slot> {
+        let now = crate::motion::frame_now();
+        let Some(toolbar) = self.toolbar().filter(|_| self.slot_changes.glides(now)) else {
+            return self.slots.hit(p);
+        };
+        let offset = |slot: &Slot| {
+            self.slot_changes
+                .offset(&slot_change::SlotKey::of(toolbar, slot), now)
+        };
+        self.slots
+            .hit_where(p, |slot| Some(offset(slot)).filter(|o| o.hypot() > 0.5))
+            .or_else(|| self.slots.hit_where(p, |slot| Some(offset(slot))))
     }
 
     fn menu_open_for(&self, slot: &Slot) -> bool {

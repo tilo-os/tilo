@@ -199,6 +199,33 @@ fn outcome_error(error: &std::io::Error) -> CheckedHistoryOutcomeV1 {
         _ => CheckedHistoryOutcomeV1::Unavailable,
     }
 }
+/// The agent the version `version_id` of the file at `path` records as
+/// having caused it, as the version's own signing device recorded it; `None`
+/// for a version its person made themselves, or when the history cannot be
+/// read.
+pub(crate) fn version_attribution(
+    path: &Path,
+    version_id: fs_protocol::FileVersionId,
+) -> Option<fs_protocol::FileAttributionV1> {
+    let history = MountedFileHistory::open(path).ok()?;
+    let FileHistoryReadValueV1::Page(page) = history
+        .read(FileHistoryReadQueryV1::Page { cursor: None })
+        .ok()?
+    else {
+        return None;
+    };
+    let FileHistoryReadValueV1::Version { attribution, .. } = history
+        .read(FileHistoryReadQueryV1::Version {
+            frontier: page.scope.frontier,
+            version_id,
+        })
+        .ok()?
+    else {
+        return None;
+    };
+    attribution.filter(|attribution| attribution.validate().is_ok())
+}
+
 fn read_error(error: &std::io::Error) -> FileHistoryReadErrorV1 {
     match ErrorCode::of(error) {
         Some(ErrorCode::NotFound | ErrorCode::AccessDenied | ErrorCode::NotPermitted) => {

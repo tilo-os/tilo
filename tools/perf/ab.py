@@ -402,6 +402,14 @@ def run_agent(ctx: RunContext) -> list[record.Record]:
           "--transport", "test-control socket, headless, release + dev-overrides, thin LTO",
           "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "compositor.log"],
          ctx.dir / "bench.log", ctx.repo)
+    if "agent_task_desktop" in ctx.bins:
+        call(["bash", "tools/with-test-environment.sh", sys.executable, "scripts/perf/agent_task.py",
+              "--spawn", ctx.bins["shell"], "--seeder", ctx.bins["agent_task_desktop"],
+              "--mcp", ctx.bins["tilo-runtime-mcp"], "--repetitions", "30", "--warmup", "3",
+              "--transport", "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO",
+              "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "task-compositor.log",
+              "--client-log", ctx.dir / "task-client.log"],
+             ctx.dir / "task.log", ctx.repo)
     return record.read(records)
 
 
@@ -467,6 +475,9 @@ def run_search(ctx: RunContext) -> list[record.Record]:
 
 RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "shell", "--bin", "shell",
                  "--features", "dev-overrides")
+# The agent task's client and seeded desktop, as perf-scheduled.sh builds them.
+AGENT_TASK_BUILD = (*RELEASE_SHELL, "--bin", "tilo-runtime-mcp", "--example", "agent_task_desktop")
+AGENT_TASK_SEEDER = "crates/session/shell/examples/agent_task_desktop.rs"
 
 
 def run_browser(ctx: RunContext) -> list[record.Record]:
@@ -507,7 +518,10 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           (("cargo", "build", "--locked", "-p", "shell", "--bin", "shell"),),
           {"shell": "target/debug/shell"}, {}, {}, run_latency),
     Group("agent", "release", "lavapipe", (RELEASE_SHELL,),
-          {"shell": "target/release/shell"}, {}, {}, run_agent),
+          {"shell": "target/release/shell"}, {}, {}, run_agent,
+          {"agent_task_desktop": (AGENT_TASK_SEEDER, AGENT_TASK_BUILD,
+                                  "target/release/examples/agent_task_desktop"),
+           "tilo-runtime-mcp": (AGENT_TASK_SEEDER, AGENT_TASK_BUILD, "target/release/tilo-runtime-mcp")}),
     Group("render", "release", "lavapipe",
           (("cargo", "build", "--locked", "--release", "-p", "ui-examples", "--example", "ui-perf"),
            ("cargo", "build", "--locked", "--release", "-p", "shell", "--example", "redraw_bench"),

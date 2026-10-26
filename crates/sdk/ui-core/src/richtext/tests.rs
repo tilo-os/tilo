@@ -116,7 +116,14 @@ fn offscreen_visual_lines_are_culled_only_by_vertical_extent() {
     let runs: Vec<_> = layout.buffer.layout_runs().collect();
     assert!(runs.len() > 10);
     let clip = Rect::new(0.0, 0.0, 100.0, 40.0);
-    let outside = crate::text_render::rich_run_outside_clip;
+    // Ink reaching two rows past each band, whichever way.
+    let reach = InkReach {
+        above: 2.0 * runs[0].line_height,
+        below: 2.0 * runs[0].line_height,
+    };
+    let outside = |run: &cosmic_text::LayoutRun<'_>, transform: Affine, clip: Rect| {
+        crate::text_render::rich_run_outside_clip(run, transform, clip, reach)
+    };
     assert!(!outside(&runs[0], Affine::IDENTITY, clip));
     let last = runs.last().unwrap();
     assert!(outside(last, Affine::IDENTITY, clip));
@@ -562,6 +569,180 @@ fn layout(text: &str, width: f32) -> RichTextLayout {
         vec![],
         vec![],
     )
+}
+
+/// Visual motion as a scan of every row of the document: the reference the
+/// paragraph-scoped search must agree with. At a row's edge it enters the
+/// row before or after in document order.
+fn visual_motion_full_scan(
+    layout: &RichTextLayout,
+    position: TextPosition,
+    right: bool,
+) -> TextPosition {
+    let position =
+        TextPosition::with_affinity(position.byte.min(layout.text_len), position.affinity);
+    let rows: Vec<_> = layout
+        .buffer
+        .layout_runs()
+        .map(|run| (run.rtl, layout.caret_stops(&run)))
+        .collect();
+    let find = |matches: &dyn Fn(&TextPosition) -> bool| {
+        rows.iter().enumerate().find_map(|(row, (_, stops))| {
+            let index = stops.iter().position(|(_, stop)| matches(stop))?;
+            Some((row, index))
+        })
+    };
+    let Some((row, index)) =
+        find(&|stop| *stop == position).or_else(|| find(&|stop| stop.byte == position.byte))
+    else {
+        return position;
+    };
+    let (rtl, stops) = &rows[row];
+    let target = RichTextLayout::visual_step(stops, index, right);
+    if (stops[target].0 - stops[index].0).abs() > 0.5 {
+        return stops[target].1;
+    }
+    let next = if right == *rtl {
+        row.checked_sub(1)
+    } else {
+        row.checked_add(1)
+    };
+    next.and_then(|next| rows.get(next))
+        .and_then(|(_, next)| if right { next.first() } else { next.last() })
+        .map(|(_, stop)| *stop)
+        .filter(|stop| *stop != position)
+        .unwrap_or(stops[target].1)
+}
+
+#[test]
+fn arrow_keys_walk_across_soft_wraps_and_line_breaks_both_ways() {
+    // A wrapped row's last stop and the next row's first are two places on
+    // screen; an arrow key at either edge moves on to the other row instead
+    // of stopping there. A right-to-left paragraph reads its rows from the
+    // right edge, so Left walks it forward.
+    for (text, rtl) in [
+        ("alpha beta gamma delta\nepsilon zeta eta theta", false),
+        ("שלום עולם ספר בית מים\nאור ים", true),
+    ] {
+        let shaped = layout(text, 80.0);
+        assert!(
+            shaped.buffer.layout_runs().count() > 3,
+            "the fixture wraps: {text:?}"
+        );
+        for forward in [true, false] {
+            let right = forward != rtl;
+            let (start, end) = if forward {
+                (0, text.len())
+            } else {
+                (text.len(), 0)
+            };
+            let mut at = TextPosition::new(start);
+            let mut bytes = vec![start];
+            for _ in 0..4 * text.len() {
+                let next = shaped.visual_motion_position(at, right);
+                assert_eq!(
+                    next,
+                    visual_motion_full_scan(&shaped, at, right),
+                    "{text:?} from {at:?}, right {right}"
+                );
+                if next == at {
+                    break;
+                }
+                at = next;
+                bytes.push(at.byte);
+            }
+            assert_eq!(
+                at.byte, end,
+                "{text:?}, right {right}: the walk stopped at {at:?} after {bytes:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rows_of_a_line_are_the_rows_a_full_scan_places_there() {
+    let text = "a first paragraph that wraps onto more rows\n\nshort\nשלום and a wrapped mixed paragraph\nlast";
+    let mut shaped = layout(text, 120.0);
+    let row = |run: &cosmic_text::LayoutRun<'_>| {
+        (
+            run.line_i,
+            run.line_top,
+            run.line_y,
+            run.line_height,
+            run.glyphs.len(),
+        )
+    };
+    let lines = shaped.buffer.lines.len();
+    let all_rows = shaped.buffer.layout_runs().count();
+    assert!(all_rows > lines, "the fixture wraps");
+    for height in [None, Some(60.0)] {
+        // A height ends the runs early; the seek leaves them ended there too.
+        shaped.buffer.set_size(Some(120.0), height);
+        let rows = shaped.buffer.layout_runs().count();
+        assert_eq!(rows < all_rows, height.is_some(), "height {height:?}");
+        for start in 0..=lines {
+            let seeked: Vec<_> = shaped
+                .buffer
+                .layout_runs()
+                .skip_to_line(start)
+                .map(|run| row(&run))
+                .collect();
+            let scanned: Vec<_> = shaped
+                .buffer
+                .layout_runs()
+                .skip_while(|run| run.line_i < start)
+                .map(|run| row(&run))
+                .collect();
+            assert_eq!(seeked, scanned, "height {height:?}, line {start}");
+        }
+    }
+}
+
+#[test]
+fn visual_motion_reads_only_its_paragraph_and_matches_a_full_scan() {
+    for text in [
+        "",
+        "alpha beta gamma\nnext\n",
+        "a\r\nb\rc",
+        "שלום mixed العربية\n👩‍💻 é\n",
+        "ภาษาไทยทดสอบ\nខ្មែរ",
+        "soft\u{ad}hyphen word\n\n",
+    ] {
+        for width in [30.0, 180.0] {
+            let shaped = layout(text, width);
+            for byte in 0..=text.len() + 1 {
+                for affinity in [TextAffinity::Before, TextAffinity::After] {
+                    let position = TextPosition::with_affinity(byte, affinity);
+                    for right in [false, true] {
+                        assert_eq!(
+                            shaped.visual_motion_position(position, right),
+                            visual_motion_full_scan(&shaped, position, right),
+                            "text {text:?}, width {width}, byte {byte}, {affinity:?}, right {right}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // An arrow key in a long document builds the caret stops of its own
+    // paragraph's rows, never of the rows above it.
+    let text = "a paragraph that wraps onto a second row\n".repeat(1000);
+    let shaped = layout(&text, 200.0);
+    let last = text.len() - 2;
+    let rows = shaped.logical_line_bands(last).len();
+    assert!(rows >= 2, "the fixture paragraph wraps");
+    CARET_STOP_RUNS.with(|count| count.set(0));
+    let moved = shaped.visual_motion_position(TextPosition::new(last), false);
+    let visited = CARET_STOP_RUNS.with(std::cell::Cell::get);
+    assert!(
+        visited <= rows,
+        "one arrow key built the caret stops of {visited} rows; its paragraph has {rows}"
+    );
+    assert_eq!(
+        moved,
+        visual_motion_full_scan(&shaped, TextPosition::new(last), false)
+    );
 }
 
 #[test]
@@ -1316,5 +1497,106 @@ fn selection_rects_match_a_scan_of_every_row() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn the_rows_within_a_view_of_a_long_text_are_found_without_walking_those_above() {
+    // Wrapped and unwrapped lines, so lines hold one row or several.
+    let text = (0..600)
+        .map(|line| {
+            if line % 7 == 0 {
+                format!("line {line}: a longer line that wraps onto a second row and maybe a third")
+            } else {
+                format!("line {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let shaped = layout(&text, 220.0);
+    let walked = |top: f32, bottom: f32| -> Vec<(usize, u32)> {
+        shaped
+            .buffer
+            .layout_runs()
+            .skip_while(|run| run.line_top + run.line_height * 3.0 < top)
+            .take_while(|run| run.line_top - run.line_height * 2.0 <= bottom)
+            .map(|run| (run.line_i, run.line_top.to_bits()))
+            .collect()
+    };
+    let height = shaped.height();
+    for (top, bottom) in [
+        (0.0, 300.0),
+        (-50.0, 10.0),
+        (1234.5, 1800.0),
+        (height * 0.5, height * 0.5 + 400.0),
+        (height - 100.0, height + 100.0),
+        (height + 500.0, height + 900.0),
+    ] {
+        let found: Vec<(usize, u32)> = shaped
+            .rows_within(top, bottom)
+            .map(|run| (run.line_i, run.line_top.to_bits()))
+            .collect();
+        assert_eq!(found, walked(top, bottom), "rows within {top}..{bottom}");
+    }
+}
+
+/// Caret geometry as a scan of every row of the document: the first exact
+/// stop, else the first stop of the byte.
+fn caret_geometry_full_scan(layout: &RichTextLayout, position: TextPosition) -> (f32, f32, f32) {
+    let mut fallback = None;
+    for run in layout.buffer.layout_runs() {
+        for (x, stop) in layout.caret_stops(&run) {
+            let geometry = (x, run.line_top, run.line_height);
+            if stop == position {
+                return geometry;
+            }
+            if stop.byte == position.byte && fallback.is_none() {
+                fallback = Some(geometry);
+            }
+        }
+    }
+    fallback.unwrap_or((0.0, 0.0, layout.line_height))
+}
+
+#[test]
+fn a_caret_at_a_huge_paragraphs_chunk_boundary_stands_and_moves_as_at_a_wrap() {
+    // A paragraph past the chunking threshold is shaped as several lines;
+    // the end of one chunk and the start of the next are the same source
+    // byte, two sides of a soft wrap. The caret there must still find the
+    // earlier chunk's end, or Left from it stops dead at the later start.
+    let text = (0..7000)
+        .map(|i| format!("word{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(text.len() > crate::text_break::HUGE_PARAGRAPH_BYTES);
+    let shaped = layout(&text, 400.0);
+    let chunks = shaped.buffer.lines.len();
+    assert!(chunks > 2, "shaped in chunks");
+    for line in 1..chunks {
+        let boundary = shaped.global_byte(Cursor::new(line, 0));
+        for byte in [boundary - 1, boundary, boundary + 1] {
+            for affinity in [TextAffinity::Before, TextAffinity::After] {
+                let position = TextPosition::with_affinity(byte, affinity);
+                assert_eq!(
+                    shaped.caret_geometry_at(position),
+                    caret_geometry_full_scan(&shaped, position),
+                    "caret at {position:?}, chunk {line}"
+                );
+                for right in [false, true] {
+                    assert_eq!(
+                        shaped.visual_motion_position(position, right),
+                        visual_motion_full_scan(&shaped, position, right),
+                        "{position:?}, right {right}, chunk {line}"
+                    );
+                }
+            }
+        }
+        // Left from the end of a chunk leaves the boundary.
+        let end = TextPosition::with_affinity(boundary, TextAffinity::Before);
+        assert!(
+            shaped.visual_motion_position(end, false).byte < boundary,
+            "Left from the end of chunk {}",
+            line - 1
+        );
     }
 }

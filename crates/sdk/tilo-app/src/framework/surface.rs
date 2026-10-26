@@ -31,7 +31,45 @@ pub(crate) struct SurfaceScope {
     children: RefCell<Vec<Weak<Self>>>,
     jobs: RefCell<Vec<SyncWeak<AtomicBool>>>,
 }
+/// Keep `now` in `statuses` when it says something else. Not generic, so
+/// every app's hosts share it.
+#[inline(never)]
+fn note_statuses(statuses: &RefCell<Vec<EffectStatus>>, now: Vec<EffectStatus>) {
+    if *statuses.borrow() != now {
+        *statuses.borrow_mut() = now;
+    }
+}
+
+/// Have a hosted surface of `scope` stage what `stages` run, on its next
+/// sync through `pending`, while the scope is active. Not generic, so every
+/// app's hosts share it.
+#[inline(never)]
+fn stage_hosted(stages: &super::stage::Stages, scope: Rc<SurfaceScope>, pending: Staging) {
+    stages.push(
+        scope.alive(),
+        Box::new(move |scenario| {
+            if scope.active() {
+                *pending.borrow_mut() = Some(scenario.map(str::to_owned));
+            }
+        }),
+    );
+}
+
 impl SurfaceScope {
+    /// A scope alive while `parent` is, a child of the surface scope
+    /// `within` when there is one. Not generic, so every app's hosts share
+    /// it.
+    #[inline(never)]
+    fn under(parent: Weak<()>, within: Option<&Rc<Self>>) -> Rc<Self> {
+        let scope = Self::new(parent);
+        if let Some(within) = within {
+            let mut children = within.children.borrow_mut();
+            children.retain(|child| child.strong_count() > 0);
+            children.push(Rc::downgrade(&scope));
+        }
+        scope
+    }
+
     fn new(parent: Weak<()>) -> Rc<Self> {
         Rc::new(Self {
             token: RefCell::new(Some(Rc::new(()))),
@@ -223,6 +261,26 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// of keeping its own copy.
     fn landed(&mut self, participant: &tilo_actions::ParticipantId, place: &tilo_resource::Place) {
         let _ = (participant, place);
+    }
+
+    /// Whether the surface is told of the actions applied here
+    /// ([`applied`](Self::applied)). A surface that implements it says so
+    /// here; no other surface's window keeps them.
+    const APPLIED: bool = false;
+
+    /// `action` was applied to the resource here through the door: invoked
+    /// from the palette, a script or an agent, or submitted by the surface's
+    /// own control, and only once the person agreed when it asks first.
+    /// Called after [`present`](Self::present) showed the state holding it;
+    /// never for a collaborator's change merged in, nor for an undo or a
+    /// restore.
+    ///
+    /// What an action means on this device beyond the document (a file
+    /// grant a removal forgets) is carried out here, so it happens when the
+    /// action applies and never when the person cancelled it. Asked only of
+    /// a surface that sets [`APPLIED`](Self::APPLIED).
+    fn applied(&mut self, action: &R::Action) {
+        let _ = action;
     }
 
     /// The participant's permission to edit changed while the app runs: a
@@ -549,12 +607,7 @@ impl<R: Resource> SurfaceCx<R> {
         S: ResourceSurface<R, E> + 'static,
         E: Effect,
     {
-        let scope = SurfaceScope::new(self.alive.clone());
-        if let Some(parent) = &self.scope {
-            let mut children = parent.children.borrow_mut();
-            children.retain(|child| child.strong_count() > 0);
-            children.push(Rc::downgrade(&scope));
-        }
+        let scope = SurfaceScope::under(self.alive.clone(), self.scope.as_ref());
         let jobs = self.effects.scoped_surface_jobs(&scope);
         let mut cx = self.clone();
         cx.jobs = jobs.clone();
@@ -570,15 +623,7 @@ impl<R: Resource> SurfaceCx<R> {
             Rc::clone(&scope),
             surface,
         );
-        let pending = host.staging();
-        self.stages.push(
-            scope.alive(),
-            Box::new(move |scenario| {
-                if scope.active() {
-                    *pending.borrow_mut() = Some(scenario.map(str::to_owned));
-                }
-            }),
-        );
+        stage_hosted(&self.stages, scope, host.staging());
         HostedSurface::element(Box::new(host))
     }
     /// The host-owned identity of the record this surface shows. A durable
@@ -734,6 +779,9 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
     presented: (u64, u64),
     /// The number of the next landing to tell the surface of.
     landings: u64,
+    /// The number of the next action applied here to tell the surface of,
+    /// when it follows them ([`ResourceSurface::APPLIED`]).
+    applied: Option<u64>,
     dispatch: Dispatcher<R>,
     read_only: bool,
     /// A scenario to stage on the next sync.
@@ -751,6 +799,9 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
 impl<R: Resource, S, E> Drop for SurfaceHost<R, S, E> {
     fn drop(&mut self) {
         self.scope.retire();
+        if self.applied.is_some() {
+            self.live.unfollow_applied();
+        }
     }
 }
 
@@ -788,7 +839,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
         }
         Self {
             presented: (live.revision(), live.loads()),
-            landings: live.landings_since(u64::MAX).1,
+            landings: live.next_landing(),
+            applied: S::APPLIED.then(|| live.follow_applied()),
             live,
             read_only: dispatch.read_only(),
             dispatch,
@@ -886,6 +938,13 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
         for (participant, place) in &landed {
             self.surface.landed(participant, place);
         }
+        if let Some(from) = self.applied {
+            let (applied, next) = self.live.applied_since(from);
+            self.applied = Some(next);
+            for action in &applied {
+                self.surface.applied(action);
+            }
+        }
         let staged = self.staging.borrow_mut().take();
         if let Some(scenario) = staged {
             self.surface.stage(scenario.as_deref());
@@ -900,10 +959,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
         self.search_queries
             .settle(self.effects.is_some() && self.surface.search_pending());
         if self.effects.is_some() {
-            let now = self.surface.effects();
-            if *self.statuses.borrow() != now {
-                *self.statuses.borrow_mut() = now;
-            }
+            note_statuses(&self.statuses, self.surface.effects());
         }
     }
     fn start_effect(

@@ -27,10 +27,12 @@ fn fill_part(room: &mut Room, part: u64) -> String {
 }
 
 fn react(message: &str, emoji: &str) -> ui::tilo_resource::Invoke<ChatPart> {
-    ChatPart::REACT.with(chat_part::React {
-        message: Id::from_raw(message),
-        emoji: emoji.into(),
-    })
+    ChatPart::paths()
+        .messages
+        .item(&Id::from_raw(message))
+        .reactions
+        .react(emoji)
+        .into()
 }
 
 fn edit(message: &str, text: &str) -> ui::tilo_resource::Invoke<ChatPart> {
@@ -164,7 +166,9 @@ fn the_window_chain_rolls_over_and_reads_across_its_parts() {
             .unwrap()
             .reactions
             .iter()
-            .any(|reaction| reaction.emoji == "👍" && reaction.users == [crate::model::ME])
+            .any(|reaction| reaction.emoji == "👍"
+                && reaction.includes(crate::model::ME)
+                && reaction.count() == 1)
     );
 }
 

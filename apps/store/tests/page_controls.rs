@@ -139,21 +139,28 @@ fn an_empty_search_offers_to_clear_it() {
     );
 }
 
-/// Search inside the Store is the window's filter field, showing the query
-/// the Store searches for; there is no field of the Store's own.
+/// Search inside the Store is the window bar's: what is typed there
+/// searches the catalogue in place, and the Store draws no field of its own.
 #[test]
-fn the_catalogue_searches_through_the_windows_filter_field() {
-    let mut store = store::fixture::seeded_app();
-    store.set_query("Notes".into());
-    let app = lay_out(store);
-    let field = find_test_id(&*app, "store.search").expect("the window's filter field");
+fn the_window_bars_search_searches_the_catalogue() {
+    let mut app = lay_out(store::fixture::seeded_app());
     assert_eq!(
-        field.accessibility().and_then(|node| node.value).as_deref(),
-        Some("Notes"),
-        "the field shows the query the Store searched for"
+        ui::widget::InPlace::of(&mut *app),
+        ui::widget::InPlace::Query,
+        "the window bar's search acts on the Store in place"
+    );
+    assert!(ui::widget::with_queryable(&mut *app, &mut |store| {
+        store.set_query_text("Notes");
+    }));
+    assert_eq!(
+        app.query(),
+        "Notes",
+        "typing in the bar searches the catalogue"
     );
     assert!(
-        !has_test_id(&*app, "search-open"),
-        "no separate launcher stands beside the field"
+        !has_test_id(&*app, "store.search"),
+        "the Store draws no search field of its own"
     );
+    ui::widget::with_queryable(&mut *app, &mut |store| store.query_closed());
+    assert_eq!(app.query(), "", "closing the bar's search clears it");
 }

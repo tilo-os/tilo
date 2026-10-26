@@ -31,7 +31,7 @@ struct ActivityObservation {
     desktop: tilo_desktop_model::DesktopTree,
     doc: automerge::AutoCommit,
     /// The verified agents of every room on this desktop, read with it.
-    roster_agents: Vec<ui::history_source::RosterAgent>,
+    roster_agents: Vec<collab_types::history::RosterAgent>,
 }
 
 impl ActivityObservation {
@@ -49,7 +49,7 @@ impl ActivityObservation {
 /// A room's verified agents and the room document's heads they were read at.
 type ReadAgents = (
     Vec<automerge::ChangeHash>,
-    Vec<ui::history_source::RosterAgent>,
+    Vec<collab_types::history::RosterAgent>,
 );
 
 thread_local! {
@@ -60,7 +60,7 @@ thread_local! {
 /// Every room's verified agents ([`WorkspaceTree::verified_agents`]), read
 /// again only for a room whose document moved since: Activity refreshes on
 /// a workspace switch, and its governance seldom changes.
-fn verified_agents_since(tree: &mut WorkspaceTree) -> Vec<ui::history_source::RosterAgent> {
+fn verified_agents_since(tree: &mut WorkspaceTree) -> Vec<collab_types::history::RosterAgent> {
     let rooms = tree
         .desktop
         .workspaces
@@ -115,7 +115,7 @@ impl ActivityTree for ActivityObservation {
         tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
         Ok(())
     }
-    fn roster_agents(&self) -> Vec<ui::history_source::RosterAgent> {
+    fn roster_agents(&self) -> Vec<collab_types::history::RosterAgent> {
         self.roster_agents.clone()
     }
 }
@@ -1016,7 +1016,10 @@ impl ActivityHost for NativeActivityHost {
         self.undos
             .start(broker, undo.room, undo.invocation, undo.task_id, undo.steps)
     }
-    fn poll_task_run_undo(&self, invocation: uuid::Uuid) -> Option<Result<(), String>> {
+    fn poll_task_run_undo(
+        &self,
+        invocation: uuid::Uuid,
+    ) -> Option<Result<Vec<tilo_desktop::activity::TaskRunDocument>, String>> {
         match self.undos.poll(invocation)? {
             super::task_undo::UndoState::Running => None,
             super::task_undo::UndoState::Ended(outcome) => Some(outcome),
@@ -1115,7 +1118,7 @@ impl ActivityTree for WorkspaceTree {
     }
     /// Every room's agents whose delegation its governance verified for
     /// exactly their device ([`WorkspaceTree::verified_agents`]).
-    fn roster_agents(&self) -> Vec<ui::history_source::RosterAgent> {
+    fn roster_agents(&self) -> Vec<collab_types::history::RosterAgent> {
         let rooms = self
             .desktop
             .workspaces
@@ -1781,6 +1784,7 @@ mod tests {
                 report: tilo_automation::RunReport {
                     run,
                     shortcut: "publish".into(),
+                    version: None,
                     trigger: "manual".into(),
                     mode: tilo_automation::RunMode::Unattended,
                     steps: Vec::new(),
@@ -1983,6 +1987,7 @@ mod tests {
             report: tilo_automation::RunReport {
                 run,
                 shortcut: "publish".into(),
+                version: None,
                 trigger: "manual".into(),
                 mode: tilo_automation::RunMode::Unattended,
                 steps: vec![tilo_automation::StepRecord {

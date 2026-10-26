@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use tilo_relay_session::rooms::private::{
+use tilo_relay_protocol::rooms::private::{
     PrivateContact, PrivateConversation, PrivateMessage, PrivateOperation, PrivateReply,
 };
 use tilo_user_identity::DeviceCert;

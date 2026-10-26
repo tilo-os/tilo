@@ -109,21 +109,22 @@ class DependencyCycleTests(unittest.TestCase):
             root = Path(tmp)
             (root / "Cargo.lock").write_text(lock({"app": ["base"], "base": []}))
             stdout = json.dumps(members({"app": [("base", None, True)], "base": []}))
-            self.assertEqual(check.audit(root, run=ran(0, stdout=stdout)), [])
+            self.assertEqual(check.audit(root, run=ran(0, stdout=stdout)), ([], []))
 
     def test_a_cycle_through_the_lock_fails_with_its_cycle(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "Cargo.lock").write_text(lock({"app": ["base"], "base": ["app"]}))
             stdout = json.dumps(members({"app": [("base", None, True)], "base": [("app", None, True)]}))
-            failure = check.audit(root, run=ran(0, stdout=stdout))
-            self.assertTrue(failure)
-            self.assertIn("app", failure[1])
+            found, _ = check.audit(root, run=ran(0, stdout=stdout))
+            self.assertEqual(len(found), 1)
+            self.assertTrue(found[0].startswith("Cargo.lock: "))
+            self.assertIn("app", found[0])
 
     def test_other_cargo_failures_are_reported(self):
-        failure = check.audit(run=ran(101, stderr="error: failed to parse manifest"))
-        self.assertTrue(failure)
-        self.assertIn("could not be checked", failure[0])
+        found, notes = check.audit(run=ran(101, stderr="error: failed to parse manifest"))
+        self.assertEqual(found, [])
+        self.assertIn("could not be checked", notes[0])
 
     def test_a_members_dev_dependency_in_the_lock_closes_no_loop(self):
         # The lock lists a member's dev-dependencies among its dependencies.

@@ -60,6 +60,7 @@ impl ShellOverlayHost {
         } {
             Ok(()) => {
                 self.shortcut_config = config;
+                self.refresh_nested_shortcuts();
                 self.shortcut_rebind = None;
                 self.shortcut_rebind_message = None;
             }
@@ -83,6 +84,7 @@ impl ShellOverlayHost {
     ) -> Result<(), settings_store::hardware::ShortcutConfigError> {
         config.validate()?;
         self.shortcut_config = settings_store::hardware::ShortcutConfig::normalise(config);
+        self.refresh_nested_shortcuts();
         Ok(())
     }
 
@@ -90,7 +92,9 @@ impl ShellOverlayHost {
     /// input event (the session-lock chord) read this snapshot instead of
     /// settings storage.
     pub(crate) fn shortcut_config(&self) -> &settings_store::hardware::ShortcutConfig {
-        &self.shortcut_config
+        self.nested_shortcuts
+            .as_ref()
+            .unwrap_or(&self.shortcut_config)
     }
 
     /// Replace the cached desktop-control preferences after settings
@@ -116,7 +120,12 @@ impl ShellOverlayHost {
         logical_key: &Key,
         modifiers: winit::event::Modifiers,
     ) -> Option<settings_store::hardware::ShortcutAction> {
-        configured_shortcut_action(&self.shortcut_config, logical_key, modifiers)
+        // The windowed defaults add usable entry points, rather than removing
+        // the usual chords when a parent does forward them (or input is injected).
+        self.nested_shortcuts
+            .as_ref()
+            .and_then(|config| configured_shortcut_action(config, logical_key, modifiers))
+            .or_else(|| configured_shortcut_action(&self.shortcut_config, logical_key, modifiers))
     }
 
     pub(super) fn reset_shortcut_pair(
@@ -162,6 +171,7 @@ impl ShellOverlayHost {
         } {
             Ok(()) => {
                 self.shortcut_config = candidate;
+                self.refresh_nested_shortcuts();
                 self.shortcut_rebind = None;
                 self.shortcut_rebind_message = None;
             }

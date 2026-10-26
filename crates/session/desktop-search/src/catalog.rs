@@ -8,7 +8,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         id: "so.tilo.activity",
         name: "Activity",
         category: "Office",
-        platforms: &["tilo-os"],
+        platforms: &["tilo-os", "web"],
         names: &["Aktivität"],
         keywords: &[
             "activity",

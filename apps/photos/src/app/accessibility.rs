@@ -720,7 +720,11 @@ impl PhotosApp {
                             AccessNode::new(Role::Button)
                                 .with_name(tr(name))
                                 .with_bounds(bounds)
-                                .with_state(AccessState::new().focusable(true))
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .disabled(!button.is_enabled()),
+                                )
                                 .with_action_target(target),
                         );
                     }
@@ -763,20 +767,6 @@ impl PhotosApp {
                             AlbumEditorHit::NextPage => {
                                 ("photos-a11y-more-photos", "photos:album-editor:next")
                             }
-                        };
-                        cards.push(
-                            AccessNode::new(Role::Button)
-                                .with_name(tr(name))
-                                .with_bounds(*bounds)
-                                .with_state(AccessState::new().focusable(true))
-                                .with_action_target(target),
-                        );
-                    }
-                } else {
-                    for (hit, bounds) in &self.album_editor_hits {
-                        let (name, target) = match hit {
-                            AlbumEditorHit::New => ("photos-new-album", "photos:album-editor:new"),
-                            _ => continue,
                         };
                         cards.push(
                             AccessNode::new(Role::Button)

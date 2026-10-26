@@ -51,6 +51,8 @@ mod host_commands;
 pub(crate) const HISTORY_ACTION_RESOURCE: &str = history_actions::RESOURCE;
 #[cfg(test)]
 mod history_actions_tests;
+#[cfg(test)]
+mod host_worker_pump_tests;
 mod model_lifecycle;
 mod participants;
 mod published_invocations;
@@ -764,7 +766,7 @@ impl AppConstructionInputs {
             profiler: crate::profiling::FrameProfiler::from_env,
             floating_surface_client:
                 crate::floating_surface::FloatingSurfaceServiceClient::for_window,
-            startup_presence_scope: PresenceKey::for_local_workspace,
+            startup_presence_scope: crate::presence::local_workspace_key,
             surface_id: ConstructionValue::Lazy(crate::local_surface_id),
         }
     }
@@ -929,6 +931,10 @@ impl App {
         app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
         app.appearance_reconcile = behaviour.appearance_reconcile;
         app.set_capture_protected(behaviour.capture_protected);
+        app.floating.window_record = Some((
+            binding.checkout.id.route().to_owned(),
+            binding.checkout.kind.as_str().to_owned(),
+        ));
         if let Some(app_id) = input_surface_id {
             app.window.app_id = Some(app_id);
         }
@@ -1723,6 +1729,65 @@ impl App {
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
 
+    /// [`Self::directory_explicit_visibility`] of `resources` and everything
+    /// under them, by resource id, found in one walk of the widget tree.
+    fn directory_explicit_visibilities(
+        &self,
+        resources: &[tilo_actions::Resource],
+    ) -> std::collections::HashMap<String, tilo_actions::ActionAddress> {
+        fn ids<'a>(resources: &'a [tilo_actions::Resource], out: &mut Vec<&'a str>) {
+            for resource in resources {
+                out.push(resource.id.as_str());
+                ids(&resource.children, out);
+            }
+        }
+        let mut all = Vec::new();
+        ids(resources, &mut all);
+        let targets: Vec<_> = all
+            .iter()
+            .map(|id| {
+                self.actions
+                    .bound_publication
+                    .target(&tilo_actions::ActionAddress::new(*id, ""))
+                    .ok()
+                    .flatten()
+            })
+            .collect();
+        let wanted: Vec<_> = all
+            .iter()
+            .zip(&targets)
+            .map(|(id, target)| {
+                (
+                    target.as_ref().map(|target| target.binding.clone()),
+                    target
+                        .as_ref()
+                        .map_or(*id, |target| target.address.address.resource.as_str())
+                        .to_owned(),
+                )
+            })
+            .collect();
+        let found = crate::bound_dispatch::publication_visibilities(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &wanted,
+        );
+        all.into_iter()
+            .zip(targets)
+            .zip(found)
+            .filter_map(|((id, target), address)| {
+                let mut address = address?;
+                if let Some(target) = &target {
+                    address.resource = self
+                        .actions
+                        .bound_publication
+                        .alias(&target.binding, &address.resource)
+                        .ok()?;
+                }
+                Some((id.to_owned(), address))
+            })
+            .collect()
+    }
+
     fn directory_explicit_visibility(
         &self,
         resource: &tilo_actions::Resource,
@@ -2199,29 +2264,16 @@ impl App {
         self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
 
-    /// The smallest-area matching rect wins, so a nested child beats its
-    /// enclosing container. Works off `node_map` rather than walking
-    /// `children` so it still reaches widgets nested under containers with
-    /// private child storage.
+    /// [`crate::widget::cursor`]'s rule over every laid-out widget. Works
+    /// off `node_map` rather than walking `children` so it still reaches
+    /// widgets nested under containers with private child storage.
     #[cfg(feature = "native")]
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
-        let mut best: Option<(f64, CursorIcon)> = None;
+        let mut pick = crate::widget::cursor::CursorPick::default();
         for &node in self.layout.node_map.keys() {
-            let Ok((rect, icon)) = self.inspect_node(node, |widget| {
-                (widget.get_rect(), widget.cursor_shape(point))
-            }) else {
-                continue;
-            };
-            if rect.contains(point)
-                && let Some(icon) = icon
-            {
-                let area = (rect.width() * rect.height()).max(0.0);
-                if best.is_none_or(|(a, _)| area < a) {
-                    best = Some((area, icon));
-                }
-            }
+            let _ = self.inspect_node(node, |widget| pick.offer(widget, point));
         }
-        best.map(|(_, icon)| icon)
+        pick.icon()
     }
 
     /// Whether a laid-out widget claims raw per-finger touch at `point`
@@ -2705,10 +2757,18 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.layout.adopted.clear();
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("rebuild.build");
         self.build_history_presentation();
+        #[cfg(test)]
+        drop(probe);
         self.layout.structure_dirty = false;
         self.layout.layout_dirty = true;
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("rebuild.focus");
         self.update_focusable_order();
+        #[cfg(test)]
+        drop(probe);
 
         // A focus trap already placed focus inside its subtree in
         // `update_focusable_order`; don't let it escape the modal.
@@ -2759,7 +2819,11 @@ impl App {
 
         // The widgets built above are fresh instances the OLD `sync` never
         // ran against, so without this they draw blank until the next event.
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("rebuild.sync");
         self.root_widget.sync(&self.state.doc, &self.state.root);
+        #[cfg(test)]
+        drop(probe);
         self.needs_sync = false;
         // This rebuild's frame presents a durability the sync just took up;
         // it is not another structure change.
@@ -3691,6 +3755,7 @@ mod private_continuity_route_tests {
 #[cfg(test)]
 pub(crate) mod ordinary_confirmation_tests {
     include!("app/deferred_invocation_tests.rs");
+    include!("app/state_tick_tests.rs");
     use super::*;
     use crate::history_mode::*;
     use std::{cell::RefCell, rc::Rc};
@@ -4060,10 +4125,29 @@ pub(crate) mod ordinary_confirmation_tests {
         fn activate(&mut self, label: &str) {
             self.act(label, crate::a11y::Action::Activate);
         }
+        /// Type `value` into the field for the name, called by its label.
         fn value(&mut self, value: &str) {
-            // Confirmation is a question, not an editable search field.
-            // Typing must not change the arguments captured by its control.
-            self.key(value);
+            let label = match self {
+                Self::Native(app) => {
+                    app.build_a11y_tree_update(1.0)
+                        .nodes
+                        .into_iter()
+                        .find_map(|(_, node)| {
+                            node.label()
+                                .filter(|l| confirmation_field(l))
+                                .map(str::to_owned)
+                        })
+                }
+                Self::FrameHarness(driver) => {
+                    driver.a11y_nodes().into_iter().find_map(|(_, node)| {
+                        node.label()
+                            .filter(|l| confirmation_field(l))
+                            .map(str::to_owned)
+                    })
+                }
+            }
+            .expect("the field for the name is published");
+            self.act(&label, crate::a11y::Action::SetValue(value.into()));
         }
         fn frame(&mut self) {
             match self {
@@ -4104,11 +4188,39 @@ pub(crate) mod ordinary_confirmation_tests {
                     .and_then(|(_, node)| node.label().map(str::to_owned)),
             }
         }
+        /// Whether a node labelled `label` is published.
+        fn published(&mut self, label: &str) -> bool {
+            let nodes = match self {
+                Self::Native(app) => app.build_a11y_tree_update(1.0).nodes,
+                Self::FrameHarness(driver) => driver.a11y_nodes(),
+            };
+            nodes
+                .into_iter()
+                .any(|(_, node)| node.label() == Some(label))
+        }
+        /// Whether the published button labelled `label` is disabled.
+        fn disabled(&mut self, label: &str) -> bool {
+            let nodes = match self {
+                Self::Native(app) => app.build_a11y_tree_update(1.0).nodes,
+                Self::FrameHarness(driver) => driver.a11y_nodes(),
+            };
+            nodes
+                .into_iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .is_some_and(|(_, node)| node.is_disabled())
+        }
+        /// The button that goes ahead: Confirm for a question, the
+        /// action's own verb ("Run") where a name is typed.
         fn submit_id(&mut self) -> accesskit::NodeId {
-            match self {
-                Self::Native(app) => named(app, "Run fixture"),
-                Self::FrameHarness(driver) => driver.a11y_node_named("Run fixture").unwrap(),
-            }
+            let nodes = match self {
+                Self::Native(app) => app.build_a11y_tree_update(1.0).nodes,
+                Self::FrameHarness(driver) => driver.a11y_nodes(),
+            };
+            nodes
+                .into_iter()
+                .find(|(_, node)| matches!(node.label(), Some("Run fixture" | "Run")))
+                .map(|(id, _)| id)
+                .expect("the button that goes ahead is published")
         }
         fn stale(&mut self, id: accesskit::NodeId) {
             match self {
@@ -4231,29 +4343,36 @@ pub(crate) mod ordinary_confirmation_tests {
         assert!(ledger.borrow().is_empty());
     }
 
-    fn published_confirmation_instruction(host: &mut Host) -> String {
+    /// Whether `label` names the labelled field for a name to type.
+    fn confirmation_field(label: &str) -> bool {
+        label.starts_with("Type ") && label.ends_with(" to confirm")
+    }
+    fn published_confirmation_instruction(host: &mut Host, question: &str) -> String {
         match host {
             Host::Native(app) => app
                 .build_a11y_tree_update(1.0)
                 .nodes
                 .into_iter()
-                .find(|(_, node)| node.label() == Some("Run fixture?"))
+                .find(|(_, node)| node.label() == Some(question))
                 .and_then(|(_, node)| node.label().map(str::to_owned))
                 .expect("native published dialog states the exact question"),
             Host::FrameHarness(driver) => {
-                fn access(node: &crate::a11y::AccessNode) -> Option<String> {
-                    if node.name.as_deref() == Some("Run fixture?") {
+                fn access(node: &crate::a11y::AccessNode, question: &str) -> Option<String> {
+                    if node.name.as_deref() == Some(question) {
                         return node.name.clone();
                     }
-                    node.children.iter().find_map(access)
+                    node.children.iter().find_map(|n| access(n, question))
                 }
-                fn widget(node: &crate::headless::InspectionNode) -> Option<String> {
+                fn widget(
+                    node: &crate::headless::InspectionNode,
+                    question: &str,
+                ) -> Option<String> {
                     node.semantics
                         .as_ref()
-                        .and_then(access)
-                        .or_else(|| node.children.iter().find_map(widget))
+                        .and_then(|n| access(n, question))
+                        .or_else(|| node.children.iter().find_map(|n| widget(n, question)))
                 }
-                widget(&driver.inspection().root)
+                widget(&driver.inspection().root, question)
                     .expect("FrameHarness published dialog states the exact question")
             }
         }
@@ -4265,18 +4384,35 @@ pub(crate) mod ordinary_confirmation_tests {
                 phrase: "APPLY EXACT".into(),
             },
         ] {
+            let phrase = matches!(policy, tilo_actions::ConfirmationPolicy::Phrase { .. });
             let (root, ledger, _) = fixture(policy);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
             assert!(ledger.borrow().is_empty());
-            // The published question names the action; the matching verb
-            // button confirms it, with no search field or phrase to type.
-            let instruction = published_confirmation_instruction(&mut host);
-            assert_eq!(instruction, "Run fixture?");
-            assert!(!instruction.contains("Type "), "{instruction:?}");
-            assert!(!instruction.contains("APPLY EXACT"), "{instruction:?}");
+            // The published question names the action; its button goes
+            // ahead. An irreversible action that names what it destroys asks
+            // for that name in a labelled field first, its verb disabled
+            // until then.
+            let question = if phrase {
+                "Run APPLY EXACT?"
+            } else {
+                "Run fixture?"
+            };
+            let instruction = published_confirmation_instruction(&mut host, question);
+            assert_eq!(instruction, question);
+            if phrase {
+                assert!(
+                    host.published("Type APPLY EXACT to confirm"),
+                    "the field for the name is labelled"
+                );
+                assert!(host.disabled("Run"), "not without the name");
+                assert!(ledger.borrow().is_empty(), "not without the name");
+                host.value("APPLY EXACT");
+            } else {
+                assert!(!host.published("Type APPLY EXACT to confirm"));
+            }
             let stale = host.submit_id();
-            host.activate("Run fixture");
+            host.activate(if phrase { "Run" } else { "Run fixture" });
             assert_eq!(
                 &*ledger.borrow(),
                 &[serde_json::json!({"payload":"original"})]
@@ -4310,8 +4446,20 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("Emit request");
                 assert!(ledger.borrow().is_empty());
                 let stale = host.submit_id();
-                host.value("wrong");
-                host.activate("Run fixture");
+                // A question goes ahead with its button; a name to type goes
+                // ahead only once it is typed exactly, with the action's verb.
+                let submit = if phrase == "CONFIRM" {
+                    "Run fixture"
+                } else {
+                    "Run"
+                };
+                if phrase != "CONFIRM" {
+                    host.value("wrong");
+                    assert!(host.disabled(submit), "not the name it asks for");
+                    assert!(ledger.borrow().is_empty(), "not the name it asks for");
+                    host.value(phrase);
+                }
+                host.activate(submit);
                 assert_eq!(
                     &*ledger.borrow(),
                     &[serde_json::json!({"payload":"original"})]
@@ -4328,10 +4476,8 @@ pub(crate) mod ordinary_confirmation_tests {
             let mut host = Host::new(native, root);
             host.activate("Emit request");
             let stale = host.submit_id();
-            host.value("CONFIRM");
             host.activate("Cancel");
             host.activate("Emit request");
-            host.value("CONFIRM");
             host.stale(stale);
             assert!(ledger.borrow().is_empty());
             host.activate("Run fixture");
@@ -4432,7 +4578,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 if mutation == "revoked" {
                     host.revoke();
                 }
-                host.value("CONFIRM");
                 host.activate("Run fixture");
                 assert!(ledger.borrow().is_empty(), "{native}:{mutation}");
             }
@@ -4482,7 +4627,6 @@ pub(crate) mod ordinary_confirmation_tests {
                     let mut host = Host::new(native, root);
                     host.activate("Emit request");
                     epoch.store(later, Ordering::SeqCst);
-                    host.value("CONFIRM");
                     host.activate("Run fixture");
                     assert!(ledger.borrow().is_empty());
                 }
@@ -4495,19 +4639,16 @@ pub(crate) mod ordinary_confirmation_tests {
             let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
-            host.value("CONFIRM");
             let stale = host.submit_id();
             host.activate("History");
             assert!(ledger.borrow().is_empty());
             host.activate("History");
             assert!(ledger.borrow().is_empty());
             host.stale(stale);
-            host.value("CONFIRM");
             host.activate("Run fixture");
             assert!(ledger.borrow().is_empty());
             host.activate("Cancel");
             host.activate("Emit request");
-            host.value("CONFIRM");
             host.activate("Run fixture");
             assert_eq!(ledger.borrow().len(), 1);
         }
@@ -4557,7 +4698,6 @@ pub(crate) mod ordinary_confirmation_tests {
                         }
                         _ => {}
                     }
-                    host.value("CONFIRM");
                     host.activate("Run fixture");
                     assert_eq!(
                         ledger.borrow().len(),
@@ -4588,7 +4728,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 model.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
                 let mut host = Host::new(native, old_guard.managed(Box::new(model)));
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 let stale = host.submit_id();
                 changed.set(true);
                 host.frame();
@@ -4697,14 +4836,12 @@ pub(crate) mod ordinary_confirmation_tests {
                 });
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 host.activate("History");
                 if changed {
                     resources.borrow_mut()[0].actions[0].label = "Changed during History".into();
                 }
                 host.activate("History");
                 assert!(ledger.borrow().is_empty());
-                host.value("CONFIRM");
                 host.activate("Run fixture");
                 assert_eq!(
                     ledger.borrow().len(),
@@ -4757,7 +4894,6 @@ pub(crate) mod ordinary_confirmation_tests {
             assert!(state(&mut host).peek_last_undo().is_none());
             let before = state(&mut host).doc.get_heads();
             host.activate("Emit request");
-            host.value("CONFIRM");
             host.activate("Run fixture");
             let author = match &host {
                 Host::Native(app) => app.collaboration.local_author.clone(),
@@ -4810,7 +4946,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 let label = if cancel { "Cancel" } else { "Run fixture" };
                 let nodes = match &mut host {
                     Host::Native(app) => app.build_a11y_tree_update(1.0).nodes,
@@ -4850,7 +4985,6 @@ pub(crate) mod ordinary_confirmation_tests {
             let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
-            host.value("CONFIRM");
             // The question opens on Confirm; one Tab reaches Cancel.
             let event = crate::synthetic_input::key_input(
                 &Key::Named(NamedKey::Tab),
@@ -4904,7 +5038,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 };
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 let stale = host.submit_id();
                 host.activate("History");
                 assert_eq!(
@@ -4938,7 +5071,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 fresh = fresh.with_continuation_identity(|_| None);
                 resources.borrow_mut()[0].actions[0] = fresh;
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 host.activate("Run fixture");
                 assert_eq!(
                     &*ledger.borrow(),
@@ -4969,7 +5101,6 @@ pub(crate) mod ordinary_confirmation_tests {
                     handler: ContinuationKey::new("later", [b"handler"]),
                 })
             });
-            host.value("CONFIRM");
             host.activate("Run fixture");
             assert_eq!(ledger.borrow().len(), 1);
         }
@@ -5114,7 +5245,6 @@ pub(crate) mod ordinary_confirmation_tests {
             let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(true, root);
             host.activate("Emit request");
-            host.value("CONFIRM");
             let Host::Native(app) = &mut host else {
                 unreachable!()
             };

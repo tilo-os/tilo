@@ -1,7 +1,12 @@
-//! The boot screen: the secret is always asked through systemd's password
-//! agents, so it works on a serial console as on the display; while Plymouth
-//! draws, it is also told who is signing in and what to say, so the theme can
-//! lay the screen out like the login screen (os/usr/share/plymouth/themes/tilo).
+//! The boot screen. While Plymouth draws, the secret is asked on it directly
+//! and the theme is told who is signing in and what to say, so it can lay the
+//! screen out like the login screen (os/usr/share/plymouth/themes/tilo).
+//! Without Plymouth the secret is asked through systemd's password agents, so
+//! it works on a serial console too.
+//!
+//! On Plymouth the question cannot go through systemd-ask-password: its
+//! Plymouth agent takes an empty answer as no answer and asks again, so the
+//! empty Enter that means "Can't sign in" would never arrive.
 //!
 //! The theme reads `display-message` texts of the form `tilo-signin-<what>:…`.
 
@@ -61,7 +66,11 @@ impl BootScreen {
             choices.join(", ")
         );
         loop {
-            let Some(answer) = self.ask_password("tilo-signin-person", "yes", &question) else {
+            let answer = match &self.plymouth {
+                Some(plymouth) => plymouth.ask("ask-question", &question),
+                None => self.ask_password("tilo-signin-person", "yes", &question),
+            };
+            let Some(answer) = answer else {
                 return Pick::OtherWays;
             };
             let answer = answer.trim();
@@ -134,11 +143,22 @@ impl Screen for BootScreen {
         if !note.is_empty() {
             text = format!("{note} {text}");
         }
-        match self.ask_password("tilo-signin", "masked", &text) {
+        let answer = match &self.plymouth {
+            Some(plymouth) => plymouth.ask("ask-for-password", &text),
+            None => self.ask_password("tilo-signin", "masked", &text),
+        };
+        let entry = match answer {
             Some(secret) if secret.is_empty() => Entry::Empty,
             Some(secret) => Entry::Secret(secret),
             None => Entry::Unavailable,
-        }
+        };
+        let what = match &entry {
+            Entry::Secret(_) => "an entry",
+            Entry::Empty => "an empty entry",
+            Entry::Unavailable => "no answer (the question could not be asked)",
+        };
+        eprintln!("tilo-boot-signin: {} gave {what}", person.name);
+        entry
     }
 
     fn checking(&mut self, _person: &Person) {
@@ -178,6 +198,25 @@ impl Plymouth {
             .status()
             .is_ok_and(|status| status.success());
         pinged.then_some(Self { program })
+    }
+
+    /// Ask on the boot screen: `ask-for-password` (masked) or
+    /// `ask-question`. An empty Enter answers empty. `None` when Plymouth
+    /// could not ask.
+    pub(crate) fn ask(&self, how: &str, prompt: &str) -> Option<Zeroizing<String>> {
+        let output = Command::new(&self.program)
+            .arg(how)
+            .arg(format!("--prompt={prompt}"))
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let stdout = Zeroizing::new(output.stdout);
+        if !output.status.success() {
+            return None;
+        }
+        let text = std::str::from_utf8(&stdout).ok()?;
+        Some(Zeroizing::new(text.to_owned()))
     }
 
     pub(crate) fn message(&self, text: &str) {
@@ -265,6 +304,12 @@ mod tests {
 dir="$(dirname "$0")"
 case "$1" in
   --ping) exit 0 ;;
+  ask-for-password|ask-question)
+    printf '%s\n' "$*" >>"$dir/asked"
+    answer="$(head -n1 "$dir/answers")"; sed -i 1d "$dir/answers"
+    [ "$answer" = "<cancel>" ] && exit 1
+    printf '%s' "$answer"
+    ;;
   display-message) printf '%s\n' "${2#--text=}" >>"$dir/messages" ;;
   ignore-keystroke)
     if [ "$2" = $'--keys=\n' ]; then other=enter; else other=move; fi
@@ -382,6 +427,30 @@ printf '%s' "$answer"
     }
 
     #[test]
+    fn without_plymouth_the_field_is_asked_through_the_password_agents() {
+        let _serial = crate::test_support::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let mut screen = screen(dir.path(), false);
+        fs::write(dir.path().join("answers"), "123456\n\n").unwrap();
+        let anna = people().remove(0);
+        let prompt = Prompt {
+            person: &anna,
+            note: Note::None,
+            several: false,
+        };
+        assert!(
+            matches!(screen.ask(&prompt), Entry::Secret(secret) if secret.as_str() == "123456")
+        );
+        assert!(matches!(screen.ask(&prompt), Entry::Empty));
+        assert_eq!(
+            read(dir.path(), "asked").lines().next(),
+            Some(
+                "-n --echo=masked --timeout=0 --id=tilo-signin:root PIN for Anna, or leave it empty for other ways to sign in"
+            )
+        );
+    }
+
+    #[test]
     fn the_field_is_labelled_for_the_person_and_their_secret() {
         let _serial = crate::test_support::serial();
         let dir = tempfile::tempdir().unwrap();
@@ -405,8 +474,9 @@ printf '%s' "$answer"
         assert_eq!(
             read(dir.path(), "asked").lines().next(),
             Some(
-                "-n --echo=masked --timeout=0 --id=tilo-signin:root Incorrect PIN. 4 tries left. PIN for Anna, or leave it empty for other ways to sign in"
-            )
+                "ask-for-password --prompt=Incorrect PIN. 4 tries left. PIN for Anna, or leave it empty for other ways to sign in"
+            ),
+            "asked on Plymouth itself, whose answer can be empty"
         );
         assert_eq!(
             read(dir.path(), "messages")

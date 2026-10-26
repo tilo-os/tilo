@@ -495,19 +495,20 @@ fn paint_arriving_rows(
     now: ui::time::Instant,
 ) -> ui::arriving::Step {
     let theme = ctx.theme;
-    let row_h = ListRowFace::new("Ag")
-        .subtitle("Ag")
-        .secondary("Ag")
-        .height(ctx.text, theme);
+    let kind = ListRowFace::new("Ag").subtitle("Ag").secondary("Ag");
+    let row_h = kind.height(ctx.text, theme);
     let frame = RowFrame::new(list, row_h, false, theme);
-    let face = ui::widget::ArrivalFace::new(ui::widget::SkeletonShape::Row, clock, now);
+    let face =
+        ui::widget::ArrivalFace::new(ui::widget::SkeletonShape::Row(kind.shape()), clock, now);
+    // The list is one region: its first row says where the mail comes from.
+    let mut named = ui::widget::NamedOnce::default();
     let mut index = 0;
     loop {
         let row = frame.row(index, 0.0);
         if row.y0 >= list.y1 {
             break;
         }
-        face.paint(ctx, row);
+        face.clone().named_once(&mut named).paint(ctx, row);
         index += 1;
     }
     face.step()

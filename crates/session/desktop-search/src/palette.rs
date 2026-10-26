@@ -394,6 +394,7 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
                 resource_label: action.resource_label.clone(),
                 resource_presentation: None,
                 action: &action.spec,
+                depth: 0,
             };
             let mut entry = CommandEntry::from_flat_action(&flat);
             if let Some((param, value)) = &action.preset {

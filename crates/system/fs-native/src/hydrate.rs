@@ -18,9 +18,13 @@
 //! [`HydratorConfig::access_bound`]: past it the access fails with `EIO`,
 //! whether its range is being fetched from a peer that went quiet, waiting
 //! for another caller's fill, or still queued behind fills of other files.
-//! A fetch already under way keeps going, so a retry can find the range
-//! resident. Accesses to resident ranges are answered on the thread that
-//! reads the events and never queue behind a fill.
+//! Answering it also [cancels](Cancel) the fill a worker is making for it,
+//! so the worker is free for the next access at once instead of waiting
+//! with the transfer layer, about 30 s per peer: an unrelated file opened
+//! meanwhile is not queued behind a dead peer. The content plane's fetcher
+//! lets the transfer itself go on without its worker, so a retry can find
+//! the range in the content store. Accesses to resident ranges are answered
+//! on the thread that reads the events and never queue behind a fill.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -73,6 +77,57 @@ pub trait WritePolicy: Send + Sync + 'static {
     fn admit_writer(&self, file: (u64, u64)) -> Result<(), i32>;
 }
 
+/// Tells a fill that nobody waits for its bytes any more: the access it
+/// was made for has been answered. Clones share one state.
+#[derive(Clone, Default)]
+pub struct Cancel(Arc<Mutex<CancelState>>);
+
+#[derive(Default)]
+struct CancelState {
+    cancelled: bool,
+    wake: Vec<Box<dyn FnOnce() + Send>>,
+}
+
+impl Cancel {
+    /// Whether the fill was cancelled.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        match self.0.lock() {
+            Ok(state) => state.cancelled,
+            Err(_) => true,
+        }
+    }
+
+    /// Runs `wake` once the fill is cancelled, at once when it already was.
+    /// A fill that never is drops `wake` with the last clone.
+    pub fn on_cancel(&self, wake: impl FnOnce() + Send + 'static) {
+        let Ok(mut state) = self.0.lock() else {
+            wake();
+            return;
+        };
+        if state.cancelled {
+            drop(state);
+            wake();
+        } else {
+            state.wake.push(Box::new(wake));
+        }
+    }
+
+    /// Cancels the fill and wakes everything waiting on it.
+    pub fn cancel(&self) {
+        let wake = match self.0.lock() {
+            Ok(mut state) if !state.cancelled => {
+                state.cancelled = true;
+                std::mem::take(&mut state.wake)
+            }
+            _ => return,
+        };
+        for wake in wake {
+            wake();
+        }
+    }
+}
+
 /// Supplies content bytes for placeholders.
 pub trait Fetcher: Send + Sync + 'static {
     /// Returns exactly `len` bytes of `content` starting at `offset`.
@@ -80,16 +135,20 @@ pub trait Fetcher: Send + Sync + 'static {
 
     /// Writes bytes `range` of `content` into `dest` at the same offsets.
     /// `ahead` marks read-ahead for a sequential reader rather than a
-    /// blocked access. The default fetches and writes; a fetcher whose
-    /// content lives in files can clone extents instead.
+    /// blocked access. `cancel` fires once nobody waits for the bytes: a
+    /// fetcher that returns then frees its worker for the next access,
+    /// while one that ignores it holds the worker until it returns. The
+    /// default fetches and writes; a fetcher whose content lives in files
+    /// can clone extents instead.
     fn fill(
         &self,
         content: &[u8; 32],
         range: Range<u64>,
         dest: BorrowedFd<'_>,
         ahead: bool,
+        cancel: &Cancel,
     ) -> io::Result<()> {
-        let _ = ahead;
+        let _ = (ahead, cancel);
         let len = range.end.saturating_sub(range.start);
         let bytes = self.fetch(content, range.start, len)?;
         if bytes.len() as u64 != len {
@@ -226,6 +285,8 @@ struct Blocked {
     fd: OwnedFd,
     deadline: Instant,
     answered: AtomicBool,
+    /// Cancelled once the access is answered: nobody waits for its fill.
+    cancel: Cancel,
 }
 
 impl Blocked {
@@ -561,8 +622,8 @@ impl Shared {
         }
     }
 
-    /// Sends `response` for `access` unless it was already answered.
-    /// Returns whether this call answered it.
+    /// Sends `response` for `access` unless it was already answered, and
+    /// cancels the fill made for it. Returns whether this call answered it.
     fn answer(&self, access: &Blocked, response: u32) -> bool {
         if access.answered.swap(true, Ordering::AcqRel) {
             return false;
@@ -572,6 +633,7 @@ impl Shared {
             // Kernels without FAN_DENY_ERRNO accept only plain deny.
             let _ = self.group.respond(raw, fan::FAN_DENY);
         }
+        access.cancel.cancel();
         true
     }
 
@@ -644,6 +706,7 @@ impl Shared {
             fd,
             deadline: now.checked_add(self.cfg.access_bound).unwrap_or(now),
             answered: AtomicBool::new(false),
+            cancel: Cancel::default(),
         });
         if let Ok(mut blocked) = self.blocked.lock() {
             blocked.insert(raw, Arc::clone(&access));
@@ -651,19 +714,23 @@ impl Shared {
         workers.send(Job { access, fill }).map_err(|_| ())
     }
 
-    /// Fetches the claimed ranges and writes them in place. Returns the
+    /// Fetches the claimed ranges and writes them in place, for the blocked
+    /// `reader` or, without one, ahead of a sequential reader. Returns the
     /// ranges written, and the first error, which stops the rest.
     fn fetch_claims(
         &self,
         content: &[u8; 32],
         fd: BorrowedFd<'_>,
         claim: &[Range<u64>],
-        ahead: bool,
+        reader: Option<&Blocked>,
     ) -> (Vec<Range<u64>>, io::Result<()>) {
+        let ahead = reader.is_none();
+        // Read-ahead has nobody waiting, so nothing cancels it.
+        let cancel = reader.map_or_else(Cancel::default, |reader| reader.cancel.clone());
         let mut done = Vec::new();
         for c in claim {
             let len = c.end.saturating_sub(c.start);
-            let r = self.fetcher.fill(content, c.clone(), fd, ahead);
+            let r = self.fetcher.fill(content, c.clone(), fd, ahead, &cancel);
             match r {
                 Ok(()) => {
                     self.stats.fills.fetch_add(1, Ordering::Relaxed);
@@ -744,7 +811,7 @@ impl Shared {
             }
             let content = st.content;
             drop(files);
-            let (done, result) = self.fetch_claims(&content, fd, &claim, !block);
+            let (done, result) = self.fetch_claims(&content, fd, &claim, reader);
             for d in &done {
                 filled = filled.saturating_add(d.end.saturating_sub(d.start));
             }

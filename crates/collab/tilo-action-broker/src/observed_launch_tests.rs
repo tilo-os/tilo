@@ -118,7 +118,12 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
             assert!(custody.certificate().is_err(), "fresh rights, not the launch snapshot, govern admission");
             env.membership.write().workspaces[0].policy.grants = grants;
             assert!(custody.certificate().is_ok());
-            host.cancel(&person, &original).unwrap();
+            host.cancel(&person, &original)
+                .wait_timeout(std::time::Duration::from_secs(5))
+                .ok()
+                .flatten()
+                .expect("answered")
+                .unwrap();
             assert!(
                 custody.certificate().is_err(),
                 "cancelled original cannot be reused"

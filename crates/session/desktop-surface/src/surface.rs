@@ -39,15 +39,16 @@ use ui::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent}
 use ui::{TextRenderer, Theme};
 
 use crate::navigation::{
-    self, ActivityCloseReason, Admitted, Application, Command, DesktopPan, HistoryDirection,
-    HistoryState, NotificationsState, PaneState, Presentation, RouteIds, ScrollAction, ScrollState,
-    Snapshot,
+    self, ActivityView, Admitted, Application, Command, DesktopPan, HistoryDirection, HistoryState,
+    NotificationsState, Presentation, RouteIds, ScrollAction, ScrollState, Snapshot,
 };
+use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
 mod arrivals;
 #[cfg(test)]
 mod close_motion_tests;
 mod history;
+mod live_shares;
 mod notices;
 #[cfg(test)]
 mod open_motion_tests;
@@ -56,10 +57,10 @@ mod search;
 mod splice;
 mod window_bars;
 
-pub use history::{ActivityPane, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
+pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
 pub use personal_ask::PersonalAsk;
-pub use search::{HostAction, HostActionSource, is_host_offer};
+pub use search::{HostAction, HostActionSource, is_host_offer, search_chord_keys};
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -77,6 +78,9 @@ pub fn published_selection(
         _ => window.first().cloned(),
     }
 }
+
+/// The app that shows a workspace's history.
+const ACTIVITY_APP: &str = tilo_actions::remote::workspace_activity::APP_ID;
 
 /// Where a host's tab contents come from.
 pub trait TileSource {
@@ -96,10 +100,39 @@ pub trait TileSource {
     fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
         Vec::new()
     }
-}
 
-/// One person's doings, as History names them, or (`None`) everyone's.
-struct ActivityAuthor(Option<String>);
+    /// The tab already showing what the launch `app` opens (a record
+    /// launch's record, [`crate::session::record_launch`]): it comes
+    /// forward in place of a second window on the same record.
+    fn showing(&self, _app: &str) -> Option<TabId> {
+        None
+    }
+
+    /// The record `tab`'s window shows and the kind of resource it keeps,
+    /// for the windows a person may share ([`ui::window_share`]).
+    fn window_record(&self, _tab: TabId) -> Option<(String, String)> {
+        None
+    }
+
+    /// The workspace the windows are in, which each window's app is told:
+    /// apps sharing one process have none of their own.
+    fn workspace_room(&self) -> Option<String> {
+        None
+    }
+
+    /// Whether this desktop draws the views windows embed of other apps'
+    /// resources ([`Self::embed`]).
+    fn draws_embeds(&self) -> bool {
+        false
+    }
+
+    /// `view`'s own app on this desktop's copy of its record, to be drawn
+    /// scaled into the window that embeds it: the app, or why it cannot
+    /// show. Never creates the record.
+    fn embed(&mut self, _view: &ui::window_share::ResourceView) -> Result<TileHost, String> {
+        Err("This desktop can't show it here".into())
+    }
+}
 
 struct Shared {
     tree: DesktopTree,
@@ -113,9 +146,10 @@ struct Shared {
     /// when something moved.
     revision: u64,
     queue: Vec<Admitted>,
-    /// Whose doings the history pane was last asked to show, until the
-    /// pane is up to take it.
-    activity_author: Option<ActivityAuthor>,
+    /// What the Activity app was last asked to show (a view, and whose
+    /// doings when one person's), until the activity model is up to offer
+    /// it.
+    activity_focus: Option<(ActivityView, Option<String>)>,
     minter: IdMinter,
     /// Logical width the strip lays out against.
     viewport_width: f64,
@@ -127,6 +161,9 @@ struct Shared {
     /// The shown strip, the area it is drawn in and how far it is
     /// panned, as last laid out.
     shown_strip: Option<(StripId, Rect, f64)>,
+    /// Where the shown strip's controls are for control hints, as last
+    /// drawn.
+    hint_places: ui::widget::HintPlaces,
     /// Carets and selections of the focused window's editors, as last laid
     /// out ([`ui::presence::capability::subtree_presence`]).
     focused_presence: Vec<(PresenceKey, PresencePayload)>,
@@ -207,6 +244,12 @@ impl DesktopHandle {
     /// strip, however wide the surface or wherever it is panned to.
     pub fn shown_strip(&self) -> Option<(StripId, Rect, f64)> {
         self.shared.borrow().shown_strip
+    }
+
+    /// Where the shown strip's window bars and edges are for control hints,
+    /// in the surface's coordinates, as last drawn.
+    pub fn hint_places(&self) -> ui::widget::HintPlaces {
+        self.shared.borrow().hint_places.clone()
     }
 
     /// The caret or selection this desktop publishes as its presence, given
@@ -474,6 +517,32 @@ fn holder_refusal(holders: &HashMap<TabId, ui::widget::TabHolder>, tab: TabId) -
     )
 }
 
+/// Answer what the windows asked of the activity with a host that keeps no
+/// history for the workspace: each write that it isn't kept, each read
+/// that it is still to come, as a native session reads a workspace it is
+/// not showing.
+fn unavailable(requests: &ActivityRequests) {
+    struct Unkept;
+    impl ActivityReads for Unkept {
+        fn revision(&self) -> u64 {
+            0
+        }
+        fn read(
+            &mut self,
+            _action: &str,
+            _arguments: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!({ "pending": true }))
+        }
+    }
+    for ask in requests.take() {
+        if let ActivityAsk::Act { answer, .. } = ask {
+            answer.complete(Err(crate::i18n::t("activity-served-unavailable")));
+        }
+    }
+    requests.serve(&mut Unkept);
+}
+
 fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
     tree.workspaces.iter().find_map(|workspace| {
         workspace.strips.iter().find_map(|strip| {
@@ -553,9 +622,12 @@ pub struct DesktopSurface {
     platform: ui::platform::PlatformConventions,
     /// The host's retained workspace history, when it keeps one.
     history: Option<Box<dyn HistorySource>>,
-    /// The history pane, while the surface draws it.
-    activity: Option<Box<dyn history::Overlay>>,
-    /// The pane was asked for while the host still loads its code: frames
+    /// What the windows ask of the workspace's activity, when the host
+    /// serves it to them.
+    activity_requests: Option<ActivityRequests>,
+    /// The activity model, while a window follows it or asks of it.
+    activity: Option<Box<dyn history::Served>>,
+    /// The model was asked for while the host still loads its code: frames
     /// keep coming, each asking again, until it can open.
     activity_loading: bool,
     /// The banners and centre, when the host installed notifications.
@@ -582,6 +654,8 @@ pub struct DesktopSurface {
     /// it wholly into view: never during the press, which would move what
     /// was pressed from under the pointer.
     reveal_on_release: Option<(StripId, GroupId)>,
+    /// The windows shared live, and the views windows embed of them.
+    live_shares: live_shares::LiveShares,
 }
 
 /// What one app may ask of its host in one frame; more waits for the next.
@@ -702,12 +776,13 @@ impl DesktopSurface {
             opens: true,
             revision: 1,
             queue: Vec::new(),
-            activity_author: None,
+            activity_focus: None,
             minter,
             viewport_width: ui::widget::DEFAULT_STRIP_USABLE_PX,
             replaced: false,
             shown_tabs: Vec::new(),
             shown_strip: None,
+            hint_places: ui::widget::HintPlaces::default(),
             focused_presence: Vec::new(),
             rebuild: Vec::new(),
             search_request: None,
@@ -743,6 +818,7 @@ impl DesktopSurface {
             search_pointer: Point::ZERO,
             platform: ui::platform::PlatformConventions::default(),
             history: None,
+            activity_requests: None,
             activity: None,
             activity_loading: false,
             notices: None,
@@ -752,6 +828,7 @@ impl DesktopSurface {
             keyboard_tab: None,
             activation: None,
             reveal_on_release: None,
+            live_shares: live_shares::LiveShares::default(),
         };
         surface.show_active_strip();
         (surface, DesktopHandle { shared })
@@ -775,14 +852,22 @@ impl DesktopSurface {
         changed
     }
 
-    /// Read workspace history from `source`: Catch up, Explore, Replay and
-    /// Tasks then open the shared history pane over the strip.
+    /// Read workspace history from `source`: the Activity app then shows
+    /// it, once the host serves the windows what they ask of it
+    /// ([`Self::serve_activity`]).
     pub fn set_history_source(&mut self, source: Box<dyn HistorySource>) {
         self.history = Some(source);
         let mut shared = self.shared.borrow_mut();
         let mut next = shared.presentation.clone();
         next.retained_history = true;
         shared.present(next);
+    }
+
+    /// Answer what the windows ask of the workspace's activity through
+    /// `requests` (the desktop's end of its session) from the history
+    /// source.
+    pub fn serve_activity(&mut self, requests: ActivityRequests) {
+        self.activity_requests = Some(requests);
     }
 
     /// Show `notifications`' banners over the strip, and its centre when a
@@ -881,109 +966,91 @@ impl DesktopSurface {
         shared.present(next);
     }
 
-    /// Open, follow or close the history pane as the presentation asks, and
-    /// carry what the person did in it back into the presentation.
+    /// Serve the windows what they asked of the workspace's activity: the
+    /// activity model is open while one follows it or asks of it, for the
+    /// active workspace, and each read it follows is read again whenever
+    /// the model moved.
     fn sync_activity(&mut self) {
-        if let Some(overlay) = self.activity.as_mut() {
-            let exit = overlay.take_exit();
-            if exit.dismissed || exit.open.is_some() {
-                overlay.finish();
-                self.activity = None;
-                self.structure_dirty = true;
-                let mut shared = self.shared.borrow_mut();
-                let tab = exit
-                    .open
-                    .as_ref()
-                    .zip(self.history.as_ref())
-                    .and_then(|(target, source)| source.resource_tab(&shared.tree, target));
-                let mut next = shared.presentation.clone();
-                next.activity = None;
-                next.pane = None;
-                next.activity_close_reason = Some(if exit.open.is_some() {
-                    ActivityCloseReason::ResourceOpened
-                } else {
-                    ActivityCloseReason::Dismissed
-                });
-                shared.present(next);
-                if let Some(ids) = tab.and_then(|tab| route_of(&shared.tree, tab)) {
-                    shared.queue.push(Admitted::Select(ids));
-                }
-                return;
-            }
-            // A view chosen inside the pane is the presented view.
-            let view = overlay.view();
-            if view != overlay.shown() {
-                overlay.set_shown(view);
-                let mut shared = self.shared.borrow_mut();
-                let mut next = shared.presentation.clone();
-                if let Some((workspace, _)) = next.activity {
-                    next.activity = Some((workspace, view));
-                }
-                shared.present(next);
-            }
-        }
-        let wanted = self.shared.borrow().presentation.activity;
-        // The host is still loading the pane's code: keep the request.
-        let mut loading = false;
-        match (wanted, self.history.as_mut()) {
-            (Some((workspace, view)), Some(source)) => {
-                let shared = self.shared.borrow();
-                match self.activity.as_mut() {
-                    Some(overlay) if overlay.workspace() == workspace => {
-                        overlay.set_view(view);
-                        overlay.set_shown(view);
-                        overlay.follow(source.as_mut(), &shared.tree, shared.revision);
-                    }
-                    _ => {
-                        if let Some(mut old) = self.activity.take() {
-                            old.finish();
-                            self.structure_dirty = true;
-                        }
-                        match source.activity_pane() {
-                            ActivityPaneCode::Ready(open) => {
-                                self.activity = open(
-                                    source.as_mut(),
-                                    &shared.tree,
-                                    shared.revision,
-                                    workspace,
-                                    view,
-                                )
-                                .map(|pane| pane.0);
-                                self.structure_dirty = true;
-                            }
-                            ActivityPaneCode::Loading => loading = true,
-                            ActivityPaneCode::Unavailable => {}
-                        }
-                    }
-                }
-            }
-            _ => {
-                if let Some(mut old) = self.activity.take() {
-                    old.finish();
-                    self.structure_dirty = true;
-                }
-            }
-        }
-        self.activity_loading = loading;
-        if let Some(overlay) = self.activity.as_mut()
-            && let Some(ActivityAuthor(author)) = self.shared.borrow_mut().activity_author.take()
+        let Some(requests) = self.activity_requests.clone() else {
+            return;
+        };
+        // A view offered to the app stays offered until it showed it.
+        let wanted = requests.wanted()
+            || self.shared.borrow().activity_focus.is_some()
+            || self
+                .activity
+                .as_ref()
+                .is_some_and(|model| model.offers_focus());
+        let workspace = self.shared.borrow().tree.active;
+        if let Some(mut old) = self
+            .activity
+            .take_if(|model| !wanted || model.workspace() != workspace)
         {
-            overlay.set_author(author);
+            old.finish();
         }
-        let pane = self.activity.as_ref().map(|overlay| PaneState {
-            playing: overlay.playing(),
-            partial: overlay.partial(),
-        });
-        let mut shared = self.shared.borrow_mut();
-        let mut next = shared.presentation.clone();
-        if wanted.is_some() && pane.is_none() && self.history.is_some() && !loading {
-            // The host retains no history for this workspace, or could not
-            // load the pane.
-            next.activity = None;
-            next.activity_close_reason = Some(ActivityCloseReason::Dismissed);
+        self.activity_loading = false;
+        if !wanted {
+            return;
         }
-        next.pane = pane;
-        shared.present(next);
+        let Some(source) = self.history.as_mut() else {
+            unavailable(&requests);
+            return;
+        };
+        if self.activity.is_none() {
+            match source.activity_pane() {
+                ActivityPaneCode::Ready(open) => {
+                    let shared = self.shared.borrow();
+                    self.activity = open(source.as_mut(), &shared.tree, shared.revision, workspace)
+                        .map(|model| model.0);
+                }
+                ActivityPaneCode::Loading => {
+                    self.activity_loading = true;
+                    return;
+                }
+                ActivityPaneCode::Unavailable => {}
+            }
+        }
+        let Some(model) = self.activity.as_mut() else {
+            self.shared.borrow_mut().activity_focus = None;
+            unavailable(&requests);
+            return;
+        };
+        let mut opened = None;
+        {
+            let mut shared = self.shared.borrow_mut();
+            model.follow(source.as_mut(), &shared.tree, shared.revision);
+            if let Some((view, author)) = shared.activity_focus.take() {
+                model.focus(view, author);
+            }
+        }
+        for ask in requests.take() {
+            match ask {
+                ActivityAsk::Act {
+                    action,
+                    arguments,
+                    answer,
+                } => answer.complete(model.act(&action, &arguments).map(|open| {
+                    if open.is_some() {
+                        opened = open;
+                    }
+                })),
+                ActivityAsk::BeginSummary => model.begin_summary(),
+                ActivityAsk::EndSummary => model.end_summary(),
+            }
+        }
+        let reads: &mut dyn ActivityReads = model.as_mut();
+        requests.serve(reads);
+        requests.wake_waiting();
+        // A record opened from the history: its window comes forward.
+        if let Some(target) = opened {
+            let mut shared = self.shared.borrow_mut();
+            if let Some(ids) = source
+                .resource_tab(&shared.tree, &target)
+                .and_then(|tab| route_of(&shared.tree, tab))
+            {
+                shared.queue.push(Admitted::Select(ids));
+            }
+        }
     }
 
     fn shown_row(&mut self) -> Option<&mut GroupRow> {
@@ -1074,8 +1141,8 @@ impl DesktopSurface {
                 model,
             );
             // A window that held an app's place (its code or record still
-            // coming) hands its opening card to what is built there now.
-            rebuilt.continue_opening_card(host);
+            // coming) hands its arrival to what is built there now.
+            rebuilt.continue_arrival(host);
             *host = rebuilt;
             built = true;
             if ui::time::now().duration_since(started) >= BUILD_BUDGET {
@@ -1353,6 +1420,21 @@ impl DesktopSurface {
             for command in queue {
                 let command = match command {
                     Admitted::Open(app) => navigation::resolve_open(&shared.tree, &app),
+                    // A record already open in a window comes forward.
+                    Admitted::Launch(app) => match self
+                        .tiles
+                        .showing(&app)
+                        .and_then(|tab| route_of(&shared.tree, tab))
+                    {
+                        Some(ids) => Admitted::Select(ids),
+                        None => Admitted::Launch(app),
+                    },
+                    // The workspace's history is the Activity app's to show:
+                    // it opens, or comes forward, and is offered the view.
+                    Admitted::Activity(_, view, author) => {
+                        shared.activity_focus = Some((view, author));
+                        navigation::resolve_open(&shared.tree, ACTIVITY_APP)
+                    }
                     other => other,
                 };
                 // Admission ran at dispatch; an earlier command in this batch
@@ -1421,22 +1503,20 @@ impl DesktopSurface {
                         ops.push(RowOp::History(ids.strip, ids.group, ids.tab, direction));
                         continue;
                     }
-                    Admitted::Activity(workspace, view, author) => {
-                        shared.activity_author = Some(ActivityAuthor(author));
-                        let mut next = shared.presentation.clone();
-                        next.activity = Some((workspace, view));
-                        next.activity_close_reason = None;
-                        shared.present(next);
-                        continue;
-                    }
-                    Admitted::CloseActivity(workspace) => {
-                        let mut next = shared.presentation.clone();
-                        if next.activity.is_some_and(|(open, _)| open == workspace) {
-                            next.activity = None;
-                            next.activity_close_reason = Some(ActivityCloseReason::Dismissed);
+                    // The Activity app's windows close as any window does.
+                    Admitted::CloseActivity(_) => {
+                        while let Some(ids) = navigation::window_of_app(&shared.tree, ACTIVITY_APP)
+                        {
+                            let Some(removed) = shared.tree.close_tab(ids.tab) else {
+                                break;
+                            };
+                            ops.push(RowOp::Close {
+                                strip: removed.strip,
+                                group: removed.group,
+                                tab: ids.tab,
+                                group_removed: removed.group_removed,
+                            });
                         }
-                        shared.present(next);
-                        continue;
                     }
                     Admitted::NotificationCenter(open) => {
                         if let Some(layer) = self.notices.as_mut() {
@@ -1578,13 +1658,6 @@ impl DesktopSurface {
                 can_forward: available.forward,
             }
         });
-        if next
-            .activity
-            .is_some_and(|(workspace, _)| workspace != tree_active)
-        {
-            next.activity = None;
-            next.activity_close_reason = Some(ActivityCloseReason::WorkspaceChanged);
-        }
         self.shared.borrow_mut().present(next);
     }
 
@@ -2156,7 +2229,9 @@ fn build_tile(
     let mut host = tiles.tile(workspace, tab);
     host.set_panic_scope(tab.id);
     // Its app's bar is drawn here: what it declares goes on its window.
-    host.set_hosted_window(ui::hosted_window::HostedWindow::new());
+    let window = ui::hosted_window::HostedWindow::new();
+    window.set_workspace(tiles.workspace_room());
+    host.set_hosted_window(window);
     if let Some(domain) = controls {
         ui::widget::controls::install_control_custody(
             &mut host,
@@ -2266,13 +2341,15 @@ impl Widget for DesktopSurface {
             || search_was_open != self.search.is_open()
             || held;
         let row_changed = self.shown_row().is_some_and(|row| row.update(state, path));
+        self.offer_window_shares();
         let bars_changed = self.sync_window_bars();
+        let share_asked = self.take_window_share_asks();
+        let embeds_changed = self.follow_embeds(state, path);
         self.refresh_presentation();
-        let activity_was_open = self.activity.is_some();
         self.sync_activity();
         self.refresh_notifications();
         if !self.shared.borrow().queue.is_empty() {
-            // The pane or the centre opened a window.
+            // The history, the centre or a window's share opened a window.
             let (doc, root) = ui::doc::document_ref(state, path);
             self.apply_commands(doc, root);
             self.show_active_strip();
@@ -2282,8 +2359,17 @@ impl Widget for DesktopSurface {
         changed
             || row_changed
             || bars_changed
+            || share_asked
+            || embeds_changed
             || self.structure_dirty
-            || activity_was_open != self.activity.is_some()
+    }
+
+    /// The windows' edits, then the views they embed.
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+        self.settle_embeds(edits, path);
     }
 
     fn build_layout(
@@ -2309,23 +2395,18 @@ impl Widget for DesktopSurface {
             node
         });
         let search = self.search_layout(taffy, theme, node_map);
-        let activity = self
-            .activity
-            .as_mut()
-            .map(|overlay| overlay.build_layout(taffy, theme, node_map));
         let notices = self
             .notices
             .as_mut()
             .map(|layer| layer.build_layout(taffy, theme, node_map));
         let arrivals = self.arrival_hints.build_layout(taffy, theme, node_map);
         let acknowledgement = self.acknowledgement.build_layout(taffy, theme, node_map);
-        // The row, when shown, is always the first child, then search, the
-        // history pane and the notifications, each when present, and the
-        // arrival hints and the acknowledgement last.
+        // The row, when shown, is always the first child, then search and
+        // the notifications, each when present, and the arrival hints and
+        // the acknowledgement last.
         let children: Vec<NodeId> = row
             .into_iter()
             .chain(search)
-            .chain(activity)
             .chain(notices)
             .chain([arrivals, acknowledgement])
             .collect();
@@ -2357,12 +2438,6 @@ impl Widget for DesktopSurface {
                 self.search
                     .palette_mut()
                     .apply_layout(taffy, palette, inner);
-            }
-            next = next.saturating_add(1);
-        }
-        if let Some(overlay) = self.activity.as_mut() {
-            if let Some(&pane) = nodes.get(next) {
-                overlay.apply_layout(taffy, pane, inner);
             }
             next = next.saturating_add(1);
         }
@@ -2448,9 +2523,12 @@ impl Widget for DesktopSurface {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some(row) = self.shown_row() {
+        let hint_places = self.shown_row().map(|row| {
             ui::widget::draw_child(row, scene, transform, text, theme, presence);
-        }
+            row.hint_places()
+        });
+        self.shared.borrow_mut().hint_places = hint_places.unwrap_or_default();
+        self.draw_embeds(scene, transform, text, theme, presence);
         self.draw_overlays(scene, transform, text, theme, presence);
     }
 
@@ -2458,13 +2536,6 @@ impl Widget for DesktopSurface {
         if let Some(layer) = self.notices.as_mut()
             && layer.route(event, ctx.scale_factor)
         {
-            *ctx.handled = true;
-            return;
-        }
-        if let Some(overlay) = self.activity.as_mut() {
-            // The pane is modal: nothing under it takes input while it is
-            // open.
-            overlay.route(event, ctx.scale_factor, *ctx.modifiers);
             *ctx.handled = true;
             return;
         }
@@ -2532,14 +2603,13 @@ impl Widget for DesktopSurface {
     /// A sideways pan of the shown strip moves windows and changes nothing
     /// else: no document, focus, selection or declaration. Every other wheel
     /// reaches a layer above the strip (a banner or the notification centre
-    /// shown, the activity pane, search) or the window under the pointer,
+    /// shown, search) or the window under the pointer,
     /// which answer for themselves.
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         let WindowEvent::MouseWheel { delta, .. } = event else {
             return false;
         };
         self.notices.as_ref().is_none_or(|layer| !layer.visible())
-            && self.activity.is_none()
             && !self.search.is_open()
             && self.pans_strip(*delta, ui::time::now())
     }
@@ -2574,14 +2644,12 @@ impl Widget for DesktopSurface {
             .search
             .is_open()
             .then(|| self.search.palette() as &dyn Widget);
-        let activity = self.activity.as_deref().map(|o| o as &dyn Widget);
         let notices = self.notices.as_ref().map(|l| l as &dyn Widget);
         self.shown
             .and_then(|strip| self.rows.get(&strip))
             .map(|row| row as &dyn Widget)
             .into_iter()
             .chain(search)
-            .chain(activity)
             .chain(notices)
             .chain([
                 &self.arrival_hints as &dyn Widget,
@@ -2601,9 +2669,6 @@ impl Widget for DesktopSurface {
         if self.search.is_open() {
             request.visit(self.search.palette_mut())?;
         }
-        if let Some(activity) = self.activity.as_deref_mut() {
-            request.visit(activity)?;
-        }
         if let Some(notices) = &mut self.notices {
             request.visit(notices)?;
         }
@@ -2617,16 +2682,11 @@ impl Widget for DesktopSurface {
             .and_then(|strip| self.rows.get_mut(&strip))
             .map(|row| row as &mut (dyn Widget + '_));
         let search = open.then(|| self.search.palette_mut() as &mut (dyn Widget + '_));
-        let activity = self
-            .activity
-            .as_deref_mut()
-            .map(|o| o as &mut (dyn Widget + '_));
         let notices = self.notices.as_mut().map(|l| l as &mut (dyn Widget + '_));
         let arrivals = &mut self.arrival_hints as &mut (dyn Widget + '_);
         let acknowledgement = &mut self.acknowledgement as &mut (dyn Widget + '_);
         row.into_iter()
             .chain(search)
-            .chain(activity)
             .chain(notices)
             .chain([arrivals, acknowledgement])
             .collect()
@@ -2646,6 +2706,7 @@ impl Widget for DesktopSurface {
     fn needs_animation_frame(&self) -> bool {
         let shown = self.shown;
         self.activity_loading
+            || self.embeds_animate()
             || self.unbuilt.iter().any(|&(strip, _)| Some(strip) == shown)
             || self
                 .children()
@@ -2672,6 +2733,7 @@ impl Widget for DesktopSurface {
             .filter_map(Widget::next_wake_deadline)
             .chain(ends)
             .chain(answer)
+            .chain(self.embed_retry_deadline())
             .min()
     }
 
@@ -2687,12 +2749,7 @@ impl Widget for DesktopSurface {
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         let row = self.shown_row().is_some_and(Widget::take_structure_dirty);
-        let activity = if let Some(overlay) = self.activity.as_deref_mut() {
-            overlay.take_structure_dirty()
-        } else {
-            false
-        };
-        own || row || activity
+        own || row
     }
 }
 
@@ -2756,8 +2813,7 @@ impl ui::widget::controls::ActionControls for DesktopSurface {
 }
 
 impl DesktopSurface {
-    /// The search palette, then the history pane, then the banners and
-    /// centre over everything.
+    /// The search palette, then the banners and centre over everything.
     fn draw_overlays(
         &mut self,
         scene: &mut Scene,
@@ -2769,9 +2825,6 @@ impl DesktopSurface {
         self.arrival_hints
             .draw(scene, transform, text, theme, presence);
         self.draw_search(scene, transform, text, theme, presence);
-        if let Some(overlay) = self.activity.as_mut() {
-            overlay.draw(scene, transform, text, theme, presence);
-        }
         if let Some(layer) = self.notices.as_mut() {
             layer.draw(scene, transform, text, theme, presence);
         }
@@ -2830,5 +2883,7 @@ pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) ->
     tree
 }
 
+#[cfg(test)]
+mod activity_tests;
 #[cfg(test)]
 mod tests;

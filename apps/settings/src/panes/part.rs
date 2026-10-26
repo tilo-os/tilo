@@ -359,6 +359,7 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_entry!("spelling.check", ui::text_assistance::TextAssistancePrefs => mouse_keyboard::check_spelling),
     crate::setting::setting_entry!("spelling.autocorrect", ui::text_assistance::TextAssistancePrefs => mouse_keyboard::auto_correct),
     crate::setting::setting_entry!("power.auto_suspend", crate::prefs::PowerPrefs => power::auto_suspend),
+    crate::setting::setting_entry!("power.lock_on_sleep", crate::prefs::PowerPrefs => power::lock_on_sleep),
     crate::setting::setting_entry!("display.night_light", crate::prefs::DisplayPrefs => display::night_light),
     crate::setting::setting_entry!("shortcuts.vim", keyboard_shortcuts::DesktopControls => keyboard_shortcuts::vim_mode),
     crate::setting::setting_switch!("network.wifi" => network::values::wifi, network::values::wifi_switch),

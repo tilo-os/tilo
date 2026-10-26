@@ -104,7 +104,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # The integration suites read the account store and the runtime's files back.
 hex.workspace = true
-runtime-fs = { path = "../../crates/runtime/runtime-fs" }
+runtime-fs = { package = "tilo-fs-client", path = "../../crates/runtime/tilo-fs-client" }
 account-custody = { path = "../../crates/system/account-custody" }
 # Exercise the published Files surface against the production cloud service.
 file-explorer = { path = "../file-explorer" }

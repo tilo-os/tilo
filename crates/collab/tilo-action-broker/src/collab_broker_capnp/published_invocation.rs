@@ -1191,7 +1191,7 @@ impl CapnpBrokerState {
             };
             let original = Arc::new(OriginalInvocation { broker: broker.clone(), peer, worker: TargetCustody::Registered(Box::new(worker.clone())), data });
             original.check_lifecycle()?;
-            let route = ui::collaboration::RouteSpec {
+            let route = runtime_collab::route::RouteSpec {
                 app_id: worker.route.app_id.clone(),
                 cluster_id: worker.route.cluster_id.parse().map_err(|_| "invalid original worker room")?,
                 record: (!worker.route.record_id.is_empty()).then(|| worker.route.record_id.clone()),

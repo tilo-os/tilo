@@ -192,6 +192,12 @@ pub fn policy_from_section_for_profile(
         idle_blank,
         idle_lock,
         idle_suspend,
+        // Only an explicit `false` lets sleep leave the session unlocked: a
+        // missing or malformed value keeps the password.
+        lock_on_sleep: section
+            .get(settings_store::power::LOCK_ON_SLEEP.name())
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(defaults.lock_on_sleep),
         lid_close_action: action("lid_close_action", defaults.lid_close_action),
         power_key_action: action("power_key_action", defaults.power_key_action),
         low_battery_percent: percent("low_battery_percent", defaults.low_battery_percent),
@@ -308,6 +314,32 @@ mod tests {
             assert_eq!(p.idle_blank, d.idle_blank);
             assert_eq!(p.idle_lock, d.idle_lock);
             assert_eq!(p.idle_suspend, d.idle_suspend);
+        }
+    }
+
+    #[test]
+    fn the_password_after_sleep_setting_is_kept_unless_it_is_explained_away() {
+        type Case = (&'static str, &'static str, bool);
+        let cases: [Case; 4] = [
+            ("missing keeps the password", "{}", true),
+            ("no power section keeps it", r#"{"display":{}}"#, true),
+            (
+                "an explicit false lets sleep leave the session open",
+                r#"{"power":{"lock_on_sleep":false}}"#,
+                false,
+            ),
+            (
+                "a malformed value keeps the password",
+                r#"{"power":{"lock_on_sleep":"sometimes"}}"#,
+                true,
+            ),
+        ];
+        for (name, json, want) in cases {
+            assert_eq!(
+                policy_from_settings_json(json).lock_on_sleep,
+                want,
+                "{name}"
+            );
         }
     }
 

@@ -117,8 +117,12 @@ impl Bookmarks {
   the record type).
 - A verb whose first parameter is `&Id` is also offered on each item, with
   the item bound.
-- `destructive` asks for confirmation from people; returning `Err` refuses
-  the verb and changes nothing.
+- `destructive` marks a deletion or overwrite. A verb that changes only the
+  document is undoable, so it runs at once and the app offers Undo (the
+  standard notice); only one Undo cannot take back asks people first. A
+  verb that also loses what Undo cannot bring back (an account's secret
+  every device forgets) adds `irreversible`, so it asks through every door.
+  Returning `Err` refuses the verb and changes nothing.
 - A verb runs again on every replica, so its body must not read a clock,
   randomness, files, the network, the environment or another process. Mint
   ids with `cx.id()`, read the time with `cx.now_ms()`, and take everything

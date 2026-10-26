@@ -1746,3 +1746,94 @@ fn a_restriction_reaches_only_below_and_lifts_once() {
         Err(Refusal::NotRestricted(BOB.into()))
     );
 }
+
+#[test]
+fn built_in_roles_load_as_the_code_defines_them_and_a_room_keeps_its_own_grants() {
+    // A room written when the Commenter's rules were fewer, with a stale
+    // copy of a Viewer rule and an adjustment of its own to the Editor role.
+    let mut stored = room_with(&[(BOB, Role::Commenter)]);
+    stored
+        .grants
+        .retain(|grant| grant.id.as_str() != "role:commenter:2");
+    for grant in &mut stored.grants {
+        if grant.id.as_str() == "role:viewer:0" {
+            grant.answer = Answer::Deny;
+        }
+    }
+    let adjustment = Grant::new(
+        "editors-no-mail",
+        Subject::Role(Role::Editor),
+        mail(),
+        KindSet::UNDOABLE,
+        Answer::Deny,
+        alice(),
+    );
+    stored.grants.insert(0, adjustment.clone());
+    let custom = Grant::new(
+        "role:editor:x",
+        Subject::Role(Role::Editor),
+        mail(),
+        KindSet::READ,
+        Answer::Allow,
+        alice(),
+    );
+    stored.grants.push(custom.clone());
+
+    let loaded: RoomPolicy =
+        serde_json::from_value(serde_json::to_value(&stored).unwrap()).unwrap();
+    let mut expected = vec![adjustment];
+    expected.extend(roles::room_role_grants("r", &alice()));
+    expected.push(custom);
+    assert_eq!(loaded.grants, expected);
+    assert_eq!(stored.clone().with_current_roles().grants, expected);
+
+    let reactions = mail()
+        .kind("mail.message")
+        .resource("m1")
+        .field(roles::REACTIONS_FIELD);
+    let bob = Authority::person(loaded.party(BOB));
+    assert_eq!(
+        bob.decide(&reactions, ActionKind::Undoable, &cx()).answer,
+        Answer::Allow
+    );
+
+    // A room that holds none of a role's grants does not get them back.
+    let mut bare = room_with(&[]);
+    bare.grants
+        .retain(|grant| grant.subject != Subject::Role(Role::Viewer));
+    assert_eq!(bare.clone().with_current_roles(), bare);
+
+    // A room already current comes back as stored, in its own order.
+    let mut current = room_with(&[]);
+    current.grants.reverse();
+    assert_eq!(current.clone().with_current_roles(), current);
+}
+
+#[test]
+fn a_room_neither_revokes_nor_gives_a_built_in_role_grant() {
+    let room = room_with(&[]);
+    let owner = Authority::person(room.party(ALICE));
+    assert_eq!(
+        room.clone().apply(
+            ALICE,
+            &owner,
+            Change::Revoke(GrantId::new("role:commenter:1")),
+            &cx(),
+            false
+        ),
+        Err(Refusal::BuiltInRole(GrantId::new("role:commenter:1")))
+    );
+    let given = Grant::new(
+        "role:viewer:1",
+        Subject::Role(Role::Viewer),
+        mail(),
+        KindSet::UNDOABLE,
+        Answer::Allow,
+        alice(),
+    );
+    assert_eq!(
+        room.clone()
+            .apply(ALICE, &owner, Change::Grant(given), &cx(), false),
+        Err(Refusal::BuiltInRole(GrantId::new("role:viewer:1")))
+    );
+}

@@ -205,17 +205,13 @@ mod tests {
             .expect("complete the task");
         assert!(app.state().tasks.values().all(|task| task.done));
         let remove = task_action(&mut app, "remove");
+        // Undo takes a removal back, so nobody is asked first.
         assert_eq!(
             remove.contract.advertised_confirmation(),
-            tilo_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::None
         );
-        assert_eq!(
-            app.call_on(&remove.address.resource, &remove.address.action, json!({})),
-            Err(DoorError::ConfirmationRequired)
-        );
-        assert_eq!(app.state().tasks.len(), 1);
-        app.call_confirmed_on(&remove.address.resource, &remove.address.action, json!({}))
-            .expect("confirm only this removal");
+        app.call_on(&remove.address.resource, &remove.address.action, json!({}))
+            .expect("an undoable removal applies at once");
         assert!(app.state().tasks.is_empty());
         assert!(
             matches!(
@@ -226,11 +222,9 @@ mod tests {
         );
         assert!(app.undo(), "removal is one undo step");
         assert_eq!(task_action(&mut app, "remove").address, remove.address);
-        assert_eq!(
-            app.call_on(&remove.address.resource, &remove.address.action, json!({})),
-            Err(DoorError::ConfirmationRequired),
-            "confirmation is not remembered"
-        );
+        app.call_on(&remove.address.resource, &remove.address.action, json!({}))
+            .expect("removing again applies at once");
+        assert!(app.undo(), "and Undo takes it back again");
         let reopened = app.reopen().expect("reopen");
         assert_eq!(reopened.state().tasks.len(), 1);
         assert!(

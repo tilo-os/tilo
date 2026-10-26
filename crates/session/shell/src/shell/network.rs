@@ -17,7 +17,6 @@ mod display_observation_refresh_tests;
 mod display_observations;
 mod governance_requests;
 mod governor_actions;
-mod home_peer_reader;
 mod hosted_sites;
 mod hosted_topology;
 mod room_rosters;
@@ -32,6 +31,7 @@ mod input_declines;
 mod lan_discovery;
 #[cfg(test)]
 mod live_identity_tests;
+mod live_layouts;
 mod live_waves;
 mod native_admission;
 #[cfg(test)]
@@ -49,6 +49,11 @@ mod own_devices_tests;
 mod paired_continuity_tests;
 mod peer_sync_worker;
 mod personal_device_peers;
+mod personal_reconcile;
+#[cfg(test)]
+mod personal_reconcile_tests;
+#[cfg(test)]
+mod presence_identity_tests;
 pub(crate) mod presence_visibility;
 mod private_chat;
 #[cfg(test)]
@@ -743,7 +748,7 @@ struct RegisteredHomePeer {
 }
 
 /// The registrations in the home-peer registry, read from disk. Not for the
-/// compositor's loop: [`HomePeerInputs`] reads it on a worker.
+/// compositor's loop: [`HomePeerInputs::watch`] reads it on a worker.
 fn read_home_peer_registry() -> Result<Vec<tilo_relay_protocol::HomePeerRegistration>, String> {
     let path = home_peer_registry_path();
     let metadata = match std::fs::metadata(&path) {
@@ -842,11 +847,23 @@ struct HomePeerInputs {
 
 impl HomePeerInputs {
     /// Read the files. Waits for the disk: the compositor's loop never calls
-    /// this, its reader thread does.
+    /// this, it reads [`Self::watch`]'s copy.
     fn read() -> Self {
         Self {
             registrations: read_home_peer_registry(),
         }
+    }
+
+    /// The files as read now, off the loop, and again on a worker whenever
+    /// their directory changes. `None` when it cannot be watched: the
+    /// refresh then knows only what the session started with.
+    fn watch() -> Option<tilo_files::native::Watched<Self>> {
+        let directory = home_peer_registry_path()
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        tilo_files::native::Watched::start("home-peers", vec![directory], Self::read)
+            .inspect_err(|error| tracing::warn!(%error, "cannot watch the home-peer registry"))
+            .ok()
     }
 }
 
@@ -1492,8 +1509,9 @@ pub struct ShellNetwork {
     /// When [`Self::note_session_reachability`] last told the relays what
     /// the session has recorded. `None` until the first tick.
     session_reach_checked: Mutex<Option<std::time::Instant>>,
-    /// Reads the files the refresh needs, off the compositor thread.
-    home_peer_reader: home_peer_reader::HomePeerReader<HomePeerInputs>,
+    /// The files the refresh needs, read off the compositor thread when
+    /// they change.
+    home_peer_inputs: Option<tilo_files::native::Watched<HomePeerInputs>>,
     /// When [`Self::kick_periodic_sync`] last did its local upkeep. `None`
     /// until the first tick.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
@@ -1527,6 +1545,9 @@ pub struct ShellNetwork {
     personal_workspaces: Option<Mutex<crate::shell::personal_workspaces::PersonalWorkspaces>>,
     /// When this device last sent its workspace list unprompted.
     last_personal_workspaces_snapshot: Mutex<Option<std::time::Instant>>,
+    /// Whether the workspace list is in step with the tree, and whether a
+    /// reconcile is queued off the loop.
+    personal_reconcile: personal_reconcile::State,
     /// When each of this person's other devices last moved focus, for the
     /// "continue from another device" offer.
     personal_focus_recency: Mutex<crate::shell::continuity_suggestion::FocusRecency>,
@@ -1588,6 +1609,8 @@ pub struct ShellNetwork {
     live_labels: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
     /// The app each live member focuses, per room and handle.
     live_apps: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
+    /// Where each live member's windows are, per room and handle.
+    live_layouts: live_layouts::LiveLayouts,
     /// What live members say beside their pointers and react with, as it
     /// arrived, for the presence pump ([`Self::take_live_chat`]).
     live_chat: Mutex<Vec<LiveChat>>,
@@ -1609,7 +1632,7 @@ pub struct ShellNetwork {
     /// The colour each peer session said its person wears, by handle: the
     /// latest any presence plane carried ([`neighbour_wire::PresenceColour`],
     /// a live frame's participant colour).
-    peer_colours: Mutex<std::collections::HashMap<u64, ui::tokens::PresenceHue>>,
+    peer_colours: Mutex<std::collections::HashMap<u64, collab_types::presence::PresenceHue>>,
     /// Advanced whenever [`Self::peer_colours`] changes, so the presence
     /// pump re-applies colours only after one did.
     peer_colours_epoch: std::sync::atomic::AtomicU64,
@@ -1709,7 +1732,7 @@ pub(crate) const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
 /// where the person is outside the resources they share.
 fn in_shared_resource(app_id: &str, presence: &collab_types::PeerPresence) -> bool {
     use collab_types::PeerPresencePayload as P;
-    use ui::presence::{PointerSpace, PresenceKey};
+    use collab_types::presence::{PointerSpace, PresenceKey};
     if app_id == DESKTOP_PRESENCE_APP
         || !matches!(
             presence.payload,
@@ -1754,8 +1777,8 @@ fn says_only_here(app_id: &str, presence: &collab_types::PeerPresence) -> bool {
     use collab_types::PeerPresencePayload as P;
     app_id == DESKTOP_PRESENCE_APP
         && matches!(
-            postcard::from_bytes::<ui::presence::PresenceKey>(&presence.key),
-            Ok(ui::presence::PresenceKey::Workspace { .. })
+            postcard::from_bytes::<collab_types::presence::PresenceKey>(&presence.key),
+            Ok(collab_types::presence::PresenceKey::Workspace { .. })
         )
         && matches!(
             presence.payload,
@@ -1909,12 +1932,14 @@ pub struct InboundScrollbackResponse {
 
 /// One received cursor-presence update, merged by the shell's
 /// frame drainer into `PresenceCtx`.
+///
+/// It carries no name: who sent it is `peer`, bound to the authenticated
+/// transport before it is queued, and what that sender is called is the
+/// room's to say ([`ShellNetwork::peer_labels`]). The wire frame's own
+/// `user` field is a claim anybody can make, so it never gets this far.
 #[derive(Debug, Clone)]
 pub struct InboundPresence {
     pub peer: u64,
-    /// Who the publishing session says is sitting at it. Empty when it
-    /// did not say; the drainer falls back to the session handle.
-    pub user: String,
     /// Presence channel key (workspace, tab, widget path, …), JSON so
     /// the wire format stays opaque to the bridge.
     pub key: String,
@@ -2022,7 +2047,13 @@ impl ShellNetwork {
         // session, moments in a test of it.
         let (builder, deferred_relays, rest_after) = match reach {
             Reach::Internet => (
-                iroh::Endpoint::builder(presets::N0).relay_mode(held_back),
+                // What `presets::N0` builds, with its publisher behind the
+                // directory gate and its public relays held back
+                // (`tilo_endpoint_reachability::directory`).
+                iroh::Endpoint::builder(presets::Minimal)
+                    .address_lookup(tilo_endpoint_reachability::collaborating())
+                    .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
+                    .relay_mode(held_back),
                 iroh::endpoint::default_relay_mode().relay_map(),
                 crate::network::reachability::REST_AFTER,
             ),
@@ -2273,7 +2304,7 @@ impl ShellNetwork {
             host_room_members: Mutex::new(std::collections::HashSet::new()),
             registered_home_device_ids: Mutex::new(home_device_ids),
             personal_device_peers,
-            home_peer_reader: home_peer_reader::HomePeerReader::spawn(HomePeerInputs::read),
+            home_peer_inputs: HomePeerInputs::watch(),
             own_device_fleet,
             lan_discovery,
             last_home_peer_refresh: Mutex::new(None),
@@ -2298,6 +2329,7 @@ impl ShellNetwork {
             personal_rooms_export: KnownContents::default(),
             personal_workspaces,
             last_personal_workspaces_snapshot: Mutex::new(None),
+            personal_reconcile: personal_reconcile::State::default(),
             #[cfg(test)]
             continuity_policy_override: None,
             device_fabric: Mutex::new(device_fabric),
@@ -2333,6 +2365,7 @@ impl ShellNetwork {
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
             live_apps: Mutex::default(),
+            live_layouts: Mutex::default(),
             live_chat: Mutex::default(),
             live_desk_pointers: Mutex::default(),
             live_waves: Mutex::default(),
@@ -2767,7 +2800,15 @@ impl ShellNetwork {
         {
             return false;
         }
-        self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
+        self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
+                    ws,
+                    msg,
+                })
+                .is_ok()
     }
 
     /// Publish live legacy-app traffic on an explicit authenticated room
@@ -2789,6 +2830,7 @@ impl ShellNetwork {
             && self
                 .cmd_tx
                 .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: workspace_topic,
                     msg,
                 })
@@ -2949,7 +2991,7 @@ impl ShellNetwork {
     /// Remember the colour peer session `peer` said its person wears. A
     /// name this build does not know, or none, leaves what was heard before.
     pub fn note_peer_colour(&self, peer: u64, colour: Option<&str>) {
-        let Some(hue) = colour.and_then(ui::tokens::PresenceHue::from_id) else {
+        let Some(hue) = colour.and_then(collab_types::presence::PresenceHue::from_id) else {
             return;
         };
         if peer == self.local_peer_hash {
@@ -2985,12 +3027,12 @@ impl ShellNetwork {
     }
 
     /// The colour peer session `peer` said its person wears, if it said.
-    pub fn peer_colour(&self, peer: u64) -> Option<ui::tokens::PresenceHue> {
+    pub fn peer_colour(&self, peer: u64) -> Option<collab_types::presence::PresenceHue> {
         self.peer_colours.lock().ok()?.get(&peer).copied()
     }
 
     /// Every colour a peer session said its person wears, by handle.
-    pub fn peer_colours(&self) -> Vec<(u64, ui::tokens::PresenceHue)> {
+    pub fn peer_colours(&self) -> Vec<(u64, collab_types::presence::PresenceHue)> {
         self.peer_colours
             .lock()
             .map(|colours| colours.iter().map(|(peer, hue)| (*peer, *hue)).collect())
@@ -2999,14 +3041,7 @@ impl ShellNetwork {
 
     /// Queue a received presence move; public so tests can inject one
     /// without going through gossip.
-    pub fn handle_presence_message(
-        &self,
-        peer: u64,
-        user: String,
-        key: String,
-        point: (f64, f64),
-        ts: u64,
-    ) {
+    pub fn handle_presence_message(&self, peer: u64, key: String, point: (f64, f64), ts: u64) {
         // A session does not paint its own cursor from the network: the
         // pointer it would draw is the one already under the user's hand.
         if peer == self.local_peer_hash {
@@ -3015,7 +3050,6 @@ impl ShellNetwork {
         if let Ok(mut buf) = self.inbound_presence.lock() {
             buf.push(InboundPresence {
                 peer,
-                user,
                 key,
                 point,
                 ts,
@@ -3033,7 +3067,6 @@ impl ShellNetwork {
         if let Ok(mut buf) = self.inbound_presence.lock() {
             buf.push(InboundPresence {
                 peer,
-                user: String::new(),
                 key,
                 point: (0.0, 0.0),
                 ts: tilo_clock::unix_now_ms(),
@@ -3648,7 +3681,7 @@ impl ShellNetwork {
     ) -> bool {
         let shared = RoomId::parse(cluster_id)
             .is_some_and(|room| !room.is_nil() && self.person_root_of_room(room).is_none());
-        let Ok(key) = postcard::to_stdvec(&ui::presence::PresenceKey::Workspace {
+        let Ok(key) = postcard::to_stdvec(&collab_types::presence::PresenceKey::Workspace {
             id: cluster_id.to_owned(),
         }) else {
             return false;
@@ -3825,7 +3858,10 @@ impl ShellNetwork {
         }) {
             self.drain_wake.poke();
         }
-        self.note_peer_colour(peer, inbound.colour.map(ui::tokens::PresenceHue::id));
+        self.note_peer_colour(
+            peer,
+            inbound.colour.map(collab_types::presence::PresenceHue::id),
+        );
         tracing::debug!(
             room = %cluster_id,
             from = %hex::encode(&from[..4]),
@@ -3852,6 +3888,7 @@ impl ShellNetwork {
                 pointer: inbound.desk_pointer.clone(),
             });
         }
+        self.hear_layout(&cluster_id, peer, inbound.layout.clone());
         if let Ok(mut apps) = self.live_apps.lock() {
             let apps = apps.entry(cluster_id.clone()).or_default();
             match inbound.app_id.as_str() {
@@ -3883,6 +3920,29 @@ impl ShellNetwork {
                 inbound.app_id.clone(),
                 cluster_id.clone(),
                 presence,
+            );
+        }
+        // Whom they follow reaches the roster as a desktop's following
+        // does over the mesh: room presence of the sender's handle.
+        let following = self
+            .live_waves
+            .lock()
+            .ok()
+            .and_then(|mut waves| waves.hear_following(from, inbound.following.as_deref()));
+        if let Some(target) = following
+            && let Ok(key) = postcard::to_stdvec(&ui::presence::PresenceKey::Workspace {
+                id: cluster_id.clone(),
+            })
+        {
+            self.handle_typed_app_presence_message(
+                peer,
+                None,
+                "tilo-shell".into(),
+                cluster_id,
+                collab_types::PeerPresence {
+                    key,
+                    payload: collab_types::PeerPresencePayload::Following { target },
+                },
             );
         }
     }
@@ -4363,7 +4423,15 @@ impl ShellNetwork {
             requester: self.local_peer_id_hash(),
         };
         let ws = room_topic_id(room);
-        let _ = self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok();
+        let _ = self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
+                    ws,
+                    msg,
+                })
+                .is_ok();
     }
 
     /// Publish a `NeighbourMsg::ScrollbackResponse` for an artifact
@@ -4386,6 +4454,7 @@ impl ShellNetwork {
             && self
                 .cmd_tx
                 .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: workspace_topic,
                     msg,
                 })
@@ -4521,18 +4590,10 @@ impl ShellNetwork {
 
     /// Reload newly approved same-identity home peers, reading the files here
     /// and waiting for the disk. The compositor's loop does not call this: its
-    /// refresh reads them on a worker (`Self::refresh_home_peer_hosts_periodically`).
+    /// refresh applies what a worker read when they changed
+    /// (`Self::refresh_home_peer_hosts_periodically`).
     pub fn refresh_home_peer_hosts(&self) -> bool {
         self.apply_home_peer_inputs(&HomePeerInputs::read())
-    }
-
-    /// Apply what the reader published, if it published anything. Reads and
-    /// writes no file: it queues dials with `try_send` and never waits for
-    /// relay discovery or a connection.
-    fn apply_published_home_peers(&self) {
-        if let Some(inputs) = self.home_peer_reader.take() {
-            let _ = self.apply_home_peer_inputs(&inputs);
-        }
     }
 
     fn apply_home_peer_inputs(&self, inputs: &HomePeerInputs) -> bool {
@@ -4669,8 +4730,12 @@ impl ShellNetwork {
         }
         *last = Some(now);
         drop(last);
-        // The files are read by the worker; `tick` applies what it publishes.
-        self.home_peer_reader.request();
+        // Reads and writes no file: the worker read them when they changed,
+        // and dials are queued with `try_send`, never waiting for relay
+        // discovery or a connection.
+        if let Some(inputs) = &self.home_peer_inputs {
+            let _ = self.apply_home_peer_inputs(&inputs.get());
+        }
     }
 
     /// The current iroh address published in an invite. It contains the
@@ -5379,7 +5444,7 @@ impl ShellNetwork {
     pub(crate) fn pump_owner_views(
         &self,
     ) -> Vec<(
-        ui::collaboration::owner_view::OwnerView,
+        collab_types::handoff::OwnerView,
         Option<AuthenticatedPersonalRoute>,
     )> {
         // Owner claims whose continuity value has reached the disk since the
@@ -6494,66 +6559,6 @@ impl ShellNetwork {
         }
     }
 
-    /// List this device's own workspaces for the person's other devices, and
-    /// send them the list when it changed (or, rarely, when it did not, to
-    /// repair a lost snapshot). Called every frame tick; when nothing
-    /// changed it is one walk over the tree's workspaces.
-    fn reconcile_personal_workspaces(&self) {
-        let (Some(workspaces), Some(here)) = (
-            self.personal_workspaces.as_ref(),
-            self.host_identity
-                .as_ref()
-                .map(|identity| identity.device_cert.device_public_key),
-        ) else {
-            return;
-        };
-        let tree = self.tree.clone();
-        // Read from the owner before the tree is held: the owner's lock
-        // comes first.
-        let held = self.held_personal_rooms();
-        let (mut changed, settle) = {
-            let tree = tree.read();
-            let changed = workspaces
-                .lock()
-                .is_ok_and(|mut workspaces| workspaces.publish_local(&tree, &held));
-            let settle = !tree.personal_device_requests.is_empty()
-                || (tree.personal_device_choices.is_empty() && !tree.desktop.workspaces.is_empty());
-            drop(tree);
-            (changed, settle)
-        };
-        if changed || settle {
-            let mut adoption = None;
-            {
-                let mut tree = tree.write();
-                if let Ok(mut workspaces) = workspaces.lock() {
-                    for (room, device, shown) in std::mem::take(&mut tree.personal_device_requests)
-                    {
-                        changed |= workspaces.set_shown(room, device, shown);
-                    }
-                    // Keeping a workspace off this device takes it off at once.
-                    adoption = Some(workspaces.adopt_into(&mut tree, &here));
-                    refresh_device_choices(&mut tree, &workspaces);
-                }
-                drop(tree);
-            }
-            if let Some(adoption) = adoption {
-                self.follow_list_off_loop(adoption);
-            }
-            if changed {
-                self.enter_configured_host_rooms_off_loop(None);
-            }
-        }
-        let due = self
-            .last_personal_workspaces_snapshot
-            .lock()
-            .is_ok_and(|last| {
-                last.is_none_or(|at| at.elapsed() >= PERSONAL_WORKSPACES_RESTATE_INTERVAL)
-            });
-        if changed || due {
-            self.publish_personal_workspaces();
-        }
-    }
-
     /// Send this device's whole workspace list, signed with its device key,
     /// on the person's own topic.
     fn publish_personal_workspaces(&self) {
@@ -6728,11 +6733,10 @@ impl ShellNetwork {
         });
         steps.time("network/periodic-sync", || self.kick_periodic_sync());
         steps.time("network/personal-workspaces", || {
-            self.reconcile_personal_workspaces();
+            self.reconcile_personal_workspaces_if_changed(matches!(admission, Admission::InPlace));
         });
         steps.time("network/home-peers", || {
             self.refresh_home_peer_hosts_periodically();
-            self.apply_published_home_peers();
         });
         steps.time("network/shared-rooms", || match admission {
             Admission::InPlace => {
@@ -7508,14 +7512,17 @@ impl ShellNetwork {
             // Ephemeral overlay state, not room state.
             NeighbourMsg::PresenceMoved {
                 peer: peer_hash,
-                user,
+                // Who the sender says it is: older peers still send it, and
+                // nothing here reads it. A peer naming itself could name
+                // anybody; `peer_hash` is bound to the transport above.
+                user: _,
                 key,
                 point,
                 ts,
                 colour,
             } => {
                 self.note_peer_colour(peer_hash, colour.as_deref());
-                self.handle_presence_message(peer_hash, user, key, point, ts);
+                self.handle_presence_message(peer_hash, key, point, ts);
             }
             NeighbourMsg::PresenceCleared {
                 peer: peer_hash,
@@ -8256,7 +8263,7 @@ pub(crate) fn shell_network_for_test(
         lan_discovery: None,
         last_home_peer_refresh: Mutex::new(None),
         session_reach_checked: Mutex::new(None),
-        home_peer_reader: home_peer_reader::HomePeerReader::spawn(HomePeerInputs::read),
+        home_peer_inputs: HomePeerInputs::watch(),
         last_sync_kick: Mutex::new(None),
         next_sync_pull: Mutex::new(None),
         peers_joined: std::sync::atomic::AtomicU64::new(0),
@@ -8272,6 +8279,7 @@ pub(crate) fn shell_network_for_test(
         personal_rooms_export: KnownContents::default(),
         personal_workspaces: None,
         last_personal_workspaces_snapshot: Mutex::new(None),
+        personal_reconcile: personal_reconcile::State::default(),
         personal_focus_recency: Mutex::default(),
         continuity_policy_override: Some(
             crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
@@ -8325,6 +8333,7 @@ pub(crate) fn shell_network_for_test(
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
         live_apps: Mutex::default(),
+        live_layouts: Mutex::default(),
         live_chat: Mutex::default(),
         live_desk_pointers: Mutex::default(),
         live_waves: Mutex::default(),
@@ -8708,9 +8717,9 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn the_periodic_refresh_applies_what_the_reader_published() {
-        // Same inputs as the blocking refresh above, through the loop's path:
-        // a request, then an apply once the worker has read the files.
+    fn the_periodic_refresh_applies_the_watched_files() {
+        // Same inputs as the blocking refresh above, through the loop's path,
+        // which applies what the network read when it started.
         let dir = tempfile::tempdir().expect("temp");
         let peers = dir.path().join("home-peers.json");
         std::fs::write(&peers, b"not-json").unwrap();
@@ -8725,25 +8734,29 @@ mod tests {
         env.set("XDG_STATE_HOME", dir.path().join("state"));
         let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
         net.refresh_home_peer_hosts_periodically();
-        let mut dialed = false;
-        tilo_test_env::wait_until("the enrolled device to be dialed", || {
-            net.apply_published_home_peers();
-            dialed |= std::iter::from_fn(|| commands.try_recv().ok()).any(
+        assert!(
+            std::iter::from_fn(|| commands.try_recv().ok()).any(
                 |command| matches!(command, NetCmd::Connect { addr } if *addr.id.as_bytes() == device),
-            );
-            dialed
-        });
+            ),
+            "the enrolled device was not dialed"
+        );
     }
 
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(process_env)]
     fn the_loops_home_peer_refresh_does_not_wait_for_the_registry() {
-        // The registry is a pipe nobody writes: opening it for reading waits
-        // for a writer, as a read waits for a busy disk. The loop's calls must
-        // return anyway; only the reader thread waits.
+        // The registry becomes a pipe nobody writes: opening it for reading
+        // waits for a writer, as a read waits for a busy disk. The loop's
+        // calls must return anyway; only the watching worker waits.
         let dir = tempfile::tempdir().expect("temp");
         let registry = dir.path().join("home-peers.json");
+        std::fs::write(&registry, b"[]").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
+        std::fs::remove_file(&registry).unwrap();
         assert!(
             std::process::Command::new("mkfifo")
                 .arg(&registry)
@@ -8751,16 +8764,11 @@ mod tests {
                 .expect("mkfifo")
                 .success()
         );
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_HOME_PEERS_PATH", &registry);
-        env.set("XDG_STATE_HOME", dir.path().join("state"));
-        let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
         for _ in 0..20 {
             net.refresh_home_peer_hosts_periodically();
-            net.apply_published_home_peers();
         }
         net.tick();
-        // Let the reader finish, so its thread does not outlive the test.
+        // Let the worker finish, so its thread does not outlive the test.
         drop(
             std::fs::OpenOptions::new()
                 .write(true)
@@ -13631,8 +13639,15 @@ mod tests {
                 history: Some(store()),
                 ..Default::default()
             };
-            earlier.record_history(&person_room.to_string(), &person_op);
-            earlier.record_history(&shared_room.to_string(), &shared_op);
+            let route = |room: RoomId| {
+                tilo_action_broker::route::CrdtRoute::record(
+                    "so.tilo.tube",
+                    room.to_string(),
+                    "history",
+                )
+            };
+            earlier.record_history(&route(person_room), &person_op);
+            earlier.record_history(&route(shared_room), &shared_op);
         }
 
         let (net, _commands) = personal_continuity_network_for_test(user);
@@ -13712,7 +13727,7 @@ mod tests {
         assert!(net.publish_channel_governance(message));
         let Some((ws, msg)) =
             std::iter::from_fn(|| cmd_rx.try_recv().ok()).find_map(|command| match command {
-                NetCmd::Publish { ws, msg } => Some((ws, msg)),
+                NetCmd::Publish { ws, msg, .. } => Some((ws, msg)),
                 _ => None,
             })
         else {
@@ -13858,7 +13873,10 @@ mod tests {
         assert_eq!(net.peer_colour(7), None);
         let before = net.peer_colours_epoch();
         net.note_peer_colour(7, Some("violet"));
-        assert_eq!(net.peer_colour(7), Some(ui::tokens::PresenceHue::Violet));
+        assert_eq!(
+            net.peer_colour(7),
+            Some(collab_types::presence::PresenceHue::Violet)
+        );
         let heard = net.peer_colours_epoch();
         assert_ne!(heard, before, "a new colour is announced");
         net.note_peer_colour(7, Some("violet"));
@@ -13866,7 +13884,7 @@ mod tests {
         net.note_peer_colour(7, None);
         assert_eq!(
             net.peer_colour(7),
-            Some(ui::tokens::PresenceHue::Violet),
+            Some(collab_types::presence::PresenceHue::Violet),
             "an unknown or missing colour leaves what was heard"
         );
         assert_eq!(
@@ -13879,7 +13897,7 @@ mod tests {
         assert_eq!(net.peer_colours_epoch(), heard);
         assert_eq!(
             net.peer_colours(),
-            vec![(7, ui::tokens::PresenceHue::Violet)]
+            vec![(7, collab_types::presence::PresenceHue::Violet)]
         );
     }
 
@@ -13894,7 +13912,7 @@ mod tests {
                 .try_recv()
                 .expect("publish_presence must enqueue a NetCmd");
             match cmd {
-                NetCmd::Publish { ws, msg } => {
+                NetCmd::Publish { ws, msg, .. } => {
                     assert_eq!(ws, expected_topic);
                     match msg {
                         NeighbourMsg::PresenceMoved {
@@ -13927,17 +13945,10 @@ mod tests {
             let tree = WorkspaceTree::bootstrap_demo().shared();
             let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
             let buf_handle = net.inbound_presence_handle();
-            net.handle_presence_message(
-                7u64,
-                "bob".into(),
-                "ws/0".into(),
-                (10.0, 20.0),
-                1_700_000_000,
-            );
+            net.handle_presence_message(7u64, "ws/0".into(), (10.0, 20.0), 1_700_000_000);
             let buf = buf_handle.lock().unwrap().clone();
             assert_eq!(buf.len(), 1);
             assert_eq!(buf[0].peer, 7u64);
-            assert_eq!(buf[0].user, "bob");
             assert_eq!(buf[0].key, "ws/0");
             assert_eq!(buf[0].point, (10.0, 20.0));
             assert_eq!(buf[0].ts, 1_700_000_000);
@@ -13949,24 +13960,12 @@ mod tests {
             let tree = WorkspaceTree::bootstrap_default().shared();
             let (net, _cmd_rx) = shell_network_for_test(tree, 99u64);
             let buf_handle = net.inbound_presence_handle();
-            net.handle_presence_message(
-                99u64,
-                "me".into(),
-                "ws/0".into(),
-                (10.0, 20.0),
-                1_700_000_000,
-            );
+            net.handle_presence_message(99u64, "ws/0".into(), (10.0, 20.0), 1_700_000_000);
             assert!(
                 buf_handle.lock().unwrap().is_empty(),
                 "a session's own presence must not be drained back into its overlay"
             );
-            net.handle_presence_message(
-                7u64,
-                "bob".into(),
-                "ws/0".into(),
-                (30.0, 40.0),
-                1_700_000_001,
-            );
+            net.handle_presence_message(7u64, "ws/0".into(), (30.0, 40.0), 1_700_000_001);
             assert_eq!(
                 buf_handle.lock().unwrap().len(),
                 1,
@@ -14077,7 +14076,7 @@ mod tests {
                 .try_recv()
                 .expect("publish_scrollback_request must enqueue a NetCmd");
             match cmd {
-                NetCmd::Publish { ws, msg } => {
+                NetCmd::Publish { ws, msg, .. } => {
                     assert_eq!(ws, expected_topic);
                     match msg {
                         NeighbourMsg::ScrollbackRequest {

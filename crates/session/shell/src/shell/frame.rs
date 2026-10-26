@@ -261,6 +261,11 @@ pub enum LayerPolicy {
 /// does not leave the layers and come back.
 const PAN_LINGER_FRAMES: u32 = 4;
 
+/// How many drawn frame identities the desktop remembers, so a pointer action
+/// waiting for the next frame can still tell whether one landed. A press holds
+/// one frame, not a session.
+const DRAWN_REVISIONS_KEPT: usize = 16;
+
 /// What the presenter asks of strip pans.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct StripPanPresenter {
@@ -752,6 +757,8 @@ pub struct FrameBuilder {
     root_node: Option<NodeId>,
     #[cfg(test)]
     layout_tree_builds: u64,
+    #[cfg(test)]
+    layout_passes: u64,
     text_renderer: TextRenderer,
     theme: Theme,
     /// The theme the settings document describes, before the active
@@ -855,6 +862,12 @@ pub struct FrameBuilder {
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
     next_scene_revision: u64,
+    /// Revisions issued to frames the desktop has finished drawing, in order:
+    /// the last few of them. A press the control socket lands asks to be
+    /// answered at a revision later than the frame its target was read from,
+    /// so the one place that turns a decision into a pointer action is also
+    /// the one place that has to hold it until then.
+    drawn_revisions: Vec<u64>,
     /// Capacity of this builder's actual presenter; absent for dense captures.
     retained_layer_width: Option<u32>,
     /// Which frames that presenter gets as layers.
@@ -963,6 +976,7 @@ fn shots_theme_requested() -> bool {
     SHOTS_THEME.get().is_some()
         || std::env::var_os("TILO_SHOTS_THEME").is_some()
         || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
+        || std::env::var_os("TILO_SHOTS_DENSITY").is_some()
 }
 
 /// Whether `app` may write `workspace`'s room for `person` at `now`: the
@@ -1004,10 +1018,10 @@ impl FrameBuilder {
     }
 
     /// Optional presentation overrides for offscreen `shots` capture:
-    /// `TILO_SHOTS_THEME=<preset>` (any name `Theme::named` finds) and
-    /// `TILO_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
-    /// a theme-driven chrome change be proven in high contrast and at large
-    /// text, not just its comfortable default density.
+    /// `TILO_SHOTS_THEME=<preset>` (any name `Theme::named` finds),
+    /// `TILO_SHOTS_TEXT_SCALE=<factor>` and `TILO_SHOTS_DENSITY=compact`.
+    /// Unset keeps the dark default — lets a theme-driven chrome change be
+    /// proven in high contrast, at large text and at compact density.
     fn shots_theme_override() -> Option<Theme> {
         let requested_theme = SHOTS_THEME
             .get()
@@ -1017,18 +1031,21 @@ impl FrameBuilder {
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|value| value.is_finite());
-        if requested_theme.is_none() && requested_scale.is_none() {
+        let compact = std::env::var_os("TILO_SHOTS_DENSITY").is_some_and(|d| d == "compact");
+        if requested_theme.is_none() && requested_scale.is_none() && !compact {
             return None;
         }
-        let theme = requested_theme
+        let mut theme = requested_theme
             .as_deref()
             .and_then(|name| Theme::named(name.trim()))
             .unwrap_or_else(Theme::dark);
-        Some(if let Some(scale) = requested_scale {
-            theme.with_text_scale(scale)
-        } else {
-            theme
-        })
+        if let Some(scale) = requested_scale {
+            theme = theme.with_text_scale(scale);
+        }
+        if compact {
+            theme = theme.with_density(ui::tokens::Density::Compact);
+        }
+        Some(theme)
     }
 
     /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle), with
@@ -1158,6 +1175,8 @@ impl FrameBuilder {
             root_node: None,
             #[cfg(test)]
             layout_tree_builds: 0,
+            #[cfg(test)]
+            layout_passes: 0,
             text_renderer: presentation.text_renderer,
             last_room_epoch: 0,
             peer_windows_quiet_at: None,
@@ -1210,6 +1229,7 @@ impl FrameBuilder {
             palette_focus_active: false,
             last_produced_sections: None,
             next_scene_revision: 1,
+            drawn_revisions: Vec::new(),
             retained_layer_width: None,
             layer_policy: LayerPolicy::default(),
             strip_motion: StripMotion::default(),
@@ -1950,6 +1970,13 @@ impl FrameBuilder {
     /// re-runs, unless `take_structure_dirty()` says otherwise, in which
     /// case the taffy tree rebuilds first.
     pub fn relayout(&mut self) {
+        #[cfg(test)]
+        {
+            self.layout_passes = self
+                .layout_passes
+                .checked_add(1)
+                .expect("test layout pass counter exhausted");
+        }
         // Apply the compositor's live fullscreen state to the strip rows
         // first, flagging the owning row dirty so the structure-dirty check
         // below rebuilds and the collapse (or restore) takes this frame.
@@ -2714,8 +2741,7 @@ impl FrameBuilder {
             self.retained_layer_width = capacity;
             return frame;
         }
-        let revision = self.next_scene_revision;
-        self.next_scene_revision = self.next_scene_revision.saturating_add(1);
+        let revision = self.reserve_scene_revision();
         let previous_revision = self
             .last_produced_sections
             .as_ref()
@@ -2735,17 +2761,18 @@ impl FrameBuilder {
         // a strip is unbaked. They cannot authorize sparse screen damage.
         let screen_space_damage = strips.as_ref().is_none_or(Vec::is_empty);
         let mut section_copies = Vec::new();
-        let damage_regions = (!pointer_filter && strips_kept && screen_space_damage)
-            .then(|| {
-                self.damage_from_sections_with_images(
-                    &sections,
-                    &parts,
-                    (pointer_filter, tint),
-                    &foreign_images,
-                    copying.then_some(&mut section_copies),
-                )
-            })
-            .flatten();
+        let damage_regions =
+            (revision != 0 && !pointer_filter && strips_kept && screen_space_damage)
+                .then(|| {
+                    self.damage_from_sections_with_images(
+                        &sections,
+                        &parts,
+                        (pointer_filter, tint),
+                        &foreign_images,
+                        copying.then_some(&mut section_copies),
+                    )
+                })
+                .flatten();
         // What a floating surface blurs, an HDR layer and a fullscreen
         // client over the desktop are not moved by a copy.
         let copies_shown =
@@ -3852,7 +3879,7 @@ impl FrameBuilder {
 
     /// `rect`, in scene pixels, rounded out to whole clip tiles inside the
     /// scene.
-    fn scene_tile_rect(&self, rect: Rect) -> Option<FineDamageRect> {
+    pub(crate) fn scene_tile_rect(&self, rect: Rect) -> Option<FineDamageRect> {
         // Vello evaluates clip layers in 16px tiles. Even outside a layer's
         // exact shape, compositing that tile can round an existing channel by
         // one unit. Retain complete clip tiles so a changed shadow cannot
@@ -4339,8 +4366,18 @@ impl FrameBuilder {
     /// fold found anything — someone who joined but hasn't moved their
     /// pointer publishes nothing, but is in the room all the same.
     pub fn pump_peer_presence(&mut self) -> bool {
+        // Arriving where people are pulses their faces in the bar, as a
+        // wave does the waver's.
+        let arrived = self.host.take_arrival_pulses();
+        for person in &arrived {
+            self.presence.bounce(
+                ui::permissions::UserId(person.clone()),
+                self.theme.motion(),
+                Instant::now(),
+            );
+        }
         let Some(relay) = self.peer_presence.as_ref() else {
-            return false;
+            return !arrived.is_empty();
         };
         let tiles = self.host.tab_tiles();
         relay.set_shown_strip(self.host.shown_strip());
@@ -4654,6 +4691,15 @@ impl FrameBuilder {
 
     /// Earliest one-shot widget deadline. Unlike animation demand this lets
     /// the compositor sleep until the visual state can actually change.
+    /// Until when the next frame waits for a window's first frame that may
+    /// still land inside its frame budget ([`ui::arriving`]): shown then, it
+    /// opens with no placeholder at all. The hold's end is a wake deadline
+    /// ([`Self::next_wake_deadline`]), so the frame is made then at the
+    /// latest.
+    pub fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
+        Widget::holds_frame_until(&*self.host, now).filter(|until| *until > now)
+    }
+
     pub fn next_wake_deadline(&self) -> Option<Instant> {
         [
             self.host.next_wake_deadline(),
@@ -4714,12 +4760,12 @@ impl FrameBuilder {
         .flatten()
     }
 
-    /// Whether any tab is still holding a place for an app that hasn't drawn
-    /// yet. The opening card's spinner keeps [`Self::needs_animation_frame`]
-    /// true for the wait's duration, so a caller waiting for quiet has to
-    /// distinguish "still starting" from "animation wedged".
-    pub fn any_tile_opening(&mut self) -> bool {
-        self.host.any_tile_opening()
+    /// Whether any tab is still holding a place for a window whose first
+    /// frame hasn't arrived yet. Asking also latches a client frame that was
+    /// published as presented, so a caller waiting for a client to show asks
+    /// this every frame.
+    pub fn any_tile_arriving(&mut self) -> bool {
+        self.host.any_tile_arriving()
     }
 
     /// The chrome's monotonic revision counter. Bumps whenever chrome
@@ -4729,6 +4775,14 @@ impl FrameBuilder {
         self.chrome.borrow().revision
     }
 
+    /// The identity of the last frame drawn, and which frames were drawn
+    /// before it, oldest first — what a pointer action asks to be answered at
+    /// a later one of.
+    #[must_use]
+    pub fn drawn_revisions(&self) -> &[u64] {
+        &self.drawn_revisions
+    }
+
     /// The shell was drawn, its motions read at `motions_at` or later: the
     /// motion clock may stop asking for a frame at rest it has now had, and
     /// the window groups' once-per-drawn-frame motion is told the frame
@@ -4736,6 +4790,17 @@ impl FrameBuilder {
     fn frame_drawn(&mut self, motions_at: Instant) {
         ui::motion::frame_drawn(motions_at);
         self.host.frame_presented();
+        // The scene this frame issued has just landed. The list is a window,
+        // not a ledger: a press waits for one frame, not for a session.
+        let issued = self.next_scene_revision.saturating_sub(1);
+        if self.drawn_revisions.last() != Some(&issued) {
+            self.drawn_revisions.push(issued);
+            let excess = self
+                .drawn_revisions
+                .len()
+                .saturating_sub(DRAWN_REVISIONS_KEPT);
+            self.drawn_revisions.drain(..excess);
+        }
     }
 
     pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
@@ -5491,16 +5556,13 @@ impl FrameBuilder {
         self.pointer_image = image;
     }
 
-    /// The cursor the chrome under `point` asks for: the smallest widget
-    /// containing the point that names one wins, so a nested button beats
-    /// the bar around it — the same rule `ui::App` applies to app windows.
+    /// The cursor the chrome under `point` asks for, by the rule every
+    /// host shares ([`ui::widget::cursor`]).
     pub fn chrome_cursor_at(
         &self,
         point: vello::kurbo::Point,
     ) -> Option<winit::window::CursorIcon> {
-        let mut best: Option<(f64, winit::window::CursorIcon)> = None;
-        chrome_cursor_walk(self.host.as_ref(), point, &mut best);
-        best.map(|(_, icon)| icon)
+        ui::widget::cursor::in_tree(self.host.as_ref(), point)
     }
 
     /// What the focused chrome widget asks of an input method — its purpose
@@ -5902,6 +5964,11 @@ impl FrameBuilder {
         // Snapshot the focus going in to detect any new target set by the
         // host's `handle_event` — mirrors `ui::App::window_event`.
         let prior_focus = *focus;
+        let overlays_before = (
+            self.host.palette_visible(),
+            self.host.agent_quick_composer_open(),
+            self.host.person_quick_composer_open(),
+        );
         let mut focus_target: Option<NodeId> = None;
         if self.offer_terminal_typing(event, modifiers, state, root_obj, &mut focus_target) {
             if let Some(new_id) = focus_target
@@ -5948,9 +6015,25 @@ impl FrameBuilder {
             || self.host.person_quick_composer_open()
             || self.palette_focus_active
         {
-            // Opening or closing an overlay must update the external seat
-            // cursor too, not just the widget's internal focus during layout.
-            self.relayout();
+            // Visibility alone is not a layout change. Pointer motion and key
+            // releases used to rebuild admission and solve the entire desktop
+            // while search was open. Still settle structural edits, geometry,
+            // opening/closing and native focus synchronously before returning.
+            let structure_changed = self.host.take_structure_dirty();
+            if structure_changed {
+                self.rebuild_layout_tree();
+            }
+            let overlays_after = (
+                self.host.palette_visible(),
+                self.host.agent_quick_composer_open(),
+                self.host.person_quick_composer_open(),
+            );
+            let geometry_dirty = self
+                .root_node
+                .is_none_or(|node| self.taffy.dirty(node).unwrap_or(true));
+            if structure_changed || geometry_dirty || overlays_before != overlays_after {
+                self.relayout();
+            }
             self.reconcile_native_focus(focus);
         }
         // Native/DRM chrome does not run through `ui::App`, whose event loop
@@ -6040,6 +6123,7 @@ impl FrameBuilder {
             ("members", WsTab::Members),
             ("permissions", WsTab::Permissions),
             ("apps", WsTab::Apps),
+            ("emoji", WsTab::Emoji),
         ] {
             put(
                 format!("ws_settings_tab[{key}]"),
@@ -6133,25 +6217,6 @@ fn claims_raw_touch_walk(widget: &dyn ui::widget::Widget, point: vello::kurbo::P
             .children()
             .into_iter()
             .any(|child| claims_raw_touch_walk(child, point))
-}
-
-fn chrome_cursor_walk(
-    widget: &dyn ui::widget::Widget,
-    point: vello::kurbo::Point,
-    best: &mut Option<(f64, winit::window::CursorIcon)>,
-) {
-    let rect = widget.get_rect();
-    if rect.contains(point)
-        && let Some(icon) = widget.cursor_shape(point)
-    {
-        let area = rect.area().max(0.0);
-        if best.is_none_or(|(smallest, _)| area < smallest) {
-            *best = Some((area, icon));
-        }
-    }
-    for child in widget.children() {
-        chrome_cursor_walk(child, point, best);
-    }
 }
 
 /// Depth-first walk of the widget tree, registering each visited node:
@@ -7583,6 +7648,99 @@ mod tests {
             TopBarPresence::Hidden,
             "the maximized window fills the display the bar stands on"
         );
+    }
+
+    /// A window maximized by key is drawn whole in the key's own frame: the
+    /// bar steps aside and the window takes the display in that frame, so
+    /// the next one repaints nothing. Restored by key, the same.
+    #[test]
+    fn a_maximize_by_key_is_drawn_whole_in_its_own_frame() {
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
+        };
+        use tilo_desktop::chrome::TopBarPresence;
+        use winit::keyboard::{Key, ModifiersState, NamedKey};
+        fn frame(fb: &mut FrameBuilder, doc: &mut AutoCommit) -> FramePaint {
+            fb.pump_apps(doc, &automerge::ROOT);
+            fb.relayout();
+            fb.paint_with_damage()
+        }
+        let ws_id = WorkspaceId(91);
+        let strip = StripId(92);
+        let mut ws = Workspace::new(ws_id, "Typing");
+        ws.strips = vec![Strip {
+            id: strip,
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: 93,
+                tabs: vec![Tab {
+                    id: 94,
+                    title: "Notes".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Notes".into()),
+                        label: "Notes".into(),
+                    },
+                    app_title: None,
+                }],
+                active_tab: 94,
+                width: WindowWidth::Fraction(667),
+                maximized: false,
+                focus_history: Vec::new(),
+            }],
+        }];
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces = vec![ws];
+        tree.desktop.active = ws_id;
+        tree.desktop.active_strip.insert(ws_id, strip);
+        tree.desktop.active_group.insert(strip, 93);
+        let mut fb = FrameBuilder::with_tree(tree, (1600, 900));
+        let mut doc = AutoCommit::new();
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let _ = frame(&mut fb, &mut doc);
+            if !fb.needs_animation_frame() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the desktop settles: {:?}",
+                fb.animation_owners()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        let _ = frame(&mut fb, &mut doc);
+        let super_held = winit::event::Modifiers::from(ModifiersState::SUPER);
+        for (key, presence) in [
+            (NamedKey::ArrowUp, TopBarPresence::Hidden),
+            (NamedKey::ArrowDown, TopBarPresence::Docked),
+        ] {
+            let press = ui::synthetic_input::key_press(Key::Named(key), None);
+            let mut focus = None;
+            assert!(
+                fb.dispatch_event(
+                    &press,
+                    &super_held,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &mut focus,
+                ),
+                "Super+{key:?} is the desktop's"
+            );
+            let _ = frame(&mut fb, &mut doc);
+            assert_eq!(
+                fb.chrome().top_bar_presence(),
+                presence,
+                "after Super+{key:?}; maximized {:?}",
+                fb.chrome().maximized_group()
+            );
+            let next = frame(&mut fb, &mut doc);
+            assert!(
+                matches!(next.damage_regions.as_deref(), Some([])),
+                "Super+{key:?} was drawn whole in its own frame; the next repaints {:?}",
+                next.damage_regions
+            );
+        }
     }
 
     /// A window that was a tile before it went fullscreen keeps drawing over
@@ -9717,13 +9875,13 @@ mod tests {
                 .take_pending_configure(SURFACE)
                 .expect("layout must make the initial client configure available without input");
             assert!(
-                fb.needs_animation_frame(),
+                fb.needs_animation_frame() || fb.next_wake_deadline().is_some(),
                 "the opening window must keep progressing"
             );
             assert!(!store.is_presented(SURFACE));
             assert!(
-                fb.any_tile_opening(),
-                "the visible notice must become an opening card, not an unresponsive-app error"
+                fb.any_tile_arriving(),
+                "the visible notice must become the window's arrival, not an unresponsive-app error"
             );
             let _ = fb.paint();
 
@@ -10529,6 +10687,13 @@ mod tests {
         );
     }
 }
+
+#[path = "frame_scene_revision.rs"]
+mod scene_revision;
+
+#[cfg(test)]
+#[path = "frame_overlay_latency_tests.rs"]
+mod overlay_latency_tests;
 
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]

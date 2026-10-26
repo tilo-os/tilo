@@ -48,6 +48,8 @@ mod persistent_room_cli;
 #[cfg(feature = "agents")]
 mod room_chat;
 #[cfg(feature = "agents")]
+mod room_discussions;
+#[cfg(feature = "agents")]
 mod room_strips;
 #[cfg(feature = "web")]
 mod web_cli;

@@ -59,16 +59,44 @@ fn bar_item(app: &SheetsApp, menu: &str, name: &str) -> String {
 }
 
 #[test]
-fn the_window_bar_names_the_sheet_in_view() {
-    let (app, _doc, _tr, _theme) = painted();
+fn the_window_bar_names_the_workbook_and_the_sheet_in_view() {
+    let (mut app, _doc, _tr, _theme) = painted();
     let sheet = app
         .active_sheet_id()
         .and_then(|id| app.workbook.sheet(&id))
         .map(|sheet| sheet.name.0.clone())
         .expect("a sheet is in view");
+    let levels = |app: &SheetsApp| {
+        let location = app.window_bar().location.expect("the bar has a location");
+        let segments: Vec<String> = location
+            .segments
+            .into_iter()
+            .map(|segment| segment.label)
+            .collect();
+        (location.label, segments)
+    };
     assert_eq!(
-        app.window_bar().location.map(|location| location.label),
-        Some(sheet)
+        levels(&app),
+        (sheet.clone(), vec![sheet.clone()]),
+        "a workbook never named or saved is called by the sheet in view"
+    );
+    app.show_file_of(std::path::PathBuf::from("/home/ana/Budget 2026.xlsx"));
+    assert_eq!(
+        levels(&app),
+        (
+            "Budget 2026".to_owned(),
+            vec!["Budget 2026".to_owned(), sheet.clone()]
+        ),
+        "the workbook is named by its file, without the extension"
+    );
+    std::rc::Rc::make_mut(&mut app.workbook).title = Some("Household budget".to_owned());
+    assert_eq!(
+        levels(&app),
+        (
+            "Household budget".to_owned(),
+            vec!["Household budget".to_owned(), sheet]
+        ),
+        "a workbook's title names it before its file"
     );
 }
 

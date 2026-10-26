@@ -33,7 +33,10 @@ use super::driver::ShellDriver;
 mod file_chooser;
 pub mod film;
 mod launcher;
+mod motion_gallery;
 mod motion_review;
+mod one_place;
+mod window_bar_reactions;
 mod window_search;
 
 /// One tab of a window seeded for the window-bar shots.
@@ -119,6 +122,17 @@ pub enum Action {
     CompositorPointer(Point),
     /// Turn "hide the top bar until the pointer is near it" on or off.
     HideTopBar(bool),
+    /// A secondary click on the named target: what a long-press by touch
+    /// becomes.
+    SecondaryClickNamed(&'static str),
+    /// A finger dragged from one point to the other, as raw touch.
+    TouchSwipe(Point, Point),
+    /// A notification banner arrives: title and body.
+    Notify(&'static str, &'static str),
+    /// The focused window goes full screen, or leaves it.
+    FullScreenFocused(bool),
+    /// The key that asks for a fullscreen window's bar (Super) goes down.
+    FullscreenBarKey,
     /// Synthesise a left-button `Pressed` at the current cursor.
     /// Caller owns the matching `MouseRelease`.
     MousePress,
@@ -309,7 +323,7 @@ pub enum Action {
         surface_id: u64,
     },
     /// Activate an app whose window has not mapped yet: the production
-    /// launch holds its place with the opening card from this frame.
+    /// launch holds its place from this frame, where its window arrives.
     HoldLaunchPlace {
         app_id: &'static str,
         label: &'static str,
@@ -976,6 +990,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             let snapshot = identify_snapshot(driver.host().output_geometry());
             driver.host_mut().identify_displays_now(&snapshot);
         }
+        Action::SecondaryClickNamed(name) => one_place::secondary_click_named(driver, name),
+        Action::TouchSwipe(from, to) => one_place::touch_swipe(driver, *from, *to),
+        Action::FullscreenBarKey => driver.host_mut().reveal_fullscreen_bar_by_key(),
+        Action::Notify(title, body) => one_place::notify(driver, title, body),
+        Action::FullScreenFocused(on) => one_place::full_screen_focused(driver, *on),
         Action::MoveCursorNamed(name) => match driver.resolve_named_centre(name) {
             Some(p) => driver.move_cursor(p),
             None => eprintln!(
@@ -2106,6 +2125,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         WsTab::Agents => "agents",
         WsTab::Permissions => "permissions",
         WsTab::Apps => "apps",
+        WsTab::Emoji => "emoji",
     };
     let palette_visible = host.palette_visible();
     let palette_query = host.palette_query();
@@ -2559,6 +2579,7 @@ fn build_scenarios() -> Vec<Scenario> {
         window_bar_files_scenario(),
         window_bar_terminal_scenario(),
         window_bar_writer_scenario(),
+        window_bar_reactions::window_bar_reactions(),
         window_bar_overflow_scenario(),
         window_bar_suggestions_scenario(),
         desk_widgets_scenario(),
@@ -3138,11 +3159,11 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
-            name: "opening_card",
-            description: "An app asked for holds its place with the moving opening card from the \
-                          first frame, says so when the start runs long, and says what it is \
-                          doing while its app is still being fetched from the registry, with \
-                          how much has arrived once the download reports it.",
+            name: "pending_window",
+            description: "An app asked for holds its place from the first frame: the ground \
+                          alone, then the skeleton once its window misses the grace period; an \
+                          app still being fetched from the registry says how much of it has \
+                          arrived once the download reports it.",
             actions: vec![
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),
@@ -3152,31 +3173,23 @@ fn build_scenarios() -> Vec<Scenario> {
                 },
                 Action::Wait(1),
                 Action::Relayout,
-                Action::Snapshot("opening-first-frame"),
-                Action::WaitWall(5_500),
+                Action::Snapshot("pending-first-frame"),
+                Action::WaitWall(400),
                 Action::Relayout,
-                Action::Snapshot("opening-slow"),
+                Action::Snapshot("pending-skeleton"),
                 Action::SelectGroup(None),
                 Action::HoldInstallPlace {
                     app_id: "so.tilo.slides",
                     label: "Slides",
                 },
-                Action::Wait(20),
-                Action::Relayout,
-                Action::Snapshot("opening-installing"),
-                Action::WaitWall(5_500),
-                Action::Relayout,
-                Action::Snapshot("opening-installing-slow"),
                 Action::InstallBytes {
                     app_id: "so.tilo.slides",
                     received: 4_200_000,
                     total: 18_000_000,
                 },
-                // Past the dots-to-bar crossfade, so the shot shows where
-                // it settles rather than a frame of the fade.
                 Action::WaitWall(400),
                 Action::Relayout,
-                Action::Snapshot("opening-installing-progress"),
+                Action::Snapshot("pending-installing-progress"),
             ],
         },
         Scenario {
@@ -3772,65 +3785,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("03-ws0-again"),
             ],
         },
-        Scenario {
-            name: "strip_switcher",
-            description: "The strip switcher on three strips with people on two: the ribbon \
-             at rest with faces beside its marks, the pointer coming to rest on it laying \
-             out the strips' names, a label lit under the pointer, New strip making a \
-             strip and naming it in place, and Super+S for the keyboard.",
-            actions: vec![
-                Action::SeedStripsWithPeople,
-                Action::MoveCursor(Point::new(800.0, 500.0)),
-                Action::WaitWall(1700),
-                Action::Snapshot("00-rest"),
-                Action::MoveCursor(Point::new(1200.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1350.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1450.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1515.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1552.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1572.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1582.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1587.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1589.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1590.0, 462.0)),
-                Action::WaitWall(8),
-                Action::WaitWall(120),
-                Action::Wait(10),
-                Action::Snapshot("01-hover-labels"),
-                Action::MoveCursorNamed("strip_switcher.strip.2"),
-                Action::WaitWall(200),
-                Action::Wait(4),
-                Action::Snapshot("02-label-lit"),
-                Action::ClickNamed("strip_switcher.new_strip"),
-                Action::Wait(6),
-                Action::Snapshot("03-new-strip-named-in-place"),
-                Action::Type("Sketches"),
-                Action::Wait(4),
-                Action::Snapshot("04-typing-the-name"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(4),
-                Action::Snapshot("05-named"),
-                Action::MoveCursor(Point::new(800.0, 500.0)),
-                Action::WaitWall(300),
-                Action::Modifiers(ModifiersState::SUPER),
-                Action::Key(Key::Character("s".into())),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Wait(10),
-                Action::Snapshot("06-super-s"),
-                Action::Key(Key::Named(NamedKey::Escape)),
-                Action::Wait(4),
-                Action::Snapshot("07-closed"),
-            ],
-        },
+        one_place::strip_switcher(),
+        one_place::one_place(),
+        one_place::fullscreen_bar(),
         Scenario {
             name: "strip_deck",
             description: "Four strips, each a full-height screen: the first fills the work \
@@ -5765,8 +5722,14 @@ fn identify_snapshot(
 
 pub fn scenarios() -> &'static [Scenario] {
     use std::sync::LazyLock;
-    static TABLE: LazyLock<Vec<Scenario>> =
-        LazyLock::new(|| [build_scenarios(), motion_review::all()].concat());
+    static TABLE: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
+        [
+            build_scenarios(),
+            motion_review::all(),
+            motion_gallery::all(),
+        ]
+        .concat()
+    });
     &TABLE
 }
 

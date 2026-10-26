@@ -10,6 +10,8 @@ fields = [
   { path = "pages.*.parent", type = "Option<Id>", readonly = true },
   { path = "pages.*.body", type = "RichText", ops = "sha256:b86bfc65e3faa1c9" },
   { path = "pages.*.tags", type = "Set<Id>" },
+  { path = "pages.*.creator", type = "Option<Atom>", readonly = true },
+  { path = "pages.*.reactions", type = "Reactions" },
   { path = "tags", type = "Collection<Tag>", stored = "collection" },
   { path = "tags.*.name", type = "Atom", label = true },
   { path = "images", type = "Map<Bytes>", readonly = true },
@@ -152,7 +154,7 @@ params = [
 id = "append-to-note"
 kind = "undoable"
 params = [
-  { name = "title", required = true, schema = { type = "string" } },
+  { name = "title", required = false, schema = { type = ["string", "null"] } },
   { name = "markdown", required = true, schema = { type = "string" } },
 ]
 

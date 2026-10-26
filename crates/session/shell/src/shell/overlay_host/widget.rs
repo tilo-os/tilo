@@ -153,6 +153,9 @@ impl Widget for ShellOverlayHost {
             .agent_markers
             .retain(|source| source.is_fresh(Instant::now()));
         crate::shell::settings_records::pump();
+        // Who is here is looked at before Activity reads what changed, so an
+        // arrival said on this frame is part of what Activity saw.
+        let arrival_dirty = self.refresh_presence_notices();
         // Records Activity reads from disk are read off the loop; one that
         // came in refreshes the glance and what the Activity app reads on this frame.
         let activity_records_dirty = self.room_activity.take_persisted_reads();
@@ -173,6 +176,7 @@ impl Widget for ShellOverlayHost {
             apps.pump_messaging_records();
             apps.pump_feedback();
         }
+        self.settle_workspace_emoji();
         steps.mark("in-process-apps");
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network
@@ -248,6 +252,10 @@ impl Widget for ShellOverlayHost {
             }
         } else {
             self.search_indexes_settling = false;
+            if let Some(chrome) = self.chrome.as_ref() {
+                self.search_registry
+                    .maintain_launcher_indexes(&chrome.borrow(), doc, path);
+            }
         }
         steps.mark("search-index");
         self.poll_pending_launchpad_actions();
@@ -270,6 +278,10 @@ impl Widget for ShellOverlayHost {
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
+        // The top bar steps aside for a window maximized this frame (and
+        // comes back with its restore) in the same pass: the bar and the
+        // windows' insets are laid out and painted from it below.
+        self.sync_top_bar_presence(Instant::now());
         steps.mark("resync");
         let content_dirty = self.content.update(doc, path);
         steps.mark("content-update");
@@ -321,6 +333,7 @@ impl Widget for ShellOverlayHost {
         self.harvest_pending_search_open();
         let tab_rename_dirty = self.harvest_tab_renames();
         let hosted_windows_dirty = self.sync_hosted_windows();
+        let hosted_windows_dirty = self.sync_window_shares() | hosted_windows_dirty;
         let chips_dirty = self.sync_desktop_control_chips();
         // Refreshing here (not inside the harvest) means the palette never
         // shows "Nothing to show" before the user's first keystroke.
@@ -334,7 +347,7 @@ impl Widget for ShellOverlayHost {
         self.sync_status_from_bridge();
         let presence_dirty = self.pump_presence_requests();
         let presence_dirty = self.sync_self_presence() | presence_dirty;
-        let presence_dirty = self.refresh_presence_notices() | presence_dirty;
+        let presence_dirty = arrival_dirty | presence_dirty;
         self.pump_screenshot_sends();
         let follow_dirty = self.reconcile_followed_peer();
         self.follow_focus_across_displays();
@@ -1257,18 +1270,9 @@ impl ShellOverlayHost {
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
-        // A press on the line under the top bar was taken when it landed
-        // ([`Self::note_pointer_press`]); nothing beneath gets it.
-        if self.presence_notice_press && matches!(event, WindowEvent::MouseInput { .. }) {
-            if matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: ElementState::Released,
-                    ..
-                }
-            ) {
-                self.presence_notice_press = false;
-            }
+        // Picking what to report takes every event: nothing underneath
+        // reacts to a pick, and Escape leaves.
+        if self.route_feedback_picker_event(event, ctx.modifiers.state()) {
             *ctx.handled = true;
             return;
         }
@@ -1486,6 +1490,11 @@ impl ShellOverlayHost {
                     _ => {}
                 }
             }
+            // A swipe down from a display's top edge reveals what hides
+            // there: the top bar the person hides, a fullscreen window's bar.
+            if !shell_owned {
+                claimed |= self.top_edge_swipe(touch.id, point, touch.phase);
+            }
             if claimed || shell_owned {
                 *ctx.handled = true;
                 return;
@@ -1638,6 +1647,11 @@ impl ShellOverlayHost {
             return;
         }
         if (Self::is_pointer_event(event) || matches!(event, WindowEvent::Focused(false)))
+            && self.route_people_overlay_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
+            return;
+        }
+        if (Self::is_pointer_event(event) || matches!(event, WindowEvent::Focused(false)))
             && self.route_collaborators_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
@@ -1705,6 +1719,12 @@ impl ShellOverlayHost {
         if !Self::is_pointer_event(event)
             && !self.keyboard_held_ahead_of_wifi_password()
             && self.route_wifi_password_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
+            return;
+        }
+        if !Self::is_pointer_event(event)
+            && !matches!(event, WindowEvent::Focused(false))
+            && self.route_people_overlay_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
         }

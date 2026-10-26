@@ -11,6 +11,8 @@ pub mod approved_checks;
 mod committed_document;
 #[cfg(target_os = "linux")]
 mod file_clipboard;
+mod host_membership;
+
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 pub(crate) use file_clipboard::test_support::TestTransferPause;
@@ -26,6 +28,7 @@ mod room_status_tests;
 #[cfg(test)]
 pub(crate) use owner_source::OPENING as NATIVE_OWNER_OPENING;
 mod resource_views;
+mod room_nodes;
 #[cfg(target_os = "linux")]
 mod service_sessions;
 mod tracker_runs;
@@ -358,7 +361,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
     }
 
     /// A room its node stewards: this owner forwards an opening app's
-    /// authorship to that host ([`grant_authorship_at_host`]).
+    /// authorship to that host ([`host_membership::commit_membership_at_host`]).
     fn grants_authorship_at_host(&self, room: &str) -> bool {
         super::state::RoomId::parse(room).is_some_and(|room| self.tree.read().seals_records(room))
     }
@@ -383,7 +386,10 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
                 // Membership is the room's governance: its host decides it.
-                return grant_authorship_at_host(network, &owner, room, &request).await;
+                return self::host_membership::commit_membership_at_host(
+                    network, &owner, room, &request,
+                )
+                .await;
             }
             let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
                 .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
@@ -399,68 +405,6 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             Ok(receipt)
         })
     }
-}
-
-/// How long the app authorship a host committed may take to reach this
-/// device's admitted room. With the host's own answer (at most
-/// `relay_rooms::ADMIN_TIMEOUT`) it stays inside the 30 s a launch waits.
-const HOST_AUTHORSHIP_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// Opening an app in a room for the first time asks the room's host to let
-/// the app author the room's records: the host is the one party that may
-/// commit it. Rooms has no action for any other membership change yet, so
-/// those are refused until it does.
-/// Answers with this device's committed view once it carries the authorship.
-async fn grant_authorship_at_host(
-    network: &super::network::ShellNetwork,
-    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
-    room: super::state::RoomId,
-    request: &tilo_owner_commit::OwnerCommitRequest,
-) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
-    const REFUSED: &str = "workspace membership requires the governing owner";
-    let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
-        caller,
-        command:
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                app,
-            },
-        ..
-    } = &request.operation
-    else {
-        return Err(REFUSED.into());
-    };
-    network
-        .grant_app_authorship_at_host(room, caller, app)
-        .await
-        .ok_or(REFUSED)??;
-    // The host's answer is not this device's commit barrier: wait until the
-    // authorship it published is in this device's actual admitted room.
-    tokio::time::timeout(HOST_AUTHORSHIP_ADMISSION_TIMEOUT, async {
-        loop {
-            network.check_native_custody(owner, room)?;
-            let receipt = owner.with_current(room, |view| {
-                let now = std::time::SystemTime::now();
-                let member = view.peer().permissions(caller.device_public_key, now)?;
-                if !member
-                    .policy
-                    .app_authors(app, &tilo_action_policy::Context::at_time(now))
-                {
-                    return Ok(None);
-                }
-                Ok(Some(tilo_owner_commit::OwnerCommitReceipt {
-                    binding: request.binding()?,
-                    generation: view.generation(),
-                    aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
-                }))
-            })?;
-            if let Some(receipt) = receipt {
-                return Ok(receipt);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .map_err(|_| "the host committed the app authorship but it did not reach this device in time")?
 }
 
 /// A commit's outcome on the owner's thread: done here, or a receipt for
@@ -560,7 +504,7 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
     }
     /// The room's agents whose delegation the room's governance verified for
     /// exactly their device ([`super::state::WorkspaceTree::verified_agents`]).
-    fn history_agents(&self, room: &str) -> Vec<ui::history_source::RosterAgent> {
+    fn history_agents(&self, room: &str) -> Vec<collab_types::history::RosterAgent> {
         super::state::RoomId::parse(room)
             .map(|room| self.0.read().verified_agents(room))
             .unwrap_or_default()
@@ -626,6 +570,36 @@ pub(super) fn with_session_blobs<T>(
         *SESSION_BLOBS.lock_recover() = None;
     }
     result
+}
+
+/// How long the filesystem names an agent as the cause of the writes to the
+/// paths it was told: long enough for an action's writes to land, short
+/// enough that a later write of the person's own stays theirs.
+const WRITE_ATTRIBUTION_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Name `agent` (`agent:<id>`, which the broker took from its custody of a
+/// live invocation and which acts for this session's person) as the cause of
+/// this device's next writes to `paths`: each version the filesystem then
+/// makes of them records the agent, for the person who signs it, in the
+/// agent's presence colour. Over the session-only document media socket, which
+/// no sandbox reaches. It grants nothing.
+///
+/// # Errors
+/// Returns why the filesystem could not be reached or refused.
+pub(super) fn attribute_session_writes(agent: &str, paths: Vec<String>) -> Result<(), String> {
+    let label = ui::history_source::agent_principal_name(agent)
+        .ok_or("only an agent is named as the cause of a write")?;
+    let (red, green, blue) = ui::presence::user_color(agent);
+    with_session_blobs(|client| {
+        client.attribute_writes(runtime_fs::blobs::WriteAttribution {
+            paths,
+            actor: agent.to_owned(),
+            label,
+            color: [red, green, blue],
+            ttl: WRITE_ATTRIBUTION_TTL,
+        })
+    })
+    .map_err(|error| error.to_string())
 }
 
 /// The filesystem daemon's content store, as content puts write to it:
@@ -980,6 +954,27 @@ fn launchable_applications(
         .collect()
 }
 
+/// Native package discovery needs neither host-entry conversion/deduplication
+/// nor other packages' capability manifests. Host IDs retain the full merge so
+/// an installed Tilo package still shadows its corresponding desktop entry.
+fn launchable_applications_for(
+    app_id: &str,
+    packages: Vec<super::launcher::InstalledApp>,
+    hosts: impl FnOnce() -> Vec<super::host_apps::HostApp>,
+) -> Vec<LaunchableApplication> {
+    if app_id.starts_with(HOST_APPLICATION_PREFIX) {
+        return launchable_applications(packages, hosts())
+            .into_iter()
+            .filter(|app| app.package_id == app_id)
+            .collect();
+    }
+    let packages = packages
+        .into_iter()
+        .filter(|app| app.package_id == app_id)
+        .collect();
+    launchable_applications(packages, Vec::new())
+}
+
 /// Open host application `desktop_id` in `workspace`, where its X11 bridge,
 /// if it needs one, is that workspace's own.
 fn launch_host_application(
@@ -1027,6 +1022,13 @@ impl LauncherServices for NativeLauncher {
     }
     fn applications(&self) -> Vec<LaunchableApplication> {
         launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
+    }
+    fn applications_for(&self, app_id: &str) -> Vec<LaunchableApplication> {
+        launchable_applications_for(
+            app_id,
+            super::launcher::gui_apps(),
+            super::host_apps::host_apps,
+        )
     }
     fn person_initiated(&self, app_id: &str) -> bool {
         self.0.as_ref().is_some_and(|tree| {
@@ -1898,8 +1900,8 @@ impl ContinuationServices for NativeContinuations {
         message: Vec<u8>,
     ) -> Result<(), String> {
         if matches!(
-            ui::collaboration::handoff::HandoffReport::decode(&message),
-            Some(ui::collaboration::handoff::HandoffReport::OwnerSubscribe { .. })
+            collab_types::handoff::HandoffReport::decode(&message),
+            Some(collab_types::handoff::HandoffReport::OwnerSubscribe { .. })
         ) {
             super::personal_continuity_registry::global_registry()
                 .lock()
@@ -1911,11 +1913,11 @@ impl ContinuationServices for NativeContinuations {
                 );
             return Ok(());
         }
-        if let Some(ui::collaboration::handoff::HandoffReport::OwnerTakeover {
+        if let Some(collab_types::handoff::HandoffReport::OwnerTakeover {
             token,
             schema,
             metadata,
-        }) = ui::collaboration::handoff::HandoffReport::decode(&message)
+        }) = collab_types::handoff::HandoffReport::decode(&message)
         {
             use super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
             if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::AppContinuations)
@@ -2161,6 +2163,7 @@ pub fn native_services(
             .chain([
                 super::settings_records::broker_door(),
                 super::activity_provider::broker_door(),
+                super::crash_records::broker_door(),
             ])
             .collect(),
         legacy_workspace: membership.map(|tree| {
@@ -2181,12 +2184,16 @@ pub fn native_services(
             Arc::new(NativeSpeakers(network))
                 as Arc<dyn tilo_action_broker::services::SpeakerServices>
         }),
+        #[cfg(target_os = "linux")]
+        drives: Some(Arc::new(NativeDrives)),
+        applications: Some(Arc::new(NativeApplications)),
         wifi_continuity: network.clone().map(|network| {
             Arc::new(NativeWifiContinuity(network))
                 as Arc<dyn tilo_action_broker::services::WifiContinuityServices>
         }),
         nearby_transfer,
         own_device: NativeOwnDevice::service(network.as_ref()),
+        room_nodes: room_nodes::NativeRoomNodes::service(network.as_ref()),
         workspace_control: network.map(|network| {
             Arc::new(NativeWorkspaceControl(network)) as Arc<dyn WorkspaceControlServices>
         }),
@@ -2260,6 +2267,7 @@ pub(crate) fn test_broker_with_membership(
         shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone(), None))),
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         app_action_grants: Some(Arc::new(NativeAppActionGrants::new(membership, None))),
+        applications: Some(Arc::new(NativeApplications)),
         ..Default::default()
     };
     tilo_action_broker::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
@@ -2285,6 +2293,27 @@ impl tilo_action_broker::services::SpeakerServices for NativeSpeakers {
         )))
     }
 }
+/// The session's NTFS drives, which tell the certified Files route when
+/// the list it is given changes.
+#[cfg(target_os = "linux")]
+pub struct NativeDrives;
+
+#[cfg(target_os = "linux")]
+impl tilo_action_broker::services::DriveServices for NativeDrives {
+    fn changed(&self, after: u64) -> Option<tilo_action_broker::services::DriveChange> {
+        Some(Box::pin(crate::shell::drives::changed(after)))
+    }
+}
+/// The person's apps, which tell the certified Files route when the list it
+/// is given changes.
+pub struct NativeApplications;
+
+impl tilo_action_broker::services::ApplicationServices for NativeApplications {
+    fn changed(&self, after: u64) -> Option<tilo_action_broker::services::ApplicationChange> {
+        Some(Box::pin(crate::shell::app_list::changed(after)))
+    }
+}
+
 /// Wi-Fi credentials carried between the person's certified devices.
 pub struct NativeWifiContinuity(pub Arc<super::network::ShellNetwork>);
 impl tilo_action_broker::services::WifiContinuityServices for NativeWifiContinuity {
@@ -2762,6 +2791,40 @@ mod tests {
                 ("host:chromium-browser", true),
             ]
         );
+        let native = launchable_applications_for(
+            "so.tilo.word-processor",
+            vec![package("so.tilo.notes"), package("so.tilo.word-processor")],
+            || panic!("native lookup must not enumerate host apps"),
+        );
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0].package_id, apps[0].package_id);
+        assert_eq!(native[0].display_name, apps[0].display_name);
+        assert!(!native[0].unconfined);
+        assert!(
+            launchable_applications_for("missing", Vec::new(), || {
+                panic!("missing native lookup must not enumerate host apps")
+            })
+            .is_empty()
+        );
+        for id in ["host:chromium-browser", "host:SO.TILO.WORD-PROCESSOR"] {
+            let selected =
+                launchable_applications_for(id, vec![package("so.tilo.word-processor")], || {
+                    vec![
+                        host("chromium-browser", "Chromium"),
+                        host("SO.TILO.WORD-PROCESSOR", "Shadowed"),
+                    ]
+                });
+            assert_eq!(
+                selected
+                    .iter()
+                    .map(|app| (&app.package_id, app.unconfined))
+                    .collect::<Vec<_>>(),
+                apps.iter()
+                    .filter(|app| app.package_id == id)
+                    .map(|app| (&app.package_id, app.unconfined))
+                    .collect::<Vec<_>>(),
+            );
+        }
     }
 
     #[test]

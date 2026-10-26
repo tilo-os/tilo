@@ -274,7 +274,7 @@ impl MusicApp {
         use crate::backend::{HomeContent, HomeItem, HomeItemKind, HomeSection, SpotifyDevice};
         self.backend_name = "Spotify".into();
         self.spotify_catalogue = true;
-        self.home_requested = true;
+        self.home_asked = Some(ui::time::now());
         self.home = Some(HomeContent {
             sections: vec![HomeSection {
                 title: crate::i18n::t("music-spotify-library"),
@@ -512,7 +512,7 @@ impl MusicApp {
                 }
                 if reply.state.get("playlist").is_some() || reply.state.get("uri").is_some() {
                     self.home = None;
-                    self.home_requested = false;
+                    self.home_asked = None;
                     self.spotify_library_offset = 50;
                     self.spotify_library_more = true;
                 }

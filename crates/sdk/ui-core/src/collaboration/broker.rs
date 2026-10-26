@@ -35,15 +35,20 @@ use tilo_sort::CompactSort as _;
 // share this worker's queues, byte budgets and route handles.
 #[path = "audio_output.rs"]
 mod audio_output;
+#[path = "change_waits.rs"]
+mod change_waits;
 #[path = "committed_document.rs"]
 pub(super) mod committed_document;
 #[path = "directory_client.rs"]
 mod directory_client;
 #[path = "held_inbound.rs"]
 mod held_inbound;
-// The managed sender itself is Unix-only (host_worker), and so is its transport.
 #[path = "inbound_document.rs"]
 mod inbound_document;
+#[path = "broker_key_schedule.rs"]
+mod key_schedule;
+use key_schedule::{KeyRound, KeySchedule, KeySignal};
+// The managed sender itself is Unix-only (host_worker), and so is its transport.
 #[cfg(unix)]
 #[path = "managed_sender_transport.rs"]
 mod managed_sender_transport;
@@ -1965,6 +1970,8 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
         }
         CollabEvent::NearbyTransferChanged => "NearbyTransferChanged",
         CollabEvent::SpeakersChanged => "SpeakersChanged",
+        CollabEvent::DrivesChanged => "DrivesChanged",
+        CollabEvent::ApplicationsChanged => "ApplicationsChanged",
         CollabEvent::Realtime(event) => {
             serialized_bytes(event, &mut meter);
             "Realtime"
@@ -3032,7 +3039,7 @@ trait SdkCertifiedIdentity: Send + Sync {
     ) -> Result<[u8; 64], runtime_portal::NotAvailable>;
 }
 
-impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
+impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIdentity> {
     fn channel_keys(
         &self,
         workspace_id: &str,
@@ -3041,7 +3048,7 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
         known_generation: u64,
     ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
         runtime_identity::BrokerSigningIdentity::channel_keys(
-            self,
+            self.as_ref(),
             workspace_id,
             app_id,
             record_id,
@@ -3058,7 +3065,10 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
         &self,
         workspace_id: &str,
     ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        runtime_identity::BrokerSigningIdentity::sign_collaboration_join(self, workspace_id)
+        runtime_identity::BrokerSigningIdentity::sign_collaboration_join(
+            self.as_ref(),
+            workspace_id,
+        )
     }
     fn sign_collaboration_op(
         &self,
@@ -3068,7 +3078,7 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
         unsigned_op: &[u8],
     ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
         runtime_identity::BrokerSigningIdentity::sign_collaboration_op(
-            self,
+            self.as_ref(),
             workspace_id,
             app_id,
             record_id,
@@ -3077,51 +3087,9 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
     }
 }
 
-#[cfg(unix)]
-impl SdkCertifiedIdentity for runtime_identity::SigningIdentity {
-    fn channel_keys(
-        &self,
-        workspace_id: &str,
-        app_id: &str,
-        record_id: &str,
-        known_generation: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        runtime_identity::SigningIdentity::channel_keys(
-            self,
-            workspace_id,
-            app_id,
-            record_id,
-            known_generation,
-        )
-    }
-    fn device_certificate(&self) -> Option<&[u8]> {
-        runtime_identity::SigningIdentity::device_certificate(self)
-    }
-    fn signing_public_key(&self) -> [u8; 32] {
-        runtime_identity::SigningIdentity::signing_public_key(self)
-    }
-    fn sign_collaboration_join(
-        &self,
-        workspace_id: &str,
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        runtime_identity::SigningIdentity::sign_collaboration_join(self, workspace_id)
-    }
-    fn sign_collaboration_op(
-        &self,
-        workspace_id: &str,
-        app_id: &str,
-        record_id: &str,
-        unsigned_op: &[u8],
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        runtime_identity::SigningIdentity::sign_collaboration_op(
-            self,
-            workspace_id,
-            app_id,
-            record_id,
-            unsigned_op,
-        )
-    }
-}
+#[cfg(all(test, unix))]
+#[path = "broker_identity_tests.rs"]
+mod identity_host_fixture;
 
 #[cfg_attr(
     not(unix),
@@ -4350,168 +4318,6 @@ fn run_shovel(
     state.notify_events();
 }
 
-/// How soon a route waiting for keys is asked about again after anything
-/// changed, and how often every route is asked when the broker does not say
-/// when keys change (`channelKeysChanged`).
-const CHANNEL_KEY_REFRESH: Duration = Duration::from_secs(1);
-
-/// The longest a route waiting for keys goes unasked while nothing changes,
-/// when nothing tells it about a change: an identity service that refused or
-/// could not take its question, or a removal whose rejoin it asks for.
-/// Admission, a channel service starting after the app and a steward this
-/// device learns of later are all pushed (see `KeySchedule`).
-const CHANNEL_KEY_WAIT_LONGEST: Duration = Duration::from_secs(30);
-
-/// What makes an endpoint ask the identity service about a route's keys.
-enum KeySignal {
-    /// The route's channel changed, or ciphertext arrived its keys can't
-    /// open: ask for the route's keys now.
-    Changed(String),
-    /// The broker does not say when keys change: ask on a timer.
-    Unpushed,
-}
-
-/// Which routes one round of key questions asks about. Only routes that ask
-/// the identity service at all are ever asked.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct KeyRound {
-    /// Every such route.
-    all: bool,
-    /// Routes holding no keys yet.
-    waiting: bool,
-    /// These routes, by channel key.
-    routes: std::collections::BTreeSet<String>,
-}
-
-impl KeyRound {
-    fn asks(&self, route: &str, keys: &super::route_keys::RouteKeys) -> bool {
-        keys.asks_identity_service()
-            && (self.all || (self.waiting && keys.awaiting_keys()) || self.routes.contains(route))
-    }
-}
-
-/// When an endpoint asks the identity service for its routes' keys.
-///
-/// A route holding keys is asked only when told to: the broker resolves the
-/// route's pending `channelKeysChanged` the moment its channel's keys or
-/// this device's access change, ciphertext arrives its keys can't open, or
-/// the broker refuses an edit sealed under them (`send_document_frame`). An
-/// endpoint whose routes all hold keys therefore never wakes for them.
-///
-/// Every channel change the identity service would answer differently is a
-/// commit the channel's steward makes within its reconcile interval (about a
-/// second) of the policy change: a key rotation, an invite, a removal, a
-/// role change that ends reading, a device's enrolment or revocation. The
-/// endpoint asks the moment that commit reaches this device, so a removed or
-/// revoked route stops holding its keys within that bound plus the commit's
-/// delivery to this device. Independently, the broker refuses content sealed
-/// under a superseded epoch on every path, and the identity service checks
-/// this device's trust and the person's role on every signature, so a stale
-/// key never publishes past the commit.
-///
-/// A route the channel service answered as waiting or unavailable is told
-/// as well when that answer may change: the service follows a member's
-/// access request to the steward's welcome, re-checks a room with no known
-/// steward whenever the workspace tree announces a change of its authority
-/// or governance, and retries a channel it failed to open on its own
-/// backoff, resolving the route's `channelKeysChanged` each time. So it is
-/// not asked on a timer either.
-///
-/// A route waiting for keys is asked on a timer only when nothing will tell
-/// it: its last question got no answer from the channel service (the
-/// identity service refused it or could not be reached, or it was never
-/// answered yet), or the service answered that this device was removed (a
-/// rejoin is asked for again on each question). It is asked after
-/// [`CHANNEL_KEY_REFRESH`], then backing off to [`CHANNEL_KEY_WAIT_LONGEST`]
-/// while nothing changes. An endpoint whose broker pushes nothing asks for
-/// every route every [`CHANNEL_KEY_REFRESH`], as before.
-struct KeySchedule {
-    /// Whether the broker says when keys change. Assumed until a route's
-    /// `channelKeysChanged` is refused.
-    pushed: bool,
-    /// Routes told to ask since the last round.
-    marked: std::collections::BTreeSet<String>,
-    /// The timer's next round, and the wait it was armed with.
-    timer: Pin<Box<tokio::time::Sleep>>,
-    wait: Duration,
-}
-
-impl KeySchedule {
-    fn new() -> Self {
-        Self {
-            pushed: true,
-            marked: std::collections::BTreeSet::new(),
-            timer: Box::pin(tokio::time::sleep(CHANNEL_KEY_REFRESH)),
-            wait: CHANNEL_KEY_REFRESH,
-        }
-    }
-
-    /// Whether the timer starts rounds: never while the broker pushes
-    /// changes and no route waits for keys that nothing will tell it about
-    /// (`unpushed_wait`, see [`RouteKeys::asks_on_timer`]).
-    fn timed(&self, unpushed_wait: bool) -> bool {
-        !self.pushed || unpushed_wait
-    }
-
-    fn note(&mut self, signal: KeySignal) {
-        match signal {
-            KeySignal::Changed(route) => {
-                self.marked.insert(route);
-                self.restart();
-            }
-            KeySignal::Unpushed if self.pushed => {
-                self.pushed = false;
-                self.restart();
-            }
-            KeySignal::Unpushed => {}
-        }
-    }
-
-    /// The round the timer starts now that it fired; arms the next one.
-    fn timer_round(&mut self) -> KeyRound {
-        if self.pushed {
-            self.wait = self.wait.saturating_mul(2).min(CHANNEL_KEY_WAIT_LONGEST);
-        }
-        self.arm();
-        KeyRound {
-            all: !self.pushed,
-            waiting: true,
-            routes: std::mem::take(&mut self.marked),
-        }
-    }
-
-    /// A round for the routes told to ask since the last one, if any.
-    fn marked_round(&mut self) -> Option<KeyRound> {
-        (!self.marked.is_empty()).then(|| KeyRound {
-            all: false,
-            waiting: false,
-            routes: std::mem::take(&mut self.marked),
-        })
-    }
-
-    /// The round a route that just joined starts: it learns its keys, or
-    /// that it waits, before its first edit.
-    fn join_round(&mut self) -> KeyRound {
-        self.restart();
-        KeyRound {
-            all: !self.pushed,
-            waiting: true,
-            routes: std::mem::take(&mut self.marked),
-        }
-    }
-
-    /// Something changed (a route joined, keys or access moved): a route
-    /// still waiting is asked again soon.
-    fn restart(&mut self) {
-        self.wait = CHANNEL_KEY_REFRESH;
-        self.arm();
-    }
-
-    fn arm(&mut self) {
-        self.timer.set(tokio::time::sleep(self.wait));
-    }
-}
-
 /// The channel-key schedule as the shovel holds it between rounds.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4561,73 +4367,6 @@ fn follow_channel_keys(
                 Err(error) => {
                     tracing::debug!(%error, "collab: the broker does not say when channel keys change; asking on a timer");
                     let _ = signals.send(KeySignal::Unpushed);
-                    return;
-                }
-            }
-        }
-    });
-}
-
-/// Follow what a Nearby Send snapshot would show on `channel` for as long
-/// as the route lives, handing the app a [`CollabEvent::NearbyTransferChanged`]
-/// after each change. The first wait (from 0) answers at once, so an app
-/// that may use Nearby Send learns its first view without asking on a
-/// timer, and learns it again after the broker comes back. The call is
-/// pending without traffic while nothing changes. The broker answers only
-/// the certified Files route; every other route stops after its first
-/// refusal.
-fn follow_nearby_transfer(channel: runtime_collab::ChannelHandle, inbound_tx: InboundBridge) {
-    tokio::task::spawn_local(async move {
-        let mut after = 0;
-        loop {
-            match channel.nearby_transfer_changed(after).await {
-                Ok(change) if change != after => {
-                    after = change;
-                    if !inbound_tx.send_durable(CollabEvent::NearbyTransferChanged) {
-                        return;
-                    }
-                }
-                Ok(_) => {
-                    tracing::warn!("collab: the broker reported unchanged Nearby Send as changed");
-                    return;
-                }
-                Err(error) => {
-                    tracing::debug!(%error, "collab: this route does not follow Nearby Send");
-                    return;
-                }
-            }
-        }
-    });
-}
-
-/// The app whose routes follow the speaker groups: only the certified
-/// Settings route is answered, so no other app spends a call on it.
-const SPEAKER_APP_ID: &str = "so.tilo.settings";
-
-/// Follow what a speaker snapshot would show for as long as the Settings
-/// route lives, handing the app a [`CollabEvent::SpeakersChanged`] after each
-/// change. The first wait (from 0) answers at once, so Settings learns its
-/// first view without asking on a timer, and learns it again after the
-/// broker comes back. The call is pending without traffic while nothing
-/// changes; a host that cannot say when its speakers change ends it after
-/// the first refusal.
-fn follow_speakers(channel: runtime_collab::ChannelHandle, inbound_tx: InboundBridge) {
-    tokio::task::spawn_local(async move {
-        let mut after = 0;
-        loop {
-            match channel.speaker_changed(after).await {
-                Ok(change) if change != after => {
-                    after = change;
-                    if !inbound_tx.send_durable(CollabEvent::SpeakersChanged) {
-                        return;
-                    }
-                }
-                Ok(_) => {
-                    tracing::warn!("collab: the broker reported unchanged speakers as changed");
-                    return;
-                }
-                Err(error) => {
-                    tracing::debug!(%error, "collab: this route does not follow speaker groups");
                     return;
                 }
             }
@@ -5256,6 +4995,7 @@ struct SdkJoinContext<'a> {
 struct SdkRoute {
     _checks: Option<super::approved_checks::Registration>,
     _moderation: Option<super::external_moderation::Registration>,
+    _attribution: Option<super::write_attribution_lane::Registration>,
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
@@ -5391,10 +5131,7 @@ async fn ensure_sdk_route(
     if encrypted {
         follow_channel_keys(channel.clone(), channel_id.clone(), key_signals.clone());
     }
-    follow_nearby_transfer(channel.clone(), inbound_tx.clone());
-    if spec.app_id == SPEAKER_APP_ID {
-        follow_speakers(channel.clone(), inbound_tx.clone());
-    }
+    change_waits::follow(&spec.app_id, &channel, inbound_tx);
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
     let ((), (), (), (), (), (), (), presence) = tokio::join!(
@@ -5443,6 +5180,12 @@ async fn ensure_sdk_route(
             error
         })
         .ok();
+    let attribution = super::write_attribution_lane::register(channel_id.clone(), channel.clone())
+        .map_err(|error| {
+            tracing::warn!(%error, "collab: write attribution lane unavailable");
+            error
+        })
+        .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
     if spec.record.is_none()
         && participant_kind == "person"
@@ -5457,6 +5200,7 @@ async fn ensure_sdk_route(
         SdkRoute {
             _checks: checks,
             _moderation: moderation,
+            _attribution: attribution,
             spec: spec.clone(),
             channel,
             presence,
@@ -5708,7 +5452,7 @@ async fn spawn_context_stream(
                     .map(|collaborator| Collaborator {
                         id: collaborator.user_id,
                         name: collaborator.display_name,
-                        colour: Collaborator::colour_from_packed(collaborator.color),
+                        colour: super::colour_from_packed(collaborator.color),
                         is_agent: collaborator.is_agent,
                         is_self: collaborator.is_self,
                         joined_at: Collaborator::joined_at_from_packed(collaborator.joined_at_ms),
@@ -9320,6 +9064,99 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
+        use runtime_identity::wire::{FRAMING, Request, Response};
+        use std::os::fd::AsFd as _;
+
+        let cluster_id = Uuid::new_v4();
+        let workspace = cluster_id.to_string();
+        let (app, mut host) = std::os::unix::net::UnixStream::pair().unwrap();
+        let expected_workspace = workspace.clone();
+        let worker = thread::spawn(move || {
+            assert!(matches!(
+                FRAMING.read_value::<_, Request>(&mut host).unwrap(),
+                Some(Request::Metadata)
+            ));
+            FRAMING
+                .write_value(
+                    &mut host,
+                    &Response::Metadata {
+                        display_name: "Ada".into(),
+                        avatar_color: [1, 2, 3],
+                        group_public_key: [4; 32],
+                        signing_public_key: [5; 32],
+                        device_certificate: Some(b"fixture".to_vec()),
+                        threshold: 1,
+                        total_shares: 1,
+                        share_index: 1,
+                    },
+                )
+                .unwrap();
+            assert!(matches!(
+                FRAMING.read_value::<_, Request>(&mut host).unwrap(),
+                Some(Request::CollaborationJoin { workspace_id }) if workspace_id == expected_workspace
+            ));
+            FRAMING
+                .write_value(&mut host, &Response::Signature(vec![7; 64]))
+                .unwrap();
+            assert!(matches!(
+                FRAMING.read_value::<_, Request>(&mut host).unwrap(),
+                Some(Request::ChannelKeys { workspace_id, app_id, record_id, known_generation })
+                    if workspace_id == expected_workspace && app_id == "notes"
+                        && record_id == "page" && known_generation == 3
+            ));
+            FRAMING
+                .write_value(
+                    &mut host,
+                    &Response::ChannelKeys {
+                        access: runtime_identity::wire::ChannelAccess::Removed,
+                        generation: 4,
+                        keys: Vec::new(),
+                    },
+                )
+                .unwrap();
+            assert!(matches!(
+                FRAMING.read_value::<_, Request>(&mut host).unwrap(),
+                Some(Request::CollaborationOp { workspace_id, app_id, record_id, unsigned_op })
+                    if workspace_id == expected_workspace && app_id == "notes"
+                        && record_id == "page" && unsigned_op == b"operation"
+            ));
+            FRAMING
+                .write_value(&mut host, &Response::Denied("role revoked".into()))
+                .unwrap();
+        });
+        let identity = runtime_identity::inherited::connect_service(app.as_fd()).unwrap();
+        let joined = sdk_join_identity_from(identity, cluster_id).unwrap();
+        assert_eq!(joined.participant_kind, "person");
+        let presentation = runtime_collab::CertifiedJoinIdentity::decode(&joined.presentation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(presentation.workspace_id, workspace);
+        assert_eq!(presentation.device_certificate, b"fixture");
+        assert_eq!(presentation.proof, [7; 64]);
+        let SdkDocumentSigner::Certified(signer) = joined.signer else {
+            panic!("an inherited identity must retain its broker signer");
+        };
+        assert_eq!(signer.device_certificate(), Some(b"fixture".as_slice()));
+        assert_eq!(signer.signing_public_key(), [5; 32]);
+        let keys = signer.channel_keys(&workspace, "notes", "page", 3).unwrap();
+        assert_eq!(keys.access, runtime_identity::wire::ChannelAccess::Removed);
+        assert_eq!(keys.generation, 4);
+        let error = signer
+            .sign_collaboration_op(&workspace, "notes", "page", b"operation")
+            .unwrap_err();
+        match error {
+            runtime_portal::NotAvailable::ConnectionFailed(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert_eq!(error.to_string(), "role revoked");
+            }
+            other => panic!("expected the broker refusal, got {other}"),
+        }
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn host_connector_handoff_fails_closed_without_fallback() {
         // Case `host_connector_failure_is_consumed_once_without_inherited_fallback`.
         {
@@ -10848,53 +10685,6 @@ mod tests {
         });
         drop(manager);
         thread.join().unwrap();
-    }
-
-    /// The timer only covers routes still waiting for keys while the broker
-    /// pushes changes, backing off while nothing changes; a change asks at
-    /// once and starts the backoff over. Without pushes, every route is
-    /// asked every second.
-    #[test]
-    fn key_schedule_polls_only_what_is_not_pushed() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap();
-        let _entered = runtime.enter();
-        let mut schedule = KeySchedule::new();
-        assert!(
-            !schedule.timed(false),
-            "routes holding keys are never polled while changes are pushed"
-        );
-        assert!(schedule.timed(true), "a waiting route is polled");
-        let mut waits = vec![schedule.wait];
-        for _ in 0..6 {
-            let round = schedule.timer_round();
-            assert!(round.waiting && !round.all, "{round:?}");
-            waits.push(schedule.wait);
-        }
-        assert_eq!(
-            waits,
-            [1, 2, 4, 8, 16, 30, 30].map(Duration::from_secs),
-            "waiting routes back off to the longest wait"
-        );
-
-        schedule.note(KeySignal::Changed("route".into()));
-        assert_eq!(schedule.wait, CHANNEL_KEY_REFRESH, "a change starts over");
-        let round = schedule.marked_round().expect("the changed route asks now");
-        assert!(!round.all && !round.waiting);
-        assert_eq!(round.routes.into_iter().collect::<Vec<_>>(), ["route"]);
-        assert_eq!(schedule.marked_round(), None, "asked once");
-
-        schedule.note(KeySignal::Unpushed);
-        assert!(
-            schedule.timed(false),
-            "without pushes, every route is polled"
-        );
-        for _ in 0..3 {
-            assert!(schedule.timer_round().all);
-            assert_eq!(schedule.wait, CHANNEL_KEY_REFRESH, "every second");
-        }
     }
 
     #[test]
@@ -12666,7 +12456,7 @@ mod tests {
             // The frame loop keeps calling these while connecting. With no
             // acknowledged route nothing is queued behind the connection.
             assert!(!mgr.send(CollabRequest::Presence {
-                key: PresenceKey::local_surface_pointer(),
+                key: crate::presence::local_surface_pointer(),
                 payload: PresencePayload::Arrived,
             }));
             assert!(mgr.poll().is_empty());

@@ -15,9 +15,13 @@
  * - never for anything else. Collaborators' and agents' windows open on
  *   their own strips, so they never move this person's focus or URL.
  * Back, Forward and a hand-edited fragment parse the URL and show its
- * target without writing history. The history state is only a page
+ * target without writing history, once: the browser announces such a move
+ * twice when the fragment changed (popstate, then hashchange), and showing
+ * it again would run the target's view action a second time. The history state is only a page
  * generation key: the URL is the whole truth, so reload, Back and a pasted
- * link take the same path.
+ * link take the same path. Showing a link may name what it opened in the
+ * address (the page replaces a link to a view with the window that view is
+ * in), so the URL is read again after showing it.
  *
  * The route is parsed and written by the runtime's Rust grammar (`link`,
  * `{parse(url), format(route)}`); this module never reads a route itself.
@@ -54,7 +58,13 @@ export function startRouter({
   let focusedAt = null;
   const generation = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let current = initial;
+  // The address this page last wrote or showed: the second announcement of
+  // one move finds it there already.
+  let followed = null;
   let stopped = false;
+  // The URL this page last wrote, so showing the link the person was on
+  // again is not taken for something they opened.
+  let written = null;
   let knownTabs = null;
   // While the router itself shows a route, the windows it opens are its
   // own doing: that history entry is written once, by the router.
@@ -73,11 +83,14 @@ export function startRouter({
     if (how === 'push' && url !== location.href) history.pushState({tilo: generation}, '', url);
     else if (url !== location.href) history.replaceState({tilo: generation}, '', url);
     if (how !== 'replace') focusedAt = null;
+    written = url;
     current = route;
+    followed = location.href;
   }
 
   async function follow() {
-    if (stopped) return;
+    if (stopped || location.href === followed) return;
+    followed = location.href;
     let route;
     try {
       route = link.parse(location.href);
@@ -94,6 +107,17 @@ export function startRouter({
     focusedAt = null;
     try {
       await quietly(route);
+    } catch (error) {
+      onError(error);
+      return;
+    }
+    // Showing the link may have named what it opened (`router.replace`), and
+    // `current` was read before it did: the URL is the whole truth, so it is
+    // read again here, and never overwritten by the windows the router itself
+    // opened.
+    if (stopped || location.href !== written) return;
+    try {
+      current = link.parse(location.href);
     } catch (error) {
       onError(error);
     }

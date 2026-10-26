@@ -236,10 +236,16 @@ impl ExtensionHost {
                 } else {
                     // A failed load is not asked again until something changes.
                     self.asked.remove(&wanted.id);
-                    update.notice = Some(format!(
-                        "{} could not be turned on: {}",
-                        wanted.name,
-                        failure(body)
+                    // The engine's reason is for the log; the person is told
+                    // what to do.
+                    tracing::warn!(
+                        extension = %wanted.name,
+                        reason = %failure(body),
+                        "the engine did not load an extension"
+                    );
+                    update.notice = Some(crate::CATALOG.t_args(
+                        "browser-extension-load-failed",
+                        &[("name", ui::i18n::ArgValue::Text(wanted.name.clone()))],
                     ));
                 }
             }
@@ -383,7 +389,17 @@ mod tests {
             now,
         );
         assert!(!update.changed);
-        assert!(update.notice.unwrap().contains("Manifest file is missing"));
+        assert_eq!(
+            update.notice.as_deref(),
+            Some(
+                format!(
+                    "Extension {} could not be turned on. Remove it and add it again.",
+                    id('c')
+                )
+                .as_str()
+            ),
+            "the person is told what to do, not the engine's reason"
+        );
         host.reconcile(&[wanted(&id('c'))], &[], now);
         assert_eq!(host.take_outbox().len(), 1, "asked again after a failure");
 

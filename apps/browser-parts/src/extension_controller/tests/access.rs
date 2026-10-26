@@ -106,6 +106,7 @@ fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
         permissions: vec!["tabs".into()],
         hosts: vec!["https://*/*".into()],
         scriptable: vec!["<all_urls>".into()],
+        framed: vec!["<all_urls>".into()],
         token: Some("a".repeat(48)),
         commands: Some(shortcuts.clone()),
         ..toolbar::Access::default()
@@ -135,6 +136,7 @@ fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
                 permissions: Vec::new(),
                 hosts: Vec::new(),
                 scriptable: Vec::new(),
+                framed: Vec::new(),
                 token: extensions::manager_token(&manager),
                 commands: None,
             },
@@ -143,6 +145,7 @@ fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
                 permissions: vec!["tabs".into()],
                 hosts: vec!["https://*/*".into()],
                 scriptable: vec!["<all_urls>".into()],
+                framed: vec!["<all_urls>".into()],
                 token: Some("a".repeat(48)),
                 commands: Some(shortcuts.clone()),
             }
@@ -175,5 +178,142 @@ fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
         Some(&WebViewCommand::ExtensionForget {
             id: "reader".into()
         })
+    );
+}
+
+#[test]
+fn the_person_sees_and_revokes_what_an_extension_was_allowed_later() {
+    use ui::framework::HostDelivery as _;
+    let window = ui::webview::test_engine::TestEngine::new();
+    let shared: SharedEngine = window.clone();
+    let profile = tempfile::tempdir().unwrap();
+    let path = profile.path().join("permit");
+    std::fs::create_dir(&path).unwrap();
+    std::fs::write(
+        path.join("manifest.json"),
+        r#"{"manifest_version":3,"name":"Permit","version":"1","permissions":["storage"],
+        "optional_permissions":["tabs","alarms"],
+        "optional_host_permissions":["https://*.example.org/*"]}"#,
+    )
+    .unwrap();
+    let info = ExtensionInfo {
+        id: "permit".into(),
+        name: "Permit".into(),
+        version: "1".into(),
+        manifest_version: 3,
+        description: String::new(),
+        permissions: Vec::new(),
+        path,
+    };
+    let permit = Installed::read(&info, true, false).unwrap();
+    let id = permit.id.clone();
+    let set = |permissions: &[&str], origins: &[&str]| ExtensionPermissionSet {
+        permissions: permissions.iter().map(|&entry| entry.to_owned()).collect(),
+        origins: origins.iter().map(|&entry| entry.to_owned()).collect(),
+    };
+    let mut controller = ExtensionController::new(true);
+    controller.infos = vec![info];
+    controller.installed = vec![permit];
+    let row_text = |controller: &ExtensionController| {
+        let rows = controller.library_rows(|_| true);
+        let row = ui::widget::find_test_id(rows[0].as_ref(), &format!("browser.extension.{id}"))
+            .expect("its row");
+        row.accessibility()
+            .and_then(|node| node.value)
+            .unwrap_or_default()
+    };
+    let revocable = |controller: &ExtensionController| {
+        let resource = controller.resources().remove(0);
+        let rows = controller.library_rows(|_| true);
+        (
+            resource
+                .actions
+                .iter()
+                .any(|spec| spec.id == "revoke-extension-access"),
+            ui::widget::find_test_id(rows[0].as_ref(), &format!("browser.extension.revoke.{id}"))
+                .is_some(),
+        )
+    };
+    let run_queued = |controller: &mut ExtensionController| {
+        let commands = std::mem::take(&mut *controller.commands.lock().unwrap());
+        for command in commands {
+            controller.run(command, &shared);
+        }
+    };
+    // Allowed nothing later: nothing to list or revoke.
+    assert!(!row_text(&controller).contains("Allowed later"));
+    assert_eq!(revocable(&controller), (false, false));
+    assert_eq!(
+        controller.request(&ExtensionRequest::Revoke(id.clone())),
+        Err(CATALOG.t("browser-extension-nothing-granted"))
+    );
+
+    // The person allowed it a site and its tabs later, and alarms, which
+    // Chrome asks nobody about: its row and its resource say so, in the
+    // words the question was put in.
+    let allowed = set(&["tabs", "alarms"], &["https://news.example.org/*"]);
+    controller.installed[0].access.granted = allowed.clone();
+    controller.tell_access(&shared);
+    let line =
+        "Allowed later: Read and change your data on news.example.org, Read your browsing history";
+    assert!(
+        row_text(&controller).contains(line),
+        "{}",
+        row_text(&controller)
+    );
+    assert_eq!(
+        controller.resources()[0]
+            .presentation
+            .as_ref()
+            .and_then(|presentation| presentation.preview.as_deref()),
+        Some(line)
+    );
+    assert_eq!(revocable(&controller), (true, true));
+
+    // Its row's button revokes it: the engine holds the extension to its
+    // manifest at once, and the Browser keeps that it holds none of it.
+    let mut rows = controller.library_rows(|_| true);
+    let pressed = rows[0]
+        .deliver_control(
+            ui::tilo_actions::OperationKind::Effect,
+            &format!("browser.extension.revoke.{id}"),
+            &mut automerge::AutoCommit::new(),
+            &automerge::ROOT,
+        )
+        .unwrap();
+    assert!(pressed.is_some(), "the row's button answers");
+    assert_eq!(queued(&controller), [format!("Revoke({id:?})")]);
+    let before = window.commands().len();
+    run_queued(&mut controller);
+    let optional = set(&["tabs", "alarms"], &["https://*.example.org/*"]);
+    assert_eq!(
+        window.commands()[before..],
+        [WebViewCommand::ExtensionGrants {
+            id: id.clone(),
+            optional: optional.clone(),
+            granted: set(&[], &[]),
+        }]
+    );
+    assert!(controller.installed[0].access.granted.is_empty());
+    // Told once: nothing is left to list, revoke or tell again.
+    controller.tell_access(&shared);
+    assert_eq!(window.commands().len(), before + 1);
+    assert!(!row_text(&controller).contains("Allowed later"));
+    assert_eq!(revocable(&controller), (false, false));
+
+    // An agent or a screen reader revokes it through the resource alike.
+    controller.installed[0].access.granted = allowed;
+    controller.tell_access(&shared);
+    let resource = controller.resources().remove(0);
+    invoke(&mut controller, &resource, "revoke-extension-access").unwrap();
+    let before = window.commands().len();
+    run_queued(&mut controller);
+    assert_eq!(
+        window.commands()[before..],
+        [WebViewCommand::ExtensionGrants {
+            id,
+            optional,
+            granted: set(&[], &[]),
+        }]
     );
 }

@@ -281,7 +281,13 @@ impl CaptureStudio {
                 .with_name(studio_text("widget-recording-saved"))
                 .with_live(Politeness::Polite)
         } else if self.shows_status() {
-            AccessNode::new(Role::Toolbar).with_name(output_name(self.mode))
+            // Keeping the last 30 s is not a recording of its own.
+            let name = if self.replay_active {
+                studio_text("widget-capture-keep-recent")
+            } else {
+                output_name(self.mode)
+            };
+            AccessNode::new(Role::Toolbar).with_name(name)
         } else {
             return None;
         };
@@ -332,9 +338,11 @@ impl CaptureStudio {
             // The receipt is on its way into a pin; it takes nothing more.
             Route::Receipt if self.screenshot_pin_pending => return false,
             Route::Receipt => {
-                if state.expanded == Some(true) {
-                    self.close_send_menu();
-                } else {
+                // The send menu closes with any other press on the receipt,
+                // as it does under a pointer; left open, it would outlive
+                // the receipt and take the next capture's keys.
+                self.close_send_menu();
+                if state.expanded != Some(true) {
                     self.press_receipt(at);
                 }
             }

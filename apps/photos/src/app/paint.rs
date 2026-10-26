@@ -14,19 +14,18 @@ use ui::surface;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, DateIndexMarker, DateIndexMarkerKind, EmptyState,
-    EmptyStateContent, ModalAction, ModalSpec, PropertyListFace, PropertyRow, ScrollMetrics,
-    Widget,
+    Button, ButtonFace, ButtonRole, DateIndexMarker, DateIndexMarkerKind, ModalAction, ModalSpec,
+    PropertyListFace, PropertyRow, ScrollMetrics, Widget,
 };
 use ui::widget::{ListRowFace, MediaCardFace, StatTileFace};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 
 use super::{
-    AlbumEditorHit, COLLECTION_PAGE_SIZE, CanvasState, CollectionPageHit, LibraryAnalysisHit,
-    LibraryDestination, PhotosApp, PlaceItem, PlacesHit, SELECTION_ALBUMS_PER_PAGE, SelectionHit,
-    ViewerDetails, captured_label, card_action_controls, displayed_image_rect, thumbnail_key,
-    timeline_date_label, timeline_row_height,
+    COLLECTION_PAGE_SIZE, CollectionPageHit, LibraryAnalysisHit, LibraryDestination, PhotosApp,
+    PlaceItem, PlacesHit, SELECTION_ALBUMS_PER_PAGE, SelectionHit, ViewerDetails, captured_label,
+    card_action_controls, displayed_image_rect, thumbnail_key, timeline_date_label,
+    timeline_row_height,
 };
 
 /// Coarse, bundled coastlines for the private/offline Places overview. These
@@ -197,16 +196,14 @@ impl PhotosApp {
         );
     }
 
-    /// Nothing to show in the content column: the shared empty state, with
-    /// one action to open a photograph where that is the way forward.
+    /// Nothing to show in the content column: the shared empty state the
+    /// app keeps mounted while the column is empty.
     pub(super) fn draw_empty_state(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        title: &str,
-        body: &str,
     ) {
         if let Some(empty) = &mut self.empty_state {
             empty.draw(
@@ -216,21 +213,7 @@ impl PhotosApp {
                 theme,
                 &PresenceCtx::empty(),
             );
-            return;
         }
-        EmptyState::paint(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            self.canvas_rect,
-            &EmptyStateContent {
-                icon: Some(Icon::Image),
-                illustration: None,
-                title,
-                message: Some(body),
-                action_label: None,
-                error: self.canvas_state == CanvasState::Error && !self.library_mode,
-            },
-            self.pointer,
-        );
     }
 
     pub(super) fn line_of(theme: &Theme, role: ui::TextRole) -> f64 {
@@ -516,25 +499,7 @@ impl PhotosApp {
 
         let content = self.content_frame(theme);
         if self.library_albums.is_empty() {
-            let title = tr("photos-albums-empty-title");
-            let body = tr("photos-albums-empty-body");
-            let action = tr("photos-new-album");
-            self.album_editor_hits.extend(
-                EmptyState::paint(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    self.canvas_rect,
-                    &EmptyStateContent {
-                        icon: Some(Icon::GalleryVerticalEnd),
-                        illustration: None,
-                        title: &title,
-                        message: Some(&body),
-                        action_label: Some(&action),
-                        error: false,
-                    },
-                    self.pointer,
-                )
-                .map(|rect| (AlbumEditorHit::New, rect)),
-            );
+            self.draw_empty_state(scene, transform, text_renderer, theme);
             return;
         }
 
@@ -965,8 +930,7 @@ impl PhotosApp {
         self.places_hits.clear();
         self.collection_page_hits.clear();
         if self.library_items.is_empty() {
-            let (title, body) = self.library_empty_state_text();
-            self.draw_empty_state(scene, transform, text_renderer, theme, &title, &body);
+            self.draw_empty_state(scene, transform, text_renderer, theme);
             return;
         }
         let frame = self.content_frame(theme);
@@ -1264,21 +1228,7 @@ impl PhotosApp {
         let place_clusters =
             crate::places::clusters(self.places_items.iter().map(|item| &item.photo));
         if self.places_items.is_empty() {
-            let title = tr("photos-places-empty-title");
-            let body = tr("photos-places-empty-body");
-            EmptyState::paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                self.canvas_rect,
-                &EmptyStateContent {
-                    icon: Some(Icon::Globe),
-                    illustration: None,
-                    title: &title,
-                    message: Some(&body),
-                    action_label: None,
-                    error: false,
-                },
-                self.pointer,
-            );
+            self.draw_empty_state(scene, transform, text_renderer, theme);
             return;
         }
         if self.places_list_mode {

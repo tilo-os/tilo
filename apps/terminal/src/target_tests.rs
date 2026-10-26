@@ -72,7 +72,7 @@ fn inspect_session_reports_production_open_failed_and_no_runtime_without_output(
             backend.reader = Box::new(Reader(receiver.take().expect("one open")));
             Ok(backend)
         });
-        app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+        app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
             .expect("terminal surface");
         app.settle();
         let before = *opens.borrow();
@@ -135,7 +135,7 @@ fn host_tab(
         log.borrow_mut().push((target.clone(), by));
         answer(target).map(|()| crate::inner::TerminalBackend::for_test())
     });
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .expect("the terminal surface is hosted");
     app.settle();
     opened
@@ -149,7 +149,7 @@ fn recorded(app: &App) -> Option<SessionTarget> {
 /// Drive the hosted terminal.
 fn on_tab<T>(app: &mut App, visit: impl FnOnce(&mut TerminalWidget) -> T) -> T {
     let out = app
-        .with_surface(visit)
+        .with_surface(|view: &mut crate::TerminalView| visit(view))
         .expect("the terminal surface is hosted");
     app.settle();
     out
@@ -555,7 +555,7 @@ fn attach_with(
         seen.borrow_mut().push(attach.map(str::to_owned));
         answer(target, attach)
     });
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .expect("the terminal surface is hosted");
     app.settle();
 }
@@ -789,6 +789,54 @@ fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
     );
 }
 
+/// A refused device shell is not the tab's record: restored at the next
+/// login, the tab opens where a new one would and asks nothing. A Terminal
+/// left on the refused shell put the same prompt up at every login.
+#[test]
+fn a_refused_device_shell_is_not_where_the_next_session_opens() {
+    let refuse_host = |target: &SessionTarget| {
+        if target.is_host() {
+            Err(OpenError::NeedsAllow("not allowed".into()))
+        } else {
+            Ok(())
+        }
+    };
+    let mut app = App::new().unwrap();
+    host_tab(&mut app, RecentTarget::none(), refuse_host);
+    on_tab(&mut app, |widget| {
+        widget.switch_target(&SessionTarget::Host, Requester::Person)
+    })
+    .unwrap();
+    assert_eq!(recorded(&app), Some(SessionTarget::Host));
+    let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) =
+        app.harness().take_host_intent()
+    else {
+        panic!("expected the person to be asked");
+    };
+    reply.upgrade().unwrap().borrow_mut().answer = Some(false);
+    app.settle();
+    assert!(matches!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Failed(_)
+    ));
+    assert_eq!(
+        recorded(&app),
+        Some(SessionTarget::default_environment()),
+        "the refusal hands the record back to where a new tab opens"
+    );
+
+    let mut app = app.reopen().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), refuse_host);
+    assert_eq!(
+        opened.borrow().as_slice(),
+        &[(SessionTarget::default_environment(), Requester::Person)]
+    );
+    assert!(
+        app.harness().take_host_intent().is_none(),
+        "the next login asks nothing"
+    );
+}
+
 #[test]
 fn trusted_shell_selection_enters_normal_permission_without_agent_identity_relabeling() {
     let mut app = App::new().unwrap();
@@ -828,7 +876,7 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
     let gate = allowed.clone();
     let sessions = owner_fixture_sessions(gate);
     let mut app = App::new().unwrap();
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .unwrap();
     app.settle();
     let mounted = mounted_device_shell_operation(&mut app, &O::Inspect);
@@ -859,7 +907,7 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
             ui::tilo_actions::ActionInvoker::actor("agent:helper"),
         );
         let result = app
-            .with_surface(|terminal: &mut TerminalWidget| {
+            .with_surface(|terminal: &mut crate::TerminalView| {
                 terminal.perform(crate::resource::TerminalEffect::Send {
                     text: "printf forbidden".into(),
                 })
@@ -1005,12 +1053,12 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
             .map_err(|error| OpenError::Failed(error.to_string()))
     });
     let mut app = App::new().unwrap();
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .unwrap();
     app.settle();
     let inspected = app.effect(&TerminalEffect::InspectSession).unwrap();
     let session = inspected.value.unwrap()["session"].clone();
-    app.with_surface(|terminal: &mut TerminalWidget| {
+    app.with_surface(|terminal: &mut crate::TerminalView| {
         terminal.try_write_input(b"printf 'TILO_%s\\n' OWNED_PTY_OUTPUT\r")
     })
     .unwrap()
@@ -1032,7 +1080,7 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
             && lines[index + 1..].contains(&"[Default fixture]$")
         {
             let local = app
-                .with_surface(|terminal: &mut TerminalWidget| terminal.grid_text())
+                .with_surface(|terminal: &mut crate::TerminalView| terminal.grid_text())
                 .unwrap();
             assert!(local.lines().any(|line| line == "TILO_OWNED_PTY_OUTPUT"));
             observed = true;
@@ -1040,7 +1088,7 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.try_write_input(b"exit\r"))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.try_write_input(b"exit\r"))
         .unwrap()
         .unwrap();
     wait_for_owner_shell(&mut app, session.as_str().unwrap(), true);
@@ -1071,7 +1119,7 @@ fn exiting_the_shell_closes_its_window_and_keeps_nothing_behind() {
     let window = ui::hosted_window::HostedWindow::new();
     let mut app = App::new().unwrap();
     let lent = window.clone();
-    app.with_surface(|terminal: &mut TerminalWidget| {
+    app.with_surface(|terminal: &mut crate::TerminalView| {
         terminal.show_in_window(Some(lent));
         terminal.set_sessions(bash_sessions());
     })
@@ -1104,7 +1152,7 @@ fn exiting_the_shell_closes_its_window_and_keeps_nothing_behind() {
     // A window in a process of its own closes its tab through the desktop.
     let _ = ui::shell_tabs::take_requests();
     let mut app = App::new().unwrap();
-    app.with_surface(|terminal: &mut TerminalWidget| {
+    app.with_surface(|terminal: &mut crate::TerminalView| {
         terminal.show_in_window(None);
         terminal.set_sessions(bash_sessions());
     })
@@ -1147,7 +1195,7 @@ fn the_target_picker_is_in_the_window_bar_and_the_content_has_no_chrome() {
     let window = ui::hosted_window::HostedWindow::new();
     let mut app = App::new().unwrap();
     let lent = window.clone();
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.show_in_window(Some(lent)))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.show_in_window(Some(lent)))
         .unwrap();
     let opened = host_tab(&mut app, RecentTarget::none(), |_| Ok(()));
 
@@ -1309,7 +1357,7 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
     let window = ui::hosted_window::HostedWindow::new();
     let mut app = App::new().unwrap();
     let lent = window.clone();
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.show_in_window(Some(lent)))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.show_in_window(Some(lent)))
         .unwrap();
     let keep = handed.clone();
     let up = reachable.clone();

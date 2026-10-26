@@ -278,14 +278,14 @@ fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
                 .unwrap()
                 .reactions
                 .iter()
-                .any(|r| r.emoji == "🔥" && r.reacted_by(model::ME))
+                .any(|r| r.emoji == "🔥" && r.includes(model::ME))
         };
         assert!(!reacted(&app), "m_me1 starts without my 🔥");
         // Open the add-reaction picker on the message, then pick an emoji.
         app.on_hit(
             Hit::AddReaction {
                 msg: "m_me1".into(),
-                anchor: Point::ZERO,
+                anchor: Rect::ZERO,
             },
             &mut ui::widget::Edits::lend(&mut doc),
         );
@@ -300,7 +300,7 @@ fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
         app.on_hit(
             Hit::AddReaction {
                 msg: "m_me1".into(),
-                anchor: Point::ZERO,
+                anchor: Rect::ZERO,
             },
             &mut ui::widget::Edits::lend(&mut doc),
         );
@@ -366,9 +366,11 @@ fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route() {
                 .expect("the semantic control dispatches through the door"),
         )
         .unwrap();
+        assert_eq!(action["action"], ui::tilo_resource::FIELD_EDIT, "{action}");
         assert!(
-            action["action"] == "react" || action["action"] == "unreact",
-            "{action}"
+            ["react", "unreact"].contains(&action["args"]["op"].as_str().unwrap_or_default())
+                && action["args"]["path"][2]["field"] == "reactions",
+            "a reaction is the field edit of the message's reactions: {action}"
         );
     }
 }
@@ -685,7 +687,7 @@ fn reading_position_drives_unread_state_and_the_return_to_latest_control() {
         assert!(
             app.semantic_hits().iter().any(|(_, hit, name, role, _)| {
                 matches!(hit, Hit::JumpToLatest)
-                    && name == "Jump to latest message"
+                    && name.text == "Jump to latest message"
                     && *role == ui::a11y::Role::Button
             }),
             "the return route is a labelled semantic button, not pointer-only chrome"

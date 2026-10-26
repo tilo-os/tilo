@@ -85,12 +85,9 @@ impl WordProcessorWidget {
         // The page's column: what the docked outline and inspector leave.
         let canvas_left = column.x0;
         let canvas_right = column.x1.max(canvas_left + 1.0);
-        // Reserve + draw the crash-recovery banner (when staged) and the Find
-        // bar (when open), stacked at the top of the page's column. The find bar
-        // is measured against the canvas width it will span first, so the
-        // band it reserves (one row, or two when the controls would run off
-        // the window) is the band it paints.
-        let find_h = self.draw_find_bar(
+        // Reserve + draw the failed-save banner (when shown) at the top of
+        // the page's column.
+        let banner_h = self.draw_save_error(
             scene,
             transform,
             text_renderer,
@@ -102,7 +99,7 @@ impl WordProcessorWidget {
             },
         );
         // Reserve the horizontal ruler band (when on) out of the canvas top, below
-        // the find bar. It is drawn with the *unscaled* `transform` so it stays a
+        // the banner. It is drawn with the *unscaled* `transform` so it stays a
         // fixed-height strip while the page scrolls/zooms; its tick + marker
         // positions are mapped through the zoom so they track the page edge.
         let ruler_h = if self.view.ruler_visible {
@@ -112,7 +109,7 @@ impl WordProcessorWidget {
         };
         let canvas = Rect::new(
             canvas_left,
-            full.y0 + find_h + ruler_h,
+            full.y0 + banner_h + ruler_h,
             canvas_right,
             layout_bar_top,
         );
@@ -142,6 +139,8 @@ impl WordProcessorWidget {
         // unscaled canvas. Scaling about the canvas centre then keeps both page
         // edges visible in auto-fit mode instead of pinning the left edge and
         // clipping the right.
+        self.page_margin_scale =
+            super::pagination::margin_scale(page_w, mobile_page, accessible_page);
         let page_x = f64::midpoint(canvas.x0, page_right) - page_w / 2.0;
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
@@ -151,7 +150,7 @@ impl WordProcessorWidget {
         // page edge geometry just computed, plus the caret paragraph's indent +
         // tab stops from the cached block views.
         if ruler_h > 0.0 {
-            let band = Rect::new(canvas_left, full.y0 + find_h, canvas_right, canvas.y0);
+            let band = Rect::new(canvas_left, full.y0 + banner_h, canvas_right, canvas.y0);
             self.draw_ruler(scene, transform, text_renderer, theme, band, page_x, page_w);
         } else {
             self.ruler.clear();
@@ -875,7 +874,7 @@ impl WordProcessorWidget {
         }
 
         // Find-match highlights (under the text).
-        if self.find.is_open() {
+        if self.find.is_active() {
             let ranges: Vec<(usize, usize)> = self
                 .find
                 .matches()
@@ -1276,10 +1275,12 @@ impl WordProcessorWidget {
     /// offset, the overflow and the visible window share one unit, so page
     /// zoom cannot distort the thumb.
     pub(super) fn canvas_scroll_metrics(&self) -> ui::widget::ScrollMetrics {
+        // The room before the start that the window's search opens counts
+        // as content, so the offset is never negative.
         ui::widget::ScrollMetrics::new(
-            self.max_scroll + self.scroll_viewport,
+            self.max_scroll + self.find_inset + self.scroll_viewport,
             self.scroll_viewport,
-            self.scroll_y,
+            self.scroll_y + self.find_inset,
         )
     }
 

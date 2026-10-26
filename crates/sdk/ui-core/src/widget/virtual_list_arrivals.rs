@@ -1,6 +1,7 @@
 //! A model's rows on their way, in a [`VirtualList`]: what each row's
 //! slot holds while it arrives, and asking again for one that failed.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use super::{ListModel, MountedRowState, VirtualList};
@@ -34,25 +35,11 @@ impl<M: ListModel> VirtualList<M> {
     /// slot of a pending row (its placeholder paints over it), or a failed
     /// row's reason with a retry when the model offers one.
     pub(super) fn arriving_row(&self, index: usize, state: &MountedRowState) -> Element {
-        match state {
-            MountedRowState::Failed(message, retries) => {
-                let reason = crate::widget::Text::new(message).dimmed();
-                if !retries {
-                    return Box::new(reason);
-                }
-                let asked = Rc::clone(&self.retry_asked);
-                Box::new(crate::row![
-                    reason,
-                    crate::widget::Button::new("arriving.retry", "arriving-retry")
-                        .on_view(move || asked.set(Some(index))),
-                ])
-            }
-            MountedRowState::Ready | MountedRowState::Pending => RowReserve::element(
-                self.viewport
-                    .item_height(index)
-                    .unwrap_or_else(|| self.viewport.estimated_height()),
-            ),
-        }
+        let height = self
+            .viewport
+            .item_height(index)
+            .unwrap_or_else(|| self.viewport.estimated_height());
+        arriving_row(index, state, &self.retry_asked, height)
     }
 
     /// Ask the model again for the failed row whose retry was pressed, if
@@ -79,5 +66,32 @@ impl<M: ListModel + 'static> VirtualList<M> {
                 crate::widget::Widget::for_each_child(self, visit);
             }))
             .min()
+    }
+}
+
+/// Row `index`'s slot while it is not ready, `height` tall: the reserved
+/// slot of a pending row, or a failed row's reason with a retry that sets
+/// `retry_asked` when the model offers one. Not generic over the model, so
+/// the toolkit builds it once for every list.
+fn arriving_row(
+    index: usize,
+    state: &MountedRowState,
+    retry_asked: &Rc<Cell<Option<usize>>>,
+    height: f64,
+) -> Element {
+    match state {
+        MountedRowState::Failed(message, retries) => {
+            let reason = crate::widget::Text::new(message).dimmed();
+            if !retries {
+                return Box::new(reason);
+            }
+            let asked = Rc::clone(retry_asked);
+            Box::new(crate::row![
+                reason,
+                crate::widget::Button::new("arriving.retry", "arriving-retry")
+                    .on_view(move || asked.set(Some(index))),
+            ])
+        }
+        MountedRowState::Ready | MountedRowState::Pending => RowReserve::element(height),
     }
 }

@@ -8,6 +8,7 @@ fn shortcut(id: &str) -> Shortcut {
         name: id.into(),
         inputs: Vec::new(),
         steps: Vec::new(),
+        step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
         triggers: Vec::new(),

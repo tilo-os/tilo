@@ -56,6 +56,7 @@ want, not only for the value you hold.
 | `Collection<T>` | items with stable `Id`s and order keys | per item; moves keep identity; one id made on two replicas reads as one item, field by field |
 | `Grid<T>` | rows and columns with stable ids, sparse cells | per cell; inserting a row keeps every cell's identity; saving and comparing a copy visit only the rows of cells changes copied |
 | `Bytes` | content-addressed blob reference; small values inline | last writer wins |
+| `Reactions` | map of each reaction, keyed by emoji and who reacted | per person and emoji; changed only by `react`/`unreact`, which record whoever invokes them |
 | `Outbox<T>` | queue of entries settled by the owning device | see §2.4 |
 | `Option<T>`, `Box<T>`, nested `Model` structs | as the inner type | as the inner type |
 | enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, its fields beside it | per field of one variant; a change of variant is last writer wins |
@@ -74,8 +75,8 @@ text it wrote itself.
 
 - `#[model(label)]` names the item: history, search, agents and item resources
   use it ("Deploy script"). One per type. `#[model(label = "first last")]` on
-  the type names it by several fields joined ("Ada Lovelace"), falling back to
-  the `#[model(label)]` field when they are empty.
+  the type names it by several fields joined ("Ada Lovelace"), each named once,
+  falling back to the `#[model(label)]` field when they are empty.
 - `#[model(readonly)]` publishes the field for reading but offers no field edit;
   only verbs change it.
 - `#[model(unit)]` stores the field as its own storage unit (for a
@@ -141,6 +142,7 @@ supports:
 | `String`, `RichText` | `splice`, `replace`; `RichText` also marks and blocks |
 | `Counter` | `add` |
 | `Set<T>` | `insert`, `remove` |
+| `Reactions` | `react`, `unreact`: the invoker's own, so a `readonly` field or collection takes them too; the Commenter role may make them |
 | `Collection<T>` | `insert`, `remove`, `move_to` |
 | `Grid<T>` | `set_cell`, `insert_row`, `insert_column`, `remove_row`, `remove_column` |
 | `Option<T>` | `set(None)`, and the inner type's edits when present |
@@ -210,13 +212,16 @@ impl Snippets {
   It is published with the item's id as its first parameter (`snippet`), and
   on each item. A record with an invariant of its own (`#[model(check)]` on
   the record) or a `queue` hook is still read whole for it.
-- `destructive` asks for confirmation from people; it does not change the kind.
+- `destructive` marks a deletion or overwrite; it does not change the kind.
+  An undoable one (the document alone, or a compensated outside change) runs
+  at once and offers Undo; only one Undo cannot take back asks people first.
 
 The resource attribute covers what used to need a hand-written `Resource`:
 `initialize` (deterministic genesis), `seed` (first content, by the creator,
 nobody's undo step), `available` (state-dependent availability of verbs),
 `children` (derived child resources, §2.5), `search` and `scopes`,
-`read_content`, `views`.
+`read_content`, `facts` (a compact summary to check the record against a
+request, published as the `facts` view), `views`.
 
 ### 2.3 How the kind is derived
 
@@ -226,7 +231,7 @@ nobody's undo step), `available` (state-dependent availability of verbs),
 - A verb that takes `&mut Outbox<T>` records an outside consequence: **Outside**.
 - An effect (`#[derive(Effect)]`) is **Outside**, or **Read** when it is a view
   effect (`#[effect(view)]`).
-- The `read_content` and view operations are **Read**.
+- The `read_content`, `facts` and view operations are **Read**.
 
 A lint covers what types cannot: no clock, randomness, file, network or process
 access inside a verb, because verbs run again on every replica. The kind

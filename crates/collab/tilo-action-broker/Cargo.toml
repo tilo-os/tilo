@@ -24,7 +24,7 @@ launcher = { path = "../../packaging/launcher" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 parking_lot.workspace = true
 automerge.workspace = true
-runtime-identity = { path = "../../runtime/runtime-identity" }
+runtime-identity = { package = "tilo-identity-client", path = "../../runtime/tilo-identity-client" }
 registry-types = { path = "../../packaging/registry-types" }
 # The host's pinned registry configuration, never an app-supplied trust anchor.
 app-cli = { path = "../../packaging/app-cli" }
@@ -73,6 +73,7 @@ tracing.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 [dev-dependencies]
+runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 # The disclosure regression reaches the real verifier and durable registry store over HTTPS.
 registry-server = { path = "../../packaging/registry-server" }
 rcgen.workspace = true
@@ -88,6 +89,8 @@ tilo-joined-room = { path = "../tilo-joined-room", features = ["test-support"] }
 iroh.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+# A test holds its own thread's wall time; other tests keep the real one.
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 word-processor = { path = "../../../apps/word-processor" }
 # Mount the production Chat factory against the certified private owner channel.
 chat = { path = "../../../apps/chat" }

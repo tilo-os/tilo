@@ -29,7 +29,6 @@ pub use broker_services::decide_receipt_against_surfaces;
 pub(crate) mod activity_provider;
 pub mod add_app_sheet;
 pub(crate) mod agent_quick_composer;
-pub mod arrival_line;
 pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;
@@ -51,6 +50,7 @@ pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
 pub mod crash_notice;
+pub mod crash_records;
 pub mod desk_widgets;
 pub mod desktop_backdrop;
 pub(crate) mod desktop_commands;
@@ -86,6 +86,7 @@ pub mod durable_writer;
 pub mod emoji_recents;
 pub mod fabric_clock;
 pub(crate) mod feedback_entry;
+pub(crate) mod feedback_pick;
 mod file_picker_overlay;
 pub mod fixed_chords;
 pub mod fixture_inputs;
@@ -112,6 +113,7 @@ pub(crate) mod identity_admin;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
+pub(crate) mod input_sources;
 pub(crate) mod invite_policy;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
@@ -119,6 +121,7 @@ pub(crate) mod launch_readiness;
 pub mod launcher;
 pub mod link_open;
 pub mod live_activities;
+pub(crate) mod live_embeds;
 pub mod live_presence;
 pub mod live_waves;
 pub(crate) mod local_audio_graph;
@@ -137,7 +140,6 @@ pub mod network;
 pub mod notification;
 pub mod notification_history;
 pub mod now_playing;
-pub mod opening_card;
 pub mod osd;
 pub mod output_scene;
 pub mod overlay_host;
@@ -149,6 +151,7 @@ pub mod peer_presence;
 pub mod peer_sync_overlay;
 pub mod peer_view;
 pub mod peer_windows;
+pub mod pending_window;
 pub mod persist;
 pub(crate) mod person_quick_composer;
 pub mod personal_continuity;
@@ -158,6 +161,7 @@ pub mod personal_tethering_runtime;
 pub mod personal_workspaces;
 pub mod physical_gamepad;
 pub mod placement;
+pub mod pointer_readiness;
 pub mod portal_dialog;
 mod power_menu;
 pub mod present;
@@ -409,7 +413,7 @@ fn try_to_ui_tile_for_tab(
             ),
         },
         // Its instance here is starting, or being installed first: the
-        // place it will open in, moving until it does.
+        // place it will open in, where its window arrives.
         ShellTile::PeerWindow {
             label,
             note,
@@ -419,11 +423,11 @@ fn try_to_ui_tile_for_tab(
             || tab.is_some_and(crate::shell::peer_windows::installing) =>
         {
             let wait = match tab.and_then(crate::shell::peer_windows::installing_package) {
-                Some((package_id, app)) => opening_card::Wait::Installing { package_id, app },
-                None => opening_card::Wait::Opening,
+                Some((package_id, _)) => pending_window::Wait::Install { package_id },
+                None => pending_window::Wait::Start,
             };
             UiTile::App(Box::new(
-                opening_card::OpeningCard::new(label, wait).for_tab(tab),
+                pending_window::PendingWindow::new(label, wait).for_tab(tab),
             ))
         }
         // A legacy window runs only on its host; until a stream of it is
@@ -466,7 +470,7 @@ fn try_to_ui_tile_for_tab(
             label,
             note,
         } if tab.is_some() && !note.is_empty() && note != peer_windows::OPENING => {
-            UiTile::App(Box::new(app_notice_card::AppNoticeCard::retry(
+            UiTile::App(Box::new(app_notice_card::ReopenCard::new(
                 tab.unwrap_or_default(),
                 app_id,
                 label,
@@ -474,23 +478,16 @@ fn try_to_ui_tile_for_tab(
             )))
         }
         // Asked for (a launch, a restore) and not yet arrived: the place
-        // it will open in, moving until it does.
+        // it will open in, where its window arrives.
         ShellTile::LocalApp {
             app_id,
             label,
             note,
-        } if note.is_empty() || note == peer_windows::OPENING => {
-            let wait = if note.is_empty() {
-                opening_card::Wait::Restoring
-            } else {
-                opening_card::Wait::Opening
-            };
-            UiTile::App(Box::new(
-                opening_card::OpeningCard::new(label, wait)
-                    .for_tab(tab)
-                    .for_package(app_id),
-            ))
-        }
+        } if note.is_empty() || note == peer_windows::OPENING => UiTile::App(Box::new(
+            pending_window::PendingWindow::new(label, pending_window::Wait::Start)
+                .for_tab(tab)
+                .for_package(app_id),
+        )),
         ShellTile::PeerWindow { label, note, .. } | ShellTile::LocalApp { label, note, .. } => {
             UiTile::Notice {
                 title: label.clone(),

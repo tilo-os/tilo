@@ -971,6 +971,20 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
     accessibility_focus_routes_through_shifted_overlay_indices();
 }
 
+/// A harness whose chrome acts as one explicit person, so who owns a room
+/// and who the chrome asks for are the same answer whatever identity another
+/// test of the process puts in the environment meanwhile.
+fn build_fixture_harness() -> Harness {
+    let chrome = ChromeState::new_with_fixture_handle(
+        WorkspaceTree::bootstrap_demo().shared(),
+        crate::shell::hosted_inputs::HostedTileInputs::fixture()
+            .expect("deterministic hosted inputs"),
+    );
+    let host = ShellOverlayHost::with_fixture_content(Box::new(StubContent::new()))
+        .with_chrome(chrome.clone());
+    build_harness_with_host(host, chrome)
+}
+
 fn build_harness_with_host(
     mut host: ShellOverlayHost,
     chrome: crate::shell::chrome_state::Chrome,
@@ -1840,7 +1854,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// footer action. Joining another workspace is in the workspace menu,
     /// and what happened here is History's.
     fn collaborator_dropdown_offers_invite_and_nothing_else_in_its_footer() {
-        let mut h = build_harness();
+        let mut h = build_fixture_harness();
         let _room = host_active_room(&h.chrome);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
@@ -1859,7 +1873,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// before minting, since an unnamed token leaves the host's own roster
     /// reading a bare peer id once the guest arrives.
     fn collaborator_invite_button_asks_who_before_minting() {
-        let mut h = build_harness();
+        let mut h = build_fixture_harness();
         let _room = host_active_room(&h.chrome);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
@@ -1892,7 +1906,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// offer to. The room is held and governed here first so peer-sync is the *only*
     /// capability missing.
     fn collaborator_actions_are_absent_when_peer_sync_is_off() {
-        let mut h = build_harness();
+        let mut h = build_fixture_harness();
         let _room = host_active_room(&h.chrome);
         assert!(!h.chrome.borrow().peer_sync_enabled);
         h.chrome.borrow_mut().overlays.collaborators = true;
@@ -1910,15 +1924,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// paint — a rect that outlives its button is invisible but still
     /// clickable.
     fn collaborator_actions_are_absent_without_the_invite_capability() {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let chrome = ChromeState::new_with_fixture_handle(
-            tree.shared(),
-            crate::shell::hosted_inputs::HostedTileInputs::fixture()
-                .expect("deterministic hosted inputs"),
-        );
-        let host = ShellOverlayHost::with_fixture_content(Box::new(StubContent::new()))
-            .with_chrome(chrome.clone());
-        let mut h = build_harness_with_host(host, chrome);
+        let mut h = build_fixture_harness();
         {
             // Owned by somebody else, and the local user holds no grant
             // here — the ordinary position of a guest in a room.
@@ -1944,7 +1950,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// The rects must not survive the dropdown closing, or empty space
     /// where a button used to be stays clickable.
     fn collaborator_action_rects_are_cleared_when_the_dropdown_closes() {
-        let mut h = build_harness();
+        let mut h = build_fixture_harness();
         let _room = host_active_room(&h.chrome);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
@@ -1973,7 +1979,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 fn adopt_rooms(h: &Harness) {
     let st = h.chrome.borrow();
     st.tree_mut()
-        .own_workspaces_for_test(crate::shell::state::local_user_id_for_room);
+        .own_workspaces_for_test(|room| st.local_user_for_room(room));
 }
 
 /// The active workspace's room held as one this device's own host governs,
@@ -2603,11 +2609,11 @@ fn roster_follow_fixture() -> Harness {
 #[test]
 fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("painted Ada Follow");
     {
         let chrome = h.chrome.borrow_mut();
@@ -2637,7 +2643,7 @@ fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
 #[test]
 fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -2664,7 +2670,7 @@ fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
 #[test]
 fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -2690,7 +2696,7 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     assert!(
         h.host
             .collaborators_overlay
-            .accessibility_rect_for_path(&[2])
+            .accessibility_rect_for_path(&[3])
             .is_none()
     );
 
@@ -2701,11 +2707,11 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
         h.host.followed_peer.is_none(),
         "reopening must not resurrect old focus"
     );
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Bob Follow after reordering");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -2734,7 +2740,7 @@ fn people_completed_click_defers_follow_until_release() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("painted Ada Follow");
     let mods = Modifiers::default();
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
@@ -2755,7 +2761,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
         let target = h
             .host
             .collaborators_overlay
-            .accessibility_rect_for_path(&[2])
+            .accessibility_rect_for_path(&[3])
             .expect("painted Ada Follow");
         let mods = Modifiers::default();
         assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
@@ -2794,7 +2800,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
 #[test]
 fn people_completed_submit_repeat_cannot_resume_follow_after_local_handoff() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let mods = Modifiers::default();
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
@@ -2879,7 +2885,7 @@ fn people_completed_cancel_survives_dismissal_reopen_and_a_fresh_click() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -2902,7 +2908,7 @@ fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -2939,7 +2945,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -2948,7 +2954,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     let moved = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada after resize");
     assert_ne!(target, moved);
     assert!(pump(&mut h, &cursor_moved_at(moved.center()), mods));

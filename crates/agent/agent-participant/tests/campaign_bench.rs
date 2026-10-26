@@ -105,6 +105,7 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             // Every app a browser mounts, and Mail, which only an agent's
             // worker holds.
             catalogue: Some(Arc::new(AppCatalogue::native)),
+            feedback_reviewer: None,
         },
     )
     .await

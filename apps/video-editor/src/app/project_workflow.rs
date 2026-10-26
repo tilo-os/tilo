@@ -464,10 +464,10 @@ impl VideoEditorApp {
         if self.export_job.is_some() {
             return; // one render at a time
         }
-        if let Some(reason) = crate::export::unavailable_reason() {
-            self.export_status = ExportStatus::Failed {
-                reason: reason.to_string(),
-            };
+        // The same door the button is painted from: a render that cannot run
+        // says why in the dialog, and never asks for an output file first.
+        if let Some(reason) = self.export_blocker() {
+            self.export_status = ExportStatus::Failed { reason };
             return;
         }
         let name = self.export.suggested_filename(&self.project.name);
@@ -546,7 +546,38 @@ impl VideoEditorApp {
     /// button from this and the press path gates on it, so the offer and the
     /// behaviour cannot disagree — which they did: the dialog said "Export
     /// needs the `GStreamer` build" and put an enabled Export button under it.
+    ///
+    /// Footage that is not on this device refuses the offer for the same
+    /// reason: the render would stop before its first frame, naming the source
+    /// it never read, and a person does not need to choose an output file to
+    /// learn that a clip is still arriving.
     pub(super) fn export_is_offered(&self) -> bool {
-        crate::export::unavailable_reason().is_none() && !self.export_running()
+        crate::export::unavailable_reason().is_none()
+            && !self.export_running()
+            && self.export_blocker().is_none()
+    }
+
+    /// What stands between this project and a render, in the person's words,
+    /// or `None` when Export can run. The dialog's status line shows it while
+    /// idle and the Export button is withdrawn, so the two cannot disagree.
+    pub(super) fn export_blocker(&self) -> Option<String> {
+        if let Some(reason) = crate::export::unavailable_reason() {
+            return Some(reason.to_string());
+        }
+        let missing = crate::export::unreadable_sources(&self.project);
+        if missing.is_empty() {
+            return None;
+        }
+        let names: Vec<&str> = missing.iter().map(|(name, _)| name.as_str()).collect();
+        let refers = if names.len() == 1 {
+            "refers to"
+        } else {
+            "refer to"
+        };
+        let it = if names.len() == 1 { "it" } else { "them" };
+        Some(format!(
+            "This cut {refers} {}. Bring {it} onto this device first.",
+            names.join(", "),
+        ))
     }
 }

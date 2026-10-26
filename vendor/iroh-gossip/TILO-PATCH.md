@@ -1,9 +1,9 @@
-# Tilo patches: stop topic timers that have no work, reach every neighbour, broadcast only with one
+# Tilo patches: stop topic timers that have no work, reach every neighbour, broadcast only with one, share connections
 
 crates.io `iroh-gossip` 0.101.0, verbatim (archive SHA-256
 `4e1dc4b05f73e7a1b9e83b531eb63c3fd671b0af3aeb13b59c546dd7ca747515`, upstream
 commit `2ce78afe09d89d41d123f28eac19bdc831609cc8`) but for the changes below,
-marked `TILO PATCH` in `src/proto/{plumtree,hyparview}.rs`, and its `[lib]` building an
+marked `TILO PATCH` in `src/proto/{plumtree,hyparview}.rs` and `src/net.rs`, and its `[lib]` building an
 `rlib` only (last section). 0.101.0 is the newest
 release. Pinned by `crates/system/fs/tests/iroh_idle.rs`
 (`gossip_sweeps_a_topic_cache_only_while_it_holds_messages`) and the
@@ -77,6 +77,35 @@ last sweep, as before), and while it holds none waits for `add` to wake it.
 Addresses are kept and evicted as before; the lone idle hosting device's
 gate in the shell (`one_host_tests::idle_host`) holds it.
 
+## The application shares gossip's connections (`src/net.rs`)
+
+Gossip owns one connection per neighbour, which it dials or accepts, and
+exposed none of them. An application that needed to reach the same peers
+outside a topic (Tilo's personal fabric between one person's devices) had to
+open a second connection on its own ALPN, with its own keep-alives and idle
+timers on both ends: an idle pair of linked devices woke about 15.5 times a
+second instead of 12.
+
+Two additions let the application use gossip's connection instead:
+
+- `Builder::connections(sender)` hands every connection gossip starts to use,
+  dialled or accepted, to `sender` (an unbounded channel; there is one send
+  per connection, from the actor, which must never wait on the application).
+- `Gossip::connection(peer)` returns the connection gossip currently sends
+  to `peer` on: the newest, as `PeerState::accept_conn` picks, until it
+  closes. It is recorded in `handle_connection`, before anything arriving on
+  the connection is handled, so any peer an event names as a neighbour has
+  one, including a peer that restarted and reconnected while the old
+  connection lingers.
+
+Gossip opens and accepts unidirectional streams only, so the application
+carries its own protocol on bidirectional streams, which gossip never
+touches. With neither addition used, nothing changes. Covered by
+`gossip_shares_its_connection_with_the_application` in `src/net.rs`, and in
+Tilo by `a_linked_pair_keeps_one_connection_for_gossip_and_personal_fabric`
+and `a_restarted_device_hears_its_siblings_fabric_at_once`
+(`crates/session/shell/src/network/actor.rs`).
+
 ## Built as an rlib only (`Cargo.toml`)
 
 Upstream also builds a `cdylib`, and Cargo leaves the hash out of
@@ -102,3 +131,11 @@ opened):
 > its whole life. Proposed: arm it when the first entry is inserted into
 > `cache`/`received_messages` (tracked by a pending flag), and re-arm in
 > `on_evict_cache_timer` only while either is non-empty.
+>
+> **Let an application share gossip's connections.** Gossip keeps one
+> connection per neighbour but exposes none, so an application talking to the
+> same peers opens a second connection with its own keep-alives. Proposed:
+> `Builder::connections(UnboundedSender<Connection>)`, handed every connection
+> gossip starts to use, and `Gossip::connection(peer) -> Option<Connection>`,
+> the one gossip currently sends on. Gossip uses unidirectional streams only;
+> applications use bidirectional ones on the same connection.

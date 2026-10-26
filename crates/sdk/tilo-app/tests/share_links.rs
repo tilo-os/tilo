@@ -116,8 +116,8 @@ impl ActionHost for Host {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        Ok(())
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 
@@ -183,6 +183,7 @@ fn expected(app: &TestApp<NotebookApp>, page: &str, mode: Mode, view: Option<&st
                 span,
             }),
             view: view.map(str::to_owned),
+            discuss: None,
         },
         secrets: LinkSecrets::default(),
     }

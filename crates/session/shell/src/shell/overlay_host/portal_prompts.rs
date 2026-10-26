@@ -16,7 +16,9 @@ impl ShellOverlayHost {
         pickers: crate::portal::FilePickerQueue,
     ) {
         self.portal_prompts = Some(prompts);
-        self.file_picker_overlay.set_queue(pickers);
+        // The chooser and the sheets read the one queue the chooser door was
+        // handed, so a chooser and a capability prompt keep their order.
+        self.file_picker_overlay.set_queue(pickers.into_prompts());
     }
 
     /// The live file-chooser dialog, if one is up. For the frame

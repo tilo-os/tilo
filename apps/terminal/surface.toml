@@ -20,6 +20,7 @@ fields = [
   { path = "runs.*.output", type = "Bytes" },
   { path = "runs.*.truncated", type = "bool" },
   { path = "runs.*.tool", type = "Atom" },
+  { path = "runs.*.undoable", type = "bool" },
   { path = "runs.*.items", type = "Vec<RunItem>" },
   { path = "requests", type = "Outbox<RunRequest, RunAnswer>", readonly = true, unit = true },
 ]
@@ -59,6 +60,7 @@ params = [
   { name = "output_len", required = true, schema = { type = "integer", minimum = 0 } },
   { name = "truncated", required = true, schema = { type = "boolean" } },
   { name = "tool", required = true, schema = { type = "string" } },
+  { name = "undoable", required = true, schema = { type = "boolean" } },
   { name = "items", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { path = { type = ["string", "null"] }, code = { type = ["string", "null"] }, column = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, kind = { type = "string", enum = ["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"] }, line = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 }, text = { type = "string" } }, required = ["kind", "text"] } } },
   { name = "request", required = false, schema = { type = ["string", "null"] } },
   { name = "run", required = true, schema = { type = "string" } },

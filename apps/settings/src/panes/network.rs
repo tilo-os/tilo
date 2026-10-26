@@ -712,6 +712,10 @@ pub(crate) struct NetworkSnapshot {
     profiles: Part<Vec<SavedNetworkProfile>>,
     profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
     wake_settings: HashMap<String, Result<NetworkWakeStatus, String>>,
+    /// The saved profiles alone, without their settings, as a status read
+    /// lists them: a profile added or removed elsewhere has the model read
+    /// everything again. `None` when not read.
+    profile_list: Part<Vec<SavedNetworkProfile>>,
     hotspot_clients: Part<Vec<os_actions::HotspotClient>>,
     vpns: Part<Vec<VpnInfo>>,
     /// The Wi-Fi link in use; `None` when not read or not on Wi-Fi.
@@ -728,20 +732,7 @@ impl NetworkSnapshot {
     /// system bus, so this never runs on the UI thread.
     fn read(initial: bool) -> Self {
         let profiles = os_actions::list_saved_network_profiles();
-        let radios = os_actions::get_radio_state();
-        let networks = os_actions::list_wifi_networks();
-        let on_wifi = networks
-            .as_ref()
-            .is_ok_and(|networks| networks.iter().any(|network| network.connected));
         Self {
-            link: on_wifi
-                .then(os_actions::network_settings::wifi_link_details)
-                .and_then(Result::ok),
-            networks,
-            wifi_enabled: Some(wifi_enabled_from(&radios)),
-            wired: Some(os_actions::get_wired()),
-            radios: Some(radios),
-            connectivity: Some(os_actions::get_connectivity()),
             wake_settings: profiles
                 .as_deref()
                 .unwrap_or_default()
@@ -756,6 +747,35 @@ impl NetworkSnapshot {
                 .map(load_profile_settings)
                 .unwrap_or_default(),
             profiles: Some(profiles),
+            plugins: initial.then(os_actions::network_settings::installed_vpn_plugins),
+            device_vpn: DeviceVpnPart::Read(DeviceVpnStatus::load()),
+            ..Self::status()
+        }
+    }
+
+    /// What changes as the device runs: the radios, the links, the
+    /// networks in range, the hotspot's clients and the VPNs. The saved
+    /// profiles, their settings and the session's device VPN (whose file
+    /// is followed on its own) are not read, so adopting it leaves them.
+    fn status() -> Self {
+        let radios = os_actions::get_radio_state();
+        let networks = os_actions::list_wifi_networks();
+        let on_wifi = networks
+            .as_ref()
+            .is_ok_and(|networks| networks.iter().any(|network| network.connected));
+        Self {
+            link: on_wifi
+                .then(os_actions::network_settings::wifi_link_details)
+                .and_then(Result::ok),
+            networks,
+            wifi_enabled: Some(wifi_enabled_from(&radios)),
+            wired: Some(os_actions::get_wired()),
+            radios: Some(radios),
+            connectivity: Some(os_actions::get_connectivity()),
+            profiles: None,
+            profile_settings: HashMap::new(),
+            wake_settings: HashMap::new(),
+            profile_list: None,
             hotspot_clients: Some(os_actions::list_hotspot_clients()),
             vpns: Some(os_actions::list_vpn_connections().map(|vpns| {
                 vpns.into_iter()
@@ -771,8 +791,8 @@ impl NetworkSnapshot {
                     })
                     .collect()
             })),
-            plugins: initial.then(os_actions::network_settings::installed_vpn_plugins),
-            device_vpn: DeviceVpnPart::Read(DeviceVpnStatus::load()),
+            plugins: None,
+            device_vpn: DeviceVpnPart::NotRead,
         }
     }
 
@@ -788,6 +808,7 @@ impl NetworkSnapshot {
             profiles: None,
             profile_settings: HashMap::new(),
             wake_settings: HashMap::new(),
+            profile_list: None,
             hotspot_clients: None,
             vpns: None,
             link: None,
@@ -811,6 +832,7 @@ impl NetworkSnapshot {
             profiles: Some(Ok(Vec::new())),
             profile_settings: HashMap::new(),
             wake_settings: HashMap::new(),
+            profile_list: None,
             hotspot_clients: Some(Ok(Vec::new())),
             vpns: Some(Ok(Vec::new())),
             link: None,
@@ -847,6 +869,14 @@ fn wifi_enabled_from(radios: &Result<os_actions::RadioState, String>) -> Result<
         .as_ref()
         .map(|radios| radios.wifi_available && radios.wifi_enabled)
         .map_err(Clone::clone)
+}
+
+/// Whether `listed` names the same saved profiles as `held`, in any order.
+fn same_profiles(held: &[SavedNetworkProfile], listed: &[SavedNetworkProfile]) -> bool {
+    held.len() == listed.len()
+        && listed
+            .iter()
+            .all(|profile| held.iter().any(|known| known.uuid == profile.uuid))
 }
 
 /// Keep `value` on success and record why it failed otherwise. `None` (the
@@ -1001,6 +1031,18 @@ pub(crate) trait NetworkService: Send + Sync {
     fn networks(&self) -> NetworkSnapshot {
         NetworkSnapshot::networks_only(self.snapshot(false).networks)
     }
+    /// What changes as the device runs (the radios, the links, the
+    /// networks in range, the VPNs) and the saved profiles listed, without
+    /// their settings: what is read again when the device reports a change.
+    fn status(&self) -> NetworkSnapshot {
+        self.snapshot(false)
+    }
+    /// Follow the device: `changed` is called, on another thread, each time
+    /// it reports a change Network shows, for as long as the answer is
+    /// held. `None` when nothing can be followed.
+    fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
     /// Ask the device to check internet connectivity again, so the next
     /// snapshot carries a fresh verdict. Only the explicit refresh does this.
     fn recheck_connectivity(&self) {}
@@ -1065,6 +1107,23 @@ impl NetworkService for DeviceNetwork {
 
     fn snapshot(&self, initial: bool) -> NetworkSnapshot {
         NetworkSnapshot::read(initial)
+    }
+
+    fn status(&self) -> NetworkSnapshot {
+        NetworkSnapshot {
+            profile_list: Some(os_actions::list_saved_network_profiles()),
+            ..NetworkSnapshot::status()
+        }
+    }
+
+    fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        match os_actions::network::follow_network_changes(changed) {
+            Ok(follow) => Some(Box::new(follow)),
+            Err(error) => {
+                warn!(target: "tilo::settings", %error, "NetworkManager's changes are not followed");
+                None
+            }
+        }
     }
 
     fn device_vpn(&self) -> Option<DeviceVpnStatus> {
@@ -1750,7 +1809,9 @@ pub struct NetworkModel {
     filter: String,
     /// The window's pages when the pane last composed.
     pages_seen: u64,
-    enterprise_open: bool,
+    /// Whether the work or school network's setup is open under its row,
+    /// and its reveal: the row's press and the setup action share it.
+    enterprise_setup: ui::widget::DisclosureState,
     /// When the open page last scanned for networks: it scans again every
     /// [`SCAN_EVERY`] while it shows them.
     scanned_at: Option<ui::time::Instant>,
@@ -1781,6 +1842,10 @@ pub struct NetworkModel {
     /// and whose page is one of this pane's: the window's [`mobile::MobileArea`]
     /// keeps it, the pane composes and polls it.
     mobile: Option<Shared<mobile::MobileModel>>,
+    /// What follows the device while a pane shows the model.
+    following: std::rc::Weak<crate::watch::Counted>,
+    /// The device's change count when the model last started a read.
+    changes_seen: u64,
     changed: bool,
 }
 
@@ -1899,6 +1964,17 @@ impl NetworkModel {
                     model.adopt_vpn_settings(SAMPLE_VPN_HOME, settings);
                 }
             }
+            Some(NetworkSample::VpnKillSwitch | NetworkSample::VpnBlocking) => {
+                model.open_page(vpn::PAGE_VPN, t("net-vpn"));
+                model.open_page(&vpn::profile_page_key(SAMPLE_VPN_HOME), "Home".into());
+                if let Ok(settings) = SampleNetwork::vpn_settings(SAMPLE_VPN_HOME) {
+                    model.adopt_vpn_settings(SAMPLE_VPN_HOME, settings);
+                }
+                model.sample_kill_switch(
+                    SAMPLE_VPN_HOME,
+                    wanted == Some(NetworkSample::VpnBlocking),
+                );
+            }
             Some(NetworkSample::PluginVpnProfile) => {
                 model.open_page(vpn::PAGE_VPN, t("net-vpn"));
                 model.open_page(&vpn::profile_page_key(SAMPLE_VPN_WORK), "Work".into());
@@ -1981,7 +2057,7 @@ impl NetworkModel {
             short_list: RefCell::new(order::HeldList::default()),
             all_list: RefCell::new(order::HeldList::default()),
             filter: String::new(),
-            enterprise_open: false,
+            enterprise_setup: ui::widget::DisclosureState::new(),
             scanned_at: None,
             scan_in_flight: false,
             hotspot_code_shown: false,
@@ -2001,6 +2077,8 @@ impl NetworkModel {
             vpn: vpn::VpnState::default(),
             jobs: Vec::new(),
             mobile: None,
+            following: std::rc::Weak::new(),
+            changes_seen: 0,
             changed: false,
         }
     }
@@ -2060,14 +2138,68 @@ impl NetworkModel {
     /// Start reading a snapshot in the background; a newer read supersedes
     /// an older one still running.
     fn start_snapshot(&mut self) {
+        let initial = !self.loaded;
+        // A whole read covers every change the device reported before it.
+        if let Some(changes) = self.device_changes() {
+            self.changes_seen = changes;
+        }
+        self.start_read(move |service| service.snapshot(initial));
+    }
+
+    /// The device's change count, while it is followed.
+    fn device_changes(&self) -> Option<u64> {
+        self.following.upgrade()?.changes()
+    }
+
+    /// Read the device's status again once it reported a change: a VPN
+    /// brought up from quick settings, a cable pulled out, airplane mode
+    /// turned on elsewhere shows while the page is open. One read at a
+    /// time; changes during it are read after it, and none while a change
+    /// of the pane's own runs (its landing reads the device anyway).
+    fn read_reported_changes(&mut self) {
+        let Some(changes) = self.device_changes() else {
+            return;
+        };
+        if changes == self.changes_seen
+            || !self.loaded
+            || self.snapshot.is_some()
+            || self.in_flight > 0
+        {
+            return;
+        }
+        self.changes_seen = changes;
+        self.start_read(|service| service.status());
+    }
+
+    /// Follow the device while a pane shows the model.
+    fn follow_device(&mut self) -> Rc<crate::watch::Counted> {
+        if let Some(held) = self.following.upgrade() {
+            return held;
+        }
+        let service = Arc::clone(&self.service);
+        let started = crate::watch::shared(&mut self.following, move || {
+            crate::watch::Counted::start(|changed| service.follow(changed))
+        });
+        // Nothing was followed while no pane showed the model: a model
+        // already read reads the status again once; a first read on its way
+        // covers it.
+        self.changes_seen = if self.loaded { u64::MAX } else { 0 };
+        started
+    }
+
+    /// Read with `read` in the background; a newer read supersedes an older
+    /// one still running.
+    fn start_read(
+        &mut self,
+        read: impl FnOnce(&dyn NetworkService) -> NetworkSnapshot + Send + 'static,
+    ) {
         let (sender, receiver) = crate::channel::channel();
         let service = Arc::clone(&self.service);
-        let initial = !self.loaded;
         let wake = ui::WakeHandle::new();
         let started = crate::device_read::thread(
             "settings-network-read",
             Box::new(move || {
-                if sender.send(service.snapshot(initial)).is_ok() {
+                if sender.send(read(service.as_ref())).is_ok() {
                     wake.wake();
                 }
             }),
@@ -2151,6 +2283,19 @@ impl NetworkModel {
         if let Some(vpns) = adopt(snapshot.vpns, &mut self.read_errors.vpns) {
             self.vpns = vpns;
         }
+        // A profile added or removed elsewhere (a network joined from quick
+        // settings, one forgotten with `nmcli`) has its settings read with
+        // everything else; the same profiles only take their new names and
+        // last uses.
+        let reread = match snapshot.profile_list {
+            Some(Ok(listed)) if same_profiles(&self.profiles, &listed) => {
+                self.profiles = listed;
+                self.fill_forms();
+                false
+            }
+            Some(Ok(_)) => true,
+            Some(Err(_)) | None => false,
+        };
         if whole || snapshot.link.is_some() {
             self.link = snapshot.link;
         }
@@ -2161,6 +2306,9 @@ impl NetworkModel {
             self.vpn.devices.status = status;
         }
         self.loaded = true;
+        if reread {
+            self.start_snapshot();
+        }
         outcome
     }
 
@@ -2901,7 +3049,8 @@ impl NetworkModel {
                 Begun::Done
             }
             NetworkEffect::ShowEnterpriseSetup => {
-                self.enterprise_open = !self.enterprise_open;
+                self.enterprise_setup
+                    .set_open(!self.enterprise_setup.is_open());
                 Begun::Done
             }
             NetworkEffect::ChooseCaCertificate => {
@@ -3555,6 +3704,7 @@ impl PaneModel for NetworkModel {
 
     fn poll(&mut self) -> bool {
         self.poll_background();
+        self.read_reported_changes();
         self.poll_prompt();
         self.poll_device_vpn();
         if let Some(mobile) = &self.mobile
@@ -3602,7 +3752,13 @@ impl PaneModel for NetworkModel {
     }
 
     fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
-        self.follow_device_vpn()
+        let device = self.follow_device();
+        Some(Rc::new((device, self.follow_device_vpn())))
+    }
+
+    // The scan's networks replace "Scanning…" when it lands.
+    fn pending_visual_work(&self) -> bool {
+        self.scan_in_flight
     }
 }
 

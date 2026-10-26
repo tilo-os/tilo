@@ -400,6 +400,8 @@ tokio-util.workspace = true
 # Drives the secret agent from a stand-in NetworkManager into the sheet.
 tilo-network-secret-agent = { path = "../network-secret-agent", features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
+# Site join tests pin the wall clock the host's threads read while it admits a page.
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path reads surfaces from.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Native Store publication through the same certified session fixture as Browser.
@@ -488,6 +490,9 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The liveness dump records each thread's stack from its signal handler
+# without allocating, and symbolizes it on the dumping thread.
+backtrace.workspace = true
 # The files a person chooses for an app in the shell's chooser, served into
 # that app's sandbox (compositor::chooser_service).
 tilo-documents = { workspace = true, features = ["mount"] }

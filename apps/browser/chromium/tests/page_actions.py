@@ -2,7 +2,9 @@
 """Page reading and operation through the host's `page` op, in real Chromium."""
 import http.server
 import json
+import os
 import re
+import tempfile
 import threading
 import time
 import unittest
@@ -25,6 +27,8 @@ FORM = b'''<!doctype html><title>Checkout</title>
   <label>Country <select name="country"><option value="NL">Netherlands</option><option value="BE">Belgium</option></select></label>
   <input id="terms" name="terms" type="checkbox" class="visually-hidden"><label for="terms">Accept terms</label>
   <label>Search <input name="q" type="search"></label>
+  <label>Proof of address <input name="proof" type="file" accept=".pdf"></label>
+  <label>Receipts <input name="receipts" type="file" multiple></label>
   <button>Place order</button>
 </form>
 <button id="covered" style="position:fixed;top:10px;left:10px">Covered</button>
@@ -41,6 +45,9 @@ customElements.define('shop-widget', class extends HTMLElement {
   }
 });
 document.querySelector('select').addEventListener('change', e => document.getElementById('status').textContent = 'country ' + e.target.value);
+for (const field of document.querySelectorAll('input[type=file]'))
+  field.addEventListener('change', e => document.getElementById('status').textContent =
+    'files ' + [...e.target.files].map(f => f.name + ':' + f.size).join(','));
 </script>'''
 
 
@@ -68,6 +75,29 @@ ARTICLE = f'''<!doctype html><title>The long read</title>
 
 LATER = b'''<!doctype html><title>Later</title>
 <button onclick="setTimeout(() => location.href = '/next', 1000)">Go later</button>'''
+GESTURE = b'''<!doctype html><title>Gestures</title>
+<style>
+#menu{display:none} #hover:hover #menu{display:block}
+li{padding:8px;margin:4px;border:1px solid #000;list-style:none}
+</style>
+<div id="hover"><span id="label">Licences</span><ul id="menu"><li><a href="/fishing" id="fishing">Fishing licence</a></li></ul></div>
+<ol id="rank"><li draggable="true" id="a">Riverton office</li><li draggable="true" id="b">Porthaven office</li><li draggable="true" id="c">Central office</li></ol>
+<canvas id="pad" width="300" height="120" aria-label="Signature pad" style="border:1px solid #000"></canvas>
+<p id="status"></p>
+<script>
+const rank = document.getElementById('rank');
+let dragged;
+rank.querySelectorAll('li').forEach(li => {
+  li.ondragstart = () => dragged = li;
+  li.ondragover = e => e.preventDefault();
+  li.ondrop = e => { e.preventDefault(); if (dragged !== li) rank.insertBefore(dragged, li); };
+});
+const pad = document.getElementById('pad'), ctx = pad.getContext('2d');
+let drawing = false, strokes = 0;
+pad.onpointerdown = e => { drawing = true; strokes++; ctx.beginPath(); ctx.moveTo(e.offsetX, e.offsetY); };
+pad.onpointermove = e => { if (drawing) ctx.lineTo(e.offsetX, e.offsetY); ctx.stroke(); };
+pad.onpointerup = () => { drawing = false; document.getElementById('status').textContent = 'strokes ' + strokes; };
+</script>'''
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -75,6 +105,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
             else LATER if path == '/later' \
+            else GESTURE if path == '/gesture' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -284,6 +315,70 @@ class PageActions(unittest.TestCase):
         self.assertEqual(self.ok('console', since=console['next'])['data']['entries'], [], 'nothing new since')
         self.assertEqual(self.main_world('typeof globalThis.__tiloPage'), 'undefined')
 
+    def test_file_inputs_show_themselves_and_take_chosen_files(self):
+        self.h.navigate(self.url + '/form')
+        outline = self.outline()
+        self.assertRegex(outline, r'file "Proof of address" \[ref=d\d+e\d+\] type=file accept="\.pdf" files=none')
+        self.assertRegex(outline, r'file "Receipts" \[ref=d\d+e\d+\] type=file multiple files=none')
+        receipts = self.ref(outline, 'file "Receipts"')
+        proof = self.ref(outline, 'file "Proof of address"')
+        with tempfile.TemporaryDirectory() as folder:
+            first = os.path.join(folder, 'proof.pdf')
+            second = os.path.join(folder, 'one.png')
+            third = os.path.join(folder, 'two.png')
+            for path, body in ((first, b'%PDF-1.4'), (second, b'\x89PNG one'), (third, b'\x89PNG two')):
+                with open(path, 'wb') as file:
+                    file.write(body)
+            # The element's own rule is the page's rule: a script cannot pick
+            # a file the page would have refused, nor a text field at all.
+            refused = self.page('fill_files', element=proof, paths=[second])
+            self.assertEqual((refused['ok'], refused['code']), (False, 'not_accepted'), refused)
+            text = self.ref(outline, 'textbox "Email"')
+            refused = self.page('fill_files', element=text, paths=[first])
+            self.assertFalse(refused['ok'], refused)
+            self.assertIn(text, refused['message'])
+            chosen = self.ok('fill_files', element=proof, paths=[first])
+            self.assertEqual(chosen['data']['files'], ['proof.pdf'], chosen)
+            # The page receives the picker's own trusted events.
+            self.assertEqual(self.main_world('document.getElementById("status").textContent'),
+                             'files proof.pdf:8')
+            self.assertRegex(self.outline(), r'file "Proof of address" .*files="proof.pdf"')
+            chosen = self.ok('fill_files', element=receipts, paths=[second, third])
+            self.assertEqual(chosen['data']['files'], ['one.png', 'two.png'], chosen)
+            self.assertEqual(self.main_world('document.getElementById("status").textContent'),
+                             'files one.png:8,two.png:8')
+            # A click on a file input asks the page's own chooser for files;
+            # nothing is chosen for it, so the outline stays as it was.
+            clicked = self.page('click', element=receipts)
+            self.assertTrue(clicked['ok'], clicked)
+
+    def test_chosen_files_reach_the_page_with_and_without_a_held_chooser(self):
+        # Choosing files names the element in the inspected document, not in a
+        # node id: a ref read from the outline resolves there, and the page
+        # receives the picker's own input and change events either way.
+        self.h.navigate(self.url + '/form')
+        with tempfile.TemporaryDirectory() as folder:
+            first = os.path.join(folder, 'proof.pdf')
+            second = os.path.join(folder, 'second.pdf')
+            for path, body in ((first, b'%PDF-1.4'), (second, b'%PDF-1.5')):
+                with open(path, 'wb') as file:
+                    file.write(body)
+            proof = self.ref(self.outline(), 'file "Proof of address"')
+            chosen = self.ok('fill_files', element=proof, paths=[first])
+            self.assertEqual(chosen['data']['files'], ['proof.pdf'], chosen)
+            self.assertEqual(self.main_world('document.querySelector("[name=proof]").files[0].name'),
+                             'proof.pdf')
+            self.assertEqual(self.main_world('document.getElementById("status").textContent'),
+                             'files proof.pdf:8')
+            # A click holds the page's chooser; answering it with the same
+            # action reaches the same field, so the page sees the second file.
+            clicked = self.ok('click', element=proof)
+            self.assertIn('file chooser', clicked['message'], clicked)
+            chosen = self.ok('fill_files', element=proof, paths=[second])
+            self.assertEqual(chosen['data']['files'], ['second.pdf'], chosen)
+            self.assertEqual(self.main_world('document.querySelector("[name=proof]").files[0].name'),
+                             'second.pdf')
+
     def test_secrets_and_cross_site_submissions_need_explicit_consent(self):
         self.h.navigate(self.url + '/agent')
         outline = self.outline()
@@ -299,6 +394,46 @@ class PageActions(unittest.TestCase):
             self.assertIn('elsewhere.test', refused['message'])
         entered = self.page('press', element=query, key='Enter', ctrl=False, shift=False, alt=False, meta=False)
         self.assertEqual(entered['code'], 'cross_origin_submit', entered)
+
+    def pointer(self, steps, button='left'):
+        return self.ok('pointer', steps=steps, button=button)
+
+    def test_pointer_hover_reveals_a_menu_and_the_click_opens_it(self):
+        self.h.navigate(self.url + '/gesture')
+        outline = self.outline()
+        self.assertNotIn('Fishing licence', outline, 'the menu is closed until a hand rests on it')
+        # The page keeps the menu shut until the pointer rests on its owner,
+        # so the outline names that owner and a gesture reaches it by ref.
+        resting = self.ref(outline, 'hoverable "Licences"')
+        self.pointer([dict(kind='move', element=resting, x=5, y=5)])
+        revealed = self.outline()
+        fishing = self.ref(revealed, 'link "Fishing licence"')
+        self.pointer([dict(kind='move', element=fishing, x=5, y=5),
+                      dict(kind='down', element=fishing, x=5, y=5),
+                      dict(kind='up', element=fishing, x=5, y=5)])
+        self.assertEqual(self.main_world('location.pathname'), '/fishing', 'the click followed the link')
+
+    def test_pointer_drags_a_page_element_onto_another(self):
+        self.h.navigate(self.url + '/gesture')
+        outline = self.outline()
+        central = self.ref(outline, 'draggable "Central office"')
+        riverton = self.ref(outline, 'draggable "Riverton office"')
+        self.pointer([dict(kind='down', element=central, x=5, y=5),
+                      dict(kind='move', element=riverton, x=5, y=5),
+                      dict(kind='up', element=riverton, x=5, y=5)])
+        order = self.main_world("[...document.querySelectorAll('#rank li')].map(li => li.textContent).join(' > ')")
+        self.assertEqual(order, 'Central office > Riverton office > Porthaven office', order)
+
+    def test_pointer_draws_on_a_canvas(self):
+        self.h.navigate(self.url + '/gesture')
+        pad = self.ref(self.outline(), 'canvas "Signature pad"')
+        steps = []
+        for line in range(3):
+            steps.append(dict(kind='down', element=pad, x=20, y=20 + line * 20))
+            steps.append(dict(kind='move', element=pad, x=120, y=20 + line * 20))
+            steps.append(dict(kind='up', element=pad, x=120, y=20 + line * 20))
+        self.pointer(steps)
+        self.assertIn('text "strokes 3"', self.outline(), 'each press and release is one stroke')
 
 
 if __name__ == '__main__':

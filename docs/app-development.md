@@ -740,7 +740,7 @@ payload-specific alternative text makes the output visible to screen readers,
 inspection, and headless scenarios.
 The `document` starter is the collaborative-text case: title and body are
 Automerge text, concurrent typing merges, the live preview follows every
-edit, and `clear` is a destructive action that asks for confirmation.
+edit, and `clear` is a destructive action that runs at once, with Undo.
 
 Every ordinary `LaunchSpec` also reuses that live root for a screenshot; no
 second screenshot-only tree is required. `shot` writes `preview.png` in the
@@ -1679,8 +1679,15 @@ facts that let a caller plan safely:
   execution.
 - `permission`: `read`, `comment`, `write`, `invite`, or `admin`; the broker
   uses this exact value for both discovery and invocation.
-- `risk`, `confirmation`, and `reversible`: destructive and privileged actions
-  require a confirmation policy. Confirmation grants are short-lived,
+- `risk`, `confirmation`, and `reversible`: privileged and sensitive actions,
+  and destructive ones Undo cannot take back, require a confirmation policy.
+  A destructive action Undo takes back (`reversible`, or a compensated undo)
+  asks nothing: it runs at once and the app offers Undo
+  (`RiskLevel::requires_confirmation_when`). A typed phrase
+  (`ConfirmationPolicy::Phrase`) is for irreversible, high-risk actions only,
+  and names what is lost (the drive, the app), never a word like "CONFIRM";
+  `tools/policy/check_action_confirmation.py` and
+  `ActionContract::validate_declaration` refuse anything else. Confirmation grants are short-lived,
   one-use, and bound to the actor, address, and arguments.
   An action whose consequence depends on its value (a generic typed edit
   that may delete) classifies each invocation instead
@@ -1913,17 +1920,58 @@ implementation is required.
 
 #### Data that arrives later
 
-Data that is not here yet — a file read, a page from a host, rows from
-another device — is an `Arriving<T>`: pending (with the `Source` its answer
-comes from), ready, or failed. The view says only what shows once the data
-is there; the framework owns every placeholder and every timing:
+Data that is not here yet — a record the room has not synced to this device,
+a child record or an attachment on its way from another device, a file read,
+a page from a host — is an `Arriving<T>`: pending (with the `Source` its
+answer comes from), ready, or failed. The view says only what shows once the
+data is there; the framework owns every placeholder and every timing.
+
+The resource an app reads is the main case, and it needs no code at all. A
+window opened on a record this device has not got yet (the room's record of
+an app that keeps one, before the room's first sync) shows the app's view
+once the room's holdings arrive from the workspace's host; until then the
+framework stands in for it. A record this device has opens complete on its
+first frame. Children and attachments are reads too:
 
 ```rust
-// Read on a background worker; a failure offers a retry that reads again.
+/// A topic's row: its title and the line under it.
+const TOPIC_ROW: RowShape = RowShape::TITLE.with_secondary(1);
+
+fn view(cx: &mut ViewCx<Room>) -> Element {
+    let topics = cx.children::<Topic>().expect("a window someone uses");
+    let mut list = Column::new();
+    for (_, _, topic) in topics.children() {
+        // Pending while the topic's record is on its way from the room.
+        let row = cx.arriving(&topic, |_, topic| {
+            Box::new(ListRow::new(&topic.id, &topic.name).secondary(&topic.summary))
+        });
+        list = list.push(Box::new(row.shaped(SkeletonShape::Row(TOPIC_ROW))));
+    }
+    Box::new(list)
+}
+
+// An attachment's bytes: ready once they are on this device.
+let reads = ContentReads::new(content_store);
+let picture = reads.read(&hash);
+```
+
+Say what the content looks like with `ArrivingView::shaped`. The shape is a
+box: the view reserves it from the first frame, and the placeholder, the
+answer and a failure all stand in it, so nothing moves when the read lands. A
+list row's shape is its kind (`RowShape`: what leads it, its lines), the same
+geometry the real row is laid out with; a `ListRow` or `MediaCard` that lands
+in a box of another shape is a debug assertion. The default is
+`SkeletonShape::Page`, the whole space the view is given, which the window's
+own view takes while its record is on its way. A pending region (the boxes of
+a list or a grid that stand together) names each source once, on the first
+of its boxes waiting on it, in a place the shape keeps for the line. A grid of
+cards on their way is `MediaGrid::of` over `ArrivingView`s shaped as cards. A
+read
+of your own data on a background worker is `Arriving::local`; a failure offers
+a retry that reads again:
+
+```rust
 let project = Arriving::local("load project", || load_project());
-let body = project.view(|project| project_view(project));
-// Optional: say what the content looks like, so the reserved space and the
-// skeleton take its geometry.
 let body = project
     .view(|project| project_view(project))
     .shaped(SkeletonShape::Media(MediaAspect::Square));
@@ -2789,8 +2837,11 @@ read differently needs a new `#[resource(version = N)]`) all fail it.
 
 ### Confirming destructive actions in tests
 
-A destructive verb or a removal never applies before the person agrees, from
-whatever path it comes: a button, a menu, the palette, an agent, or an editor
+A removal Undo takes back (any change of the document alone) runs at once,
+from whatever path it comes, and the surface offers Undo in the standard
+notice (`NavShell::toast_with_action(.., "Undo")`, whose press is an
+`UndoRequest::Undo`). Only what Undo cannot take back never applies before
+the person agrees: a button, a menu, the palette, an agent, or an editor
 applying its own edit now (`Dispatcher::submit_now` / `apply_now` hand it to
 the host, which asks). Do not give the app a dialog of its own for this; the
 host asks. A test confirms what the host asks with one call, through the real

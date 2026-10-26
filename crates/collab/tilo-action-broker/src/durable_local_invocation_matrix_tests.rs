@@ -4,6 +4,7 @@ mod durable_local_matrix {
         rpc_pair,
     };
     use super::*;
+    use crate::test_support::KindSet;
     struct Environment {
         root: tempfile::TempDir,
         cert: tilo_user_identity::DeviceCert,
@@ -195,6 +196,41 @@ mod durable_local_matrix {
                 binding,
                 authorize,
                 bridge_task,
+            }
+        }
+        /// A connection for `app_id`, which publishes the actions it reaches
+        /// through its own door: the application a person launched.
+        async fn app_caller(
+            &self,
+            env: &Environment,
+            peer: u64,
+            app_id: &str,
+            agent: Option<&str>,
+        ) -> Connection {
+            let (server, socket) = std::os::unix::net::UnixStream::pair().unwrap();
+            let (rpc, server, client) = rpc_pair(
+                self.state.clone(),
+                peer,
+                server,
+                socket,
+                None,
+                self.directories.clone(),
+            );
+            let route = CrdtRoute::app(app_id, env.route.cluster_id.clone());
+            let handle = rpc
+                .join_channel_as_kind(
+                    &route.channel_key(),
+                    &presentation(&route.cluster_id, &env.cert, &env.key),
+                    agent.unwrap_or(""),
+                    if agent.is_some() { "agent" } else { "person" },
+                    "",
+                )
+                .await
+                .unwrap();
+            Connection {
+                handle,
+                server,
+                client,
             }
         }
         async fn caller(&self, env: &Environment, peer: u64, agent: Option<&str>) -> Connection {
@@ -394,7 +430,9 @@ mod durable_local_matrix {
                     KindSet::ALL,
                 );
                 let person = rig.caller(&env, 904, None).await;
-                let agent = rig.caller(&env, 905, Some("scribe")).await;
+                let agent = rig
+                    .app_caller(&env, 905, "so.tilo.files", Some("scribe"))
+                    .await;
                 let invocation = id(0xb001);
                 let admitted = invoke(&agent.handle, &rig.binding, invocation)
                     .await
@@ -485,6 +523,66 @@ mod durable_local_matrix {
             .await;
     }
 
+    /// The durable local door names its target itself, so the connection may
+    /// only reach what is its own: another application's binding is refused
+    /// before admission, while an agent channel — its own principal — still
+    /// reaches the same target through the same door.
+    #[tokio::test(flavor = "current_thread")]
+    async fn durable_local_rpc_reaches_only_the_callers_own_application() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let env = Environment::new();
+                let rig = Rig::new(&env).await;
+                let agent_grant =
+                    env.membership.write().workspaces[0].admit_agent("scribe", KindSet::ALL);
+                env.membership.write().workspaces[0].allow_app(
+                    tilo_action_policy::Subject::agent("scribe"),
+                    &env.route.app_id,
+                    KindSet::ALL,
+                );
+                let application = rig.app_caller(&env, 904, "so.tilo.files", None).await;
+                let invocation = id(0xb101);
+                assert!(
+                    invoke(&application.handle, &rig.binding, invocation)
+                        .await
+                        .unwrap_err()
+                        .contains("not allowed"),
+                    "an application connection cannot reach another application's binding"
+                );
+                no_delivery(&rig);
+                assert!(
+                    application
+                        .handle
+                        .published_invocation_observation(
+                            &rig.binding.host,
+                            invocation.0.as_bytes()
+                        )
+                        .await
+                        .unwrap()
+                        .result
+                        .is_none()
+                );
+                // Only the agent's own admission can reach the target, so a
+                // delivered invocation is the agent's.
+                let agent = rig
+                    .app_caller(&env, 905, "so.tilo.files", Some("scribe"))
+                    .await;
+                let admitted = invoke(&agent.handle, &rig.binding, invocation)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    rig.delivered_effect(&env, invocation).await,
+                    admitted.result.as_ref().unwrap().id
+                );
+                env.membership.write().workspaces[0].revoke_grant(&agent_grant);
+                rig.directories.remove(903);
+                drop(application);
+                drop(agent);
+                rig.stop().await;
+            })
+            .await;
+    }
+
     /// An edit a durable, certified invocation's effect submits is admitted
     /// as that invocation's caller: under their grants, and refused beyond
     /// them; a certified caller whose certificate no longer verifies
@@ -493,9 +591,7 @@ mod durable_local_matrix {
     async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                use tilo_actions::remote::{
-                    InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
-                };
+                use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
                 let env = Environment::new();
                 let rig = Rig::new(&env).await;
                 let room = env.route.cluster_id.clone();
@@ -514,7 +610,9 @@ mod durable_local_matrix {
                         KindSet::ALL,
                     );
                 }
-                let agent = rig.caller(&env, 905, Some("scribe")).await;
+                let agent = rig
+                    .app_caller(&env, 905, "so.tilo.files", Some("scribe"))
+                    .await;
                 let invocation = id(0xc001);
                 invoke(&agent.handle, &rig.binding, invocation)
                     .await
@@ -574,15 +672,15 @@ mod durable_local_matrix {
                 assert!(matches!(
                     rig.state
                         .action_invoke(&continued, Some(903), None, &edit("edit"))
-                        .poll_ready(),
-                    PendingPoll::Ready(Ok(_))
+                        .await,
+                    Some(Ok(_))
                 ));
                 assert_eq!(app.try_recv().unwrap().actor, "agent:scribe");
                 assert!(!matches!(
                     rig.state
                         .action_invoke(&continued, Some(903), None, &edit("erase"))
-                        .poll_ready(),
-                    PendingPoll::Ready(Ok(_))
+                        .await,
+                    Some(Ok(_))
                 ));
                 assert!(app.try_recv().is_err(), "the denied edit reaches no app");
 

@@ -79,3 +79,47 @@ fn a_guests_new_folder_opens_its_dialog_unasked() {
         app.harness().control_failures()
     );
 }
+
+/// What the open search lists, by name.
+fn listed(harness: &FrameHarness) -> Vec<String> {
+    harness
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(_, node)| node.role() == ui::accesskit::Role::ListItem)
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect()
+}
+
+/// Search in Feeds offers what the app does as well as what it holds, as
+/// the window's own palette does: with nothing typed it lists the app's
+/// actions beside its feeds, and a typed word finds an action too.
+#[test]
+fn search_offers_the_apps_actions_beside_what_it_holds() {
+    let mut app = TestApp::<feeds::FeedsShell>::capture(Some("detail")).unwrap();
+    let harness = app.harness();
+    harness.relayout();
+    harness
+        .open_search(&ui::search::SearchRequest::this_app())
+        .expect("search opens");
+    harness.relayout();
+    let open = listed(harness);
+    assert!(
+        open.iter().any(|name| name == "Mark all articles as read"),
+        "the app's actions are offered: {open:?}"
+    );
+    assert!(
+        open.iter().any(|name| name == "Rust Blog"),
+        "and what it holds: {open:?}"
+    );
+    harness.key("Escape");
+    harness.relayout();
+    harness
+        .open_search(&ui::search::SearchRequest::this_app().with_query("mark all"))
+        .expect("search opens again");
+    harness.relayout();
+    let typed = listed(harness);
+    assert!(
+        typed.iter().any(|name| name == "Mark all articles as read"),
+        "a typed word finds an action: {typed:?}"
+    );
+}

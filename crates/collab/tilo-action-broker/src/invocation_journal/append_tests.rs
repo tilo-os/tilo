@@ -73,9 +73,9 @@ fn entries(root: &Path) -> Vec<Value> {
 fn append_journal_invocation_costs_one_data_barrier_per_durable_transition() {
     let (_dir, root, mut journal) = fresh();
     let k = key(&journal, 1);
-    let opened = journal.barriers;
+    let opened = journal.barriers();
     assert!(journal.admit(k.clone(), intent("draft"), 1).unwrap());
-    let admitted = journal.barriers;
+    let admitted = journal.barriers();
     assert_eq!(
         (
             admitted.writes - opened.writes,
@@ -90,7 +90,8 @@ fn append_journal_invocation_costs_one_data_barrier_per_durable_transition() {
         journal.update(&k, progress(&k, sequence), false).unwrap();
     }
     assert_eq!(
-        journal.barriers, admitted,
+        journal.barriers(),
+        admitted,
         "progress never writes or waits on the disk"
     );
     assert_eq!(store(&root).len(), length);
@@ -102,7 +103,7 @@ fn append_journal_invocation_costs_one_data_barrier_per_durable_transition() {
         "observers still see the latest progress"
     );
     journal.update(&k, succeeded(&k, "saved"), false).unwrap();
-    let done = journal.barriers;
+    let done = journal.barriers();
     assert_eq!(
         (
             done.writes - admitted.writes,
@@ -505,7 +506,7 @@ fn append_journal_size_stays_bounded_over_ten_thousand_invokes() {
     const INVOKES: u128 = 10_000;
     let (_dir, root, mut journal) = fresh();
     // This measures bytes, not durability.
-    journal.barriers.elide = true;
+    journal.elide_barriers();
     let argument = "a".repeat(4096);
     let mut largest = 0;
     for n in 1..=INVOKES {
@@ -520,7 +521,7 @@ fn append_journal_size_stays_bounded_over_ten_thousand_invokes() {
         journal.update(&k, succeeded(&k, "ok"), false).unwrap();
         largest = largest.max(std::fs::metadata(root.join("records.json")).unwrap().len());
     }
-    let barriers = journal.barriers;
+    let barriers = journal.barriers();
     assert!(
         barriers.directory > 1,
         "the entries were compacted along the way"

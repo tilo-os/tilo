@@ -31,7 +31,7 @@ use crate::workbook::{
     Sheet, Workbook,
 };
 
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
 /// The most cells one write, sort or import changes.
 pub const MAX_WRITES: usize = 16 * 1024;
@@ -46,7 +46,9 @@ pub const MAX_IMPORTED_SHEETS: usize = 64;
 pub struct CellWrite {
     /// The cell, e.g. `B3`.
     pub cell: String,
-    /// What to type into it: a value, or a formula starting with `=`.
+    /// What to type into it: a value, or a formula starting with `=`; an
+    /// ISO date such as `2026-10-22` (or `2026-10-22T09:30`) becomes a real
+    /// date, and a leading apostrophe (`'007`) marks text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<String>,
     /// How it shows.
@@ -197,6 +199,28 @@ fn first_writes(new: &SheetSpec) -> Result<Option<Vec<CellWrite>>, Refusal> {
         }
         (None, None, None) => Ok(None),
     }
+}
+
+/// `write` with its input read as `set-cells` reads a value: an ISO date
+/// a real date, an apostrophe text. A format the write names wins, and one
+/// naming text keeps the input as typed.
+fn typed_write(write: CellWrite) -> Result<CellWrite, Refusal> {
+    let Some(input) = write.input.as_deref() else {
+        return Ok(write);
+    };
+    if write.format == Some(CellFormat::Text) {
+        return Ok(write);
+    }
+    let Some((input, format)) =
+        crate::cell_actions::cell_input(&serde_json::Value::String(input.to_owned()))?
+    else {
+        return Ok(write);
+    };
+    Ok(CellWrite {
+        input: Some(input),
+        format: write.format.or(format),
+        ..write
+    })
 }
 
 fn cell_of(reference: &str) -> Result<Addr, Refusal> {
@@ -634,6 +658,10 @@ impl Workbook {
             return Err(Refusal::new("name at least one cell"));
         }
         let sheet = &self.sheet_key(sheet)?;
+        let cells = cells
+            .into_iter()
+            .map(typed_write)
+            .collect::<Result<Vec<_>, _>>()?;
         write_into(self.sheet_mut(sheet)?, &cells)
     }
 
@@ -1372,6 +1400,9 @@ impl ResourceSurface<Workbook, SheetsEffect> for SheetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Workbook>) {
         self.attach_content(cx.content());
+        if let Some(path) = cx.launch_arguments().first() {
+            self.show_file_of(std::path::PathBuf::from(path));
+        }
         self.attach_framework(cx.dispatcher(), cx.live());
         self.attach_people(cx.people());
         self.follow_locale(cx.settings::<tilo_locale::Locale>());
@@ -1391,3 +1422,26 @@ mod tests;
 
 #[cfg(test)]
 mod agent_tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::SheetsShell::scenarios() {
+            let mut app = TestApp::<super::SheetsShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

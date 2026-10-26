@@ -8,6 +8,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
         permissions: vec!["tabs".into()],
         hosts: vec!["https://*/*".into()],
         scriptable: vec!["<all_urls>".into()],
+        framed: vec!["https://*/*".into()],
         token: Some("f".repeat(48)),
         commands: Some(json!({"_execute_action":{"suggested_key":{"default":"Ctrl+Shift+Y"}}})),
     };
@@ -16,7 +17,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
         encode_command(access),
         Some(
             json!({"op":"extension_access","id":id,"permissions":["tabs"],"hosts":["https://*/*"],
-                "scriptable":["<all_urls>"],"token":"f".repeat(48),
+                "scriptable":["<all_urls>"],"framed":["https://*/*"],"token":"f".repeat(48),
                 "commands":{"_execute_action":{"suggested_key":{"default":"Ctrl+Shift+Y"}}}})
         )
     );
@@ -48,6 +49,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             permissions: Vec::new(),
             hosts: Vec::new(),
             scriptable: Vec::new(),
+            framed: Vec::new(),
             token: Some("f".into()),
             commands: None,
         },
@@ -56,6 +58,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             permissions: vec![String::new(); 513],
             hosts: Vec::new(),
             scriptable: Vec::new(),
+            framed: Vec::new(),
             token: None,
             commands: None,
         },
@@ -64,6 +67,16 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             permissions: Vec::new(),
             hosts: Vec::new(),
             scriptable: vec!["x".repeat(2049)],
+            framed: Vec::new(),
+            token: None,
+            commands: None,
+        },
+        WebViewCommand::ExtensionAccess {
+            id: id.into(),
+            permissions: Vec::new(),
+            hosts: Vec::new(),
+            scriptable: Vec::new(),
+            framed: vec!["x".repeat(2049)],
             token: None,
             commands: None,
         },
@@ -73,6 +86,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             permissions: Vec::new(),
             hosts: Vec::new(),
             scriptable: Vec::new(),
+            framed: Vec::new(),
             token: None,
             commands: Some(json!(["_execute_action"])),
         },
@@ -81,6 +95,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             permissions: Vec::new(),
             hosts: Vec::new(),
             scriptable: Vec::new(),
+            framed: Vec::new(),
             token: None,
             commands: Some(json!({"long": {"description": "x".repeat(70 * 1024)}})),
         },
@@ -504,6 +519,19 @@ fn an_extensions_request_for_more_access_reaches_the_browser_and_its_answer_the_
             granted: set(&[], &[]),
         })
     );
+    // The page that asked closed before the person answered.
+    assert_eq!(
+        event(json!({"event":"extension_permission_closed","tab":2,"request":4})),
+        Some(WebViewEvent::ExtensionPermissionClosed { request: 4 })
+    );
+    for bad in [
+        json!({"event":"extension_permission_closed","tab":2}),
+        json!({"event":"extension_permission_closed","tab":2,"request":0}),
+        json!({"event":"extension_permission_closed","tab":2,"request":"4"}),
+        json!({"event":"extension_permission_closed","tab":2,"request":4_294_967_296_u64}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
     // A request for nothing, without its number, from no extension, or of
     // another shape: refused.
     for bad in [
@@ -767,4 +795,105 @@ fn an_extensions_side_panel_opens_closes_and_follows_its_options() {
     assert!(!command_within_limits(
         &WebViewCommand::ExtensionOpenSidePanel { id: "short".into() }
     ));
+}
+
+#[test]
+fn a_side_panels_tab_and_a_shortcut_pressed_in_the_browsers_field_reach_the_host() {
+    use crate::webview::{ExtensionShortcut, KeyModifiers, NamedKey};
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    assert_eq!(
+        encode_command(WebViewCommand::ExtensionSidePanelPage { id: id.into() }),
+        Some(json!({"op":"extension_panel","side_panel":id}))
+    );
+    assert!(!command_within_limits(
+        &WebViewCommand::ExtensionSidePanelPage { id: "short".into() }
+    ));
+    let shift_ctrl = KeyModifiers {
+        ctrl: true,
+        shift: true,
+        ..KeyModifiers::default()
+    };
+    assert_eq!(
+        encode_command(WebViewCommand::ExtensionCommandKey {
+            key: KeyInput::Character("Y".into()),
+            modifiers: shift_ctrl,
+        }),
+        Some(
+            json!({"op":"extension_command_key","key":"Y","ctrl":true,"shift":true,"alt":false,"meta":false})
+        )
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::ExtensionCommandKey {
+            key: KeyInput::Named(NamedKey::ArrowUp),
+            modifiers: shift_ctrl,
+        }),
+        Some(
+            json!({"op":"extension_command_key","key":"ArrowUp","ctrl":true,"shift":true,"alt":false,"meta":false})
+        )
+    );
+    assert!(!command_within_limits(
+        &WebViewCommand::ExtensionCommandKey {
+            key: KeyInput::Character("y".repeat(17)),
+            modifiers: shift_ctrl,
+        }
+    ));
+
+    // The keys extensions' commands hold, as Chrome names them.
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    assert_eq!(
+        event(json!({"event":"extension_shortcuts","tab":1,"shortcuts":[
+            {"key":"Y","ctrl":true,"alt":false,"shift":true,"meta":false},
+            {"key":"Comma","ctrl":false,"alt":true,"shift":false,"meta":false}]})),
+        Some(WebViewEvent::ExtensionShortcuts(vec![
+            ExtensionShortcut {
+                key: "Y".into(),
+                modifiers: shift_ctrl,
+            },
+            ExtensionShortcut {
+                key: "Comma".into(),
+                modifiers: KeyModifiers {
+                    alt: true,
+                    ..KeyModifiers::default()
+                },
+            },
+        ]))
+    );
+    for bad in [
+        json!({"event":"extension_shortcuts","shortcuts":[{"key":"y","ctrl":true,"alt":false,"shift":false,"meta":false}]}),
+        json!({"event":"extension_shortcuts","shortcuts":[{"key":"Escape","ctrl":true,"alt":false,"shift":false,"meta":false}]}),
+        json!({"event":"extension_shortcuts","shortcuts":[{"key":"Y","ctrl":true}]}),
+        json!({"event":"extension_shortcuts"}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+
+    // A key pressed, named as the host names the keys it is forwarded.
+    let pressed = |key: KeyInput, shift: bool| {
+        ExtensionShortcut::pressed(
+            &key,
+            KeyModifiers {
+                ctrl: true,
+                shift,
+                ..KeyModifiers::default()
+            },
+        )
+        .map(|shortcut| shortcut.key)
+    };
+    let text = |text: &str| KeyInput::Character(text.into());
+    assert_eq!(pressed(text("y"), false).as_deref(), Some("Y"));
+    assert_eq!(pressed(text("Y"), true).as_deref(), Some("Y"));
+    assert_eq!(pressed(text("!"), true).as_deref(), Some("1"));
+    assert_eq!(pressed(text(")"), true).as_deref(), Some("0"));
+    assert_eq!(pressed(text("<"), true).as_deref(), Some("Comma"));
+    assert_eq!(pressed(text(" "), false).as_deref(), Some("Space"));
+    assert_eq!(
+        pressed(KeyInput::Named(NamedKey::ArrowLeft), false).as_deref(),
+        Some("Left")
+    );
+    assert_eq!(pressed(KeyInput::Named(NamedKey::Enter), false), None);
+    assert_eq!(pressed(text("é"), false), None);
+    assert_eq!(pressed(text("ab"), false), None);
 }

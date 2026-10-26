@@ -38,6 +38,7 @@ use tilo_actions::{
 };
 use tilo_resource::children::{self as lifecycle, ChildList as _, ChildRef, Children as Container};
 use tilo_resource::{Atom, Edit, EditOp, Id, Reader, Resource, Segment};
+use ui_core::arriving::{Arrival, Arriving, Source};
 use ui_core::permissions::{PermissionScope, TreePath};
 use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordOpenError};
 use ui_core::widget::Edits;
@@ -51,6 +52,24 @@ use super::record::RecordDoor;
 pub(crate) const CHILD_ACTION_TYPE: &str = "tilo.app.child-action";
 /// The operation type the container's lifecycle is carried out under.
 pub(crate) const LIFECYCLE_TYPE: &str = "tilo.app.child-lifecycle";
+
+/// A listed child: its id, its place in the container and its state as a
+/// read, pending while its record is on its way from the room.
+pub type Listed<C> = (Id, ChildRef, Arriving<Rc<<C as Resource>::State>>);
+
+/// Why a listed child is not held.
+enum Unheld {
+    /// Its record is not on this device yet.
+    Missing,
+    /// It is here and does not read.
+    Unreadable(String),
+}
+
+impl From<String> for Unheld {
+    fn from(reason: String) -> Self {
+        Self::Unreadable(reason)
+    }
+}
 
 /// A resource whose records are children a record lists. See the
 /// module docs.
@@ -221,7 +240,13 @@ pub(crate) struct ChildrenState<C: ChildRecord> {
     id: String,
     kind: RecordKind,
     held: RefCell<BTreeMap<Id, Live<C>>>,
-    /// A child before anything was written to it.
+    /// Each listed child as a read: pending while its record is on its way
+    /// from the room, its state once it is here.
+    arrivals: RefCell<BTreeMap<Id, Arriving<Rc<C::State>>>>,
+    /// Why a listed child that is here does not read, by id.
+    unreadable: RefCell<BTreeMap<Id, String>>,
+    /// A child before anything was written to it: what the container
+    /// publishes for one whose record has not arrived.
     empty: Rc<C::State>,
     revision: Cell<u64>,
     published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
@@ -248,6 +273,8 @@ impl<C: ChildRecord> ChildrenState<C> {
             id: ui_core::record::children_resource_id(&C::parent_record(), C::KIND),
             kind: RecordKind::new(C::KIND),
             held: RefCell::default(),
+            arrivals: RefCell::default(),
+            unreadable: RefCell::default(),
             empty,
             revision: Cell::new(0),
             published: RefCell::new(None),
@@ -288,21 +315,60 @@ impl<C: ChildRecord> ChildrenState<C> {
             .collect()
     }
 
-    /// Every child outside the trash with its state, in the container's
-    /// order; one whose record has not arrived yet reads as a new one.
-    pub(crate) fn children(&self) -> Vec<(Id, ChildRef, Rc<C::State>)> {
+    /// Every child outside the trash with its state as a read, in the
+    /// container's order: pending while its record is on its way from the
+    /// room.
+    pub(crate) fn children(&self) -> Vec<Listed<C>> {
         self.refresh();
-        let held = self.held.borrow();
+        let arrivals = self.arrivals.borrow();
         self.listed()
             .into_iter()
             .filter(|(_, child)| child.trashed.is_none())
-            .map(|(id, child)| {
-                let state = held
-                    .get(&id)
-                    .map_or_else(|| Rc::clone(&self.empty), Live::get);
-                (id, child, state)
+            .filter_map(|(id, child)| {
+                let arriving = arrivals.get(&id)?.clone();
+                Some((id, child, arriving))
             })
             .collect()
+    }
+
+    /// Bring each listed child's read to where its record stands: its
+    /// state once it is here, why it does not read, or on its way from the
+    /// room. Children no longer listed are let go.
+    fn settle(&self) {
+        let listed = self.listed();
+        let held = self.held.borrow();
+        let unreadable = self.unreadable.borrow();
+        let mut arrivals = self.arrivals.borrow_mut();
+        arrivals.retain(|id, _| listed.iter().any(|(listed, _)| listed == id));
+        for (id, _) in listed {
+            let now = match (held.get(&id), unreadable.get(&id)) {
+                (Some(live), _) => Arrival::Ready(live.get()),
+                (None, Some(reason)) => Arrival::Failed(reason.clone()),
+                (None, None) => Arrival::Pending {
+                    from: ui_core::room_sync::source(),
+                },
+            };
+            match arrivals.get(&id) {
+                None => {
+                    let arriving = Arriving::pending(Source::Local);
+                    arriving.stand(now);
+                    arrivals.insert(id, arriving);
+                }
+                Some(arriving) => {
+                    let same = arriving.with(|was| match (was, &now) {
+                        (Arrival::Ready(was), Arrival::Ready(now)) => Rc::ptr_eq(was, now),
+                        (Arrival::Failed(was), Arrival::Failed(now)) => was == now,
+                        (Arrival::Pending { from: was }, Arrival::Pending { from: now }) => {
+                            was == now
+                        }
+                        _ => false,
+                    });
+                    if !same {
+                        arriving.stand(now);
+                    }
+                }
+            }
+        }
     }
 
     /// The child `id`, listed or in the trash, when its record is here.
@@ -342,31 +408,45 @@ impl<C: ChildRecord> ChildrenState<C> {
                 .collect()
         };
         for id in missing {
-            moved |= self.hold(&id).is_ok();
+            match self.hold(&id) {
+                Ok(()) => {
+                    self.unreadable.borrow_mut().remove(&id);
+                    moved = true;
+                }
+                // Not here yet: it is on its way from the room.
+                Err(Unheld::Missing) => {}
+                Err(Unheld::Unreadable(reason)) => {
+                    self.unreadable.borrow_mut().insert(id, reason);
+                }
+            }
         }
         if moved {
             self.moved();
         }
+        self.settle();
         moved
     }
 
     /// Hold child `id`: read its record from this device, which asks the
     /// room for it when it has not got it yet.
-    fn hold(&self, id: &Id) -> Result<(), String> {
+    fn hold(&self, id: &Id) -> Result<(), Unheld> {
         if self.held.borrow().contains_key(id) {
             return Ok(());
         }
         let checkout = RecordCheckout::new(Self::record(id)?, self.kind.clone());
         if !self.room.store.is_ready(&checkout.id) {
             if !self.room.store.takes_writes() {
-                return Err("opened once the store takes writes".into());
+                return Err(Unheld::Missing);
             }
-            self.room
-                .store
-                .try_open_record(&checkout)
-                .map_err(|error| error.to_string())?;
+            match self.room.store.try_open_record(&checkout) {
+                Ok(_) => {}
+                Err(RecordOpenError::MissingRecord | RecordOpenError::Busy) => {
+                    return Err(Unheld::Missing);
+                }
+                Err(error) => return Err(Unheld::Unreadable(error.to_string())),
+            }
         }
-        self.follow(id)
+        Ok(self.follow(id)?)
     }
 
     fn follow(&self, id: &Id) -> Result<(), String> {
@@ -746,7 +826,12 @@ impl<C: ChildRecord> ChildrenState<C> {
                 )));
             }
         }
-        self.hold(child).map_err(ActionError::Refused)?;
+        self.hold(child).map_err(|unheld| {
+            ActionError::Refused(match unheld {
+                Unheld::Missing => "it has not arrived on this device yet".to_owned(),
+                Unheld::Unreadable(reason) => reason,
+            })
+        })?;
         self.write(child, action, invoker)
     }
 
@@ -1146,9 +1231,11 @@ impl<C: ChildRecord> Children<C> {
         self.state.id()
     }
 
-    /// Every child outside the trash, with its place and state, in order.
+    /// Every child outside the trash, with its place and its state as a
+    /// read, in order: a child whose record is on its way from the room is
+    /// pending. Show it with [`ViewCx::arriving`](super::ViewCx::arriving).
     #[must_use]
-    pub fn children(&self) -> Vec<(Id, ChildRef, Rc<C::State>)> {
+    pub fn children(&self) -> Vec<Listed<C>> {
         self.state.children()
     }
 
@@ -1387,7 +1474,8 @@ mod tests {
                         .child(&group)
                         .map_or_else(|| group.to_string(), |topic| topic.name.clone())
                 });
-                (state.name.clone(), group)
+                let name = state.with(|state| state.ready().map(|topic| topic.name.clone()));
+                (name.expect("every child here"), group)
             })
             .collect()
     }
@@ -1551,5 +1639,79 @@ mod tests {
         );
         invoke(child, lifecycle::RESTORE, serde_json::json!({})).unwrap();
         assert_eq!(children.children().len(), 1);
+    }
+
+    /// The saved record `id` of `store`, as another device receives it.
+    fn copy(from: &RecordStore, to: &RecordStore, id: &RecordId, kind: &str) {
+        let saved = from.read(id, |doc| doc.clone().save()).unwrap();
+        to.create_record(&RecordCheckout::new(id.clone(), RecordKind::new(kind)))
+            .unwrap();
+        to.with(id, |doc| {
+            *doc = ui_core::automerge::AutoCommit::load(&saved).unwrap();
+        })
+        .unwrap();
+    }
+
+    /// A device's store of room `lounge`'s records, kept as it keeps them:
+    /// a record it has not got reads as missing, not as an error.
+    fn device() -> RecordStore {
+        crate::record::RecordOwners::with_store(Rc::new(crate::feedback::MemoryStore::new()))
+            .open("so.tilo.test", "lounge")
+            .unwrap()
+    }
+
+    /// The children of the room `store` holds, as `author` sees them.
+    fn children_of(store: &RecordStore) -> Children<Topic> {
+        let read = store.clone();
+        Children::<Topic>::detached_in(store.clone(), "so.tilo.test", "ana", move || {
+            read.read(&RecordId::room_default(), |doc| {
+                Reader::<Room>::read(doc).unwrap().state().clone()
+            })
+            .unwrap()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_child_whose_record_is_on_its_way_reads_pending_until_it_arrives() {
+        let here = device();
+        let parent = RecordCheckout::new(RecordId::room_default(), RecordKind::new(Room::KIND));
+        here.create_record(&parent).unwrap();
+        here.with(&parent.id, |doc| {
+            Room::initialize(doc).unwrap();
+            doc.commit();
+        })
+        .unwrap();
+        let design = children_of(&here)
+            .create(serde_json::json!({ "name": "design" }), None, None)
+            .unwrap();
+        // Another device has the room's listing, not yet the child's record.
+        let there = device();
+        copy(&here, &there, &RecordId::room_default(), Room::KIND);
+        let theirs = children_of(&there);
+        let listed = theirs.children();
+        let [(id, _, arriving)] = listed.as_slice() else {
+            panic!("the one listed child: {}", listed.len());
+        };
+        assert_eq!(*id, design);
+        assert!(
+            arriving.get().is_pending(),
+            "listed and not here is on its way, not a new child: {:?}",
+            arriving.with(|arrival| arrival.clone().map(|_| ()))
+        );
+        assert!(theirs.child(&design).is_none());
+
+        copy(
+            &here,
+            &there,
+            &RecordId::room_default().child(design.as_str()).unwrap(),
+            Topic::KIND,
+        );
+        let _ = theirs.revision();
+        assert_eq!(
+            arriving.with(|arrival| arrival.ready().map(|topic| topic.name.clone())),
+            Some("design".to_owned()),
+            "the same read answers once the record arrived"
+        );
     }
 }

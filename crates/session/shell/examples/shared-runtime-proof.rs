@@ -191,7 +191,7 @@ fn main() -> Result<()> {
         vec![session.room.clone()],
         Box::new(move |event, route| {
             if route.app_id == WRITER
-                && let CollabEvent::Document { envelope, .. } = event
+                && let runtime_collab::event::CollabEvent::Document { envelope, .. } = event
                 && let Ok(mut events) = received.lock()
             {
                 events.push(envelope.clone());

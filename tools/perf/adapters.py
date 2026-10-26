@@ -109,7 +109,11 @@ Each adapter reads what a benchmark already prints and emits records through
   H.264 (`--codec vp9`) is its own series, its codec after the group
   (`stream.vp9.frame.latency`), so it never shares a baseline with H.264's.
   The report must name the env's renderer, commit and profile, and be
-  correct: an incorrect run is a failure, never a measurement.
+  correct: an incorrect run is a failure, never a measurement. A
+  qualification that names the browser it drove (`--platform safari`, which
+  Safari's WebDriver drives on a macOS host) must have streamed what it asked
+  for: over the HTTPS stream, since Safari has no WebTransport, and in the
+  codec it asked for.
 
 Usage:
 
@@ -701,6 +705,10 @@ def native_stream(report: dict[str, Any], env: dict[str, Any]) -> list[record.Re
         raise ValueError(f"the report names codec {codec!r}")
     if session["codec"] != codec:
         raise ValueError(f"the session streamed {session['codec']}, not the requested {codec}")
+    # Safari has no WebTransport, so a run that names it took the HTTPS
+    # stream: a record claiming otherwise measured another browser.
+    if report.get("browser", {}).get("driver") == "webdriver" and report["workload"]["carrier"] != "https":
+        raise ValueError(f"the Safari run streamed over {report['workload']['carrier']}, not the HTTPS stream Safari takes")
     samples = report["samples"]
     missing = [field for field in STREAM_KPIS if not samples.get(field)]
     if missing:

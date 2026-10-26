@@ -203,8 +203,12 @@ impl VideoEditorApp {
                 if b <= chip_x0 - S1 && clear_of(&claimed, a, b) {
                     text(scene, tr, tf, &words, &label, c.text_dim, x + S1, label_top);
                 }
-                // faint grid line down the lanes
-                stroke_line(scene, tf, grid_ink, x, r.lanes.y0, x, r.timeline.y1, 1.0);
+                // faint grid line down the lanes, while there are clips
+                // to read against it
+                let grid_bottom = self.playhead_bottom(r);
+                if grid_bottom > r.lanes.y0 {
+                    stroke_line(scene, tf, grid_ink, x, r.lanes.y0, x, grid_bottom, 1.0);
+                }
             }
         }
 
@@ -565,7 +569,7 @@ impl VideoEditorApp {
                 px,
                 r.ruler.y0 + S1,
                 px,
-                r.timeline.y1,
+                self.playhead_bottom(r),
                 1.5,
             );
             let head = triangle_down(px, r.ruler.y0 + S1, 10.0);
@@ -596,28 +600,19 @@ impl VideoEditorApp {
         crate::presence::draw_peer_playheads(
             &mut crate::presence::PeerPaintCtx::new(scene, tf, tr, theme, presence),
             &peer_tags,
-            r.timeline.y1,
+            self.playhead_bottom(r),
         );
 
         // Empty timeline: say what to do, rather than showing bare lanes.
         // Through the same shared empty state the preview and the inspector
         // use, so the three empty surfaces of one window are one design.
-        if self.project.clips.is_empty() {
-            let area = Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1);
-            let message = if self.project.media.is_empty() {
-                "Import media, then drag it here."
-            } else {
-                "Drag a clip from the media bin onto a track."
-            };
+        // Its words ask for a step, so it carries the button for it.
+        if let Some(empty) = self.timeline_empty(r) {
             ui::widget::EmptyState::paint(
                 &mut ui::paint::PaintCtx::new(scene, tf, tr, theme),
-                area,
-                &ui::widget::EmptyStateContent {
-                    icon: Some(Icon::Layers),
-                    message: Some(message),
-                    ..ui::widget::EmptyStateContent::new("Nothing on the timeline")
-                },
-                Point::new(f64::MIN, f64::MIN),
+                empty.area,
+                &empty.content(),
+                self.last_mouse,
             );
         }
 

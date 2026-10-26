@@ -622,6 +622,77 @@ pub fn close_active_tab(st: &mut ChromeState) -> Result<(), TabActionError> {
     close_tab(st, tab)
 }
 
+/// The focused window group, resolved as [`active_tab_id`] resolves its
+/// tab's group.
+pub fn active_group_id(st: &ChromeState) -> Option<GroupId> {
+    let tree = st.tree();
+    let ws = tree.desktop.active_workspace()?;
+    let strip = tree
+        .desktop
+        .active_strip
+        .get(&ws.id)
+        .and_then(|id| ws.strips.iter().find(|s| s.id == *id))
+        .or_else(|| ws.strips.first())?;
+    let group = tree
+        .desktop
+        .active_group
+        .get(&strip.id)
+        .and_then(|g| strip.window_groups.iter().find(|w| w.id == *g))
+        .or_else(|| strip.window_groups.first())
+        .map(|g| g.id);
+    drop(tree);
+    group
+}
+
+/// Close every tab of `group_id` and remember them as one close, so a
+/// single Reopen Closed Tab brings the whole window back. The window
+/// menu's Close window, its search row and the `group.close` action
+/// converge here.
+///
+/// # Errors
+///
+/// [`TabActionError::UnknownTab`] when the group, or one of its tabs, is
+/// no longer in the tree; otherwise as [`close_tab`].
+pub fn close_group(st: &mut ChromeState, group_id: GroupId) -> Result<(), TabActionError> {
+    let tabs_of = |st: &ChromeState| {
+        let tree = st.tree();
+        let tabs = tree
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .find(|group| group.id == group_id)
+            .map(|group| group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>());
+        drop(tree);
+        tabs
+    };
+    let tabs = tabs_of(st).ok_or(TabActionError::UnknownTab)?;
+    let closed = crate::shell::closed_tabs::capture_group(&st.tree(), group_id);
+    for tab in tabs {
+        if !tabs_of(st).is_some_and(|present| present.contains(&tab)) {
+            return Err(TabActionError::UnknownTab);
+        }
+        close_tab_unrecorded(st, tab)?;
+    }
+    if let Some(entry) = closed {
+        st.remember_closed_tab_after_removal(entry);
+    }
+    Ok(())
+}
+
+/// [`close_group`] on the focused window group — the `group.close`
+/// action's form.
+///
+/// # Errors
+///
+/// [`TabActionError::NoActiveTab`] when no window is focused, otherwise as
+/// [`close_group`].
+pub fn close_active_group(st: &mut ChromeState) -> Result<(), TabActionError> {
+    let group = active_group_id(st).ok_or(TabActionError::NoActiveTab)?;
+    close_group(st, group)
+}
+
 /// Why a window could not move to another workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MoveTabError {

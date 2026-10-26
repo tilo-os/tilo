@@ -58,11 +58,6 @@ pub const DEFAULT_STRIP_USABLE_PX: f64 = 1280.0;
 
 pub const RESIZE_HANDLE_PX: f64 = 6.0;
 
-/// How long a window's place is held, with nothing drawn in it, for its
-/// first frame: a window whose content arrives inside it appears whole,
-/// with no fade (its slot opening is the motion); one that arrives later
-/// cross-fades in over the ground it held.
-const ARRIVAL_GRACE: Duration = Duration::from_millis(150);
 /// The lifted handle remains readable while exposing the drop target; the app
 /// pixels beneath it recede further so the target never disappears.
 const DRAG_CONTENT_ALPHA: f32 = 0.42;
@@ -76,18 +71,6 @@ const DRAG_CONTENT_SCALE_END: f64 = 0.96;
 fn window_progress(direction: crate::motion::Direction, elapsed: Duration) -> f64 {
     crate::motion::WindowMotion::OPEN.progress_after(
         direction,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
-        elapsed,
-    )
-}
-
-/// How far a window's content has cross-faded in over the ground its place
-/// held, `elapsed` after it arrived past [`ARRIVAL_GRACE`]
-/// (`motion::CROSS_FADE`).
-fn arrival_progress(elapsed: Duration) -> f64 {
-    crate::motion::CROSS_FADE.progress_after(
-        crate::motion::Direction::Enter,
         crate::tokens::EffectiveMotion::default(),
         crate::tokens::MotionSource::Pointer,
         elapsed,
@@ -115,11 +98,20 @@ fn group_close_fade() -> Duration {
 /// every rebuild of one frame reads the same value. Closed form: a stalled
 /// frame lands where the motion is, and a new target mid-flight keeps the
 /// value and its velocity, so Super+M twice is one motion, not a queue.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 struct FrameSpring<T: crate::motion::Animatable> {
     motion: crate::motion::MotionValue<T>,
     drawn: T,
     at: Instant,
+}
+
+impl<T: crate::motion::Animatable> Drop for FrameSpring<T> {
+    /// A spring let go mid-way (a shortcut landing what it changed, a
+    /// close completing) is drawn no more: it asks for no more frames.
+    fn drop(&mut self) {
+        let target = self.motion.target();
+        self.motion.snap(target);
+    }
 }
 
 impl FrameSpring<f64> {
@@ -243,6 +235,8 @@ pub struct WindowGroup {
     external_navigation: bool,
     /// Transient presentation from the parent row; never a persisted maximize.
     fullscreen_presentation: bool,
+    /// While fullscreen, the bar the person reached for (`fullscreen_bar`).
+    fullscreen_bar: fullscreen_bar::FullscreenBar,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
@@ -264,11 +258,18 @@ pub struct WindowGroup {
     /// An edge drag the parent row is carrying out on this window
     /// ([`super::edge_resize`]).
     edge_drag: Option<GroupEdgeDrag>,
-    /// The edge of this window a press would resize, shown before anything
-    /// is pressed. The parent row decides it ([`super::edge_resize::seam_owner`]).
-    edge_highlight: Option<WindowEdge>,
+    /// The edge of this window a press would resize, and since when the
+    /// pointer has rested on it: it lights up once that rest outlasts
+    /// [`EDGE_HOVER_DWELL`]. The parent row decides it
+    /// ([`super::edge_resize::seam_owner`]).
+    edge_highlight: Option<(WindowEdge, Instant)>,
+    /// The last frame painted the lit edge.
+    edge_lit_drawn: bool,
+    /// A finished edge drag's size label, fading out: when the drag let go,
+    /// the edge it was on, and the size it shows.
+    size_label_fade: Option<(Instant, WindowEdge, (f64, f64))>,
     /// The edge highlight changed since the last frame, which shows, moves
-    /// or hides the grip.
+    /// or hides the lit edge.
     grip_dirty: bool,
     pub maximized: bool,
     pub search_active: bool,
@@ -315,12 +316,6 @@ pub struct WindowGroup {
     /// display and draws edge to edge ([`Widget::set_full_bleed`]).
     fills_display: bool,
     last_cursor: Point,
-    /// When the window was asked for: its slot opens from here, and its
-    /// content, held back until it first draws, shows whole if that is
-    /// within [`ARRIVAL_GRACE`].
-    spawned_at: Option<Instant>,
-    /// Content that first drew past the grace cross-fades in from here.
-    arrival_fade_at: Option<Instant>,
     /// A tab just opened in this window that has not drawn yet, and the tab
     /// shown before it: the window keeps showing that one meanwhile, so its
     /// body is never blank.
@@ -349,11 +344,6 @@ pub struct WindowGroup {
     /// A restoring frame came to rest and the window is owed the layout at
     /// its own width: asks for the frame that lays it out.
     rest_layout_owed: bool,
-    /// Set on any `draw` this group sat out because nothing in it had
-    /// presented yet; drained on the first `draw` that does paint, which
-    /// latches the arrival fade to the moment the window turns up rather
-    /// than the moment its tab was created.
-    held_back: bool,
     /// Tab-pill close fades, keyed by close-start `Instant` — the same
     /// stamp the bar snapshots into `closing_tabs` so both stay in
     /// lockstep. A side table (not a `TileHost` field) to keep
@@ -446,12 +436,11 @@ pub fn merged_controls_width(theme: &Theme) -> f64 {
     let m = crate::chrome::HeaderRowMetrics::resolve(theme);
     3.0 * m.chip + 2.0 * m.gap
 }
-/// The per-group right-edge resize grip: two bars, each this wide, filling
-/// the `RESIZE_HANDLE_PX` band between them.
-const GRIP_BAR_PX: f64 = 2.0;
-/// The grip runs a quarter of the group's height, clamped to
-/// `spacing.s6 ..= spacing.s16 + spacing.s4`.
-const GRIP_HEIGHT_SHARE: f64 = 0.25;
+/// How long the pointer rests on a window edge before the edge lights up:
+/// passing over one on the way elsewhere changes nothing but the cursor.
+const EDGE_HOVER_DWELL: Duration = Duration::from_millis(120);
+/// The stroke of a lit edge, inside the window's outline.
+const EDGE_LIT_PX: f64 = 2.0;
 
 impl WindowGroup {
     /// Paint a whole group while its window handle is being reordered. The
@@ -551,8 +540,11 @@ impl WindowGroup {
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
+            fullscreen_bar: fullscreen_bar::FullscreenBar::default(),
             edge_drag: None,
             edge_highlight: None,
+            edge_lit_drawn: false,
+            size_label_fade: None,
             grip_dirty: false,
             maximized: false,
             search_active: false,
@@ -576,8 +568,6 @@ impl WindowGroup {
             top_slide_since: None,
             fills_display: false,
             last_cursor: Point::ZERO,
-            spawned_at: None,
-            arrival_fade_at: None,
             tab_waiting: None,
             tab_fade: None,
             rect_spring: None,
@@ -585,7 +575,6 @@ impl WindowGroup {
             content_px: 0.0,
             rect_from_width: 0.0,
             rest_layout_owed: false,
-            held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
             close_requested: false,
@@ -615,13 +604,16 @@ impl WindowGroup {
     }
 
     fn navigation_bar_visible(&self) -> bool {
-        !self.external_navigation && !self.fullscreen_presentation
+        !self.external_navigation && (!self.fullscreen_presentation || self.fullscreen_bar_drawn())
     }
 
     pub(crate) fn set_fullscreen_presentation(&mut self, fullscreen: bool) {
         if self.fullscreen_presentation != fullscreen {
             self.fullscreen_presentation = fullscreen;
             self.style_dirty = true;
+            if !fullscreen {
+                self.fullscreen_bar = fullscreen_bar::FullscreenBar::default();
+            }
         }
     }
 
@@ -666,30 +658,28 @@ impl WindowGroup {
         self.focused
     }
 
+    /// The window was asked for: its slot opens from nothing. What shows
+    /// inside it meanwhile is its content's arrival ([`TileHost`]).
     pub fn start_spawn_animation(&mut self) {
-        self.spawned_at = Some(crate::time::now());
         self.arm_width_from_zero();
     }
 
-    /// Called by every paint: on the first one after the window's place was
-    /// held back (nothing of it had drawn), decide how its content arrives.
-    /// Inside [`ARRIVAL_GRACE`] of being asked for it shows whole; later, it
-    /// cross-fades in. The slot's width spring is left as it is: it has been
-    /// opening since the window was asked for.
-    fn take_first_paint(&mut self) {
-        let now = crate::time::now();
-        if std::mem::take(&mut self.held_back) && !self.is_closing() {
-            let late = self
-                .spawned_at
-                .is_none_or(|asked| now.saturating_duration_since(asked) >= ARRIVAL_GRACE);
-            self.arrival_fade_at = late.then_some(now);
+    /// Whether the window stands on screen: something in it has drawn, or
+    /// its place is reserved for content still on its way. Only a first
+    /// frame from this device, inside its frame budget, keeps it off.
+    #[must_use]
+    pub fn stands(&self) -> bool {
+        Widget::presented(self) || self.holds_first_frame_until(crate::time::now()).is_none()
+    }
+
+    /// Until when the window's first frame waits for its content: nothing
+    /// in it has drawn, and its active tab's first frame comes from this
+    /// device and is inside its frame budget.
+    fn holds_first_frame_until(&self, now: Instant) -> Option<Instant> {
+        if Widget::presented(self) || self.is_closing() {
+            return None;
         }
-        if self
-            .arrival_fade_at
-            .is_some_and(|t| arrival_progress(now.saturating_duration_since(t)) >= 1.0)
-        {
-            self.arrival_fade_at = None;
-        }
+        self.active_host()?.holds_first_frame_until(now)
     }
 
     /// A shortcut or action lands what it changed at once: the springs it
@@ -708,10 +698,6 @@ impl WindowGroup {
             }
             if self.rect_spring.take().is_some() {
                 self.style_dirty = true;
-            }
-            if !self.is_closing() {
-                self.spawned_at = None;
-                self.arrival_fade_at = None;
             }
         }
     }
@@ -1238,22 +1224,55 @@ impl WindowGroup {
             .resolve_in_strip(self.strip_usable_px, self.alone)
     }
 
-    /// Show (or, with `None`, hide) the grip on the edge of this window a
-    /// press would resize. Set by the parent row from
+    /// Light up (or, with `None`, put out) the edge of this window a press
+    /// would resize, once the pointer has rested there for
+    /// [`EDGE_HOVER_DWELL`]. Set by the parent row from
     /// [`super::edge_resize::seam_owner`]; the window itself never decides.
     pub fn set_edge_highlight(&mut self, edge: Option<WindowEdge>) {
-        if self.edge_highlight != edge {
-            self.edge_highlight = edge;
+        if self.edge_highlight.map(|(edge, _)| edge) != edge {
+            self.edge_highlight = edge.map(|edge| (edge, crate::time::now()));
+            self.edge_lit_drawn = false;
             self.grip_dirty = true;
         }
     }
 
-    /// The edge whose grip shows: the one being dragged, else the one a
-    /// press would resize.
+    /// The edge a drag is moving, else the one a press would resize.
     pub fn edge_highlight(&self) -> Option<WindowEdge> {
         self.edge_drag
             .map(|drag| drag.moving)
-            .or(self.edge_highlight)
+            .or(self.edge_highlight.map(|(edge, _)| edge))
+    }
+
+    /// When the hovered edge lights up, while it has not yet.
+    fn edge_reveal_at(&self) -> Option<Instant> {
+        let (_, since) = self.edge_highlight?;
+        (self.edge_drag.is_none() && !self.edge_lit_drawn)
+            .then(|| since.checked_add(EDGE_HOVER_DWELL))
+            .flatten()
+    }
+
+    /// The edge lit at `now`: the one being dragged, else the hovered one
+    /// once the pointer has rested on it.
+    fn lit_edge(&self, now: Instant) -> Option<WindowEdge> {
+        if let Some(drag) = self.edge_drag {
+            return Some(drag.moving);
+        }
+        let (edge, since) = self.edge_highlight?;
+        (now.saturating_duration_since(since) >= EDGE_HOVER_DWELL
+            || crate::motion::testing::is_settled())
+        .then_some(edge)
+    }
+
+    /// How far a released drag's size label has faded out, `None` once gone.
+    fn size_label_fading(&self, now: Instant) -> Option<f64> {
+        let (released, ..) = self.size_label_fade?;
+        let progress = crate::motion::CROSS_FADE.progress_after(
+            crate::motion::Direction::Exit,
+            crate::tokens::EffectiveMotion::default(),
+            crate::tokens::MotionSource::Pointer,
+            now.saturating_duration_since(released),
+        );
+        (!self.reduce_motion && progress < 1.0).then_some(progress)
     }
 
     /// The widths this window may be resized to: the strictest minimum and
@@ -1299,6 +1318,7 @@ impl WindowGroup {
             live_px,
         });
         self.edge_highlight = None;
+        self.size_label_fade = None;
         self.grip_dirty = true;
         self.style_dirty = true;
         self.set_live_resize_anchor(Some(moving.opposite()));
@@ -1333,6 +1353,11 @@ impl WindowGroup {
         let Some(drag) = self.edge_drag.take() else {
             return 0.0;
         };
+        self.size_label_fade = Some((
+            crate::time::now(),
+            drag.moving,
+            (drag.live_px, self.rect.height().round()),
+        ));
         if commit {
             self.width = WindowWidth::from_px(drag.live_px, self.strip_usable_px);
             self.width_before_share = None;
@@ -1591,166 +1616,6 @@ impl WindowGroup {
         self.search_tab = None;
     }
 
-    /// Carry the window's search to its tab's app ([`super::WindowSearch::drive`]).
-    fn drive_search(&mut self) {
-        if self.search.is_remote() {
-            // An app in a process of its own is told, and drives itself.
-            if let Some(tab) = self.search_tab {
-                let events = self.search.take_remote_events();
-                self.window_events
-                    .extend(events.into_iter().map(|event| (tab, event)));
-            }
-            return;
-        }
-        if !self.search.wants_drive() {
-            return;
-        }
-        let Some(tab) = self.search_tab else {
-            return;
-        };
-        let search = &mut self.search;
-        let driven = self
-            .hosts
-            .iter_mut()
-            .find(|(id, _)| *id == tab)
-            .and_then(|(_, host)| host.visit_search_root(&mut |root| search.drive(root)));
-        if driven.is_none() {
-            // The tab's app is gone: nothing is left to tell.
-            self.search.detach();
-        }
-    }
-
-    /// Carry out what the person asked of the window's search.
-    fn service_search(&mut self) -> bool {
-        let requests = self.search.take_requests();
-        let acted = !requests.is_empty();
-        for request in requests {
-            match request {
-                super::WindowSearchRequest::Open => {
-                    self.open_search(crate::tokens::MotionSource::Pointer);
-                }
-                super::WindowSearchRequest::Close => {
-                    self.close_search(crate::motion::input_source());
-                }
-                super::WindowSearchRequest::Widen(reach) => {
-                    // The platform search takes the query on from here.
-                    self.pending_search_open = Some(super::SearchHandoff {
-                        tab: self.bar.active_id(),
-                        reach,
-                        query: self.search.query().to_owned(),
-                    });
-                    self.close_search(crate::motion::input_source());
-                }
-            }
-        }
-        self.drive_search();
-        acted
-    }
-
-    /// The search follows the window's active tab: switching tabs ends it on
-    /// the tab it was on.
-    fn follow_search_tab(&mut self) {
-        if let Some(tab) = self.search_tab
-            && tab != self.bar.active_id()
-        {
-            self.close_search(crate::tokens::MotionSource::Pointer);
-        }
-    }
-
-    /// Whether `event` is Find (Ctrl+F, ⌘F), or Find and Replace (Ctrl+H,
-    /// ⌘⌥F), and this window can search in place (for replacing, a
-    /// document): the window opens its search, or gives the open one the
-    /// keyboard, instead of the app opening a find of its own.
-    fn takes_find(&mut self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
-        let Some(opening) = super::window_search::search_chord(
-            event,
-            modifiers.state(),
-            crate::platform::PlatformConventions::default(),
-        ) else {
-            return false;
-        };
-        if !self.focused || !self.navigation_bar_visible() {
-            return false;
-        }
-        let replace = opening == crate::window_toolbar::SearchOpening::Replace;
-        if self.search.is_open() {
-            if self.search.has_keyboard() {
-                // Find again widens, and the replace chord goes to the
-                // replacement: the search's own key handling.
-                return false;
-            }
-            if replace {
-                self.search.focus_replacement();
-            } else {
-                self.search.take_keyboard();
-            }
-            return true;
-        }
-        let active = self.bar.active_id();
-        let in_place = match self.window_offer(active) {
-            Some(offer) => offer.search.into(),
-            None => self
-                .active_host_mut()
-                .map_or(super::InPlace::Nothing, TileHost::in_place_search),
-        };
-        if in_place == super::InPlace::Nothing || (replace && in_place != super::InPlace::Document)
-        {
-            return false;
-        }
-        self.open_search_as(crate::tokens::MotionSource::Keyboard, opening);
-        true
-    }
-
-    /// Route a keyboard or input-method event to the window's search while
-    /// its field holds the keyboard, for a host whose own chords and focus
-    /// would otherwise see the key first. Whether the search took it; an
-    /// event it did not take is the host's to dispatch as usual.
-    pub fn route_search_input(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) -> bool {
-        if !self.search.has_keyboard()
-            || !matches!(
-                event,
-                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-            )
-        {
-            return false;
-        }
-        let routed = self.search.route(event, ctx);
-        if routed {
-            self.service_search();
-            self.drive_search();
-        }
-        routed
-    }
-
-    /// Place the search control after the tabs, and let it reach up to the
-    /// window's own controls.
-    fn place_search(&mut self) {
-        if !self.navigation_bar_visible() {
-            self.search.place(Rect::ZERO, 0.0);
-            return;
-        }
-        let px = super::window_controls::CONTROL_PX;
-        if let Some((row, reach)) = self.bar.toolbar_search_slot() {
-            // The app put its slots in the bar: the control ends their row,
-            // and the open search grows back over the location.
-            let x0 = row.x1 + super::window_controls::CONTROL_GAP;
-            let y0 = row.center().y - px / 2.0;
-            self.search
-                .place_trailing(Rect::new(x0, y0, x0 + px, y0 + px), reach.min(x0));
-            return;
-        }
-        let row = self.bar.get_rect();
-        let x0 = self.bar.tabs_end() + super::window_controls::CONTROL_GAP;
-        let y0 = row.center().y - px / 2.0;
-        let limit = self.bar.window_controls().content_limit(row);
-        self.search
-            .place(Rect::new(x0, y0, x0 + px, y0 + px), limit.max(x0 + px));
-    }
-
     pub fn take_pending_new_tab(&mut self) -> Option<u64> {
         self.pending_new_tab.take()
     }
@@ -1799,15 +1664,14 @@ impl WindowGroup {
             host.bind_record(store.clone(), record_for(*tab_id));
         }
     }
-    /// Deliberately not [`Widget::opening`], which is false as soon as
-    /// one tab has drawn even if a tab behind it is still starting (and
-    /// still needs animation frames).
-    pub fn any_tile_opening(&self) -> bool {
-        // `presented()` is also the latch that retires a newly arrived
-        // client's opening state. Evaluate every host before asking which are
-        // still opening, just as the group's ordinary presentation path does.
+    /// Whether any tab still stands for content whose first frame is not
+    /// shown, even when another tab of the window has drawn.
+    pub fn any_tile_arriving(&self) -> bool {
+        // `presented()` is also the latch that notes a newly arrived
+        // client's first frame. Evaluate every host before asking which are
+        // still arriving, just as the group's ordinary presentation path does.
         let _ = Widget::presented(self);
-        self.hosts.iter().any(|(_, h)| Widget::opening(h))
+        self.hosts.iter().any(|(_, h)| h.is_arriving())
     }
 
     pub fn active_host_mut(&mut self) -> Option<&mut TileHost> {
@@ -1856,12 +1720,6 @@ impl WindowGroup {
             return None;
         }
         let active_id = self.bar.active_id();
-        let opening_name = self
-            .bar
-            .tabs()
-            .iter()
-            .find(|tab| tab.id == active_id)
-            .map(|tab| tab.title.clone());
         let host = self
             .hosts
             .iter_mut()
@@ -1871,9 +1729,6 @@ impl WindowGroup {
         self.bar
             .set_group_focused(self.focused || self.search_active);
         self.bar.draw(scene, transform, tr, theme, presence);
-        if let Some(name) = opening_name.as_deref() {
-            host.set_opening_name(name);
-        }
         host.set_focused(self.focused || self.search_active);
         host.draw_complete_content_capture(scene, transform, tr, theme, presence)?;
         Some(self.rect.union(capture_rect))
@@ -2052,13 +1907,13 @@ impl WindowGroup {
             let from_alive = self.hosts.iter().any(|(i, _)| *i == from);
             if to != active || !from_alive {
                 self.tab_waiting = None;
-            } else if self
-                .hosts
-                .iter()
-                .any(|(i, h)| *i == to && (Widget::presented(h) || Widget::opening(h)))
-            {
-                // Drawn, or waited for long enough that its opening card
-                // says what is coming.
+            } else if self.hosts.iter().any(|(i, h)| {
+                *i == to
+                    && (Widget::presented(h)
+                        || h.holds_first_frame_until(crate::time::now()).is_none())
+            }) {
+                // Drawn, or its place is reserved past the frame its first
+                // frame may hold: what stands there is its arrival.
                 let mut fade = crate::motion::CrossFade::new(from);
                 // The new tab's content arriving, not a navigation: it
                 // cross-fades whatever opened it.
@@ -2126,8 +1981,11 @@ impl WindowGroup {
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
+            fullscreen_bar: fullscreen_bar::FullscreenBar::default(),
             edge_drag: None,
             edge_highlight: None,
+            edge_lit_drawn: false,
+            size_label_fade: None,
             grip_dirty: false,
             maximized: false,
             search_active: false,
@@ -2151,8 +2009,6 @@ impl WindowGroup {
             top_slide_since: None,
             fills_display: false,
             last_cursor: Point::ZERO,
-            spawned_at: None,
-            arrival_fade_at: None,
             tab_waiting: None,
             tab_fade: None,
             rect_spring: None,
@@ -2160,7 +2016,6 @@ impl WindowGroup {
             content_px: 0.0,
             rect_from_width: 0.0,
             rest_layout_owed: false,
-            held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
             close_requested: false,
@@ -2831,7 +2686,7 @@ impl WindowGroup {
                 self.note_maximized_press(self.last_cursor);
                 false
             }
-            WindowEvent::CursorLeft { .. } => self.top_edge.on_leave(crate::time::now()),
+            WindowEvent::CursorLeft { .. } => self.top_edge.on_leave(),
             WindowEvent::Touch(touch) => {
                 let p = Point::new(touch.location.x / scale, touch.location.y / scale);
                 match touch.phase {
@@ -2845,9 +2700,7 @@ impl WindowGroup {
                         self.top_edge.on_touch_start(p, &geo);
                         false
                     }
-                    winit::event::TouchPhase::Moved => {
-                        self.top_edge.on_touch_move(p, crate::time::now())
-                    }
+                    winit::event::TouchPhase::Moved => self.top_edge.on_touch_move(p),
                     winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
                         self.top_edge.on_touch_end();
                         false
@@ -2888,7 +2741,7 @@ impl WindowGroup {
         }
         for action in self.maximized_controls.take_activated() {
             // A used control is done with the bar.
-            if self.top_edge.hide(crate::time::now()) {
+            if self.top_edge.hide() {
                 self.top_edge_changed();
             }
             if action == CLOSE_TARGET && self.bar.is_held(self.bar.active_id()) {
@@ -3081,9 +2934,6 @@ impl WindowGroup {
             let alpha = f32_of_f64((1.0 - eased).max(0.0));
             let scale = 1.0 - 0.05 * eased;
             (alpha, 0.0, 0.0, scale)
-        } else if let Some(started) = self.arrival_fade_at {
-            let eased = arrival_progress(crate::time::now().saturating_duration_since(started));
-            (crate::motion::unit_opacity(eased), 0.0, 0.0, 1.0)
         } else {
             (1.0, 0.0, 0.0, 1.0)
         }
@@ -3201,65 +3051,112 @@ impl WindowGroup {
         }
     }
 
-    /// The two-bar resize grip on the edge of this window a press would
-    /// resize, or is resizing ([`Self::edge_highlight`]): it marks which
-    /// window will change before anything is pressed. Nothing at rest.
-    #[allow(
-        clippy::similar_names,
-        reason = "cx/cy is the standard center-x/center-y coordinate naming convention; \
-                  distinguishing them further would reduce clarity"
-    )]
-    fn draw_resize_grip(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let Some(edge) = self.edge_highlight() else {
+    /// The edge of this window a press would resize, or is resizing
+    /// ([`Self::lit_edge`]), lit along its whole length: the window's own
+    /// outline brightens on that side, so which window and which edge will
+    /// move is plain before anything is pressed. Neutral ink, never the
+    /// accent: secondary on hover, primary while dragging. Nothing at rest.
+    fn draw_lit_edge(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let edge = self.lit_edge(crate::time::now());
+        self.edge_lit_drawn = edge.is_some();
+        let Some(edge) = edge else {
             return;
         };
-        // Neutral ink, never the accent: secondary at rest, primary while
-        // the edge is being dragged.
-        let grip_col = if self.edge_drag.is_some() {
+        let ink = if self.edge_drag.is_some() {
             theme.tokens.colors.text_primary
         } else {
             theme.tokens.colors.text_dim
         };
-        let total_h = self.rect.height();
-        let grip_h = (total_h * GRIP_HEIGHT_SHARE).clamp(
-            f64::from(theme.tokens.spacing.s6),
-            f64::from(theme.tokens.spacing.s16) + f64::from(theme.tokens.spacing.s4),
+        // The card's outline (the window's body under its bar), inset so
+        // the stroke lies inside it, cut to the lit side: it runs round both
+        // corners into the top and bottom edges as far as the corners reach.
+        let card = self.card_rect();
+        let radius = f64::from(theme.tokens.radii.tile);
+        let outline = vello::kurbo::RoundedRect::from_rect(
+            card.inset(-EDGE_LIT_PX / 2.0),
+            (radius - EDGE_LIT_PX / 2.0).max(0.0),
         );
-        // Two bars, each `GRIP_BAR_PX` wide, that together fill the
-        // `RESIZE_HANDLE_PX` band exactly: centred on the band's own centre,
-        // one on either side of it, so the painted grip and the pointer
-        // zone are the same thing.
-        let grip_cx = match edge {
-            WindowEdge::Leading => self.rect.x0 + RESIZE_HANDLE_PX / 2.0,
-            WindowEdge::Trailing => self.rect.x1 - RESIZE_HANDLE_PX / 2.0,
+        let reach = radius.max(EDGE_LIT_PX);
+        let side = match edge {
+            WindowEdge::Leading => Rect::new(card.x0, card.y0, card.x0 + reach, card.y1),
+            WindowEdge::Trailing => Rect::new(card.x1 - reach, card.y0, card.x1, card.y1),
         };
-        let grip_cy = self.rect.center().y;
-        let bar = |dx: f64| {
-            vello::kurbo::RoundedRect::from_rect(
-                Rect::new(
-                    grip_cx + dx - GRIP_BAR_PX / 2.0,
-                    grip_cy - grip_h / 2.0,
-                    grip_cx + dx + GRIP_BAR_PX / 2.0,
-                    grip_cy + grip_h / 2.0,
-                ),
-                GRIP_BAR_PX / 2.0,
-            )
+        scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &side);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(EDGE_LIT_PX),
+            transform,
+            ink,
+            None,
+            &outline,
+        );
+        scene.pop_layer();
+    }
+
+    /// The window's body under its bar, across the window's whole width.
+    fn card_rect(&self) -> Rect {
+        self.active_host()
+            .map(Widget::get_rect)
+            .filter(|card| card.height() > 0.0)
+            .map_or(self.rect, |card| {
+                Rect::new(self.rect.x0, card.y0, self.rect.x1, card.y1)
+            })
+    }
+
+    /// The window's size while its edge is dragged, and fading out once let
+    /// go: a small chip inside the window beside the moving edge, at its
+    /// middle, where it never covers the pointer's path.
+    fn draw_size_label(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let now = crate::time::now();
+        let (edge, (width, height), alpha) = if let Some(drag) = self.edge_drag {
+            (drag.moving, (drag.live_px, self.rect.height().round()), 1.0)
+        } else if let (Some(faded), Some((_, edge, size))) =
+            (self.size_label_fading(now), self.size_label_fade)
+        {
+            (edge, size, 1.0 - faded)
+        } else {
+            // Faded out: this frame is the first without it.
+            self.size_label_fade = None;
+            return;
         };
-        let offset = RESIZE_HANDLE_PX / 2.0 - GRIP_BAR_PX / 2.0;
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            grip_col,
-            None,
-            &bar(-offset),
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let label = format!("{width:.0} \u{d7} {height:.0}");
+        let card = self.card_rect();
+        let inset = f64::from(theme.tokens.spacing.rhythm.related);
+        let x = match edge {
+            WindowEdge::Leading => card.x0 + inset,
+            WindowEdge::Trailing => card.x1 - inset,
+        };
+        let anchor = Rect::new(x, card.center().y, x, card.center().y);
+        let within = card.inset(-inset);
+        let chip = crate::widget::tooltip::hover_chip_rect_on(
+            tr,
+            theme,
+            (anchor, crate::widget::tooltip::TooltipSide::Beside),
+            &label,
+            within,
         );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            grip_col,
-            None,
-            &bar(offset),
-        );
+        let faded = alpha < 1.0;
+        if faded {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                f32_of_f64(alpha),
+                transform,
+                &crate::widget::tooltip::chip_paint_bounds(chip, theme),
+            );
+        }
+        crate::widget::tooltip::draw_chip(scene, transform, tr, theme, chip, &label);
+        if faded {
+            scene.pop_layer();
+        }
     }
 
     /// Paint the app being carried as one lifted object: real app pixels tucked
@@ -3537,6 +3434,7 @@ impl Widget for WindowGroup {
             .into_iter()
             .filter_map(Widget::next_wake_deadline)
             .chain(reveal)
+            .chain(self.edge_reveal_at())
             .min()
     }
 
@@ -3701,9 +3599,12 @@ impl Widget for WindowGroup {
         self.set_reduce_motion(theme.reduce_motion);
         // This is the layout a maximized frame that came to rest is owed.
         self.rest_layout_owed = false;
+        self.chrome_motion = theme.motion();
+        self.fullscreen_bar.laid_out = self.bar_over_content();
         let bar_node = self
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
+        self.lay_bar_over_content(taffy, bar_node);
         let active_id = self.bar.active_id();
         self.offer_history_controls();
         for (id, host) in &mut self.hosts {
@@ -3809,29 +3710,19 @@ impl Widget for WindowGroup {
         }
         self.step_rect_spring();
         self.offer_history_controls();
-        // An indicator that flashes in and out before an app has time to
-        // draw would just be a flicker, so nothing paints until either
-        // something has drawn or the wait is long enough to say so.
-        if !Widget::presented(self) && !Widget::opening(self) {
-            if self.is_closing() {
-                // A dying client must not blank the card: keep the last
-                // frame we painted while the slot collapses.
-            } else {
-                self.held_back = true;
-                return;
-            }
+        // A first frame from this device may hold the window's first frame
+        // up to one frame budget, so a window whose app draws in time
+        // appears complete. A host that honours the hold
+        // (`Widget::holds_frame_until`) keeps its last frame meanwhile; one
+        // that draws anyway shows the slot without the window. Past the
+        // budget the window stands, its place reserved, and its content
+        // arrives inside its frame ([`TileHost`]).
+        if self.holds_first_frame_until(crate::time::now()).is_some() {
+            return;
         }
-        // The first frame after holding the place back. The slot has been
-        // opening since the window was asked for and goes on from where it
-        // is; the content shows whole when it came inside the grace (a
-        // local app's first frame normally does), and cross-fades in over
-        // the ground its place held when it came later.
-        self.take_first_paint();
-        // Close checked first (mutually exclusive with an arrival): the
-        // window fades out as one (α 1→0, scale 1→0.95) while its slot
-        // closes; a late arrival cross-fades in. The whole paint composes
-        // under one alpha+translate+scale layer so hit tests stay aligned
-        // with what's on screen mid-fade.
+        // The window fades out as one (α 1→0, scale 1→0.95) while its slot
+        // closes. The whole paint composes under one alpha+translate+scale
+        // layer so hit tests stay aligned with what's on screen mid-fade.
         let (fade_alpha, fade_x, fade_y, fade_scale) = self.fade_transform_params();
         let spawn_active = fade_alpha < 1.0;
         if spawn_active {
@@ -3884,25 +3775,11 @@ impl Widget for WindowGroup {
         }
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
-        if self.navigation_bar_visible() {
-            self.bar.set_maximized(self.maximized);
-            self.bar
-                .set_group_focused(self.focused || self.search_active);
-            // The bar's menus stay inside the window.
-            self.bar.set_popup_area(self.rect);
-            self.bar.draw(scene, transform, tr, theme, presence);
-            self.search.set_ground(self.bar.ground_color(theme));
-            self.search.draw(scene, transform, tr, theme, presence);
+        let bar_over = self.bar_over_content();
+        if self.navigation_bar_visible() && !bar_over {
+            self.draw_bar(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();
-        // A tile holding a place for an app that has not arrived takes
-        // its name from the pill above it, so the two never disagree.
-        let opening_name = self
-            .bar
-            .tabs()
-            .iter()
-            .find(|t| t.id == active_id)
-            .map(|t| t.title.clone());
         // Scoping search *is* aiming the keyboard at this group, so it
         // lights the same edge/shadow signal as keyboard focus.
         let focused = self.focused || self.search_active;
@@ -3929,9 +3806,6 @@ impl Widget for WindowGroup {
                 h.draw(scene, transform, tr, theme, presence);
             }
         } else if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
-            if let Some(name) = &opening_name {
-                h.set_opening_name(name);
-            }
             h.set_focused(focused);
             // A maximized window filling its display draws edge to edge;
             // under a docked bar, or mid-fade, it is still a card.
@@ -3965,16 +3839,17 @@ impl Widget for WindowGroup {
             }
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
+        self.draw_bar_over_content(bar_over, scene, transform, tr, theme, presence);
         if self.navigation_bar_visible() {
             let band = self.bar.get_rect().inflate(0.0, 6.0);
             self.bar.draw_holder_chip(scene, transform, tr, theme, band);
         }
-        // Only under the pointer or while dragging: at rest the grip sits on
-        // the window's own trailing edge, over its content, where it reads
-        // as that app's scrollbar (and stays put when the app's panels go).
-        // The east-west cursor already marks the band before it shows.
+        // Only after the pointer rests on an edge, or while dragging: at
+        // rest nothing marks the edges, and the east-west cursor already
+        // says what a press there does before the edge lights up.
         if !self.maximized && !self.fullscreen_presentation {
-            self.draw_resize_grip(scene, transform, theme);
+            self.draw_lit_edge(scene, transform, theme);
+            self.draw_size_label(scene, transform, tr, theme);
         }
 
         // No outline rings around `self.rect` for drag/search/maximize:
@@ -4054,6 +3929,14 @@ impl Widget for WindowGroup {
     fn name(&self) -> &'static str {
         "WindowGroup"
     }
+    /// Only what the active tab shows holds the frame: a tab beside it,
+    /// still starting, never does.
+    fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
+        if self.is_closing() {
+            return None;
+        }
+        Widget::holds_frame_until(self.active_host()?, now)
+    }
     /// **Any**, not all: a group with one live window and a second still
     /// starting must not blink out because a sibling tab hasn't drawn.
     fn presented(&self) -> bool {
@@ -4067,11 +3950,6 @@ impl Widget for WindowGroup {
         self.hosts
             .iter()
             .fold(false, |seen, (_, h)| h.presented() || seen)
-    }
-    /// Only true while *nothing* has presented, so a group with one live
-    /// window never turns into a placeholder because a sibling is starting.
-    fn opening(&self) -> bool {
-        !Widget::presented(self) && self.hosts.iter().any(|(_, h)| h.opening())
     }
     fn get_rect(&self) -> Rect {
         self.rect
@@ -4102,6 +3980,7 @@ impl Widget for WindowGroup {
         if self.maximized_chrome_live() && self.top_edge.settle(crate::time::now()) {
             self.top_edge_changed();
         }
+        self.style_dirty |= self.fullscreen_bar.laid_out != self.bar_over_content();
         let bar = self.bar.take_structure_dirty();
         let active = self.bar.active_id();
         let mut active_host = false;
@@ -4128,7 +4007,13 @@ impl Widget for WindowGroup {
                 .top_edge
                 .deadline()
                 .is_some_and(|due| crate::time::now() >= due);
-        self.grip_dirty || reveal_due || self.children().into_iter().any(Widget::needs_redraw)
+        let edge_due = self
+            .edge_reveal_at()
+            .is_some_and(|due| crate::time::now() >= due);
+        self.grip_dirty
+            || reveal_due
+            || edge_due
+            || self.children().into_iter().any(Widget::needs_redraw)
     }
     fn mark_drawn(&mut self) {
         self.grip_dirty = false;
@@ -4159,9 +4044,6 @@ impl Widget for WindowGroup {
     }
     fn animation_detail(&self) -> Option<String> {
         let mut parts = Vec::new();
-        if self.arrival_fade_at.is_some() {
-            parts.push("arrival".to_string());
-        }
         if self.closing_at.is_some() {
             parts.push("closing".to_string());
         }
@@ -4200,9 +4082,6 @@ impl Widget for WindowGroup {
             return false;
         }
         // Include group and inactive closing-host animations beyond the active presentation.
-        let spawn_in_flight = self.arrival_fade_at.is_some_and(|t| {
-            arrival_progress(crate::time::now().saturating_duration_since(t)) < 1.0
-        });
         let close_window = group_close_fade();
         let close_in_flight = !self.reduce_motion
             && self
@@ -4227,17 +4106,21 @@ impl Widget for WindowGroup {
             .is_some_and(|(_, h)| h.needs_animation_frame());
         let rect_in_flight =
             (!self.reduce_motion && self.rect_spring.is_some()) || self.rest_layout_owed;
-        let chrome_fade = self.maximized_chrome_live()
-            && self.top_edge.fading(crate::time::now(), self.chrome_motion);
         let top_slide = self.top_slide_in_flight();
         let tab_fade = self
             .tab_fade
             .as_ref()
             .is_some_and(|fade| fade.is_moving(crate::motion::frame_now()));
-        spawn_in_flight
-            || tab_fade
+        // Until the frame that no longer paints it: the fade, and a frame
+        // to spare, whether or not this window is drawn meanwhile.
+        let size_label_fading = self.size_label_fade.is_some_and(|(released, ..)| {
+            crate::time::now().saturating_duration_since(released)
+                < crate::tokens::Durations::default().fast().saturating_mul(2)
+        });
+        tab_fade
+            || size_label_fading
+            || self.fullscreen_bar_fading()
             || top_slide
-            || chrome_fade
             || close_in_flight
             || group_close_in_flight
             || rect_in_flight
@@ -4398,20 +4281,17 @@ mod tests {
         }
     }
 
-    /// The trailing-edge grip lies over the window's own content, so at
-    /// rest it is not painted: an app's panels came and went under a pair
-    /// of bars that looked like their scrollbar. Hovering the band or
-    /// dragging shows it.
-    /// The docked strip is a body of its own under the tabs, and the tabs
-    /// on it lift off its ground, inset from its ends as from its top.
-
+    /// At rest nothing marks a window's edges. Resting the pointer on one
+    /// lights that edge along its whole length, after a short dwell so
+    /// passing over it shows nothing; dragging it lights it at once and
+    /// shows the window's size beside it, which fades once let go.
     #[test]
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "sample points are small positive pixel coordinates"
     )]
-    fn the_resize_grip_shows_only_on_the_edge_that_will_change() {
+    fn a_resting_pointer_lights_the_whole_edge_that_will_change() {
         use crate::offscreen::OffscreenRenderer;
         use taffy::prelude::TaffyMaxContent;
         let theme = Theme::dark();
@@ -4444,46 +4324,79 @@ mod tests {
             );
             renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255))
         };
+        let start = crate::time::now();
+        let later = start.checked_add(EDGE_HOVER_DWELL).unwrap();
+        use crate::time::testing::with_monotonic_time as at;
         let mut group = make_group();
-        let idle = render(&mut group);
+        let idle = at(start, || render(&mut group));
         let rect = group.rect;
-        let (x, y) = (rect.x1 - RESIZE_HANDLE_PX / 2.0 - 2.0, rect.center().y);
-        let at = |rgba: &[u8], x: f64, y: f64| {
+        let px = |rgba: &[u8], x: f64, y: f64| {
             let (r, g, b, _) = OffscreenRenderer::sample(rgba, 400, x as u32, y as u32);
             (r, g, b)
         };
-        // Nothing on the edge at the grip's height that is not also there
-        // well below it.
-        let below = rect.y1 - 40.0;
+        let trailing = rect.x1 - EDGE_LIT_PX / 2.0;
+        let leading = rect.x0 + EDGE_LIT_PX / 2.0;
+        // Near the top and the bottom of the window's body as well as the
+        // middle: the whole edge.
+        let card = group.card_rect();
+        let heights = [card.y0 + 24.0, card.center().y, card.y1 - 24.0];
+
+        let passing = at(start, || {
+            group.set_edge_highlight(Some(WindowEdge::Trailing));
+            render(&mut group)
+        });
+        for y in heights {
+            assert_eq!(
+                px(&passing, trailing, y),
+                px(&idle, trailing, y),
+                "passing over an edge lights nothing (y = {y})"
+            );
+        }
+        assert!(
+            at(later, || group.needs_redraw()),
+            "the dwell's end is a frame of its own"
+        );
+        assert_eq!(group.next_wake_deadline(), Some(later));
+
+        let rested = at(later, || render(&mut group));
+        for y in heights {
+            assert_ne!(
+                px(&rested, trailing, y),
+                px(&idle, trailing, y),
+                "a resting pointer lights the edge a press would resize (y = {y})"
+            );
+            assert_eq!(
+                px(&rested, leading, y),
+                px(&idle, leading, y),
+                "and only that edge"
+            );
+        }
         assert_eq!(
-            at(&idle, x, y),
-            at(&idle, x, below),
-            "an idle group paints a grip over its window's edge"
+            group.edge_reveal_at(),
+            None,
+            "lit, it waits for nothing more"
         );
 
-        group.set_edge_highlight(Some(WindowEdge::Trailing));
-        let hovered = render(&mut group);
+        let dragging = at(start, || {
+            group.set_edge_highlight(None);
+            group.begin_edge_drag(WindowEdge::Leading);
+            render(&mut group)
+        });
+        let y = card.center().y;
         assert_ne!(
-            at(&hovered, x, y),
-            at(&idle, x, y),
-            "the grip shows on the edge a press would resize"
+            px(&dragging, leading, y),
+            px(&idle, leading, y),
+            "a drag lights its edge at once"
         );
-        group.set_edge_highlight(Some(WindowEdge::Leading));
-        let leading = render(&mut group);
-        assert_eq!(at(&leading, x, y), at(&idle, x, y), "and only on that edge");
-        assert_ne!(
-            at(&leading, rect.x0 + RESIZE_HANDLE_PX / 2.0 + 2.0, y),
-            at(&idle, rect.x0 + RESIZE_HANDLE_PX / 2.0 + 2.0, y),
-            "the leading edge's grip shows when that edge is the one"
-        );
-
-        group.set_edge_highlight(None);
-        group.begin_edge_drag(WindowEdge::Trailing);
-        let dragging = render(&mut group);
-        assert_ne!(
-            at(&dragging, x, y),
-            at(&idle, x, y),
-            "the grip shows while resizing"
+        // The size chip stands inside the window beside the moving edge.
+        let beside = (12..60)
+            .map(|dx| rect.x0 + f64::from(dx))
+            .any(|x| px(&dragging, x, y) != px(&idle, x, y));
+        assert!(beside, "the window's size shows beside the dragged edge");
+        group.end_edge_drag(true);
+        assert!(
+            group.needs_animation_frame(),
+            "the size fades out once let go"
         );
     }
 
@@ -4727,7 +4640,7 @@ mod tests {
 
     struct Starting {
         presented: bool,
-        opening: bool,
+        from: crate::arriving::Source,
     }
 
     impl Widget for Starting {
@@ -4745,8 +4658,8 @@ mod tests {
         fn presented(&self) -> bool {
             self.presented
         }
-        fn opening(&self) -> bool {
-            self.opening
+        fn arrives_from(&self) -> crate::arriving::Source {
+            self.from.clone()
         }
     }
 
@@ -4841,10 +4754,10 @@ mod tests {
         );
     }
 
-    fn group_opening(title: &str, presented: bool, opening: bool) -> WindowGroup {
+    fn group_opening(title: &str, presented: bool, from: crate::arriving::Source) -> WindowGroup {
         let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
             TabDescriptor::new(1, title),
-            TileContent::App(Box::new(Starting { presented, opening })),
+            TileContent::App(Box::new(Starting { presented, from })),
         )];
         let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
         g.rect = Rect::new(0.0, 0.0, 400.0, 300.0);
@@ -4879,55 +4792,58 @@ mod tests {
     }
 
     #[test]
-    fn opening_card_holds_the_place_only_for_a_worthwhile_wait() {
+    fn a_window_holds_its_first_frame_only_for_its_budget_then_reserves_its_place() {
         {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
             let scene = Scene::new();
-            let _ = (&theme, &mut tr);
             assert!(
                 scene.encoding().path_data.is_empty(),
                 "an untouched scene must read as nothing painted, or the \
-             held-back case passes for free",
+             held case passes for free",
             );
         }
 
+        let t0 = crate::time::now();
+        let budget = crate::arriving::frame_budget();
         {
-            let mut g = group_opening("Files", false, false);
-            assert!(
-                !painted_anything(&mut g),
-                "a window frame went up for an app that has not drawn and has \
-             not been waiting long enough to say so — which is a card \
-             flashing on and off in front of an app that opened fast",
-            );
+            let mut g = crate::time::testing::with_monotonic_time(t0, || {
+                group_opening("Files", false, crate::arriving::Source::Local)
+            });
+            crate::time::testing::with_monotonic_time(t0, || {
+                assert_eq!(
+                    Widget::holds_frame_until(&g, t0),
+                    Some(t0 + budget),
+                    "a first frame from this device holds the window's for one frame"
+                );
+                assert!(!g.stands());
+                assert!(
+                    !painted_anything(&mut g),
+                    "a window frame went up before its app's first frame had its \
+                 budget, which is the window appearing empty and then filled",
+                );
+            });
+            crate::time::testing::with_monotonic_time(t0 + budget, || {
+                assert_eq!(Widget::holds_frame_until(&g, t0 + budget), None);
+                assert!(g.stands(), "past the budget its place is reserved");
+                assert!(
+                    painted_anything(&mut g),
+                    "the desktop stayed empty for an app the person asked for and \
+                 is still waiting on",
+                );
+                assert!(g.any_tile_arriving());
+            });
         }
 
         {
-            let mut g = group_opening("Files", false, true);
-            assert!(
-                Widget::opening(&g),
-                "the group must report that it is holding a place",
-            );
-            assert!(
-                painted_anything(&mut g),
-                "the desktop stayed empty for an app the person asked for and \
-             is still waiting on — the whole defect this exists to fix",
-            );
-        }
-
-        // Case `the_card_takes_the_apps_name_from_its_tab`.
-        // A card reading `so.tilo.file-explorer` is the failure this guards:
-        // the person asked for Files, and a package id is not an answer.
-        {
-            let mut g = group_opening("Files", false, true);
-            let _ = painted_anything(&mut g);
-            let (_, host) = g.hosts.first().expect("the group has its one tab");
-            assert_eq!(
-                host.opening_name_for_test(),
-                "Files",
-                "the card must say what the tab says; anything else is two \
-             names for one window",
-            );
+            // Another device's frame never holds this one's: the place is
+            // reserved from the first frame.
+            let mut g = crate::time::testing::with_monotonic_time(t0, || {
+                group_opening("Notes", false, crate::arriving::Source::peer("Laptop"))
+            });
+            crate::time::testing::with_monotonic_time(t0, || {
+                assert_eq!(Widget::holds_frame_until(&g, t0), None);
+                assert!(g.stands());
+                assert!(painted_anything(&mut g));
+            });
         }
 
         {
@@ -4936,14 +4852,14 @@ mod tests {
                     TabDescriptor::new(1, "Files"),
                     TileContent::App(Box::new(Starting {
                         presented: true,
-                        opening: false,
+                        from: crate::arriving::Source::Local,
                     })),
                 ),
                 (
                     TabDescriptor::new(2, "Notes"),
                     TileContent::App(Box::new(Starting {
                         presented: false,
-                        opening: true,
+                        from: crate::arriving::Source::Local,
                     })),
                 ),
             ];
@@ -4952,11 +4868,13 @@ mod tests {
                 Widget::presented(&g),
                 "one of its tabs is a window on screen"
             );
-            assert!(
-                !Widget::opening(&g),
-                "a group holding a window the person is using must never be \
-             replaced by a card about the tab beside it",
+            assert_eq!(
+                Widget::holds_frame_until(&g, crate::time::now()),
+                None,
+                "a group holding a window the person is using never holds a \
+             frame for the tab beside it",
             );
+            assert!(g.stands());
         }
     }
 
@@ -5009,9 +4927,6 @@ mod tests {
             }
             self.latched.get()
         }
-        fn opening(&self) -> bool {
-            !self.latched.get()
-        }
     }
 
     impl crate::widget::app_widget::AppWidget for Latching {
@@ -5054,7 +4969,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_card_retires_when_any_tab_window_has_drawn() {
+    fn the_placeholder_retires_when_its_tabs_window_has_drawn() {
         {
             let (g, latched, asked) = group_of_two(true, true);
 
@@ -5069,8 +4984,8 @@ mod tests {
                 "a window that has drawn must end up marked as having drawn",
             );
             assert!(
-                !Widget::opening(&g),
-                "and must not still be holding its own place",
+                !g.any_tile_arriving(),
+                "and must not still be standing for its own place",
             );
         }
 
@@ -5084,9 +4999,9 @@ mod tests {
                 .map(|(_, h)| h)
                 .expect("the group holds the tab it was built with");
             assert!(
-                !Widget::opening(host),
-                "the card holding this window's place must be gone: the window is \
-             drawn, populated, and the one on screen",
+                !host.is_arriving(),
+                "the placeholder in this window's place must be gone: the window \
+             is drawn, populated, and the one on screen",
             );
         }
 
@@ -5104,7 +5019,7 @@ mod tests {
                 .find(|(id, _)| *id == 2)
                 .map(|(_, h)| h)
                 .expect("the group holds the tab it was built with");
-            assert!(Widget::opening(host), "its place is still being held");
+            assert!(host.is_arriving(), "its place is still reserved");
         }
     }
 
@@ -6003,7 +5918,7 @@ mod tests {
             // layout, and rebuilds only when a group asks for it. Frames at
             // 60 and at 20 a second must both end the motion.
             for frame_ms in [16, 50] {
-                let mut g = group_opening("Files", true, false);
+                let mut g = group_opening("Files", true, crate::arriving::Source::Local);
                 g.set_strip_usable_px(1200.0);
                 let t0 = crate::time::now();
                 at(t0, 0, || g.start_spawn_animation());
@@ -6036,7 +5951,7 @@ mod tests {
             // presenter is still busy paints nothing; the step the next
             // rebuild skips must not leave the slot stopped part-way, asking
             // for frames forever.
-            let mut g = group_opening("Notes", true, false);
+            let mut g = group_opening("Notes", true, crate::arriving::Source::Local);
             g.set_strip_usable_px(1200.0);
             let t0 = crate::time::now();
             at(t0, 0, || g.start_spawn_animation());
@@ -6066,21 +5981,23 @@ mod tests {
         }
 
         {
-            let mut g = group_opening("Files", false, false);
+            let t0 = crate::time::now();
+            let mut g = at(t0, 0, || {
+                group_opening("Files", false, crate::arriving::Source::Local)
+            });
             g.set_strip_usable_px(1200.0);
             assert!(
-                !painted_anything(&mut g),
-                "precondition: an unpresented group with no opening card paints nothing",
+                !at(t0, 0, || painted_anything(&mut g)),
+                "precondition: a group holding its first frame paints nothing",
             );
             let from = g.layout_width_px();
-            let t0 = crate::time::now();
             at(t0, 0, || g.start_closing());
             assert!(
                 (g.layout_width_px() - from).abs() < 0.5,
                 "close must start from the last reserved width, not jump to zero",
             );
             assert!(
-                painted_anything(&mut g),
+                at(t0, 0, || painted_anything(&mut g)),
                 "a closing group is drawn from its last frame while the slot collapses",
             );
             let mut last = g.layout_width_px();
@@ -6467,6 +6384,11 @@ mod tests {
 
 /// The maximized window's bar: hidden at rest over a full-height client, and
 /// one bar with a Tilo app's header row.
+#[path = "window_group_fullscreen_bar.rs"]
+mod fullscreen_bar;
+#[path = "window_group_search.rs"]
+mod search;
+
 #[cfg(test)]
 #[path = "window_group_window_bar_tests.rs"]
 mod window_bar_tests;
@@ -6478,3 +6400,7 @@ mod search_tests;
 #[cfg(test)]
 #[path = "window_group_motion_tests.rs"]
 mod motion_tests;
+
+#[cfg(test)]
+#[path = "window_group_arrival_tests.rs"]
+mod arrival_tests;

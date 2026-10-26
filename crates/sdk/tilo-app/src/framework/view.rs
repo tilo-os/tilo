@@ -10,8 +10,11 @@ use tilo_resource::{
     Settable,
 };
 use ui_core::LocalState;
+use ui_core::arriving::Arriving;
 use ui_core::i18n::LabelKey;
 use ui_core::record::RecordSaveStatus;
+use ui_core::room_sync::RoomUnreachable;
+use ui_core::widget::{ArrivingView, SkeletonShape};
 use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
 
 use super::controls::{ActionControl, Actions};
@@ -27,6 +30,29 @@ use super::settings::ViewStorage;
 use super::stage::Stages;
 use super::surface::{ResourceSurface, SurfaceCx};
 use super::switch::Switch;
+
+/// What builds a part with bindings of its own, retired with the `Rc` it
+/// is handed.
+type ScopedPart = dyn Fn(&Rc<()>) -> Element;
+
+/// A part showing an answer that landed, built again with its own
+/// bindings (retired with `alive`) for each newer one.
+fn arrived_part(build: Box<ScopedPart>) -> Element {
+    Switch::keyed(
+        LocalState::new(()),
+        Box::new(move |(), alive: &Rc<()>| build(alive)),
+    )
+}
+
+/// The window's view once the room's holdings arrived, the page they
+/// reserve until then.
+fn room_arrival(holdings: &Arriving<(), RoomUnreachable>, part: Rc<ScopedPart>) -> Element {
+    let view = ArrivingView::new(holdings, move |()| {
+        let part = Rc::clone(&part);
+        arrived_part(Box::new(move |alive: &Rc<()>| part(alive)))
+    });
+    Box::new(view.shaped(SkeletonShape::Page))
+}
 
 fn disabled(mut button: Button) -> Button {
     button.set_enabled(false);
@@ -110,13 +136,14 @@ impl<R: Resource> ViewCx<R> {
     ) -> Self {
         let published = with_history_verbs(published);
         let app = dispatch.app_id();
+        let fresh = FreshScope::new();
         Self {
             env: RecordEnv {
                 live,
                 alive: Rc::downgrade(alive),
                 dispatch,
-                saved: LocalState::new(RecordSaveStatus::Saved),
-                saves: super::Saves::default(),
+                saved: fresh.saved,
+                saves: fresh.saves,
                 run,
                 storage,
                 effects: Effects::inert(),
@@ -127,11 +154,54 @@ impl<R: Resource> ViewCx<R> {
             action_bindings: Actions::new(app, published),
             item: None,
             path: Some(Vec::new()),
+            controls: fresh.controls,
+            forms: fresh.forms,
+            stages: fresh.stages,
+            feeds: fresh.feeds,
+            bindings: Bindings::new(),
+        }
+    }
+}
+
+/// The specs `specs` builds as callers see them now, at what `source`
+/// says of them, kept in `kept`. Not generic, so every app's views share
+/// it.
+#[inline(never)]
+fn current_specs(
+    source: &StatusSource,
+    kept: &super::effect::KeptSpecs,
+    specs: fn() -> Vec<tilo_actions::ActionSpec>,
+) -> Vec<tilo_actions::ActionSpec> {
+    let now = source
+        .borrow()
+        .as_ref()
+        .map(|status| status())
+        .unwrap_or_default();
+    super::effect::kept_specs_of(kept, &now, specs)
+}
+
+/// What a freshly built root view scope starts with that does not name its
+/// resource type: made here once rather than in every app's
+/// [`ViewCx::root`].
+struct FreshScope {
+    saved: LocalState<RecordSaveStatus>,
+    saves: super::Saves,
+    controls: Rc<RefCell<HashMap<String, u32>>>,
+    forms: Forms,
+    stages: Stages,
+    feeds: super::history::HistoryFeeds,
+}
+
+impl FreshScope {
+    #[inline(never)]
+    fn new() -> Self {
+        Self {
+            saved: LocalState::new(RecordSaveStatus::Saved),
+            saves: super::Saves::default(),
             controls: Rc::default(),
             forms: Forms::default(),
             stages: Stages::new(),
             feeds: super::history::HistoryFeeds::default(),
-            bindings: Bindings::new(),
         }
     }
 }
@@ -514,6 +584,57 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     where
         K: Clone + PartialEq + 'static,
     {
+        let scope = self.part_scope();
+        Switch::keyed(
+            key.clone(),
+            Box::new(move |value: &K, alive: &Rc<()>| part(&mut scope(alive), value)),
+        )
+    }
+
+    /// A part of the view showing data that arrives later: a resource read
+    /// that is not here yet, a query of another app, a file read on a
+    /// worker ([`Arriving`]). `part` builds what shows once the data is
+    /// there, with its own bindings, again whenever a newer answer lands;
+    /// until then, and when the read fails, the framework shows the
+    /// placeholder and the failure ([`ArrivingView`]), with every timing.
+    /// Say what the content looks like with [`ArrivingView::shaped`].
+    pub fn arriving<V, E>(
+        &self,
+        arriving: &Arriving<V, E>,
+        part: impl Fn(&mut ViewCx<R, T>, &V) -> Element + 'static,
+    ) -> ArrivingView
+    where
+        V: Clone + 'static,
+        E: std::fmt::Display + 'static,
+    {
+        let scope = Rc::new(self.part_scope());
+        let part = Rc::new(part);
+        ArrivingView::new(arriving, move |value: &V| {
+            let (scope, part, value) = (Rc::clone(&scope), Rc::clone(&part), value.clone());
+            arrived_part(Box::new(move |alive: &Rc<()>| {
+                part(&mut scope(alive), &value)
+            }))
+        })
+    }
+
+    /// [`Self::arriving`] for the window's room: its whole view, a page,
+    /// once the room's holdings arrived. Only `part`'s scope depends on the
+    /// app; the arrival around it is built once, in the runtime.
+    pub(crate) fn arriving_room(
+        &self,
+        holdings: &Arriving<(), RoomUnreachable>,
+        part: impl Fn(&mut ViewCx<R, T>) -> Element + 'static,
+    ) -> Element {
+        let scope = self.part_scope();
+        room_arrival(
+            holdings,
+            Rc::new(move |alive: &Rc<()>| part(&mut scope(alive))),
+        )
+    }
+
+    /// What builds a part of this scope with its own bindings, retired
+    /// with the part (`alive`).
+    fn part_scope(&self) -> impl Fn(&Rc<()>) -> ViewCx<R, T> + 'static {
         let env = self.env.clone();
         let focus = Rc::clone(&self.focus);
         let updaters = self.updaters.clone();
@@ -524,27 +645,21 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let stages = self.stages.clone();
         let feeds = self.feeds.clone();
         let bindings = self.bindings.clone();
-        Switch::keyed(
-            key.clone(),
-            Box::new(move |value: &K, alive: &Rc<()>| {
-                let mut cx = ViewCx {
-                    env: env.living(alive),
-                    focus: Rc::clone(&focus),
-                    updaters: updaters.clone(),
-                    gate: gate.clone(),
-                    action_bindings: action_bindings.clone(),
-                    item: item.clone(),
-                    path: path.clone(),
-                    // Each build of the part names its controls afresh.
-                    controls: Rc::default(),
-                    forms: Forms::default(),
-                    stages: stages.clone(),
-                    feeds: feeds.clone(),
-                    bindings: bindings.clone(),
-                };
-                part(&mut cx, value)
-            }),
-        )
+        move |alive: &Rc<()>| ViewCx {
+            env: env.living(alive),
+            focus: Rc::clone(&focus),
+            updaters: updaters.clone(),
+            gate: gate.clone(),
+            action_bindings: action_bindings.clone(),
+            item: item.clone(),
+            path: path.clone(),
+            // Each build of the part names its controls afresh.
+            controls: Rc::default(),
+            forms: Forms::default(),
+            stages: stages.clone(),
+            feeds: feeds.clone(),
+            bindings: bindings.clone(),
+        }
     }
 
     /// Host a custom widget or renderer that takes part through the
@@ -591,12 +706,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let source = Rc::clone(&status);
         let kept = super::effect::KeptSpecs::default();
         self.effects.publish::<E>(self.alive.clone(), move || {
-            let now = source
-                .borrow()
-                .as_ref()
-                .map(|status| status())
-                .unwrap_or_default();
-            super::effect::kept_specs::<E>(&kept, &now)
+            current_specs(&source, &kept, E::specs)
         });
         if self.effects.env().is_some() {
             self.effects.handle(self.alive.clone(), handle);

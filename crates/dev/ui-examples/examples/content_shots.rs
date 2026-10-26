@@ -298,7 +298,11 @@ fn states_page() -> Element {
                 .message("EPUB or PDF, up to 200 MB")
                 .with_action(Button::new("choose", "Choose files")),
         ),
-        Box::new(Skeleton::row()),
+        Box::new(Skeleton::row(
+            tilo_ui::widget::RowShape::TITLE
+                .led_by(tilo_ui::widget::RowLeadingShape::Avatar)
+                .with_secondary(1),
+        )),
         Box::new(Skeleton::text(3)),
         Box::new(
             tilo_ui::widget::Container::new()
@@ -508,7 +512,17 @@ fn shelf() -> Element {
             )))
             .push(Box::new(Section::titled(
                 "Loading",
-                vec![Box::new(MediaGrid::loading(3, MediaAspect::Wide))],
+                vec![Box::new(MediaGrid::arriving(
+                    3,
+                    MediaAspect::Wide,
+                    &tilo_ui::arriving::Source::host("Lounge"),
+                    // Asked a while ago: the skeleton shows.
+                    {
+                        let now = tilo_ui::time::now();
+                        now.checked_sub(tilo_ui::time::Duration::from_secs(1))
+                            .unwrap_or(now)
+                    },
+                ))],
             ))),
     )
 }
@@ -558,9 +572,17 @@ fn charts_page() -> Element {
 /// A named page and the function that builds it.
 type Page = (&'static str, fn() -> Element);
 
+#[allow(
+    clippy::exit,
+    reason = "a capture whose layout failed would write a blank page; the scenario must fail with a status instead"
+)]
 fn shoot(out: &Path, name: &str, build: fn() -> Element, theme: &Theme, viewport: (u32, u32)) {
-    let harness =
+    let mut harness =
         FrameHarness::new_with_theme(tilo_ui::State::new(), build(), viewport, theme.clone());
+    if let Some(report) = harness.take_skip_report() {
+        eprintln!("{name}: {report}");
+        std::process::exit(1);
+    }
     let path = out.join(format!("{name}.png"));
     harness.render_png(&path);
     if let Ok(json) = harness.inspection_json() {

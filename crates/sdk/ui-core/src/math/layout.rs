@@ -15,7 +15,7 @@
 //! that scales an expression scales all of it together. [`layout_wrapped`]
 //! breaks a long expression before its top-level operators.
 
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, UI_MATH_FAMILY};
+use crate::text_render::{FontChoice, TextKind, TextRenderer, TextStyle, UI_MATH_FAMILY};
 
 use super::model::{Node, Row, Slot};
 
@@ -136,9 +136,15 @@ fn delimiter_padding(size: f32) -> f64 {
 
 /// The math face at exactly `size`, as content: measured and painted at the
 /// size the layout's geometry uses.
+///
+/// A caller sets the size itself — a theme role, or the formula size the
+/// screen resolves — so it already includes the reader's text scale. The
+/// style is content-sized (the text scale is never applied again on top of
+/// it) and only the caller's own zoom belongs in the transform.
 pub(crate) fn math_style(size: f32) -> TextStyle {
     TextStyle::new(size)
         .with_family(FontChoice::Named(UI_MATH_FAMILY.into()))
+        .with_kind(TextKind::Numeric)
         .with_content_size(size)
 }
 

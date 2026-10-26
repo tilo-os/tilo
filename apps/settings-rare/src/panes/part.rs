@@ -19,8 +19,8 @@ fn mesh_remote(made: &crate::area::Areas) -> ui::RemoteActions {
 }
 
 /// Every area the window holds, in the order they are made: an area made
-/// later may use one made before (Users and Storage act through Device
-/// mesh's host client).
+/// later may use one made before (Users, Storage and About act through
+/// Device mesh's host client).
 pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
     (40, |context, _| {
         Box::new(time_date::TimeDateArea::new(context.cx))
@@ -51,6 +51,9 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
     }),
     (170, |context, made| {
         Box::new(storage::StorageArea::new(context.cx, mesh_remote(made)))
+    }),
+    (175, |context, made| {
+        Box::new(about::AboutArea::new(context.cx, mesh_remote(made)))
     }),
     (190, |context, _| {
         Box::new(
@@ -295,7 +298,7 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     },
     crate::area::PaneEntry {
         categories: &[Category::About],
-        build: |app, _| about::build(app.host()),
+        build: |app, _| model_pane(about::area(app).map(about::AboutArea::model)),
     },
 ];
 

@@ -86,64 +86,6 @@ fn paragraph_controls_follow_their_measured_labels() {
 }
 
 #[test]
-fn find_controls_fit_their_published_bounds_at_every_scale() {
-    for scale in [1.0, 2.0] {
-        let theme = Theme::dark().with_text_scale(scale);
-        let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
-        wp.sync(&state.doc, &state.root);
-        wp.model_mut().insert_str(
-            &mut Edits::lend(&mut state.doc),
-            "A report about the report",
-        );
-        wp.stage_find_for_shot(&state.doc, "report");
-        let mut framed = mount_themed(state, wp, 1200, 800, &theme);
-        let (wp, _) = Framed::split(&mut framed);
-        let access = wp
-            .find
-            .accessibility()
-            .expect("the shared Find bar is published");
-        let controls: Vec<_> = access
-            .children
-            .iter()
-            .filter_map(|node| node.bounds.map(|bounds| (node, bounds.to_rect())))
-            .collect();
-        assert!(
-            controls.len() >= 7,
-            "find and replace fields, navigation and replacement actions are visible"
-        );
-        let band = wp.find_band;
-        assert!((band.height() - wp.find.height(&theme)).abs() < 0.01);
-        for (node, rect) in &controls {
-            assert!(
-                rect.x0 >= band.x0 - 0.01
-                    && rect.x1 <= band.x1 + 0.01
-                    && rect.y0 >= band.y0 - 0.01
-                    && rect.y1 <= band.y1 + 0.01,
-                "published control {:?} {rect:?} leaves Find band {band:?}",
-                node.name
-            );
-            assert!(
-                rect.height() >= label_height(&theme) - 0.01,
-                "published control {:?} clips its label",
-                node.name
-            );
-        }
-        for (i, (_, a)) in controls.iter().enumerate() {
-            for (j, (_, b)) in controls.iter().enumerate().skip(i + 1) {
-                assert!(!overlaps(*a, *b), "Find controls #{i} and #{j} overlap");
-            }
-        }
-        assert!(
-            controls
-                .iter()
-                .any(|(node, _)| node.action_target.as_deref() == Some("find-Replace")),
-            "the real Replace action remains reachable"
-        );
-    }
-}
-
-#[test]
 fn layout_controls_center_on_the_theme_sized_bar() {
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);

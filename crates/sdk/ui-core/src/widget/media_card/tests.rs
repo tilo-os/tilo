@@ -408,3 +408,66 @@ fn creator_avatar_loads_through_the_shared_store_and_scales_with_metadata() {
         );
     }
 }
+
+#[test]
+fn a_shelf_of_grids_lays_out_at_every_width() {
+    use crate::widget::{Column, Scrollable, Section};
+    let shelf = || -> Box<dyn crate::widget::Widget> {
+        let artists = MediaGrid::new(
+            ["Miles Davis", "Nina Simone", "Thelonious Monk"]
+                .into_iter()
+                .map(|name| {
+                    MediaCard::new(name, MediaSource::Placeholder)
+                        .aspect(MediaAspect::Circle)
+                        .title(name)
+                        .meta("12 albums")
+                })
+                .collect(),
+        )
+        .with_size(MediaSize::Small);
+        let mixed = MediaGrid::new(vec![
+            MediaCard::new("podcast", MediaSource::Kind(Icon::Mic))
+                .title("The Tilo Podcast")
+                .meta("Tilo"),
+            MediaCard::new("photo", MediaSource::Placeholder).seed("Lisbon"),
+        ])
+        .with_size(MediaSize::Small);
+        let column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(24.0)
+            .push(Box::new(Section::titled(
+                "Artists",
+                vec![Box::new(artists)],
+            )))
+            .push(Box::new(Section::titled("Picked", vec![Box::new(mixed)])))
+            .push(Box::new(Section::titled(
+                "Loading",
+                vec![Box::new(MediaGrid::arriving(
+                    3,
+                    MediaAspect::Wide,
+                    &crate::arriving::Source::host("Lounge"),
+                    // Asked a while ago: the skeleton shows.
+                    crate::time::now() - crate::time::Duration::from_secs(1),
+                ))],
+            )));
+        let page = Column::new()
+            .with_intrinsic_height()
+            .with_gap(32.0)
+            .push(Box::new(column));
+        Box::new(Scrollable::new_vertical().with_child(Box::new(page)))
+    };
+    for (theme, viewport) in [
+        (Theme::dark(), (1280, 800)),
+        (Theme::light(), (1280, 800)),
+        (Theme::dark(), (420, 900)),
+        (Theme::dark().with_text_scale(2.0), (1280, 900)),
+    ] {
+        let mut harness =
+            FrameHarness::new_with_theme(crate::State::new(), shelf(), viewport, theme);
+        let skipped = harness.take_skip_report();
+        assert!(skipped.is_none(), "{viewport:?}: {skipped:?}");
+        let root = harness.inspection().root;
+        assert!(rect(&root).area() > 0.0, "{viewport:?}: nothing laid out");
+    }
+}

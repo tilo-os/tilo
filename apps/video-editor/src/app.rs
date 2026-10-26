@@ -44,7 +44,7 @@ use crate::model::key;
 use crate::export::{Container, ExportSettings, ExportStatus, FrameRate, Resolution};
 use crate::model::{
     Clip, ClipId, EffectKind, Filters, MAX_GAIN_DB, MAX_SPEED, MIN_GAIN_DB, MIN_SPEED, MediaId,
-    MediaItem, MediaKind, Project, TextAlign, TextSource, TrackId, TrackKind, Transition,
+    MediaItem, MediaKind, Project, Side, TextAlign, TextSource, TrackId, TrackKind, Transition,
 };
 use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
@@ -57,6 +57,7 @@ use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
 mod accessibility;
 mod bin_paint;
+mod go_to_clip;
 mod inspector_layout;
 mod inspector_paint;
 mod interaction;
@@ -69,6 +70,7 @@ mod render_action;
 mod scenario;
 mod selection;
 mod strip_menu;
+mod timeline_empty;
 mod timeline_paint;
 mod window_bar;
 use crate::layout::{self as chrome_layout, S1, S2, S3, S4, S6};
@@ -1736,14 +1738,24 @@ impl VideoEditorApp {
     }
 
     /// Where the timeline starts in the room between the header row and
-    /// the window's bottom edge: the divider the person drags.
+    /// the window's bottom edge: the divider the person drags, held where
+    /// the picture fills the preview's width so the room past it goes to
+    /// the timeline (the ratio stays for a wider window).
     fn timeline_top(&self, below_header: f64, bottom: f64) -> f64 {
-        (below_header
-            + self
-                .timeline_split
-                .ratio()
-                .first_extent((bottom - below_header).max(0.0)))
-        .round()
+        let extent = self
+            .timeline_split
+            .ratio()
+            .first_extent((bottom - below_header).max(0.0))
+            .min(self.preview_fill_height());
+        (below_header + extent).round()
+    }
+
+    /// Hand the divider its room and the most the preview can use.
+    fn place_timeline_split(&mut self) {
+        let bounds = self.timeline_split_bounds();
+        let most = self.preview_fill_height();
+        self.timeline_split.set_first_max(Some(most));
+        self.timeline_split.set_rect(bounds, &self.chrome_theme);
     }
 
     /// The room the divider moves in: the whole editor.
@@ -1758,8 +1770,7 @@ impl VideoEditorApp {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        let bounds = self.timeline_split_bounds();
-        self.timeline_split.set_rect(bounds, &self.chrome_theme);
+        self.place_timeline_split();
         self.timeline_split.handle_event(event, ctx)
     }
 
@@ -1927,7 +1938,7 @@ impl VideoEditorApp {
                 if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
                     continue;
                 }
-                let inner = clip_inner_rect(cr);
+                let inner = clip_inner_rect(cr, self.clip_header_rect(cr).height());
                 if inner.height() <= 4.0 || inner.width() <= 4.0 {
                     continue;
                 }
@@ -3021,6 +3032,21 @@ impl VideoEditorApp {
         if !right_halves.is_empty() {
             self.selection.set(right_halves);
         }
+    }
+
+    /// Put the two pictures that meet at the playhead beside each other, as
+    /// the editor's own gesture: the project's `place-two-angles` verb
+    /// submitted through the same dispatcher a palette press or an agent
+    /// goes through, so all three make one edit and one undo step. Offered
+    /// only where two pictures meet on tracks that may be edited.
+    fn place_side_by_side(&self) {
+        if !self.project.side_by_side_available(self.playhead) {
+            return;
+        }
+        let Some(dispatcher) = self.actions.as_ref() else {
+            return;
+        };
+        dispatcher.submit(Project::PLACE_SIDE_BY_SIDE.with(self.playhead));
     }
 
     /// Lift every editable selected clip, leaving the gaps where they were:
@@ -5206,6 +5232,11 @@ impl VideoEditorApp {
             VideoEditorEffect::ToggleMedia => self.toggle_bin(),
             VideoEditorEffect::ToggleInspector => self.toggle_inspector(),
             VideoEditorEffect::SplitSelection => self.split_selected(),
+            VideoEditorEffect::GoToClip => {
+                if !self.go_to_clip() {
+                    return Err("there is no clip to go to".into());
+                }
+            }
             VideoEditorEffect::Import { path: Some(path) } => {
                 self.pending_imports.push(PathBuf::from(path));
             }
@@ -6111,8 +6142,7 @@ impl VideoEditorApp {
         #[cfg(feature = "decode")]
         self.pump_preview_decode();
 
-        let bounds = self.timeline_split_bounds();
-        self.timeline_split.set_rect(bounds, theme);
+        self.place_timeline_split();
         let mut regions = self.regions();
         if !self.shot_lifecycle.interaction_applied
             && self.shot_scenario.is_interaction()
@@ -7117,6 +7147,7 @@ impl Widget for VideoEditorApp {
                     || l.transitions.iter().any(|(_, rc)| rc.contains(point))
                     || l.colors.iter().any(|(_, rc)| rc.contains(point))
                     || l.pip.iter().any(|(_, _, rc)| rc.contains(point))
+                    || l.sides.iter().any(|(_, _, rc)| rc.contains(point))
                     || l.speed_presets.iter().any(|(_, rc)| rc.contains(point))
                     || l.title_align.iter().any(|(_, rc)| rc.contains(point))
                     || l.title_colors.iter().any(|(_, rc)| rc.contains(point))
@@ -7489,7 +7520,8 @@ impl VideoEditorApp {
             | VideoEditorEffect::ShowExport
             | VideoEditorEffect::ToggleMedia
             | VideoEditorEffect::ToggleInspector
-            | VideoEditorEffect::SplitSelection => {
+            | VideoEditorEffect::SplitSelection
+            | VideoEditorEffect::GoToClip => {
                 self.perform_resource_operation(effect)?;
                 return Ok(ui::framework::Effected::done());
             }
@@ -8622,10 +8654,11 @@ impl VideoEditorApp {
                 }
             }
             ExportStatus::Idle => {
-                // One source of truth for the availability copy — the export
-                // module knows what it can actually do, this dialog does not.
-                if let Some(reason) = crate::export::unavailable_reason() {
-                    let reason = elide_at(reason, width, &ty.xs, tr);
+                // One source of truth for what stands in the way — the export
+                // module knows what it can actually do and which footage it has
+                // not read, this dialog does not.
+                if let Some(reason) = self.export_blocker() {
+                    let reason = elide_at(&reason, width, &ty.xs, tr);
                     text(scene, tr, tf, &reason, &ty.xs, dim, x0, status.y0);
                 }
             }

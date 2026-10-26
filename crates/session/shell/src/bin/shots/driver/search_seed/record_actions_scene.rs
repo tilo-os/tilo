@@ -7,6 +7,27 @@ impl ShellDriver {
     /// Notes keeps Groceries open and has closed Trip plan; the search is
     /// for their Rename actions.
     pub(in crate::driver) fn scene_palette_record_actions(&mut self) {
+        // The published pages come from the broker's test fixture: a build
+        // without `test-support` shows the search without them, as the
+        // catalogue scene does.
+        #[cfg(feature = "test-support")]
+        if !self.publish_notes_pages() {
+            return;
+        }
+        // The provider snapshots published surfaces off the frame; let the
+        // first query's snapshot land, as it has by any later keystroke.
+        self.fb.host_mut().set_palette_visible(true);
+        self.fb.host_mut().set_palette_query("rename");
+        let _ = self.paint_settled();
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let _ = self.paint_settled();
+        self.scene_palette_query("rename");
+    }
+
+    /// Attach a broker publishing Notes' two pages; `false` without a
+    /// workspace to publish them in.
+    #[cfg(feature = "test-support")]
+    fn publish_notes_pages(&mut self) -> bool {
         use shell::shell::collab_broker::CrdtRoute;
         use shell::shell::collab_broker_capnp::{
             PublishedAction, PublishedInput, PublishedSurface,
@@ -20,7 +41,7 @@ impl ShellDriver {
                 .active_workspace()
                 .map(|workspace| workspace.room().to_string())
         }) else {
-            return;
+            return false;
         };
         let page = |peer_id: u64, record: &str, title: &str, live: bool| PublishedSurface {
             peer_id,
@@ -51,13 +72,6 @@ impl ShellDriver {
             broker.replace_published_surfaces_for_test(pages);
             broker
         });
-        // The provider snapshots published surfaces off the frame; let the
-        // first query's snapshot land, as it has by any later keystroke.
-        self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_query("rename");
-        let _ = self.paint_settled();
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        let _ = self.paint_settled();
-        self.scene_palette_query("rename");
+        true
     }
 }

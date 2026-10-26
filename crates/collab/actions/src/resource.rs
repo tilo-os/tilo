@@ -866,6 +866,9 @@ pub struct ActionSpec {
     /// Classifies one invocation's bound arguments when the action's risk
     /// depends on them. See [`ActionSpec::with_risk`].
     risk_of: Option<RiskClassifier>,
+    /// Decides from one invocation's bound arguments whether Undo takes it
+    /// back, when that depends on them. See [`ActionSpec::with_undo_of`].
+    undo_of: Option<UndoClassifier>,
     /// Classifies what one invocation's bound arguments are, for the grants
     /// deciding it. See [`ActionSpec::with_need_of`].
     need_of: Option<NeedClassifier>,
@@ -920,6 +923,7 @@ impl Clone for ActionSpec {
             params: self.params.clone(),
             build: self.build.clone(),
             risk_of: self.risk_of.clone(),
+            undo_of: self.undo_of.clone(),
             need_of: self.need_of.clone(),
             continuation_resolver: self.continuation_resolver.clone(),
             carrier: self.carrier,
@@ -932,6 +936,9 @@ impl Clone for ActionSpec {
 
 /// Classifies the risk of one invocation from its bound arguments.
 pub type RiskClassifier = Arc<dyn Fn(&ActionArgs) -> RiskLevel + Send + Sync>;
+
+/// Decides from one invocation's bound arguments whether Undo takes it back.
+pub type UndoClassifier = Arc<dyn Fn(&ActionArgs) -> bool + Send + Sync>;
 
 /// Classifies what one invocation is from its bound arguments.
 pub type NeedClassifier = Arc<dyn Fn(&ActionArgs) -> ActionNeed + Send + Sync>;
@@ -1210,6 +1217,7 @@ impl ActionSpec {
                 deferred_type: Some(type_id),
             },
             risk_of: None,
+            undo_of: None,
             need_of: None,
             continuation_resolver: None,
             carrier: false,
@@ -1253,6 +1261,7 @@ impl ActionSpec {
             params: Vec::new(),
             build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
+            undo_of: None,
             need_of: None,
             continuation_resolver: None,
             carrier: false,
@@ -1290,6 +1299,7 @@ impl ActionSpec {
             params: Vec::new(),
             build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
+            undo_of: None,
             need_of: None,
             continuation_resolver: None,
             carrier: false,
@@ -1345,6 +1355,7 @@ impl ActionSpec {
                 build,
             },
             risk_of: None,
+            undo_of: None,
             need_of: None,
             continuation_resolver: None,
             carrier: false,
@@ -1413,6 +1424,7 @@ impl ActionSpec {
             params: Vec::new(),
             build: InvocationBuilder::Fixed(for_build),
             risk_of: None,
+            undo_of: None,
             need_of: None,
             continuation_resolver: None,
             carrier: false,
@@ -1463,6 +1475,7 @@ impl ActionSpec {
                 build,
             },
             risk_of: None,
+            undo_of: None,
             need_of: None,
             continuation_resolver: None,
             carrier: false,
@@ -1567,6 +1580,7 @@ impl ActionSpec {
                 deferred_type: None,
             },
             risk_of: None,
+            undo_of: None,
             need_of: None,
             continuation_resolver: None,
             carrier: false,
@@ -1654,7 +1668,9 @@ impl ActionSpec {
     #[must_use]
     pub fn destructive(mut self) -> Self {
         self.contract.risk = RiskLevel::Destructive;
-        self.contract.confirmation = ConfirmationPolicy::Confirm;
+        // Asked with a click when Undo cannot take it back; run at once,
+        // with Undo offered, when it can ([`ActionContract::settle_confirmation`]).
+        self.contract.settle_confirmation();
         self
     }
 
@@ -1814,6 +1830,26 @@ impl ActionSpec {
             .map_or_else(|_| self.contract.need(), |args| self.need_for_args(&args))
     }
 
+    /// Decide per invocation whether Undo takes it back, for an action that
+    /// carries others (a group: Undo takes it back only when it takes back
+    /// every member). Without it, the contract's
+    /// [`can_be_undone`](ActionContract::can_be_undone) decides.
+    #[must_use]
+    pub fn with_undo_of(
+        mut self,
+        classify: impl Fn(&ActionArgs) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.undo_of = Some(Arc::new(classify));
+        self
+    }
+
+    /// Whether Undo takes back one invocation with these bound arguments.
+    pub fn undoable_for(&self, args: &ActionArgs) -> bool {
+        self.undo_of
+            .as_ref()
+            .map_or_else(|| self.contract.can_be_undone(), |classify| classify(args))
+    }
+
     /// The risk of one invocation: the classifier's verdict for these
     /// arguments, or the declared [`ActionContract::risk`].
     pub fn risk_for(&self, args: &ActionArgs) -> RiskLevel {
@@ -1831,7 +1867,10 @@ impl ActionSpec {
         if self.contract.confirmation != ConfirmationPolicy::None || self.risk_of.is_none() {
             return self.contract.confirmation.clone();
         }
-        if self.risk_for(args).requires_confirmation() {
+        if self
+            .risk_for(args)
+            .requires_confirmation_when(self.undoable_for(args))
+        {
             ConfirmationPolicy::Confirm
         } else {
             ConfirmationPolicy::None
@@ -1913,6 +1952,8 @@ impl ActionSpec {
     #[must_use]
     pub fn reversible(mut self) -> Self {
         self.contract.reversible = true;
+        // A deletion Undo takes back is no longer asked about.
+        self.contract.settle_confirmation();
         self
     }
 
@@ -2209,6 +2250,94 @@ pub struct FlatAction<'a> {
     pub resource_label: String,
     pub resource_presentation: Option<ResourcePresentation>,
     pub action: &'a ActionSpec,
+    /// How deep the resource sits in its forest: 0 for a root (the app or
+    /// the open document itself), more for an item inside it.
+    pub depth: usize,
+}
+
+impl FlatAction<'_> {
+    /// The row a person reads for this action ([`listed_row`]).
+    #[must_use]
+    pub fn row(&self) -> ListedRow {
+        listed_row(
+            &self.action.label,
+            (self.depth > 0).then_some(self.resource_label.as_str()),
+        )
+    }
+}
+
+/// One action as a person reads it in a list: what it does, and under it
+/// what it acts on.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ListedRow {
+    pub title: String,
+    pub subtitle: Option<String>,
+}
+
+/// The row for an action labelled `label`, which acts on the item named
+/// `item` (none for the app or document itself): the label alone as the
+/// title, the outcome in the person's words, and the item's name under it
+/// when it acts on one. An action's description is written for agents and
+/// scripts (what it takes, what it answers) and is never the line under a
+/// person's row; it still finds the row in a search. Never the label joined
+/// to the resource's name, a kind of control ("— Focus"), an id or a
+/// separator glyph: every list of actions people see (an app's palette,
+/// desktop search) builds its rows here.
+#[must_use]
+pub fn listed_row(label: &str, item: Option<&str>) -> ListedRow {
+    let title = label.trim().to_owned();
+    let subtitle = item
+        .map(str::trim)
+        .filter(|item| !item.is_empty() && *item != title)
+        .map(str::to_owned);
+    ListedRow { title, subtitle }
+}
+
+/// What is wrong with how `row` reads, if anything: a raw id (a run of ten
+/// or more digits, a long hex string) anywhere, or in its label a separator
+/// glyph joining facts or a control's own verb ("— Focus"). Empty for a row
+/// that reads as an outcome in the person's words. The line under the label
+/// may quote the person's own content (an article's title), so only ids are
+/// looked for there. Every list of actions people see is held to this
+/// ([`listed_row`] builds rows that pass).
+#[must_use]
+pub fn listed_row_problems(row: &ListedRow) -> Vec<&'static str> {
+    let mut problems = Vec::new();
+    for (index, text) in std::iter::once(row.title.as_str())
+        .chain(row.subtitle.as_deref())
+        .enumerate()
+    {
+        if text
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| {
+                (word.len() >= 10 && word.chars().all(|c| c.is_ascii_digit()))
+                    || (word.len() >= 16
+                        && word.chars().all(|c| c.is_ascii_hexdigit())
+                        && word.chars().any(|c| c.is_ascii_digit()))
+            })
+        {
+            problems.push("a raw id");
+        }
+        if index > 0 {
+            continue;
+        }
+        if ['\u{b7}', '\u{2022}', '|']
+            .iter()
+            .any(|glyph| text.contains(*glyph))
+            || text.contains(" \u{2014} ")
+            || text.contains(" \u{2013} ")
+        {
+            problems.push("a separator glyph");
+        }
+        if ["Focus", "Activate", "Show context menu", "Set value"]
+            .iter()
+            .any(|verb| text.ends_with(&format!(" {verb}")) || text == *verb)
+        {
+            problems.push("a control's own verb");
+        }
+    }
+    problems.dedup();
+    problems
 }
 
 /// Depth-first flatten of a resource forest into every exported action,
@@ -2216,12 +2345,12 @@ pub struct FlatAction<'a> {
 pub fn flatten(resources: &[Resource]) -> Vec<FlatAction<'_>> {
     let mut out = Vec::new();
     for r in resources {
-        flatten_into(r, &mut out);
+        flatten_into(r, 0, &mut out);
     }
     out
 }
 
-fn flatten_into<'a>(resource: &'a Resource, out: &mut Vec<FlatAction<'a>>) {
+fn flatten_into<'a>(resource: &'a Resource, depth: usize, out: &mut Vec<FlatAction<'a>>) {
     for action in &resource.actions {
         out.push(FlatAction {
             key: format!("{}{}{}", resource.id.0, KEY_SEP, action.id),
@@ -2230,10 +2359,11 @@ fn flatten_into<'a>(resource: &'a Resource, out: &mut Vec<FlatAction<'a>>) {
             resource_label: resource.label.clone(),
             resource_presentation: resource.presentation.clone(),
             action,
+            depth,
         });
     }
     for child in &resource.children {
-        flatten_into(child, out);
+        flatten_into(child, depth.saturating_add(1), out);
     }
 }
 
@@ -2241,6 +2371,42 @@ fn flatten_into<'a>(resource: &'a Resource, out: &mut Vec<FlatAction<'a>>) {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
+
+    /// The rows the person saw are each refused, and the row the listing
+    /// builds for the same actions reads as an outcome.
+    #[test]
+    fn listed_rows_name_the_outcome_never_an_id_a_glyph_or_a_control_verb() {
+        let seen = [
+            (
+                "Feeds \u{2014} Add a subscription \u{b7} 17471151804430418729",
+                None,
+            ),
+            ("Refresh all feeds \u{2014} Focus", None),
+            ("History \u{2014} History", None),
+            ("Focus", Some("New folder")),
+        ];
+        for (title, subtitle) in seen {
+            let row = ListedRow {
+                title: title.to_owned(),
+                subtitle: subtitle.map(str::to_owned),
+            };
+            assert!(!listed_row_problems(&row).is_empty(), "{row:?}");
+        }
+        // What the action does is its label; what it is described as, for
+        // agents, never stands under it.
+        assert_eq!(
+            listed_row("Add a subscription", None),
+            ListedRow {
+                title: "Add a subscription".into(),
+                subtitle: None,
+            }
+        );
+        let item = listed_row("Unsubscribe", Some("Hacker News"));
+        assert_eq!(item.subtitle.as_deref(), Some("Hacker News"));
+        assert!(listed_row_problems(&item).is_empty());
+        // The resource named like the action adds nothing under it.
+        assert_eq!(listed_row("History", Some("History")).subtitle, None);
+    }
 
     #[derive(Debug, Serialize, Deserialize)]
     struct OpenPath {

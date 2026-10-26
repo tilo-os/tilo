@@ -133,14 +133,246 @@ pub fn read_answer(
     context: &PlanContext,
 ) -> Result<tilo_agent::tools::Answer, String> {
     let answer = if context.may_plan_nothing {
-        tilo_agent::tools::read_plan_allowing_none(input, revealed, most_steps)
+        tilo_agent::tools::read_plan_allowing_none(
+            &coordinated(input, context),
+            revealed,
+            most_steps,
+        )
     } else {
         tilo_agent::tools::read_plan(input, revealed, most_steps)
     }?;
     if let Some(wait) = &answer.wait {
         Wait::planned(wait.clone(), None)?;
     }
+    let mut answer = answer;
+    read_obligations(input, &mut answer);
     Ok(answer)
+}
+
+/// `input` as a coordinator's turn is read: a plan of no steps that lists,
+/// adjusts or sets aside items has answered, `reply` or not; a model asked
+/// to plan no steps should not be refused for leaving out a courtesy.
+fn coordinated(input: &serde_json::Value, context: &PlanContext) -> serde_json::Value {
+    let listed = |key: &str| {
+        input
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|items| !items.is_empty())
+    };
+    let mut input = input.clone();
+    if matches!(context.role, Role::Coordinator { .. })
+        && ["obligations", "adjust", "set_aside"]
+            .into_iter()
+            .any(listed)
+        && input
+            .get("reply")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|reply| reply.trim().is_empty())
+        && let Some(fields) = input.as_object_mut()
+    {
+        fields.insert("reply".into(), "Items updated.".into());
+    }
+    input
+}
+
+/// The most obligations a task keeps, and the most characters of each.
+pub const MOST_OBLIGATIONS: usize = 12;
+const MOST_OBLIGATION_CHARS: usize = 160;
+
+/// The most apps and earlier items one item of a coordinated task names.
+const MOST_ITEM_NAMES: usize = 8;
+
+/// The `plan` input's checklist, which is never a reason to refuse a plan:
+/// `obligations` (the request's deliverables), each step's `for` (the one
+/// it fulfils) and `set_aside` (those the model will not do, with why). A
+/// malformed entry is left out. An obligation may be an object (`text`,
+/// `apps`, `after`, `wait_for`), as a coordinator lists items; its plan is
+/// kept beside it, and `adjust` with it.
+fn read_obligations(input: &serde_json::Value, answer: &mut tilo_agent::tools::Answer) {
+    let bounded = |text: &str| {
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.chars().take(MOST_OBLIGATION_CHARS).collect::<String>())
+    };
+    let listed: Vec<(String, tilo_agent::tools::ItemPlan)> = input
+        .get("obligations")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| match item {
+            serde_json::Value::String(text) => {
+                bounded(text).map(|text| (text, tilo_agent::tools::ItemPlan::default()))
+            }
+            serde_json::Value::Object(_) => {
+                let text = item.get("text").and_then(serde_json::Value::as_str)?;
+                Some((bounded(text)?, item_plan(item)))
+            }
+            _ => None,
+        })
+        .take(MOST_OBLIGATIONS)
+        .collect();
+    let planned = listed
+        .iter()
+        .any(|(_, plan)| *plan != tilo_agent::tools::ItemPlan::default());
+    (answer.obligations, answer.items) = listed.into_iter().unzip();
+    if !planned {
+        answer.items.clear();
+    }
+    answer.adjust = input
+        .get("adjust")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let item = entry.get("item").and_then(obligation_number)?;
+            let note = entry
+                .get("note")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|note| {
+                    let note = note.trim();
+                    (!note.is_empty()).then(|| note.chars().take(MOST_NOTE_CHARS).collect())
+                })?;
+            Some((item, note))
+        })
+        .take(MOST_OBLIGATIONS)
+        .collect();
+    let steps = input.get("steps").and_then(serde_json::Value::as_array);
+    let serves: Vec<Option<usize>> = steps
+        .into_iter()
+        .flatten()
+        .map(|step| step.get("for").and_then(obligation_number))
+        .collect();
+    answer.serves = if serves.iter().any(Option::is_some) {
+        serves
+    } else {
+        Vec::new()
+    };
+    answer.set_aside = input
+        .get("set_aside")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let item = entry.get("item").and_then(obligation_number)?;
+            let reason = entry
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .and_then(bounded)?;
+            Some((item, reason))
+        })
+        .take(MOST_OBLIGATIONS)
+        .collect();
+}
+
+/// The most characters of a coordinator's note on one item.
+const MOST_NOTE_CHARS: usize = 400;
+
+/// How a coordinator said one item is run: its apps, the items it
+/// follows and what it waits for, each malformed part left out.
+fn item_plan(item: &serde_json::Value) -> tilo_agent::tools::ItemPlan {
+    let list = |key: &str| {
+        item.get(key)
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    };
+    tilo_agent::tools::ItemPlan {
+        apps: list("apps")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|app| !app.is_empty())
+            .map(|app| app.chars().take(MOST_OBLIGATION_CHARS).collect())
+            .take(MOST_ITEM_NAMES)
+            .collect(),
+        after: list("after")
+            .iter()
+            .filter_map(obligation_number)
+            .take(MOST_ITEM_NAMES)
+            .collect(),
+        wait: tilo_agent::tools::read_wait(item).ok().flatten(),
+    }
+}
+
+/// An obligation's number as a model wrote it: `2`, or `"2"`.
+fn obligation_number(value: &serde_json::Value) -> Option<usize> {
+    let number = match value {
+        serde_json::Value::Number(number) => number.as_u64()?,
+        serde_json::Value::String(text) => text.trim().trim_start_matches('#').parse().ok()?,
+        _ => return None,
+    };
+    usize::try_from(number).ok().filter(|number| *number >= 1)
+}
+
+/// The checklist a plan declared ([`tilo_agent::tools::Answer::obligations`]
+/// and [`tilo_agent::tools::Answer::set_aside`]), handed to the host with
+/// the plan's steps; for a coordinated task, how each item is run
+/// ([`tilo_agent::tools::Answer::items`]), the notes on items and what the
+/// plan said in reply.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Obligations {
+    pub items: Vec<String>,
+    pub set_aside: Vec<(usize, String)>,
+    /// Beside each of `items`, how it is run; empty when no item says.
+    pub plans: Vec<tilo_agent::tools::ItemPlan>,
+    /// Notes on items, by number.
+    pub adjust: Vec<(usize, String)>,
+    /// The plan's `reply`: how an item's agent says its item is done, or
+    /// cannot be.
+    pub reply: Option<String>,
+}
+
+/// Which part of a coordinated task a plan is: one agent per item of the
+/// checklist, with a coordinator that lists the items, follows news for
+/// them and checks the whole once they ended.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Role {
+    /// The whole task, by one agent: no coordination.
+    #[default]
+    Whole,
+    /// The coordinator's turn: listing the items (`lists`), or news or the
+    /// check, told `note`.
+    Coordinator { lists: bool, note: String },
+    /// One item's agent, told `note`: the request, its item, the checklist
+    /// and what the items before it did.
+    Item { note: String },
+}
+
+impl Role {
+    /// Whether the task is coordinated.
+    #[must_use]
+    pub fn coordinated(&self) -> bool {
+        *self != Self::Whole
+    }
+
+    /// What the plan is told of its part, after the request; empty for the
+    /// whole task.
+    #[must_use]
+    pub fn note(&self) -> &str {
+        match self {
+            Self::Whole => "",
+            Self::Coordinator { note, .. } | Self::Item { note } => note,
+        }
+    }
+}
+
+/// Who a plan of a coordinated task is, as the plan and usage logs name it:
+/// the coordinator or an item's agent, the item, and the task id the logs
+/// give it (an item's agent's with its own suffix).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanRole {
+    /// `coordinator` or `item`.
+    pub role: &'static str,
+    /// The item, numbered from 1.
+    pub item: Option<usize>,
+    pub task: String,
+}
+
+impl PlanRole {
+    /// The fields a log line carries for it.
+    #[must_use]
+    pub fn fields(&self) -> serde_json::Value {
+        serde_json::json!({"role": self.role, "item": self.item, "task": self.task})
+    }
 }
 
 /// One action to perform.
@@ -157,6 +389,9 @@ pub struct Step {
     /// never to a value the plan wrote
     /// ([`tilo_agent::plan::carried_arguments`]). `None` carries nothing.
     pub carries: Option<String>,
+    /// The obligation of the task's checklist this step fulfils, numbered
+    /// from 1: ticked when the step succeeds.
+    pub serves: Option<usize>,
 }
 
 impl Step {
@@ -288,6 +523,11 @@ pub struct PlanContext {
     pub new_documents: Vec<String>,
     /// The task's budget for asking a model call lost to the network again.
     pub retries: TurnRetries,
+    /// On a plan of the rest of a task, its checklist: each obligation,
+    /// whether it is done, and what is still to do. Empty for none.
+    pub obligations: String,
+    /// Which part of a coordinated task this plan is.
+    pub role: Role,
 }
 
 impl PlanContext {
@@ -439,7 +679,10 @@ pub fn observation_within(
     most: usize,
 ) -> Option<String> {
     let value = output.value.as_ref().filter(|value| !value.is_null())?;
-    let text = compact(read_content(value)).to_string();
+    // Dates and amounts as the host reads them, noted beside what the
+    // document writes, so the model copies an ISO date rather than
+    // working out which way `03/04/2026` goes.
+    let text = compact(&crate::values::annotate_json(read_content(value))).to_string();
     let text = if text.chars().count() > most {
         format!("{}… (cut)", text.chars().take(most).collect::<String>())
     } else {
@@ -555,6 +798,18 @@ pub trait Planner: Send {
     fn last_planned_by_model(&self) -> bool {
         false
     }
+
+    /// The checklist the plan this planner last made declared, taken once.
+    fn take_obligations(&mut self) -> Obligations {
+        Obligations::default()
+    }
+
+    /// Whether a task this planner plans is coordinated: its checklist's
+    /// items each done by an agent of their own. A planner that does not
+    /// say, does not.
+    fn decomposes(&self) -> bool {
+        false
+    }
 }
 
 /// Reads the steps from the task: one JSON object or an array of them.
@@ -621,6 +876,7 @@ fn step(item: &serde_json::Value, context: &PlanContext) -> Result<Step, String>
         record,
         action: StepAction::Invoke { address, arguments },
         carries,
+        serves: None,
     })
 }
 
@@ -672,6 +928,7 @@ mod tests {
             record: None,
             action: StepAction::Wait(anywhere),
             carries: None,
+            serves: None,
         };
         assert_eq!(step.log_names(), (String::new(), "wait".into()));
     }
@@ -708,6 +965,28 @@ mod tests {
         assert_eq!(wait_places(), ["mail", "chat", "messages"]);
         assert_eq!(message_app(" CHAT "), Some("so.tilo.chat"));
         assert_eq!(message_app("so.tilo.notes"), None);
+    }
+
+    /// A plan's checklist is read beside its steps and never refuses it:
+    /// blank items and numbers below 1 are left out, a number may be
+    /// written as text.
+    #[test]
+    fn a_plan_reads_its_obligations_and_what_each_step_fulfils() {
+        let mut revealed = tilo_agent::tools::Revealed::new();
+        revealed.reveal("a#b");
+        let input = serde_json::json!({"steps": [
+                {"operation": "a#b", "arguments": {}, "for": 2},
+                {"operation": "a#b", "arguments": {}}],
+            "obligations": ["enter the code", " ", "post it"],
+            "set_aside": [{"item": "1", "reason": " already done "}, {"item": 0, "reason": "x"},
+                {"item": 2}]});
+        let answer = read_answer(&input, &revealed, 4, &context()).expect("a plan");
+        assert_eq!(answer.obligations, ["enter the code", "post it"]);
+        assert_eq!(answer.serves, [Some(2), None]);
+        assert_eq!(answer.set_aside, [(1, "already done".to_owned())]);
+        let untagged = serde_json::json!({"steps": [{"operation": "a#b", "arguments": {}}]});
+        let answer = read_answer(&untagged, &revealed, 4, &context()).expect("a plan");
+        assert!(answer.obligations.is_empty() && answer.serves.is_empty());
     }
 
     #[test]

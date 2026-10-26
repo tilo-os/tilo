@@ -204,6 +204,8 @@ const fn operation(op: &EditOp) -> tilo_actions::EditOp {
         EditOp::InsertColumn { .. } => Recorded::InsertColumn,
         EditOp::RemoveRow { .. } => Recorded::RemoveRow,
         EditOp::RemoveColumn { .. } => Recorded::RemoveColumn,
+        EditOp::React { .. } => Recorded::React,
+        EditOp::Unreact { .. } => Recorded::Unreact,
         EditOp::Rich { .. } => Recorded::Mark,
     }
 }
@@ -257,6 +259,10 @@ fn edit_at(
         // A text written whole (a formula, a title) is what it reads now:
         // a reader names it without the document, and elides it to fit.
         EditOp::Replace { text } => Some(Scalar::whole_text(text)),
+        // The emoji a reaction gave or took back.
+        EditOp::React { emoji } | EditOp::Unreact { emoji } => {
+            Scalar::from_json(&serde_json::Value::String(emoji.clone()))
+        }
         EditOp::Add { by } => old
             .as_ref()
             .and_then(|old| crate::__private::json_via_bytes(old).ok())

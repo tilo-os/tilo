@@ -1,0 +1,4 @@
+#pragma once
+namespace tilo {
+inline constexpr char kPageClipboard[] = R"TILO_CLIPBOARD(@TILO_PAGE_CLIPBOARD@)TILO_CLIPBOARD";
+}

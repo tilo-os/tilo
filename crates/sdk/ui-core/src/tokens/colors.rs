@@ -369,170 +369,18 @@ pub struct Intents {
     pub selection_tint: Color,
 }
 
-/// How many hues the presence palette has.
-pub const PRESENCE_LEN: usize = 12;
+pub use collab_types::presence::{PRESENCE_HUES, PRESENCE_LEN, PresenceHue};
 
-/// The presence palette's hues, in OKLCH degrees: twelve evenly spaced, so
-/// neighbours sit 30° apart.
-pub const PRESENCE_HUES: [f32; PRESENCE_LEN] = [
-    25.0, 55.0, 85.0, 115.0, 145.0, 175.0, 205.0, 235.0, 265.0, 295.0, 325.0, 355.0,
-];
-
-/// One of the twelve presence hues: a person's colour, as they choose it.
-///
-/// A colour is part of someone's identity, not of a theme: it is stored as
-/// this choice and painted through whatever theme each viewer uses
-/// ([`PresencePalette::hue`]), so it reads at that theme's presence
-/// lightness and chroma everywhere.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PresenceHue {
-    Red,
-    Orange,
-    Amber,
-    Olive,
-    Green,
-    Teal,
-    Cyan,
-    Sky,
-    Blue,
-    Violet,
-    Magenta,
-    Pink,
-}
-
-impl PresenceHue {
-    /// Every hue, in [`PRESENCE_HUES`] order.
-    pub const ALL: [Self; PRESENCE_LEN] = [
-        Self::Red,
-        Self::Orange,
-        Self::Amber,
-        Self::Olive,
-        Self::Green,
-        Self::Teal,
-        Self::Cyan,
-        Self::Sky,
-        Self::Blue,
-        Self::Violet,
-        Self::Magenta,
-        Self::Pink,
-    ];
-
-    /// The palette slot, `0..PRESENCE_LEN`.
-    #[must_use]
-    pub fn slot(self) -> usize {
-        Self::ALL.iter().position(|h| *h == self).unwrap_or(0)
+/// The presence hue nearest to `colour`'s, for a colour that arrives from
+/// outside (a host's accent, a roster's packed colour). A grey has no hue
+/// and gives `None`.
+#[must_use]
+pub fn nearest_presence_hue(colour: Color) -> Option<PresenceHue> {
+    let source = Oklch::from_color(colour);
+    if source.c < 0.02 {
+        return None;
     }
-
-    /// The hue at `slot`, wrapping past [`PRESENCE_LEN`].
-    #[must_use]
-    pub fn from_slot(slot: usize) -> Self {
-        Self::ALL
-            .get(slot % PRESENCE_LEN)
-            .copied()
-            .unwrap_or(Self::Blue)
-    }
-
-    #[must_use]
-    pub fn degrees(self) -> f32 {
-        PRESENCE_HUES.get(self.slot()).copied().unwrap_or(265.0)
-    }
-
-    /// The stored name (`"violet"`), as settings and actions spell it.
-    #[must_use]
-    pub const fn id(self) -> &'static str {
-        match self {
-            Self::Red => "red",
-            Self::Orange => "orange",
-            Self::Amber => "amber",
-            Self::Olive => "olive",
-            Self::Green => "green",
-            Self::Teal => "teal",
-            Self::Cyan => "cyan",
-            Self::Sky => "sky",
-            Self::Blue => "blue",
-            Self::Violet => "violet",
-            Self::Magenta => "magenta",
-            Self::Pink => "pink",
-        }
-    }
-
-    /// The name a person reads in a picker.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Red => "Red",
-            Self::Orange => "Orange",
-            Self::Amber => "Amber",
-            Self::Olive => "Olive",
-            Self::Green => "Green",
-            Self::Teal => "Teal",
-            Self::Cyan => "Cyan",
-            Self::Sky => "Sky",
-            Self::Blue => "Blue",
-            Self::Violet => "Violet",
-            Self::Magenta => "Magenta",
-            Self::Pink => "Pink",
-        }
-    }
-
-    /// Parse [`Self::id`].
-    #[must_use]
-    pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|h| h.id() == id)
-    }
-
-    /// The hue nearest to `colour`'s, for a colour that arrives from outside
-    /// (a host's accent). A grey has no hue and gives `None`.
-    #[must_use]
-    pub fn nearest(colour: Color) -> Option<Self> {
-        let source = Oklch::from_color(colour);
-        if source.c < 0.02 {
-            return None;
-        }
-        let distance = |h: Self| {
-            let d = (h.degrees() - source.h).rem_euclid(360.0);
-            d.min(360.0 - d)
-        };
-        Self::ALL
-            .into_iter()
-            .min_by(|a, b| distance(*a).total_cmp(&distance(*b)))
-    }
-
-    /// The colour someone wears until they choose one: a pure function of
-    /// their identity, so every host paints them the same without asking.
-    /// The fixture names `me`, `alice`, `bob` and `charlie` are pinned so
-    /// demos and tests stay recognisable.
-    #[must_use]
-    pub fn of_identity(id: &str) -> Self {
-        match id {
-            "me" => Self::Blue,
-            "alice" => Self::Pink,
-            "bob" => Self::Orange,
-            "charlie" => Self::Green,
-            _ => {
-                // FNV-1a 64-bit: cheap, deterministic, no RNG state.
-                let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-                for byte in id.as_bytes() {
-                    hash ^= u64::from(*byte);
-                    hash = hash.wrapping_mul(0x0100_0000_01b3);
-                }
-                let slot = hash.checked_rem(PRESENCE_LEN as u64).unwrap_or(0);
-                Self::from_slot(usize::try_from(slot).unwrap_or(0))
-            }
-        }
-    }
-
-    /// The person's stored choice in a settings document
-    /// (`identity.colour`), if they made one.
-    #[must_use]
-    pub fn chosen_in(settings: &serde_json::Value) -> Option<Self> {
-        settings
-            .get("identity")?
-            .get("colour")?
-            .as_str()
-            .and_then(Self::from_id)
-    }
+    Some(PresenceHue::nearest_to_degrees(source.h))
 }
 
 /// How much of a person's chroma their face keeps while they are idle or
@@ -2033,8 +1881,8 @@ mod tests {
             .collect();
         assert!(spread.len() >= 8, "identities spread over the ring");
         let orange = Color::from_rgb8(0xE0, 0x80, 0x30);
-        assert_eq!(PresenceHue::nearest(orange), Some(PresenceHue::Orange));
-        assert_eq!(PresenceHue::nearest(Color::from_rgb8(128, 128, 128)), None);
+        assert_eq!(nearest_presence_hue(orange), Some(PresenceHue::Orange));
+        assert_eq!(nearest_presence_hue(Color::from_rgb8(128, 128, 128)), None);
         let settings = serde_json::json!({"identity": {"colour": "violet"}});
         assert_eq!(PresenceHue::chosen_in(&settings), Some(PresenceHue::Violet));
         assert_eq!(PresenceHue::chosen_in(&serde_json::json!({})), None);

@@ -466,6 +466,42 @@ impl RecordPublisher {
         )
     }
 
+    /// Record which agent caused this publisher's own `version_id` of
+    /// `record_id`, as the session authenticated it: a signed operation of
+    /// its own, so peers learn it from the same device that signed the
+    /// version. Republishing the same attribution is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid attribution, a version this actor did
+    /// not sign, a different attribution already recorded, or a repository
+    /// failure.
+    pub fn attribute(
+        &self,
+        record_id: FileRecordId,
+        version_id: FileVersionId,
+        attribution: &fs_protocol::FileAttributionV1,
+    ) -> Result<bool, RecordPublisherError> {
+        let _guard = self
+            .publish_lock
+            .lock()
+            .map_err(|_| RecordPublisherError::PublicationUnavailable)?;
+        attribution.validate()?;
+        validate_record(record_id)?;
+        let key = RecordRepositoryKey {
+            workspace_id: self.workspace_id,
+            record_id,
+        };
+        self.apply_idempotent(
+            key,
+            RecordOperationV1::AttributeVersion(fs_protocol::FileVersionAttributionV1 {
+                version_id,
+                attribution: attribution.clone(),
+            }),
+            &self.local_authorizer(record_id),
+        )
+    }
+
     /// Publish missing immutable versions followed by changed metadata.
     /// Completed prefixes are safe to retry after a crash or restart.
     pub fn publish(
@@ -948,6 +984,19 @@ fn operation_is_present(
         },
         RecordOperationV1::PrepareTransaction(_) | RecordOperationV1::CommitTransaction { .. } => {
             Ok(false)
+        }
+        RecordOperationV1::AttributeVersion(attributed) => {
+            match snapshot
+                .attributions
+                .iter()
+                .find(|current| current.version_id == attributed.version_id)
+            {
+                Some(current) if current == attributed => Ok(true),
+                Some(_) => Err(RecordPublisherError::VersionCollision(
+                    attributed.version_id,
+                )),
+                None => Ok(false),
+            }
         }
     }
 }

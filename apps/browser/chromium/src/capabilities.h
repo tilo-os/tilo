@@ -73,7 +73,9 @@ class Downloads final : public CefDownloadHandler {
     const int owner=owner_(browser);const auto url=item->GetURL().ToString();
     const bool retryable=provenance_.TakeRetryable(owner,item->GetOriginalUrl().ToString(),url);
     auto early=early_.find(id);const bool staged=early!=early_.end();
-    auto expected=TakeExpected(owner,item);
+    // A download staged before this was matched to its request then: another
+    // request for the same address waits for a download of its own.
+    auto expected=staged?std::nullopt:TakeExpected(owner,item);
     std::string chosen=staged?early->second.chosen:std::string();
     if(expected && !expected->name.empty()) chosen=FileName(expected->name);
     const auto name=chosen.empty()?FileName(suggested):chosen;

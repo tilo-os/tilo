@@ -35,6 +35,7 @@ mod invite_scenes;
 mod now_playing_fixture;
 mod scene_catalogue;
 mod search_seed;
+mod secret_prompt_sim_scene;
 mod two_groups_scene;
 mod uninstall_scenes;
 mod window_menu_scene;
@@ -1538,6 +1539,28 @@ impl ShellDriver {
         st_bump(&handle);
     }
 
+    /// `who`'s pointer is heard at `at` in the workspace on screen, as their
+    /// device sends it a few dozen times a second.
+    pub fn peer_pointer_for_shots(&mut self, who: &str, at: Point) {
+        let room = self
+            .chrome()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room().to_string());
+        let Some(room) = room else {
+            return;
+        };
+        self.fb.apply_remote_presence_for_shots(
+            who.into(),
+            ui::presence::PresenceKey::Workspace { id: room },
+            ui::collaboration::PresencePayload::Pointer {
+                x: ui::num::f32_of_f64(at.x),
+                y: ui::num::f32_of_f64(at.y),
+            },
+        );
+    }
+
     /// `who` says `text` beside their pointer.
     pub fn remote_cursor_chat_for_shots(&mut self, who: &str, text: &str, sent: bool) {
         let now = Instant::now();
@@ -1983,6 +2006,7 @@ impl ShellDriver {
             "palette_rechner" => self.scene_palette_query("rechner"),
             "palette_sum" => self.scene_palette_query("2+2"),
             "palette_move" => self.scene_palette_query("move"),
+            "palette_keyboard_layout" => self.scene_palette_query("keyboard layout"),
             "palette_files" => self.scene_palette_query("files"),
             "palette_finder" => self.scene_seeded_query("finder"),
             "palette_spotify" => self.scene_seeded_query("spotify"),
@@ -2033,6 +2057,8 @@ impl ShellDriver {
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
+            "ws-settings-emoji" => self.scene_ws_settings_emoji(true),
+            "ws-settings-emoji-empty" => self.scene_ws_settings_emoji(false),
             "ws-settings-agents" => self.scene_ws_settings_agents(),
             "ws-settings-agent-access" => self.scene_ws_settings_agent_access(),
             "ws-settings-agent-access-keyboard" => {
@@ -2096,6 +2122,9 @@ impl ShellDriver {
             }
             "secret-prompt-sim-pin" => {
                 self.scene_secret_prompt_network(SecretPromptNetwork::SimPin);
+            }
+            "secret-prompt-sim-puk" => {
+                self.scene_secret_prompt_network(SecretPromptNetwork::SimPuk);
             }
             "desktop-control-ask" => self.scene_desktop_control_ask(),
             "desktop-control-chip" => self.scene_desktop_control_chip(),
@@ -2848,6 +2877,30 @@ impl ShellDriver {
         self.fb.host_mut().force_ws_settings_settled();
     }
 
+    /// The Emoji tab, with a few of the workspace's own emoji or none.
+    fn scene_ws_settings_emoji(&mut self, seeded: bool) {
+        self.with_chrome(|st| {
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::Emoji;
+        });
+        if seeded {
+            let pictures: Vec<(&str, Vec<u8>)> = [
+                ("ship_it", [46, 160, 67]),
+                ("party", [214, 92, 196]),
+                ("coffee", [140, 90, 50]),
+                ("lgtm", [52, 120, 246]),
+                ("on_fire", [240, 120, 32]),
+            ]
+            .into_iter()
+            .map(|(name, colour)| (name, emoji_picture(colour)))
+            .collect();
+            if let Err(error) = self.fb.host_mut().seed_workspace_emoji_for_shots(&pictures) {
+                eprintln!("shots: workspace emoji not seeded: {error}");
+            }
+        }
+        self.fb.host_mut().force_ws_settings_settled();
+    }
+
     fn scene_ws_settings_agents(&mut self) {
         self.seed_workspace_permissions();
         self.seed_agent_member_for_shots();
@@ -3131,6 +3184,7 @@ impl ShellDriver {
                     ..field("psk", "Password", true, "")
                 }],
                 remember: Some(true),
+                sim: None,
             },
             SecretPromptNetwork::SignIn => NetworkSecretsRequest {
                 handle: "nm-secrets:shots/8021x".into(),
@@ -3150,14 +3204,14 @@ impl ShellDriver {
                     field("password", "Password", true, ""),
                 ],
                 remember: Some(true),
+                sim: None,
             },
-            SecretPromptNetwork::SimPin => NetworkSecretsRequest {
-                handle: "nm-secrets:shots/gsm".into(),
-                title: "SIM PIN required".into(),
-                detail: "Enter the PIN to unlock the SIM for \u{201c}Carrier\u{201d}.".into(),
-                fields: vec![field("pin", "SIM PIN", true, "")],
-                remember: Some(false),
-            },
+            SecretPromptNetwork::SimPin => {
+                return self.scene_secret_prompt_sim(os_actions::SimLock::Pin);
+            }
+            SecretPromptNetwork::SimPuk => {
+                return self.scene_secret_prompt_sim(os_actions::SimLock::Puk);
+            }
         };
         let queue = self.host_mut().portal_dialog_queue();
         if let Ok(reply) = queue.enqueue_network_secrets(request) {
@@ -3614,6 +3668,7 @@ impl ShellDriver {
                 Some(host.ws_settings_tab_pill_rect(WsTab::Permissions))
             }
             "ws_settings_tab[apps]" => Some(host.ws_settings_tab_pill_rect(WsTab::Apps)),
+            "ws_settings_tab[emoji]" => Some(host.ws_settings_tab_pill_rect(WsTab::Emoji)),
             _ => None,
         };
         if let Some(r) = curated
@@ -4171,4 +4226,38 @@ enum SecretPromptNetwork {
     Wifi,
     SignIn,
     SimPin,
+    SimPuk,
+}
+
+/// A small round picture in `colour` with a lighter ring, as a workspace's
+/// own emoji might be: PNG bytes.
+fn emoji_picture(colour: [u8; 3]) -> Vec<u8> {
+    let side = 96_u32;
+    let centre = f64::from(side) / 2.0;
+    let picture = image::RgbaImage::from_fn(side, side, |x, y| {
+        let dx = f64::from(x) + 0.5 - centre;
+        let dy = f64::from(y) + 0.5 - centre;
+        let distance = (dx * dx + dy * dy).sqrt();
+        let lighten = |channel: u8| channel.saturating_add(70);
+        if distance > centre - 2.0 {
+            image::Rgba([0, 0, 0, 0])
+        } else if distance > centre * 0.62 || distance <= centre * 0.42 {
+            image::Rgba([colour[0], colour[1], colour[2], 255])
+        } else {
+            image::Rgba([
+                lighten(colour[0]),
+                lighten(colour[1]),
+                lighten(colour[2]),
+                255,
+            ])
+        }
+    });
+    let mut encoded = Vec::new();
+    if let Err(error) = image::DynamicImage::ImageRgba8(picture).write_to(
+        &mut std::io::Cursor::new(&mut encoded),
+        image::ImageFormat::Png,
+    ) {
+        eprintln!("shots: emoji picture not encoded: {error}");
+    }
+    encoded
 }

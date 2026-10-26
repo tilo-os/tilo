@@ -662,15 +662,6 @@ pub struct HistoryState {
     pub can_forward: bool,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ActivityCloseReason {
-    Dismissed,
-    WorkspaceChanged,
-    /// The person opened a resource from the history; focus goes to it.
-    ResourceOpened,
-}
-
 /// Presentation the surface holds beside the tree: nothing here is saved
 /// or shared with peers.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -678,22 +669,10 @@ pub struct Presentation {
     pub pan: Option<DesktopPan>,
     pub scroll: Option<ScrollState>,
     pub history: Option<HistoryState>,
-    pub activity: Option<(WorkspaceId, ActivityView)>,
-    pub activity_close_reason: Option<ActivityCloseReason>,
-    /// The history pane the surface draws for `activity`, when it draws one.
-    pub pane: Option<PaneState>,
     /// The host installed a history source: Catch up, Explore and Replay.
     pub retained_history: bool,
     /// The host installed notifications, and what they show.
     pub notifications: Option<NotificationsState>,
-}
-
-/// The history pane as the surface draws it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PaneState {
-    pub playing: bool,
-    /// Some referenced history could not be read.
-    pub partial: bool,
 }
 
 /// What the surface's notifications show, for a host's tray control.
@@ -707,41 +686,11 @@ pub struct NotificationsState {
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub struct ActivityState {
-    pub workspace: String,
-    pub view: ActivityView,
-    pub playing: bool,
-    pub coverage: &'static str,
-    /// The surface draws this view itself (the shared history pane), so a
-    /// host presents no view of its own for it.
-    #[serde(rename = "inSurface")]
-    pub in_surface: bool,
-}
-
-fn activity_state(
-    workspace: WorkspaceId,
-    view: ActivityView,
-    pane: Option<PaneState>,
-) -> ActivityState {
-    ActivityState {
-        workspace: workspace.0.to_string(),
-        view,
-        playing: pane.is_some_and(|pane| pane.playing),
-        coverage: if pane.is_some_and(|pane| pane.partial) {
-            "partial"
-        } else {
-            "complete"
-        },
-        in_surface: pane.is_some(),
-    }
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
     pub route: Route,
-    /// The app the window shows, as links name it; `None` for a surface of
-    /// no app (the activity pane).
+    /// The app the window shows, as links name it; `None` for a window that
+    /// shows no app of its own.
     pub app: Option<String>,
     pub label: String,
     pub strip_label: String,
@@ -784,8 +733,6 @@ pub struct Snapshot {
     pub maximized: bool,
     pub capabilities: Capabilities,
     pub desktop_pan: Option<DesktopPan>,
-    pub workspace_activity: Option<ActivityState>,
-    pub workspace_activity_close_reason: Option<ActivityCloseReason>,
     pub history: Option<HistoryState>,
     pub scroll: Option<ScrollState>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -838,10 +785,6 @@ pub fn snapshot_with(
         active.is_some_and(|ids| parse_scroll_region(&scroll.region).ok() == Some(ids))
     });
     let history = presentation.history.filter(|_| active.is_some());
-    let workspace_activity = presentation
-        .activity
-        .filter(|(workspace, _)| *workspace == tree.active)
-        .map(|(workspace, view)| activity_state(workspace, view, presentation.pane));
     Snapshot {
         version: 1,
         generation: generation.to_owned(),
@@ -872,8 +815,6 @@ pub fn snapshot_with(
         maximized: active_group.is_some_and(|g| g.maximized),
         capabilities: presentation.capabilities(),
         desktop_pan,
-        workspace_activity,
-        workspace_activity_close_reason: presentation.activity_close_reason,
         history,
         scroll,
         notifications: presentation.notifications,
@@ -1163,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn a_history_source_admits_every_view_and_the_snapshot_says_who_draws_it() {
+    fn a_history_source_admits_every_view_and_the_snapshot_says_so() {
         let tree = tree();
         let w = u64::MAX.to_string();
         let presentation = Presentation {
@@ -1198,22 +1139,10 @@ mod tests {
             admit(&center, "g", &tree).unwrap_err(),
             "Notifications are unavailable on this desktop"
         );
-        let shown = Presentation {
-            activity: Some((WorkspaceId(u64::MAX), ActivityView::Replay)),
-            pane: Some(PaneState {
-                playing: true,
-                partial: true,
-            }),
-            ..presentation
-        };
-        let json = serde_json::to_value(snapshot_with(&tree, "g", vec![], &shown)).unwrap();
+        let json = serde_json::to_value(snapshot_with(&tree, "g", vec![], &presentation)).unwrap();
         assert_eq!(json["capabilities"]["workspaceHistory"], true);
         assert_eq!(json["capabilities"]["workspaceReplay"], true);
         assert_eq!(json["capabilities"]["notifications"], true);
-        assert_eq!(json["workspaceActivity"]["view"], "replay");
-        assert_eq!(json["workspaceActivity"]["inSurface"], true);
-        assert_eq!(json["workspaceActivity"]["playing"], true);
-        assert_eq!(json["workspaceActivity"]["coverage"], "partial");
         assert_eq!(json["notifications"]["retained"], 0);
     }
 
@@ -1241,13 +1170,11 @@ mod tests {
                 can_back: true,
                 can_forward: false,
             }),
-            activity: Some((WorkspaceId(2), ActivityView::Explore)),
             ..Presentation::default()
         };
         let json = serde_json::to_value(snapshot_with(&tree, "g", vec![], &presentation)).unwrap();
         assert!(json["desktopPan"].is_null(), "another strip");
         assert!(json["scroll"].is_null(), "another window");
-        assert!(json["workspaceActivity"].is_null(), "another workspace");
         assert_eq!(json["history"]["canBack"], true);
         assert_eq!(json["history"]["canForward"], false);
     }
