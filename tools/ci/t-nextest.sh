@@ -145,4 +145,6 @@ PY
 if (( nextest )) && [[ ${3:-} == run ]] && declares_no_test; then
     arguments+=(--no-tests=pass)
 fi
+# The test environment (Mesa's lavapipe, a headless PulseAudio) is Linux's; the Mac runs cargo as is.
+[[ $(uname -s) == Linux ]] || exec "${arguments[@]}"
 exec bash "$root/tools/test-env.sh" "${arguments[@]}"
