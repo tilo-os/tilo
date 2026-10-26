@@ -182,6 +182,17 @@ class TTomlTests(unittest.TestCase):
         import pre_push
         self.assertEqual(t_toml.PUSH_GATE_SIZE_ARCH, pre_push.SIZE_ARCH)
 
+    def test_all_but_matches_every_file_of_a_package_except_under_the_entries_left_out(self):
+        globs = t_toml.all_but("crates/rt", ["web"])
+        # t's globs, like fnmatch's, let `*` cross directories.
+        for path, expected in (("crates/rt/src/lib.rs", True), ("crates/rt/Cargo.toml", True),
+                               ("crates/rt/w", True), ("crates/rt/wasm/x.rs", True),
+                               ("crates/rt/webs/x", True), ("crates/rt/we.rs", True),
+                               ("crates/rt/web/page.mjs", False), ("crates/rt/web/app/index.html", False),
+                               ("crates/other/x.rs", False)):
+            with self.subTest(path=path):
+                self.assertEqual(any(fnmatch.fnmatchcase(path, glob) for glob in globs), expected)
+
     def test_a_read_inside_a_reached_package_is_already_counted(self):
         root = Path("/w")
         packages = {name: {"manifest_path": f"/w/{path}/Cargo.toml"} for name, path in

@@ -3292,54 +3292,88 @@ cost = "heavy"
 on = ["stable", "dispatch"]
 default = false
 
-# Getting in, end to end, on the stack the web entry and room service images
-# ship: crates/hosting/tilo-room-service/dev/auth-e2e.mjs starts them with
-# dev/run.py and drives headless Chrome through a person's first visit, reloads,
-# tabs, a damaged link, a stolen invitation, a revoked device, a guest's open
-# page the host forgot, a host that forgot its room, a stale link, a pruned
-# membership and a removed member. Before it,
-# dev/limits-e2e.py checks the persistent room's limits and what it keeps across
-# a restart over plain HTTP, and dev/owner-key-e2e.py that only a throwaway
-# room's creator mints its invitations and watches its members. Release
-# binaries with the images' flags. The bundle
-# records the commit it was built from, so a committed tree must match it
-# exactly; a working tree with changes runs as a development build.
+# Getting in, end to end, on the stack the web entry and room service images ship: their
+# programs (room-service-binaries) and desktop bundle (web-desktop-bundle), each a check of its own
+# that a commit changing none of what it reads takes from the last build. Each script is a check
+# of its own as well, so one runs alone (`t test browser-auth-e2e/auth`) and a change reruns only
+# those it reaches; `browser-auth-e2e` runs them all:
+# - browser-auth-e2e/limits (dev/limits-e2e.py): the persistent room's limits and what it keeps
+#   across a restart, over plain HTTP;
+# - browser-auth-e2e/owner-key (dev/owner-key-e2e.py): only a throwaway room's creator mints its
+#   invitations and watches its members;
+# - browser-auth-e2e/auth (crates/hosting/tilo-room-service/dev/auth-e2e.mjs): starts the stack
+#   with dev/run.py and drives headless Chrome through a person's first visit, reloads, tabs, a
+#   damaged link, a stolen invitation, a revoked device, a guest's open page the host forgot, a
+#   host that forgot its room, a stale link, a pruned membership and a removed member. The bundle
+#   records the commit it was built from, so a committed tree must match it exactly; a working
+#   tree with changes runs as a development build.
+# Their summaries and a screenshot of each page auth-e2e checks: `t outputs browser-auth-e2e`.
 [[check]]
 name = "browser-auth-e2e"
+run = "true"
+needs = ["browser-auth-e2e/limits", "browser-auth-e2e/owner-key", "browser-auth-e2e/auth"]
+outputs = ["/target/limits-e2e/**", "/target/owner-key-e2e/**", "/target/auth-e2e/**"]
+requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
+hints = { builds = false }
+on = ["stable", "dispatch"]
+cost = "seconds"
+default = false
+
+[[check]]
+name = "browser-auth-e2e/limits"
 run = """
-export TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts
-python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
-cargo build --locked --release -p tilo-relay --features agents --bin tilo-relay
-cargo build --locked --release -p tilo-room-service
-bin=$CARGO_TARGET_DIR/release
+bin=/target/publish/room-service/bin
 python3 crates/hosting/tilo-room-service/dev/limits-e2e.py \
-  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out "$TMPDIR/limits-e2e"
+  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out /target/limits-e2e
+"""
+needs = ["room-service-binaries"]
+inputs = ["crates/hosting/tilo-room-service/dev/limits-e2e.py"]
+outputs = ["/target/limits-e2e/**"]
+requires = ["arch=x86_64"]
+hints = { builds = false }
+cost = "minutes"
+default = false
+
+[[check]]
+name = "browser-auth-e2e/owner-key"
+run = """
+bin=/target/publish/room-service/bin
 python3 crates/hosting/tilo-room-service/dev/owner-key-e2e.py \
-  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out "$TMPDIR/owner-key-e2e"
-cp -r scripts/moq-browser "$TMPDIR/moq-browser"
-TILO_MOQ_BROWSER_DIR=$TMPDIR/moq-browser crates/browser/tilo-browser-runtime/scripts/build.sh "$TMPDIR/auth-bundle" --bundle desktop
+  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out /target/owner-key-e2e
+"""
+needs = ["room-service-binaries"]
+inputs = ["crates/hosting/tilo-room-service/dev/owner-key-e2e.py"]
+outputs = ["/target/owner-key-e2e/**"]
+requires = ["arch=x86_64"]
+hints = { builds = false }
+cost = "minutes"
+default = false
+
+[[check]]
+name = "browser-auth-e2e/auth"
+run = """
+export TILO_FONT_ASSET_CACHE=/target/font-artifacts
 bash tools/ci/ensure-browser-dependencies.sh
 npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
 export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
 if [ -z "$(git status --porcelain)" ]; then revision=(--expect-revision "$(git rev-parse HEAD)"); else revision=(--allow-dev); fi
-rm -rf "$CARGO_TARGET_DIR/auth-e2e"
-node crates/hosting/tilo-room-service/dev/auth-e2e.mjs --bundle "$TMPDIR/auth-bundle" \
-  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out "$CARGO_TARGET_DIR/auth-e2e" "${revision[@]}"
+bin=/target/publish/room-service/bin
+node crates/hosting/tilo-room-service/dev/auth-e2e.mjs --bundle /target/publish/web-desktop/bundle \
+  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out /target/auth-e2e "${revision[@]}"
 """
-env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets" }
-needs = ["test-assets"]
-inputs = ["apps/**", "crates/**", "vendor/**", "scripts/moq-browser/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "Cargo.toml", "Cargo.lock"]
-# The summary and a screenshot of each page it checks (`t outputs browser-auth-e2e`).
+needs = ["room-service-binaries", "web-desktop-bundle"]
+inputs = ["crates/hosting/tilo-room-service/dev/auth-e2e.mjs", "crates/hosting/tilo-room-service/dev/run.py", "crates/browser/tilo-browser-runtime/container/**", "crates/sdk/ui-core/assets/fonts/**", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py"]
 outputs = ["/target/auth-e2e/**"]
 git = true
 requires = ["arch=x86_64"]
-on = ["stable", "dispatch"]
-timeout_secs = 9000
+hints = { builds = false }
+timeout_secs = 5400
 cost = "heavy"
 default = false
 
 # Whose windows are whose on a room's shared desktop, end to end, on the
-# stack browser-auth-e2e runs: crates/hosting/tilo-room-service/dev/
+# stack browser-auth-e2e/auth runs: crates/hosting/tilo-room-service/dev/
 # shared-desktop-e2e.mjs has two guests and one of the room's moderators open,
 # hover, drag and close each other's windows in headless Chrome, and
 # photographs what each sees. `t outputs browser-shared-desktop-e2e` runs it
@@ -3347,34 +3381,29 @@ default = false
 [[check]]
 name = "browser-shared-desktop-e2e"
 run = """
-export TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts
-python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
-cargo build --locked --release -p tilo-relay --features agents --bin tilo-relay
-cargo build --locked --release -p tilo-room-service
-bin=$CARGO_TARGET_DIR/release
-cp -r scripts/moq-browser "$TMPDIR/moq-browser"
-TILO_MOQ_BROWSER_DIR=$TMPDIR/moq-browser crates/browser/tilo-browser-runtime/scripts/build.sh "$TMPDIR/desktop-bundle" --bundle desktop
+export TILO_FONT_ASSET_CACHE=/target/font-artifacts
 bash tools/ci/ensure-browser-dependencies.sh
 npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
 export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
 if [ -z "$(git status --porcelain)" ]; then revision=(--expect-revision "$(git rev-parse HEAD)"); else revision=(--allow-dev); fi
+bin=/target/publish/room-service/bin
 rm -rf /target/shared-desktop-e2e
 # The screenshots are what this is for: a failed check is in summary.json
 # beside them, and the outputs are kept whatever happened.
-node crates/hosting/tilo-room-service/dev/shared-desktop-e2e.mjs --bundle "$TMPDIR/desktop-bundle" \
+node crates/hosting/tilo-room-service/dev/shared-desktop-e2e.mjs --bundle /target/publish/web-desktop/bundle \
   --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out /target/shared-desktop-e2e "${revision[@]}" \
   || echo "shared-desktop-e2e: exited $? (see summary.json)"
 """
-env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets" }
-needs = ["test-assets"]
-inputs = ["apps/**", "crates/**", "vendor/**", "scripts/moq-browser/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "Cargo.toml", "Cargo.lock"]
+needs = ["room-service-binaries", "web-desktop-bundle"]
+inputs = ["crates/hosting/tilo-room-service/dev/shared-desktop-e2e.mjs", "crates/hosting/tilo-room-service/dev/auth-e2e.mjs", "crates/hosting/tilo-room-service/dev/run.py", "crates/browser/tilo-browser-runtime/container/**", "crates/sdk/ui-core/assets/fonts/**", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py"]
 git = true
 requires = ["arch=x86_64"]
-requirement = { cores = 8, memory = "32GiB" }
+requirement = { cores = 8, memory = "16GiB" }
+hints = { builds = false }
 on = ["dispatch"]
 cache = false
 outputs = ["/target/shared-desktop-e2e/**"]
-timeout_secs = 9000
+timeout_secs = 5400
 cost = "heavy"
 default = false
 
@@ -4223,22 +4252,39 @@ requires = ["arch=any"]
 on = ["main"]
 
 # The browser desktop bundle (crates/browser/tilo-web-desktop: every web app compiled to wasm,
-# release, split into modules) that the room service's and the web entry's images serve. One
-# build per commit (the bundle records it) that both image contexts take as an output, so neither
-# compiles the apps to wasm again and the room service's native build runs beside it.
+# release, split into modules) that the room service's and the web entry's images serve and the
+# browser end-to-end checks drive. web-desktop-wasm compiles its modules, keyed by what that
+# compile reads (not by commit, and not by the crates' web/ pages), so a commit that changes
+# none of it takes the last build; web-desktop-bundle assembles this commit's pages around them,
+# once per commit (the bundle records it), and both image contexts take it as an output, so
+# neither compiles the apps to wasm again and the room service's native build runs beside it.
 [[check]]
-name = "web-desktop-bundle"
-run = "bash tools/ci/publish/web-desktop-bundle.sh /target/publish/web-desktop/bundle"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "Cargo.lock", "crates/**", "apps/**", "tools/web/**", "scripts/moq-browser/**", "tools/font-catalog.py"]
-outputs = ["/target/publish/web-desktop/bundle/**"]
-# The release bundle records the commit it was built from (git rev-parse, git status).
-git = true
+name = "web-desktop-wasm"
+run = "bash tools/ci/publish/web-desktop-bundle.sh wasm /target/publish/web-desktop/wasm"
+outputs = ["/target/publish/web-desktop/wasm/**"]
 # A command check gets no jobserver from t, so cargo would keep .cargo/config.toml's floor of 4
 # jobs on the 8 cores this check reserves.
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 cost = "heavy"
 requirement = { cores = 8, memory = "24GiB" }
+default = false
+# BEGIN generated by tools/ci/t_toml.py: web-desktop-wasm-reads
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "tools/font-catalog.py", "tools/web/generate_web_desktop.py", "tools/web/crate_source.py", "tools/web/wasm-split/**", "apps/*/tilo-app.toml", "apps/*/Cargo.toml", "apps/*/search/*.ftl", "crates/agent/agent-participant/Cargo.toml", "crates/agent/agent-participant/src/web_apps.rs", "crates/session/desktop-search/src/catalog.rs", "Cargo.toml", "Cargo.lock", "apps/activity/**", "apps/api-tester/**", "apps/calculator/**", "apps/calendar/**", "apps/camera/**", "apps/canvas/**", "apps/chat/**", "apps/chip-design/**", "apps/clocks/**", "apps/contacts/**", "apps/diffmerge/**", "apps/ebook/**", "apps/feeds/**", "apps/hex-editor/**", "apps/maps/**", "apps/messages/**", "apps/model-providers/**", "apps/moderation-model/**", "apps/music/**", "apps/notes/**", "apps/passwords/**", "apps/pdf-viewer/**", "apps/photos/**", "apps/poker/**", "apps/scratchpad/**", "apps/sheets/**", "apps/shortcuts/**", "apps/slides/**", "apps/snippets/**", "apps/speed-test/**", "apps/tasks/**", "apps/themes/**", "apps/totp/**", "apps/tube/**", "apps/typst-editor/**", "apps/video-editor/**", "apps/video-player/**", "apps/weather/**", "apps/word-processor/**", "crates/agent/model-client/**", "crates/agent/provider-config/**", "crates/browser/browser-continuity-core/**", "crates/browser/paint-stream/**", "crates/browser/tilo-browser-compute/[!w]*", "crates/browser/tilo-browser-compute/w", "crates/browser/tilo-browser-compute/w[!e]*", "crates/browser/tilo-browser-compute/we", "crates/browser/tilo-browser-compute/we[!b]*", "crates/browser/tilo-browser-compute/web[!/]*", "crates/browser/tilo-browser-peer/**", "crates/browser/tilo-browser-runtime/[!w]*", "crates/browser/tilo-browser-runtime/w", "crates/browser/tilo-browser-runtime/w[!e]*", "crates/browser/tilo-browser-runtime/we", "crates/browser/tilo-browser-runtime/we[!b]*", "crates/browser/tilo-browser-runtime/web[!/]*", "crates/browser/tilo-web-desktop/**", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/feedback-review/**", "crates/collab/feedback/**", "crates/collab/neighbour-wire/**", "crates/collab/reference/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/dev/headless-schema/**", "crates/dev/ui-graph/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-automerge/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc-pdf/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-document/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/media/ocr/**", "crates/media/segment/**", "crates/media/thumbnail/**", "crates/media/vision/**", "crates/media/wet-media/**", "crates/packaging/registry-types/**", "crates/platform/tilo-agent-models/**", "crates/platform/tilo-capture/**", "crates/platform/tilo-clipboard/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-contact-directory/**", "crates/platform/tilo-dialogs/**", "crates/platform/tilo-files/**", "crates/platform/tilo-image-codec/**", "crates/platform/tilo-invidious/**", "crates/platform/tilo-locale/**", "crates/platform/tilo-location/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-media/**", "crates/platform/tilo-messaging/**", "crates/platform/tilo-mime/**", "crates/platform/tilo-net/**", "crates/platform/tilo-notify/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-pdf/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-presentation/**", "crates/platform/tilo-process/**", "crates/platform/tilo-render-protocol/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-secrets/**", "crates/platform/tilo-sort/**", "crates/platform/tilo-subject/**", "crates/platform/tilo-typst-fonts/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-workspace-emoji/**", "crates/runtime/cli/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-portal/**", "crates/sdk/font-catalog/**", "crates/sdk/provider-settings-ui/**", "crates/sdk/search/**", "crates/sdk/tilo-app/**", "crates/sdk/tilo-history/**", "crates/sdk/tilo-host/**", "crates/sdk/tilo-page-raster/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/sdk/tilo-rich-text/**", "crates/sdk/ui-core/**", "crates/sdk/ui-paint/**", "crates/session/desktop-model/**", "crates/session/desktop-search/**", "crates/session/desktop-surface/**", "crates/session/desktop/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/app-state/**", "crates/system/bounded-command/**", "crates/system/cloud-source/**", "crates/system/content-device/**", "crates/system/content-types/**", "crates/system/content/**", "crates/system/desktop-policy/**", "crates/system/durable-store/**", "crates/system/fs-protocol/**", "crates/system/secret-vault/**", "crates/system/settings-store/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/tts/**", "crates/system/wire-frame/**", "crates/text/emoji-catalogue/**", "crates/text/emoji/**", "crates/text/highlight-grammars/**", "crates/text/highlight/**", "crates/text/pim-lines/**", "crates/text/spellcheck/**", "crates/workspace-hack/**", "vendor/automerge/**", "vendor/cosmic-text/**", "vendor/pulldown-cmark/**", "vendor/regex-syntax/**", "vendor/serde_json/**", "vendor/vello/**", "vendor/vello_encoding/**", "vendor/vello_shaders/**", "vendor/wgpu-hal/**", "vendor/wgpu/**", "vendor/winit/**", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "tools/test-assets-build.rs"]
+# END generated
+
+[[check]]
+name = "web-desktop-bundle"
+run = "bash tools/ci/publish/web-desktop-bundle.sh bundle /target/publish/web-desktop/bundle /target/publish/web-desktop/wasm"
+needs = ["web-desktop-wasm"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh", "crates/browser/tilo-browser-runtime/web/**", "crates/browser/tilo-browser-compute/scripts/build.sh", "crates/browser/tilo-browser-compute/web/**", "crates/sdk/ui-core/assets/fonts/**", "scripts/moq-browser/**", "tools/font-catalog.py"]
+outputs = ["/target/publish/web-desktop/bundle/**"]
+# The release bundle records the commit it was built from (git rev-parse, git status).
+git = true
+requires = ["arch=x86_64"]
+cost = "minutes"
+requirement = { cores = 2, memory = "4GiB" }
+hints = { builds = false }
 default = false
 
 # The room service image's programs (tools/ci/publish/room-service-binaries.sh): tilo-relay with
@@ -5290,19 +5336,16 @@ default = false
 name = "site-door-acceptance"
 run = """
 export TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts
-python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
-cp -r scripts/moq-browser "$TMPDIR/moq-browser"
-TILO_MOQ_BROWSER_DIR=$TMPDIR/moq-browser crates/browser/tilo-browser-runtime/scripts/build.sh "$TMPDIR/desktop-bundle" --bundle desktop
 bash tools/ci/ensure-browser-dependencies.sh
 npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
 export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
-bash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --bundle "$TMPDIR/desktop-bundle" --out /target/site-door-acceptance
+bash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --bundle /target/publish/web-desktop/bundle --out /target/site-door-acceptance
 """
 # nested-session.sh and the local site take the nested-session check's output where t puts it, so
-# the sources stay read-only.
+# the sources stay read-only. The web view is served the images' desktop bundle.
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
-needs = ["nested-session", "test-assets"]
-inputs = ["apps/**", "crates/**", "vendor/**", "dist/dev/site-door-acceptance.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "scripts/moq-browser/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "tools/test-env.sh", "tools/with-test-environment.sh", "Cargo.toml", "Cargo.lock"]
+needs = ["nested-session", "test-assets", "web-desktop-bundle"]
+inputs = ["apps/**", "crates/**", "vendor/**", "dist/dev/**", "os/scripts/bake-runtime-bundle.sh", "os/scripts/stamp-runtime.sh", "os/usr/share/tilo/system-interfaces.toml", "tools/apps/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "tools/test-env.sh", "tools/with-test-environment.sh", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/site-door-acceptance/**"]
 git = true
 requires = ["arch=x86_64"]
