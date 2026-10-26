@@ -44,7 +44,7 @@ pub(crate) fn kept_type<K: Hash + Eq, V: Clone>(
         }
     });
     found.unwrap_or_else(|| {
-        let built = build();
+        let ty = build();
         kept.with(|kept| {
             let mut kept = kept.borrow_mut();
             if kept.epoch != epoch {
@@ -53,8 +53,12 @@ pub(crate) fn kept_type<K: Hash + Eq, V: Clone>(
                     types: HashMap::new(),
                 };
             }
-            kept.types.insert(key, built.clone());
+            kept.types.insert(key, ty.clone());
         });
-        built
+        ty
     })
 }
+
+/// Types kept per vocabulary and dotted path or field: `None` where the
+/// path offers no such action, so it is not looked for again.
+pub(crate) type KeptByPath = KeptTypes<(std::any::TypeId, String), Option<Arc<ActionType>>>;

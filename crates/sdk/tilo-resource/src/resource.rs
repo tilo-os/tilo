@@ -918,9 +918,7 @@ pub(crate) fn field_edit_spec_at_of(
     // The same for every item: kept once per type and path, bound to the
     // item's.
     thread_local! {
-        static KEPT: std::cell::RefCell<
-            crate::kept::KeptTypes<(std::any::TypeId, String), Option<Arc<ActionType>>>,
-        > = std::cell::RefCell::default();
+        static KEPT: std::cell::RefCell<crate::kept::KeptByPath> = std::cell::RefCell::default();
     }
     let key = ((vocabulary.type_id)(), dotted.clone());
     crate::kept::kept_type(&KEPT, key, || item_edit_type(vocabulary, shape, &dotted))

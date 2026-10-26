@@ -352,8 +352,7 @@ pub const RENAME: &str = "rename";
 /// Its type is kept once per collection, bound to the item's id.
 fn rename_spec(vocabulary: &'static Vocabulary, field: &str, id: &Id) -> Option<ActionSpec> {
     thread_local! {
-        static KEPT: RefCell<crate::kept::KeptTypes<(TypeId, String), Option<Arc<ActionType>>>> =
-            RefCell::default();
+        static KEPT: RefCell<crate::kept::KeptByPath> = RefCell::default();
     }
     if !vocabulary.edits {
         return None;
