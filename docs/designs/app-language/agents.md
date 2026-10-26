@@ -28,7 +28,7 @@ otherwise spends tokens, calls or guesses on.
   request.
 
 The door is one MCP tool, `tilo`, taking a **program**. This is code mode, not one action per call:
-- **Packages are mounted.** Every installed app's types, actions and views are packages
+- **Apps are mounted.** Every installed app's types, actions and views are available
   inside the program.
 - **Programs chain.** They query, read, filter, loop and act without a round trip per step. Their
   output is what they `print`.
@@ -78,7 +78,7 @@ sits what main already has, which this design keeps rather than rebuilds:
 
   A program is one more kind of task step on it, checked the same way.
 - **New here:**
-  - programs over mounted packages, with a REPL session;
+  - programs over mounted apps, with a REPL session;
   - typed search with paths and identifier patterns;
   - composed native views as answers.
 
@@ -383,7 +383,7 @@ The cost of a task is measured in tokens and calls, and every output format is j
 2. **Compiler:**
    - doc comments required on public items;
    - naming-convention warnings;
-   - requests and answers compiled against the workspace's installed packages;
+   - requests and answers compiled against the workspace's installed apps;
    - "did you mean" for names, filters, actions and argument types.
 3. **Search:** the query and tokens from `search.md`, shared with the palette.
 4. **Runtime:**
