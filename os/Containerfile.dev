@@ -200,12 +200,14 @@ RUN --network=none \
 # ---- The dev image ------------------------------------------------------------
 FROM dev-toolchain AS dev
 
-# Third-party apps the VM acceptance suite (scripts/vm-acceptance, A08-A13)
+# Third-party apps the VM acceptance suite (scripts/vm-acceptance, A07-A13)
 # opens, one per toolkit and protocol path people use every day: Chromium, the
 # engine Electron apps (VS Code, Cursor, chat clients) ship, on Wayland and
 # forced onto X11 through Xwayland; GNOME Text Editor (GTK4 and libadwaita);
 # FeatherPad on Qt's Wayland platform (Qt6); alacritty (winit and OpenGL); and
-# glxgears, an OpenGL X11 client the way games are. os/dev-image/ carries the
+# glxgears, an OpenGL X11 client the way games are; and xterm, a plain X11 client (A07),
+# which otherwise has to come from a network install in the VM: without it A07 fell back
+# to Wine File, whose first start sets up a Wine prefix. os/dev-image/ carries the
 # desktop entries and the page that start the variants. Without weak
 # dependencies they add about 600 MiB, two thirds of it Chromium. Like the
 # toolchain layer this one is the same for every commit on one rootfs.
@@ -216,7 +218,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
     LD_PRELOAD=/run/tilo-build-clock.so dnf install -y --setopt=reposdir=/repo \
       --setopt=install_weak_deps=False \
-      chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils \
+      chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils xterm \
     && dnf clean all \
     && if [ -x /usr/libexec/tilo/finalize-rpmdb ]; then /usr/libexec/tilo/finalize-rpmdb; fi \
     && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf /etc/ld.so.cache
