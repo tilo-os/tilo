@@ -600,6 +600,20 @@ def record_shell_parts(ctx, report: dict, variant: str = "") -> None:
         ctx.record(f"memory.shell_threads{suffix}", "count", [threads], what="compositor threads")
 
 
+def describe_shell_parts(report: dict, n: int = 6) -> str:
+    """The compositor's memory by kind, for a failure text: glibc's heap in use and free
+    (free heap still counts as resident until it is trimmed), then the largest mapping
+    classes. A failed check keeps no files, so this is what says where an over-budget
+    compositor's memory is."""
+    parts = shell_parts_mib(report)
+    heap = [f"{k.replace('malloc_', 'heap ').replace('_', ' ')} {parts.pop(k)} MiB"
+            for k in ("malloc_in_use", "malloc_free") if k in parts]
+    rest = [f"{k} {v} MiB" for k, v in list(parts.items())[:n]]
+    peak = (report.get("status_kib") or {}).get("VmHWM")
+    peak_text = [f"peak RSS {round(peak / 1024)} MiB"] if peak else []
+    return ", ".join(heap + rest + peak_text)
+
+
 def shell_idle_anon_problems(anon_mib: float, budgets: dict) -> list[str]:
     """The idle compositor's anonymous RSS against `shell_idle_anon_mb`."""
     budget = budgets["shell_idle_anon_mb"]
@@ -830,6 +844,8 @@ def idle_empty(ctx, res):
         ctx.write("R01-shell-memory-map.json", json.dumps(report, indent=1))
         record_shell_parts(ctx, report)
         res.metrics["shell_parts_mib"] = shell_parts_mib(report)
+        if any(p.startswith("idle compositor anonymous RSS") for p in problems):
+            problems.append(f"compositor memory by kind: {describe_shell_parts(report)}")
     expect(not problems, "; ".join(problems))
 
 
@@ -930,7 +946,14 @@ def mem(ctx, res):
         ctx.write("R03-shell-smaps.json", json.dumps(smaps, indent=1))
         _record_shell_shm(ctx, res, smaps, "four_apps")
     if m["shell"]["anon_rss_mb"] > b["shell_anon_mb"]:
-        problems.append(f"compositor anonymous RSS {m['shell']['anon_rss_mb']} MB > {b['shell_anon_mb']} MB")
+        over = f"compositor anonymous RSS {m['shell']['anon_rss_mb']} MB > {b['shell_anon_mb']} MB"
+        try:
+            report = shell_memory_map(ctx)
+        except core.Unobservable:
+            problems.append(over)
+        else:
+            ctx.write("R03-shell-memory-map.json", json.dumps(report, indent=1))
+            problems.append(f"{over} ({describe_shell_parts(report)})")
     big = [p for p in m["procs"] if p["comm"] != "shell" and (p["anon_rss_mb"] or 0) > b["process_anon_mb"]]
     if big:
         problems.append("over the per-process anonymous RSS budget: " +
