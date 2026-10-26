@@ -1023,6 +1023,32 @@ fn the_bar_marks_an_unsaved_document_until_it_is_saved() {
     .unwrap();
 }
 
+/// The window's search finds in the source: a query is matched in the text the
+/// editor shows, and stepping to a match puts the caret there and scrolls it
+/// into view.
+#[test]
+fn the_windows_search_finds_in_the_source() {
+    use ui::widget::{FindOptions, Findable};
+
+    let (mut app, _doc) = fresh();
+    app.layout_in(Rect::new(0.0, 0.0, 1280.0, 760.0));
+    render_once(&mut app);
+    let body = app.editor.text().to_owned();
+    assert!(body.contains("Smooth motion"), "the sample is the source");
+    let found = app.editor.find("motion", FindOptions::default());
+    let expected = body.to_lowercase().matches("motion").count();
+    assert_eq!(found.len(), expected, "every match of the query is found");
+    // A step lands the caret on the match, on its line.
+    app.editor.reveal(0);
+    let first = found[0].clone();
+    assert_eq!(app.editor.caret(), first.end);
+    let line = body[..first.start].bytes().filter(|b| *b == b'\n').count() + 1;
+    assert_eq!(app.caret_line_col().0, line, "the caret is on its line");
+    // Closing the search stops painting the matches.
+    app.editor.clear_find();
+    assert!(app.editor.find("", FindOptions::default()).is_empty());
+}
+
 #[test]
 fn resize_reflows_between_split_and_compact() {
     // The responsive contract: layout is re-derived from the *current* width

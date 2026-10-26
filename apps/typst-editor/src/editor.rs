@@ -47,6 +47,13 @@ pub struct SourceEditor {
     /// Last known hover position (window space), or `None` when the pointer is
     /// off the pane. Drives the inline-diagnostic tooltip.
     hover: Option<Point>,
+    /// The matches the window's search found, in reading order, and which of
+    /// them is the caret's.
+    matches: Vec<ui::widget::FindMatch>,
+    current: Option<usize>,
+    /// Counts the source it has seen, so the search finds again when an edit
+    /// moves the text under it.
+    revision: u64,
 }
 
 impl SourceEditor {
@@ -64,7 +71,44 @@ impl SourceEditor {
             rect: Rect::ZERO,
             drag_anchor: None,
             hover: None,
+            matches: Vec::new(),
+            current: None,
+            revision: 0,
         }
+    }
+}
+
+/// The source is a document the window's search finds in: the matches are
+/// kept here and each is revealed as the caret, scrolled into view.
+impl ui::widget::Findable for SourceEditor {
+    fn find(
+        &mut self,
+        query: &str,
+        options: ui::widget::FindOptions,
+    ) -> Vec<ui::widget::FindMatch> {
+        self.matches = crate::find::in_text(self.text(), query, options);
+        self.current = None;
+        self.matches.clone()
+    }
+
+    fn reveal(&mut self, index: usize) {
+        let Some(found) = self.matches.get(index).cloned() else {
+            return;
+        };
+        self.current = Some(index);
+        let text = self.text().to_owned();
+        let line = text[..found.start.min(text.len())]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
+        self.goto_line(&text, line);
+        self.set_caret(found.end);
+        self.focused = true;
+    }
+
+    fn content_revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -97,6 +141,7 @@ impl SourceEditor {
     /// Show the source at `path`, each edit a splice there once a
     /// dispatcher is attached.
     pub fn follow(&mut self, path: Path<Workspace, String>) {
+        self.revision = self.revision.wrapping_add(1);
         let mut control = Self::control_new();
         control.set_rect(self.rect);
         self.code = TextControl::view_only_at(control, path);
@@ -114,6 +159,9 @@ impl SourceEditor {
     /// Show the open file's source as `doc` holds it. Called from the app's
     /// `sync`.
     pub fn pull(&mut self, doc: &AutoCommit) {
+        // An edit anywhere moves the text under the search: its next drive
+        // finds again, keeping the match the person is looking at.
+        self.revision = self.revision.wrapping_add(1);
         self.code.pull(doc);
     }
 
