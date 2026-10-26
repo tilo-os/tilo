@@ -137,15 +137,16 @@ impl DocumentReplica {
         self.outbound.advance(heads);
     }
 
-    /// Apply incremental Automerge bytes and retain them in the outbound frontier.
+    /// Apply incremental Automerge bytes, whole or not at all, and retain them
+    /// in the outbound frontier.
     ///
     /// # Errors
     ///
     /// Returns an error when `data` is not a valid incremental Automerge payload
-    /// for this document.
+    /// for this document; nothing of it is applied then.
     pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
         let before = self.doc.get_heads();
-        let loaded = self.doc.load_incoming(data)?;
+        let loaded = self.doc.load_incoming_whole(data)?;
         self.outbound.observe_changes_after(&mut self.doc, &before);
         Ok(loaded)
     }
@@ -570,9 +571,11 @@ impl State {
     ///
     /// Returns an error if `data` is not a valid incremental Automerge patch
     /// (corrupt bytes, or bytes that don't apply to this document's history).
+    /// A payload that stops parsing part way is refused whole: none of its
+    /// changes are applied, not even the ones before the corruption.
     pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
         let before = self.doc.get_heads();
-        let n = self.doc.load_incoming(data)?;
+        let n = self.doc.load_incoming_whole(data)?;
         // Keep the undo baseline aligned with the new, merged document state
         // so the *next* local action brackets against a complete picture.
         // Existing entries keep their original before/after heads — those
@@ -963,6 +966,41 @@ pub(crate) fn write_selected_patches(
 mod tests {
     use super::*;
     use automerge::{ReadDoc, ScalarValue, transaction::Transactable};
+
+    #[test]
+    fn a_payload_that_stops_parsing_part_way_is_refused_whole() {
+        let mut peer = AutoCommit::new();
+        peer.put(ROOT, "title", "room").unwrap();
+        peer.commit();
+        let base = peer.get_heads();
+        let mut state = State::new();
+        state.load_incremental(&peer.save()).unwrap();
+        let mut replica = DocumentReplica::new(AutoCommit::load(&peer.save()).unwrap());
+        // Two changes: a valid first one, then a second cut short.
+        peer.put(ROOT, "first", "kept only whole").unwrap();
+        peer.commit();
+        let middle = peer.get_heads();
+        peer.put(ROOT, "second", "cut short").unwrap();
+        peer.commit();
+        let first = peer.save_after(&base);
+        let second = peer.save_after(&middle);
+        let first_change = &first[..first.len() - second.len()];
+        let mut torn = first_change.to_vec();
+        torn.extend_from_slice(&second[..second.len() - 1]);
+        let before = state.doc.get_heads();
+        assert!(state.load_incremental(&torn).is_err());
+        assert_eq!(
+            state.doc.get_heads(),
+            before,
+            "not even the valid first change"
+        );
+        assert!(state.doc.get(ROOT, "first").unwrap().is_none());
+        assert!(replica.load_incremental(&torn).is_err());
+        assert!(replica.doc.get(ROOT, "first").unwrap().is_none());
+        // The whole payload applies.
+        assert!(state.load_incremental(&first).unwrap() > 0);
+        assert_eq!(state.doc.get_heads(), peer.get_heads());
+    }
 
     #[test]
     #[allow(
