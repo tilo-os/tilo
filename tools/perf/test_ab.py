@@ -190,6 +190,12 @@ class EndToEnd(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name) / "repo"
         self.repo.mkdir()
+        # The fake groups build into the checkout's own target/, so the run
+        # looks there too, whatever target directory the caller builds into
+        # (t sets CARGO_TARGET_DIR).
+        target = mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(self.repo / "target")})
+        target.start()
+        self.addCleanup(target.stop)
         self.env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
         self.git("init", "--quiet", "--initial-branch=work")
