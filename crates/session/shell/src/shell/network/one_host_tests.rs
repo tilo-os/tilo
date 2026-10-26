@@ -48,6 +48,7 @@ mod member_controls;
 mod no_secret_store;
 mod old_rooms;
 mod own_devices;
+mod pointers;
 mod sealed_records;
 
 /// The app whose document the tests edit, and its record.
@@ -467,6 +468,10 @@ impl Device {
             Arc::new(Mutex::new(BrokerChannels::default())),
         )
         .expect("the device's channel state opens")
+    }
+
+    pub(crate) fn tree(&self) -> &WorkspaceTreeHandle {
+        &self.tree
     }
 
     pub(crate) fn net(&self) -> &Arc<ShellNetwork> {
