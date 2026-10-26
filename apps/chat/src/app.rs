@@ -894,6 +894,11 @@ pub struct ChatApp {
     root_node: Option<NodeId>,
     video_node: Option<NodeId>,
     pub(crate) video: VideoPlayer,
+    /// What the call tile's layout node was last placed from: whether the
+    /// call fills the window, and where the tile stands. Chat's only laid-out
+    /// node is that tile; everything else it places itself as it paints, so
+    /// a scroll or a keystroke re-solves no layout.
+    laid_video: Option<(bool, Rect)>,
     pub(crate) hits: Vec<(Rect, Hit)>,
     /// Ordinal in `keyboard_targets()`. Derived from the current hit inventory
     /// so Tab and assistive focus traverse the same controls a pointer can use.
@@ -1197,6 +1202,7 @@ impl ChatApp {
             root_node: None,
             video_node: None,
             video,
+            laid_video: None,
             hits: Vec::new(),
             keyboard_target: None,
             last_mouse: Point::ZERO,
@@ -4807,6 +4813,13 @@ impl Widget for ChatApp {
             };
             self.video.apply_layout(taffy, vn, off);
         }
+        self.laid_video = Some((self.call.expanded, self.call_video_rect()));
+    }
+
+    /// Dirty only when the call tile's node would be placed elsewhere: the
+    /// call opened or closed over the window, or the tile was moved.
+    fn is_layout_dirty(&self) -> bool {
+        self.laid_video != Some((self.call.expanded, self.call_video_rect()))
     }
 
     fn draw(
