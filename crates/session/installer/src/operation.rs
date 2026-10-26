@@ -21,12 +21,6 @@ pub const PROVIDER: &str = "installer";
 /// The single protocol type every installer operation is encoded under.
 pub const OPERATION_TYPE: &str = "installer.operation";
 
-/// Fixed online-account controls; private form fields never enter this payload.
-pub const ONLINE_ACCOUNT_OPERATION_TYPE: &str = "installer.online-accounts-control";
-
-/// Every operation type the typed [`InstallerEffect`] vocabulary decodes.
-pub const OPERATION_TYPES: &[&str] = &[OPERATION_TYPE, ONLINE_ACCOUNT_OPERATION_TYPE];
-
 /// The fixed online-account controls, as the accounts surface publishes them.
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +29,27 @@ pub enum OnlineControl {
     Retry,
     Cancel,
     SkipOffline,
+}
+
+impl OnlineControl {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Retry => "retry",
+            Self::Cancel => "cancel",
+            Self::SkipOffline => "skip-offline",
+        }
+    }
+
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "add" => Some(Self::Add),
+            "retry" => Some(Self::Retry),
+            "cancel" => Some(Self::Cancel),
+            "skip-offline" => Some(Self::SkipOffline),
+            _ => None,
+        }
+    }
 }
 
 /// Everything a door can ask the installer for: one typed vocabulary over the
@@ -79,45 +94,50 @@ pub fn region_resource(index: usize) -> String {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
     /// Report the wizard's state (never a secret).
+    #[serde(rename = "status")]
     Status,
+    #[serde(rename = "next")]
     Next,
+    #[serde(rename = "back")]
     Back,
-    SetKeyboardLayout {
-        layout: String,
-    },
+    #[serde(rename = "set-layout")]
+    SetKeyboardLayout { layout: String },
+    #[serde(rename = "refresh-networks")]
     RefreshNetworks,
-    SelectNetwork {
-        ssid: String,
-    },
+    #[serde(rename = "select-network")]
+    SelectNetwork { ssid: String },
+    #[serde(rename = "connect-network")]
     ConnectNetwork {
         #[serde(default)]
         password: Option<String>,
     },
-    SetInstallMethod {
-        method: String,
-    },
+    #[serde(rename = "set-method")]
+    SetInstallMethod { method: String },
+    #[serde(rename = "refresh-disks")]
     RefreshDisks,
-    SelectDisk {
-        device: String,
-    },
-    SelectFreeRegion {
-        index: usize,
-    },
+    #[serde(rename = "select-disk")]
+    SelectDisk { device: String },
+    #[serde(rename = "select-region")]
+    SelectFreeRegion { index: usize },
+    #[serde(rename = "set-size")]
     SetAlongsideSize {
         gib: i64,
         disk: Box<crate::disks::Disk>,
         extent: crate::disks::GuidedAlongsidePlan,
     },
+    #[serde(rename = "set-identity")]
     SetIdentity {
         #[serde(default)]
         username: Option<String>,
         #[serde(default)]
         full_name: Option<String>,
     },
+    #[serde(rename = "set-passphrase")]
     SetPassphrase {
         passphrase: String,
         confirmation: String,
     },
+    #[serde(rename = "set-disk-passphrase")]
     SetDiskPassphrase {
         passphrase: String,
         confirmation: String,
@@ -131,48 +151,44 @@ pub enum Operation {
     /// Set an account password that is already a SHA-512 crypt hash, without
     /// keeping or transmitting the plaintext. Only the unattended recipe path
     /// publishes this action.
-    SetPasswordHash {
-        hash: String,
-    },
-    SetFilesystem {
-        filesystem: String,
-    },
-    SetSecurityKey {
-        enabled: bool,
-    },
-    SetMediaCodecs {
-        enabled: bool,
-    },
-    SetHostname {
-        hostname: String,
-    },
-    SetLocale {
-        locale: String,
-    },
-    SetTimezone {
-        timezone: String,
-    },
-    SetRecoveryPromise {
-        acknowledged: bool,
-    },
+    #[serde(rename = "set-password-hash")]
+    SetPasswordHash { hash: String },
+    #[serde(rename = "set-filesystem")]
+    SetFilesystem { filesystem: String },
+    #[serde(rename = "set-security-key")]
+    SetSecurityKey { enabled: bool },
+    #[serde(rename = "set-media-codecs")]
+    SetMediaCodecs { enabled: bool },
+    #[serde(rename = "set-hostname")]
+    SetHostname { hostname: String },
+    #[serde(rename = "set-locale")]
+    SetLocale { locale: String },
+    #[serde(rename = "set-timezone")]
+    SetTimezone { timezone: String },
+    #[serde(rename = "set-recovery-promise")]
+    SetRecoveryPromise { acknowledged: bool },
     /// Start the install onto the reviewed target. `target` is the exact
     /// object the published confirmation phrase named; an install whose
     /// target has since changed is refused rather than redirected.
+    #[serde(rename = "begin")]
     BeginInstall {
         target: String,
         /// The exact append-only geometry displayed when this action was published.
         #[serde(default)]
         allocation: Option<crate::disks::GuidedAlongsidePlan>,
     },
+    #[serde(rename = "copy-recovery-key")]
     CopyRecoveryKey,
-    ConfirmRecoverySaved {
-        saved: bool,
-    },
+    #[serde(rename = "confirm-recovery-saved")]
+    ConfirmRecoverySaved { saved: bool },
+    #[serde(rename = "reboot")]
     Reboot,
+    #[serde(rename = "power-off")]
     PowerOff,
     /// Leave a staged (USB-free) installer and restart into the operating
     /// system it was staged from. Firmware already consumed the one-shot
     /// `BootNext`, so a plain restart lands there.
+    #[serde(rename = "return-to-host")]
     ReturnToHost,
 }
 
@@ -221,30 +237,312 @@ impl Operation {
     pub fn decode(payload: &[u8]) -> Result<Self, String> {
         // Report the category only: serde's message can quote the offending
         // input, and that input may be a passphrase.
-        serde_json::from_slice(payload).map_err(|error| {
-            let category = match error.classify() {
-                serde_json::error::Category::Io => "unreadable payload",
-                serde_json::error::Category::Syntax => "malformed payload",
-                serde_json::error::Category::Data => "unexpected fields or values",
-                serde_json::error::Category::Eof => "truncated payload",
-            };
-            format!("not an installer operation: {category}")
-        })
+        serde_json::from_slice(payload).map_err(|error| payload_error(&error))
+    }
+
+    /// The arguments of this operation, as the canonical effect envelope
+    /// carries them: its fields without the serde tag.
+    pub(crate) fn arguments(&self) -> serde_json::Map<String, serde_json::Value> {
+        let serde_json::Value::Object(mut arguments) =
+            serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+        else {
+            return serde_json::Map::new();
+        };
+        arguments.remove("op");
+        arguments.retain(|_, value| !value.is_null());
+        arguments
+    }
+
+    /// The operation `id` with `arguments`: the inverse of [`Self::arguments`]
+    /// under the canonical effect envelope.
+    pub(crate) fn from_arguments(
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Self, String> {
+        let mut invocation = arguments.clone();
+        invocation.insert("op".into(), serde_json::Value::String(id.to_owned()));
+        serde_json::from_value(serde_json::Value::Object(invocation))
+            .map_err(|error| payload_error(&error))
     }
 }
 
-impl ui::widget::resource_effects::EffectVocabulary for InstallerEffect {
-    const OPERATION_TYPES: &'static [&'static str] = OPERATION_TYPES;
+/// Report a payload's category only: serde's message can quote the offending
+/// input, and that input may be a passphrase.
+fn payload_error(error: &serde_json::Error) -> String {
+    let category = match error.classify() {
+        serde_json::error::Category::Io => "unreadable payload",
+        serde_json::error::Category::Syntax => "malformed payload",
+        serde_json::error::Category::Data => "unexpected fields or values",
+        serde_json::error::Category::Eof => "truncated payload",
+    };
+    format!("not an installer operation: {category}")
+}
 
-    fn decode(type_id: &str, payload: &[u8]) -> Result<Self, String> {
-        match type_id {
-            OPERATION_TYPE => Ok(Self::Install(Operation::decode(payload)?)),
-            ONLINE_ACCOUNT_OPERATION_TYPE => serde_json::from_slice(payload)
-                .map(Self::Online)
-                .map_err(|_| "Invalid online account control".to_string()),
-            other => Err(format!("not an installer operation: {other}")),
+impl ui::tilo_resource::Effect for InstallerEffect {
+    const OPERATION: &'static str = OPERATION_TYPE;
+
+    fn declarations() -> Vec<ui::tilo_resource::effect::EffectDecl> {
+        installer_declarations()
+    }
+
+    fn id(&self) -> &'static str {
+        match self {
+            Self::Install(operation) => operation.name(),
+            Self::Online(control) => control.id(),
         }
     }
+
+    fn arguments(&self) -> serde_json::Map<String, serde_json::Value> {
+        match self {
+            Self::Install(operation) => operation.arguments(),
+            Self::Online(_) => serde_json::Map::new(),
+        }
+    }
+
+    fn decode(
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Self, String> {
+        if let Some(control) = OnlineControl::from_id(id) {
+            return Ok(Self::Online(control));
+        }
+        Operation::from_arguments(id, arguments).map(Self::Install)
+    }
+}
+
+fn installer_declaration(
+    id: &'static str,
+    label: &'static str,
+    params: Vec<tilo_actions::ActionParam>,
+    kind: tilo_actions::OperationKind,
+    risk: tilo_actions::RiskLevel,
+    answers: ui::tilo_resource::effect::Answers,
+) -> ui::tilo_resource::effect::EffectDecl {
+    let view = kind == tilo_actions::OperationKind::View;
+    ui::tilo_resource::effect::EffectDecl {
+        id,
+        label,
+        description: "",
+        params,
+        kind,
+        row: false,
+        answers,
+        risk,
+        idempotent: false,
+        action_kind: if view {
+            tilo_actions::ActionKind::Read
+        } else {
+            tilo_actions::ActionKind::Outside
+        },
+        own_device: false,
+        attended: false,
+        risk_of: None,
+        audience: tilo_actions::Audience::Everyone,
+        untrusted: false,
+        opens: None,
+        participant: false,
+        edits: false,
+        member: false,
+        item: None,
+        offload: None,
+        tags: &[],
+        outside_with: None,
+    }
+}
+
+/// The declarations of the installer's one vocabulary. The accounts controls
+/// are ordinary effects here too, so the catalogue and the toolkit's effect
+/// host see the same operation type.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table entry per effect keeps the installer's vocabulary together"
+)]
+fn installer_declarations() -> Vec<ui::tilo_resource::effect::EffectDecl> {
+    use tilo_actions::{ActionParam, OperationKind, ParamType, RiskLevel};
+    use ui::tilo_resource::effect::Answers;
+
+    let text = |name: &'static str, description: &'static str| {
+        ActionParam::required(name, ParamType::Text, description)
+    };
+    let secret = |name: &'static str, description: &'static str| {
+        ActionParam::required(name, ParamType::Secret, description)
+    };
+    let boolean = |name: &'static str, description: &'static str| {
+        ActionParam::required(name, ParamType::Boolean, description)
+    };
+    let effect = |id, label, params| {
+        installer_declaration(
+            id,
+            label,
+            params,
+            OperationKind::Effect,
+            RiskLevel::Low,
+            Answers::Nothing,
+        )
+    };
+
+    vec![
+        installer_declaration(
+            "status",
+            "Installer status",
+            Vec::new(),
+            OperationKind::View,
+            RiskLevel::None,
+            Answers::Value,
+        ),
+        effect("next", "Next", Vec::new()),
+        effect("back", "Back", Vec::new()),
+        effect(
+            "return-to-host",
+            "Return to the existing system",
+            Vec::new(),
+        ),
+        effect(
+            "set-layout",
+            "Choose keyboard layout",
+            vec![text("layout", "Keyboard layout")],
+        ),
+        effect("refresh-networks", "Refresh networks", Vec::new()),
+        effect(
+            "select-network",
+            "Choose Wi-Fi network",
+            vec![text("ssid", "Network name")],
+        ),
+        effect(
+            "connect-network",
+            "Connect",
+            vec![ActionParam::optional(
+                "password",
+                ParamType::Secret,
+                "Wi-Fi password (secured networks only)",
+            )],
+        ),
+        effect("add", "Sign in using private form", Vec::new()),
+        effect("retry", "Retry using private form", Vec::new()),
+        effect("cancel", "Cancel sign-in", Vec::new()),
+        effect("skip-offline", "Continue offline", Vec::new()),
+        effect(
+            "set-method",
+            "Choose install method",
+            vec![text(
+                "method",
+                "erase: use the whole disk; alongside: keep existing partitions",
+            )],
+        ),
+        effect("refresh-disks", "Refresh disks", Vec::new()),
+        effect("select-disk", "Use this disk", Vec::new()),
+        effect("select-region", "Use this region", Vec::new()),
+        effect(
+            "set-size",
+            "Use N GiB for Tilo",
+            vec![ActionParam::required(
+                "gib",
+                ParamType::Integer,
+                "Total Tilo capacity in whole GiB (at least 35)",
+            )],
+        ),
+        effect(
+            "set-identity",
+            "Set username and name",
+            vec![
+                ActionParam::optional(
+                    "username",
+                    ParamType::Text,
+                    "Up to 32 lowercase letters, digits, _ or -; starts with a letter or _",
+                ),
+                ActionParam::optional("full_name", ParamType::Text, "Full name (optional)"),
+            ],
+        ),
+        effect(
+            "set-passphrase",
+            "Set account and default startup secret",
+            vec![
+                secret("passphrase", "Startup and unlock passphrase"),
+                secret("confirmation", "The same secret again"),
+            ],
+        ),
+        effect(
+            "set-disk-passphrase",
+            "Set a separate disk startup secret",
+            vec![
+                secret("passphrase", "Startup and unlock passphrase"),
+                secret("confirmation", "The same disk secret again"),
+                ActionParam::optional(
+                    "mode",
+                    ParamType::Text,
+                    "`tpm2` requires the measured-boot boundary; `passphrase` forces an independent strong passphrase. Omit for the reviewed target's normal policy.",
+                ),
+            ],
+        ),
+        effect(
+            "set-password-hash",
+            "Set a pre-hashed account password",
+            vec![secret("hash", "A canonical SHA-512 crypt hash")],
+        ),
+        effect(
+            "set-filesystem",
+            "Choose filesystem",
+            vec![text("filesystem", "Root filesystem")],
+        ),
+        effect(
+            "set-security-key",
+            "Enroll a security key",
+            vec![boolean(
+                "enabled",
+                "Enroll a FIDO2 security key as another unlock factor",
+            )],
+        ),
+        effect(
+            "set-hostname",
+            "Set hostname",
+            vec![text(
+                "hostname",
+                "Letters, digits and hyphens; no leading or trailing hyphen; at most 63",
+            )],
+        ),
+        effect(
+            "set-locale",
+            "Choose language and locale",
+            vec![text("locale", "Language and locale")],
+        ),
+        effect(
+            "set-timezone",
+            "Choose time zone",
+            vec![text("timezone", "IANA time zone")],
+        ),
+        effect(
+            "set-media-codecs",
+            "Install media codecs",
+            vec![boolean("enabled", "Install more video and audio formats")],
+        ),
+        effect(
+            "set-recovery-promise",
+            "I will save my recovery key",
+            vec![boolean(
+                "acknowledged",
+                "A recovery key is shown once during install; it is the only backup if the TPM or passphrase is lost",
+            )],
+        ),
+        installer_declaration(
+            "begin",
+            "Begin installation",
+            Vec::new(),
+            OperationKind::Effect,
+            RiskLevel::Destructive,
+            Answers::Nothing,
+        ),
+        effect("copy-recovery-key", "Copy recovery key", Vec::new()),
+        effect(
+            "confirm-recovery-saved",
+            "I saved this key off this computer",
+            vec![boolean(
+                "saved",
+                "The recovery key is stored somewhere other than this computer",
+            )],
+        ),
+        effect("reboot", "Reboot now", Vec::new()),
+        effect("power-off", "Power off", Vec::new()),
+    ]
 }
 
 #[cfg(test)]
@@ -272,14 +570,14 @@ mod tests {
                 assert!(Operation::decode(&bytes).unwrap() == operation);
             }
             assert!(
-                Operation::decode(br#"{"op":"select_disk","device":"/dev/vdb","extra":1}"#)
+                Operation::decode(br#"{"op":"select-disk","device":"/dev/vdb","extra":1}"#)
                     .is_err()
             );
-            assert!(Operation::decode(br#"{"op":"format_everything"}"#).is_err());
+            assert!(Operation::decode(br#"{"op":"format-everything"}"#).is_err());
         }
         {
             let error = Operation::decode(
-                br#"{"op":"set_passphrase","passphrase":"hunter2-correct-horse","confirmation":5}"#,
+                br#"{"op":"set-passphrase","passphrase":"hunter2-correct-horse","confirmation":5}"#,
             )
             .err()
             .unwrap();

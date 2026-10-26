@@ -220,6 +220,34 @@ pub trait Effect: Sized + 'static {
         let Payload { effect, args } = decode_payload(payload)?;
         Self::decode(&effect, &args)
     }
+
+    /// This effect encoded as its operation's payload: the one encoding every
+    /// action spec, bound control and console door produces, for a caller
+    /// that already holds the typed effect rather than the arguments a caller
+    /// would bind.
+    #[must_use]
+    fn encoded(&self) -> EncodedAction {
+        encode_effect(Self::OPERATION, self.id(), self.arguments())
+    }
+}
+
+/// [`Effect::encoded`]: the one invocation payload of `id` under `operation`.
+fn encode_effect(
+    operation: &'static str,
+    id: &str,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> EncodedAction {
+    EncodedAction::encode_operation(
+        operation,
+        &Payload {
+            effect: id.to_owned(),
+            args,
+        },
+    )
+    .unwrap_or_else(|_| EncodedAction {
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
+        payload: Vec::new(),
+    })
 }
 
 /// How the effect's specs carry an invocation: its id and its arguments.
@@ -234,7 +262,17 @@ struct Payload {
 /// is compiled once rather than in every app's `from_payload`.
 #[inline(never)]
 fn decode_payload(payload: &[u8]) -> Result<Payload, String> {
-    tilo_actions::decode_json(payload).map_err(|error| error.to_string())
+    // Report the category only: serde's message can quote the offending
+    // input, and an effect may carry a secret.
+    tilo_actions::decode_json(payload).map_err(|error| {
+        let category = match error.classify() {
+            serde_json::error::Category::Io => "unreadable payload",
+            serde_json::error::Category::Syntax => "malformed payload",
+            serde_json::error::Category::Data => "unexpected fields or values",
+            serde_json::error::Category::Eof => "truncated payload",
+        };
+        format!("not an effect invocation: {category}")
+    })
 }
 
 /// How an encoded invocation's arguments are made of the caller's and the

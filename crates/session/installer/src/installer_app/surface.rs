@@ -14,7 +14,7 @@ use tilo_actions::{
     ConfirmationPolicy, EncodedAction, OperationKind, ParamType, Resource, ResourcePresentation,
     ResultSpec, RiskLevel,
 };
-use ui::widget::resource_effects::EffectVocabulary;
+use ui::tilo_resource::Effect as _;
 use zeroize::Zeroizing;
 
 use super::{
@@ -27,9 +27,8 @@ use super::{
 use crate::install::PowerAction;
 use crate::layouts;
 use crate::operation::{
-    ACCOUNT, KEYBOARD, MEDIA, NETWORK, ONLINE_ACCOUNT_OPERATION_TYPE, OPERATION_TYPE, OPTIONS,
-    OnlineControl, Operation, POWER, PROVIDER, RECOVERY, REVIEW, SESSION, STORAGE, disk_resource,
-    region_resource,
+    ACCOUNT, KEYBOARD, MEDIA, NETWORK, OPERATION_TYPE, OPTIONS, OnlineControl, Operation, POWER,
+    PROVIDER, RECOVERY, REVIEW, SESSION, STORAGE, disk_resource, region_resource,
 };
 
 /// How long a copied recovery key stays on the clipboard: time to paste it
@@ -43,7 +42,6 @@ type Blocked = Option<(&'static str, String)>;
 // Only fixed controls cross the action door. Identity fields and requests stay
 // in AccountsForm's process-local queue, never in action parameters or history.
 const ONLINE_ACCOUNTS: &str = "installer.accounts";
-const ONLINE_OPERATION_TYPE: &str = ONLINE_ACCOUNT_OPERATION_TYPE;
 
 /// Keep guidance within publication limits without silently dropping it.
 fn with_guidance(mut resource: Resource, id: &str, guidance: &str) -> Resource {
@@ -64,10 +62,7 @@ fn with_guidance(mut resource: Resource, id: &str, guidance: &str) -> Resource {
 }
 
 fn encoded(operation: &Operation) -> EncodedAction {
-    EncodedAction::encode_operation(OPERATION_TYPE, operation).unwrap_or_else(|_| EncodedAction {
-        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-        payload: b"installer operation could not be encoded".to_vec(),
-    })
+    crate::operation::InstallerEffect::Install(operation.clone()).encoded()
 }
 
 /// An effect operation with typed parameters, built by `build` from the
@@ -297,15 +292,9 @@ impl InstallerApp {
                     label,
                     "",
                     OperationKind::Effect,
-                    ONLINE_OPERATION_TYPE,
+                    OPERATION_TYPE,
                     Vec::new(),
-                    move |_| {
-                        EncodedAction::encode_operation(ONLINE_OPERATION_TYPE, &control)
-                            .unwrap_or_else(|_| EncodedAction {
-                                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                                payload: Vec::new(),
-                            })
-                    },
+                    move |_| crate::operation::InstallerEffect::Online(control).encoded(),
                 ),
                 blocked,
             ));
@@ -955,7 +944,7 @@ impl InstallerApp {
                 }),
             risk: RiskLevel::Destructive,
             confirmation: ConfirmationPolicy::Phrase { phrase },
-            ..ActionContract::default()
+            ..ActionContract::for_operation(OperationKind::Effect)
         });
         let review = Resource::new(REVIEW, "installer.review", "Review and install");
         let review = if erase {
@@ -1131,7 +1120,10 @@ impl InstallerApp {
 
     /// Decode and apply one encoded installer operation.
     pub(super) fn apply_encoded(&mut self, encoded: &EncodedAction) -> Applied {
-        let effect = crate::operation::InstallerEffect::decode(&encoded.type_id, &encoded.payload)?;
+        if encoded.type_id != crate::operation::InstallerEffect::OPERATION {
+            return Err(format!("not an installer operation: {}", encoded.type_id));
+        }
+        let effect = crate::operation::InstallerEffect::from_payload(&encoded.payload)?;
         self.answer(effect)
     }
 

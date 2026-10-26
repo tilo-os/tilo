@@ -5,30 +5,24 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_ui::automerge::{AutoCommit, ROOT};
-use tilo_ui::tilo_actions::{
-    ActionOutput, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
-};
-use tilo_ui::widget::resource_effects::{EffectVocabulary, TypedEffects, host};
+use tilo_ui::tilo_actions::{ActionOutput, EncodedAction, OperationKind, Resource};
+use tilo_ui::tilo_resource::Effect;
+use tilo_ui::widget::resource_effects::{TypedEffects, host};
 use tilo_ui::widget::{Button, Widget};
 
 const PROBE: &str = "test.probe";
 
-#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
+/// The probe's one typed vocabulary: the toolkit's canonical [`Effect`].
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "test.probe")]
 enum ProbeEffect {
+    /// Increment.
     Increment,
-    SetValue { value: i64 },
-}
-
-impl EffectVocabulary for ProbeEffect {
-    const OPERATION_TYPES: &'static [&'static str] = &[PROBE];
-
-    fn decode(type_id: &str, payload: &[u8]) -> Result<Self, String> {
-        if type_id != PROBE {
-            return Err(format!("not a probe operation: {type_id}"));
-        }
-        serde_json::from_slice(payload).map_err(|_| "malformed probe operation".to_owned())
-    }
+    /// Set value.
+    SetValue {
+        #[param("New value")]
+        value: i64,
+    },
 }
 
 struct Handles {
@@ -64,39 +58,11 @@ impl Probe {
     }
 
     fn resource() -> Resource {
-        let increment = ActionSpec::typed_operation(
-            "increment",
-            "Increment",
-            "",
-            OperationKind::Effect,
-            PROBE,
-            Vec::new(),
-            |_| EncodedAction::encode_operation(PROBE, &ProbeEffect::Increment).unwrap(),
-        );
-        let set = ActionSpec::typed_operation(
-            "set-value",
-            "Set value",
-            "",
-            OperationKind::Effect,
-            PROBE,
-            vec![ActionParam::required(
-                "value",
-                ParamType::Integer,
-                "New value",
-            )],
-            |args| {
-                EncodedAction::encode_operation(
-                    PROBE,
-                    &ProbeEffect::SetValue {
-                        value: args.integer("value").unwrap_or_default(),
-                    },
-                )
-                .unwrap()
-            },
-        );
-        Resource::new("test.probe:root", PROBE, "Probe")
-            .with_action(increment)
-            .with_action(set)
+        let mut resource = Resource::new("test.probe:root", PROBE, "Probe");
+        for spec in ProbeEffect::specs() {
+            resource = resource.with_action(spec);
+        }
+        resource
     }
 }
 
@@ -143,7 +109,7 @@ impl TypedEffects for Probe {
 }
 
 fn encoded(effect: &ProbeEffect) -> EncodedAction {
-    EncodedAction::encode_operation(PROBE, effect).unwrap()
+    effect.encoded()
 }
 
 #[test]
@@ -216,12 +182,12 @@ fn a_typed_effect_reaches_the_roots_answer_and_a_malformed_one_is_refused() {
 
     let malformed = EncodedAction {
         type_id: PROBE.into(),
-        payload: br#"{"op":"explode"}"#.to_vec(),
+        payload: br#"{"effect":"explode","args":{}}"#.to_vec(),
     };
     let refused = start(&mut root, &malformed);
     assert_eq!(
         refused.as_ref().err().map(String::as_str),
-        Some("malformed probe operation"),
+        Some("there is no effect `explode`"),
         "{refused:?}"
     );
     assert_eq!(handles.answered.get(), 2);

@@ -143,11 +143,7 @@ fn switching_regions_discards_capacity_and_rejects_a_queued_old_size_action() {
         "choose a region before sizing it"
     );
     let select = |index| {
-        tilo_actions::EncodedAction::encode_operation(
-            op::OPERATION_TYPE,
-            &Operation::SelectFreeRegion { index },
-        )
-        .unwrap()
+        crate::operation::InstallerEffect::Install(Operation::SelectFreeRegion { index }).encoded()
     };
     assert!(app.apply_encoded(&select(0)).is_ok());
     assert!(set_size(&mut app, 35));
@@ -280,14 +276,11 @@ fn capacity_bounds_alignment_and_review_geometry_are_checked() {
     let old = app.guided_alongside_plan();
     assert!(set_size(&mut app, 40));
     app.step = Step::Review;
-    let encoded = tilo_actions::EncodedAction::encode_operation(
-        op::OPERATION_TYPE,
-        &Operation::BeginInstall {
-            target: "/dev/sda".into(),
-            allocation: old,
-        },
-    )
-    .unwrap();
+    let encoded = crate::operation::InstallerEffect::Install(Operation::BeginInstall {
+        target: "/dev/sda".into(),
+        allocation: old,
+    })
+    .encoded();
     assert!(
         app.apply_encoded(&encoded).is_err(),
         "old authorization must not install the resized plan"

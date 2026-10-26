@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::operation::{self as op, Operation};
+use ui::tilo_resource::Effect as _;
 
 mod capacity_tests;
 mod method_intent_tests;
@@ -435,16 +436,143 @@ fn linux_without_unallocated_space_never_falls_back_to_erase() {
     }
 }
 
+/// Every action the installer publishes is one effect of the canonical
+/// vocabulary: its payload decodes through [`InstallerEffect`], and the
+/// declaration callers see carries the same kind, risk and secret parameters.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one test walks every published action of every wizard step"
+)]
+fn every_published_action_is_the_canonical_effect_vocabulary() {
+    fn visit(resource: &tilo_actions::Resource, actions: &mut Vec<tilo_actions::ActionSpec>) {
+        actions.extend(resource.actions.iter().cloned());
+        for child in &resource.children {
+            visit(child, actions);
+        }
+    }
+
+    fn argument(param: &tilo_actions::ActionParam) -> Value {
+        if let Some(choice) = param.choices.first() {
+            return Value::String(choice.to_string());
+        }
+        match param.ty {
+            tilo_actions::ParamType::Text
+            | tilo_actions::ParamType::Secret
+            | tilo_actions::ParamType::Resource
+            | tilo_actions::ParamType::DateTime => Value::String("x".into()),
+            tilo_actions::ParamType::Integer => param
+                .schema
+                .as_deref()
+                .and_then(|schema| schema.get("minimum"))
+                .and_then(Value::as_i64)
+                .map_or_else(|| Value::from(1), Value::from),
+            tilo_actions::ParamType::Number => Value::from(1.0),
+            tilo_actions::ParamType::Boolean => Value::Bool(false),
+            tilo_actions::ParamType::Object => Value::Object(serde_json::Map::new()),
+            tilo_actions::ParamType::Array => Value::Array(Vec::new()),
+        }
+    }
+
+    let backend = FakeBackend::new();
+    let (mut app, _doc) = app(&backend);
+    app.disks = sample_disks();
+    app.selected_disk = Some(0);
+    app.recovery_key = Some(KEY.into());
+    for step in [
+        Step::Keyboard,
+        Step::Network,
+        Step::Accounts,
+        Step::Disk,
+        Step::Account,
+        Step::Options,
+        Step::Media,
+        Step::Review,
+        Step::Install,
+    ] {
+        app.step = step;
+        let resources = app.publish();
+        let mut actions = Vec::new();
+        for resource in &resources {
+            visit(resource, &mut actions);
+        }
+        assert!(!actions.is_empty(), "{step:?} publishes no actions");
+        for action in actions {
+            assert_eq!(
+                action.operation_type.as_deref(),
+                Some(<crate::operation::InstallerEffect as ui::tilo_resource::Effect>::OPERATION),
+                "{step:?} {} is not the canonical effect operation",
+                action.id
+            );
+            let arguments = action
+                .params()
+                .iter()
+                .map(|param| (param.name.to_string(), argument(param)))
+                .collect();
+            let encoded = action
+                .build_json(&arguments)
+                .unwrap_or_else(|error| panic!("{step:?} {}: {error}", action.id));
+            let effect = crate::operation::InstallerEffect::from_payload(&encoded.payload)
+                .unwrap_or_else(|error| panic!("{step:?} {}: {error}", action.id));
+            let declaration =
+                <crate::operation::InstallerEffect as ui::tilo_resource::Effect>::declaration(
+                    effect.id(),
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{step:?} {} decodes to `{}` with no declaration",
+                        action.id,
+                        effect.id()
+                    )
+                });
+            assert_eq!(declaration.kind, action.kind, "{step:?} {}", action.id);
+            assert_eq!(
+                declaration.risk, action.contract.risk,
+                "{step:?} {}",
+                action.id
+            );
+            assert_eq!(
+                declaration.action_kind(),
+                action.contract.kind,
+                "{step:?} {}",
+                action.id
+            );
+            for param in action.params() {
+                let declared = declaration
+                    .params
+                    .iter()
+                    .find(|declared| declared.name == param.name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{step:?} {} has undeclared parameter {}",
+                            action.id, param.name
+                        )
+                    });
+                assert_eq!(
+                    declared.ty, param.ty,
+                    "{step:?} {} {}",
+                    action.id, param.name
+                );
+                assert_eq!(
+                    declared.required, param.required,
+                    "{step:?} {} {}",
+                    action.id, param.name
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
     // Phase `the_published_surface_is_valid_on_every_step`.
     {
         let backend = FakeBackend::new();
         let (mut app, _doc) = app(&backend);
-        let handlers: HashSet<String> = crate::operation::OPERATION_TYPES
-            .iter()
-            .map(|type_id| (*type_id).to_owned())
-            .collect();
+        let handlers: HashSet<String> = std::iter::once(
+            <crate::operation::InstallerEffect as ui::tilo_resource::Effect>::OPERATION.to_owned(),
+        )
+        .collect();
         for step in [
             Step::Keyboard,
             Step::Network,

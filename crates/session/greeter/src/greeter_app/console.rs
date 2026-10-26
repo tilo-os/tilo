@@ -18,10 +18,10 @@ use console_control::{Request, catalog, wire};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ui::tilo_actions::{
-    ActionArgs, ActionParam, ActionSpec, Availability, EncodedAction, OperationKind, ParamType,
-    Resource,
+    ActionParam, ActionSpec, Availability, EncodedAction, OperationKind, ParamType, Resource,
 };
-use ui::widget::resource_effects::EffectVocabulary;
+use ui::tilo_resource::Effect as _;
+use ui::tilo_resource::effect::{Answers, EffectDecl};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{AuthPhase, GreeterApp};
@@ -81,16 +81,165 @@ pub enum Operation {
     },
 }
 
-impl EffectVocabulary for Operation {
-    const OPERATION_TYPES: &'static [&'static str] = &[OPERATION];
+impl ui::tilo_resource::Effect for Operation {
+    const OPERATION: &'static str = OPERATION;
 
-    fn decode(type_id: &str, payload: &[u8]) -> Result<Self, String> {
-        if type_id != OPERATION {
-            return Err(format!("not a greeter operation: {type_id}"));
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table entry per published effect keeps the vocabulary together"
+    )]
+    fn declarations() -> Vec<EffectDecl> {
+        [
+            (
+                "configure-session-diagnostics",
+                "Configure timing diagnostics for this sign-in",
+                vec![
+                    ActionParam::required(
+                        "presentation",
+                        ParamType::Boolean,
+                        "Content-free timing for this sign-in",
+                    ),
+                    ActionParam::required(
+                        "gpu_stages",
+                        ParamType::Boolean,
+                        "Content-free timing for this sign-in",
+                    ),
+                    ActionParam::required(
+                        "gpu_timestamps",
+                        ParamType::Boolean,
+                        "Content-free timing for this sign-in",
+                    ),
+                    ActionParam::required(
+                        "gpu_dispatch_timestamps",
+                        ParamType::Boolean,
+                        "Content-free timing for this sign-in",
+                    ),
+                ],
+            ),
+            (
+                "respond-challenge",
+                "Respond to authentication challenge",
+                vec![
+                    ActionParam::required(
+                        "challenge",
+                        ParamType::Text,
+                        "Current authentication challenge identity",
+                    ),
+                    ActionParam::required(
+                        "response",
+                        ParamType::Secret,
+                        "Private transient authentication response",
+                    ),
+                ],
+            ),
+            ("cancel-authentication", "Cancel sign-in", Vec::new()),
+            (
+                "sign-in",
+                "Sign in",
+                vec![ActionParam::required(
+                    "password",
+                    ParamType::Secret,
+                    "Password; transient authentication input only",
+                )],
+            ),
+            ("fingerprint", "Use fingerprint", Vec::new()),
+            (
+                "choose-account",
+                "Accounts on this computer",
+                vec![ActionParam::required(
+                    "username",
+                    ParamType::Text,
+                    "Account on this computer",
+                )],
+            ),
+            (
+                "set-username",
+                "Username",
+                vec![ActionParam::required(
+                    "username",
+                    ParamType::Text,
+                    "Username to authenticate",
+                )],
+            ),
+            (
+                "choose-session",
+                "Session",
+                vec![ActionParam::required(
+                    "session",
+                    ParamType::Text,
+                    "Available session",
+                )],
+            ),
+            ("suspend", "Suspend", Vec::new()),
+            ("reboot", "Restart", Vec::new()),
+            ("power-off", "Shut down", Vec::new()),
+            (
+                "larger-text",
+                "Larger text",
+                vec![ActionParam::required(
+                    "enabled",
+                    ParamType::Boolean,
+                    "Turn this on or off",
+                )],
+            ),
+            (
+                "high-contrast",
+                "High contrast",
+                vec![ActionParam::required(
+                    "enabled",
+                    ParamType::Boolean,
+                    "Turn this on or off",
+                )],
+            ),
+            (
+                "screen-reader",
+                "Screen reader",
+                vec![ActionParam::required(
+                    "enabled",
+                    ParamType::Boolean,
+                    "Turn this on or off",
+                )],
+            ),
+        ]
+        .into_iter()
+        .map(|(id, label, params)| greeter_declaration(id, label, params))
+        .collect()
+    }
+
+    fn id(&self) -> &'static str {
+        match self {
+            Self::ConfigureSessionDiagnostics { .. } => "configure-session-diagnostics",
+            Self::RespondChallenge { .. } => "respond-challenge",
+            Self::CancelAuthentication => "cancel-authentication",
+            Self::SignIn { .. } => "sign-in",
+            Self::Fingerprint => "fingerprint",
+            Self::ChooseAccount { .. } => "choose-account",
+            Self::SetUsername { .. } => "set-username",
+            Self::ChooseSession { .. } => "choose-session",
+            Self::Suspend => "suspend",
+            Self::Reboot => "reboot",
+            Self::PowerOff => "power-off",
+            Self::LargerText { .. } => "larger-text",
+            Self::HighContrast { .. } => "high-contrast",
+            Self::ScreenReader { .. } => "screen-reader",
         }
+    }
+
+    fn arguments(&self) -> serde_json::Map<String, Value> {
+        let Value::Object(mut arguments) = serde_json::to_value(self).unwrap_or(Value::Null) else {
+            return serde_json::Map::new();
+        };
+        arguments.remove("op");
+        arguments.retain(|_, value| !value.is_null());
+        arguments
+    }
+
+    fn decode(id: &str, arguments: &serde_json::Map<String, Value>) -> Result<Self, String> {
+        let mut invocation = arguments.clone();
+        invocation.insert("op".into(), Value::String(id.to_owned()));
         // Report the category only: serde's message can quote the offending
         // input, and that input may be a passcode or challenge response.
-        serde_json::from_slice(payload).map_err(|error| {
+        serde_json::from_value(Value::Object(invocation)).map_err(|error| {
             let category = match error.classify() {
                 serde_json::error::Category::Io => "unreadable payload",
                 serde_json::error::Category::Syntax => "malformed payload",
@@ -99,6 +248,41 @@ impl EffectVocabulary for Operation {
             };
             format!("not a greeter operation: {category}")
         })
+    }
+}
+
+/// One greeter effect declaration, as the console publishes it. The effect's
+/// arguments are its published parameters; no greeter operation changes a
+/// document.
+fn greeter_declaration(
+    id: &'static str,
+    label: &'static str,
+    params: Vec<ActionParam>,
+) -> EffectDecl {
+    EffectDecl {
+        id,
+        label,
+        description: "",
+        params,
+        kind: OperationKind::Effect,
+        row: false,
+        answers: Answers::Nothing,
+        risk: ui::tilo_actions::RiskLevel::Low,
+        idempotent: false,
+        action_kind: ui::tilo_actions::ActionKind::Outside,
+        own_device: false,
+        attended: false,
+        risk_of: None,
+        audience: ui::tilo_actions::Audience::Everyone,
+        untrusted: false,
+        opens: None,
+        participant: false,
+        edits: false,
+        member: false,
+        item: None,
+        offload: None,
+        tags: &[],
+        outside_with: None,
     }
 }
 
@@ -121,12 +305,12 @@ impl GreeterApp {
         self
     }
 
-    pub(super) fn serve_console(&mut self, _state: &AutoCommit) {
+    pub(super) fn serve_console(&mut self, state: &AutoCommit) {
         let Some(console) = self.console.clone() else {
             return;
         };
         for pending in console.take_pending() {
-            let reply = self.answer_console(pending.line(), _state);
+            let reply = self.answer_console(pending.line(), state);
             pending.respond(reply);
         }
     }
@@ -191,7 +375,13 @@ impl GreeterApp {
     /// Returns a stable code and the reason when the operation is malformed
     /// or cannot run now.
     pub(super) fn apply_encoded(&mut self, encoded: &EncodedAction) -> Result<Value, Refused> {
-        let operation = Operation::decode(&encoded.type_id, &encoded.payload)
+        if encoded.type_id != Operation::OPERATION {
+            return Err(refused(
+                "invalid_arguments",
+                format!("not a greeter operation: {}", encoded.type_id),
+            ));
+        }
+        let operation = Operation::from_payload(&encoded.payload)
             .map_err(|message| refused("invalid_arguments", message))?;
         self.apply(operation)
     }
@@ -281,7 +471,7 @@ impl GreeterApp {
                     super::LARGER_TEXT_SCALE
                 } else {
                     1.0
-                }))
+                }));
             }
             Operation::HighContrast { enabled } => {
                 self.retune(AccessibilityRequest::HighContrast(enabled));
@@ -295,7 +485,7 @@ impl GreeterApp {
 
     /// The same one-shot request the footer's toggle raises; the host applies
     /// it on the next frame.
-    fn retune(&mut self, request: AccessibilityRequest) {
+    fn retune(&self, request: AccessibilityRequest) {
         self.requests.accessibility.set(Some(request));
     }
 
@@ -393,59 +583,25 @@ impl GreeterApp {
 }
 
 fn conversation_actions(challenge: Option<crate::auth::Challenge>) -> Vec<ActionSpec> {
-    let mut response_param = ActionParam::required(
-        "challenge",
-        ParamType::Text,
-        "Current authentication challenge identity",
-    );
-    if let Some(challenge) = challenge {
-        response_param = response_param.with_choices([challenge.id.to_string()]);
-    }
     vec![
-        typed_action(
-            "respond-challenge",
-            "greeter-auth-respond",
-            vec![
-                response_param,
-                ActionParam::required(
-                    "response",
-                    ParamType::Secret,
-                    "Private transient authentication response",
-                ),
-            ],
-            |args| Operation::RespondChallenge {
-                challenge: args.text("challenge").unwrap_or_default().to_owned(),
-                response: args.text("response").unwrap_or_default().to_owned(),
-            },
-        ),
-        nullary_action(
-            "cancel-authentication",
-            "greeter-auth-cancel",
-            &Operation::CancelAuthentication,
-        ),
+        action_with("respond-challenge", "greeter-auth-respond", |declaration| {
+            if let Some(challenge) = challenge
+                && let Some(param) = declaration
+                    .params
+                    .iter_mut()
+                    .find(|param| param.name == "challenge")
+            {
+                param.choices = vec![challenge.id.to_string().into()];
+            }
+        }),
+        action("cancel-authentication", "greeter-auth-cancel"),
     ]
 }
 
 fn diagnostics_action() -> ActionSpec {
-    typed_action(
+    action(
         "configure-session-diagnostics",
         "greeter-session-diagnostics",
-        super::SESSION_DIAGNOSTICS
-            .iter()
-            .map(|(param, _)| {
-                ActionParam::required(
-                    param,
-                    ParamType::Boolean,
-                    "Content-free timing for this sign-in",
-                )
-            })
-            .collect(),
-        |args| Operation::ConfigureSessionDiagnostics {
-            presentation: args.boolean("presentation").unwrap_or(false),
-            gpu_stages: args.boolean("gpu_stages").unwrap_or(false),
-            gpu_timestamps: args.boolean("gpu_timestamps").unwrap_or(false),
-            gpu_dispatch_timestamps: args.boolean("gpu_dispatch_timestamps").unwrap_or(false),
-        },
     )
 }
 
@@ -457,29 +613,20 @@ impl GreeterApp {
         let mut resource = Resource::new(PROVIDER, "greeter.sign-in", super::t("greeter-sign-in"));
         let mut specs = vec![
             diagnostics_action(),
-            typed_action(
-                "sign-in",
-                "greeter-sign-in",
-                vec![ActionParam::required(
-                    "password",
-                    ParamType::Secret,
-                    "Password; transient authentication input only",
-                )],
-                |args| Operation::SignIn {
-                    password: args.text("password").unwrap_or_default().to_owned(),
-                },
-            ),
-            typed_action(
-                "choose-session",
-                "greeter-session",
-                vec![
-                    ActionParam::required("session", ParamType::Text, "Available session")
-                        .with_choices(self.sessions.iter().map(|session| session.name.clone())),
-                ],
-                |args| Operation::ChooseSession {
-                    session: args.text("session").unwrap_or_default().to_owned(),
-                },
-            ),
+            action("sign-in", "greeter-sign-in"),
+            action_with("choose-session", "greeter-session", |declaration| {
+                if let Some(param) = declaration
+                    .params
+                    .iter_mut()
+                    .find(|param| param.name == "session")
+                {
+                    param.choices = self
+                        .sessions
+                        .iter()
+                        .map(|session| session.name.clone().into())
+                        .collect();
+                }
+            }),
         ];
         let challenge = self
             .auth_session
@@ -487,38 +634,29 @@ impl GreeterApp {
             .and_then(crate::auth::AuthSession::challenge);
         specs.extend(conversation_actions(challenge));
         if self.users.len() > 1 {
-            specs.push(typed_action(
+            specs.push(action_with(
                 "choose-account",
                 "greeter-accounts",
-                vec![
-                    ActionParam::required("username", ParamType::Text, "Account on this computer")
-                        .with_choices(self.users.iter().map(|user| user.username.clone())),
-                ],
-                |args| Operation::ChooseAccount {
-                    username: args.text("username").unwrap_or_default().to_owned(),
+                |declaration| {
+                    if let Some(param) = declaration
+                        .params
+                        .iter_mut()
+                        .find(|param| param.name == "username")
+                    {
+                        param.choices = self
+                            .users
+                            .iter()
+                            .map(|user| user.username.clone().into())
+                            .collect();
+                    }
                 },
             ));
         }
         if self.login_user.is_none() {
-            specs.push(typed_action(
-                "set-username",
-                "greeter-username",
-                vec![ActionParam::required(
-                    "username",
-                    ParamType::Text,
-                    "Username to authenticate",
-                )],
-                |args| Operation::SetUsername {
-                    username: args.text("username").unwrap_or_default().to_owned(),
-                },
-            ));
+            specs.push(action("set-username", "greeter-username"));
         }
         if self.fingerprint_available_for(&self.attempt_username()) {
-            specs.push(nullary_action(
-                "fingerprint",
-                "greeter-use-fingerprint",
-                &Operation::Fingerprint,
-            ));
+            specs.push(action("fingerprint", "greeter-use-fingerprint"));
         }
         for mut spec in specs {
             if spec.id == "respond-challenge" {
@@ -581,74 +719,40 @@ impl ui::widget::resource_effects::TypedEffects for GreeterApp {
 /// The footer's power menu and accessibility toggles: what a person can do
 /// from the sign-in screen before anyone is signed in.
 fn screen_actions() -> Vec<ActionSpec> {
-    let mut specs: Vec<ActionSpec> = [
-        ("suspend", "greeter-suspend", Operation::Suspend),
-        ("reboot", "greeter-restart", Operation::Reboot),
-        ("power-off", "greeter-shut-down", Operation::PowerOff),
+    [
+        ("suspend", "greeter-suspend"),
+        ("reboot", "greeter-restart"),
+        ("power-off", "greeter-shut-down"),
+        ("larger-text", "greeter-larger-text"),
+        ("high-contrast", "greeter-high-contrast"),
+        ("screen-reader", "greeter-screen-reader"),
     ]
     .into_iter()
-    .map(|(id, label, operation)| nullary_action(id, label, &operation))
-    .collect();
-    specs.extend(
-        [
-            ("larger-text", "greeter-larger-text"),
-            ("high-contrast", "greeter-high-contrast"),
-            ("screen-reader", "greeter-screen-reader"),
-        ]
-        .into_iter()
-        .map(|(id, label)| {
-            typed_action(
-                id,
-                label,
-                vec![ActionParam::required(
-                    "enabled",
-                    ParamType::Boolean,
-                    "Turn this on or off",
-                )],
-                move |args| {
-                    let enabled = args.boolean("enabled").unwrap_or(false);
-                    match id {
-                        "larger-text" => Operation::LargerText { enabled },
-                        "high-contrast" => Operation::HighContrast { enabled },
-                        _ => Operation::ScreenReader { enabled },
-                    }
-                },
-            )
-        }),
-    );
-    specs
+    .map(|(id, label)| action(id, label))
+    .collect()
 }
 
-fn typed_action(
+/// One published action of the greeter's one typed vocabulary, with the
+/// translation key its label comes from. The declaration supplies every
+/// effect property and argument; a caller can adjust only what the live
+/// screen knows (the values a choice may take).
+fn action(id: &'static str, label: &'static str) -> ActionSpec {
+    action_with(id, label, |_| {})
+}
+
+fn action_with(
     id: &'static str,
     label: &'static str,
-    params: Vec<ActionParam>,
-    build: impl Fn(&ActionArgs) -> Operation + Send + Sync + 'static,
+    adjust: impl FnOnce(&mut EffectDecl),
 ) -> ActionSpec {
-    ActionSpec::typed_operation(
-        id,
-        super::t(label),
-        "",
-        OperationKind::Effect,
-        OPERATION,
-        params,
-        move |args| encoded(&build(args)),
-    )
-}
-
-fn nullary_action(id: &'static str, label: &'static str, operation: &Operation) -> ActionSpec {
-    let operation = operation.clone();
-    typed_action(id, label, Vec::new(), move |_| operation.clone())
-}
-
-/// The operation with the arguments the door bound strictly against its
-/// parameters. A secret argument rides along to the in-process handler only;
-/// it is never published or logged (the host redacts `Secret` params).
-fn encoded(operation: &Operation) -> EncodedAction {
-    EncodedAction::encode_operation(OPERATION, operation).unwrap_or_else(|_| EncodedAction {
-        type_id: ui::tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-        payload: b"greeter operation could not be encoded".to_vec(),
-    })
+    // The ids are this file's own constants; the fallback keeps a typo
+    // visible as an inert action instead of panicking a sign-in screen.
+    let mut declaration =
+        Operation::declaration(id).unwrap_or_else(|| greeter_declaration(id, label, Vec::new()));
+    adjust(&mut declaration);
+    let mut spec = declaration.spec(Operation::OPERATION);
+    spec.label = super::t(label);
+    spec
 }
 
 #[cfg(test)]
@@ -695,8 +799,7 @@ mod tests {
             "sign-in" => json!({"password": "hunter2"}),
             "respond-challenge" => json!({"challenge": "1", "response": "123456"}),
             "choose-session" => json!({"session": "GNOME"}),
-            "choose-account" => json!({"username": "ada"}),
-            "set-username" => json!({"username": "ada"}),
+            "choose-account" | "set-username" => json!({"username": "ada"}),
             "configure-session-diagnostics" => json!({
                 "presentation": true,
                 "gpu_stages": false,
@@ -709,34 +812,39 @@ mod tests {
         for phase in [AuthPhase::Idle, AuthPhase::Authenticating] {
             app.phase = phase;
             let resources = app.publish();
-            let handlers: std::collections::HashSet<String> = Operation::OPERATION_TYPES
-                .iter()
-                .map(|type_id| (*type_id).to_owned())
-                .collect();
+            let handlers: std::collections::HashSet<String> =
+                std::iter::once(Operation::OPERATION.to_owned()).collect();
             let violations = ui::tilo_actions::validate_surface(
                 &resources,
                 &ui::tilo_actions::ActionRegistry::new(),
                 &handlers,
             );
             assert!(violations.is_empty(), "{phase:?}: {violations:?}");
-            for action in [
-                "sign-in",
-                "respond-challenge",
-                "choose-session",
-                "cancel-authentication",
-                "configure-session-diagnostics",
-            ] {
-                let spec = ui::tilo_actions::door::resolve(
-                    &resources,
-                    &ui::tilo_actions::ActionAddress::new(PROVIDER, action),
-                )
-                .unwrap_or_else(|| panic!("{action} is not published"));
+            for spec in &resources[0].actions {
+                let action = spec.id.as_str();
                 let args = arguments(action).as_object().cloned().unwrap_or_default();
                 let encoded = spec
                     .build_json(&args)
                     .unwrap_or_else(|error| panic!("{action}: {error}"));
-                Operation::decode(&encoded.type_id, &encoded.payload)
+                let effect = Operation::from_payload(&encoded.payload)
                     .unwrap_or_else(|error| panic!("{action}: {error}"));
+                let declaration = Operation::declaration(action)
+                    .unwrap_or_else(|| panic!("{action} has no canonical declaration"));
+                assert_eq!(declaration.id, effect.id(), "{action}");
+                assert_eq!(declaration.kind, spec.kind, "{action}");
+                assert_eq!(declaration.risk, spec.contract.risk, "{action}");
+                assert_eq!(declaration.action_kind(), spec.contract.kind, "{action}");
+                for param in spec.params() {
+                    let declared = declaration
+                        .params
+                        .iter()
+                        .find(|declared| declared.name == param.name)
+                        .unwrap_or_else(|| {
+                            panic!("{action} has undeclared parameter {}", param.name)
+                        });
+                    assert_eq!(declared.ty, param.ty, "{action} {}", param.name);
+                    assert_eq!(declared.required, param.required, "{action} {}", param.name);
+                }
             }
         }
 
@@ -1338,9 +1446,10 @@ mod authentication_tests {
         let catalogue = catalog::enumerate(PROVIDER, &resources, "");
         assert!(!catalogue.to_string().contains(SECRET));
         let reply = if door == "published" {
-            app.invoke_published("sign-in@greeter", &args)
-                .map(|value| value.to_string())
-                .unwrap_or_else(|(code, message)| format!("{code}: {message}"))
+            app.invoke_published("sign-in@greeter", &args).map_or_else(
+                |(code, message)| format!("{code}: {message}"),
+                |value| value.to_string(),
+            )
         } else {
             app.answer_console(
                 &json!({"op":"actions_invoke","provider":PROVIDER,"id":"sign-in@greeter","args":args})
