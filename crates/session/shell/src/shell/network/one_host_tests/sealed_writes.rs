@@ -78,9 +78,11 @@ fn until_connected(device: &Device, manager: &mut CollaborationManager) {
 /// refusal, as the app is told it. A write that was published fails.
 fn refusal(device: &Device, manager: &mut CollaborationManager, request: CollabRequest) -> String {
     assert!(manager.send(request), "the app queued its write");
-    let receipt = manager
-        .begin_document_publication_barrier()
-        .expect("a publication barrier on a connected app");
+    // A write the app refused before it left is told at once.
+    let receipt = match manager.begin_document_publication_barrier() {
+        Ok(receipt) => receipt,
+        Err(error) => return format!("{error:?}"),
+    };
     until(&[device], "the write's publication to end", || {
         let _ = manager.poll();
         match receipt.try_complete() {
