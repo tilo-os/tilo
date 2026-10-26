@@ -338,7 +338,7 @@ esac
             [
                 "",
                 "Incorrect PIN. 7 tries left.",
-                "You already tried that PIN. Try another.",
+                "You already tried that PIN. 7 tries left.",
             ]
         );
     }
