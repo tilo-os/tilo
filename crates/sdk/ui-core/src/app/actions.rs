@@ -3337,6 +3337,19 @@ impl App {
         on_behalf_of: Option<tilo_actions::InvocationId>,
         origin: crate::bound_dispatch::Origin,
     ) -> bool {
+        // A pick the app asks the person to confirm is asked before it
+        // reaches the door, through the same question the door's own
+        // confirmations get.
+        if origin == crate::bound_dispatch::Origin::PersonConfirming && on_behalf_of.is_none() {
+            return self.ask_person(
+                crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
+                    target.clone(),
+                ),
+                intent.address.clone(),
+                crate::bound_dispatch::ControlContinuationArguments::Json(intent.arguments.clone()),
+                true,
+            );
+        }
         let argument = format!(
             "{}{}",
             tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -3439,7 +3452,7 @@ impl App {
                 // Only what the person asked for is refused over the window;
                 // the app hears of its own invocation's refusal through the
                 // feedback above.
-                if acting.is_none() && origin == crate::bound_dispatch::Origin::Person {
+                if acting.is_none() && origin.is_persons() {
                     self.refuse_visibly(&error);
                 }
                 false
@@ -3803,8 +3816,7 @@ impl App {
         {
             // Only what the person asked for is refused over the window; the
             // app hears of its own invocation's refusal through the feedback.
-            let says_refusal =
-                on_behalf_of.is_none() && origin == crate::bound_dispatch::Origin::Person;
+            let says_refusal = on_behalf_of.is_none() && origin.is_persons();
             if on_behalf_of.is_none() && self.take_history_invocation(&intent, None) {
                 dispatched = dispatched.saturating_add(1);
                 continue;
@@ -3863,10 +3875,14 @@ impl App {
                 );
                 continue;
             }
-            if !matches!(
-                resolved.confirmation_for_json(&intent.arguments),
-                tilo_actions::ConfirmationPolicy::None
-            ) {
+            let confirming =
+                acting.is_none() && origin == crate::bound_dispatch::Origin::PersonConfirming;
+            if confirming
+                || !matches!(
+                    resolved.confirmation_for_json(&intent.arguments),
+                    tilo_actions::ConfirmationPolicy::None
+                )
+            {
                 // A bound control never manufactures confirmation. Hand the
                 // exact address to the standard palette flow, which owns the
                 // explicit confirm/phrase UI and only then enters the door.
@@ -3875,10 +3891,11 @@ impl App {
                     &intent.address,
                     &Err(tilo_actions::DoorError::ConfirmationRequired),
                 );
-                self.open_ordinary_confirmation(
+                self.ask_person(
                     crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer,
                     intent.address,
                     crate::bound_dispatch::ControlContinuationArguments::Json(intent.arguments),
+                    confirming,
                 );
                 dispatched = dispatched.saturating_add(1);
                 continue;
@@ -4621,6 +4638,19 @@ impl App {
         address: tilo_actions::ActionAddress,
         arguments: crate::bound_dispatch::ControlContinuationArguments,
     ) -> bool {
+        self.ask_person(target, address, arguments, false)
+    }
+
+    /// Ask the person before `address` goes ahead: as the door asked
+    /// ([`Self::open_ordinary_confirmation`]), or, `confirming`, as the app
+    /// asked for a pick of theirs ([`crate::bound_dispatch::Origin::PersonConfirming`]).
+    fn ask_person(
+        &mut self,
+        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        address: tilo_actions::ActionAddress,
+        arguments: crate::bound_dispatch::ControlContinuationArguments,
+        confirming: bool,
+    ) -> bool {
         let request = crate::bound_dispatch::OrdinaryConfirmation::prepare(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -4630,6 +4660,7 @@ impl App {
             arguments,
         );
         let request = match request {
+            Ok(request) if confirming => request.confirming(),
             Ok(request) => request.asking_first(),
             Err(error) => {
                 self.refuse_visibly(&error);
@@ -4650,6 +4681,14 @@ impl App {
         self.focused_node = None;
         if let Some(palette) = self.actions.action_palette.as_mut() {
             palette.activate_ordinary(request);
+        }
+        if self
+            .actions
+            .action_palette
+            .as_ref()
+            .is_some_and(crate::action_palette::ActionPalette::went_ahead)
+        {
+            return self.finish_action_palette_input(true);
         }
         self.rebuild_action_palette_admission();
         true

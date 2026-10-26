@@ -99,6 +99,9 @@ enum Command {
     Apply(publishing::ApplyArgs),
     /// Upload packages and ask the registry to list them.
     Publish(publishing::PublishArgs),
+    /// Run a build of this app, or a bot's program, in a running room, for
+    /// everyone in it.
+    Push(tilo_app_cli::push::PushArgs),
 }
 
 #[derive(clap::Args)]
@@ -1194,6 +1197,7 @@ fn main() -> ExitCode {
         Command::Keys(args) => publishing::run_keys(args),
         Command::Apply(args) => publishing::run_apply(args),
         Command::Publish(args) => publishing::run_publish(args),
+        Command::Push(args) => tilo_app_cli::push::run_push(args),
     };
     let code = match &result {
         Ok(_) => ExitCode::SUCCESS,
@@ -1301,6 +1305,7 @@ impl Command {
             Self::Keys(_) => "keys",
             Self::Apply(_) => "apply",
             Self::Publish(_) => "publish",
+            Self::Push(_) => "push",
         }
     }
 }

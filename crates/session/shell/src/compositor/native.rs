@@ -13421,6 +13421,7 @@ pub fn run() {
                     .collect::<Vec<_>>();
                 for room in rooms {
                     net.publish_hosted_legacy_windows(room, &tree_handle);
+                    net.follow_room_app_versions(room);
                 }
                 let generation = tree_handle.generation();
                 net.set_room_window_hosting(

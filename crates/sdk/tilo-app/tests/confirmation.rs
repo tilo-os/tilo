@@ -15,6 +15,10 @@ pub struct Note {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Notes {
     pub notes: Collection<Note>,
+    /// How long the notes stay open unattended: any change can weaken the
+    /// person's security, so the door asks, though Undo takes it back.
+    #[model(trust = "weakening")]
+    pub open_minutes: u32,
 }
 
 #[resource(kind = "test.notes", label = "Notes")]
@@ -64,6 +68,7 @@ impl ResourceApp for NotesApp {
             ),
             cx.button("clear", Notes::CLEAR.with(())),
             cx.button("forget", Notes::FORGET.with(())),
+            cx.button("keep open", Notes::paths().open_minutes.set(60)),
         ])
     }
 }
@@ -129,6 +134,8 @@ enum Now {
     InvokedGesture,
     IrreversibleGesture,
     IrreversibleVerb,
+    Confirming,
+    IrreversibleConfirming,
 }
 
 thread_local! {
@@ -192,6 +199,10 @@ impl Widget for Remover {
             Now::Gesture => dispatch.submit_gesture(edits, Notes::REMOVE.with(first)),
             Now::IrreversibleGesture => dispatch.submit_gesture(edits, Notes::FORGET.with(())),
             Now::IrreversibleVerb => dispatch.submit_now(edits, Notes::FORGET.with(())),
+            Now::Confirming => dispatch.submit_confirming(edits, Notes::REMOVE.with(first)),
+            Now::IrreversibleConfirming => {
+                dispatch.submit_confirming(edits, Notes::FORGET.with(()))
+            }
             Now::InvokedGesture => {
                 let _agent = tilo_app::invocation_scope::InvokerScope::enter(
                     tilo_actions::ActionInvoker::actor("agent:helper"),
@@ -343,4 +354,118 @@ fn an_irreversible_destructive_verb_of_a_gesture_asks_first() {
 #[test]
 fn an_irreversible_destructive_verb_applied_now_asks_first() {
     asks_before_forgetting(Now::IrreversibleVerb);
+}
+
+/// Hold Shift, or let go of it, as the window's modifier change says.
+fn hold_shift<A: ResourceApp>(app: &mut TestApp<A>, held: bool) {
+    let names: Vec<String> = if held {
+        vec!["shift".into()]
+    } else {
+        Vec::new()
+    };
+    app.harness().set_modifiers(&names);
+}
+
+/// Pick the remover's choice `now` with Shift `held`, on a fresh window.
+fn choose(now: Now, held: bool) -> TestApp<RemoverApp> {
+    let mut app = TestApp::<RemoverApp>::new().unwrap();
+    app.invoke(Notes::ADD.with("Milk")).unwrap();
+    hold_shift(&mut app, held);
+    NOW.set(Some(now));
+    app.settle();
+    assert_eq!(
+        APPLIED.with(|applied| applied.borrow_mut().drain(..).collect::<Vec<_>>()),
+        [Ok(())],
+        "{now:?}"
+    );
+    app
+}
+
+/// A choice the app asks the person to confirm (Delete in a context menu)
+/// is asked about though Undo would take it back, in the action's own
+/// words; once they agree it applies, and Undo takes it back.
+#[test]
+fn a_confirming_choice_without_shift_asks_and_undo_takes_it_back() {
+    let mut app = choose(Now::Confirming, false);
+    assert!(app.asking().is_some(), "the person is asked first");
+    assert_eq!(
+        app.harness().asking_why(),
+        None,
+        "the action asks, not the room's grants"
+    );
+    assert_eq!(app.state().notes.len(), 1, "nothing is removed yet");
+    assert!(app.confirm_asked().is_some(), "the person agrees");
+    assert!(app.state().notes.is_empty(), "then it applies");
+    assert!(app.undo(), "Undo takes it back");
+    assert_eq!(app.state().notes.len(), 1);
+}
+
+/// Holding Shift, the same choice applies at once, nobody is asked, and
+/// Undo takes it back.
+#[test]
+fn a_confirming_choice_with_shift_applies_at_once_and_undo_takes_it_back() {
+    let mut app = choose(Now::Confirming, true);
+    assert_eq!(app.asking(), None, "Shift skips the question");
+    assert!(app.state().notes.is_empty(), "removed at once");
+    assert!(app.undo(), "Undo takes it back");
+    assert_eq!(app.state().notes.len(), 1);
+    hold_shift(&mut app, false);
+}
+
+/// What Undo cannot take back is asked, Shift or not.
+#[test]
+fn an_irreversible_confirming_choice_asks_shift_or_not() {
+    for held in [false, true] {
+        let mut app = choose(Now::IrreversibleConfirming, held);
+        assert!(app.asking().is_some(), "Shift {held}: the person is asked");
+        assert_eq!(app.state().notes.len(), 1, "Shift {held}: nothing is lost");
+        hold_shift(&mut app, false);
+    }
+}
+
+/// Press "keep open", whose contract asks though Undo takes it back, with
+/// Shift `held`, on a fresh window.
+fn keep_open(held: bool) -> TestApp<NotesApp> {
+    let mut app = TestApp::<NotesApp>::new().unwrap();
+    app.invoke(Notes::ADD.with("Milk")).unwrap();
+    let mut app = app.reopen().unwrap();
+    hold_shift(&mut app, held);
+    app.harness().click_named("field-edit").unwrap();
+    app.settle();
+    app
+}
+
+/// The host's own question, for an action whose contract asks, is asked
+/// without Shift as before.
+#[test]
+fn the_hosts_question_asks_without_shift_as_before() {
+    let mut app = keep_open(false);
+    assert!(app.asking().is_some(), "without Shift it asks");
+    assert_eq!(app.state().open_minutes, 0, "nothing changed yet");
+}
+
+/// With Shift the host's question is skipped for what Undo takes back: it
+/// applies at once and Undo takes it back.
+#[test]
+fn shift_skips_the_hosts_question_for_what_undo_takes_back() {
+    let mut app = keep_open(true);
+    assert_eq!(app.asking(), None, "with Shift nobody is asked");
+    assert_eq!(app.state().open_minutes, 60, "it applied at once");
+    assert!(app.undo(), "Undo takes it back");
+    assert_eq!(app.state().open_minutes, 0);
+    hold_shift(&mut app, false);
+}
+
+/// What Undo cannot take back is asked by the host though Shift is held.
+#[test]
+fn shift_never_skips_the_hosts_question_for_what_undo_cannot_take_back() {
+    let mut app = TestApp::<NotesApp>::new().unwrap();
+    app.invoke(Notes::ADD.with("Milk")).unwrap();
+    let mut app = app.reopen().unwrap();
+    hold_shift(&mut app, true);
+    app.harness().click_named("forget").unwrap();
+    app.settle();
+    assert!(app.asking().is_some(), "the person is asked first");
+    assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
+    hold_shift(&mut app, false);
 }

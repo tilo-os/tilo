@@ -395,25 +395,40 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
     }
 }
 
-/// Deleting a message of your own from its menu asks nothing: it goes
-/// at once, and the Undo under the composer brings it back through the
-/// history of the part it was in.
-#[test]
-fn deleting_your_own_message_asks_nothing_and_undo_brings_it_back() {
-    let (mut app, mut doc) = app_with_doc();
+/// A message of the person's own, sent in `#general`.
+fn send_own(app: &mut ChatApp, doc: &mut crate::testing::Room, text: &str) -> Id {
     app.active_channel = "c_general".into();
     app.focus = Focus::Main;
     app.thread_open = None;
-    crate::testing::write_draft(&mut app, &mut doc, "a slip of the keys");
-    app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
-    app.reload(&doc);
-    let mine = |doc: &crate::testing::Room| {
-        crate::testing::messages(doc, "c_general")
-            .into_iter()
-            .find(|message| message.text == "a slip of the keys")
-            .map(|message| message.id)
-    };
-    let id = mine(&doc).expect("the message was sent");
+    crate::testing::write_draft(app, doc, text);
+    app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(doc));
+    app.reload(doc);
+    own_message(doc, text).expect("the message was sent")
+}
+
+fn own_message(doc: &crate::testing::Room, text: &str) -> Option<Id> {
+    crate::testing::messages(doc, "c_general")
+        .into_iter()
+        .find(|message| message.text == text)
+        .map(|message| message.id)
+}
+
+fn offers_undo(app: &mut ChatApp, doc: &crate::testing::Room) -> bool {
+    app.reload(doc);
+    render_frame(app, 1440.0, 900.0);
+    app.semantic_hits()
+        .into_iter()
+        .any(|(_, hit, ..)| matches!(hit, Hit::UndoDelete))
+}
+
+/// Delete in a message's menu asks first, as Discord's does: the message
+/// stays until the person agrees. Once they do it goes, and the Undo under
+/// the composer brings it back through the history of its part.
+#[test]
+fn deleting_your_own_message_from_its_menu_asks_first_and_undo_brings_it_back() {
+    ui::widget::note_shift(false);
+    let (mut app, mut doc) = app_with_doc();
+    let id = send_own(&mut app, &mut doc, "a slip of the keys");
 
     activate_context_menu_action(
         &mut app,
@@ -421,25 +436,193 @@ fn deleting_your_own_message_asks_nothing_and_undo_brings_it_back() {
         MenuTarget::Message(id.clone()),
         MenuAction::DeleteMessage,
     );
-    let chain = app.chain.clone().expect("the window holds the messages");
     assert_eq!(
-        chain.dispatcher().take_asked().map(|asked| asked.len()),
-        Ok(0),
-        "deleting your own message asks nothing"
+        own_message(&doc, "a slip of the keys").as_ref(),
+        Some(&id),
+        "nothing goes before the person agrees"
     );
-    assert_eq!(mine(&doc), None, "the message goes at once");
-    app.reload(&doc);
-    render_frame(&mut app, 1280.0, 720.0);
+    app.confirm_asked(&mut doc);
+    assert_eq!(
+        own_message(&doc, "a slip of the keys"),
+        None,
+        "then it goes"
+    );
     assert!(
-        app.semantic_hits()
-            .into_iter()
-            .any(|(_, hit, ..)| matches!(hit, Hit::UndoDelete)),
+        offers_undo(&mut app, &doc),
         "Undo is offered under the composer"
     );
 
     app.on_hit(Hit::UndoDelete, &mut ui::widget::Edits::lend(&mut doc));
-    assert_eq!(mine(&doc), Some(id), "Undo brings the message back");
+    assert_eq!(
+        own_message(&doc, "a slip of the keys"),
+        Some(id),
+        "Undo brings the message back"
+    );
     assert!(app.deleted.borrow().is_none(), "and the offer is gone");
+}
+
+/// With Shift held, Delete in the menu goes at once, unasked, and Undo
+/// brings it back.
+#[test]
+fn shift_deletes_your_own_message_from_its_menu_at_once() {
+    let (mut app, mut doc) = app_with_doc();
+    let id = send_own(&mut app, &mut doc, "a slip of the keys");
+    ui::widget::note_shift(true);
+    activate_context_menu_action(
+        &mut app,
+        &mut doc,
+        MenuTarget::Message(id.clone()),
+        MenuAction::DeleteMessage,
+    );
+    ui::widget::note_shift(false);
+    let chain = app.chain.clone().expect("the window holds the messages");
+    assert_eq!(
+        chain.dispatcher().take_asked().map(|asked| asked.len()),
+        Ok(0),
+        "nobody is asked"
+    );
+    assert_eq!(
+        own_message(&doc, "a slip of the keys"),
+        None,
+        "it goes at once"
+    );
+    assert!(
+        offers_undo(&mut app, &doc),
+        "Undo is offered under the composer"
+    );
+    app.on_hit(Hit::UndoDelete, &mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(own_message(&doc, "a slip of the keys"), Some(id));
+}
+
+/// The menu row says which it will do: "Delete message…" while it asks
+/// first, "Delete message" while Shift is held and it goes at once.
+#[test]
+fn the_menus_delete_row_reads_as_it_will_act() {
+    let (mut app, mut doc) = app_with_doc();
+    let id = send_own(&mut app, &mut doc, "mine");
+    app.open_message_menu(id, Point::new(120.0, 120.0));
+    let row = |app: &ChatApp| {
+        let menu = app.menu.as_ref().expect("the menu is open");
+        let index = menu
+            .items
+            .iter()
+            .position(|action| *action == MenuAction::DeleteMessage)
+            .expect("Delete is offered");
+        menu.widget.items()[index]
+            .shown_label()
+            .map(std::borrow::Cow::into_owned)
+    };
+    ui::widget::note_shift(false);
+    assert_eq!(row(&app).as_deref(), Some("Delete message\u{2026}"));
+    ui::widget::note_shift(true);
+    assert_eq!(row(&app).as_deref(), Some("Delete message"));
+    ui::widget::note_shift(false);
+}
+
+/// The pointer over a message lifts its row and shows its bar: react,
+/// reply, edit (one's own) and More. Shift grows the quick actions, and
+/// its delete goes at once; Undo brings the message back.
+#[test]
+fn hovering_a_message_shows_its_bar_and_shift_its_quick_actions() {
+    ui::widget::note_shift(false);
+    let (mut app, mut doc) = app_with_doc();
+    let id = send_own(&mut app, &mut doc, "hover over me");
+    app.message_bar.settle_for_visual_review();
+    render_frame(&mut app, 1440.0, 900.0);
+    let row = app
+        .message_rows
+        .iter()
+        .find(|(_, row)| *row == id)
+        .map(|(rect, _)| *rect)
+        .expect("the message is painted");
+    let mut handled = false;
+    app.dispatch_event(
+        &ui::synthetic_input::cursor_moved(row.center().x, row.center().y),
+        1.0,
+        Modifiers::default(),
+        &mut ui::widget::Edits::lend(&mut doc),
+        &mut handled,
+    );
+    assert!(handled, "the hover repaints");
+    assert_eq!(app.hovered_message.as_ref(), Some(&id));
+    render_frame(&mut app, 1440.0, 900.0);
+    let bar = |app: &ChatApp| {
+        app.hits
+            .iter()
+            .filter_map(|(_, hit)| match hit {
+                Hit::MessageBar { msg, action } if *msg == id => Some(action.bar_key()),
+                Hit::MessageMore { msg } if *msg == id => Some("more"),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(bar(&app), ["react", "reply", "edit", "more"]);
+    let names: Vec<String> = app
+        .semantic_hits()
+        .into_iter()
+        .filter(|(_, hit, ..)| matches!(hit, Hit::MessageBar { .. } | Hit::MessageMore { .. }))
+        .map(|(_, _, name, ..)| name.text)
+        .collect();
+    assert_eq!(
+        names,
+        ["Add reaction", "Reply in thread", "Edit message", "More"]
+    );
+
+    ui::widget::note_shift(true);
+    render_frame(&mut app, 1440.0, 900.0);
+    assert_eq!(
+        bar(&app),
+        ["react", "reply", "edit", "pin", "copy", "delete", "more"]
+    );
+    app.on_hit(
+        Hit::MessageBar {
+            msg: id.clone(),
+            action: MenuAction::DeleteMessage,
+        },
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    ui::widget::note_shift(false);
+    assert_eq!(own_message(&doc, "hover over me"), None, "deleted at once");
+    assert!(offers_undo(&mut app, &doc), "Undo is offered");
+    app.on_hit(Hit::UndoDelete, &mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(own_message(&doc, "hover over me"), Some(id));
+}
+
+/// The bar's More opens the message's whole menu, as a right click does.
+#[test]
+fn the_bars_more_opens_the_messages_menu() {
+    ui::widget::note_shift(false);
+    let (mut app, mut doc) = app_with_doc();
+    let id = send_own(&mut app, &mut doc, "more please");
+    app.message_bar.settle_for_visual_review();
+    render_frame(&mut app, 1440.0, 900.0);
+    app.hovered_message = Some(id.clone());
+    render_frame(&mut app, 1440.0, 900.0);
+    let more = app
+        .hits
+        .iter()
+        .find(|(_, hit)| matches!(hit, Hit::MessageMore { msg } if *msg == id))
+        .map(|(rect, _)| *rect)
+        .expect("the bar shows More");
+    app.on_hit(
+        Hit::MessageMore { msg: id.clone() },
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    let menu = app.menu.as_ref().expect("the menu opens");
+    assert_eq!(menu.target, MenuTarget::Message(id));
+    assert_eq!(menu.items, MenuAction::for_message().to_vec());
+    // At the button, not where the pointer last was: its trailing edge on
+    // the button's, under it or (near the window's bottom) above it.
+    let at = menu.widget.get_rect();
+    assert!((at.x1 - more.x1).abs() < 1.0, "{at:?} ends at {more:?}");
+    assert!(
+        at.y0 >= more.y1 || at.y1 <= more.y0,
+        "{at:?} opens off {more:?}, not across it"
+    );
+    assert!(
+        (at.y0 - more.y1).abs() < 12.0 || (more.y0 - at.y1).abs() < 12.0,
+        "{at:?} stays at {more:?}"
+    );
 }
 
 #[test]
@@ -2571,7 +2754,7 @@ fn a_bridged_calls_guests_get_their_own_tiles_and_volume() {
         .into_iter()
         .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if id == "discord:1"))
         .expect("Dana has a tile of her own");
-    assert_eq!(dana.2.text, "Dana (via Discord): volume and mute for you");
+    assert_eq!(dana.2.text, "Dana, from Discord: volume and mute for you");
     assert!(
         app.semantic_hits()
             .iter()

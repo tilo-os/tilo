@@ -52,6 +52,40 @@
 (allow initrc_t useradd_t (process2 (nnp_transition nosuid_transition)))
 (allow initrc_t passwd_t (process2 (nnp_transition nosuid_transition)))
 
+; bootc (install_exec_t) belongs in install_t, the domain Fedora's policy
+; gives it when systemd or an admin runs it: install_t holds mac_admin, which
+; bootc needs to write labels the running policy does not know yet (an update
+; to an image with new types). Tilo's deployment services are scripts in
+; unconfined_service_t that run bootc, mostly under NoNewPrivileges, and
+; Fedora has no transition from there. bootc then probes mac_admin with chcon
+; on every call, `bootc status` included, is denied, copies itself to /tmp
+; and re-executes, and stays without it. install_t is unconfined like
+; unconfined_service_t; what the transition adds is mac_admin, for the one
+; family of programs the policy means to have it.
+(typetransition unconfined_service_t install_exec_t process install_t)
+(allow unconfined_service_t install_t (process (transition)))
+(allow unconfined_service_t install_t (process2 (nnp_transition nosuid_transition)))
+
+; systemd's TPM measurement log, /run/log/systemd/tpm2-measure.log, is what
+; makes the PCR extensions of each boot phase auditable. The initrd, with no
+; policy loaded yet, creates it as systemd-pcrphase measures enter-initrd;
+; after switch-root /run is relabelled and the file falls under /run/log's
+; syslogd_var_run_t, which systemd-tpm2-setup.service (init_t, it has no
+; domain of its own) may create but not write. The service then fails on
+; every boot of a measured UKI. A type of its own gives exactly the
+; measurement log to the two writers, not the volatile journal beside it.
+(type tilo_tpm2_measure_log_t)
+(roletype object_r tilo_tpm2_measure_log_t)
+(typeattributeset file_type (tilo_tpm2_measure_log_t))
+(typeattributeset non_auth_file_type (tilo_tpm2_measure_log_t))
+(typeattributeset non_security_file_type (tilo_tpm2_measure_log_t))
+(typeattributeset pidfile (tilo_tpm2_measure_log_t))
+(filecon "/run/log/systemd/tpm2-measure\.log" file (system_u object_r tilo_tpm2_measure_log_t ((s0) (s0))))
+(typetransition init_t syslogd_var_run_t file "tpm2-measure.log" tilo_tpm2_measure_log_t)
+(typetransition systemd_pcrextend_t syslogd_var_run_t file "tpm2-measure.log" tilo_tpm2_measure_log_t)
+(allow init_t tilo_tpm2_measure_log_t (file (create open getattr read write append lock ioctl)))
+(allow systemd_pcrextend_t tilo_tpm2_measure_log_t (file (create open getattr read write append lock ioctl setattr)))
+
 ; --- what fs does, grouped by subsystem -------------------------------------
 ; Types the domain attribute already grants (proc, sysfs, /dev/null and
 ; urandom, shared libraries, locale, its own process signals, unix stream

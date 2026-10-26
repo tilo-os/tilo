@@ -126,15 +126,19 @@ export async function fetchPersonProfile(origin, user, fetcher = (...args) => gl
 /**
  * Follow the pictures of the people in `/here`'s lines: `seen(lines)` with
  * each answer fetches the profile of anyone whose `profile_ms` moved
- * (`profileOf(user)`) and shows their picture (`show(user, url | null)`).
+ * (`profileOf(user)`) and shows their picture (`show(user, url | null)`)
+ * and the accounts elsewhere it names (`linked(user, [{service, handle}])`).
  */
-export function followPhotos({profileOf, show, own = () => null, onOwn = () => {}, onError = () => {}}) {
+export function followPhotos({profileOf, show, linked = () => {}, own = () => null, onOwn = () => {}, onError = () => {}}) {
   const stamps = new Map(); // user -> profile_ms fetched
   const shown = new Set(); // users with a picture shown
   async function refresh(user, stamp) {
     try {
       const profile = await profileOf(user);
       if (stamps.get(user) !== stamp) return;
+      const accounts = Array.isArray(profile?.linked) ? profile.linked : [];
+      linked(user, accounts.filter(link => typeof link?.service === 'string' && typeof link?.handle === 'string')
+        .map(({service, handle}) => ({service, handle})));
       // The person's own profile also carries what they say they are
       // doing, set on any of their devices.
       if (profile && user === own()) onOwn(profile);

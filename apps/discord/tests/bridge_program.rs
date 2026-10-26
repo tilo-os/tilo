@@ -520,8 +520,24 @@ fn pass() -> Vec<Step> {
                     ("discord_user", item("discord_user")),
                     ("user_name", item("user_name")),
                     ("display_name", item("display_name")),
+                    ("avatar", item("avatar")),
                 ],
             )],
+        ),
+        each(
+            "photos",
+            vec![
+                guild("fetch-photo", "fetch-asset", &[("op", item("op"))]),
+                guild(
+                    "set-link-photo",
+                    "set-link-photo",
+                    &[
+                        ("discord_user", item("discord_user")),
+                        ("avatar", item("avatar")),
+                        ("photo", plan_step("fetch-photo", "/data_url")),
+                    ],
+                ),
+            ],
         ),
         each("import_categories", {
             let mut body = vec![chat(

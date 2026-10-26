@@ -803,6 +803,7 @@ def animations(ctx, res):
     ctx.reset()
     ctx.new_terminal_window()
     ctx.settle(1.5)
+    evidence_mark, cpu_before = core.session_log_mark(ctx), core.cpu_ticks(ctx)
     display = ctx.facts.get("display") or {}
     hardware = bool(display.get("hardware"))
     software = (ctx.facts.get("renderer") or "").lower().startswith("software")
@@ -846,6 +847,8 @@ def animations(ctx, res):
         unseen += u
     problems += judge_switch_lines(switches, 2, b, hardware)
     where = f" [renderer: {ctx.facts.get('renderer')}]"
+    if problems:
+        where += core.frame_pacing_evidence(ctx, "W16", evidence_mark, cpu_before)
     expect(not problems, "; ".join(problems + unseen) + where)
     if unseen:
         raise Unobservable("; ".join(unseen) + where)

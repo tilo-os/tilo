@@ -455,11 +455,8 @@ impl ChatApp {
         let name = self.call_name(&p.user);
         let name_w =
             width_of(tr, &name, &theme.text(TextRole::Label)).min(Self::huddle_name_max(theme));
-        let muted = if p.mark().is_some() {
-            f64::from(sp.s1) + f64::from(theme.tokens.metrics.icon_sm)
-        } else {
-            0.0
-        };
+        let marks = u8::from(p.mark().is_some()) + u8::from(self.call_mark(&p.user).is_some());
+        let muted = f64::from(marks) * (f64::from(sp.s1) + f64::from(theme.tokens.metrics.icon_sm));
         face + f64::from(sp.s2) + name_w + muted + f64::from(sp.s2)
     }
 
@@ -700,7 +697,11 @@ impl ChatApp {
         let parts = self.huddle_participants();
         if let Some(featured) = parts.first() {
             let name = self.call_name(&featured.user);
-            Self::name_plate(scene, tf, tr, theme, v, &name, featured.mark());
+            let service = self.call_mark(&featured.user).map(|(mark, _)| mark);
+            Self::name_plate(scene, tf, tr, theme, v, &name, (featured.mark(), service));
+            if let Some(at) = self.plate_mark(tr, theme, v, featured) {
+                ChatApp::push_hit(hits, at, Hit::CallMark(featured.user.clone()));
+            }
             if !self.is_me(&featured.user) {
                 ChatApp::push_hit(hits, v, Hit::CallParticipant(featured.user.clone()));
             }
@@ -860,11 +861,9 @@ impl ChatApp {
                 &p.user,
             );
             let name_x = x + face + f64::from(sp.s2);
-            let muted_w = if p.mark().is_some() {
-                f64::from(sp.s1) + icon
-            } else {
-                0.0
-            };
+            let service = self.call_mark(&p.user).map(|(mark, _)| mark);
+            let marks = u8::from(p.mark().is_some()) + u8::from(service.is_some());
+            let muted_w = f64::from(marks) * (f64::from(sp.s1) + icon);
             let room = (x + w - f64::from(sp.s2) - muted_w - name_x).max(0.0);
             let name = elide(ctx.text, &self.call_name(&p.user), &style, room);
             let name_w = width_of(ctx.text, &name, &style);
@@ -877,8 +876,16 @@ impl ChatApp {
                 Rect::new(name_x, y, name_x + room, y + h),
                 room + 1.0,
             );
+            // Where a bridge carries them in from, as on their messages,
+            // then their muted microphone.
+            let mut ix = name_x + name_w + f64::from(sp.s1);
+            if let Some(service) = service {
+                let at = Rect::new(ix, cy - icon / 2.0, ix + icon, cy + icon / 2.0);
+                service.draw(scene, tf, at, theme.text_dim);
+                ChatApp::push_hit(hits, at, Hit::CallMark(p.user.clone()));
+                ix += icon + f64::from(sp.s1);
+            }
             if let Some(mark) = p.mark() {
-                let ix = name_x + name_w + f64::from(sp.s1);
                 mark.draw(
                     scene,
                     tf,
@@ -1134,7 +1141,7 @@ impl ChatApp {
             theme,
             host,
             &you,
-            self.call.muted.then_some(Icon::MicOff),
+            (self.call.muted.then_some(Icon::MicOff), None),
         );
         // Each other participant's tile opens how loud they play here.
         let tiles = match self.overlay_stage() {
@@ -1142,6 +1149,9 @@ impl ChatApp {
             CallStage::Share { strip, .. } => strip,
         };
         for (p, rect) in self.call_participants().iter().zip(&tiles).skip(1) {
+            if let Some(at) = self.plate_mark(tr, theme, *rect, p) {
+                ChatApp::push_hit(hits, at, Hit::CallMark(p.user.clone()));
+            }
             ChatApp::push_hit(hits, *rect, Hit::CallParticipant(p.user.clone()));
         }
         if let Some(note) = self.call_bridged_note(&self.call.channel) {
@@ -1414,7 +1424,8 @@ impl ChatApp {
     ) {
         self.draw_member_picture(scene, tf, tr, theme, rect, p);
         let name = self.call_name(&p.user);
-        Self::name_plate(scene, tf, tr, theme, rect, &name, p.mark());
+        let service = self.call_mark(&p.user).map(|(mark, _)| mark);
+        Self::name_plate(scene, tf, tr, theme, rect, &name, (p.mark(), service));
         if p.sharing {
             let side = ChipFace::height(theme);
             let inset = f64::from(theme.tokens.spacing.s2);
@@ -1480,18 +1491,16 @@ impl ChatApp {
         }
     }
 
-    /// The name plate at a tile's bottom-leading corner: the person's name
-    /// and its `mark` (a muted microphone while they are muted), on the
-    /// floating material over the media.
-    fn name_plate(
-        scene: &mut Scene,
-        tf: Affine,
+    /// Where a tile's name plate goes: the plate, the name as it fits, its
+    /// width, and the service mark after it (`service`), if any.
+    fn plate_layout(
         tr: &mut TextRenderer,
         theme: &Theme,
         tile: Rect,
         name: &str,
-        mark: Option<Icon>,
-    ) {
+        mark: bool,
+        service: bool,
+    ) -> (Rect, String, f64, Option<Rect>) {
         let sp = &theme.tokens.spacing;
         let local = theme.on_ground(ui::chrome::panel_ground(theme));
         let style = local.text(TextRole::Label);
@@ -1499,22 +1508,70 @@ impl ChatApp {
         let inset = f64::from(sp.s2);
         let pad_x = f64::from(sp.s2);
         let icon_side = f64::from(theme.tokens.metrics.icon_sm);
-        let icon_w = if mark.is_some() {
-            icon_side + f64::from(sp.s1)
-        } else {
-            0.0
-        };
-        let max_name = (tile.width() - 2.0 * inset - 2.0 * pad_x - icon_w).max(0.0);
+        let icon_w = icon_side + f64::from(sp.s1);
+        let icons = f64::from(u8::from(mark) + u8::from(service)) * icon_w;
+        let max_name = (tile.width() - 2.0 * inset - 2.0 * pad_x - icons).max(0.0);
         let shown = elide(tr, name, &style, max_name);
         let name_w = width_of(tr, &shown, &style);
         let plate = Rect::new(
             tile.x0 + inset,
             tile.y1 - inset - plate_h,
-            tile.x0 + inset + 2.0 * pad_x + icon_w + name_w,
+            tile.x0 + inset + 2.0 * pad_x + icons + name_w,
             tile.y1 - inset,
         );
+        let service = service.then(|| {
+            let x = plate.x1 - pad_x - icon_side;
+            Rect::new(
+                x,
+                plate.center().y - icon_side / 2.0,
+                x + icon_side,
+                plate.center().y + icon_side / 2.0,
+            )
+        });
+        (plate, shown, name_w, service)
+    }
+
+    /// Where `user`'s service mark sits on `tile`'s name plate, if they
+    /// have one, for its tip.
+    fn plate_mark(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        tile: Rect,
+        p: &Participant,
+    ) -> Option<Rect> {
+        self.call_mark(&p.user)?;
+        let name = self.call_name(&p.user);
+        Self::plate_layout(tr, theme, tile, &name, p.mark().is_some(), true).3
+    }
+
+    /// The name plate at a tile's bottom-leading corner: the person's name
+    /// and its `mark` (a muted microphone while they are muted), then the
+    /// mark of the service a bridge carries them in from, on the floating
+    /// material over the media.
+    fn name_plate(
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        tile: Rect,
+        name: &str,
+        (mark, service): (Option<Icon>, Option<ui::icons::ServiceMark>),
+    ) {
+        let sp = &theme.tokens.spacing;
+        let local = theme.on_ground(ui::chrome::panel_ground(theme));
+        let style = local.text(TextRole::Label);
+        let plate_h = plate_height(theme);
+        let pad_x = f64::from(sp.s2);
+        let icon_side = f64::from(theme.tokens.metrics.icon_sm);
+        let icon_w = icon_side + f64::from(sp.s1);
+        let (plate, shown, name_w, service_rect) =
+            Self::plate_layout(tr, theme, tile, name, mark.is_some(), service.is_some());
         let shape = RoundedRect::from_rect(plate, plate_h / 2.0);
         paint_material(scene, tf, &shape, Material::Floating, theme);
+        if let (Some(service), Some(rect)) = (service, service_rect) {
+            service.draw(scene, tf, rect, local.text_dim);
+        }
         let mut x = plate.x0 + pad_x;
         if let Some(mark) = mark {
             mark.draw(

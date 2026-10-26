@@ -289,6 +289,7 @@ fn fetch_asset_reads_at_most_what_chat_holds() {
                 url: url.into(),
                 max_bytes,
                 attachment: None,
+                inline: false,
             },
         })
     };
@@ -619,6 +620,60 @@ fn avatars_are_remembered_by_hash() {
         }))
         .is_err()
     );
+}
+
+fn set_photo(bot: &mut Replica<Guild>, avatar: &str, photo: &str) -> Result<(), String> {
+    bot.apply(Guild::SET_LINK_PHOTO.with(guild::SetLinkPhoto {
+        discord_user: "d_ada".into(),
+        avatar: avatar.into(),
+        photo: photo.into(),
+    }))
+    .map(|_| ())
+    .map_err(|refusal| format!("{refusal:?}"))
+}
+
+fn photo_of(bot: &Replica<Guild>) -> (Option<String>, Option<String>) {
+    let guild = bot.state().unwrap();
+    let link = guild.links.find(&Id::from_raw("d_ada")).unwrap();
+    (link.photo.clone(), link.photo_avatar.clone())
+}
+
+#[test]
+fn a_linked_avatar_is_kept_as_a_picture_of_the_hash_it_is_of() {
+    let mut bot = link_ada(connected());
+    const PNG: &str = "data:image/png;base64,iVBORw0KGgo=";
+    assert!(set_photo(&mut bot, "a1b2", "https://cdn.discordapp.com/x.png").is_err());
+    assert!(set_photo(&mut bot, "a1b2", "data:image/gif;base64,R0lG").is_err());
+    let long = format!("data:image/png;base64,{}", "A".repeat(MAX_PHOTO_CHARS));
+    assert!(
+        set_photo(&mut bot, "a1b2", &long).is_err(),
+        "too long for a profile"
+    );
+    set_photo(&mut bot, "stale", PNG).unwrap();
+    assert_eq!(
+        photo_of(&bot),
+        (None, None),
+        "not the avatar the link holds"
+    );
+    set_photo(&mut bot, "a1b2", PNG).unwrap();
+    assert_eq!(photo_of(&bot), (Some(PNG.into()), Some("a1b2".into())));
+    let mut ada = bot.fork().as_author(ADA);
+    assert!(set_photo(&mut ada, "a1b2", PNG).is_err(), "only the bridge");
+
+    // A new avatar keeps the old picture until the new one is fetched; no
+    // avatar drops it.
+    let rename = |avatar: &str| {
+        Guild::RENAME_LINK.with(guild::RenameLink {
+            discord_user: "d_ada".into(),
+            user_name: "d_ada.name".into(),
+            display_name: None,
+            avatar: Some(avatar.into()),
+        })
+    };
+    bot.apply(rename("c3d4")).unwrap();
+    assert_eq!(photo_of(&bot), (Some(PNG.into()), Some("a1b2".into())));
+    bot.apply(rename("")).unwrap();
+    assert_eq!(photo_of(&bot), (None, None));
 }
 
 #[test]
