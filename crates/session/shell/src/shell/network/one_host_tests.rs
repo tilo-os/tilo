@@ -1164,6 +1164,95 @@ impl Device {
         super::embedded_host::host_state_root(&self.dir.join("state.json"))
     }
 
+    /// Where this device stands on `room`, for a wait that timed out: its
+    /// native owner, whether it holds the room, the note as the notes app
+    /// here has it (and the changes it still lacks), the note's writes
+    /// waiting in its inbound documents, what its own host retains of the
+    /// room, its tabs, and the dials it made.
+    pub(crate) fn catch_up(&self, room: RoomId) -> String {
+        let Some(net) = self.net.as_ref() else {
+            return format!("{}: offline", self.label);
+        };
+        let status = net.native_owner_status();
+        let owner = format!(
+            "{}{}",
+            status.describe(),
+            net.open_failure()
+                .map(|failure| format!(" ({failure})"))
+                .unwrap_or_default()
+        );
+        let (holds, sealed) = {
+            let tree = self.tree.read();
+            (
+                tree.holds_room(room) && !tree.is_joining(room),
+                tree.seals_records(room),
+            )
+        };
+        let access = match self.note_access(room) {
+            ChannelAccess::Ready(_) => "ready".to_owned(),
+            other => format!("{other:?}"),
+        };
+        let (text, heads, missing) = {
+            let mut notes = self.notes.lock().unwrap();
+            notes.get_mut(&room).map_or((None, 0, 0), |document| {
+                let text = document
+                    .get(automerge::ROOT, NOTE_TEXT)
+                    .ok()
+                    .flatten()
+                    .and_then(|(value, _)| value.into_string().ok());
+                (
+                    text,
+                    document.get_heads().len(),
+                    document.get_missing_deps(&[]).len(),
+                )
+            })
+        };
+        let writes = self.note_writes(room).len();
+        let room_id = room.to_string();
+        let waiting = net
+            .inbound_documents_handle()
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|document| document.cluster_id == room_id && document.record_id == NOTE_RECORD)
+            .count();
+        let retained = net.room_host().map_or_else(
+            || "no host".to_owned(),
+            |host| {
+                let workspace = tilo_relay::room_workspace_id(&room_id).unwrap();
+                let runtime = net.runtime_handle().unwrap();
+                match runtime.block_on(host.room_records().retained(workspace)) {
+                    Ok(bodies) => format!("{} bodies, {} note writes", bodies.len(), {
+                        bodies
+                            .iter()
+                            .filter(|body| {
+                                matches!(
+                                    postcard::from_bytes::<crate::network::protocol::NeighbourMsg>(&body.body),
+                                    Ok(crate::network::protocol::NeighbourMsg::AppDocument { app_id, .. })
+                                        if app_id == NOTES
+                                )
+                            })
+                            .count()
+                    }),
+                    Err(error) => error,
+                }
+            },
+        );
+        let tabs: Vec<u64> = self.tabs(room).into_iter().map(|(tab, _)| tab).collect();
+        let dials = net.wire_tally().map(|tally| {
+            let counts = tally.snapshot();
+            let count = |kind| counts.get(kind).copied().unwrap_or(0);
+            (count("NativeGovernorDial"), count("NativeHostDial"))
+        });
+        format!(
+            "{}: owner {owner}; holds the room {holds}, sealed {sealed}; note channel {access}; \
+             note {text:?} ({heads} heads, {missing} changes missing, {writes} writes opened, \
+             {waiting} waiting); own host retains {retained}; tabs {tabs:?}; \
+             dials (governor, other host) {dials:?}",
+            self.label
+        )
+    }
+
     /// Open a connection to `other`, as two of a person's devices that find
     /// each other on the network do.
     pub(crate) fn reach(&self, other: &Self) {
@@ -1187,7 +1276,34 @@ fn typed() -> automerge::transaction::CommitOptions {
 /// Run `devices`' loops until `probe` answers, waking only when one of
 /// them is woken or reaches a deadline of its own loop; fail at the shared
 /// hang bound naming `what`.
-pub(crate) fn until<T>(devices: &[&Device], what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
+pub(crate) fn until<T>(devices: &[&Device], what: &str, probe: impl FnMut() -> Option<T>) -> T {
+    until_or_say(devices, what, probe, String::new)
+}
+
+/// [`until`] for a device catching up on `room`: at the hang bound it
+/// says where each of `devices` stands on the room, so a timeout names
+/// what is missing.
+pub(crate) fn until_caught_up<T>(
+    devices: &[&Device],
+    what: &str,
+    room: RoomId,
+    probe: impl FnMut() -> Option<T>,
+) -> T {
+    until_or_say(devices, what, probe, || {
+        devices
+            .iter()
+            .map(|device| format!("\n  {}", device.catch_up(room)))
+            .collect()
+    })
+}
+
+/// [`until`], saying `standing` when it times out.
+fn until_or_say<T>(
+    devices: &[&Device],
+    what: &str,
+    mut probe: impl FnMut() -> Option<T>,
+    standing: impl Fn() -> String,
+) -> T {
     let bound = tilo_test_env::hang_deadline();
     let wakes = &devices
         .first()
@@ -1201,7 +1317,11 @@ pub(crate) fn until<T>(devices: &[&Device], what: &str, mut probe: impl FnMut() 
         if let Some(value) = probe() {
             return value;
         }
-        assert!(Instant::now() < bound, "timed out waiting for {what}");
+        assert!(
+            Instant::now() < bound,
+            "timed out waiting for {what}{}",
+            standing()
+        );
         let next = devices
             .iter()
             .filter_map(|device| device.next_deadline())

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use tilo_user_identity::DeviceCapabilities;
 
-use super::{Device, Person, Wakes, hosted_workspace, scratch, until};
+use super::{Device, Person, Wakes, hosted_workspace, scratch, until, until_caught_up};
 
 #[test]
 #[serial_test::serial]
@@ -116,7 +116,7 @@ fn a_persons_second_device_holds_the_first_devices_workspace_and_catches_up_afte
 
     // It comes back and catches up from the desktop host's retained log.
     second.come_back();
-    until(&[&first, &second], "the laptop to catch up", || {
+    until_caught_up(&[&first, &second], "the laptop to catch up", room, || {
         (second.holds(room)
             && second.note(room).as_deref() == Some("Roadmap reviewed while the laptop was away")
             && second.shows_tab(room, while_away)
