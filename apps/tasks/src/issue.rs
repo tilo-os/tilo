@@ -3,7 +3,9 @@
 //!
 //! Each part that shows the issue's state is built again only when that
 //! part changes, so typing in the title or the description never rebuilds
-//! the editor under the caret.
+//! the editor under the caret. The page draws no Back of its own: the
+//! window bar's Back (and a narrow window's) closes it, and the bar's
+//! location names it.
 
 use crate::model::{
     ConfirmationState, Issue, Message, MessageKind, ModelChoice, RunPhase, Status, Tracker,
@@ -30,7 +32,6 @@ pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav) -> Element {
             Box::new(
                 Column::new()
                     .with_rhythm(ui::tokens::Rhythm::Group)
-                    .push(back(&nav))
                     .push(Box::new(
                         EmptyState::new("tasks-issue-gone-title")
                             .with_message("tasks-issue-gone-message")
@@ -39,15 +40,6 @@ pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav) -> Element {
             )
         }
     })
-}
-
-fn back(nav: &Nav) -> Element {
-    let nav = nav.clone();
-    Box::new(
-        Button::new("tasks-issue-back", "tasks-back")
-            .with_icon(ui::icons::Icon::ChevronLeft)
-            .on_view(move || nav.open.set(None)),
-    )
 }
 
 fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
@@ -59,7 +51,6 @@ fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
     let header = Row::new()
         .no_wrap()
         .with_rhythm(ui::tokens::Rhythm::Related)
-        .push(back(nav))
         .push(Box::new(
             Text::from_state(&number, |number| reference(*number))
                 .with_role(TextRole::Title)

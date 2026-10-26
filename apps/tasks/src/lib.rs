@@ -9,6 +9,12 @@
 //! the issue's actions, approved, steered and answered from the issue page.
 //!
 //! Storage, sync, history, undo, search and permissions are the framework's.
+//!
+//! The sidebar is the tracker read the way a person works through it: every
+//! issue, the ones assigned to them, the ones nobody has taken, the ones an
+//! agent is working on, and one row per label in use. The window bar holds
+//! the two places (Issues, Board) as its views and names the open issue as
+//! its location, so the window draws no title row and no Back of its own.
 
 /// The application id.
 pub const APP_ID: &str = crate::model::APP_ID;
@@ -16,11 +22,15 @@ pub const APP_ID: &str = crate::model::APP_ID;
 pub const APP_TITLE: &str = "Tasks";
 
 mod board;
+mod filter;
 mod issue;
 mod list;
 pub mod locales;
 pub mod model;
 mod sample;
+mod window_bar;
+
+pub(crate) use filter::Filter;
 
 use ui::i18n::I18nManager;
 use ui::prelude::*;
@@ -39,10 +49,26 @@ pub enum Place {
 }
 
 impl Place {
-    const fn key(self) -> &'static str {
+    /// The places the window shows, in the bar's order.
+    pub(crate) const ALL: [Self; 2] = [Self::List, Self::Board];
+
+    pub(crate) const fn key(self) -> &'static str {
         match self {
             Self::List => "list",
             Self::Board => "board",
+        }
+    }
+
+    /// The place a bar view's key names, if it names one.
+    pub(crate) fn of(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|place| place.key() == key)
+    }
+
+    /// The place as the window bar and the bar's view switcher name it.
+    pub(crate) fn title(self) -> String {
+        match self {
+            Self::List => tr("tasks-place-list"),
+            Self::Board => tr("tasks-place-board"),
         }
     }
 }
@@ -52,11 +78,20 @@ impl Place {
 pub(crate) struct Nav {
     pub(crate) place: LocalState<Place>,
     pub(crate) open: LocalState<Option<Id>>,
+    /// The sidebar row chosen: a [`Filter`]'s key, or none for everything.
+    pub(crate) filter: LocalState<Option<String>>,
 }
 
 impl Nav {
     pub(crate) fn open(&self, issue: &Id) {
         self.open.set(Some(issue.clone()));
+    }
+
+    /// The filter the sidebar has chosen.
+    pub(crate) fn filter(&self) -> Filter {
+        self.filter
+            .with(|key| key.as_deref().and_then(Filter::of))
+            .unwrap_or_default()
     }
 }
 
@@ -83,14 +118,21 @@ impl ResourceApp for App {
         sample::SCENARIOS
     }
 
-    fn scenario(name: Option<&str>) -> Vec<Invoke<Tracker>> {
-        sample::scenario(name)
+    /// A capture cannot make six issues and label them: the scenario stages
+    /// the tracker it reached as the record's start, and its views after.
+    fn fixture(fixture: &mut ui::framework::Fixture<Tracker>) {
+        let Some(scenario) = fixture.scenario() else {
+            return;
+        };
+        let _ = scenario;
+        fixture.start(sample::tracker(fixture.person()));
     }
 
     fn view(cx: &mut ViewCx<Tracker>) -> Element {
         let nav = Nav {
             place: cx.local(Place::List),
             open: cx.local(None),
+            filter: cx.local(None),
         };
         let opener = nav.clone();
         cx.on_open_item(move |issue| {
@@ -112,32 +154,31 @@ impl ResourceApp for App {
             Ok::<(), Refusal>(())
         });
         let stage = nav.clone();
-        cx.on_stage(move |scenario| sample::stage(scenario, &stage, &staged.get()));
+        let staged_for_stage = staged.clone();
+        cx.on_stage(move |scenario| sample::stage(scenario, &stage, &staged_for_stage.get()));
 
-        let selection = cx.local(Some(Place::List.key().to_owned()));
+        // The sidebar narrows the tracker, and is built again as the
+        // tracker gains issues and labels; the views switch its places.
         let chosen = nav.clone();
-        let sidebar = ui::widget::NavList::new(vec![NavSection::untitled(
-            "places",
-            vec![
-                NavItem::new(Place::List.key(), tr("tasks-place-list"))
-                    .icon(ui::icons::Icon::ListTree),
-                NavItem::new(Place::Board.key(), tr("tasks-place-board"))
-                    .icon(ui::icons::Icon::LayoutGrid),
-            ],
-        )])
-        .with_id("tasks.places")
-        // Named for what it lists, not the app: the sidebar's heading and
-        // the window's tab already say "Tasks".
-        .with_accessible_name(tr("tasks-places"))
-        .with_semantic_key("tasks.places")
-        .bind_selection(&selection)
-        .on_select(move |key| {
-            chosen.open.set(None);
-            chosen.place.set(if key == Place::Board.key() {
-                Place::Board
-            } else {
-                Place::List
-            });
+        let selection = nav.filter.clone();
+        let me = cx.me().map(str::to_owned);
+        let sidebar = cx.switch(&staged, move |_cx, tracker| {
+            let chosen = chosen.clone();
+            Box::new(
+                ui::widget::NavList::new(sidebar_sections(tracker, me.as_deref()))
+                    .with_id("tasks.filters")
+                    // Named for what it narrows, not the app: the sidebar's
+                    // heading and the window's tab already say "Tasks".
+                    .with_accessible_name(tr("tasks-filters"))
+                    .with_semantic_key("tasks.filters")
+                    .bind_selection(&selection)
+                    .on_select(move |key| {
+                        chosen.open.set(None);
+                        chosen
+                            .filter
+                            .set(Filter::of(&key).map(|filter| filter.key()));
+                    }),
+            ) as Element
         });
 
         let content_nav = nav.clone();
@@ -152,17 +193,62 @@ impl ResourceApp for App {
             })
         });
 
-        Box::new(
-            ui::widget::NavShell::new()
-                .content_kind(ui::widget::ContentKind::Page)
-                .with_id("tasks.shell")
-                .mode(ui::widget::NavMode::Push)
-                .with_pane_state(&cx.local(ui::widget::NavPane::Content))
-                .sidebar(Box::new(sidebar))
-                .sidebar_header(tr("tasks-title"), Vec::new())
-                .content(content),
-        )
+        let (back, closer) = (nav.clone(), nav.clone());
+        let shell = ui::widget::NavShell::new()
+            .content_kind(ui::widget::ContentKind::Page)
+            .with_id("tasks.shell")
+            .mode(ui::widget::NavMode::Push)
+            .with_window_toolbar()
+            .with_pane_state(&cx.local(ui::widget::NavPane::Content))
+            .sidebar(sidebar)
+            .sidebar_header(tr("tasks-title"), Vec::new())
+            .content(content)
+            // The window bar's Back closes the open issue, and a narrow
+            // window's own Back does too.
+            .on_back(
+                move || back.open.with(Option::is_some),
+                move || closer.open.set(None),
+            );
+        Box::new(window_bar::TasksWindow::new(shell, nav, staged))
     }
+}
+
+/// The sidebar's rows: what narrows the tracker, and the labels it carries.
+fn sidebar_sections(tracker: &Tracker, me: Option<&str>) -> Vec<NavSection> {
+    let filters = Filter::ALL
+        .into_iter()
+        .map(|filter| {
+            let count = tracker
+                .issues
+                .values()
+                .filter(|issue| filter.matches(issue, me))
+                .count();
+            NavItem::new(filter.key(), filter.title())
+                .icon(filter.icon())
+                .count(u32::try_from(count).unwrap_or(u32::MAX))
+                .without_actions()
+        })
+        .collect();
+    let mut sections = vec![NavSection::untitled("filters", filters)];
+    let labels: Vec<NavItem> = filter::labels(tracker)
+        .into_iter()
+        .map(|label| {
+            let filter = Filter::Label(label.clone());
+            let count = tracker
+                .issues
+                .values()
+                .filter(|issue| issue.labels.iter().any(|carried| *carried == label))
+                .count();
+            NavItem::new(filter.key(), label)
+                .icon(ui::icons::Icon::Tag)
+                .count(u32::try_from(count).unwrap_or(u32::MAX))
+                .without_actions()
+        })
+        .collect();
+    if !labels.is_empty() {
+        sections.push(NavSection::untitled("labels", labels));
+    }
+    sections
 }
 
 /// A row to create an issue: its title, then Enter or the button.

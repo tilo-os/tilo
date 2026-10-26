@@ -276,6 +276,10 @@ struct Version<R: Resource> {
 /// the view is built.
 pub struct Fixture<R: Resource> {
     scenario: Option<String>,
+    /// The participant the capture's window reads as
+    /// ([`RecordEnv::me`](super::RecordEnv::me)), for a scene with
+    /// something of their own in it.
+    person: String,
     values: HashMap<TypeId, Rc<dyn Any>>,
     /// What the record starts with, written before the versions.
     start: Option<Start>,
@@ -289,9 +293,14 @@ pub struct Fixture<R: Resource> {
 type Start = Box<dyn Fn(&mut Doc) -> Result<(), String>>;
 
 impl<R: Resource> Fixture<R> {
-    pub(crate) fn new(scenario: Option<&str>, content: Option<tilo_content::ContentStore>) -> Self {
+    pub(crate) fn new(
+        scenario: Option<&str>,
+        person: &str,
+        content: Option<tilo_content::ContentStore>,
+    ) -> Self {
         Self {
             scenario: scenario.map(str::to_owned),
+            person: person.to_owned(),
             values: HashMap::new(),
             start: None,
             history: Vec::new(),
@@ -304,6 +313,14 @@ impl<R: Resource> Fixture<R> {
     /// The scenario being captured; `None` for a plain `--shots`.
     pub fn scenario(&self) -> Option<&str> {
         self.scenario.as_deref()
+    }
+
+    /// Who the capture's window is for: the participant the view reads as
+    /// its own ([`RecordEnv::me`](super::RecordEnv::me)). A scene that holds
+    /// something of the person's own — a seat at the table, an issue
+    /// assigned to them — stages it for them.
+    pub fn person(&self) -> &str {
+        &self.person
     }
 
     /// Stand `value` in for a live source: the views and surfaces of this

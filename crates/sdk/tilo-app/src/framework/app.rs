@@ -1084,7 +1084,8 @@ fn prepare_capture<A: ResourceApp>(
     context: &mut HostContext,
     scenario: Option<&str>,
 ) -> Result<Run, LaunchError> {
-    let mut fixture = Fixture::<A::Resource>::new(scenario, context.content().cloned());
+    let mut fixture =
+        Fixture::<A::Resource>::new(scenario, &context.author().0, context.content().cloned());
     A::fixture(&mut fixture);
     if context.content().is_none()
         && let Some(content) = fixture.lent_content()
