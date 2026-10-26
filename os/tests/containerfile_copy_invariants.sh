@@ -303,7 +303,9 @@ containerfile="$repo/os/Containerfile"
 # tilo-clock-floor, its service, timer and shutdown service keep the clock
 # floor PID 1 starts from at chrony's authenticated time: four payload rows
 # riding existing COPY instructions.
-expected_contract=918897fceb88645bf39bec64dd0be8da30091de8d631db66dfcc6265ce4f27fc
+# tilo-authselect-unchanged rides the libexec COPY and the authselect-apply-changes
+# drop-in that uses it is one payload row: an unchanged boot skips authselect.
+expected_contract=5fdf74748f3446ed4b0d914ef102b358547470862c012e8decc9dd9d11e5b4d5
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

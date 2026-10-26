@@ -114,6 +114,10 @@ COPY \
     /usr/lib/systemd/system/
 COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf \
     /usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf
+# authselect-apply-changes skips a boot on which nothing it applies from changed, instead
+# of holding the greeter for a run that changes nothing (tilo-authselect-unchanged).
+COPY os/usr/lib/systemd/system/authselect-apply-changes.service.d/10-tilo-skip-unchanged.conf \
+    /usr/lib/systemd/system/authselect-apply-changes.service.d/10-tilo-skip-unchanged.conf
 COPY os/usr/lib/NetworkManager/conf.d/20-tilo-wake.conf \
     /usr/lib/NetworkManager/conf.d/20-tilo-wake.conf
 COPY os/usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf \
@@ -273,6 +277,7 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-session-recovery \
     os/usr/libexec/tilo-cage-session \
     os/usr/libexec/tilo-clock-floor \
+    os/usr/libexec/tilo-authselect-unchanged \
     /usr/libexec/
 # The graphical-session user target. (`systemctl --global enable` further down
 # resolves each unit file at build time, so a unit that was never copied in
