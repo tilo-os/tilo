@@ -135,6 +135,7 @@ pub fn offered(host: &Host, resource: &ResourceRef) -> Rc<[RowAction]> {
                     destructive: action.role.as_deref() == Some("destructive"),
                     args: Vec::new(),
                     on: None,
+                    toggles: action.toggles.clone(),
                 },
             )
         })
@@ -203,6 +204,7 @@ pub fn offered_in(host: &Host, item: &ResourceRef, owner: &ResourceRef) -> Rc<[R
                     destructive: action.role.as_deref() == Some("destructive"),
                     args: vec![(second.name.clone(), item.id_string())],
                     on: None,
+                    toggles: None,
                 });
             }
         }
@@ -226,6 +228,7 @@ pub fn primary(host: &Host, resource: &ResourceRef) -> Option<RowAction> {
         destructive: false,
         args: Vec::new(),
         on: None,
+        toggles: None,
     };
     Some(presented(host, &action, resource, base))
 }
@@ -245,6 +248,7 @@ pub fn package_primary(meta: &Meta) -> Option<RowAction> {
         destructive: false,
         args: Vec::new(),
         on: None,
+        toggles: None,
     })
 }
 

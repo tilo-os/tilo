@@ -389,6 +389,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                     role: None,
                     scenario: true,
                     present: None,
+                    toggles: None,
                 });
                 meta.scenarios.push(ScenarioMeta {
                     id: c.id.clone(),
@@ -461,6 +462,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                     role: c.present.role.clone(),
                     scenario: false,
                     present: c.present.view.clone(),
+                    toggles: toggled_field(env, a, &c.params),
                 });
                 if let Some(v) = env.callables.iter().find(|v| {
                     v.own && v.kind == CKind::View && Some(&v.id) == c.present.view.as_ref()
@@ -645,4 +647,22 @@ fn is_ui_head(env: &Env, e: &ast::Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// The id of the subject's `Bool` field an action's `on:` names (`on: n.pinned`, `n` its first
+/// parameter): the state it toggles. `None` for any other `on:`, or none.
+fn toggled_field(env: &Env, action: &ast::ActionDecl, params: &[ParamInfo]) -> Option<String> {
+    let on = action.opts.iter().find(|opt| opt.name.name == "on")?;
+    let ast::ExprKind::Field { base, name } = &on.value.kind else {
+        return None;
+    };
+    let ast::ExprKind::Ident(subject) = &base.kind else {
+        return None;
+    };
+    let first = params.first().filter(|first| first.name == *subject)?;
+    let Ty::Record(key) = &first.ty else {
+        return None;
+    };
+    let field = env.type_info(key)?.field(&name.name)?;
+    (field.ty == Ty::Bool).then(|| field.id.clone())
 }

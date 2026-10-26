@@ -777,17 +777,38 @@ fn without_frame_buttons(node: &UiNode) -> UiNode {
     node
 }
 
-/// The actions of `actions` a header offers beside `frame`: those the content does not already
-/// show as its own buttons, so no action stands twice in one window.
-fn outside(actions: &[RowAction], frame: &UiNode) -> Rc<[RowAction]> {
+/// The actions of `actions` on `subject` a header offers beside `frame`: those the content does
+/// not already show, as its own buttons or as a control bound to the state an action toggles
+/// (a "Done" switch for "Check"), so no action stands twice in one window.
+fn outside(actions: &[RowAction], frame: &UiNode, subject: &ResourceRef) -> Rc<[RowAction]> {
     let mut shown = Vec::new();
     content_buttons(frame, &mut shown);
+    let mut bound = Vec::new();
+    bound_fields(frame, subject, &mut bound);
     actions
         .iter()
         .filter(|action| !shown.contains(&action.label.as_str()))
+        .filter(|action| {
+            action
+                .toggles
+                .as_ref()
+                .is_none_or(|field| !bound.contains(&field))
+        })
         .cloned()
         .collect::<Vec<_>>()
         .into()
+}
+
+/// The fields of `subject` that controls in `node` are bound to.
+fn bound_fields<'a>(node: &'a UiNode, subject: &ResourceRef, out: &mut Vec<&'a String>) {
+    if let Some((target, field)) = node.binding.as_ref().and_then(|binding| binding.field())
+        && target == subject
+    {
+        out.push(field);
+    }
+    for child in &node.children {
+        bound_fields(child, subject, out);
+    }
 }
 
 fn slot(element: Element, fit: Fit) -> Slot {
@@ -1589,7 +1610,7 @@ impl Window {
             let mut page = content_page(&frame);
             let titled = frame.kind == "document" && mark_field_roles(&host, &mut page);
             mark_cards(&host, &mut page);
-            let root_actions = outside(&root_actions, &frame);
+            let root_actions = outside(&root_actions, &frame, &root_target);
             let signature = format!(
                 "{:?}",
                 root_actions
@@ -1676,6 +1697,7 @@ impl Window {
                 let actions = outside(
                     &describe::offered_in(&host, &target, &root_target),
                     detail_frame,
+                    &target,
                 );
                 let signature = format!(
                     "{:?}",

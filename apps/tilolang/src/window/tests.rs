@@ -1020,12 +1020,51 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
         labels(&offered)
     );
     let frame = frame_of(&room.window.root_tree().unwrap()).unwrap().clone();
-    let header = outside(&offered, &frame);
+    let header = outside(&offered, &frame, &target);
     assert!(
         !labels(&header).contains(&"Increment".to_owned())
             && !labels(&header).contains(&"Decrement".to_owned()),
         "the counter's buttons are its content's: {:?}",
         labels(&header)
+    );
+}
+
+// One control per action: an item's "Done" switch in its window is how it is checked there, so
+// the header does not offer "Check" beside it. The action stays the item's, on the door and in
+// its row's menu.
+#[test]
+fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() {
+    let room = Room::seeded("todo");
+    let host = room.window.current_host().unwrap();
+    let item = room
+        .window
+        .detail_target()
+        .cloned()
+        .expect("the scenario's item is shown");
+    let list = room.window.root.as_ref().unwrap().target.clone();
+    let offered = describe::offered_in(&host, &item, &list);
+    let check = offered
+        .iter()
+        .find(|action| action.label == "Check")
+        .expect("the item offers Check");
+    assert!(check.toggles.is_some(), "Check says the state it toggles");
+    let remove = offered
+        .iter()
+        .find(|action| action.destructive)
+        .expect("the list offers to remove the item");
+    let header = room
+        .window
+        .headers
+        .get("content")
+        .cloned()
+        .expect("the item's window has a header");
+    assert!(
+        !header.contains(&format!("{:?}", check.action)),
+        "the Done switch stands for Check: {header}"
+    );
+    assert!(
+        header.contains(&format!("{:?}", remove.action)),
+        "the rest of the item's actions stay: {header}"
     );
 }
 
