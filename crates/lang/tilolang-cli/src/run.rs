@@ -31,6 +31,8 @@ pub struct RunOptions {
     /// How many sessions (people) share the workspace.
     pub peers: usize,
     pub headless: bool,
+    /// Render with lavapipe only, never this machine's GPU (`nested-session.sh --software`).
+    pub software: bool,
     /// The sessions' state (default: the tool's state directory).
     pub state: Option<PathBuf>,
     /// The Tilo checkout whose nested session runs the apps.
@@ -305,6 +307,9 @@ fn session_command(
     }
     if options.headless {
         command.arg("--headless");
+    }
+    if options.software {
+        command.arg("--software");
     }
     command
 }
