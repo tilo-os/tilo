@@ -183,9 +183,8 @@ impl PrintCentre {
     /// waiting for the person when somebody does — and what that row's Try
     /// again asks for.
     pub(super) fn tell(&mut self, notice: OperationNotice) {
-        let retry = notice.retry.clone();
         if let ui::attention::Published::Waiting(item) = ui::attention::publish(notice.notice())
-            && let Some(retry) = retry
+            && let Some(retry) = notice.retry
         {
             self.pending_retries.insert(item, retry);
         }
@@ -200,16 +199,13 @@ impl PrintCentre {
             let Some(acted) = ui::attention::apply(press) else {
                 continue;
             };
-            match acted.action.verb.as_str() {
-                TRY_AGAIN_ACTION => {
-                    if let Some(retry) = self.pending_retries.remove(&acted.item) {
-                        asked |= self.retry(retry);
-                    }
+            if acted.action.verb == TRY_AGAIN_ACTION {
+                if let Some(retry) = self.pending_retries.remove(&acted.item) {
+                    asked |= self.retry(retry);
                 }
-                _ => {
-                    self.open_queue();
-                    asked = true;
-                }
+            } else {
+                self.open_queue();
+                asked = true;
             }
         }
         asked
