@@ -2754,7 +2754,7 @@ fn a_bridged_calls_guests_get_their_own_tiles_and_volume() {
         .into_iter()
         .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if id == "discord:1"))
         .expect("Dana has a tile of her own");
-    assert_eq!(dana.2.text, "Dana (via Discord): volume and mute for you");
+    assert_eq!(dana.2.text, "Dana, from Discord: volume and mute for you");
     assert!(
         app.semantic_hits()
             .iter()
