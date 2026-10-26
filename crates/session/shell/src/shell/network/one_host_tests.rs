@@ -389,6 +389,15 @@ impl Device {
             Arc::try_unwrap(net)
                 .unwrap_or_else(|_| panic!("{}'s network is not shared", self.label)),
         );
+        // A shut down device writes nothing more. In this process the
+        // network's blocking work (an admission it was making) outlives it,
+        // and would publish into the state file after the device started
+        // again from it: its writer is closed here, after whatever it was
+        // writing, as the end of the process would stop it.
+        // The tree is let go first: a publication takes the writer, then
+        // the tree.
+        let writer = self.tree.read().native_runtime.clone();
+        writer.close_for_shutdown();
     }
 
     /// Start this device again from what it kept on disk, as booting it
@@ -732,6 +741,31 @@ impl Device {
     /// `room`'s records are sealed channels each app opens itself, never
     /// documents this device's owner commits.
     fn assert_sealed(&self, room: RoomId) {
+        let status = self.net().native_owner_status();
+        self.assert_sealed_under(room, &status);
+    }
+
+    /// Whether `room`'s records can be read here yet: not while this
+    /// device's native owner opens, which on a busy disk takes seconds after
+    /// a session starts and holds the room's records neither way until it
+    /// has. Once it has opened, or failed to, they must be sealed. The
+    /// owner's standing is read once, so the answer and the assertion are
+    /// about the same moment.
+    fn records_sealed(&self, room: RoomId) -> bool {
+        let status = self.net().native_owner_status();
+        if matches!(status, super::native_enrollment::NativeOwnerStatus::Opening) {
+            return false;
+        }
+        self.assert_sealed_under(room, &status);
+        true
+    }
+
+    /// [`Self::assert_sealed`] with the native owner standing as `status`.
+    fn assert_sealed_under(
+        &self,
+        room: RoomId,
+        status: &super::native_enrollment::NativeOwnerStatus,
+    ) {
         let (sealed, committed) = {
             let tree = self.tree.read();
             (
@@ -739,23 +773,24 @@ impl Device {
                 tree.committed_record_rooms.contains(&room),
             )
         };
-        let status = self.net().native_owner_status();
         let standing = status.describe();
         let failure = self.net().open_failure().unwrap_or_default();
-        let governor = status
-            .open()
-            .and_then(|owner| {
-                owner
-                    .with_current(room, |view| {
-                        Ok(format!(
-                            "{:?} {:?}",
-                            view.governor().device_label,
-                            view.governor().capabilities
-                        ))
-                    })
-                    .ok()
-            })
-            .unwrap_or_default();
+        let governor = match status {
+            super::native_enrollment::NativeOwnerStatus::Open(owner) => Some(owner),
+            _ => None,
+        }
+        .and_then(|owner| {
+            owner
+                .with_current(room, |view| {
+                    Ok(format!(
+                        "{:?} {:?}",
+                        view.governor().device_label,
+                        view.governor().capabilities
+                    ))
+                })
+                .ok()
+        })
+        .unwrap_or_default();
         assert!(
             sealed,
             "{} holds {room} as a sealed room (its records committed instead: {committed}; \
@@ -802,7 +837,9 @@ impl Device {
     /// Whether this device holds the note's channel in `room`, so the notes
     /// app here reads and writes it.
     pub(crate) fn holds_note(&self, room: RoomId) -> bool {
-        self.assert_sealed(room);
+        if !self.records_sealed(room) {
+            return false;
+        }
         self.note_keys(room).is_some()
     }
 
@@ -928,16 +965,9 @@ impl Device {
     /// The note's text in `room` as the notes app here shows it.
     pub(crate) fn note(&self, room: RoomId) -> Option<String> {
         self.net.as_ref()?;
-        // A device started again holds its rooms' records neither way while
-        // its native owner opens: it has no note to read yet. Open, they are
-        // sealed.
-        if matches!(
-            self.net().native_owner_status(),
-            super::native_enrollment::NativeOwnerStatus::Opening
-        ) {
+        if !self.records_sealed(room) {
             return None;
         }
-        self.assert_sealed(room);
         let keys = self.note_keys(room)?;
         self.read_notes(room, &keys);
         let notes = self.notes.lock().unwrap();
