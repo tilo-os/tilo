@@ -5845,7 +5845,8 @@ on = ["stable"]
 # fingerprint. Sealing with the publisher identity is a signing step of its own. The preview
 # checks seal with a throwaway key and build the image from that, so a change is checked whole
 # before it lands. Until stable publishes a new definition, release OS images ship no runtime,
-# and a run's dev images (os-dev-image-{arch}) ship the one env-runtime-preview sealed.
+# and a run's dev images (os-dev-image-{arch}) ship one built from the run's own snapshot and
+# sealed with a throwaway key (`env-runtime.sh dev`).
 [[check]]
 name = "image-env-runtime-tree-{arch}"
 isolation = "vm"
@@ -5875,7 +5876,7 @@ default = false
 
 [[check]]
 name = "env-runtime-preview"
-run = "bash tools/ci/publish/env-runtime.sh preview /target/publish/env-runtime/trees /target/publish/env-runtime/packer /target/publish/env-runtime/preview"
+run = "bash tools/ci/publish/env-runtime.sh seal /target/publish/env-runtime/trees /target/publish/env-runtime/packer /target/publish/env-runtime/preview"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "os/dev/resolve-env-runtime.sh", "crates/packaging/registry-types/src/lib.rs", "os/Containerfile.env-runtime"]
 needs = ["image-env-runtime-tree-x86_64", "image-env-runtime-tree-aarch64", "env-runtime-packer"]
 outputs = ["/target/publish/env-runtime/preview/**"]
@@ -6843,8 +6844,8 @@ default = false
 name = "os-dev-image-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
-inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "keys/cosign-dev.pub", "Cargo.lock", "rust-toolchain.toml", ".containerignore", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
-needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-preview", "signing-tools"]
+inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "keys/cosign-dev.pub", "Cargo.lock", "rust-toolchain.toml", ".containerignore", "tools/ci/os/oci_layers.py", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-image.sh"]
+needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "signing-tools"]
 outputs = ["/target/publish/os-dev/{arch}/**"]
 git = true
 requires = ["{node}", "disk-100g"]
@@ -7355,7 +7356,7 @@ secrets = ["REGISTRY_TOKEN"]
 name = "os-board-{board}"
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh board {board} /target/publish/os-dev/aarch64 /target/publish/os-board/{board}"
-inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", "os/account.env", "os/tests/board_audio_contract.sh", ".containerignore", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
+inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", "os/account.env", "os/tests/board_audio_contract.sh", ".containerignore", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-image.sh"]
 needs = ["image-rpms-aarch64", "os-dev-image-aarch64", "os-assets", "signing-tools"]
 outputs = ["/target/publish/os-board/{board}/image.oci.tar", "/target/publish/os-board/{board}/digest", "/target/publish/os-board/{board}/revision", "/target/publish/os-board/{board}/board", "/target/publish/os-board/{board}/disk/disk.qcow2"]
 git = true

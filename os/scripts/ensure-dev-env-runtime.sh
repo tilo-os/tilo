@@ -7,7 +7,7 @@
 #   SOURCE       a sealed env-runtime directory in install-env-runtime.sh's
 #                layout, or an empty one: the runtime the same t run built
 #                from this tree's os/Containerfile.env-runtime and sealed with
-#                a throwaway key (env-runtime-preview)
+#                a throwaway key (tools/ci/publish/env-runtime.sh dev)
 #   INSTALL_BIN  tilo-install
 #
 # A release image ships the published, stable-signed runtime of its
