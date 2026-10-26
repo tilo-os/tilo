@@ -330,7 +330,9 @@ impl Findable for SheetsApp {
             let Some(raw) = self.find_cell_raw(found) else {
                 continue;
             };
-            ranges.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            // Right to left, so each replacement leaves the ranges before
+            // it where they were found.
+            ranges.sort_unstable_by_key(|range| std::cmp::Reverse(range.0));
             let mut replaced = raw;
             for (start, end) in ranges {
                 if let Some(next) = replace_range(&replaced, start, end, with) {
