@@ -958,10 +958,15 @@ async fn answer_unlist(
             reason: "the removal digest must be 64 hex characters".into(),
         };
     };
-    match context.rooms.leave_wait_list(&context.room, removal).await {
-        Ok(told) => RoomEvent::Unlisted {
+    match context
+        .rooms
+        .leave_wait_list_for_operator(&context.room, removal)
+        .await
+    {
+        Ok((told, contact)) => RoomEvent::Unlisted {
             request,
             told: told.map(mailbox),
+            contact_sha256: contact.map(hex::encode),
         },
         Err(error) => RoomEvent::WaitListFailed {
             request,
@@ -1063,11 +1068,32 @@ async fn answer_wait_list_command(
 }
 
 /// The event that has the operator mail an invitation a member asked for.
-fn invite_mail(mail: tilo_relay::rooms::WaitListMail) -> RoomEvent {
-    RoomEvent::InviteMail {
-        to: mailbox(mail.to),
-        link: mail.link,
-        removal: hex::encode(mail.removal),
+fn invite_mail(
+    mail: tilo_relay::rooms::WaitListMail,
+    request: String,
+) -> (RoomEvent, tokio::sync::oneshot::Sender<bool>) {
+    (
+        RoomEvent::InviteMail {
+            request,
+            to: mailbox(mail.to),
+            link: mail.link,
+            removal: hex::encode(mail.removal),
+        },
+        mail.queued,
+    )
+}
+
+type MailAcks = std::collections::BTreeMap<String, tokio::sync::oneshot::Sender<bool>>;
+
+fn publish_invite_mail(asked: tilo_relay::rooms::WaitListMail, mail_acks: &mut MailAcks) {
+    mail_acks.retain(|_, sender| !sender.is_closed());
+    if mail_acks.len() >= 512 {
+        let _ = asked.queued.send(false);
+    } else {
+        let request = hex::encode(rand::random::<[u8; 32]>());
+        let (event, queued) = invite_mail(asked, request.clone());
+        mail_acks.insert(request, queued);
+        println!("{}", event.to_line());
     }
 }
 
@@ -2180,6 +2206,7 @@ async fn serve_operator(
     let mut roles_seen = governance.roles_changed_at();
     let admitter = Admitter::of(context, removals.clone(), governance.members_only);
     let mut admitting = tokio::task::JoinSet::<RoomEvent>::new();
+    let mut mail_acks = MailAcks::new();
     let mut mail = governance
         .wait_list_mail
         .as_ref()
@@ -2191,7 +2218,7 @@ async fn serve_operator(
                     Some(mail) => mail.recv().await,
                     None => std::future::pending().await,
                 }
-            } => println!("{}", invite_mail(asked).to_line()),
+            } => publish_invite_mail(asked, &mut mail_acks),
             Some(answered) = admitting.join_next(), if !admitting.is_empty() => match answered {
                 Ok(event) => println!("{}", event.to_line()),
                 // Its waiter hears nothing and gives up, as on any lost answer.
@@ -2234,6 +2261,11 @@ async fn serve_operator(
                 | OperatorCommand::Confirm { .. }
                 | OperatorCommand::Standing { .. }))) => {
                     println!("{}", answer_wait_list_command(context, governance, command).await.to_line());
+                }
+                Some(Ok(OperatorCommand::InviteMailQueued { request, queued })) => {
+                    if let Some(sender) = mail_acks.remove(&request) {
+                        let _ = sender.send(queued);
+                    }
                 }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent room admits guests by pre-admission only"),
                 Some(Ok(OperatorCommand::Shutdown {})) | None => {
