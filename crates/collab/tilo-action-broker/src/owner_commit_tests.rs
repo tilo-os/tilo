@@ -2035,6 +2035,112 @@ mod owner_commit_tests {
             .unwrap()
     }
 
+    /// A person's certified caller that their own device handed to agent
+    /// `agent`, as the standalone runtime's MCP door does.
+    fn delegated_owner_caller(f: &OwnerFixture, agent: &str) -> VerifiedActionCaller {
+        effect_owner_caller(f).delegated_to(agent)
+    }
+
+    /// Exactly `prepare_owner_effect`, but the receipt names `actor` instead
+    /// of the caller's own effective actor: the shape a mismatched terminal
+    /// takes. Prepares the journal's own invocation, so `validate` decides.
+    fn prepare_owner_effect_claiming(
+        f: &OwnerFixture,
+        caller: &VerifiedActionCaller,
+        actor: &str,
+    ) -> Result<invocation_journal::PreparedEffect, String> {
+        let key = f
+            .state
+            .caller_key(caller, tilo_actions::InvocationId::new())?;
+        let context = tilo_actions::ActionContext::default();
+        let contract = tilo_actions::ActionContract::default();
+        let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"context":context,
+            "actor":actor,"contract":contract,"app_id":f.route.app_id,
+            "resource":format!("app.{}", f.route.app_id),"resource_kind":"app","action":"open"});
+        let update = tilo_actions::InvocationUpdate::Succeeded {
+            invocation: key.invocation,
+            output: tilo_actions::ActionOutput::default(),
+        };
+        let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+            key.invocation,
+            actor,
+            context,
+            tilo_actions::EffectReceiptStatus::Succeeded,
+            tilo_clock::unix_now_i64(),
+        );
+        effect.completed_at = 100;
+        let request = tilo_owner_commit::OwnerCommitRequest {
+            room: f.route.cluster_id.clone(),
+            operation: tilo_owner_commit::CommitOperation::EffectReceipt {
+                invocation: key.invocation.0,
+                redacted: serde_json::to_vec(&effect).map_err(|error| error.to_string())?,
+            },
+        };
+        let mut guard = f.state.journal.lock().unwrap();
+        let journal = guard.as_mut().unwrap().as_mut().unwrap();
+        journal.admit(key.clone(), intent, 1)?;
+        journal.prepare_effect(&key, update, &request)
+    }
+
+    /// The MCP door hands a person's certified session to their agent, and
+    /// that agent's own effect terminal is accepted: the durable owner, the
+    /// receipt actor and the validation all name the agent the person's
+    /// device delegated to. A receipt naming anyone else is still refused.
+    #[test]
+    fn a_delegated_agents_effect_terminal_is_owned_and_receipted_as_that_agent() {
+        let root = canonical_tempdir();
+        let f = owner_fixture(root.path());
+        let caller = delegated_owner_caller(&f, "mcp-7");
+        assert_eq!(caller.admitted.broker_actor().id, "agent:mcp-7");
+        let (key, request, prepared) = prepare_owner_effect(&f, &caller);
+        assert_eq!(
+            key.owner,
+            InvocationOwner::AuthenticatedLocal {
+                root: f.owner.peer().authority().user_public_key,
+                device: f.owner.peer().authority().device_public_key,
+                agent: Some("mcp-7".into()),
+            },
+            "the durable owner is the person's device delegated to its agent"
+        );
+        let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+            serde_json::from_slice(match &request.operation {
+                tilo_owner_commit::CommitOperation::EffectReceipt { redacted, .. } => redacted,
+                _ => unreachable!(),
+            })
+            .unwrap();
+        assert_eq!(receipt.actor, "agent:mcp-7", "the receipt names who acted");
+        assert_eq!(
+            prepared.update,
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation: key.invocation,
+                output: tilo_actions::ActionOutput::default(),
+            }
+        );
+        // The same journal accepts the finished terminal off the prepared one.
+        let mut guard = f.state.journal.lock().unwrap();
+        let journal = guard.as_mut().unwrap().as_ref().unwrap();
+        assert_eq!(journal.lookup(&key).unwrap().unwrap().key.owner, key.owner);
+    }
+
+    #[test]
+    fn a_delegated_agents_effect_terminal_naming_anyone_else_is_refused() {
+        for mistaken in [None, Some("agent:mcp-8"), Some("agent:")] {
+            let root = canonical_tempdir();
+            let f = owner_fixture(root.path());
+            let caller = delegated_owner_caller(&f, "mcp-7");
+            // The person themselves, another agent, or a nameless agent: none
+            // of them acted, so none may be named.
+            let person = principal_id_for_root(f.owner.peer().authority().user_public_key);
+            let actor = mistaken.unwrap_or(&person);
+            let refusal = prepare_owner_effect_claiming(&f, &caller, actor)
+                .expect_err("a mismatched actor is still refused");
+            assert_eq!(
+                refusal, "prepared effect payload differs from admitted terminal",
+                "{actor}"
+            );
+        }
+    }
+
     fn prepare_owner_effect(
         f: &OwnerFixture,
         caller: &VerifiedActionCaller,
