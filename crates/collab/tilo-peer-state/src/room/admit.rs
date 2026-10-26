@@ -10,7 +10,8 @@
 //!
 //! The whole batch is refused or the whole candidate is returned: a partial
 //! merge would advance local heads past refused operations.
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 
 use super::media;
@@ -272,6 +273,7 @@ fn checked(
     if !governs {
         personal_layout_kept(before, candidate)?;
     }
+    layout_own_namespace_kept(input, before, candidate, governs)?;
     match contents {
         ContentOwnership::Registry => {
             let AuthorityPin::Device(pinned) = authority else {
@@ -299,6 +301,128 @@ fn checked(
     crate::durability::monotonic(before, candidate).map_err(RoomRefusal::Durability)?;
     media::validate_transition(before, candidate, media::TransitionMode::Admission)
         .map_err(RoomRefusal::Media)
+}
+
+/// Every entry of a root scalar map, joined across the concurrent maps a
+/// key may hold. An entry whose value is not a scalar is recorded as
+/// `None`, so a writer that replaces a map with a scalar is still seen as a
+/// change of that key.
+fn scalar_map_entries(
+    doc: Option<&AutoCommit>,
+    key: &str,
+) -> Result<BTreeMap<String, Option<Vec<u8>>>, String> {
+    let mut out = BTreeMap::new();
+    let Some(doc) = doc else {
+        return Ok(out);
+    };
+    for (value, object) in doc.get_all(ROOT, key).map_err(|e| e.to_string())? {
+        if !matches!(value, Value::Object(automerge::ObjType::Map)) {
+            continue;
+        }
+        for entry in doc.keys(&object) {
+            let scalar = match doc
+                .get(&object, entry.as_str())
+                .map_err(|e| e.to_string())?
+            {
+                Some((Value::Scalar(value), _)) => match value.as_ref() {
+                    ScalarValue::Bytes(bytes) => Some(bytes.clone()),
+                    ScalarValue::Str(text) => Some(text.as_bytes().to_vec()),
+                    ScalarValue::Uint(number) => Some(number.to_le_bytes().to_vec()),
+                    ScalarValue::Int(number) => Some(number.to_le_bytes().to_vec()),
+                    ScalarValue::Boolean(flag) => Some(vec![u8::from(*flag)]),
+                    ScalarValue::Null
+                    | ScalarValue::F64(_)
+                    | ScalarValue::Counter(_)
+                    | ScalarValue::Timestamp(_)
+                    | ScalarValue::Unknown { .. } => None,
+                },
+                Some((Value::Object(_), _)) | None => None,
+            };
+            out.insert(entry, scalar);
+        }
+    }
+    Ok(out)
+}
+
+/// The values a root map held for a key before and after a batch.
+type MapChange = (Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// Which keys of a root map differ between the two documents.
+fn changed_map_keys(
+    before: Option<&AutoCommit>,
+    after: Option<&AutoCommit>,
+    key: &str,
+) -> Result<BTreeMap<String, MapChange>, String> {
+    let old = scalar_map_entries(before, key)?;
+    let new = scalar_map_entries(after, key)?;
+    let keys: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
+    Ok(keys
+        .into_iter()
+        .filter_map(|id| {
+            let prior = old.get(id).cloned().flatten();
+            let next = new.get(id).cloned().flatten();
+            (old.get(id) != new.get(id)).then(|| (id.clone(), (prior, next)))
+        })
+        .collect())
+}
+
+/// A layout request names the person who asked, and only that person (or
+/// the room's governor) may add or remove it. The claim map is kept in each
+/// owner's own namespace; the request map and the claims are room state,
+/// not free-form root keys.
+fn layout_own_namespace_kept(
+    input: &RoomAdmission<'_>,
+    before: Option<&AutoCommit>,
+    candidate: &AutoCommit,
+    governs: bool,
+) -> Result<(), RoomRefusal> {
+    use tilo_desktop_model::projection::{ROOM_LAYOUT_APPLIED_KEY, ROOM_LAYOUT_REQUESTS_KEY};
+    let owners = tilo_desktop_model::projection::contents_owners_of(candidate);
+    let owners_before = before
+        .map(tilo_desktop_model::projection::contents_owners_of)
+        .unwrap_or_default();
+    let claims = changed_map_keys(before, Some(candidate), ROOM_LAYOUT_APPLIED_KEY)
+        .map_err(RoomRefusal::Malformed)?;
+    for key in claims.keys() {
+        let owner = |owners: &BTreeMap<u16, String>| {
+            key.split_once('/')
+                .and_then(|(salt, _)| u16::from_str_radix(salt, 16).ok())
+                .and_then(|salt| owners.get(&salt).cloned())
+        };
+        let named = owner(&owners).or_else(|| owner(&owners_before));
+        let allowed = match named {
+            Some(device) => device == input.source.key,
+            None => governs,
+        };
+        if !allowed {
+            return Err(RoomRefusal::Topology(
+                "a layout claim is outside the writer's namespace".into(),
+            ));
+        }
+    }
+    let requests = changed_map_keys(before, Some(candidate), ROOM_LAYOUT_REQUESTS_KEY)
+        .map_err(RoomRefusal::Malformed)?;
+    if !governs && let Standing::Member { person, .. } = input.source.standing {
+        let person = hex::encode(person);
+        for (_, (prior, next)) in requests {
+            for value in [prior, next].into_iter().flatten() {
+                let Some(request) =
+                    serde_json::from_slice::<tilo_desktop_model::projection::LayoutRequest>(&value)
+                        .ok()
+                else {
+                    return Err(RoomRefusal::Topology(
+                        "a layout request is not readable".into(),
+                    ));
+                };
+                if request.from != person {
+                    return Err(RoomRefusal::Topology(
+                        "a layout request names another person".into(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A batch from a sender that is not the governance writer leaves the room's

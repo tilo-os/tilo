@@ -51,10 +51,12 @@ pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesk
     };
     // The fold every host uses: peers' entries are taken from the document,
     // ours (there are none in a fresh tree) stay.
-    workspace_tree.workspaces[0].strips = strips
-        .into_iter()
-        .map(crate::projection::hydrate_strip)
-        .collect();
+    if let Some(workspace) = workspace_tree.workspaces.first_mut() {
+        workspace.strips = strips
+            .into_iter()
+            .map(crate::projection::hydrate_strip)
+            .collect();
+    }
     let mut records: Vec<(crate::ids::TabId, String)> =
         record_routes_at(doc, heads).into_iter().collect();
     records.sort_unstable();
@@ -177,9 +179,8 @@ pub fn request(
         Some((_, map)) => map,
         None => doc.put_object(&ROOT, ROOM_LAYOUT_REQUESTS_KEY, automerge::ObjType::Map)?,
     };
-    let blob = match serde_json::to_vec(request) {
-        Ok(blob) => blob,
-        Err(_) => return Ok(false),
+    let Ok(blob) = serde_json::to_vec(request) else {
+        return Ok(false);
     };
     let unchanged = matches!(
         doc.get(&requests, request.id.as_str()).ok().flatten(),

@@ -115,6 +115,119 @@ fn take_ownership(doc: &mut AutoCommit, root: [u8; 32]) {
     doc.put(ROOT, "owner", person_id(root)).unwrap();
 }
 
+fn governed_with_owners() -> AutoCommit {
+    let mut doc = governed();
+    let owners = doc
+        .put_object(ROOT, "contents_owners_v1", ObjType::Map)
+        .unwrap();
+    doc.put(&owners, "0001", key(0x11)).unwrap();
+    doc.put(&owners, "0002", key(0x22)).unwrap();
+    doc.commit();
+    doc
+}
+
+fn layout_request(from: &str, to_salt: u16) -> Vec<u8> {
+    serde_json::to_vec(&tilo_desktop_model::projection::LayoutRequest {
+        id: format!("request-{to_salt}"),
+        from: from.into(),
+        to_salt,
+        at: 1,
+        command: Vec::new(),
+    })
+    .unwrap()
+}
+
+/// A layout claim is recorded in the namespace of the device whose windows
+/// it marks applied. A member may not pre-mark another device's request,
+/// which would silently drop the rearrangement the room retained.
+#[test]
+fn a_member_cannot_claim_another_devices_retained_layout_request() {
+    let before = governed_with_owners();
+    let stolen = changes_after(&before, |doc| {
+        let applied = doc
+            .put_object(ROOT, "layout_applied_v1", ObjType::Map)
+            .unwrap();
+        doc.put(&applied, "0001/someone-elses-request", 1_u64)
+            .unwrap();
+    });
+    let refused = admit(
+        Some(&before),
+        member(&key(0x22), EDITOR),
+        AuthorityPin::Device(&key(0x11)),
+        ContentOwnership::Salted { local_salt: 2 },
+        &stolen,
+    );
+    assert!(
+        matches!(refused, Err(RoomRefusal::Topology(_))),
+        "{refused:?}"
+    );
+
+    let own = changes_after(&before, |doc| {
+        let applied = doc
+            .put_object(ROOT, "layout_applied_v1", ObjType::Map)
+            .unwrap();
+        doc.put(&applied, "0002/editors-own-request", 1_u64)
+            .unwrap();
+    });
+    admit(
+        Some(&before),
+        member(&key(0x22), EDITOR),
+        AuthorityPin::Device(&key(0x11)),
+        ContentOwnership::Salted { local_salt: 2 },
+        &own,
+    )
+    .expect("a member records its own claim");
+}
+
+/// A member may ask the room to rearrange a window, but only as itself: a
+/// request naming another person is refused before the owner ever reads it.
+#[test]
+fn a_member_cannot_ask_as_another_person() {
+    let before = governed_with_owners();
+    let forged = changes_after(&before, |doc| {
+        let requests = doc
+            .put_object(ROOT, "layout_requests_v1", ObjType::Map)
+            .unwrap();
+        doc.put(
+            &requests,
+            "forged",
+            ScalarValue::Bytes(layout_request(&person_id(VIEWER), 2)),
+        )
+        .unwrap();
+    });
+    let refused = admit(
+        Some(&before),
+        member(&key(0x22), EDITOR),
+        AuthorityPin::Device(&key(0x11)),
+        ContentOwnership::Salted { local_salt: 2 },
+        &forged,
+    );
+    assert!(
+        matches!(refused, Err(RoomRefusal::Topology(_))),
+        "{refused:?}"
+    );
+
+    let honest = changes_after(&before, |doc| {
+        let requests = doc
+            .put_object(ROOT, "layout_requests_v1", ObjType::Map)
+            .unwrap();
+        doc.put(
+            &requests,
+            "honest",
+            ScalarValue::Bytes(layout_request(&person_id(EDITOR), 2)),
+        )
+        .unwrap();
+    });
+    admit(
+        Some(&before),
+        member(&key(0x22), EDITOR),
+        AuthorityPin::Device(&key(0x11)),
+        ContentOwnership::Salted { local_salt: 2 },
+        &honest,
+    )
+    .expect("a member asks as itself");
+}
+
 #[test]
 fn authority_bootstrap_needs_no_roster_and_others_need_held_governance() {
     let authority = key(0xA0);
