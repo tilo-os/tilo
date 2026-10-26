@@ -21,7 +21,22 @@ use crate::diffview;
 use crate::history;
 use crate::i18n::{t, t_args};
 
+use crate::diffview::DiffHit;
+
 use super::{GitClientApp, Hit, ScrollRegion, Scroller, Target};
+
+/// What the band above a conflicted file says: what each choice costs, in
+/// the person's terms, or — where the sides cannot be read — the bare fact
+/// that both changed the file.
+pub(super) fn conflict_note(cost: Option<crate::repo::ConflictCost>) -> String {
+    match cost {
+        Some(cost) => t_args(
+            "git-conflict-cost",
+            &[("ours", cost.ours.into()), ("theirs", cost.theirs.into())],
+        ),
+        None => t("git-conflict-explainer"),
+    }
+}
 
 impl GitClientApp {
     /// Show commit `index`: its own page, with its files and no file diff.
@@ -76,6 +91,7 @@ impl GitClientApp {
         match crate::repo::resolve_conflict(&path, &file, side) {
             Ok(()) => {
                 self.last_error = None;
+                self.forget_conflict_cost();
                 let side_word = t(match side {
                     crate::repo::ConflictSide::Ours => "git-conflict-ours",
                     crate::repo::ConflictSide::Theirs => "git-conflict-theirs",
@@ -94,56 +110,138 @@ impl GitClientApp {
     }
 
     /// A conflicted file's sides, above its diff: the choice that resolves
-    /// the conflict without a terminal.
+    /// the conflict without a terminal, and what each choice costs.
+    ///
+    /// The sentence and the two buttons share a row where they fit; in a
+    /// narrow window the sentence wraps to the width it has and the buttons
+    /// stand under it, because a sentence elided before it says what the
+    /// second choice costs is not a sentence about the decision.
     pub(super) fn paint_conflict_actions(
+        &mut self,
         ctx: &mut PaintCtx<'_>,
         body: Rect,
+        file: &str,
         pointer: Option<Point>,
     ) -> (Rect, Vec<(Rect, Hit)>) {
         let theme = ctx.theme;
         let s = &theme.tokens.spacing;
         let style = theme.text(TextRole::Body);
-        let note = t("git-conflict-explainer");
+        self.conflict_cost_for(file);
+        let note = self.conflict_sentence();
         let note_w = f64::from(ctx.text.measure_style(&note, None, &style).0);
-        let h = ui::widget::ButtonFace::height(ControlSize::Regular, theme)
+        let pad = f64::from(s.s3);
+        let row_h = ui::widget::ButtonFace::height(ControlSize::Regular, theme)
             .max(f64::from(ctx.text.measure_style("Ag", None, &style).1))
             + 2.0 * f64::from(s.s2);
-        let band = Rect::new(body.x0, body.y0, body.x1, body.y0 + h);
-        ctx.text(
-            &note,
-            &style,
-            theme.text_dim,
-            Point::new(band.x0 + f64::from(s.s3), band.y0 + f64::from(s.s2)),
-            None,
-        );
-        let mut x = band.x0 + f64::from(s.s3) + note_w + f64::from(s.s4);
-        let mut hits = Vec::new();
-        for (label, side) in [
+        let labels = [
             (t("git-conflict-take-ours"), crate::repo::ConflictSide::Ours),
             (
                 t("git-conflict-take-theirs"),
                 crate::repo::ConflictSide::Theirs,
             ),
-        ] {
-            let face = || ui::widget::ButtonFace::new(Rect::ZERO, &label);
-            let w = face().intrinsic_width(ctx.text, theme);
+        ];
+        let widths: Vec<f64> = labels
+            .iter()
+            .map(|(label, _)| {
+                ui::widget::ButtonFace::new(Rect::ZERO, label).intrinsic_width(ctx.text, theme)
+            })
+            .collect();
+        let buttons_w: f64 = widths.iter().sum::<f64>()
+            + f64::from(s.s2) * (f64::from(u32::try_from(widths.len()).unwrap_or(1)) - 1.0);
+        // One row when the sentence has room beside the buttons, two when it
+        // has not.
+        let side_by_side = pad + note_w + f64::from(s.s4) + buttons_w + pad <= body.width();
+        let text_room = if side_by_side {
+            note_w
+        } else {
+            (body.width() - 2.0 * pad).max(0.0)
+        };
+        let text_h = if side_by_side {
+            row_h
+        } else {
+            let measured =
+                ctx.text
+                    .measure_style(&note, Some(ui::num::f32_of_f64(text_room)), &style);
+            (f64::from(measured.1) + 2.0 * f64::from(s.s2)).max(row_h)
+        };
+        let band = Rect::new(
+            body.x0,
+            body.y0,
+            body.x1,
+            body.y0 + text_h + row_h * f64::from(u8::from(!side_by_side)),
+        );
+        ctx.text(
+            &note,
+            &style,
+            theme.text_dim,
+            Point::new(band.x0 + pad, band.y0 + f64::from(s.s2)),
+            Some(ui::num::f32_of_f64(text_room)),
+        );
+        // Read out with the buttons: what the choice costs is the choice.
+        self.semantic.push(Target {
+            rect: Rect::new(band.x0, band.y0, band.x1, band.y0 + text_h),
+            hit: Hit::ConflictNote,
+        });
+        let button_y = if side_by_side {
+            band.y0
+        } else {
+            band.y0 + text_h
+        };
+        let mut x = if side_by_side {
+            band.x0 + pad + note_w + f64::from(s.s4)
+        } else {
+            band.x0 + pad
+        };
+        let mut hits = Vec::new();
+        for ((label, side), w) in labels.into_iter().zip(widths) {
+            // The width comes from the label; the face that is painted is
+            // the one with the button's own rect, or nothing shows.
             let rect = Rect::new(
                 x,
-                band.y0 + f64::from(s.s1),
+                button_y + f64::from(s.s1),
                 x + w,
-                band.y1 - f64::from(s.s1),
+                button_y + row_h - f64::from(s.s1),
             );
-            ui::widget::Button::paint(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                theme,
-                &face().hovered(pointer.is_some_and(|p| rect.contains(p))),
-            );
+            let hovered = pointer.is_some_and(|p| rect.contains(p));
+            let face = ui::widget::ButtonFace::new(rect, &label).hovered(hovered);
+            ui::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
             hits.push((rect, Hit::ResolveConflict(side)));
             x = rect.x1 + f64::from(s.s2);
         }
         (Rect::new(body.x0, band.y1, body.x1, body.y1), hits)
+    }
+
+    /// What keeping each side of `file` would discard. Read once per
+    /// conflict — from the repository where there is one, from the bundled
+    /// sample's canned sides where the shot shows a repository that is not
+    /// on disk — and remembered until another file is picked.
+    pub(super) fn conflict_cost_for(&mut self, file: &str) -> Option<crate::repo::ConflictCost> {
+        if let Some((known, cost)) = &self.conflict_cost
+            && known == file
+        {
+            return *cost;
+        }
+        let cost = match &self.repo_path {
+            Some(path) => crate::repo::conflict_cost(path, file).ok(),
+            None => crate::sample::conflict_cost(file),
+        };
+        self.conflict_cost = Some((file.to_owned(), cost));
+        cost
+    }
+
+    /// Forget the read cost: the sides change as soon as one is kept.
+    pub(super) fn forget_conflict_cost(&mut self) {
+        self.conflict_cost = None;
+    }
+
+    /// The sentence above the conflicted file, as the band paints it and as
+    /// assistive technology reads it: one sentence, one source.
+    pub(super) fn conflict_sentence(&self) -> String {
+        let cost = match (&self.conflict_cost, self.selected_conflict()) {
+            (Some((known, cost)), Some(file)) if *known == file => *cost,
+            _ => None,
+        };
+        conflict_note(cost)
     }
 
     /// The selected commit, or one file of what it changed.
@@ -217,6 +315,24 @@ impl GitClientApp {
             }
             Err(error) => {
                 self.last_error = Some(error.to_string());
+            }
+        }
+    }
+
+    /// Whatever a diff view drew is reachable where it was drawn: a control
+    /// painted here and recorded nowhere is one that ignores a press and that
+    /// a reader never hears.
+    fn record_drawn(&mut self, targets: &[(Rect, DiffHit)]) {
+        for &(rect, hit) in targets {
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                self.targets.push(Target {
+                    rect,
+                    hit: Hit::Diff(hit),
+                });
+                self.semantic.push(Target {
+                    rect,
+                    hit: Hit::Diff(hit),
+                });
             }
         }
     }
@@ -312,9 +428,13 @@ impl GitClientApp {
                 settings: self.settings,
                 staged: false,
                 can_discard: false,
+                // The change is already committed: there is nothing here to
+                // stage, and the working tree's selection is not this file.
+                actions: false,
                 pointer: self.pointer,
             },
         );
+        self.record_drawn(&out.targets);
         let max_y = out.content_height - out.viewport.height();
         self.diff_scroll = self.diff_scroll.clamp(0.0, max_y.max(0.0));
         self.diff_hscroll = self.diff_hscroll.clamp(0.0, out.max_hscroll);

@@ -53,32 +53,57 @@ impl VideoEditorApp {
                 choices: self.project_choices(),
                 ..ToolbarLocation::default()
             }),
-            actions: vec![
-                ToolbarAction::new(SPLIT, "scissors", "Split at playhead")
-                    .enabled(self.can_split_selection()),
-                ToolbarAction::new(SIDE_BY_SIDE, "columns-2", "Place side by side")
-                    .enabled(self.can_place_side_by_side()),
-                self.export_action(),
-                ToolbarAction::new(
-                    INSPECTOR,
-                    "panel-right",
-                    if inspector_open {
-                        "Hide inspector"
-                    } else {
-                        "Show inspector"
-                    },
-                )
-                .on(inspector_open),
-                ToolbarAction::new(UNDO, "undo-2", "Undo")
-                    .in_menu()
-                    .enabled(self.undo.can(ui::UndoRequest::Undo)),
-                ToolbarAction::new(REDO, "redo-2", "Redo")
-                    .in_menu()
-                    .enabled(self.undo.can(ui::UndoRequest::Redo)),
-                ToolbarAction::new(IMPORT, "folder-open", "Import media").in_menu(),
-            ],
+            actions: {
+                // The bar's own row: what the editor does, in the order the
+                // published actions sit in. Undo and Redo join it only while
+                // the transport strip is too narrow to draw its own pair.
+                let mut actions = vec![
+                    ToolbarAction::new(SPLIT, "scissors", "Split at playhead")
+                        .enabled(self.can_split_selection()),
+                    ToolbarAction::new(SIDE_BY_SIDE, "columns-2", "Place side by side")
+                        .enabled(self.can_place_side_by_side()),
+                    self.export_action(),
+                    ToolbarAction::new(
+                        INSPECTOR,
+                        "panel-right",
+                        if inspector_open {
+                            "Hide inspector"
+                        } else {
+                            "Show inspector"
+                        },
+                    )
+                    .on(inspector_open),
+                    ToolbarAction::new(IMPORT, "folder-open", "Import media").in_menu(),
+                ];
+                actions.extend(self.history_off_the_strip());
+                actions
+            },
             ..WindowToolbar::default()
         }
+    }
+
+    /// Undo and Redo while the transport strip has no room to draw them.
+    ///
+    /// A narrow strip gives the buttons up before the playhead time, which
+    /// nothing else on the strip carries — but no capability is lost to a
+    /// width: off the strip they stand in the bar's overflow menu, named, and
+    /// disabled exactly when the strip's pair would have been. They are
+    /// menu-only, so the row of the bar is unchanged by a resize.
+    fn history_off_the_strip(&self) -> Vec<ToolbarAction> {
+        if !self.history_buttons(&self.regions()).is_empty() {
+            return Vec::new();
+        }
+        [
+            (UNDO, ui::UndoRequest::Undo, "undo-2", "Undo"),
+            (REDO, ui::UndoRequest::Redo, "redo-2", "Redo"),
+        ]
+        .into_iter()
+        .map(|(id, which, icon, label)| {
+            ToolbarAction::new(id, icon, label)
+                .in_menu()
+                .enabled(self.undo.can(which))
+        })
+        .collect()
     }
 
     /// Export: it opens the export settings, where the destination, a
@@ -164,6 +189,16 @@ impl VideoEditorApp {
         let effect = match event {
             ToolbarEvent::ToggleSidebar => VideoEditorEffect::ToggleMedia,
             ToolbarEvent::Action { id } => match id.as_str() {
+                // The strip's own pair, when the strip is too narrow to
+                // draw it: one request to the host, as a press there makes.
+                UNDO => {
+                    self.undo.request(ui::UndoRequest::Undo);
+                    return;
+                }
+                REDO => {
+                    self.undo.request(ui::UndoRequest::Redo);
+                    return;
+                }
                 SPLIT => VideoEditorEffect::SplitSelection,
                 EXPORT => VideoEditorEffect::ShowExport,
                 INSPECTOR => VideoEditorEffect::ToggleInspector,

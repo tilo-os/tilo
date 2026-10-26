@@ -1214,6 +1214,65 @@ fn a_commit_reports_the_files_it_changed_and_their_diffs() {
     assert_eq!(root_files[0].kind, git_client::model::ChangeKind::Added);
 }
 
+/// Keeping a side of a conflicted file discards what the other side wrote,
+/// so the app reads the two sides first and says how much each choice
+/// throws away. The counts are the lines only one side has, as git's own
+/// diff of the two sides counts them.
+#[test]
+fn a_conflict_reports_what_each_side_costs() {
+    let (_dir, path) = init_repo();
+    repo::create_branch(&path, "feature", None, true).unwrap();
+    // Their side: the second line rewritten, and two lines added under it.
+    fs::write(
+        path.join("file.txt"),
+        "line 1\ntheir second\ntheir third\ntheir fourth\nline 3\n",
+    )
+    .unwrap();
+    repo::stage_file(&path, "file.txt").unwrap();
+    repo::commit(&path, "feature edits the second line").unwrap();
+    repo::checkout_branch(&path, "master").unwrap();
+    // Our side: the same line rewritten, in our words only.
+    fs::write(path.join("file.txt"), "line 1\nour second\nline 3\n").unwrap();
+    repo::stage_file(&path, "file.txt").unwrap();
+    repo::commit(&path, "our side edits the second line").unwrap();
+    {
+        let repo = open(&path);
+        let tip = repo
+            .find_branch("feature", git2::BranchType::Local)
+            .unwrap()
+            .into_reference()
+            .peel_to_commit()
+            .unwrap();
+        let annotated = repo.find_annotated_commit(tip.id()).unwrap();
+        repo.merge(&[&annotated], None, None).unwrap();
+        assert!(
+            repo.index().unwrap().has_conflicts(),
+            "the fixture is conflicted"
+        );
+    }
+
+    let cost = repo::conflict_cost(&path, "file.txt").expect("both sides are in the index");
+    assert_eq!(cost.ours, 1, "one line only our side wrote: {cost:?}");
+    assert_eq!(cost.theirs, 3, "three lines only theirs wrote: {cost:?}");
+    assert_eq!(
+        cost.discards(repo::ConflictSide::Ours),
+        3,
+        "keeping ours throws their three lines away"
+    );
+    assert_eq!(cost.discards(repo::ConflictSide::Theirs), 1);
+
+    // A file that is not conflicted has no two sides to cost.
+    let error = repo::conflict_cost(&path, "missing.txt").expect_err("no such file");
+    assert!(format!("{error:#}").contains("no our side"), "{error:#}");
+
+    // Settling the conflict ends the question: there is nothing left to cost.
+    repo::resolve_conflict(&path, "file.txt", repo::ConflictSide::Ours).unwrap();
+    assert!(
+        repo::conflict_cost(&path, "file.txt").is_err(),
+        "a settled file has no second side"
+    );
+}
+
 /// A conflicted file is settled by keeping one side: the index stops being
 /// conflicted, the working tree holds the kept text, and the other side is
 /// gone from the file (its history stays in the merge).

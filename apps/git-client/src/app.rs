@@ -41,8 +41,8 @@ use ui::tilo_resource::Invoke;
 use ui::tokens::TextRole;
 use ui::widget::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar};
 use ui::widget::{
-    Banner, ButtonFace, ControlSize, EmptyState, EmptyStateContent, ModalAction, ModalHit,
-    ModalLayout, ModalSpec, SidebarDrawer, TextInput, TextInputKind, Widget,
+    Banner, ButtonFace, ControlSize, EmptyState, EmptyStateContent, ModalAction, ModalSpec,
+    SidebarDrawer, TextInput, TextInputKind, Widget,
 };
 
 use crate::changes::{self, ChangesHit};
@@ -128,13 +128,59 @@ enum Confirm {
     /// Delete a local branch.
     DeleteBranch(String),
     /// Switch to a branch while the working tree holds uncommitted work:
-    /// the person chooses what becomes of it.
-    SwitchBranch {
-        name: String,
-        /// Whether there is uncommitted work at all (a clean tree switches
-        /// without asking).
-        dirty: bool,
-    },
+    /// the person chooses what becomes of it. A clean tree has nothing at
+    /// stake and switches without a question, so this only ever asks when
+    /// there is work to lose.
+    SwitchBranch { name: String },
+}
+
+/// Where the first-run screen puts its three controls: the path to type in,
+/// the system file chooser beside it, and the button that opens it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OpenControls {
+    field: Rect,
+    choose: Rect,
+    open: Rect,
+}
+
+impl OpenControls {
+    /// One row while the path keeps `path_room` beside the two buttons; under
+    /// that the buttons stand on their own row under it. A path field
+    /// squeezed to nothing is not a field: at a large text scale in a long
+    /// language the three controls do not fit side by side, and the row that
+    /// cannot hold them has to become two.
+    fn at(
+        lane: Rect,
+        y: f64,
+        h: f64,
+        gap: f64,
+        choose_w: f64,
+        open_w: f64,
+        path_room: f64,
+    ) -> Self {
+        let room = lane.width() - choose_w - open_w - 2.0 * gap;
+        let path_room = path_room.min(lane.width() / 2.0);
+        if room >= path_room {
+            let open = Rect::new(lane.x1 - open_w, y, lane.x1, y + h);
+            let choose = Rect::new(open.x0 - gap - choose_w, y, open.x0 - gap, y + h);
+            return Self {
+                field: Rect::new(lane.x0, y, choose.x0 - gap, y + h),
+                choose,
+                open,
+            };
+        }
+        let choose = Rect::new(
+            lane.x0,
+            y + h + gap,
+            (lane.x0 + choose_w).min(lane.x1),
+            y + 2.0 * h + gap,
+        );
+        Self {
+            field: Rect::new(lane.x0, y, lane.x1, y + h),
+            open: Rect::new(lane.x1 - open_w, choose.y0, lane.x1, choose.y1),
+            choose,
+        }
+    }
 }
 
 /// One answer to a confirmation sheet.
@@ -178,8 +224,7 @@ impl Confirm {
             }
             Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => "git-confirm-discard-body",
             Confirm::DeleteBranch(_) => "git-confirm-delete-branch-body",
-            Confirm::SwitchBranch { dirty: true, .. } => "git-confirm-switch-dirty-body",
-            Confirm::SwitchBranch { dirty: false, .. } => "git-confirm-switch-body",
+            Confirm::SwitchBranch { .. } => "git-confirm-switch-body",
         })
     }
 
@@ -196,7 +241,9 @@ impl Confirm {
                 label: t("git-delete-branch"),
                 danger: true,
             }],
-            Confirm::SwitchBranch { dirty, .. } if *dirty => vec![
+            // The work comes along or it is parked; there is no third answer
+            // that keeps it anywhere else.
+            Confirm::SwitchBranch { .. } => vec![
                 ChoiceFace {
                     choice: ConfirmChoice::SwitchStashing,
                     label: t("git-switch-stash"),
@@ -208,12 +255,6 @@ impl Confirm {
                     danger: false,
                 },
             ],
-            // A clean tree has nothing to decide: Cancel, or go.
-            Confirm::SwitchBranch { .. } => vec![ChoiceFace {
-                choice: ConfirmChoice::SwitchCarrying,
-                label: t("git-switch-go"),
-                danger: false,
-            }],
         }
     }
 }
@@ -234,6 +275,14 @@ enum Hit {
     BackToCommit,
     /// Keep one side of a conflicted file.
     ResolveConflict(crate::repo::ConflictSide),
+    /// The conflicted file's own sentence: what keeping each side costs.
+    ConflictNote,
+    /// The question a confirmation sheet asks, and the sentence under it
+    /// saying what answering costs.
+    ConfirmQuestion,
+    /// One answer on that sheet, by index: Cancel first, then the choices in
+    /// the order the sheet offers them.
+    ConfirmAnswer(usize),
     Panel(PanelHit),
     OpenPath,
     /// Choose the repository's folder with the system's file chooser.
@@ -361,15 +410,22 @@ pub struct GitClientApp {
     file_selection: Option<usize>,
     /// Which local branch of the branches page is under the keyboard.
     branch_selection: Option<usize>,
+    /// What keeping each side of the conflicted file under review would
+    /// discard, and which file it was read for. Read once per conflict: the
+    /// choice is worth naming, not re-reading every frame.
+    conflict_cost: Option<(String, Option<crate::repo::ConflictCost>)>,
     /// What the last action did, said once: a branch switched, a stash made,
     /// a push sent. Only failures used to be reported, so work that
     /// succeeded looked like work that had not happened.
     notice: Option<String>,
 
-    /// A destructive step waiting for confirmation, and where its sheet was
-    /// laid out last.
+    /// A question waiting for its answer: a destructive step, or a switch
+    /// that has to say what becomes of uncommitted work.
     confirm: Option<Confirm>,
-    confirm_layout: Option<ModalLayout>,
+    /// The sheet asking it, which owns its own hover, keyboard focus and
+    /// activation, so the question answers to Tab and Enter like every other
+    /// question in the system rather than only to the pointer.
+    confirm_sheet: ui::widget::ModalSheet,
 
     /// The list column of the Changes and History screens: docked beside the
     /// content when the window is wide, a floating drawer when it is narrow.
@@ -522,9 +578,10 @@ impl GitClientApp {
             commit_diffs: HashMap::new(),
             file_selection: None,
             branch_selection: None,
+            conflict_cost: None,
             notice: None,
             confirm: None,
-            confirm_layout: None,
+            confirm_sheet: ui::widget::ModalSheet::new(),
             // Both lists are content the person reads: the overview width,
             // docked or as a drawer, so a row reads the same in both.
             // The diff beside them keeps the content minimum plus a rail's
@@ -727,6 +784,13 @@ impl GitClientApp {
             if self.selected_commit >= self.model.commits.len() {
                 self.selected_commit = 0;
             }
+            // A branch the person deleted is no longer under the keyboard:
+            // keep the selection on a branch, not past the end of the list.
+            let local = self.model.branches.iter().filter(|b| !b.is_remote).count();
+            self.branch_selection = self
+                .branch_selection
+                .map(|index| index.min(local.saturating_sub(1)))
+                .filter(|_| local > 0);
             self.diff_scroll = 0.0;
         }
     }
@@ -1097,6 +1161,18 @@ impl GitClientApp {
     /// Give keyboard focus to one embedded text field (or none), keeping the
     /// toolkit inputs' focus flags mutually exclusive.
     fn set_focus(&mut self, field: Option<Field>) {
+        // The message is written in the list column, which a narrow window
+        // keeps in the drawer: focusing the field opens it, so the person is
+        // never typing into something they cannot see.
+        if field == Some(Field::Commit) && self.drawer.is_overlay() && !self.drawer.is_open() {
+            // A window someone uses slides the column in; a capture puts it
+            // where it stands, so the frame does not depend on the clock.
+            if self.mode.is_live() {
+                self.drawer.open();
+            } else {
+                self.drawer.snap(true);
+            }
+        }
         self.focus = field;
         self.commit_input.set_focus(field == Some(Field::Commit));
         self.branch_input.set_focus(field == Some(Field::Branch));
@@ -1244,9 +1320,8 @@ impl GitClientApp {
             // Switching branches with work in the tree asks first: the work
             // either comes along or is parked, and the person decides which.
             BranchAction::Checkout(name) => {
-                let dirty = self.model.change_count() > 0;
-                if dirty {
-                    self.confirm = Some(Confirm::SwitchBranch { name, dirty });
+                if self.model.change_count() > 0 {
+                    self.confirm = Some(Confirm::SwitchBranch { name });
                     return;
                 }
                 crate::repo::checkout_branch(&path, &name)
@@ -1517,8 +1592,8 @@ impl GitClientApp {
 
     /// The selected file's diff, or one sentence when there is none.
     fn paint_diff(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
-        let body = if self.selected_conflict().is_some() {
-            let (below, hits) = Self::paint_conflict_actions(ctx, body, self.pointer);
+        let body = if let Some(file) = self.selected_conflict() {
+            let (below, hits) = self.paint_conflict_actions(ctx, body, &file, self.pointer);
             for (rect, hit) in hits {
                 self.push_target(rect, hit);
             }
@@ -1552,6 +1627,9 @@ impl GitClientApp {
                 settings: self.settings,
                 staged,
                 can_discard: true,
+                // A conflicted file's decision is the band above its diff:
+                // staging the markers would settle it as neither side.
+                actions: self.selected_conflict().is_none(),
                 pointer: self.pointer,
             },
         );
@@ -1685,16 +1763,22 @@ impl GitClientApp {
         let h = ButtonFace::height(ControlSize::Regular, theme);
         let label = t("git-open");
         let button_w = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(ctx.text, theme);
-        let button = Rect::new(lane.x1 - button_w, y, lane.x1, y + h);
         // Beside the path, the system's file chooser: most people pick the
         // folder rather than type where it is.
         let choose_label = t("git-choose");
         let choose_face =
             || ButtonFace::new(Rect::ZERO, &choose_label).icon(ui::icons::Icon::FolderOpen);
         let choose_w = choose_face().intrinsic_width(ctx.text, theme);
-        let choose_x1 = button.x0 - f64::from(s.s2);
-        let choose = Rect::new(choose_x1 - choose_w, y, choose_x1, y + h);
-        let field = Rect::new(lane.x0, y, choose.x0 - f64::from(s.s2), y + h);
+        let controls = OpenControls::at(
+            lane,
+            y,
+            h,
+            f64::from(s.s2),
+            choose_w,
+            button_w,
+            f64::from(theme.tokens.metrics.content_min_width),
+        );
+        let (field, choose, button) = (controls.field, controls.choose, controls.open);
         self.open_input.apply_layout_external(field);
         self.open_input
             .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
@@ -1746,7 +1830,7 @@ impl GitClientApp {
         }
 
         if let Some(error) = &self.last_error {
-            let top = button.y1 + f64::from(s.s4);
+            let top = button.y1.max(choose.y1) + f64::from(s.s4);
             let content = BannerContent::new(BannerKind::Error, error);
             let h = Banner::height(&content, lane.width(), ctx.text, theme);
             let banner = Rect::new(lane.x0, top, lane.x1, top + h);
@@ -1759,6 +1843,15 @@ impl GitClientApp {
         self.screen = screen;
         self.set_focus(None);
         self.confirm = None;
+        // The branches page opens on its first local branch, as History
+        // opens on its first commit: otherwise the first arrow lands on the
+        // second branch and Enter checks that one out.
+        if screen == Screen::Panels && self.branch_selection.is_none() {
+            let local = self.model.branches.iter().filter(|b| !b.is_remote).count();
+            if local > 0 {
+                self.branch_selection = Some(0);
+            }
+        }
     }
 
     /// Do what `hit` names: the one path pointer presses, keys and
@@ -1806,12 +1899,18 @@ impl GitClientApp {
                 self.diff_hscroll = 0.0;
             }
             Hit::ResolveConflict(side) => self.resolve_conflict(side),
+            // Read or asked, never pressed: the conflict's own sentence, the
+            // question a sheet puts, and the repository chooser, which is
+            // dispatched as its effect.
+            Hit::ConflictNote | Hit::ConfirmQuestion | Hit::ChooseRepository => {}
+            // The sheet's answers, reached by a press or by assistive
+            // technology activating the button it names.
+            Hit::ConfirmAnswer(index) => self.answer_confirm(index),
             Hit::Panel(panel) => self.activate_panel(panel),
             Hit::OpenPath => self.set_focus(Some(Field::Open)),
             Hit::OpenRepository => self.open_repo_from_input(),
             // Dispatched as its effect (`effect_for_hit`); a direct press
             // without the published action does nothing.
-            Hit::ChooseRepository => {}
         }
     }
 
@@ -1916,30 +2015,39 @@ impl GitClientApp {
         }
     }
 
-    /// A press while the confirmation sheet is up: its buttons, its close
-    /// control and its scrim; nothing under it.
-    fn confirm_press(&mut self, pos: Point) {
-        let Some(layout) = &self.confirm_layout else {
-            return;
+    /// Answer the sheet with its action `index`: Cancel (0) puts the
+    /// question away, and the rest are its own answers in the order it
+    /// offered them.
+    fn answer_confirm(&mut self, index: usize) {
+        let choice = match index {
+            0 => None,
+            index => self.confirm.as_ref().and_then(|confirm| {
+                confirm
+                    .choices()
+                    .get(index.saturating_sub(1))
+                    .map(|face| face.choice)
+            }),
         };
-        match layout.hit(pos) {
-            Some(ModalHit::Action(0) | ModalHit::Close) => self.confirm = None,
-            Some(ModalHit::Action(index)) => {
-                // Action 0 is Cancel; the rest are the sheet's own answers,
-                // in the order it offered them.
-                let choice = self.confirm.as_ref().and_then(|confirm| {
-                    confirm
-                        .choices()
-                        .get(index.saturating_sub(1))
-                        .map(|f| f.choice)
-                });
+        self.confirm_sheet.reset();
+        match choice {
+            // `perform_confirmed` takes the question; leaving it standing
+            // where no answer was found puts it away instead of asking
+            // forever.
+            Some(choice) => self.perform_confirmed(choice),
+            None => self.confirm = None,
+        }
+    }
+
+    /// A press, a key or an assistive activation while the sheet is up: the
+    /// sheet's own answers, its close control and its scrim; nothing under
+    /// it.
+    fn answer_sheet(&mut self, response: ui::widget::SheetResponse) {
+        match response {
+            ui::widget::SheetResponse::Action(index) => self.answer_confirm(index),
+            ui::widget::SheetResponse::Dismiss => {
                 self.confirm = None;
-                if let Some(choice) = choice {
-                    self.perform_confirmed(choice);
-                }
+                self.confirm_sheet.reset();
             }
-            Some(ModalHit::Scrim) if layout.dismiss_on_scrim => self.confirm = None,
-            _ => {}
         }
     }
 
@@ -2310,6 +2418,59 @@ impl GitClientApp {
                 Hit::BackToCommit => {
                     button("git.back-to-commit".into(), rect, t("git-back-to-commit"))
                 }
+                Hit::ConflictNote => {
+                    let note = self.conflict_sentence();
+                    out.push((
+                        "git.conflict.note".into(),
+                        rect,
+                        AccessNode::new(Role::StaticText)
+                            .with_name(&note)
+                            .with_value(&note)
+                            .with_bounds(rect),
+                        None,
+                    ));
+                    continue;
+                }
+                // The question and what answering costs, read out as one
+                // sentence: a reader hears what it is deciding about.
+                Hit::ConfirmQuestion => {
+                    let Some(confirm) = &self.confirm else {
+                        continue;
+                    };
+                    let text = format!("{} {}", confirm.title(), confirm.body());
+                    out.push((
+                        "git.confirm.question".into(),
+                        rect,
+                        AccessNode::new(Role::StaticText)
+                            .with_name(&text)
+                            .with_value(&text)
+                            .with_bounds(rect),
+                        None,
+                    ));
+                    continue;
+                }
+                Hit::ConfirmAnswer(index) => {
+                    let Some(confirm) = &self.confirm else {
+                        continue;
+                    };
+                    let name = match *index {
+                        0 => t("git-cancel"),
+                        index => match confirm.choices().get(index.saturating_sub(1)) {
+                            Some(face) => face.label.clone(),
+                            None => continue,
+                        },
+                    };
+                    out.push((
+                        format!("git.confirm:{index}"),
+                        rect,
+                        AccessNode::new(Role::Button)
+                            .with_name(&name)
+                            .with_state(AccessState::new().focusable(true))
+                            .with_bounds(rect),
+                        Some(Hit::ConfirmAnswer(*index)),
+                    ));
+                    continue;
+                }
                 Hit::ResolveConflict(side) => {
                     let (target, name) = match side {
                         crate::repo::ConflictSide::Ours => {
@@ -2604,9 +2765,8 @@ impl Widget for GitClientApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        use ui::widget::modal_dialog;
         let Some(confirm) = &self.confirm else {
-            self.confirm_layout = None;
+            self.confirm_sheet.reset();
             return;
         };
         let window = presence.viewport.get().unwrap_or(self.rect);
@@ -2614,43 +2774,71 @@ impl Widget for GitClientApp {
         let body = confirm.body();
         let choices = confirm.choices();
         let cancel = t("git-cancel");
-        let hovered = |index: usize| {
-            self.confirm_layout
-                .as_ref()
-                .and_then(|layout| layout.actions.get(index).copied())
-                .zip(self.pointer)
-                .is_some_and(|(rect, p)| rect.contains(p))
-        };
-        let mut actions = vec![ModalAction::secondary(&cancel).hovered(hovered(0))];
-        actions.extend(choices.iter().enumerate().map(|(index, face)| {
-            let action = if face.danger {
+        let mut actions = vec![ModalAction::secondary(&cancel)];
+        // The answer the sheet recommends is its primary; a second answer
+        // that keeps the work another way is the alternate, which stands
+        // apart so the two are not read as the same act.
+        let mut recommended = true;
+        for face in &choices {
+            actions.push(if face.danger {
                 ModalAction::danger(&face.label)
-            } else {
+            } else if std::mem::take(&mut recommended) {
                 ModalAction::primary(&face.label)
-            };
-            action.hovered(hovered(index.saturating_add(1)))
-        }));
-        let style = theme.text(TextRole::Body);
-        let spec = ModalSpec::new(&title).actions(&actions);
-        let width = modal_dialog::body_width(window, spec.max_width, theme);
-        let (_, body_h) = text.measure_style(&body, Some(ui::num::f32_of_f64(width)), &style);
-        let spec = spec.body_height(f64::from(body_h)).dismiss_on_scrim(true);
-        let layout = modal_dialog::layout(window, &spec, text, theme);
-        modal_dialog::paint_backdrop(scene, transform, text, theme, &layout, &spec);
-        let (_, dim) = modal_dialog::ink(theme);
-        text.draw_style(
-            scene,
-            &body,
-            dim,
-            transform.pre_translate(vello::kurbo::Vec2::new(layout.body.x0, layout.body.y0)),
-            Some(ui::num::f32_of_f64(layout.body.width())),
-            &style,
-        );
-        modal_dialog::paint_actions(scene, transform, text, theme, &layout, &spec);
-        self.confirm_layout = Some(layout);
+            } else {
+                ModalAction::alternate(&face.label)
+            });
+        }
+        let spec = ModalSpec::new(&title)
+            .actions(&actions)
+            .dismiss_on_scrim(true);
+        self.confirm_sheet
+            .paint_message(scene, transform, text, theme, window, &spec, &body);
+        // While the question is up it is the whole of what a person can act
+        // on: the picture under the scrim is context, and a press there only
+        // dismisses. So the accessibility tree holds the question and its
+        // answers, and not the page they were asked about.
+        let Some(layout) = self.confirm_sheet.layout() else {
+            return;
+        };
+        let mut reached = vec![Target {
+            rect: Rect::new(
+                layout.title.x0,
+                layout.title.y0,
+                layout.body.x1,
+                layout.body.y1,
+            ),
+            hit: Hit::ConfirmQuestion,
+        }];
+        for (index, rect) in layout.actions.iter().copied().enumerate() {
+            if rect.area() > 0.0 {
+                reached.push(Target {
+                    rect,
+                    hit: Hit::ConfirmAnswer(index),
+                });
+            }
+        }
+        self.semantic = reached;
+        self.targets.clear();
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // A question holds the window while it asks: it takes the pointer,
+        // the keyboard (Tab moves between its answers, Enter takes the one
+        // under focus) and the scrim's dismissal, and the page behind it
+        // takes nothing.
+        if self.confirm.is_some() {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.pointer = Some(Point::new(
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
+                ));
+            }
+            if let Some(response) = self.confirm_sheet.handle(event, ctx.scale_factor) {
+                self.answer_sheet(response);
+            }
+            *ctx.handled = true;
+            return;
+        }
         let mut input = InputEventCtx {
             event,
             scale_factor: ctx.scale_factor,
@@ -2890,10 +3078,6 @@ impl GitClientApp {
         let Some(pos) = self.pointer else {
             return;
         };
-        if self.confirm.is_some() {
-            self.confirm_press(pos);
-            return;
-        }
         if self.scroll_bar_press(pos) {
             self.set_focus(None);
             return;
@@ -2974,14 +3158,8 @@ impl GitClientApp {
             return;
         }
 
-        // The confirmation sheet holds the keyboard: Escape cancels it.
-        if self.confirm.is_some() {
-            if matches!(&ev.logical_key, Key::Named(NamedKey::Escape)) {
-                self.confirm = None;
-            }
-            *handled = true;
-            return;
-        }
+        // A question holds the keyboard through the sheet it is asked on,
+        // which `handle_event` routes before any of this runs.
 
         // A focused text field takes the keys, except Enter (submit) and Escape
         // (blur) which the app intercepts. Text editing — cursor, selection,
@@ -3649,6 +3827,16 @@ impl GitClientApp {
                 }
                 self.diff_scroll = 0.0;
             }
+            // The file a merge left conflicted, open, so the capture shows
+            // the choice it waits on and what each side costs.
+            Some("conflict") => self.test_select_conflicted_file(),
+            // The question a dirty tree asks before it changes branch: the
+            // capture of the decision itself, not of what it is about.
+            Some("switch") => {
+                self.confirm = Some(Confirm::SwitchBranch {
+                    name: "wgpu-pipeline".to_owned(),
+                });
+            }
             // The narrow window's list column, revealed over its scrim
             // rather than the closed default a fresh narrow window opens to.
             Some("narrow") => self.drawer.snap(true),
@@ -3676,6 +3864,49 @@ impl GitClientApp {
 mod tests {
     use super::*;
     use ui::widget::Widget;
+
+    /// The first-run screen's three controls fit the lane they are drawn in:
+    /// side by side while the path keeps room to type in, and in two rows
+    /// below that, so neither a field nor a button is squeezed to nothing.
+    #[test]
+    fn the_open_screen_folds_its_row_before_it_squeezes_the_path() {
+        let wide_lane = Rect::new(0.0, 0.0, 400.0, 400.0);
+        let wide = OpenControls::at(wide_lane, 60.0, 32.0, 8.0, 102.0, 58.0, 180.0);
+        assert!(
+            (wide.field.y0 - wide.choose.y0).abs() < f64::EPSILON,
+            "one row when it fits"
+        );
+        assert!(
+            wide.field.width() >= 180.0,
+            "the path keeps its room: {:?}",
+            wide.field
+        );
+        assert!(wide.choose.x1 <= wide.open.x0, "the buttons do not overlap");
+        assert!(!wide.field.overlaps(wide.choose) && !wide.choose.overlaps(wide.open));
+
+        // The same lane at a 1.5 text scale in an expanded language: the two
+        // buttons take almost all of it.
+        let lane = Rect::new(0.0, 0.0, 342.0, 400.0);
+        let narrow = OpenControls::at(lane, 60.0, 48.0, 12.0, 215.0, 85.0, 180.0);
+        assert!(
+            narrow.field.y1 <= narrow.choose.y0,
+            "the buttons moved under the path: {:?} {:?}",
+            narrow.field,
+            narrow.choose
+        );
+        assert!(
+            (narrow.field.width() - lane.width()).abs() < f64::EPSILON,
+            "the path keeps the whole row"
+        );
+        assert!(
+            narrow.choose.width() >= 215.0,
+            "the chooser keeps its label"
+        );
+        assert!(
+            narrow.choose.x1 <= narrow.open.x0,
+            "the buttons do not overlap"
+        );
+    }
 
     #[test]
     fn live_initial_view_stays_empty_until_the_repository_is_explicitly_bound() {
