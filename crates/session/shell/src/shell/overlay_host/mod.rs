@@ -272,6 +272,7 @@ mod qs_wifi_radio_tests;
 mod queries;
 mod room_activity;
 mod scene;
+pub(crate) use scene::take_section_spans;
 mod services;
 mod setup;
 mod shell_clicks;
