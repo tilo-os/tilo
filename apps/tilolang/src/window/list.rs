@@ -63,8 +63,8 @@ pub struct RowData {
     pub row: Option<UiNode>,
     /// What the row's checkbox shows, when it is bound to a field.
     pub checked: Option<bool>,
-    /// What a participant's avatar on the row is called.
-    pub avatar: Option<(String, String)>,
+    /// The row's avatar, when its view gives it one.
+    pub avatar: Option<RowAvatar>,
     pub actions: Rc<[RowAction]>,
     /// Who else is at the item now: a collaborator or an agent whose window shows it.
     pub presence: Option<String>,
@@ -88,14 +88,50 @@ pub struct RowSource {
     pub names: Names,
 }
 
-impl RowSource {
+/// How the rows of a list are read from the view that renders them: which view and list, and
+/// what a row the view rendered is kept as.
+pub trait RowRead {
+    type Data: Clone + PartialEq;
+
+    /// The view whose list it is.
+    fn view(&self) -> &Rc<RefCell<ViewInstance>>;
+
+    /// The key of the `list` node.
+    fn list(&self) -> &str;
+
     /// What `row` (a row of the list, as the view rendered it) shows.
+    fn data(&self, view: &ViewInstance, row: &UiNode) -> Option<Self::Data>;
+
+    /// What a row is called, for the list's type-ahead and accessibility.
+    fn label(data: &Self::Data) -> Option<String>;
+}
+
+impl RowRead for RowSource {
+    type Data = RowData;
+
+    fn view(&self) -> &Rc<RefCell<ViewInstance>> {
+        &self.view
+    }
+
+    fn list(&self) -> &str {
+        &self.list
+    }
+
+    fn label(data: &RowData) -> Option<String> {
+        Some(
+            data.row
+                .as_ref()
+                .and_then(|node| text(node, "title"))
+                .unwrap_or_else(|| data.label.clone()),
+        )
+    }
+
     fn data(&self, view: &ViewInstance, row: &UiNode) -> Option<RowData> {
         let item = find_kind(row, "item")?;
         let Some(Value::Ref(reference)) = item.props.get("item") else {
             return None;
         };
-        let target = reference.target.clone();
+        let target = ResourceRef::clone(&reference.target);
         let list_row = find_kind(item, "list_row").cloned();
         let checked = list_row
             .as_ref()
@@ -108,7 +144,10 @@ impl RowSource {
         let avatar = list_row
             .as_ref()
             .and_then(|node| match node.props.get("avatar") {
-                Some(Value::Principal(who)) => Some((self.names.label(&who.0), who.0.clone())),
+                Some(Value::Principal(who)) => {
+                    Some(RowAvatar::Of(self.names.label(&who.0), who.0.clone()))
+                }
+                Some(Value::Opt(None)) => Some(RowAvatar::Space),
                 _ => None,
             });
         Some(RowData {
@@ -124,6 +163,16 @@ impl RowSource {
     }
 }
 
+/// The avatar of a row whose view gives it one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowAvatar {
+    /// A participant: what they are called, and their identity.
+    Of(String, String),
+    /// None this time (`.none`): the row keeps the room one takes, so its text lines up with
+    /// that of the rows beside it that have one.
+    Space,
+}
+
 /// The first node of `kind` at or under `node`.
 fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
     if node.kind == kind {
@@ -135,27 +184,37 @@ fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
 }
 
 /// The rows of a list: every row's key, in order, as the view's list holds them, and the rows
-/// the list shows, rendered by the view when the list asks for them.
-#[derive(Default)]
-pub struct Rows {
-    source: Option<Rc<RowSource>>,
+/// the list shows, rendered by the view when the list asks for them and read as `S` says.
+pub struct Rows<S: RowRead = RowSource> {
+    source: Option<Rc<S>>,
     /// Shared, so the order is copied cheaply when the list needs it before and after a change.
     keys: Vec<Rc<str>>,
     /// Where each key is, built when first asked after the keys changed.
     index: RefCell<Option<HashMap<Rc<str>, usize>>>,
     /// The rows shown, by key.
-    shown: RefCell<HashMap<String, RowData>>,
+    shown: RefCell<HashMap<String, S::Data>>,
 }
 
-impl Rows {
+impl<S: RowRead> Default for Rows<S> {
+    fn default() -> Self {
+        Self {
+            source: None,
+            keys: Vec::new(),
+            index: RefCell::new(None),
+            shown: RefCell::default(),
+        }
+    }
+}
+
+impl<S: RowRead> Rows<S> {
     /// The rows of `source`'s list, none of them shown yet.
     #[must_use]
-    pub fn of(source: Rc<RowSource>) -> Self {
+    pub fn of(source: Rc<S>) -> Self {
         let keys = {
-            let view = source.view.borrow();
-            let len = view.list_len(&source.list).unwrap_or(0);
+            let view = source.view().borrow();
+            let len = view.list_len(source.list()).unwrap_or(0);
             (0..len)
-                .filter_map(|index| view.row_key(&source.list, index))
+                .filter_map(|index| view.row_key(source.list(), index))
                 .map(Rc::from)
                 .collect()
         };
@@ -167,35 +226,23 @@ impl Rows {
         }
     }
 
-    /// Rows that are given rather than read from a view: for tests of the list's chrome.
-    #[cfg(test)]
-    #[must_use]
-    pub fn new(rows: Vec<RowData>) -> Self {
-        Self {
-            source: None,
-            keys: rows.iter().map(|row| Rc::from(row.key.as_str())).collect(),
-            index: RefCell::new(None),
-            shown: RefCell::new(rows.into_iter().map(|row| (row.key.clone(), row)).collect()),
-        }
-    }
-
     /// Whether these are the rows of `source`'s list.
-    fn reads(&self, source: &RowSource) -> bool {
+    pub fn reads(&self, source: &S) -> bool {
         self.source
             .as_ref()
-            .is_some_and(|own| Rc::ptr_eq(&own.view, &source.view) && own.list == source.list)
+            .is_some_and(|own| Rc::ptr_eq(own.view(), source.view()) && own.list() == source.list())
     }
 
     /// The row of `key`, when the list shows it.
     #[must_use]
-    pub fn find(&self, key: &str) -> Option<RowData> {
+    pub fn find(&self, key: &str) -> Option<S::Data> {
         self.shown.borrow().get(key).cloned()
     }
 
     /// The rows shown, in the list's order.
     #[cfg(test)]
     #[must_use]
-    pub fn shown(&self) -> Vec<RowData> {
+    pub fn shown(&self) -> Vec<S::Data> {
         let shown = self.shown.borrow();
         self.keys
             .iter()
@@ -203,63 +250,17 @@ impl Rows {
             .collect()
     }
 
-    /// The row of the item `target`, whether or not it is shown: the rows of a list are keyed
-    /// by their loop and their item's id (`<loop>/<id>`).
-    #[must_use]
-    pub fn key_of(&self, target: &ResourceRef) -> Option<String> {
-        // The loop's key is what a shown row's key has before its item's id (an id holds `/`
-        // itself); with no row shown, the loop's key holds none.
-        let prefix = self
-            .shown
-            .borrow()
-            .values()
-            .find_map(|row| {
-                row.key
-                    .strip_suffix(&row.item.id_string())
-                    .map(str::to_owned)
-            })
-            .or_else(|| {
-                let (prefix, _) = self.keys.first()?.split_once('/')?;
-                Some(format!("{prefix}/"))
-            })?;
-        let key = format!("{prefix}{}", target.id_string());
-        self.index_of(&key).map(|_| key)
-    }
-
     /// Apply the view's changes of the list's own children, in order: rows inserted, removed
     /// and moved. Returns them as the list widget takes them, each against the order the ones
     /// before it left.
     pub fn apply(&mut self, patches: &[Patch]) -> Vec<ListModelChange<String>> {
-        let mut out = Vec::new();
-        for patch in patches {
-            match patch {
-                Patch::Insert { index, node, .. } => {
-                    let index = (*index).min(self.keys.len());
-                    self.keys.insert(index, Rc::from(node.key.as_str()));
-                    out.push(ListModelChange::RowsInserted { index, count: 1 });
-                }
-                Patch::Remove { key, .. } => {
-                    if let Some(index) = self.keys.iter().position(|k| **k == **key) {
-                        self.keys.remove(index);
-                        self.shown.borrow_mut().remove(key);
-                        out.push(ListModelChange::RowsRemoved { index, count: 1 });
-                    }
-                }
-                Patch::Move { key, to, .. } => {
-                    if let Some(from) = self.keys.iter().position(|k| **k == **key) {
-                        let moved = self.keys.remove(from);
-                        let to = (*to).min(self.keys.len());
-                        self.keys.insert(to, moved);
-                        out.push(ListModelChange::RowsMoved { from, to, count: 1 });
-                    }
-                }
-                _ => {}
-            }
-        }
-        if !out.is_empty() {
+        let changes = apply_to_keys(&mut self.keys, patches, |key| {
+            self.shown.borrow_mut().remove(key);
+        });
+        if !changes.is_empty() {
             *self.index.borrow_mut() = None;
         }
-        out
+        changes
     }
 
     /// Read the shown rows of `keys` again from the view. Returns the keys whose row shows
@@ -268,7 +269,7 @@ impl Rows {
         let Some(source) = &self.source else {
             return Vec::new();
         };
-        let Ok(view) = source.view.try_borrow() else {
+        let Ok(view) = source.view().try_borrow() else {
             return Vec::new();
         };
         let mut shown = self.shown.borrow_mut();
@@ -297,7 +298,44 @@ impl Rows {
     }
 }
 
-impl ListModel for Rows {
+impl Rows<RowSource> {
+    /// Rows that are given rather than read from a view: for tests of the list's chrome.
+    #[cfg(test)]
+    #[must_use]
+    pub fn new(rows: Vec<RowData>) -> Self {
+        Self {
+            source: None,
+            keys: rows.iter().map(|row| Rc::from(row.key.as_str())).collect(),
+            index: RefCell::new(None),
+            shown: RefCell::new(rows.into_iter().map(|row| (row.key.clone(), row)).collect()),
+        }
+    }
+
+    /// The row of the item `target`, whether or not it is shown: the rows of a list are keyed
+    /// by their loop and their item's id (`<loop>/<id>`).
+    #[must_use]
+    pub fn key_of(&self, target: &ResourceRef) -> Option<String> {
+        // The loop's key is what a shown row's key has before its item's id (an id holds `/`
+        // itself); with no row shown, the loop's key holds none.
+        let prefix = self
+            .shown
+            .borrow()
+            .values()
+            .find_map(|row| {
+                row.key
+                    .strip_suffix(&row.item.id_string())
+                    .map(str::to_owned)
+            })
+            .or_else(|| {
+                let (prefix, _) = self.keys.first()?.split_once('/')?;
+                Some(format!("{prefix}/"))
+            })?;
+        let key = format!("{prefix}{}", target.id_string());
+        self.index_of(&key).map(|_| key)
+    }
+}
+
+impl<S: RowRead> ListModel for Rows<S> {
     type Key = String;
 
     fn len(&self) -> usize {
@@ -328,11 +366,11 @@ impl ListModel for Rows {
         let Some(source) = self.source.clone() else {
             return;
         };
-        let Ok(mut view) = source.view.try_borrow_mut() else {
+        let Ok(mut view) = source.view().try_borrow_mut() else {
             return;
         };
         let mut shown = self.shown.borrow_mut();
-        for patch in view.hide_rows(&source.list, range.clone()) {
+        for patch in view.hide_rows(source.list(), range.clone()) {
             if let Patch::Remove { parent, .. } = patch
                 && let Some(row) = parent.last()
             {
@@ -346,7 +384,7 @@ impl ListModel for Rows {
             if shown.contains_key(&**key) {
                 continue;
             }
-            let row = match view.row(&source.list, index) {
+            let row = match view.row(source.list(), index) {
                 Ok(Some(row)) => row.clone(),
                 Ok(None) => continue,
                 Err(error) => {
@@ -363,13 +401,7 @@ impl ListModel for Rows {
     fn label(&self, index: usize) -> Option<String> {
         let key = self.keys.get(index)?;
         let shown = self.shown.borrow();
-        let data = shown.get(&**key)?;
-        Some(
-            data.row
-                .as_ref()
-                .and_then(|node| text(node, "title"))
-                .unwrap_or_else(|| data.label.clone()),
-        )
+        S::label(shown.get(&**key)?)
     }
 }
 
@@ -430,8 +462,10 @@ fn row(data: &RowData, requests: &Requests, sink: &EventSink) -> Element {
             });
         }
     }
-    if let Some((name, identity)) = &data.avatar {
-        row = row.avatar(name.clone(), identity.clone());
+    match &data.avatar {
+        Some(RowAvatar::Of(name, identity)) => row = row.avatar(name.clone(), identity.clone()),
+        Some(RowAvatar::Space) => row = row.avatar_space(),
+        None => {}
     }
     if let Some(identity) = &data.presence {
         row = row.presence(identity.clone());
@@ -680,19 +714,7 @@ impl ListPane {
         let Some(list) = self.virtual_list() else {
             return;
         };
-        if !structure.is_empty() {
-            // The changes are only known once applied, so the model applies them on a copy of
-            // its order first.
-            let mut keys = list.model().keys.clone();
-            let changes = apply_keys(&mut keys, structure);
-            list.update_model_changes(&changes, |rows| {
-                rows.apply(structure);
-            });
-        }
-        let refreshed = list.model().refresh(rows);
-        if !refreshed.is_empty() {
-            list.invalidate_rows(refreshed);
-        }
+        apply_changes(list, structure, rows);
         if list.model().is_empty() {
             let rows = list.update_model(std::mem::take);
             self.show(rows);
@@ -780,16 +802,64 @@ impl ListPane {
     }
 }
 
-/// `structure` applied to `keys`: the changes the list widget takes, as [`Rows::apply`] makes
-/// them.
-fn apply_keys(keys: &mut Vec<Rc<str>>, structure: &[Patch]) -> Vec<ListModelChange<String>> {
-    let mut rows = Rows {
-        keys: std::mem::take(keys),
-        ..Rows::default()
-    };
-    let changes = rows.apply(structure);
-    *keys = rows.keys;
-    changes
+/// The view's changes of a list's own children (`patches`, in order) applied to its row
+/// `keys`: rows inserted, removed and moved, each as the list widget takes it, against the order
+/// the ones before it left. `removed` hears of each row taken out.
+pub fn apply_to_keys(
+    keys: &mut Vec<Rc<str>>,
+    patches: &[Patch],
+    mut removed: impl FnMut(&str),
+) -> Vec<ListModelChange<String>> {
+    let mut out = Vec::new();
+    for patch in patches {
+        match patch {
+            Patch::Insert { index, node, .. } => {
+                let index = (*index).min(keys.len());
+                keys.insert(index, Rc::from(node.key.as_str()));
+                out.push(ListModelChange::RowsInserted { index, count: 1 });
+            }
+            Patch::Remove { key, .. } => {
+                if let Some(index) = keys.iter().position(|k| **k == **key) {
+                    keys.remove(index);
+                    removed(key);
+                    out.push(ListModelChange::RowsRemoved { index, count: 1 });
+                }
+            }
+            Patch::Move { key, to, .. } => {
+                if let Some(from) = keys.iter().position(|k| **k == **key) {
+                    let moved = keys.remove(from);
+                    let to = (*to).min(keys.len());
+                    keys.insert(to, moved);
+                    out.push(ListModelChange::RowsMoved { from, to, count: 1 });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The view inserted, removed or moved rows of the list `list` shows (`structure`, in order)
+/// and changed the rows of `rows` (by key): the list takes each change as it is, and rebuilds
+/// alone each shown row that shows something else now.
+pub fn apply_changes<S: RowRead>(
+    list: &mut VirtualList<Rows<S>>,
+    structure: &[Patch],
+    rows: Vec<String>,
+) {
+    if !structure.is_empty() {
+        // The changes are only known once applied, so the model applies them on a copy of its
+        // order first.
+        let mut keys = list.model().keys.clone();
+        let changes = apply_to_keys(&mut keys, structure, |_| {});
+        list.update_model_changes(&changes, |rows| {
+            rows.apply(structure);
+        });
+    }
+    let refreshed = list.model().refresh(rows);
+    if !refreshed.is_empty() {
+        list.invalidate_rows(refreshed);
+    }
 }
 
 impl Decorator for ListPane {
@@ -898,7 +968,7 @@ mod tests {
             list.iter().map(|k| Rc::from(k.as_str())).collect()
         };
         let old = keys(&["a", "b", "c", "d"]);
-        let mut rows = Rows {
+        let mut rows: Rows = Rows {
             keys: shared(&old),
             ..Rows::default()
         };
