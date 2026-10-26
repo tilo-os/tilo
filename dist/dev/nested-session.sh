@@ -40,7 +40,9 @@
 #                      the session follows this machine's configuration.
 #                      nested-pair.sh points two sessions at a local site.
 #   --ready FILE       once the shell answers on its control socket, write the
-#                      socket and the runtime directory to FILE as JSON
+#                      socket, the runtime directory and the state directory to
+#                      FILE as JSON (also kept as session.json in the runtime
+#                      directory)
 #
 # The window opens at 1280x800 logical pixels; set TILO_WINIT_SIZE=WxH
 # (physical pixels) to choose another size. A headless session renders a
@@ -287,6 +289,11 @@ export TILO_APPS_DATA_DIR=$state/apps
 export TILO_RUNTIME_BUNDLE_DIR=$runtimes
 export TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$trust
 export TILO_LAUNCHER_BIN=$bin/tilo-launcher
+# A development session: a running app whose payload is its module (a
+# tilolang app) follows reinstalls of its package, verified by the launcher
+# as a launch is, so `tilolang dev` swaps a new build in without a restart
+# (crates/packaging/launcher/src/live_module.rs). A shipped launcher ignores it.
+export TILO_LAUNCHER_LIVE_MODULES=1
 # The interfaces this build of the system provides, not the host's: on a Tilo
 # host /usr/share/tilo/system-interfaces.toml is that image's, which may be
 # newer or older than the apps built here.
@@ -546,6 +553,10 @@ confirm_native() {
 if [[ -n $join_file ]]; then
     TILO_TEST_CONTROL=$control confirm_native > "$logs/native.log" 2>&1 &
 fi
+# Where this session is, for tools that attach to it by its runtime directory
+# or control socket (`tilolang dev --session`): the same JSON as --ready.
+jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" \
+    '{control: $control, runtime: $runtime, state: $state}' > "$runtime/session.json"
 # Tell whoever drives the session that it answers: the shell serves its
 # control socket once it is up.
 if [[ -n $ready_out ]]; then
@@ -557,8 +568,7 @@ if [[ -n $ready_out ]]; then
             ((tries--)) && kill -0 "$shell_pid" 2>/dev/null || exit 1
             sleep 0.2
         done
-        jq -n --arg control "$control" --arg runtime "$runtime" \
-            '{control: $control, runtime: $runtime}' > "$ready_out.partial"
+        cp "$runtime/session.json" "$ready_out.partial"
         mv "$ready_out.partial" "$ready_out"
     ) &
 fi
