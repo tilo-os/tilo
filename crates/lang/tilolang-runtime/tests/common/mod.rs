@@ -588,7 +588,9 @@ pub fn of_kind<'a>(
 /// The resource an action returned.
 pub fn returned_ref(out: tilolang_runtime::InvokeOutcome) -> tilolang_runtime::ResourceRef {
     match out {
-        tilolang_runtime::InvokeOutcome::Done(Value::Ref(r)) => r.target,
+        tilolang_runtime::InvokeOutcome::Done(Value::Ref(r)) => {
+            std::rc::Rc::unwrap_or_clone(r.target)
+        }
         other => panic!("expected a returned resource, got {other:?}"),
     }
 }

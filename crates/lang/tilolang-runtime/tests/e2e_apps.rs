@@ -159,7 +159,7 @@ mod cases {
         let part = items(w, message, "parts").pop().expect("a block part");
         match w.rt.read(&part, "invocation").unwrap() {
             Value::Opt(Some(inner)) => match *inner {
-                Value::Ref(r) => r.target,
+                Value::Ref(r) => std::rc::Rc::unwrap_or_clone(r.target),
                 other => panic!("not a reference: {other:?}"),
             },
             other => panic!("the host has recorded no invocation: {other:?}"),
@@ -180,7 +180,7 @@ mod cases {
         items
             .into_iter()
             .map(|v| match v {
-                Value::Ref(r) => r.target,
+                Value::Ref(r) => std::rc::Rc::unwrap_or_clone(r.target),
                 other => panic!("not a reference: {other:?}"),
             })
             .collect()
@@ -240,7 +240,7 @@ mod cases {
                     .any(|r| text_prop(r, "title") == title)
             })
             .and_then(|item| match item.props.get("item") {
-                Some(Value::Ref(r)) => Some(r.target.clone()),
+                Some(Value::Ref(r)) => Some(ResourceRef::clone(&r.target)),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no item `{title}` in\n{}", dump(tree)))
@@ -799,10 +799,13 @@ mod cases {
         let (bo, guest) = (Principal::new("person:bo"), Principal::new("person:guest"));
         wb.auth.deny_invoker(&guest);
         let card_for = |who: &Principal| {
-            let view = wb
+            let mut view = wb
                 .rt
                 .open_view(who, &apps.chat.view("thread"), vec![res(&conv)])
                 .unwrap();
+            // The messages are rows of the thread's list: read whole, as a host that draws
+            // every row does.
+            view.set_lazy_rows(false).unwrap();
             let card = of_kind(view.tree(), "invocation")[0];
             (
                 text_prop(card, "state"),
@@ -1067,7 +1070,7 @@ mod cases {
         let shown: Vec<&ResourceRef> = cards
             .iter()
             .map(|c| match &c.props["item"] {
-                Value::Ref(r) => &r.target,
+                Value::Ref(r) => &*r.target,
                 other => panic!("a card shows a resource, not {other:?}"),
             })
             .collect();

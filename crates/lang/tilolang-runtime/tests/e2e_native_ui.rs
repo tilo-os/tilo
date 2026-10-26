@@ -314,6 +314,6 @@ action add(l: Tasks, title: Text) {
         let summary = open("summary");
         let card = of_kind(&summary, "card")[0];
         assert_eq!(card.props["count"], Value::Int(3), "{}", dump(&summary));
-        assert!(matches!(&card.props["item"], Value::Ref(r) if r.target == l));
+        assert!(matches!(&card.props["item"], Value::Ref(r) if *r.target == l));
     }
 }

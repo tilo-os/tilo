@@ -12,8 +12,9 @@ use std::time::Duration;
 use tilolang_runtime::Translation;
 use tilolang_tilo::bench::{BenchConfig, Env, Isolation, Record, memory_child, run};
 
-/// Section 4.1, for the runtime's share of a frame.
-const OPEN_P95_MS: f64 = 300.0;
+/// Section 4.1, for the runtime's share of a frame. Opening is held to half the section's
+/// 300 ms: every app opens 10k items well inside it (DECISIONS.md, "Where it stands").
+const OPEN_P95_MS: f64 = 150.0;
 const KEYSTROKE_MS: f64 = 2.0;
 const PEER_MS: f64 = 2.0;
 const SCROLL_P50_MS: f64 = 1.0;
@@ -92,6 +93,30 @@ fn the_runtime_meets_its_budgets() {
     // budgets at 10k; memory, an app's as the platform measures it, at 1k.
     for app in ["notes", "chat"] {
         let records = bench(apps.join(app), vec![1000, 10_000]);
+        if app == "chat" {
+            // One conversation of 10k messages, in its window's transcript.
+            at_most(
+                &records,
+                ("thread_open", "10k"),
+                95,
+                OPEN_P95_MS,
+                &mut misses,
+            );
+            at_most(
+                &records,
+                ("thread_keystroke", "10k"),
+                95,
+                KEYSTROKE_MS,
+                &mut misses,
+            );
+            at_most(
+                &records,
+                ("thread_scroll", "10k"),
+                50,
+                SCROLL_P50_MS,
+                &mut misses,
+            );
+        }
         at_most(
             &records,
             ("memory_anon", "1k"),
@@ -112,16 +137,17 @@ fn the_runtime_meets_its_budgets() {
         at_most(&records, ("idle_wakeups", "10k"), 100, 0.0, &mut misses);
     }
 
-    // Todo and the board hold every budget but opening 10k items (DECISIONS.md, "Not met
-    // yet").
+    // Todo, and the board over a notebook, a todo list and a chat of 10k items each.
     let todo = bench(apps.join("todo"), vec![1000, 10_000]);
     at_most(&todo, ("memory_anon", "1k"), 100, MEMORY_MIB, &mut misses);
+    at_most(&todo, ("open", "10k"), 95, OPEN_P95_MS, &mut misses);
     at_most(&todo, ("keystroke", "10k"), 95, KEYSTROKE_MS, &mut misses);
     at_most(&todo, ("peer_edit", "10k"), 95, PEER_MS, &mut misses);
     at_most(&todo, ("scroll", "10k"), 50, SCROLL_P50_MS, &mut misses);
     at_most(&todo, ("idle_wakeups", "10k"), 100, 0.0, &mut misses);
     let board = bench(apps.join("board"), vec![1000, 10_000]);
     at_most(&board, ("memory_anon", "1k"), 100, MEMORY_MIB, &mut misses);
+    at_most(&board, ("open", "10k"), 95, OPEN_P95_MS, &mut misses);
     at_most(&board, ("keystroke", "10k"), 95, KEYSTROKE_MS, &mut misses);
     at_most(&board, ("peer_edit", "10k"), 95, PEER_MS, &mut misses);
     at_most(&board, ("idle_wakeups", "10k"), 100, 0.0, &mut misses);

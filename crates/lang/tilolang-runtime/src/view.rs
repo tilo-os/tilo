@@ -7,6 +7,12 @@ use crate::ids::{FieldId, ModuleHash};
 use crate::value::{ResourceRef, Value};
 use crate::view_state::StateKey;
 
+/// The property of a `list` in a card: how many of its rows it shows (`tilolang::prims::
+/// PREVIEW_ROWS`). Only those are built.
+pub(crate) const PREVIEW: &str = "preview";
+/// The property a preview gets: how many rows the list has, the ones not built included.
+pub(crate) const LIST_LEN: &str = "len";
+
 /// A two-way binding: an input or checkbox edits this field or view state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Binding {
@@ -94,6 +100,16 @@ impl UiNode {
         parts.try_fold(self, |node, part| {
             node.children.iter().find(|c| c.key == part)
         })
+    }
+
+    /// How many rows a `list` has: its children, or for a preview, which builds only the rows
+    /// it shows, the count it carries (its `len` property).
+    #[must_use]
+    pub fn items_total(&self) -> usize {
+        match self.props.get(LIST_LEN) {
+            Some(Value::Int(len)) => usize::try_from(*len).unwrap_or(0),
+            _ => self.children.len(),
+        }
     }
 
     /// Number of nodes in the subtree.

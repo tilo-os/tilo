@@ -447,3 +447,220 @@ fn publishing_plans_no_action_until_one_runs() {
     }
     assert_eq!(plans(), 1);
 }
+
+/// Conversations of notes: a collection within a collection's items.
+const THREADS: &str = r#"app so.tilo.threads "Threads"
+
+type Note {
+  text: Text merge text
+}
+
+type Thread {
+  title: Text merge text
+  notes: Collection<Note>
+  draft: Text merge text
+}
+
+type Inbox {
+  threads: Collection<Thread>
+}
+
+action start(i: Inbox, title: Text) { i.threads.insert(Thread(title: title)) }
+
+action post(t: Thread, text: Text) { t.notes.insert(Note(text: text)) }
+
+action clear(n: Note) { n.text = "" }
+
+root Inbox
+
+default view main for Inbox
+
+view main(i: Inbox) {
+  page {
+    for t in i.threads {
+      text(t.title)
+    }
+  }
+}
+"#;
+
+const THREADS_APP: &str = "so.tilo.threads";
+
+fn invoke(
+    replica: &mut Replica,
+    meta: &tilolang_runtime::Meta,
+    (ty, action): (&str, &str),
+    resource: &str,
+    args: &Json,
+) {
+    let action = meta.actions.iter().find(|a| a.name == action).unwrap();
+    let planned = replica
+        .host
+        .plan(&PlanRequest {
+            app: THREADS_APP,
+            kind: &format!("tl.{THREADS_APP}.{ty}"),
+            action_id: &action.id,
+            resource: Some(resource),
+            args: args.as_object().unwrap(),
+            caller: None,
+        })
+        .unwrap();
+    replica.apply(&planned);
+}
+
+fn edit_text(replica: &mut Replica, root: &str, path: Vec<Segment>, text: &str) {
+    replica.apply(&DynAction {
+        app: THREADS_APP.to_owned(),
+        kind: format!("tl.{THREADS_APP}.Inbox"),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Edit {
+            id: root.to_owned(),
+            edit: Edit::new(
+                path,
+                EditOp::Replace {
+                    text: text.to_owned(),
+                },
+            ),
+        }],
+    });
+}
+
+/// Every published resource with a deferred action, by id, and that action's builder: a
+/// resource republished gets a builder of its own, one kept keeps it.
+fn builders(resource: &Resource, out: &mut std::collections::BTreeMap<String, usize>) {
+    if let Some(build) = resource.actions.iter().find_map(|a| match &a.input {
+        tilo_actions::ActionInput::Deferred { build, .. } => Some(build),
+        _ => None,
+    }) {
+        out.insert(
+            resource.id.as_str().to_owned(),
+            Arc::as_ptr(build).cast::<()>() as usize,
+        );
+    }
+    for child in &resource.children {
+        builders(child, out);
+    }
+}
+
+/// A change within a conversation is republished where it is: typing its draft reads its
+/// label again, retyping a note relabels that note, posting one adds it, and the notes no
+/// change reached are the ones published before.
+#[test]
+fn a_change_within_an_item_republishes_only_the_resources_it_reached() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(THREADS, "")]);
+    let meta = packages[0].meta.clone();
+    let root = ada.host.root_of(THREADS_APP).unwrap().doc;
+    ada.commit();
+    let threads = field_id(&meta, "Inbox", "threads");
+    let notes = field_id(&meta, "Thread", "notes");
+    invoke(
+        &mut ada,
+        &meta,
+        ("Inbox", "start"),
+        &root,
+        &json!({ "title": "" }),
+    );
+    let thread_id = match ada.host.store().record(&root).unwrap().get(&threads) {
+        Some(DynValue::Collection(items)) => items.iter().next().unwrap().0.as_str().to_owned(),
+        other => panic!("{other:?}"),
+    };
+    let thread = format!("{root}/{threads}:{thread_id}");
+    for text in ["one", "two", "three"] {
+        invoke(
+            &mut ada,
+            &meta,
+            ("Thread", "post"),
+            &thread,
+            &json!({ "text": text }),
+        );
+    }
+    let note_ids: Vec<String> = match ada.host.store().record(&root).unwrap().get(&threads) {
+        Some(DynValue::Collection(items)) => match items.iter().next().unwrap().1.get(&notes) {
+            Some(DynValue::Collection(notes)) => {
+                notes.iter().map(|(id, _)| id.as_str().to_owned()).collect()
+            }
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    };
+    let anew = |ada: &Replica| {
+        let planner: Arc<dyn Planner> = Arc::new(Refusing);
+        let record = ada.host.store().record(&root).unwrap();
+        let label = ada.host.label_of(&root);
+        shape(&publish_tree(
+            &meta, &record, "Inbox", &root, &label, &planner,
+        ))
+    };
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    assert_eq!(shape(&published.trees()[&root]), anew(&ada));
+    let before = {
+        let mut out = std::collections::BTreeMap::new();
+        builders(&published.trees()[&root], &mut out);
+        out
+    };
+    assert_eq!(before.len(), 3, "the three notes: {before:?}");
+    let note = |id: &str| resource_id(THREADS_APP, &format!("{thread}/{notes}:{id}"));
+    // Typing the draft: the conversation names itself by it once its title is empty.
+    let thread_path = |field: &str| {
+        vec![
+            Segment::Field(threads.clone()),
+            Segment::Item(Id::from_raw(&thread_id)),
+            Segment::Field(field_id(&meta, "Thread", field)),
+        ]
+    };
+    edit_text(&mut ada, &root, thread_path("draft"), "hel");
+    assert_eq!(published.update(&ada.host, &planner), vec![root.clone()]);
+    check_kept(&ada, &published, &before, "typing the draft", &anew);
+
+    let mut note_path = thread_path("notes");
+    note_path.push(Segment::Item(Id::from_raw(&note_ids[1])));
+    note_path.push(Segment::Field(field_id(&meta, "Note", "text")));
+    edit_text(&mut ada, &root, note_path, "zwei");
+    published.update(&ada.host, &planner);
+    check_kept(&ada, &published, &before, "retyping a note", &anew);
+    assert_eq!(
+        find(&published.trees()[&root], &note(&note_ids[1]))
+            .unwrap()
+            .label,
+        "zwei"
+    );
+
+    invoke(
+        &mut ada,
+        &meta,
+        ("Thread", "post"),
+        &thread,
+        &json!({ "text": "four" }),
+    );
+    published.update(&ada.host, &planner);
+    check_kept(&ada, &published, &before, "posting a note", &anew);
+}
+
+fn find<'r>(resource: &'r Resource, id: &str) -> Option<&'r Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    resource.children.iter().find_map(|child| find(child, id))
+}
+
+/// The tree published equals publishing anew, and every resource with a builder in `before`
+/// still has the one it had.
+fn check_kept(
+    ada: &Replica,
+    published: &Publications,
+    before: &std::collections::BTreeMap<String, usize>,
+    step: &str,
+    anew: &dyn Fn(&Replica) -> String,
+) {
+    let tree = published.trees().values().next().unwrap();
+    assert_eq!(shape(tree), anew(ada), "after {step}");
+    let mut now = std::collections::BTreeMap::new();
+    builders(tree, &mut now);
+    for (id, build) in before {
+        assert_eq!(now.get(id), Some(build), "{id} was republished by {step}");
+    }
+}

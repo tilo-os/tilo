@@ -20175,6 +20175,7 @@ name = "tilolang-runtime"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "foldhash 0.1.5",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -20191,6 +20192,7 @@ name = "tilolang-tilo"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "foldhash 0.1.5",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

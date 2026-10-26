@@ -255,7 +255,10 @@ impl HostInner {
             InvokeOutcome::Done(Value::Ref(made))
                 if request.caller.is_none_or(|caller| !caller.agent) =>
             {
-                *self.produced.borrow_mut() = Some((request.action_id.to_owned(), made.target));
+                *self.produced.borrow_mut() = Some((
+                    request.action_id.to_owned(),
+                    std::rc::Rc::unwrap_or_clone(made.target),
+                ));
             }
             InvokeOutcome::Done(_) => {}
             // An action that needs a person's approval is not refused: it is recorded as a
