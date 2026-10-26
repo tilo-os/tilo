@@ -101,8 +101,11 @@ pub struct RoomAdmission<'a> {
     pub source: Writer<'a>,
     pub authority: AuthorityPin<'a>,
     pub contents: ContentOwnership,
-    /// Seconds since the Unix epoch, for grant expiry.
-    pub caps_now: u64,
+    /// The instant the batch is judged at, in nanoseconds since the Unix
+    /// epoch: grant expiry, and the certificate a saved shortcut's proof
+    /// carries. Not whole seconds: a certificate issued earlier in this
+    /// second is already valid.
+    pub now_ns: u64,
 }
 
 /// A batch every check admitted. The caller binds a returned media policy to
@@ -199,7 +202,7 @@ pub fn admit_room_changes(
 ) -> Result<AdmittedRoom, RoomRefusal> {
     let governs = input.authority.admits(&input.source);
     if !governs {
-        may_write(input.before, input.room, &input.source, input.caps_now)?;
+        may_write(input.before, input.room, &input.source, input.now_ns)?;
     }
     match super::base::lineage(input.before, changes) {
         super::base::Lineage::Same { changes, replaced } => {
@@ -269,7 +272,7 @@ fn checked(
         source,
         authority,
         contents,
-        caps_now,
+        now_ns,
     } = *input;
     let governs = authority.admits(&source);
     let declared = uuid::Uuid::parse_str(room).map_err(|_| RoomRefusal::DeclaredRoomMismatch)?;
@@ -288,7 +291,7 @@ fn checked(
     }
     // Every writer, the governor included: it relays and merges what members
     // write, so who sent a batch says nothing about who saved a shortcut.
-    saved_shortcuts_proven(before, candidate, room, caps_now)?;
+    saved_shortcuts_proven(before, candidate, room, now_ns)?;
     match contents {
         ContentOwnership::Registry => {
             let AuthorityPin::Device(pinned) = authority else {
@@ -351,7 +354,7 @@ fn saved_shortcuts_proven(
     before: Option<&AutoCommit>,
     candidate: &AutoCommit,
     room: &str,
-    caps_now: u64,
+    now_ns: u64,
 ) -> Result<(), RoomRefusal> {
     use tilo_desktop_model::projection::workspace_shortcuts_of;
     let Some(before) = before else {
@@ -366,7 +369,6 @@ fn saved_shortcuts_proven(
         return Ok(());
     }
     let revocations = super::saved_shortcut::room_revocations(candidate);
-    let now_ns = super::saved_shortcut::ns_at(caps_now);
     for shortcut in written {
         if super::saved_shortcut::proven_saver(room, &shortcut, &revocations, now_ns)
             != shortcut.saved_by
@@ -384,7 +386,7 @@ fn may_write(
     before: Option<&AutoCommit>,
     room: &str,
     source: &Writer<'_>,
-    caps_now: u64,
+    now_ns: u64,
 ) -> Result<(), RoomRefusal> {
     let Standing::Member { person, foreign } = source.standing else {
         return Ok(());
@@ -397,7 +399,7 @@ fn may_write(
     }
     let bound = tilo_action_policy::roles::foreign_device_bound();
     let authority = policy.person_on_device(&person, foreign, &bound);
-    let cx = Context::at_secs(caps_now);
+    let cx = Context::at_secs(now_ns / 1_000_000_000);
     if authority
         .decide(&TreePath::room(room), ActionKind::Undoable, &cx)
         .answer
