@@ -1220,8 +1220,10 @@ impl Device {
             || "no host".to_owned(),
             |host| {
                 let workspace = tilo_relay::room_workspace_id(&room_id).unwrap();
-                let runtime = net.runtime_handle().unwrap();
-                let retained = runtime.block_on(host.room_records().retained(workspace));
+                let records = host.room_records();
+                let retained = net
+                    .wait_on(async move { records.retained(workspace).await })
+                    .and_then(std::convert::identity);
                 match retained {
                     Ok(bodies) => {
                         let authors: Vec<String> = bodies
