@@ -8536,7 +8536,8 @@ impl collab_service::Server for CapnpCollabService {
             let participant_kind = reader.get_participant_kind()?.to_str().map_err(|error| {
                 capnp::Error::failed(format!("participant kind not utf8: {error}"))
             })?;
-            let record_kind = joined_record_kind(reader.get_record_kind()?)?;
+            let record_kind =
+                route_record_kind(&route, joined_record_kind(reader.get_record_kind()?)?)?;
             if (verified_identity.host_scope.is_some()
                 || verified_identity.worker_registration.is_some())
                 && !matches!(participant_kind, "" | "person")
@@ -8652,6 +8653,26 @@ impl collab_service::Server for CapnpCollabService {
             results.get().set_handle(client);
             Ok(())
         })
+    }
+}
+
+/// The resource kind of the record `route` names: a workspace record's own
+/// kind, which the route's id already derives from and every window joining
+/// it holds whether or not it says so, else what the join `named`. A join
+/// naming a workspace record as another kind is refused.
+fn route_record_kind(
+    route: &CrdtRoute,
+    named: Option<String>,
+) -> Result<Option<String>, capnp::Error> {
+    let Some(record) = collab_types::workspace_record(&route.app_id, &route.record_id) else {
+        return Ok(named);
+    };
+    match named {
+        Some(kind) if kind != record.kind => Err(capnp::Error::failed(format!(
+            "the workspace record of kind {} was joined as {kind}",
+            record.kind
+        ))),
+        _ => Ok(Some(record.kind.to_owned())),
     }
 }
 
@@ -16185,6 +16206,8 @@ pub mod tests {
     include!("canonical_route_tests.rs");
     #[cfg(all(test, target_os = "linux"))]
     include!("native_checkout_tests.rs");
+    #[cfg(all(test, target_os = "linux"))]
+    include!("workspace_record_custody_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
