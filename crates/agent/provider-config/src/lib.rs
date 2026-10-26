@@ -32,6 +32,7 @@ const CONFIG_KEY: &str = "config";
 const HOSTED_KEY: &str = "hosted";
 
 /// The request dialect spoken by a provider endpoint.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", rename_all = "snake_case")]
 pub enum ProviderProtocol {
@@ -58,6 +59,7 @@ impl ProviderProtocol {
 /// Where an endpoint runs. This is an explicit trust cue in the UI: a local
 /// vLLM server must remain distinct from a hosted API even though it shares the
 /// `OpenAI` wire protocol.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", rename_all = "snake_case")]
 pub enum EndpointLocation {
@@ -104,6 +106,17 @@ pub struct SecretReference {
 }
 
 settings_store::read_through_json_value!(SecretReference);
+
+impl Default for SecretReference {
+    /// A reference that points at nothing, which [`Self::is_valid`] refuses:
+    /// it is what an absent slot reads as, never a usable key.
+    fn default() -> Self {
+        Self {
+            vault: String::new(),
+            locator: String::new(),
+        }
+    }
+}
 
 impl SecretReference {
     pub fn provider_api_key(profile_id: &str) -> Self {
@@ -195,6 +208,17 @@ pub struct SignInCredential {
 }
 
 settings_store::read_through_json_value!(SignInCredential);
+
+impl Default for SignInCredential {
+    /// A sign-in this build cannot name: it is what an absent slot reads as,
+    /// and a profile holding it shows as unsupported rather than signed in.
+    fn default() -> Self {
+        Self {
+            issuer: String::new(),
+            billing_project: None,
+        }
+    }
+}
 
 impl SignInCredential {
     /// A sign-in with `issuer` and no billing project.
@@ -294,6 +318,7 @@ pub fn vertex_model_id(model: &str) -> String {
 /// One model advertised by a profile. A model list is metadata, not a
 /// capability grant: individual agent tasks still require their own action
 /// permissions.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct ModelDescriptor {
@@ -343,6 +368,10 @@ impl Default for ModelDescriptor {
 
 /// Explicit request limits for one selected model; not a capability or runtime
 /// attestation. None on a descriptor preserves legacy request shaping.
+///
+/// Each limit is a field of its own in a document: an output allowance and a
+/// runtime context changed at the same time both survive.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", deny_unknown_fields)]
 pub struct ModelRequestLimits {
@@ -403,6 +432,13 @@ impl ModelDescriptor {
 }
 
 /// A configured model-provider endpoint.
+///
+/// A document stores each field of a profile on its own, so two people
+/// changing different parts of one provider — its name and whether it is
+/// enabled — both keep their change. What is decided as one thing stays one
+/// value: the credential reference, the sign-in it uses and its reasoning
+/// setting.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct ProviderProfile {
@@ -457,6 +493,7 @@ settings_store::read_through_json_value!(ProviderProfile);
 pub const REQUIRED_PARAMS: &[&str] = &["model", "messages", "tools", "tool_choice"];
 
 /// The output-token-limit field of an OpenAI-compatible provider.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub enum TokenLimitParam {
@@ -478,6 +515,7 @@ impl TokenLimitParam {
 }
 
 /// The request API of an OpenAI-compatible endpoint's agent turns.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", rename_all = "snake_case")]
 pub enum OpenAiApi {
@@ -520,11 +558,24 @@ pub struct ReasoningSetting {
 
 settings_store::read_through_json_value!(ReasoningSetting);
 
+impl Default for ReasoningSetting {
+    /// Send no reasoning field at all, which is what an absent setting means.
+    fn default() -> Self {
+        Self {
+            param: ReasoningParam::Omit,
+            effort: String::new(),
+        }
+    }
+}
+
 /// The reasoning efforts a profile may name.
 pub const REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
 
+// A credential reference, a sign-in and a reasoning setting are each decided
+// as one thing, so they stay one value: last writer wins over the whole of it.
+// A profile's own fields are separate (see [`ProviderProfile`]).
 #[cfg(feature = "model")]
-tilo_resource::json_model!(ProviderProfile);
+tilo_resource::json_model!(SecretReference, SignInCredential, ReasoningSetting);
 
 impl Default for ProviderProfile {
     fn default() -> Self {
@@ -1108,6 +1159,153 @@ impl ProviderConfig {
     }
 }
 
+/// What a document holds of the configuration when two people change it at
+/// once: each provider is its own item and each of its fields its own value,
+/// so edits of different providers, or of different fields of one provider,
+/// both survive.
+mod stored_fields {
+    #![cfg(all(test, feature = "model"))]
+
+    use super::*;
+    use tilo_automerge::ApplyIncoming as _;
+    use tilo_resource::__private::{ObjType, ROOT, ReadDoc as _, Value};
+    use tilo_resource::{Delta, Doc, Model as _, ModelError, Slot, read_key, write_key};
+
+    const CONFIG: &str = "config";
+
+    /// The configuration as a settings record holds it, under `config`.
+    fn stored(config: &ProviderConfig) -> Result<Doc, ModelError> {
+        let mut doc = Doc::new();
+        write_key(&mut doc, &ROOT, CONFIG, config)?;
+        Ok(doc)
+    }
+
+    fn held(doc: &Doc) -> Result<ProviderConfig, ModelError> {
+        read_key(doc, &ROOT, CONFIG)
+    }
+
+    /// Change `config` in place, as an action's write does: only the fields
+    /// that differ from what the document holds are written.
+    fn edit(doc: &mut Doc, change: impl FnOnce(&mut ProviderConfig)) -> Result<(), ModelError> {
+        let before = held(doc)?;
+        let mut after = before.clone();
+        change(&mut after);
+        after.store_changed(&before, doc, Slot::Key(&ROOT, CONFIG), &Delta::nothing())
+    }
+
+    fn two_profiles() -> ProviderConfig {
+        let mut anthropic = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+        anthropic.label = "Anthropic".into();
+        anthropic.models = vec![ModelDescriptor::new("claude")];
+        let mut local = ProviderProfile::local_vllm();
+        local.label = "Local".into();
+        local.models = vec![ModelDescriptor::new("llama")];
+        ProviderConfig {
+            default_profile: Some(anthropic.id.clone()),
+            profiles: vec![anthropic, local],
+            ..Default::default()
+        }
+    }
+
+    /// Two people changing different fields of one provider both keep their
+    /// change: the profile is not one value written whole.
+    #[test]
+    fn concurrent_edits_of_one_providers_different_fields_both_survive() {
+        let base = two_profiles();
+        let mut ours = stored(&base).expect("the configuration writes");
+        let mut theirs = ours.fork();
+
+        edit(&mut ours, |config| {
+            config.profiles[0].label = "Anthropic (work)".into();
+        })
+        .expect("one person's change writes");
+        edit(&mut theirs, |config| {
+            config.profiles[0].enabled = false;
+        })
+        .expect("the other person's change writes");
+        ours.merge_incoming(&mut theirs).expect("the changes merge");
+
+        let merged = held(&ours).expect("the merged configuration reads");
+        assert_eq!(merged.profiles[0].label, "Anthropic (work)");
+        assert!(
+            !merged.profiles[0].enabled,
+            "the field the first person did not touch keeps the second's change"
+        );
+        // The other provider is untouched by either.
+        assert_eq!(merged.profiles[1].label, "Local");
+        assert!(merged.profiles[1].enabled);
+    }
+
+    /// Two people changing two providers both keep their change: the list is
+    /// per profile, not one snapshot of all of them.
+    #[test]
+    fn concurrent_edits_of_different_providers_both_survive() {
+        let base = two_profiles();
+        let mut ours = stored(&base).expect("the configuration writes");
+        let mut theirs = ours.fork();
+
+        edit(&mut ours, |config| {
+            config.profiles[0].models[0].label = "Claude Opus".into();
+        })
+        .expect("one person's change writes");
+        edit(&mut theirs, |config| {
+            config.profiles[1].endpoint = "http://127.0.0.1:9000/v1".into();
+            config.profiles[1].default_model = Some("llama".into());
+        })
+        .expect("the other person's change writes");
+        ours.merge_incoming(&mut theirs).expect("the changes merge");
+
+        let merged = held(&ours).expect("the merged configuration reads");
+        assert_eq!(merged.profiles[0].models[0].label, "Claude Opus");
+        assert_eq!(merged.profiles[1].endpoint, "http://127.0.0.1:9000/v1");
+        assert_eq!(merged.profiles[1].default_model.as_deref(), Some("llama"));
+    }
+
+    /// A provider's fields are stored one by one, not as one JSON string: a
+    /// document holds a label as a value of the profile's own map.
+    #[test]
+    fn a_profile_is_stored_as_its_fields() {
+        let doc = stored(&two_profiles()).expect("the configuration writes");
+        let Some((Value::Object(_), config)) = doc.get(&ROOT, CONFIG).ok().flatten() else {
+            panic!("the configuration is a map");
+        };
+        let Some((Value::Object(_), profiles)) = doc.get(&config, "profiles").ok().flatten() else {
+            panic!("the providers are a list");
+        };
+        let Some((Value::Object(_), profile)) = doc.get(&profiles, 0).ok().flatten() else {
+            panic!("a provider is a map of its fields");
+        };
+        let label = match doc.get(&profile, "label").ok().flatten() {
+            Some((Value::Object(ObjType::Text), id)) => doc.text(&id).expect("the label reads"),
+            other => panic!(
+                "a provider's label is its own field, not part of one JSON string: {other:?}"
+            ),
+        };
+        assert_eq!(label, "Anthropic");
+    }
+
+    /// What settings store and read is unchanged: a provider is still the
+    /// JSON object its file had, without the fields it leaves absent.
+    #[test]
+    fn the_json_form_of_a_configuration_is_unchanged() {
+        let base = two_profiles();
+        let encoded = serde_json::to_value(&base).expect("the configuration serialises");
+        assert_eq!(encoded["profiles"][0]["label"], "Anthropic");
+        assert_eq!(encoded["profiles"][0]["protocol"], "anthropic");
+        assert_eq!(encoded["profiles"][1]["protocol"], "open_ai_compatible");
+        assert_eq!(encoded["profiles"][1]["location"], "this_device");
+        assert!(
+            encoded["profiles"][0].get("sign_in").is_none()
+                && encoded["profiles"][0].get("reasoning").is_none()
+                && encoded["profiles"][0].get("openai_api").is_none(),
+            "absent fields stay absent"
+        );
+        let decoded: ProviderConfig =
+            serde_json::from_value(encoded).expect("the configuration reads back");
+        assert_eq!(decoded, base.sanitised());
+    }
+}
+
 /// A profile validation diagnosis fit for an inline Settings status line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfileIssue {
@@ -1340,7 +1538,8 @@ mod tests {
             encoded["profiles"][0]["reasoning"],
             serde_json::json!({"param": "reasoning.effort", "effort": "low"})
         );
-        let decoded: ProviderConfig = serde_json::from_value(encoded).unwrap();
+        let decoded: ProviderConfig =
+            serde_json::from_value(encoded).expect("the configuration reads back");
         assert_eq!(decoded, config);
 
         let mut invalid = profile.clone();
