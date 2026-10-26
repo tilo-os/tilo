@@ -9092,6 +9092,12 @@ mod tests {
         env.set("TILO_HOME_PEERS_PATH", &peers);
         env.set("XDG_STATE_HOME", dir.path().join("state"));
         let (net, mut commands) = personal_continuity_network_for_test(user);
+        // The person's list brings the shared room's workspace; an
+        // enrollment's room list alone makes none.
+        net.tree
+            .write()
+            .join_room("Shared", RoomId::parse(room).expect("room"))
+            .expect("a workspace of the room");
         let net = Arc::new(net);
         assert!(net.join_default_workspace());
         let topic = room_topic_id(RoomId::parse(room).expect("room"));
