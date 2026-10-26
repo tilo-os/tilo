@@ -48,6 +48,7 @@ mod member_controls;
 mod no_secret_store;
 mod old_rooms;
 mod own_devices;
+mod pointers;
 mod sealed_records;
 
 /// The app whose document the tests edit, and its record.
@@ -423,6 +424,15 @@ impl Device {
             Arc::try_unwrap(net)
                 .unwrap_or_else(|_| panic!("{}'s network is not shared", self.label)),
         );
+        // A shut down device writes nothing more. In this process the
+        // network's blocking work (an admission it was making) outlives it,
+        // and would publish into the state file after the device started
+        // again from it: its writer is closed here, after whatever it was
+        // writing, as the end of the process would stop it.
+        // The tree is let go first: a publication takes the writer, then
+        // the tree.
+        let writer = self.tree.read().native_runtime.clone();
+        writer.close_for_shutdown();
     }
 
     /// Start this device again from what it kept on disk, as booting it
@@ -502,6 +512,10 @@ impl Device {
             Arc::new(Mutex::new(BrokerChannels::default())),
         )
         .expect("the device's channel state opens")
+    }
+
+    pub(crate) fn tree(&self) -> &WorkspaceTreeHandle {
+        &self.tree
     }
 
     pub(crate) fn net(&self) -> &Arc<ShellNetwork> {
@@ -799,6 +813,31 @@ impl Device {
     /// `room`'s records are sealed channels each app opens itself, never
     /// documents this device's owner commits.
     fn assert_sealed(&self, room: RoomId) {
+        let status = self.net().native_owner_status();
+        self.assert_sealed_under(room, &status);
+    }
+
+    /// Whether `room`'s records can be read here yet: not while this
+    /// device's native owner opens, which on a busy disk takes seconds after
+    /// a session starts and holds the room's records neither way until it
+    /// has. Once it has opened, or failed to, they must be sealed. The
+    /// owner's standing is read once, so the answer and the assertion are
+    /// about the same moment.
+    fn records_sealed(&self, room: RoomId) -> bool {
+        let status = self.net().native_owner_status();
+        if matches!(status, super::native_enrollment::NativeOwnerStatus::Opening) {
+            return false;
+        }
+        self.assert_sealed_under(room, &status);
+        true
+    }
+
+    /// [`Self::assert_sealed`] with the native owner standing as `status`.
+    fn assert_sealed_under(
+        &self,
+        room: RoomId,
+        status: &super::native_enrollment::NativeOwnerStatus,
+    ) {
         let (sealed, committed) = {
             let tree = self.tree.read();
             (
@@ -806,23 +845,24 @@ impl Device {
                 tree.committed_record_rooms.contains(&room),
             )
         };
-        let status = self.net().native_owner_status();
         let standing = status.describe();
         let failure = self.net().open_failure().unwrap_or_default();
-        let governor = status
-            .open()
-            .and_then(|owner| {
-                owner
-                    .with_current(room, |view| {
-                        Ok(format!(
-                            "{:?} {:?}",
-                            view.governor().device_label,
-                            view.governor().capabilities
-                        ))
-                    })
-                    .ok()
-            })
-            .unwrap_or_default();
+        let governor = match status {
+            super::native_enrollment::NativeOwnerStatus::Open(owner) => Some(owner),
+            _ => None,
+        }
+        .and_then(|owner| {
+            owner
+                .with_current(room, |view| {
+                    Ok(format!(
+                        "{:?} {:?}",
+                        view.governor().device_label,
+                        view.governor().capabilities
+                    ))
+                })
+                .ok()
+        })
+        .unwrap_or_default();
         assert!(
             sealed,
             "{} holds {room} as a sealed room (its records committed instead: {committed}; \
@@ -869,7 +909,9 @@ impl Device {
     /// Whether this device holds the note's channel in `room`, so the notes
     /// app here reads and writes it.
     pub(crate) fn holds_note(&self, room: RoomId) -> bool {
-        self.assert_sealed(room);
+        if !self.records_sealed(room) {
+            return false;
+        }
         self.note_keys(room).is_some()
     }
 
@@ -995,7 +1037,9 @@ impl Device {
     /// The note's text in `room` as the notes app here shows it.
     pub(crate) fn note(&self, room: RoomId) -> Option<String> {
         self.net.as_ref()?;
-        self.assert_sealed(room);
+        if !self.records_sealed(room) {
+            return None;
+        }
         let keys = self.note_keys(room)?;
         self.read_notes(room, &keys);
         let notes = self.notes.lock().unwrap();
@@ -1192,6 +1236,112 @@ impl Device {
         super::embedded_host::host_state_root(&self.dir.join("state.json"))
     }
 
+    /// Where this device stands on `room`, for a wait that timed out: its
+    /// native owner, whether it holds the room, the note as the notes app
+    /// here has it (and the changes it still lacks), the note's writes
+    /// waiting in its inbound documents, what its own host retains of the
+    /// room, its tabs, and its sessions with the room's hosts.
+    pub(crate) fn catch_up(&self, room: RoomId) -> String {
+        let Some(net) = self.net.as_ref() else {
+            return format!("{}: offline", self.label);
+        };
+        let status = net.native_owner_status();
+        let owner = format!(
+            "{}{}",
+            status.describe(),
+            net.open_failure()
+                .map(|failure| format!(" ({failure})"))
+                .unwrap_or_default()
+        );
+        let (holds, sealed) = {
+            let tree = self.tree.read();
+            (
+                tree.holds_room(room) && !tree.is_joining(room),
+                tree.seals_records(room),
+            )
+        };
+        let access = match self.note_access(room) {
+            ChannelAccess::Ready(_) => "ready".to_owned(),
+            other => format!("{other:?}"),
+        };
+        let (text, heads, missing) = {
+            let mut notes = self.notes.lock().unwrap();
+            notes.get_mut(&room).map_or((None, 0, 0), |document| {
+                let text = document
+                    .get(automerge::ROOT, NOTE_TEXT)
+                    .ok()
+                    .flatten()
+                    .and_then(|(value, _)| value.into_string().ok());
+                (
+                    text,
+                    document.get_heads().len(),
+                    document.get_missing_deps(&[]).len(),
+                )
+            })
+        };
+        let writes = self.note_writes(room).len();
+        let room_id = room.to_string();
+        let waiting = net
+            .inbound_documents_handle()
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|document| document.cluster_id == room_id && document.record_id == NOTE_RECORD)
+            .count();
+        let retained = net.room_host().map_or_else(
+            || "no host".to_owned(),
+            |host| {
+                let workspace = tilo_relay::room_workspace_id(&room_id).unwrap();
+                let records = host.room_records();
+                let retained = net
+                    .wait_on(async move { records.retained(workspace).await })
+                    .and_then(std::convert::identity);
+                match retained {
+                    Ok(bodies) => {
+                        let authors: Vec<String> = bodies
+                            .iter()
+                            .filter(|body| {
+                                matches!(
+                                    postcard::from_bytes::<crate::network::protocol::NeighbourMsg>(&body.body),
+                                    Ok(crate::network::protocol::NeighbourMsg::AppDocument { app_id, .. })
+                                        if app_id == NOTES
+                                )
+                            })
+                            .map(|body| hex::encode(&body.author[..2]))
+                            .collect();
+                        format!("{} bodies, note writes by {authors:?}", bodies.len())
+                    }
+                    Err(error) => error,
+                }
+            },
+        );
+        let tabs: Vec<u64> = self.tabs(room).into_iter().map(|(tab, _)| tab).collect();
+        let dials = net.wire_tally().map(|tally| {
+            let counts = tally.snapshot();
+            let count = |kind| counts.get(kind).copied().unwrap_or(0);
+            format!(
+                "governor {}, other host {}; host inputs {}, sealed writes replayed {}, \
+                 live {}; ready {}, closed {}",
+                count("NativeGovernorDial"),
+                count("NativeHostDial"),
+                count("HostNativeInput"),
+                count("HostSealedReplay"),
+                count("HostSealedLive"),
+                count("HostReady"),
+                count("HostClosed"),
+            )
+        });
+        format!(
+            "{} ({}): owner {owner}; holds the room {holds}, sealed {sealed}; note channel {access}; \
+             note {text:?} ({heads} heads, {missing} changes missing, {writes} writes opened, \
+             {waiting} waiting); own host retains {retained}; tabs {tabs:?}; \
+             sessions {}",
+            self.label,
+            hex::encode(&self.key().verifying_key().to_bytes()[..2]),
+            dials.unwrap_or_default()
+        )
+    }
+
     /// Open a connection to `other`, as two of a person's devices that find
     /// each other on the network do.
     pub(crate) fn reach(&self, other: &Self) {
@@ -1215,7 +1365,35 @@ fn typed() -> automerge::transaction::CommitOptions {
 /// Run `devices`' loops until `probe` answers, waking only when one of
 /// them is woken or reaches a deadline of its own loop; fail at the shared
 /// hang bound naming `what`.
-pub(crate) fn until<T>(devices: &[&Device], what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
+pub(crate) fn until<T>(devices: &[&Device], what: &str, probe: impl FnMut() -> Option<T>) -> T {
+    until_or_say(devices, what, probe, String::new)
+}
+
+/// [`until`] for a device catching up on `room`: at the hang bound it
+/// says where each of `devices` stands on the room, so a timeout names
+/// what is missing.
+pub(crate) fn until_caught_up<T>(
+    devices: &[&Device],
+    what: &str,
+    room: RoomId,
+    probe: impl FnMut() -> Option<T>,
+) -> T {
+    until_or_say(devices, what, probe, || {
+        devices.iter().fold(String::new(), |mut said, device| {
+            said.push_str("\n  ");
+            said.push_str(&device.catch_up(room));
+            said
+        })
+    })
+}
+
+/// [`until`], saying `standing` when it times out.
+fn until_or_say<T>(
+    devices: &[&Device],
+    what: &str,
+    mut probe: impl FnMut() -> Option<T>,
+    standing: impl Fn() -> String,
+) -> T {
     let bound = tilo_test_env::hang_deadline();
     let wakes = &devices
         .first()
@@ -1229,7 +1407,11 @@ pub(crate) fn until<T>(devices: &[&Device], what: &str, mut probe: impl FnMut() 
         if let Some(value) = probe() {
             return value;
         }
-        assert!(Instant::now() < bound, "timed out waiting for {what}");
+        assert!(
+            Instant::now() < bound,
+            "timed out waiting for {what}{}",
+            standing()
+        );
         let next = devices
             .iter()
             .filter_map(|device| device.next_deadline())

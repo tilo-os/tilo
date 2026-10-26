@@ -22,6 +22,7 @@ use super::site_join::SiteJoin;
 use super::{RoomId, ShellNetwork};
 use crate::network::invite::enrollment_driver::Via;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
+use std::sync::Arc;
 
 /// How long opening a link waits for the workspace it joins to be held.
 const LINK_JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
@@ -249,16 +250,22 @@ impl ShellNetwork {
             return Ok(PeerSyncResponse::Message(room.to_string()));
         }
         let http = HostHttp::new(origin)?;
-        let runtime = self.runtime_handle()?;
         let bytes = base64::Engine::decode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
             invitation,
         )
         .map_err(|_| "That invitation is damaged. Ask for a new link.")?;
-        let name = match runtime.block_on(tilo_relay_client::https::join(
-            http.as_ref(),
-            &tilo_relay_protocol::rooms::JoinStep::Inspect { invitation: bytes },
-        )) {
+        let inspected = {
+            let http = Arc::clone(&http);
+            self.wait_on(async move {
+                tilo_relay_client::https::join(
+                    http.as_ref(),
+                    &tilo_relay_protocol::rooms::JoinStep::Inspect { invitation: bytes },
+                )
+                .await
+            })?
+        };
+        let name = match inspected {
             Ok(tilo_relay_protocol::rooms::JoinReply::Invitation {
                 name, room: named, ..
             }) if RoomId::parse(&named) == Some(room) => name,
@@ -272,8 +279,11 @@ impl ShellNetwork {
                 ));
             }
         };
-        let host = runtime
-            .block_on(tilo_relay_client::https::host_info(http.as_ref()))
+        let host = self
+            .wait_on({
+                let http = Arc::clone(&http);
+                async move { tilo_relay_client::https::host_info(http.as_ref()).await }
+            })?
             .map_err(|error| error.to_string())?
             .host_cert
             .device_public_key;
