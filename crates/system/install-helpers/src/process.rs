@@ -7,6 +7,7 @@
 //! here is the shape the helpers' Python originals had: bytes on standard
 //! input, both streams captured, and `subprocess.run`'s two error messages.
 
+use std::ffi::OsStr;
 use std::time::Duration;
 
 use crate::{Error, Result};
@@ -52,28 +53,43 @@ pub fn name(program: &str) -> &str {
 /// # Errors
 /// The program missing (as `OSError`), or the timeout (as `TimeoutExpired`).
 pub fn run(argv: &[&str], input: Option<&[u8]>, timeout: Duration) -> Result<Output> {
+    let argv: Vec<&OsStr> = argv.iter().map(OsStr::new).collect();
+    run_os(&argv, input, timeout)
+}
+
+/// [`run`] for arguments that may not be UTF-8, as a Python script's paths
+/// were.
+///
+/// # Errors
+/// As [`run`].
+pub fn run_os(argv: &[&OsStr], input: Option<&[u8]>, timeout: Duration) -> Result<Output> {
     let Some((program, rest)) = argv.split_first() else {
         return Err(Error::new("empty command line"));
     };
-    let output =
-        bounded_command::run(program, rest, input, OUTPUT_LIMIT, timeout).map_err(|failure| {
+    let shown = argv
+        .iter()
+        .map(|argument| argument.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let output = bounded_command::run_os(program, rest, input, OUTPUT_LIMIT, timeout).map_err(
+        |failure| {
             match failure {
                 bounded_command::Error::Process(error) => {
-                    Error::new(format!("{error}: '{program}'"))
+                    Error::new(format!("{error}: '{}'", program.to_string_lossy()))
                 }
                 // A tool that outlives its deadline or floods its output is not
                 // answering the request it was given: both read as one failure, in
                 // the words `subprocess.run` used for the deadline.
                 bounded_command::Error::Timeout(_) => Error::new(format!(
-                    "Command '{}' timed out after {} seconds",
-                    argv.join(" "),
+                    "Command '{shown}' timed out after {} seconds",
                     timeout.as_secs()
                 )),
                 // Not a timeout, and not worded as one: a caller that reads a
                 // timeout from the message must not mistake a flood for it.
-                other => Error::new(format!("{}: {other}", argv.join(" "))),
+                other => Error::new(format!("{shown}: {other}")),
             }
-        })?;
+        },
+    )?;
     Ok(Output {
         code: output.status.code(),
         stdout: output.stdout,
@@ -158,6 +174,47 @@ mod tests {
             started.elapsed() < Duration::from_secs(10),
             "the call returned instead of waiting on the child"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_wedged_tool_is_killed_with_the_child_it_started() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let helper = directory.path().join("helper");
+        let marker = directory.path().join("child.pid");
+        fs_write(&helper, "#!/bin/sh\nsleep 3600 & echo $! > \"$1\"\nwait\n");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = super::run_os(
+            &[helper.as_os_str(), marker.as_os_str()],
+            None,
+            Duration::from_millis(100),
+        )
+        .expect_err("a wedged helper is ended");
+        assert!(error.0.contains("timed out"), "{error}");
+        let pid: i32 = std::fs::read_to_string(&marker)
+            .expect("the helper started its child")
+            .trim()
+            .parse()
+            .expect("a pid");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            // SAFETY: signal 0 only probes whether the pid exists.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                let gone = std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+                assert!(gone, "the probe failed for another reason");
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the helper's child {pid} survived the deadline"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn fs_write(path: &std::path::Path, contents: &str) {
+        std::fs::write(path, contents).unwrap();
     }
 
     #[test]

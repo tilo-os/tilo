@@ -12,7 +12,7 @@ use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
@@ -539,6 +539,348 @@ pub fn run_prepared_with_stdin(
     )
 }
 
+/// A completed streaming command: what the consumer made of standard
+/// output, and the status and bounded diagnostics that came with it.
+#[derive(Debug)]
+pub struct Streamed<T> {
+    pub status: ExitStatus,
+    pub stderr: Vec<u8>,
+    pub value: T,
+}
+
+/// Why a streaming command did not complete.
+#[derive(Debug)]
+pub enum StreamError<E> {
+    /// The command, its deadline, its output bound or its process tree
+    /// failed before the consumer could finish.
+    Command(Error),
+    /// The consumer refused what it read, so the tree was ended.
+    Consumer(E),
+}
+
+impl<E> From<Error> for StreamError<E> {
+    fn from(error: Error) -> Self {
+        Self::Command(error)
+    }
+}
+
+impl<E> From<std::io::Error> for StreamError<E> {
+    fn from(error: std::io::Error) -> Self {
+        Self::Command(Error::Process(error))
+    }
+}
+
+/// Run a prepared command whose stdout is consumed as it is produced.
+///
+/// The child owns its process tree and is ended with it when `consume`
+/// returns an error, the deadline passes, or either stream crosses its
+/// bound. Standard output is streamed through a bounded channel: the whole
+/// archive is never held in memory. `consume` must read to end of file for a
+/// successful command; closing it early ends the child through the closed
+/// pipe.
+///
+/// # Errors
+/// As [`run_prepared`], or the consumer's own error.
+pub fn run_prepared_streaming<T, E>(
+    command: Command,
+    input: Option<&[u8]>,
+    stdout_limit: usize,
+    stderr_limit: usize,
+    timeout: Duration,
+    consume: impl FnOnce(&mut dyn Read) -> Result<T, E>,
+) -> Result<Streamed<T>, StreamError<E>> {
+    if input.is_some_and(|bytes| bytes.len() > MAX_INPUT_BYTES) {
+        return Err(Error::InputTooLarge.into());
+    }
+    run_prepared_streaming_inner(
+        command,
+        input.map_or(Stdin::Null, |bytes| {
+            Stdin::Bytes(Zeroizing::new(bytes.to_vec()))
+        }),
+        stdout_limit,
+        stderr_limit,
+        timeout,
+        consume,
+    )
+}
+
+/// [`run_prepared_streaming`] with `file` as standard input: an archive the
+/// caller already holds given to the tool as it is, never copied into memory.
+///
+/// # Errors
+/// As [`run_prepared_streaming`].
+pub fn run_prepared_streaming_with_stdin<T, E>(
+    command: Command,
+    file: std::fs::File,
+    stdout_limit: usize,
+    stderr_limit: usize,
+    timeout: Duration,
+    consume: impl FnOnce(&mut dyn Read) -> Result<T, E>,
+) -> Result<Streamed<T>, StreamError<E>> {
+    run_prepared_streaming_inner(
+        command,
+        Stdin::File(file),
+        stdout_limit,
+        stderr_limit,
+        timeout,
+        consume,
+    )
+}
+
+/// One chunk of a command's streamed standard output.
+enum StreamChunk {
+    Bytes(Vec<u8>),
+    End,
+    Overflow,
+    Failed(std::io::Error),
+}
+
+/// The consumer's view of a streamed standard output.
+struct StreamReader {
+    chunks: Receiver<StreamChunk>,
+    current: Vec<u8>,
+    offset: usize,
+    deadline: Option<Instant>,
+    stdout_limit: usize,
+    overflowed: bool,
+}
+
+impl Read for StreamReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.offset < self.current.len() {
+                let available = self.current.len().saturating_sub(self.offset);
+                let count = available.min(buffer.len());
+                let Some(end) = self.offset.checked_add(count) else {
+                    return Ok(0);
+                };
+                let Some(source) = self.current.get(self.offset..end) else {
+                    return Ok(0);
+                };
+                let Some(destination) = buffer.get_mut(..count) else {
+                    return Ok(0);
+                };
+                destination.copy_from_slice(source);
+                self.offset = self.offset.saturating_add(count);
+                if self.offset == self.current.len() {
+                    self.current.clear();
+                    self.offset = 0;
+                }
+                return Ok(count);
+            }
+            let chunk = match self.deadline {
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    match self.chunks.recv_timeout(remaining) {
+                        Ok(chunk) => chunk,
+                        Err(RecvTimeoutError::Timeout) => {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "command stdout stream timed out",
+                            ));
+                        }
+                        Err(RecvTimeoutError::Disconnected) => StreamChunk::End,
+                    }
+                }
+                None => self.chunks.recv().unwrap_or(StreamChunk::End),
+            };
+            match chunk {
+                StreamChunk::Bytes(bytes) => {
+                    self.current = bytes;
+                    self.offset = 0;
+                }
+                StreamChunk::End => return Ok(0),
+                StreamChunk::Overflow => {
+                    self.overflowed = true;
+                    return Err(std::io::Error::other(format!(
+                        "command stdout exceeds {0} bytes",
+                        self.stdout_limit
+                    )));
+                }
+                StreamChunk::Failed(error) => return Err(error),
+            }
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one supervisor keeps spawn, consume, deadline and teardown in one control flow"
+)]
+fn run_prepared_streaming_inner<T, E>(
+    mut command: Command,
+    input: Stdin,
+    stdout_limit: usize,
+    stderr_limit: usize,
+    timeout: Duration,
+    consume: impl FnOnce(&mut dyn Read) -> Result<T, E>,
+) -> Result<Streamed<T>, StreamError<E>> {
+    let (stdin, input) = match input {
+        Stdin::Null => (Stdio::null(), None),
+        Stdin::Inherit => (Stdio::inherit(), None),
+        Stdin::Bytes(bytes) => (Stdio::piped(), Some(bytes)),
+        Stdin::File(file) => (Stdio::from(file), None),
+    };
+    command
+        .stdin(stdin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    own_process_tree(&mut command);
+    let mut child = command.spawn()?;
+    let input_writer = if let Some(bytes) = input {
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            StreamError::Command(Error::Process(std::io::Error::other(
+                "command stdin is unavailable",
+            )))
+        })?;
+        Some(std::thread::spawn(move || stdin.write_all(&bytes)))
+    } else {
+        None
+    };
+    let stdout = child.stdout.take().ok_or_else(|| {
+        StreamError::Command(Error::Process(std::io::Error::other(
+            "command stdout is unavailable",
+        )))
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        StreamError::Command(Error::Process(std::io::Error::other(
+            "command stderr is unavailable",
+        )))
+    })?;
+    let (sender, chunks) = std::sync::mpsc::sync_channel(4);
+    let stream = std::thread::spawn(move || {
+        stream_bounded(stdout, &sender, stdout_limit);
+    });
+    let err_reader = std::thread::spawn(move || read_bounded(stderr, stderr_limit));
+    let deadline = Instant::now().checked_add(timeout);
+    let mut reader = StreamReader {
+        chunks,
+        current: Vec::new(),
+        offset: 0,
+        deadline,
+        stdout_limit,
+        overflowed: false,
+    };
+    let consumed = consume(&mut reader);
+    let consumer_failed = consumed.is_err();
+    let overflowed = reader.overflowed;
+    // Dropping the receiver lets a blocked reader stop at its next send and
+    // close the pipe, so a child still writing ends instead of waiting.
+    drop(reader);
+    if consumer_failed {
+        kill_tree(&mut child);
+        let status = child.wait();
+        let _ = stream.join();
+        let _ = err_reader.join();
+        let _ = input_writer.map(std::thread::JoinHandle::join);
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(Error::Timeout(timeout.as_millis()).into());
+        }
+        if overflowed {
+            return Err(Error::OutputTooLarge {
+                stream: "stdout",
+                limit: stdout_limit,
+            }
+            .into());
+        }
+        let _ = status;
+        return match consumed {
+            Err(error) => Err(StreamError::Consumer(error)),
+            Ok(_) => Err(Error::Reader.into()),
+        };
+    }
+    let status = match wait_timeout(
+        &mut child,
+        deadline.map_or(Duration::MAX, |deadline| {
+            deadline.saturating_duration_since(Instant::now())
+        }),
+    ) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            kill_tree(&mut child);
+            let _ = child.wait();
+            let _ = stream.join();
+            let _ = err_reader.join();
+            let _ = input_writer.map(std::thread::JoinHandle::join);
+            return Err(Error::Timeout(timeout.as_millis()).into());
+        }
+        Err(error) => {
+            kill_tree(&mut child);
+            let _ = child.wait();
+            let _ = stream.join();
+            let _ = err_reader.join();
+            let _ = input_writer.map(std::thread::JoinHandle::join);
+            return Err(Error::Process(error).into());
+        }
+    };
+    let _ = stream.join();
+    let Ok(stderr) = err_reader.join() else {
+        return Err(Error::Reader.into());
+    };
+    if let Some(result) = input_writer {
+        match result.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(Error::Process(error).into()),
+            Err(_) => return Err(Error::Writer.into()),
+        }
+    }
+    if overflowed || stderr.len() > stderr_limit {
+        return Err(if stderr.len() > stderr_limit {
+            Error::OutputTooLarge {
+                stream: "stderr",
+                limit: stderr_limit,
+            }
+        } else {
+            Error::OutputTooLarge {
+                stream: "stdout",
+                limit: stdout_limit,
+            }
+        }
+        .into());
+    }
+    match consumed {
+        Ok(value) => Ok(Streamed {
+            status,
+            stderr,
+            value,
+        }),
+        Err(error) => Err(StreamError::Consumer(error)),
+    }
+}
+
+fn stream_bounded(mut pipe: impl Read, sender: &SyncSender<StreamChunk>, limit: usize) {
+    let mut total = 0usize;
+    let mut chunk = [0u8; 8192];
+    loop {
+        let count = match pipe.read(&mut chunk) {
+            Ok(0) => {
+                let _ = sender.send(StreamChunk::End);
+                return;
+            }
+            Ok(count) => count,
+            Err(error) => {
+                let _ = sender.send(StreamChunk::Failed(error));
+                return;
+            }
+        };
+        let Some(bytes) = chunk.get(..count) else {
+            let _ = sender.send(StreamChunk::End);
+            return;
+        };
+        total = total.saturating_add(count);
+        if total > limit {
+            let _ = sender.send(StreamChunk::Overflow);
+            return;
+        }
+        if sender.send(StreamChunk::Bytes(bytes.to_vec())).is_err() {
+            return;
+        }
+    }
+}
+
 /// What a bounded command reads as its standard input.
 enum Stdin {
     Null,
@@ -804,6 +1146,100 @@ mod tests {
                 child
             });
             assert!(child.try_wait().unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn a_streamed_command_reaches_its_consumer_with_status_and_stderr() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        fs::write(&source, b"archive bytes").unwrap();
+        let mut command = Command::new("sh");
+        command.args(["-c", "cat; printf diagnostic >&2; exit 3"]);
+        let mut seen = Vec::new();
+        let streamed = run_prepared_streaming_with_stdin(
+            command,
+            fs::File::open(&source).unwrap(),
+            64,
+            64,
+            UNTESTED_TIMEOUT,
+            |stdout| {
+                stdout.read_to_end(&mut seen).map_err(Error::Process)?;
+                Ok::<_, Error>(())
+            },
+        )
+        .expect("the stream completes");
+        assert_eq!(streamed.status.code(), Some(3));
+        assert_eq!(streamed.stderr, b"diagnostic");
+        assert_eq!(seen, b"archive bytes");
+    }
+
+    #[test]
+    fn a_streamed_deadline_ends_the_child_and_its_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let helper = directory.path().join("helper");
+        fs::write(
+            &helper,
+            "#!/bin/sh
+printf partial
+sleep 3600 &
+wait
+",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let error = returns("the streamed deadline to kill the child", move || {
+            run_prepared_streaming(
+                Command::new(helper),
+                None,
+                64,
+                64,
+                Duration::from_millis(50),
+                |stdout| {
+                    let mut seen = Vec::new();
+                    stdout.read_to_end(&mut seen).map_err(Error::Process)?;
+                    Ok::<_, Error>(())
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(matches!(error, StreamError::Command(Error::Timeout(_))));
+    }
+
+    #[test]
+    fn a_consumer_that_refuses_its_stream_ends_the_tree_and_bounds_its_output() {
+        {
+            let mut command = Command::new("sh");
+            command.args(["-c", "printf first; sleep 3600"]);
+            let error = returns("the refusing consumer to end the child", move || {
+                run_prepared_streaming(
+                    command,
+                    None,
+                    64,
+                    64,
+                    Duration::from_secs(3600),
+                    |_stdout| Err::<(), _>("refused"),
+                )
+            })
+            .unwrap_err();
+            assert!(matches!(error, StreamError::Consumer("refused")));
+        }
+        {
+            let mut command = Command::new("sh");
+            command.args(["-c", "head -c 8192 /dev/zero"]);
+            let error = run_prepared_streaming(command, None, 64, 64, UNTESTED_TIMEOUT, |stdout| {
+                let mut seen = Vec::new();
+                stdout.read_to_end(&mut seen).map_err(Error::Process)?;
+                Ok::<_, Error>(())
+            })
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                StreamError::Command(Error::OutputTooLarge {
+                    stream: "stdout",
+                    limit: 64
+                })
+            ));
         }
     }
 

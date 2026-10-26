@@ -11,7 +11,7 @@ use std::io::{self, Read, Write as _};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -603,25 +603,41 @@ fn member_mtime<R: Read>(entry: &mut tar::Entry<'_, R>) -> (i64, i64) {
 
 fn extract_rpm(path: &Path, tree: &Path, ld_conf: &mut Vec<String>) -> Result<()> {
     let source = File::open(path).at(path)?;
-    let mut archive = Command::new("rpm2archive")
-        .args(["-n", "-"])
-        .stdin(source)
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|error| Error::os(&error, Some(Path::new("rpm2archive"))))?;
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let unpacked = match archive.stdout.take() {
-        Some(stdout) => unpack(tar::Archive::new(stdout), &file_name, tree, ld_conf),
-        None => Ok(()),
-    };
-    let status = archive.wait().at(Path::new("rpm2archive"))?;
-    if !status.success() {
+    let mut archive = Command::new("rpm2archive");
+    archive.args(["-n", "-"]);
+    // The archive is read member by member as rpm2archive writes it. It is
+    // never held whole in memory: a base's rpms are hundreds of megabytes,
+    // and an archive bomb must not become the helper's allocation.
+    let streamed = bounded_command::run_prepared_streaming_with_stdin(
+        archive,
+        source,
+        TOOL_OUTPUT_LIMIT,
+        64 * 1024,
+        TOOL_TIMEOUT,
+        |stdout| unpack(tar::Archive::new(stdout), &file_name, tree, ld_conf),
+    )
+    .map_err(|failure| match failure {
+        bounded_command::StreamError::Consumer(error) => error,
+        bounded_command::StreamError::Command(bounded_command::Error::Timeout(_)) => {
+            Error::Pack(format!("rpm2archive timed out on {file_name}"))
+        }
+        bounded_command::StreamError::Command(bounded_command::Error::OutputTooLarge {
+            ..
+        }) => Error::Pack(format!(
+            "rpm2archive output exceeds its bound on {file_name}"
+        )),
+        bounded_command::StreamError::Command(error) => {
+            Error::Pack(format!("rpm2archive failed on {file_name}: {error}"))
+        }
+    })?;
+    if !streamed.status.success() {
         return Err(Error::Pack(format!("rpm2archive failed on {file_name}")));
     }
-    unpacked
+    Ok(())
 }
 
 fn unpack<R: Read>(
@@ -871,6 +887,37 @@ mod tests {
         assert!(
             matches!(failure, Error::Os(_)),
             "a missing program is an operating-system refusal: {failure:?}"
+        );
+    }
+    #[test]
+    fn a_broken_archive_is_refused_without_leaving_a_partial_tree() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let bin = directory.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let rpm2archive = bin.join("rpm2archive");
+        std::fs::write(&rpm2archive, "#!/bin/sh\nprintf 'not a tar archive'\n").unwrap();
+        std::fs::set_permissions(&rpm2archive, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let source = directory.path().join("package.rpm");
+        std::fs::write(&source, b"an rpm").unwrap();
+        let tree = directory.path().join("tree");
+        fs::create_dir(&tree).unwrap();
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let path = format!("{}:{old_path}", bin.display());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("PATH", &path);
+        let mut ld_conf = Vec::new();
+        let error = extract_rpm(&source, &tree, &mut ld_conf)
+            .expect_err("a tool that answers with rubbish is refused");
+        assert!(
+            error.is_pack_or_os(),
+            "a corrupt archive is refused: {error:?}"
+        );
+        assert_eq!(
+            fs::read_dir(&tree).unwrap().count(),
+            0,
+            "nothing of the corrupt archive is left in the tree"
         );
     }
 }

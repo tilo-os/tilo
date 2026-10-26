@@ -6,14 +6,20 @@
 //! writes the account's `authorized_keys` file, a key-only `sshd` drop-in and
 //! the `sshd.service` enablement link, each labelled for its installed path.
 
+use std::ffi::OsStr;
 use std::fs::{self, DirBuilder, OpenOptions, Permissions};
 use std::io::Write as _;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command as Process, Stdio};
+use std::time::Duration;
 
 use crate::args::{Arg, Command};
 use crate::{Error, Result, py, require};
+
+/// How long one installed-system tool may take before it is treated as
+/// wedged. `ssh-keygen` over one bounded key file and `chcon` over one path
+/// are immediate; a minute is already generous.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The command line.
 pub const COMMAND: Command = Command {
@@ -72,18 +78,27 @@ pub trait Host {
     /// # Errors
     /// `matchpathcon` or `chcon` failing.
     fn label(&self, path: &Path, installed: &str) -> Result<()> {
-        let output = Process::new("/usr/sbin/matchpathcon")
-            .args(["-n", installed])
-            .stdin(Stdio::null())
-            .output()?;
-        require(output.status.success(), "matchpathcon failed")?;
+        let output = crate::process::run_os(
+            &[
+                OsStr::new("/usr/sbin/matchpathcon"),
+                OsStr::new("-n"),
+                OsStr::new(installed),
+            ],
+            None,
+            TOOL_TIMEOUT,
+        )?;
+        require(output.success(), "matchpathcon failed")?;
         let context = String::from_utf8_lossy(&output.stdout);
-        let status = Process::new("chcon")
-            .arg("--no-dereference")
-            .arg(context.trim())
-            .arg(path)
-            .stdin(Stdio::null())
-            .status()?;
+        let status = crate::process::run_os(
+            &[
+                OsStr::new("chcon"),
+                OsStr::new("--no-dereference"),
+                OsStr::new(context.trim()),
+                path.as_os_str(),
+            ],
+            None,
+            TOOL_TIMEOUT,
+        )?;
         require(status.success(), "chcon failed")
     }
 
@@ -92,16 +107,17 @@ pub trait Host {
     /// # Errors
     /// `ssh-keygen` refusing the file.
     fn check_keys(&self, path: &Path) -> Result<()> {
-        let output = Process::new("ssh-keygen")
-            .arg("-l")
-            .arg("-f")
-            .arg(path)
-            .stdin(Stdio::null())
-            .output()?;
-        require(
-            output.status.success(),
-            "ssh-keygen refused the SSH public keys",
-        )
+        let output = crate::process::run_os(
+            &[
+                OsStr::new("ssh-keygen"),
+                OsStr::new("-l"),
+                OsStr::new("-f"),
+                path.as_os_str(),
+            ],
+            None,
+            TOOL_TIMEOUT,
+        )?;
+        require(output.success(), "ssh-keygen refused the SSH public keys")
     }
 }
 
