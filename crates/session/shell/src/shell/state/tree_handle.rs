@@ -95,7 +95,14 @@ struct TreeCell {
     /// The rooms apps cannot open documents in yet, as the last release
     /// saw them while someone waited; `None` while nobody does.
     unready: parking_lot::Mutex<Option<UnreadyRooms>>,
+    /// Who found the tree held by a writer and asked to be woken once it is
+    /// free ([`WorkspaceTreeHandle::try_read_or_wake`]): taken and run by
+    /// the next write guard's release, after it unlocked the tree.
+    on_release: parking_lot::Mutex<Vec<ReleaseWake>>,
 }
+
+/// What a reader that found the tree held runs once it is free.
+pub type ReleaseWake = Box<dyn FnOnce() + Send>;
 
 /// The rooms of a tree whose apps cannot open documents yet, and why
 /// ([`WorkspaceTree::unready_rooms`]).
@@ -207,7 +214,10 @@ impl PolicySnapshot {
 #[must_use = "the tree is unlocked as soon as the guard is dropped"]
 #[clippy::has_significant_drop]
 pub struct WorkspaceTreeWriteGuard<'a> {
-    guard: parking_lot::RwLockWriteGuard<'a, WorkspaceTree>,
+    /// Released by hand at the end of [`Drop::drop`], before the readers
+    /// waiting for the release are woken.
+    guard: std::mem::ManuallyDrop<parking_lot::RwLockWriteGuard<'a, WorkspaceTree>>,
+    on_release: &'a parking_lot::Mutex<Vec<ReleaseWake>>,
     /// Whether the tree was lent mutably. Nothing in the tree changes behind
     /// a shared reference, so a guard that never lent it wrote nothing.
     written: bool,
@@ -236,6 +246,7 @@ impl WorkspaceTreeHandle {
             reserved_revision: AtomicU64::new(0),
             readiness: RoomReadiness::default(),
             unready: parking_lot::Mutex::new(None),
+            on_release: parking_lot::Mutex::new(Vec::new()),
         }))
     }
 
@@ -266,6 +277,30 @@ impl WorkspaceTreeHandle {
     /// [`Self::read`].
     pub fn try_read(&self) -> Option<parking_lot::RwLockReadGuard<'_, WorkspaceTree>> {
         self.0.lock.try_read_recursive()
+    }
+
+    /// [`Self::try_read`] for a step that never waits for the tree and must
+    /// not be left waiting either: when a writer holds the tree, `wake` runs
+    /// once, as soon as that writer has released it, so the step looks
+    /// again then rather than at whatever wakes its thread next (on an idle
+    /// desktop, possibly nothing).
+    pub fn try_read_or_wake(
+        &self,
+        wake: impl FnOnce() + Send + 'static,
+    ) -> Option<parking_lot::RwLockReadGuard<'_, WorkspaceTree>> {
+        if let Some(guard) = self.0.lock.try_read_recursive() {
+            return Some(guard);
+        }
+        let mut waiting = self.0.on_release.lock();
+        // A release takes the wakes only after it unlocked the tree, and
+        // waits for this lock to take them: a writer that released before
+        // this second look is seen by it, one that releases after takes
+        // `wake`.
+        if let Some(guard) = self.0.lock.try_read_recursive() {
+            return Some(guard);
+        }
+        waiting.push(Box::new(wake));
+        None
     }
 
     /// Exclusive access. The generation advances when the guard is dropped
@@ -310,7 +345,8 @@ impl WorkspaceTreeHandle {
             written: false,
             active_on_entry: guard.desktop.active,
             taken_at: at,
-            guard,
+            guard: std::mem::ManuallyDrop::new(guard),
+            on_release: &self.0.on_release,
             generation: &self.0.generation,
             policy: &self.0.policy,
             holder: &self.0.holder,
@@ -446,7 +482,19 @@ impl std::ops::DerefMut for WorkspaceTreeWriteGuard<'_> {
 
 impl Drop for WorkspaceTreeWriteGuard<'_> {
     fn drop(&mut self) {
-        // Runs before `guard` releases the lock.
+        self.announce();
+        // SAFETY: `guard` is dropped here only, once, and not used after.
+        unsafe { std::mem::ManuallyDrop::drop(&mut self.guard) };
+        let woken = std::mem::take(&mut *self.on_release.lock());
+        for wake in woken {
+            wake();
+        }
+    }
+}
+
+impl WorkspaceTreeWriteGuard<'_> {
+    /// What a release announces, while the lock is still held.
+    fn announce(&mut self) {
         let reserved = self.reserved_revision.swap(0, Ordering::AcqRel);
         if !self.written && reserved == 0 {
             // Only read through: the tree is as it was taken, so there is
@@ -517,6 +565,65 @@ impl Drop for WorkspaceTreeWriteGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A step that found the tree held is woken once, by that writer's
+    /// release, and then reads it; a step that found it free leaves nothing
+    /// behind to wake anyone.
+    #[test]
+    fn a_reader_that_found_the_tree_held_is_woken_once_by_its_release() {
+        let handle = WorkspaceTreeHandle::default();
+        let woken = Arc::new(AtomicU64::new(0));
+        let wake = |woken: &Arc<AtomicU64>| {
+            let woken = Arc::clone(woken);
+            move || {
+                woken.fetch_add(1, Ordering::AcqRel);
+            }
+        };
+        assert!(handle.try_read_or_wake(wake(&woken)).is_some());
+        drop(handle.write());
+        assert_eq!(
+            woken.load(Ordering::Acquire),
+            0,
+            "a free tree registers no wake"
+        );
+
+        let (held_tx, held) = std::sync::mpsc::channel();
+        let (release_tx, release) = std::sync::mpsc::channel::<()>();
+        let writer = {
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                let mut guard = handle.write();
+                guard.desktop.room_epoch = guard.desktop.room_epoch.wrapping_add(1);
+                held_tx.send(()).unwrap();
+                let _ = release.recv();
+                drop(guard);
+            })
+        };
+        tilo_test_env::recv("the writer to hold the tree", &held);
+        assert!(handle.try_read_or_wake(wake(&woken)).is_none());
+        assert_eq!(
+            woken.load(Ordering::Acquire),
+            0,
+            "woken only by the release"
+        );
+        release_tx.send(()).unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            woken.load(Ordering::Acquire),
+            1,
+            "the release wakes the reader once"
+        );
+        assert!(
+            handle.try_read().is_some(),
+            "the woken reader finds the tree free"
+        );
+        drop(handle.write());
+        assert_eq!(
+            woken.load(Ordering::Acquire),
+            1,
+            "a later release wakes nobody"
+        );
+    }
 
     #[test]
     fn a_long_wait_for_the_tree_names_the_writer_that_held_it() {
