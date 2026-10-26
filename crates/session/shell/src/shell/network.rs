@@ -2021,8 +2021,14 @@ impl ShellNetwork {
         identity: impl FnOnce(&iroh::SecretKey, &std::path::Path) -> Option<HostIdentity>,
     ) -> std::io::Result<Self> {
         // Peer sync owns its runtime so that dropping the network ends every
-        // task it started. Two workers: the actor waits on sockets.
-        let runtime = tilo_rt::daemon("tilo-net").workers(2).build()?;
+        // task it started. One worker: everything on it waits on sockets,
+        // timers and channels (a worker may not block, `tilo_rt`), and its
+        // CPU work is per packet. A second worker bought no throughput, but
+        // every turn that woke two or more tasks (a QUIC keep-alive passes
+        // the socket, the path's actor and the connection's driver) woke it
+        // too, to find the first had run them: about half of an idle linked
+        // desktop's wakeups.
+        let runtime = tilo_rt::daemon("tilo-net").workers(1).build()?;
         let _enter = runtime.enter();
 
         ensure_private_dir(state_dir).map_err(|error| {
