@@ -650,7 +650,7 @@ fn a_link_made_from_discord_edits_its_reply_to_the_tilo_name() {
             content: linked_reply("Ada Lovelace"),
         }]
     );
-    assert!(linked_reply("Ada Lovelace").starts_with("Linked to Ada Lovelace ✓"));
+    assert!(linked_reply("Ada Lovelace").starts_with("Linked to Ada Lovelace."));
     g.links[0].interaction = None;
     assert!(
         plan_linked(&g, &chat_with_ada(), "u_ada")
