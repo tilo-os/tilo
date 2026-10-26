@@ -73,6 +73,8 @@ struct Cached {
     fields: Map<&'static str, FieldValue>,
     /// Its collections listed so far.
     lists: Map<&'static str, Listed>,
+    /// The items within it kept, by key: forgotten with it, without a look at the others.
+    inside: Vec<String>,
 }
 
 impl Cached {
@@ -82,6 +84,27 @@ impl Cached {
             schema,
             fields: Map::default(),
             lists: Map::default(),
+            inside: Vec::new(),
+        }
+    }
+}
+
+impl DocCache {
+    /// Keep `cached` as the resource `key`, an item within the resource `parent`.
+    fn keep_within(&mut self, parent: &str, key: String, cached: Cached) {
+        if let Some(parent) = self.resources.get_mut(parent) {
+            parent.inside.push(key.clone());
+        }
+        self.resources.insert(key, cached);
+    }
+
+    /// Forget the resource `key` and the items kept within it.
+    fn drop_resource(&mut self, key: &str) {
+        let mut gone = vec![key.to_owned()];
+        while let Some(key) = gone.pop() {
+            if let Some(cached) = self.resources.remove(&key) {
+                gone.extend(cached.inside);
+            }
         }
     }
 }
@@ -367,11 +390,11 @@ impl ReadCache {
             .ok_or_else(|| not_found(format!("item `{}`", last.item)))?;
         let obj = tilo_resource::stored_item(doc, &coll, &last.item)
             .ok_or_else(|| not_found(format!("item `{}`", last.item)))?;
-        self.docs
-            .entry(at.doc.clone())
-            .or_default()
-            .resources
-            .insert(key.to_owned(), Cached::new(obj.clone(), schema));
+        self.docs.entry(at.doc.clone()).or_default().keep_within(
+            &parent.id_string(),
+            key.to_owned(),
+            Cached::new(obj.clone(), schema),
+        );
         Ok((obj, schema))
     }
 
@@ -411,18 +434,25 @@ impl ReadCache {
             .collect();
         let listed = read_listing(doc, entries, item_schema);
         let mut stored: Vec<Stored> = Vec::with_capacity(listed.len());
+        let mut kept = Vec::new();
         for item in listed {
             let id = format!("{prefix}{}", item.stored.id.as_str());
             if let Some(schema) = item_schema {
-                let cached = cache
-                    .resources
-                    .entry(id)
-                    .or_insert_with(|| Cached::new(item.obj.clone(), schema));
+                let cached = match cache.resources.entry(id) {
+                    std::collections::hash_map::Entry::Occupied(found) => found.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(new) => {
+                        kept.push(new.key().clone());
+                        new.insert(Cached::new(item.obj.clone(), schema))
+                    }
+                };
                 for (name, value) in item.fields {
                     cached.fields.entry(name).or_insert(value);
                 }
             }
             stored.push(item.stored);
+        }
+        if let Some(parent) = cache.resources.get_mut(key) {
+            parent.inside.append(&mut kept);
         }
         in_stored_order(&mut stored);
         let mut keys = Map::default();
@@ -504,10 +534,7 @@ impl ReadCache {
             return;
         };
         if key.field == ANY_FIELD {
-            let inside = format!("{}/", key.resource);
-            cache
-                .resources
-                .retain(|r, _| r != &key.resource && !r.starts_with(&inside));
+            cache.drop_resource(&key.resource);
         } else if let Some(cached) = cache.resources.get_mut(&key.resource) {
             cached.fields.remove(key.field.as_str());
             cached.lists.remove(key.field.as_str());
