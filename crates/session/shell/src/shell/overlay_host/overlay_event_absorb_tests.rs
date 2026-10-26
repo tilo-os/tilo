@@ -4125,3 +4125,76 @@ fn radio_details_lost_release_does_not_capture_a_fresh_content_click() {
         }
     }
 }
+
+/// The guide's rows are rebind targets for the pointer and the keyboard, so
+/// a reader gets them too: one button per row and the Done, and activating
+/// one starts the same rebind the pointer starts.
+#[test]
+fn a_reader_reaches_every_guide_row_and_its_done() {
+    let (vw, vh) = (1600.0, 900.0);
+    let mut h = build_harness_sized(vw, vh);
+    h.chrome.borrow_mut().overlays.shortcut_help = true;
+    settle(&mut h, vw, vh);
+
+    let semantics = h.host.accessibility().expect("shell semantics");
+    let guide = semantics
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some(&crate::shell::i18n::t("guide-a11y-name")))
+        .expect("the guide is published");
+    assert_eq!(
+        guide.children.len(),
+        h.host.shortcut_binding_rects.len() + 1,
+        "one button per rebindable row, plus Done"
+    );
+
+    // The first row is where it is drawn, and activating it starts the
+    // rebind exactly as a click on that row does.
+    let (action, rect) = h.host.shortcut_binding_rects[0];
+    let row = guide
+        .children
+        .iter()
+        .find(|node| node.semantic_key.as_deref() == Some("guide:chord:0"))
+        .expect("the first row is published");
+    assert_eq!(
+        row.bounds.map(ui::a11y::AccessBounds::to_rect),
+        Some(rect),
+        "a reader's row is the painted one"
+    );
+    assert!(
+        row.description
+            .as_deref()
+            .is_some_and(|description| description.contains('+') || !description.is_empty()),
+        "the row says which chord it holds"
+    );
+    assert!(h.host.perform_semantic_action(
+        "guide:chord:0",
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+        &automerge::ROOT,
+    ));
+    assert_eq!(h.host.shortcut_rebind, Some(action));
+
+    // Done leaves the guide, as pressing it does.
+    let done = guide
+        .children
+        .iter()
+        .find(|node| node.semantic_key.as_deref() == Some("guide:done"))
+        .expect("Done is published");
+    assert_eq!(
+        done.name.as_deref(),
+        Some(crate::shell::i18n::t("guide-done").as_str())
+    );
+    assert_eq!(
+        done.bounds.map(ui::a11y::AccessBounds::to_rect),
+        Some(h.host.shortcut_help_done_rect())
+    );
+    assert!(h.host.perform_semantic_action(
+        "guide:done",
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+        &automerge::ROOT,
+    ));
+    assert!(!h.chrome.borrow().overlays.shortcut_help, "Done closes it");
+    assert_eq!(h.host.shortcut_rebind, None, "and abandons the rebind");
+}

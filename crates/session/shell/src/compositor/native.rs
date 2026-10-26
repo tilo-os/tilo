@@ -8091,6 +8091,9 @@ fn power_notification_to_incoming(
     crate::notifications::IncomingNotification {
         dbus_id: bridge.alloc_id(),
         app_name: crate::shell::i18n::t("notification-app-power"),
+        app_icon: None,
+        desktop_entry: None,
+        image_data: None,
         summary: n.summary,
         body: n.body,
         actions: Vec::new(),
@@ -12700,6 +12703,10 @@ pub fn run() {
             });
         }
 
+        // The window with the person's focus is no longer asking for it.
+        frame_builder.with_chrome(|chrome| {
+            crate::shell::attention::clear_focused(&chrome.tree());
+        });
         // Client fullscreen is a per-output overlay drawn above everything,
         // laid out in the desktop beneath the shell only while the shell
         // takes the input over it (`FrameBuilder::set_client_fullscreen_group`).

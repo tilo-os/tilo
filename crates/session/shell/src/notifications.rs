@@ -223,6 +223,15 @@ impl CloseReason {
     }
 }
 
+/// A sender-supplied `image-data` hint, decoded and bounded: straight-alpha
+/// RGBA, row-major, `width * height * 4` bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncomingImageData {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
 /// One notification that crossed the bridge from a `Notify` call, before
 /// it is mapped into a [`tilo_desktop::notifications::Notification`] toast by the chrome pump.
 #[derive(Clone, Debug)]
@@ -231,6 +240,15 @@ pub struct IncomingNotification {
     pub dbus_id: u32,
     /// Sending application's human-readable name (the `app_name` arg).
     pub app_name: String,
+    /// The sender's own icon name, absolute path, or `image-path` hint. A
+    /// lower-trust hint than a launcher-verified app id, and only ever used
+    /// for pixels.
+    pub app_icon: Option<String>,
+    /// The freedesktop `desktop-entry` hint, also only an artwork hint.
+    pub desktop_entry: Option<String>,
+    /// Decoded `image-data`: straight-alpha RGBA, already bounded. Only ever
+    /// pixels, never identity or policy.
+    pub image_data: Option<IncomingImageData>,
     /// Single-line summary (becomes the toast title).
     pub summary: String,
     /// Optional multi-line body (becomes the toast body).
@@ -1207,6 +1225,83 @@ fn parse_badge_count(hints: &HashMap<String, OwnedValue>) -> Option<u32> {
         .map(|value| value.min(9_999))
 }
 
+/// A bounded text hint used only to find artwork, never as identity.
+#[cfg(any(test, target_os = "linux"))]
+fn parse_icon_hint(hints: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    let value = hints
+        .get(key)?
+        .try_clone()
+        .ok()
+        .and_then(|value| String::try_from(value).ok())?;
+    let value = value.trim();
+    (!value.is_empty() && value.len() <= 4096 && !value.chars().any(char::is_control))
+        .then(|| value.to_string())
+}
+
+/// Decode the freedesktop `image-data` hint, rejecting anything that is not
+/// 8-bit RGB/RGBA at a size chrome can paint.
+#[cfg(any(test, target_os = "linux"))]
+fn parse_image_data(hints: &HashMap<String, OwnedValue>) -> Option<IncomingImageData> {
+    let structure =
+        zbus::zvariant::Structure::try_from(hints.get("image-data")?.try_clone().ok()?).ok()?;
+    let mut fields = structure.into_fields();
+    if fields.len() != 7 {
+        return None;
+    }
+    let width = i32::try_from(fields.remove(0)).ok()?;
+    let height = i32::try_from(fields.remove(0)).ok()?;
+    let rowstride = i32::try_from(fields.remove(0)).ok()?;
+    let _has_alpha = bool::try_from(fields.remove(0)).ok()?;
+    let bits = i32::try_from(fields.remove(0)).ok()?;
+    let channels = i32::try_from(fields.remove(0)).ok()?;
+    let bytes = fields.remove(0).downcast::<Vec<u8>>().ok()?;
+    let (width, height, rowstride) = (
+        u32::try_from(width).ok()?,
+        u32::try_from(height).ok()?,
+        usize::try_from(rowstride).ok()?,
+    );
+    let channels = usize::try_from(channels).ok()?;
+    if bits != 8
+        || !(3..=4).contains(&channels)
+        || width == 0
+        || height == 0
+        || width > 512
+        || height > 512
+        || rowstride < (width as usize).checked_mul(channels)?
+    {
+        return None;
+    }
+    let needed = rowstride.checked_mul(height as usize)?;
+    if bytes.len() < needed {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(
+        (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?,
+    );
+    for row in 0..height as usize {
+        let line = bytes.get(row * rowstride..row * rowstride + rowstride)?;
+        for pixel in 0..width as usize {
+            let at = pixel * channels;
+            let r = *line.get(at)?;
+            let g = *line.get(at + 1)?;
+            let b = *line.get(at + 2)?;
+            let a = if channels == 4 {
+                *line.get(at + 3)?
+            } else {
+                255
+            };
+            rgba.extend_from_slice(&[r, g, b, a]);
+        }
+    }
+    Some(IncomingImageData {
+        width,
+        height,
+        rgba,
+    })
+}
+
 #[cfg(any(test, target_os = "linux"))]
 fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String> {
     let value = hints
@@ -1566,12 +1661,12 @@ fn systemd_escape(value: &str) -> String {
     })
 }
 
-/// One `Notify` call's spec arguments; `app_icon` is accepted on the wire
-/// and ignored.
+/// One `Notify` call's spec arguments.
 #[cfg(target_os = "linux")]
 struct NotifyRequest {
     app_name: String,
     replaces_id: u32,
+    app_icon: String,
     summary: String,
     body: String,
     actions: Vec<String>,
@@ -1597,11 +1692,12 @@ type NotifyArgs = (
 #[cfg(target_os = "linux")]
 impl From<NotifyArgs> for NotifyRequest {
     fn from(
-        (app_name, replaces_id, _app_icon, summary, body, actions, hints, expire_timeout): NotifyArgs,
+        (app_name, replaces_id, app_icon, summary, body, actions, hints, expire_timeout): NotifyArgs,
     ) -> Self {
         Self {
             app_name,
             replaces_id,
+            app_icon,
             summary,
             body,
             actions,
@@ -1799,6 +1895,7 @@ impl NotificationService {
         let NotifyRequest {
             app_name,
             replaces_id,
+            app_icon,
             summary,
             body,
             actions,
@@ -1830,10 +1927,18 @@ impl NotificationService {
         let ongoing_owner = ongoing
             .then(|| sender.as_ref().map(ToString::to_string))
             .flatten();
+        let app_icon = (!app_icon.trim().is_empty())
+            .then(|| app_icon.trim().to_string())
+            .or_else(|| parse_icon_hint(&hints, "image-path"));
+        let desktop_entry = parse_icon_hint(&hints, "desktop-entry");
+        let image_data = parse_image_data(&hints);
         self.bridge.push_incoming_with_sharing(
             IncomingNotification {
                 dbus_id: id,
                 app_name,
+                app_icon,
+                desktop_entry,
+                image_data,
                 summary,
                 body,
                 actions: pair_actions(&actions),
@@ -2079,6 +2184,64 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn image_data_hints_are_decoded_and_bounded() {
+        use zbus::zvariant::{OwnedValue, Value};
+        let mut hints = HashMap::new();
+        hints.insert(
+            "image-data".to_string(),
+            OwnedValue::try_from(Value::new((
+                2_i32,
+                1_i32,
+                8_i32,
+                true,
+                8_i32,
+                4_i32,
+                vec![255_u8, 0, 0, 255, 0, 255, 0, 255],
+            )))
+            .unwrap(),
+        );
+        let image = parse_image_data(&hints).expect("RGBA is decoded");
+        assert_eq!((image.width, image.height), (2, 1));
+        assert_eq!(image.rgba, [255, 0, 0, 255, 0, 255, 0, 255]);
+
+        // Three channels gain an opaque alpha.
+        hints.insert(
+            "image-data".to_string(),
+            OwnedValue::try_from(Value::new((
+                1_i32,
+                1_i32,
+                4_i32,
+                false,
+                8_i32,
+                3_i32,
+                vec![1_u8, 2, 3, 0],
+            )))
+            .unwrap(),
+        );
+        assert_eq!(
+            parse_image_data(&hints).map(|image| image.rgba),
+            Some(vec![1, 2, 3, 255])
+        );
+
+        // More than 8 bits per sample is not something the card can paint.
+        hints.insert(
+            "image-data".to_string(),
+            OwnedValue::try_from(Value::new((
+                1_i32,
+                1_i32,
+                4_i32,
+                false,
+                16_i32,
+                3_i32,
+                vec![0_u8; 32],
+            )))
+            .unwrap(),
+        );
+        assert!(parse_image_data(&hints).is_none());
+    }
+
     #[test]
     fn bridge_messages_round_trip_and_hints_are_bounded() {
         // Phase `alloc_id_is_monotonic_and_never_zero`.
@@ -2096,6 +2259,9 @@ mod tests {
             b.push_incoming(IncomingNotification {
                 dbus_id: 1,
                 app_name: "App".into(),
+                app_icon: None,
+                desktop_entry: None,
+                image_data: None,
                 summary: "Hi".into(),
                 body: "There".into(),
                 actions: vec![],

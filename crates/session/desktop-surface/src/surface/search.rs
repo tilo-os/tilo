@@ -741,13 +741,9 @@ impl DesktopSurface {
         if !self.search.is_open() {
             return;
         }
-        scene.fill(
-            ui::vello::peniko::Fill::NonZero,
-            transform,
-            ui::vello::peniko::Color::from_rgba8(0, 0, 0, 110),
-            None,
-            &self.rect,
-        );
+        // The desktop's own scrim, never a literal fill: the same dim the
+        // shell lays behind its palette, in the theme's hue and strength.
+        ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
         self.search
             .palette_mut()
             .draw(scene, transform, text, theme, presence);

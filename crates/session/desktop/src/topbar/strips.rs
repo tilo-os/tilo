@@ -244,6 +244,28 @@ impl TopBarChrome {
         );
     }
 
+    /// Let the painted name field take a pointer event, and copy its
+    /// selection back into the name the bar owns.
+    pub(super) fn field_pointer(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let Some(naming) = self.strips.naming.as_mut() else {
+            return false;
+        };
+        let Some(input) = naming.input.as_mut() else {
+            return false;
+        };
+        let took = input.handle_chrome_pointer(event, scale_factor, modifiers);
+        if took {
+            let (anchor, cursor) = input.selection_anchor_focus_or_caret();
+            naming.selection = ui::text_selection::Selection { anchor, cursor };
+        }
+        took
+    }
+
     /// Start renaming the workspace in place, from its current name, as the
     /// workspace menu's Rename asks.
     pub fn begin_workspace_rename(&mut self) {
@@ -357,6 +379,11 @@ impl TopBarChrome {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Some(ctx.logical(position));
+                // The name field is painted by the toolkit's TextInput but
+                // lives outside the retained tree; its pointer path is
+                // forwarded here so caret placement, drag selection and the
+                // context menu reach the same editor that paints it.
+                self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
                 false
             }
             WindowEvent::KeyboardInput { .. } => {
@@ -372,10 +399,17 @@ impl TopBarChrome {
                     .last_cursor
                     .is_some_and(|point| self.strips.field_rect.contains(point));
                 if inside {
+                    self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
                     *ctx.handled = true;
                     return true;
                 }
+                self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
                 self.cancel_workspace_rename();
+                false
+            }
+            WindowEvent::MouseInput { .. } => {
+                // A release ends a drag that may have left the field.
+                self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
                 false
             }
             _ => false,
@@ -540,11 +574,10 @@ mod tests {
         assert_eq!(frame.ws_pill_rect, pill, "the name is back as it was");
         assert!(frame.strips.field_rect.is_zero_area());
 
-        // The current name is selected: typing replaces it.
+        // The current name is selected: typing replaces it, with no press
+        // needed to reach the field.
         frame.begin_workspace_rename();
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        let field = frame.strips.field_rect.center();
-        Framed::harness_mut(&mut frame).click_at(field.x, field.y);
         Framed::harness_mut(&mut frame).type_text("Lounge");
         Framed::harness_mut(&mut frame).key("Enter");
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
@@ -553,6 +586,29 @@ mod tests {
             Some(&ChromeIntent::RenameWorkspace {
                 name: "Lounge".into()
             })
+        );
+
+        // A press in the field is the field's, not the bar's: it puts one
+        // caret where the person pointed, so the selected name is no longer
+        // selected and typing there edits in place.
+        frame.begin_workspace_rename();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        let field = frame.strips.field_rect.center();
+        Framed::harness_mut(&mut frame).click_at(field.x, field.y);
+        let naming = frame.strips.naming.as_ref().expect("still naming");
+        assert_eq!(
+            (naming.selection.anchor, naming.selection.cursor),
+            (4, 4),
+            "the press left one caret where the person pointed, past the short name"
+        );
+        Framed::harness_mut(&mut frame).key("Enter");
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert_eq!(
+            chrome.intents.borrow().last(),
+            Some(&ChromeIntent::RenameWorkspace {
+                name: "Room".into()
+            }),
+            "an unchanged name commits as it was"
         );
     }
 

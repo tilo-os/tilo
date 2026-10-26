@@ -6574,6 +6574,14 @@ impl XdgActivationHandler for State {
             app_id_matches_target,
         );
         if let Err(reason) = result {
+            // A refused focus request is not nothing: the window asked for
+            // the person and did not get them. Its tab carries the news.
+            if let Some(tab) = {
+                let tree = self.workspace_tree.read();
+                tab_binding::tab_for_surface(&tree, target)
+            } {
+                crate::shell::attention::ask_tab(tab);
+            }
             tracing::debug!(
                 target: "shell::compositor::activation",
                 ?reason,
@@ -7043,6 +7051,13 @@ impl XdgShellHandler for State {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         crate::compositor::foreign::note_client_pump();
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
+        if let Some(parent) = surface.parent() {
+            // A parented dialog belongs to its parent's window. If that
+            // window is not where the person is looking, its tab asks; a
+            // dialog on the focused window is answered by the same rule on
+            // the next tick.
+            crate::shell::attention::ask_surface(crate::compositor::state::surface_id(&parent));
+        }
         let authenticated_launch_key = surface.wl_surface().client().and_then(|client| {
             client
                 .get_data::<ClientState>()

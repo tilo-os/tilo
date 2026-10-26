@@ -560,6 +560,9 @@ pub struct ProjectionOverlay {
     /// A display choice made on the sheet, for the host to invoke as its
     /// published action.
     requested: Option<DisplayRequest>,
+    /// The pointer, so the row and the button under it lift: every other
+    /// shell list answers the pointer, and this sheet answered only focus.
+    cursor: Option<Point>,
 }
 
 impl Default for ProjectionOverlay {
@@ -603,6 +606,7 @@ impl ProjectionOverlay {
             credential_rect: Rect::ZERO,
             chosen: None,
             requested: None,
+            cursor: None,
         }
     }
 
@@ -966,11 +970,62 @@ impl ProjectionOverlay {
                 || EventOutcome::consumed(false),
                 |point| self.handle_click(point),
             ),
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseInput { .. }
-            | WindowEvent::MouseWheel { .. } => EventOutcome::consumed(false),
+            WindowEvent::CursorMoved { .. } => {
+                // What stands under the pointer lifts: a receiver row, a
+                // device row, or a button. Only a change of control is news
+                // worth a frame.
+                let before = self.hover_target();
+                self.cursor = cursor;
+                EventOutcome::consumed(before != self.hover_target())
+            }
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
+                EventOutcome::consumed(false)
+            }
             _ => EventOutcome::default(),
         }
+    }
+
+    /// What the pointer is over, as the last paint laid it out: distinct per
+    /// control, so a move that changes nothing asks for no frame.
+    fn hover_target(&self) -> Option<(u8, usize)> {
+        let point = self.cursor?;
+        if let Some(index) = self
+            .remote_rects
+            .iter()
+            .position(|(_, rect)| rect.contains(point))
+        {
+            return Some((0, index));
+        }
+        if let Some(index) = self.device_rects.iter().position(|row| row.contains(point)) {
+            return Some((1, index));
+        }
+        if let Some(index) = self
+            .layout_rects
+            .iter()
+            .position(|rect| !rect.is_zero_area() && rect.contains(point))
+        {
+            return Some((2, index));
+        }
+        let buttons = [
+            self.keep_rect,
+            self.revert_rect,
+            self.close_rect,
+            self.refresh_rect,
+            self.retry_rect,
+            self.audio_rect,
+            self.adaptive_rect,
+            self.resolution_rect,
+            self.fps_rect,
+        ];
+        buttons
+            .iter()
+            .position(|rect| !rect.is_zero_area() && rect.contains(point))
+            .map(|index| (3, index))
+    }
+
+    /// Whether the pointer is over `rect`, for a control that lifts.
+    fn pointer_over(&self, rect: Rect) -> bool {
+        !rect.is_zero_area() && self.cursor.is_some_and(|point| rect.contains(point))
     }
 
     fn handle_credential_event(
@@ -1928,10 +1983,13 @@ impl ProjectionOverlay {
             }
             let enabled = self.layout_enabled(mode);
             let highlighted = self.focus == SheetFocus::Layout(mode);
+            let hovered = self.pointer_over(row);
             let radius = ui::chrome::ChromeRole::Control.radius(theme, row.height());
             let shape = RoundedRect::from_rect(row, radius);
-            let tier =
-                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(highlighted));
+            let tier = ui::chrome::selection_tier(
+                theme,
+                ui::chrome::SelectionState::new(highlighted, hovered && !highlighted, false),
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -2048,6 +2106,14 @@ impl ProjectionOverlay {
                 SheetFocus::Revert => Some(crate::shell::display_confirm::BandFocus::Revert),
                 SheetFocus::Layout(_) | SheetFocus::Remote(_) | SheetFocus::Receivers => None,
             };
+            let placed = crate::shell::display_confirm::band_buttons(band);
+            let hover = if self.pointer_over(placed.keep) {
+                Some(crate::shell::display_confirm::BandFocus::Keep)
+            } else if self.pointer_over(placed.revert) {
+                Some(crate::shell::display_confirm::BandFocus::Revert)
+            } else {
+                None
+            };
             let buttons = crate::shell::display_confirm::paint_keep_revert_band(
                 scene,
                 transform,
@@ -2058,6 +2124,7 @@ impl ProjectionOverlay {
                 &status,
                 crate::shell::display_confirm::BandState {
                     focus,
+                    hover,
                     disabled: self.displays.answer.is_some(),
                 },
             );
@@ -2139,6 +2206,8 @@ impl ProjectionOverlay {
             .collect();
         let disabled = !self.shared_display_editable();
         let faces = &self.faces;
+        let pointer = self.cursor;
+        let viewport = self.remote_viewport();
         self.remote_scroll
             .paint(scene, transform, theme, |scene, transform| {
                 for (index, (display, row)) in remote.iter().zip(&rows).enumerate() {
@@ -2147,6 +2216,19 @@ impl ProjectionOverlay {
                         display.enabled,
                         theme.motion(),
                     );
+                    let shown = transform.transform_rect_bbox(*row).intersect(viewport);
+                    let hovered =
+                        pointer.is_some_and(|point| !shown.is_zero_area() && shown.contains(point));
+                    if hovered {
+                        ui::chrome::shell::paint_row_selection(
+                            scene,
+                            transform,
+                            *row,
+                            ui::chrome::SelectionState::new(false, true, false),
+                            theme.tokens.colors.lift(0.35),
+                            theme,
+                        );
+                    }
                     Self::paint_remote_row(
                         scene,
                         transform,
@@ -2156,9 +2238,9 @@ impl ProjectionOverlay {
                         display,
                         pose,
                         ui::widget::ToggleInteract {
+                            hovered,
                             focused: focused == Some(index),
                             disabled,
-                            ..Default::default()
                         },
                     );
                 }
@@ -2194,6 +2276,7 @@ impl ProjectionOverlay {
                 .role(ButtonRole::Plain)
                 .icon(ui::icons::Icon::Monitor)
                 .focused(interact.focused)
+                .hovered(interact.hovered)
                 .disabled(interact.disabled),
         );
         ui::widget::Toggle::paint(
@@ -2516,7 +2599,7 @@ impl ProjectionOverlay {
                 transform,
                 text_renderer,
                 theme,
-                &ui::widget::ButtonFace::new(rect, &label),
+                &ui::widget::ButtonFace::new(rect, &label).hovered(self.pointer_over(rect)),
             );
             self.retry_rect = rect;
         }
@@ -2547,8 +2630,11 @@ impl ProjectionOverlay {
             let connecting = matches!(&self.controller.status, ProjectionStatus::Connecting { device_id } if device_id == &device.id);
             let radius = ui::chrome::ChromeRole::Control.radius(theme, row.height());
             let shape = RoundedRect::from_rect(row, radius);
-            let tier =
-                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(selected));
+            let hovered = self.pointer_over(row);
+            let tier = ui::chrome::selection_tier(
+                theme,
+                ui::chrome::SelectionState::new(selected, hovered && !selected, false),
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -2611,6 +2697,7 @@ impl ProjectionOverlay {
                 row,
                 connected,
                 connecting,
+                hovered,
             );
         }
     }
@@ -2662,6 +2749,7 @@ impl ProjectionOverlay {
         row: Rect,
         connected: bool,
         connecting: bool,
+        hovered: bool,
     ) {
         let action = Rect::new(row.x1 - 86.0, row.y0 + 11.0, row.x1 - 10.0, row.y1 - 11.0);
         let label = if connected {
@@ -2682,6 +2770,7 @@ impl ProjectionOverlay {
                 } else {
                     ButtonRole::Secondary
                 })
+                .hovered(hovered)
                 .disabled(connecting),
         );
     }
@@ -2947,6 +3036,75 @@ mod tests {
         overlay.displays.outputs_seen = Some(DisplayHardwareSnapshot::published_generation());
         overlay.displays.polled_at = Some(Instant::now());
         overlay
+    }
+
+    /// The sheet answers the pointer as every other shell list does: the row
+    /// or button under it lifts, and moving where nothing changed asks for no
+    /// frame (the finding: this sheet had no hover state anywhere).
+    #[test]
+    fn the_row_and_button_under_the_pointer_lift_and_only_a_change_asks_for_a_frame() {
+        let mut overlay = overlay_with(two_displays());
+        overlay.focus = SheetFocus::Layout(DisplayLayoutMode::Mirror);
+        let host = overlay.host_rect;
+        let sheet = overlay.sheet_rect();
+        overlay.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+            host,
+            true,
+        );
+        let mut document = automerge::AutoCommit::new();
+        let modifiers = winit::event::Modifiers::default();
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).expect("a layout node");
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut ctx = EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: ui::widget::Edits::lend(&mut document),
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &taffy,
+        };
+        let mut move_to = |overlay: &mut ProjectionOverlay, point: Point| {
+            overlay
+                .handle_event(
+                    &ui::synthetic_input::cursor_moved(point.x, point.y),
+                    &mut ctx,
+                    Some(point),
+                    host,
+                    true,
+                )
+                .invalidate
+        };
+        // Nowhere in particular: nothing to lift, no frame.
+        assert!(!move_to(
+            &mut overlay,
+            Point::new(sheet.x0 - 40.0, sheet.y0)
+        ));
+        // Onto the sheet's own body: still no control, still no frame.
+        assert!(!move_to(
+            &mut overlay,
+            Point::new(sheet.center().x, sheet.y0 + 4.0)
+        ));
+        // Onto a layout card: it lifts, and the frame is asked for once.
+        let card = overlay.layout_rects[0].center();
+        assert!(
+            move_to(&mut overlay, card),
+            "the card under the pointer lifts"
+        );
+        assert!(
+            !move_to(&mut overlay, Point::new(card.x + 2.0, card.y)),
+            "moving within the same control is not news"
+        );
+        // Off it again: the lift goes with the pointer.
+        assert!(move_to(&mut overlay, Point::new(sheet.x0 - 40.0, sheet.y0)));
     }
 
     #[test]
