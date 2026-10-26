@@ -1991,7 +1991,21 @@ impl BrowserWidget {
                 request.action()
             ));
         }
-        if self.page_operation.is_some() || self.page_operation_result.is_some() {
+        // A settled operation's update waits here until the effect reply that
+        // asked for it reads it ([`Self::settle_replies`]). One whose reply is
+        // gone is spent: that caller was answered `accepted` and moved on, so
+        // nothing will ever read it here (`tilo_status` still answers it), and
+        // holding the slot would refuse every later action in this tab. An
+        // operation still in flight is never abandoned: it settles at its own
+        // deadline.
+        self.abandon_unwatched_page_result();
+        if self.page_operation.is_some() {
+            return Err("another page action is already running in this tab".into());
+        }
+        // A result the caller stopped waiting for while its page action ran on
+        // to completion is refused here exactly like one still running: the
+        // slot frees itself when that action settles and nobody reads it.
+        if self.page_operation_result.is_some() {
             return Err("another page action is already running in this tab".into());
         }
         // The page runs nothing while it waits on its question: an action
@@ -5965,6 +5979,28 @@ impl BrowserWidget {
         }
     }
 
+    /// Whether an effect reply still waits on `invocation`, the one that
+    /// would read that operation's outcome.
+    fn reply_outstanding(&self, invocation: ui::tilo_actions::InvocationId) -> bool {
+        self.pending_replies
+            .iter()
+            .any(|(waiting, _)| *waiting == invocation)
+    }
+
+    /// Let go of a settled page update when no effect reply waits on it any
+    /// more: nothing would ever read it, and holding the tab's one
+    /// page-operation slot for it refuses every later action forever. An
+    /// operation still running is left to settle at its own deadline.
+    fn abandon_unwatched_page_result(&mut self) {
+        if self
+            .page_operation_result
+            .as_ref()
+            .is_some_and(|update| !self.reply_outstanding(update.invocation()))
+        {
+            self.page_operation_result = None;
+        }
+    }
+
     /// Answer `reply` once the operation `invocation` names settles.
     pub(crate) fn answer_later(
         &mut self,
@@ -6203,9 +6239,13 @@ impl BrowserWidget {
                 BrowserOperation::RevealDownload { .. } => {
                     local_output("Downloaded file location was handed to the desktop portal.")
                 }
-                BrowserOperation::OpenInNewTab { .. } => {
-                    local_output("Asked the desktop for a new Browser tab beside this one.")
-                }
+                BrowserOperation::OpenInNewTab { .. } => local_output(
+                    "Asked the desktop for a new Browser tab beside this one. The tab is another \
+                     Browser instance with its own peer id and its own page: this window keeps this \
+                     page and its refs, and the new tab's page has to be addressed through that \
+                     instance (tilo_list_apps shows it once it maps; its page actions live there, \
+                     never here).",
+                ),
                 _ => ui::tilo_actions::ActionOutput::default(),
             };
             let answers_a_dialog = matches!(operation, BrowserOperation::AnswerPageDialog { .. });
