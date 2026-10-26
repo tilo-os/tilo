@@ -3990,15 +3990,20 @@ relay_cpus = ""
 # Checks for nodes with KVM, a privileged VM or 100 GB of disk.
 
 # The OS image's acceptance scenarios in tilo-vm (scripts/vm-acceptance), in a
-# micro-VM on an x86-64 node with KVM: this tree's own dev image (os-dev-image-x86_64)
-# installed to a disk and booted in a libvirt guest (tools/ci/vm-acceptance.sh).
+# micro-VM on an x86-64 node with KVM: this tree's own dev image, on the disk
+# os-dev-gate-x86_64 installed it to (the disk the dev channel publishes), booted from a
+# throwaway overlay in a libvirt guest by tilo-vm-binary-x86_64's tilo-vm
+# (tools/ci/vm-acceptance.sh).
 # `t dispatch vm-acceptance --input only=input --input swap=all` runs a selection;
 # `t test vm-acceptance` the checks a working tree's changes select; `t outputs
 # vm-acceptance` gives the report. vm-acceptance-perf runs every check on release candidates
 # and when dispatched, and publishes its performance records where the run holds
 # TILO_PACKAGES_TOKEN (`t dispatch vm-acceptance-perf --ref main`, or any reference the
 # server's secret config gives it to). The micro-VM holds the guest (6 vCPUs, 4.5 GiB) beside
-# the image install and the tilo-vm build.
+# what a swap builds. Its inputs are what the run reads besides the disk and tilo-vm: the
+# suite, its driver and the repository files the scenarios read. A swap builds from the
+# whole tree, which the commit keys (`git`). A result is kept per commit and those files,
+# so a run whose disk, tilo-vm and suite are unchanged takes it from the cache.
 [[check]]
 name = "vm-acceptance"
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
@@ -4007,10 +4012,20 @@ isolation = "vm"
 git = true
 writable_sources = true
 run = "bash tools/ci/vm-acceptance.sh"
-needs = ["os-dev-image-x86_64"]
-inputs = ["**"]
+needs = ["os-dev-gate-x86_64", "tilo-vm-binary-x86_64"]
+inputs = [
+  "scripts/vm-acceptance/**",
+  "tools/ci/vm-acceptance.sh",
+  "os/account.env",
+  "os/components.toml",
+  "os/dev/assert-native-arch.sh",
+  "os/dev/probe-kvm.py",
+  "os/tests/boot_performance_gate.sh",
+  "tools/perf/**",
+  "tools/atspi_external_client.py",
+  "crates/dev/tilo-vm-protocol/src/lib.rs",
+]
 outputs = ["/target/vm-acceptance/report/**"]
-cache = false
 timeout_secs = 10800
 cost = "heavy"
 default = false
@@ -4094,7 +4109,7 @@ isolation = "vm"
 git = true
 writable_sources = true
 run = "bash tools/ci/vm-acceptance.sh cohort"
-needs = ["os-dev-image-x86_64", "vm-cohort-x86_64", "vm-cohort-verifier-x86_64"]
+needs = ["os-dev-gate-x86_64", "tilo-vm-binary-x86_64", "vm-cohort-x86_64", "vm-cohort-verifier-x86_64"]
 inputs = ["**"]
 outputs = ["/target/vm-acceptance/report/**"]
 cache = false
