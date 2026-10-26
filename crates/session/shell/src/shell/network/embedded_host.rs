@@ -169,6 +169,11 @@ impl ShellNetwork {
     /// opens the room's records with. `None` for a room hosted elsewhere, or
     /// while the host is not open. Blocks on the host: call it off the frame
     /// loop.
+    ///
+    /// The steward answers on this network's runtime, never on the caller's
+    /// thread: the broker asks from its connections' own runtime, where
+    /// entering another runtime to wait panics and takes the asking app's
+    /// connection with it.
     pub(crate) fn hosted_channel_keys(
         &self,
         room: RoomId,
@@ -187,12 +192,19 @@ impl ShellNetwork {
             Ok(runtime) => runtime,
             Err(error) => return Some(Err(error)),
         };
-        runtime.block_on(host.rooms().steward_channel_keys(
-            &room.to_string(),
-            channel,
-            route,
-            create,
-        ))
+        let (room, route) = (room.to_string(), route.cloned());
+        let (answer, answered) = std::sync::mpsc::sync_channel(1);
+        runtime.spawn(async move {
+            let keys = host
+                .rooms()
+                .steward_channel_keys(&room, channel, route.as_ref(), create)
+                .await;
+            let _ = answer.send(keys);
+        });
+        // The task ends without answering only when the runtime shuts down.
+        answered
+            .recv()
+            .unwrap_or_else(|_| Some(Err("this device's network stopped".into())))
     }
 
     /// Whether this device's own host holds `room`, as the native owner,
