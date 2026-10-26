@@ -312,9 +312,27 @@ impl GitClientApp {
                 settings: self.settings,
                 staged: false,
                 can_discard: false,
+                // The change is already committed: there is nothing here to
+                // stage, and the working tree's selection is not this file.
+                actions: false,
                 pointer: self.pointer,
             },
         );
+        // Whatever the view drew is reachable where it was drawn: a control
+        // painted here and recorded nowhere is one that ignores a press and
+        // that a reader never hears.
+        for (rect, hit) in out.targets {
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                self.targets.push(Target {
+                    rect,
+                    hit: Hit::Diff(hit),
+                });
+                self.semantic.push(Target {
+                    rect,
+                    hit: Hit::Diff(hit),
+                });
+            }
+        }
         let max_y = out.content_height - out.viewport.height();
         self.diff_scroll = self.diff_scroll.clamp(0.0, max_y.max(0.0));
         self.diff_hscroll = self.diff_hscroll.clamp(0.0, out.max_hscroll);

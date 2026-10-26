@@ -61,6 +61,11 @@ pub struct DiffInput<'a> {
     pub staged: bool,
     /// Whether the worktree side may be discarded here.
     pub can_discard: bool,
+    /// Whether this file's changes can be staged or unstaged here at all.
+    /// They cannot while the file is conflicted — its two sides are the
+    /// decision, and `git add` on the markers would settle it the wrong way —
+    /// nor in a commit's history, where the change is already made.
+    pub actions: bool,
     pub pointer: Option<Point>,
 }
 
@@ -453,16 +458,20 @@ fn paint_file_header(
 
     // Actions trail: the file's toggle last, discard before it.
     let mut right = band.x1 - m.pad;
-    let mut buttons: Vec<(String, ButtonRole, DiffHit)> = vec![(
-        t(if input.staged {
-            "git-unstage-file"
-        } else {
-            "git-stage-file"
-        }),
-        ButtonRole::Secondary,
-        DiffHit::StageFile,
-    )];
-    if input.can_discard && !input.staged {
+    let mut buttons: Vec<(String, ButtonRole, DiffHit)> = if !input.actions {
+        Vec::new()
+    } else {
+        vec![(
+            t(if input.staged {
+                "git-unstage-file"
+            } else {
+                "git-stage-file"
+            }),
+            ButtonRole::Secondary,
+            DiffHit::StageFile,
+        )]
+    };
+    if input.actions && input.can_discard && !input.staged {
         buttons.push((
             t("git-discard-file"),
             ButtonRole::Destructive,
@@ -590,16 +599,20 @@ impl RowPass<'_, '_> {
         let small_h = ButtonFace::height(ControlSize::Small, theme);
         let y = row.center().y - small_h / 2.0;
         let mut right = row.x1 - m.pad;
-        let mut actions = vec![(
-            t(if self.input.staged {
-                "git-unstage-hunk"
-            } else {
-                "git-stage-hunk"
-            }),
-            ButtonRole::Secondary,
-            HunkAction::Toggle,
-        )];
-        if self.input.can_discard && !self.input.staged {
+        let mut actions = if self.input.actions {
+            vec![(
+                t(if self.input.staged {
+                    "git-unstage-hunk"
+                } else {
+                    "git-stage-hunk"
+                }),
+                ButtonRole::Secondary,
+                HunkAction::Toggle,
+            )]
+        } else {
+            Vec::new()
+        };
+        if self.input.actions && self.input.can_discard && !self.input.staged {
             actions.push((
                 t("git-discard-hunk"),
                 ButtonRole::Destructive,
@@ -883,6 +896,7 @@ mod tests {
                 settings,
                 staged,
                 can_discard: true,
+                actions: true,
                 pointer: None,
             },
         )
@@ -952,6 +966,41 @@ mod tests {
                 assert!(a.intersect(*b).area() <= 0.0, "{a:?} overlaps {b:?}");
             }
         }
+    }
+
+    /// A view that offers no actions draws none: the file's toggle and
+    /// discard, and each hunk's, are the working tree's business, and a
+    /// commit's file or a conflicted file has no working tree to act on.
+    #[test]
+    fn a_view_without_actions_draws_none() {
+        let diff = sample_diff();
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        let quiet = paint(
+            &mut ctx,
+            Rect::new(0.0, 0.0, 900.0, 600.0),
+            &DiffInput {
+                diff: &diff,
+                scroll: 0.0,
+                hscroll: 0.0,
+                settings: Settings::default(),
+                staged: false,
+                can_discard: true,
+                actions: false,
+                pointer: None,
+            },
+        );
+        assert!(
+            quiet.targets.is_empty(),
+            "nothing to press: {:?}",
+            quiet.targets
+        );
+        assert!(
+            quiet.content_height > 0.0,
+            "the change is still drawn, only not acted on"
+        );
     }
 
     /// Without wrapping, a narrow pane scrolls its long lines sideways; with

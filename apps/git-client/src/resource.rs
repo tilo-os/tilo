@@ -203,6 +203,7 @@ impl ResourceSurface<GitClient, GitClientEffect> for GitClientApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::t;
     use crate::settings::{DiffLayout, Settings};
     use crate::shared::{SharedRepo, shared_fingerprint};
     use ui::framework::Effect as _;
@@ -795,6 +796,64 @@ mod tests {
                 .find_branch("codex/another", git2::BranchType::Local)
                 .is_err()
         );
+    }
+
+    /// A commit's file opens in the same diff view the working tree uses,
+    /// and offers none of that view's actions: the change is already made,
+    /// and staging or discarding it from here would act on a different
+    /// file than the one on screen.
+    #[test]
+    fn a_commits_file_offers_no_stage_or_discard() {
+        let (_dir, path) = scratch_repository("commit-diff-actions");
+        std::fs::write(path.join("file.txt"), "one\nedited\n").unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("file.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "edit the file",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+        let head = repo.head().unwrap().target().unwrap().to_string();
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+
+        app.effect_on(
+            &crate::actions::commit_resource_id(&head),
+            &crate::actions::GitClientEffect::OpenCommit { id: head },
+        )
+        .unwrap();
+        app.settle();
+        // Enter opens the file the commit's list is on.
+        app.harness().key("Enter");
+        app.settle();
+
+        assert!(
+            app.harness()
+                .a11y_node_named(&t("git-back-to-commit"))
+                .is_some(),
+            "the commit's file is open, with the way back"
+        );
+        for absent in [
+            t("git-stage-file"),
+            t("git-unstage-file"),
+            t("git-discard-file-name"),
+            t("git-stage-hunk"),
+            t("git-discard-hunk"),
+        ] {
+            assert!(
+                app.harness().a11y_node_named(&absent).is_none(),
+                "a committed change offers no {absent:?}: there is nothing here to act on"
+            );
+        }
     }
 
     /// The window bar's layout item and the palette's effect switch the

@@ -1552,6 +1552,9 @@ impl GitClientApp {
                 settings: self.settings,
                 staged,
                 can_discard: true,
+                // A conflicted file's decision is the band above its diff:
+                // staging the markers would settle it as neither side.
+                actions: self.selected_conflict().is_none(),
                 pointer: self.pointer,
             },
         );
