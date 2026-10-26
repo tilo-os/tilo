@@ -22,6 +22,11 @@ use ui::{
 #[cfg(target_arch = "wasm32")]
 pub(crate) const SEMANTICS_WINDOW_MS: u64 = 100;
 
+/// How long after a presented frame its tree is built, at the soonest: long
+/// enough that the build runs in a task of its own, after the browser took
+/// the frame.
+pub(crate) const AFTER_FRAME: std::time::Duration = std::time::Duration::from_millis(1);
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SemanticsDecision {
     /// The host already holds this exact tree.
@@ -62,6 +67,32 @@ impl SemanticsGate {
     /// without scheduling anything.
     pub(crate) fn would_defer_unbuilt(&self, now: ui::time::Instant) -> bool {
         !self.requested && self.delivered != 0 && self.schedule.would_defer(now)
+    }
+    /// Leave a presented frame's tree to a task of its own after the frame:
+    /// building it walks every window's semantics, often the largest part
+    /// of a frame, and the pixels an input asked for must not wait on it.
+    /// The tree is due at once in that task when the host asked for one or
+    /// the IME line moved; otherwise at the end of the window the last
+    /// delivery opened, so typing builds one tree per window rather than
+    /// one per key. False for the first tree, which goes with the first
+    /// frame.
+    pub(crate) fn after_frame(
+        &mut self,
+        ime: Option<&ImeWindowState>,
+        now: ui::time::Instant,
+    ) -> bool {
+        if self.delivered == 0 {
+            return false;
+        }
+        let soon = now.checked_add(AFTER_FRAME).unwrap_or(now);
+        let urgent = self.requested || ime_signature(ime) != self.ime;
+        let at = match self.schedule.window_end(now) {
+            Some(end) if !urgent => end.max(soon),
+            _ => soon,
+        };
+        let at = self.schedule.due().map_or(at, |held| held.min(at));
+        self.schedule.hold(at);
+        true
     }
     /// Hold a moved frame's tree, whose window is over, for the frame after
     /// (due `now`), unless something else asks for it now: a request, the
@@ -280,6 +311,39 @@ mod tests {
     }
     fn window() -> SemanticsGate {
         SemanticsGate::new(Duration::from_millis(100))
+    }
+
+    #[test]
+    fn a_presented_frame_leaves_its_tree_to_a_task_after_it() {
+        let t0 = ui::time::Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut gate = window();
+        // The first tree goes with the first frame.
+        assert!(!gate.after_frame(None, ms(0)));
+        gate.decide(&tree(&["a"], 0), None, ms(0));
+        // A keystroke inside the window: one tree at its end, however many
+        // frames the keys present before it.
+        assert!(gate.after_frame(None, ms(20)));
+        assert_eq!(gate.due(), Some(ms(100)));
+        assert!(gate.after_frame(None, ms(60)));
+        assert_eq!(gate.due(), Some(ms(100)));
+        assert_eq!(
+            gate.decide(&tree(&["ab"], 0), None, ms(100)),
+            SemanticsDecision::Deliver { forced: false }
+        );
+        // Past the window, the tree is built right after the frame, in a
+        // task of its own.
+        assert!(gate.after_frame(None, ms(300)));
+        assert_eq!(gate.due(), Some(ms(300) + AFTER_FRAME));
+        gate.decide(&tree(&["abc"], 0), None, ms(301));
+        // The IME line moving, or the host asking, does not wait for the
+        // window.
+        assert!(gate.after_frame(Some(&ime(0, 40)), ms(320)));
+        assert_eq!(gate.due(), Some(ms(320) + AFTER_FRAME));
+        gate.decide(&tree(&["abc"], 0), Some(&ime(0, 40)), ms(321));
+        gate.request();
+        assert!(gate.after_frame(Some(&ime(0, 40)), ms(330)));
+        assert_eq!(gate.due(), Some(ms(330) + AFTER_FRAME));
     }
 
     #[test]

@@ -2744,7 +2744,7 @@ impl Mount {
         }
         let stage = self.metric_start();
         self.presentation.set(true);
-        self.publish_frame(0, change);
+        self.publish_frame(0, change, true);
         self.presentation.set(false);
         self.metric_end("publish", stage);
         Ok(())
@@ -2828,7 +2828,7 @@ impl Mount {
     }
 
     fn publish(&mut self, id: u64) {
-        self.publish_frame(id, FrameChange::Other);
+        self.publish_frame(id, FrameChange::Other, false);
     }
 
     /// Whether a frame's tree stays unbuilt: only a frame that laid nothing
@@ -2874,13 +2874,15 @@ impl Mount {
         }
     }
 
-    /// Publish the status of a presented frame. `change` says what the
-    /// frame changed ([`Self::draw`]). The tree of a frame that laid
+    /// Publish the status of a frame. `change` says what the frame changed
+    /// ([`Self::draw`]); `presented`, that it is the frame just drawn, whose
+    /// tree is built in a task after it
+    /// ([`crate::semantics_status::SemanticsGate::after_frame`]). The tree of a frame that laid
     /// nothing out is not built: it is the last one. Nor is that of a frame
     /// that only moved laid-out content, a content-only change: the gate's
     /// deadline delivers it as it then is. Neither changes the focus
     /// presence or the place in the room either.
-    fn publish_frame(&mut self, id: u64, change: FrameChange) {
+    fn publish_frame(&mut self, id: u64, change: FrameChange, presented: bool) {
         // What did not run is said over the window; the log says which
         // invocation it was, which the window's words leave out.
         let failures = self.frame.control_failures();
@@ -2897,7 +2899,12 @@ impl Mount {
         let ime = ime_window.as_ref().map(|i| {
             serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.content.purpose),"hints":i.content.html()})
         });
-        let unbuilt = self.tree_unbuilt(change, ime_window.as_ref());
+        let unbuilt = self.tree_unbuilt(change, ime_window.as_ref())
+            || (presented
+                && self
+                    .semantics
+                    .borrow_mut()
+                    .after_frame(ime_window.as_ref(), ui::time::now()));
         let (decision, root_rect) = if unbuilt {
             (None, self.tree_root_rect.get())
         } else {
