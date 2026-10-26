@@ -24,7 +24,7 @@ otherwise spends tokens, calls or guesses on.
 - **Types and actions describe themselves as source.** `describe` prints a type or an action as
   its tilolang declaration with its doc comments, the way the author wrote it. Agents read code
   faster and more reliably than they read schemas.
-- **Output is input.** Every address, filter and literal in an answer is valid in the next
+- **Output is input.** Every ref, filter and literal in an answer is valid in the next
   request.
 
 The door is one MCP tool, `tilo`, taking a line or a block. The same language is the `tilo`
@@ -65,18 +65,18 @@ parents, its children by kind with counts, its actions, and who else is on it.
 "What does this say?" becomes `read this` with no searching. "Add that to my list" becomes
 `do todo.add(here, selection)`.
 
-## 3. Addresses
+## 3. Refs
 
-- **Every resource has a short address,** unique within the workspace, like a git short hash:
+- **Every resource has a short ref,** unique within the workspace, like a git short hash:
   `t91`, `m3`, `f7`. The prefix comes from the type's initial and grows only when needed.
-- **A full address is also accepted:** `mail/Thread/t91`, and a path by title,
+- **A full path is also accepted:** `mail/Thread/t91`, and a path by title,
   `notes/"Board meeting"`.
-- **Every line of output starts with the address of what it shows,** so an agent never has to
-  look an address up again.
-- **Anchors** address inside a resource: `m3 ¶2.2` is a paragraph, `f7 p.4` a page, `doc §3` a
+- **Every line of output starts with the ref of what it shows,** so an agent never has to
+  look one up again.
+- **Anchors** point inside a resource: `m3 ¶2.2` is a paragraph, `f7 p.4` a page, `doc §3` a
   heading, `t91 m3..m5` a range of messages. They are what `quote(...)` cites.
 - **Addresses are stable.** They don't change when a title does, and a moved resource keeps
-  its address.
+  its ref.
 
 ## 4. Finding
 
@@ -102,7 +102,8 @@ parents, its children by kind with counts, its actions, and who else is on it.
 - **Pages** default to 10 rows. `more` continues the last result, and `find … | count` answers
   without rows.
 - **Tokens:**
-  - `@domain` and full addresses for people;
+  - mail addresses and `@domain` on mail-address fields, and `person:jane` for an explicit
+    expansion through Jane's associations (`search.md` §2.2.1);
   - `me`;
   - `is:unread`;
   - `-7d` and `today`;
@@ -157,10 +158,10 @@ actions on Thread                          this task
   delete(thread)                           no
 
 > describe mail
-app mail "Mail" · types: Mailbox Thread Message Draft Label Person · start: look mail
+app mail "Mail" · types: Mailbox Thread Message Draft Label · start: look mail
 ```
 
-- **`describe` works on anything:** an app, a type, an action, a field, or an address, which
+- **`describe` works on anything:** an app, a type, an action, a field, or a ref, which
   describes that resource's type with this resource's values.
 - **Permission is shown before acting,** per action, for this task.
 - **Doc comments are the documentation.** The compiler requires one on every public type and
@@ -232,7 +233,7 @@ reporting.
 
 ## 10. Its own trail
 
-- `history task` lists what this task did, with addresses.
+- `history task` lists what this task did, with refs.
 - `undo task` undoes it all, and `undo i22` undoes one action.
 - `watch <query>` makes a standing task: "tell me when the school writes" is
   `watch Thread from:@school.example`. It is a saved search that notifies, owned by the person
@@ -252,7 +253,7 @@ Things are only quick when replies are short and fast:
 1. **The door:**
    - the `tilo` tool and CLI parse tilolang requests;
    - the path tools are kept as spellings;
-   - `look`, `describe`, short addresses and anchors are added.
+   - `look`, `describe`, short refs and anchors are added.
 2. **Compiler:**
    - doc comments required on public items;
    - naming-convention warnings;

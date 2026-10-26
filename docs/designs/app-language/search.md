@@ -51,8 +51,8 @@ rest go under "More filters".
 type Message {
     subject: Text (title)
     body: Text (body)
-    from: Person
-    to: Set<Person>
+    from: MailAddress
+    to: Set<MailAddress>
     received: Time
     unread: Bool
     labels: Set<Label>
@@ -79,7 +79,8 @@ type Message {
   | enum | chips with the variants' icons; several may be picked | `status:open` | `status: [.open]` |
   | `Time`, `Date` | presets (today, this week, last 30 days, a month) plus a range picker; also a sort | `received:>2026-10-01` | `received: 2026-10-01..` |
   | `Int`, `Number` | range | `size:>10` | `size: 10..` |
-  | `Person`, `Set<Person>` | people picker with avatars, ordered by who you deal with most | `from:jane`, `from:jane@ycombinator.com`, `from:@ycombinator.com` | `from: "@ycombinator.com"` |
+  | an endpoint (`MailAddress`, `PhoneNumber`, `ServiceAccount`, `TiloIdentity`) | picker of the endpoints that occur, with the person they are associated with when there is one | per kind: `from:jane@ycombinator.com`, `from:@ycombinator.com` (mail domain), `from:+4930…` | `from: "@ycombinator.com"` |
+  | `Person` (a Contacts person) | people picker with avatars | `from:person:jane` | `from: person:p4` |
   | a reference or `Set` of another type | picker of that type, using its row view | `label:legal` | `labels: [label:9c]` |
   | `Set<Text>` | tag chips with counts | `tag:urgent` | `tags: ["urgent"]` |
 
@@ -88,17 +89,51 @@ type Message {
   the runtime's field-precise invalidation. It is shown as a toggle chip.
 - **`sort field newest|oldest|a_z|z_a`** is the default order when there's no text, and an
   offered order otherwise. Relevance is always offered when there is text.
-- **People are matched by name or address.** A person is known by their addresses (mail, Tilo
-  identity, phone). `from:@ycombinator.com` matches anyone with an address at that domain,
-  whether or not they are a contact. No organisation concept is needed to search.
+- **Endpoints are facts; people are associations.** See §2.2.1.
 - **`hide field`** keeps a field out of filters. It is still searchable by text if it is text.
 - **Text fields:**
   - `(title)` is weighted as a title and `(body)` as long prose.
   - Other text fields are metadata.
   - `(secret)` fields are never indexed.
 
+#### 2.2.1 Endpoints and people
+
+Mail addresses, phone numbers, Discord and other service accounts, and Tilo identities are
+**different kinds of things**. A message records the **endpoint** it actually came from and went
+to. That is a fact of the message, and search filters on it directly. `from:@ycombinator.com`
+is a match on the sender's mail domain. It needs no contact, organisation or person.
+
+Which endpoints belong to one **person** is a separate, uncertain claim. It follows Contacts'
+model (`docs/architecture/shared-contacts.md`):
+- An endpoint is `{ service, scope, recipient, revision }`. Phone numbers are reassigned and
+  service handles change, so the revision matters.
+- **A Contacts association** is a decision the person reviewed in their address book. It is not
+  proof of identity.
+- **A linked account** is one its owner linked to their Tilo identity themselves, such as
+  signing in with Discord. It is evidence from the owner.
+- Labels and hints (a name, an address typed into a contact) never identify anyone.
+
+Searching by a person is therefore an explicit expansion through those associations, and it
+says what it used:
+
+```
+> find Message from:person:jane
+4 messages, from Jane Doe's associated endpoints:
+  jane@ycombinator.com   your contact, reviewed Sep 3
+  @janedoe on Discord    linked by Jane
+  not included: jdoe@gmail.com, which appears in 2 messages and is not associated
+```
+
+- **Ambiguity is reported, not resolved.** Two contacts claiming one endpoint, or a changed
+  revision, shows both and picks neither.
+- **Nobody's address book is assumed complete.** An agent starts from the facts (the endpoints in
+  the messages). It may propose an association, which is Contacts' own confirmation-required
+  action, and never creates one itself.
+- **Results show the endpoint, with the associated person beside it when there is one.** History
+  is never rewritten when people are linked or unlinked later.
+
 **Without a `search` block, the defaults are:**
-- every top-level `Bool`, enum, `Date`/`Time`, `Person` and `Set` field is a filter, in field
+- every top-level `Bool`, enum, `Date`/`Time`, endpoint, `Person` and `Set` field is a filter, in field
   order;
 - the first `Time` field, or the platform's modified time when there is none, is the default sort,
   newest first;
@@ -130,7 +165,8 @@ There is no separate search row.
   - the title;
   - the first other text;
   - the first `Time` as meta;
-  - the first `Person` as the avatar;
+  - the first endpoint or `Person` as the avatar, with the associated person's picture when there
+    is one;
   - the type's icon.
 - **Preview.** The palette's preview pane shows the type's `default view`, read-only and live.
 - **Grouping.** Results are grouped by type ("Messages", "Notes"); the plural comes from the type
@@ -167,7 +203,8 @@ school" are all saved searches. They are synced, collaborative and shareable lik
 ### 3.1 The system palette
 
 - **Typed tokens.** With no type chip selected, typed tokens for any declared filter key work
-  across types: `from:jane` matches every type with a `Person` filter called `from`.
+  across types: `from:@ycombinator.com` matches every type whose `from` filter is a mail
+  address.
 - **Type chips.** Selecting one type chip (Messages) shows that type's filter strip, with counts:
   `[Unread 12] [From ▾] [Received ▾] [Labels ▾] [More]`. Picking a chip and typing a token are the
   same filter, shown as the same chip in the field.
@@ -208,13 +245,13 @@ descriptions:
 
 ```
 describe(mail.Message)
-→ filters: unread (Bool) "Unread", from (Person) "Who sent it", received (Time),
+→ filters: unread (Bool) "Unread", from (MailAddress) "Who sent it", received (Time),
            labels (Set<Label>), has_attachment (Bool) "Has attachment"
   sort: received newest | relevance
 
 find(mail.Message, text: "83(b)", where: { from: "@ycombinator.com", received: 2026-09-01.. },
      sort: received newest, limit: 10)
-→ [ { ref: msg:m3, title: "Re: Incorporation & SAFE", from: person:a1, received: 2026-10-21T14:02,
+→ [ { ref: msg:m3, title: "Re: Incorporation & SAFE", from: jane@ycombinator.com (Jane Doe, your contact), received: 2026-10-21T14:02,
       unread: true, labels: [label:9c "Legal"], match: { field: body, at: ¶2.2,
       excerpt: "File your 83(b) election within 30 days…" } }, … ]
 ```
@@ -279,7 +316,7 @@ find(mail.Message, text: "83(b)", where: { from: "@ycombinator.com", received: 2
 ## 6. Open
 
 - **Cross-type filters by shared meaning.** "From Jane" across messages, notes she wrote and
-  her todos assigned to you. Field names alone (`from`) are fragile. `Person` filters may need a
+  her todos assigned to you. Field names alone (`from`) are fragile. Endpoint and person filters may need a
   declared role (author, assignee, participant).
 - **Ranking learned from the person** must stay private to their devices. How it syncs between
   their own devices is open.
