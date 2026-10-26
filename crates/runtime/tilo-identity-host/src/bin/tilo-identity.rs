@@ -792,7 +792,10 @@ mod unix {
             use tilo_control::client::{Unreachable, invoke_wire};
             let answer = self
                 .0
-                .request(&invoke_wire("actions", id, args, None, None))
+                .request(
+                    &invoke_wire("actions", id, args, None, None)
+                        .map_err(|error| error.to_string())?,
+                )
                 .map_err(|error| match error {
                     Unreachable::NoDesktop => "the session is not running".to_string(),
                     Unreachable::Refused { message, .. } => message,

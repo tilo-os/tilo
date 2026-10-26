@@ -473,16 +473,17 @@ fn read_action_id(answer: &serde_json::Value, app: &str) -> Option<String> {
 
 /// The `read` listing request: settled within `wait_ms`, and with
 /// `after_revision`, a listing other than the one already seen.
-fn read_listing_request(wait_ms: u64, after_revision: Option<&str>) -> String {
-    let mut request = serde_json::json!({
-        "op": "actions_enumerate",
-        "query": "read",
-        "wait_ms": wait_ms,
-    });
-    if let (Some(revision), Some(fields)) = (after_revision, request.as_object_mut()) {
-        fields.insert("after_revision".into(), revision.into());
-    }
-    request.to_string()
+fn read_listing_request(wait_ms: u64, after_revision: Option<&str>) -> std::io::Result<String> {
+    let request: tilo_control::protocol::Command =
+        tilo_control::protocol::Command::ActionsEnumerate {
+            query: "read".into(),
+            include_programmatic: false,
+            page: Default::default(),
+            wait_ms: Some(wait_ms),
+            after_revision: after_revision.map(str::to_owned),
+        };
+    serde_json::to_string(&request)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 /// Milliseconds of `budget` left since `started`.
@@ -512,7 +513,9 @@ fn run_read_with(
     let mut id = None;
     for _ in 0..READ_DISCOVERY_LISTINGS {
         let wait_ms = remaining_ms(READ_DISCOVERY_WAIT_MS, started);
-        let response = match round_trip(&read_listing_request(wait_ms, seen.as_deref())) {
+        let response = match read_listing_request(wait_ms, seen.as_deref())
+            .and_then(|request| round_trip(&request))
+        {
             Ok(response) => response,
             Err(e) => {
                 eprintln!("tilo-control: socket round-trip: {e}");
@@ -1096,38 +1099,32 @@ fn actions_list_wire(
     json: bool,
     page: &ListPage,
     wait_ms: Option<u64>,
-) -> serde_json::Value {
-    let mut wire = serde_json::json!({ "op": "actions_enumerate", "query": query });
-    if let Some(object) = wire.as_object_mut() {
-        if include_programmatic {
-            object.insert("include_programmatic".into(), true.into());
-        }
-        if !json {
-            object.insert("detail".into(), "compact".into());
-        }
-        if let Some(limit) = page.limit {
-            object.insert("limit".into(), limit.into());
-        }
-        if let Some(cursor) = &page.cursor {
-            object.insert("cursor".into(), cursor.clone().into());
-        }
-        if !page.kinds.is_empty() {
-            object.insert("kinds".into(), page.kinds.clone().into());
-        }
-        if page.files {
-            object.insert("files".into(), true.into());
-        }
-    }
-    with_wait(&mut wire, wait_ms);
-    wire
+) -> Result<serde_json::Value, ParseError> {
+    use tilo_control::protocol::{Command, ListingDetail, ListingRequest};
+    encode_control(Command::ActionsEnumerate {
+        query: query.to_owned(),
+        include_programmatic,
+        page: ListingRequest {
+            limit: page.limit,
+            cursor: page.cursor.clone(),
+            detail: if json {
+                ListingDetail::Full
+            } else {
+                ListingDetail::Compact
+            },
+            kinds: page.kinds.clone(),
+            files: page.files,
+            every_workspace: false,
+        },
+        wait_ms,
+        after_revision: None,
+    })
 }
 
-/// Add `wait_ms` to a request when the caller asked to wait. A request
-/// without it keeps exactly the shape it always had.
-fn with_wait(value: &mut serde_json::Value, wait_ms: Option<u64>) {
-    if let (Some(wait_ms), Some(fields)) = (wait_ms, value.as_object_mut()) {
-        fields.insert("wait_ms".into(), wait_ms.into());
-    }
+fn encode_control(
+    command: tilo_control::protocol::Command,
+) -> Result<serde_json::Value, ParseError> {
+    serde_json::to_value(command).map_err(|error| ParseError::Usage(error.to_string()))
 }
 
 fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
@@ -1184,19 +1181,28 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             steps,
         } => json!({ "op": "pinch", "fingers": fingers, "scale": scale, "steps": steps }),
         Command::Watch { watching } => json!({ "op": "watch", "watching": watching }),
-        Command::StateDump { history: true, .. } => {
-            json!({ "op": "state_dump", "include_history": true })
+        Command::StateDump { history, .. } => {
+            encode_control(tilo_control::protocol::Command::StateDump {
+                include_history: *history,
+            })?
         }
-        Command::StateDump { .. } => json!({ "op": "state_dump" }),
         Command::Windows { .. } => json!({ "op": "windows" }),
-        Command::Read { .. } => json!({ "op": "actions_enumerate", "query": "read" }),
+        Command::Read { .. } => {
+            encode_control(tilo_control::protocol::Command::ActionsEnumerate {
+                query: "read".into(),
+                include_programmatic: false,
+                page: Default::default(),
+                wait_ms: None,
+                after_revision: None,
+            })?
+        }
         Command::ActionsList {
             query,
             include_programmatic,
             json,
             page,
             wait_ms,
-        } => actions_list_wire(query, *include_programmatic, *json, page, *wait_ms),
+        } => actions_list_wire(query, *include_programmatic, *json, page, *wait_ms)?,
         Command::ActionsInvoke {
             provider,
             id,
@@ -1210,17 +1216,19 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             &action_arguments(args_json.as_deref(), *args_stdin)?,
             device.as_deref(),
             *wait_ms,
-        ),
+        )
+        .map_err(|error| ParseError::Usage(error.to_string()))?,
         Command::ActionsStatus {
             invocation_id,
             wait_ms,
-        } => {
-            let mut value = json!({ "op": "actions_status", "invocation_id": invocation_id });
-            with_wait(&mut value, *wait_ms);
-            value
-        }
+        } => encode_control(tilo_control::protocol::Command::ActionsStatus {
+            invocation_id: *invocation_id,
+            wait_ms: *wait_ms,
+        })?,
         Command::ActionsCancel { invocation_id } => {
-            json!({ "op": "actions_cancel", "invocation_id": invocation_id })
+            encode_control(tilo_control::protocol::Command::ActionsCancel {
+                invocation_id: *invocation_id,
+            })?
         }
         // Its requests come from stdin, one per line, and go out as they are.
         Command::ActionsSession => return Ok(String::new()),

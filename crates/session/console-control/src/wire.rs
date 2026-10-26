@@ -45,38 +45,32 @@ pub fn parse(line: &str) -> Result<Request, WireError> {
         .get("op")
         .and_then(Value::as_str)
         .ok_or_else(|| WireError("a request needs a string `op`".into()))?;
-    match op {
-        "actions_enumerate" => Ok(Request::Enumerate {
-            query: optional_string(object, "query")?.unwrap_or_default(),
-        }),
-        "actions_invoke" => Ok(Request::Invoke {
-            provider: required_string(object, "provider")?,
-            id: required_string(object, "id")?,
-            args: match object.get("args") {
-                None | Some(Value::Null) => Map::new(),
-                Some(Value::Object(args)) => args.clone(),
-                Some(_) => return Err(WireError("`args` must be a JSON object".into())),
-            },
-        }),
-        "state_dump" => Ok(Request::StateDump),
-        other => Ok(Request::Unsupported { op: other.into() }),
+    // Endpoint support is deliberately narrower than the shared grammar.
+    // In particular, naming a test-input operation never enables it here.
+    if !matches!(op, "actions_enumerate" | "actions_invoke" | "state_dump") {
+        return Ok(Request::Unsupported { op: op.into() });
     }
-}
-
-fn required_string(object: &Map<String, Value>, key: &str) -> Result<String, WireError> {
-    object
-        .get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| WireError(format!("`{key}` must be a non-empty string")))
-}
-
-fn optional_string(object: &Map<String, Value>, key: &str) -> Result<Option<String>, WireError> {
-    match object.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(_) => Err(WireError(format!("`{key}` must be a string"))),
+    let request = tilo_control::protocol::parse_request::<Value, Value>(line)
+        .map_err(|error| WireError(error.message))?;
+    if request.agent.is_some() || request.window.is_some() {
+        return Ok(Request::Unsupported {
+            op: "participant/window routing".into(),
+        });
+    }
+    match request.command {
+        tilo_control::protocol::Command::ActionsEnumerate { query, .. } => {
+            Ok(Request::Enumerate { query })
+        }
+        tilo_control::protocol::Command::ActionsInvoke {
+            device: Some(_), ..
+        } => Ok(Request::Unsupported {
+            op: "actions_invoke on another device".into(),
+        }),
+        tilo_control::protocol::Command::ActionsInvoke {
+            provider, id, args, ..
+        } => Ok(Request::Invoke { provider, id, args }),
+        tilo_control::protocol::Command::StateDump { .. } => Ok(Request::StateDump),
+        _ => Err(WireError("operation is not served by this endpoint".into())),
     }
 }
 
@@ -175,6 +169,13 @@ mod tests {
             ));
         }
         {
+            for line in [
+                r#"{"op":"actions_invoke","provider":"p","id":"i","device":"other"}"#,
+                r#"{"op":"actions_invoke","provider":"p","id":"i","agent":"a"}"#,
+                r#"{"op":"state_dump","window":"another-app"}"#,
+            ] {
+                assert!(matches!(parse(line), Ok(Request::Unsupported { .. })));
+            }
             for line in [
                 "not json",
                 "[1]",

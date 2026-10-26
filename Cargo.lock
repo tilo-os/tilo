@@ -2702,6 +2702,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
+ "tilo-control",
  "tilo-paths",
  "tilo-test-env",
  "tracing",
@@ -17543,6 +17544,7 @@ name = "tilo-control"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "serde",
  "serde_json",
  "tempfile",
  "tilo-paths",

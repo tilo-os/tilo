@@ -16,6 +16,7 @@ use std::path::PathBuf;
 
 pub mod client;
 pub mod front;
+pub mod protocol;
 
 /// Environment variable naming the test-control socket; the compositor
 /// listens there only when it is set and development overrides are compiled

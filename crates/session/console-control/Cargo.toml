@@ -14,6 +14,7 @@ path = "src/lib.rs"
 # owning app delivers queued requests to its UI thread itself.
 [dependencies]
 tilo-paths.workspace = true
+tilo-control = { path = "../control-cli" }
 tilo-actions = { path = "../../collab/actions" }
 serde_json.workspace = true
 tracing.workspace = true

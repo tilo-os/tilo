@@ -45,19 +45,21 @@ pub fn invoke_wire(
     args: &serde_json::Value,
     device: Option<&str>,
     wait_ms: Option<u64>,
-) -> serde_json::Value {
-    let mut value = serde_json::json!({
-        "op": "actions_invoke", "provider": provider, "id": id, "args": args,
-    });
-    if let Some(object) = value.as_object_mut() {
-        if let Some(device) = device {
-            object.insert("device".to_string(), device.into());
-        }
-        if let Some(wait_ms) = wait_ms {
-            object.insert("wait_ms".to_string(), wait_ms.into());
-        }
-    }
-    value
+) -> io::Result<serde_json::Value> {
+    let args = args.as_object().cloned().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "action arguments must be an object",
+        )
+    })?;
+    let request: crate::protocol::Command = crate::protocol::Command::ActionsInvoke {
+        provider: provider.to_owned(),
+        id: id.to_owned(),
+        args,
+        device: device.map(str::to_owned),
+        wait_ms,
+    };
+    serde_json::to_value(request).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 /// `id` with every control character written as `\xHH`, so a terminal

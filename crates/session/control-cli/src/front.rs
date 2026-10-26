@@ -503,19 +503,21 @@ fn coerce(param: &Param, raw: &str) -> Result<serde_json::Value, String> {
     }
 }
 
-fn listing_request(query: &str, kinds: &[&str]) -> serde_json::Value {
-    let mut request = serde_json::json!({
-        "op": "actions_enumerate",
-        "query": query,
-        "limit": LIST_LIMIT,
-        "detail": "compact",
-    });
-    if !kinds.is_empty()
-        && let Some(object) = request.as_object_mut()
-    {
-        object.insert("kinds".into(), kinds.to_vec().into());
-    }
-    request
+fn listing_request(query: &str, kinds: &[&str]) -> Result<serde_json::Value, Failure> {
+    use crate::protocol::{Command, ListingDetail, ListingRequest};
+    let request: Command = Command::ActionsEnumerate {
+        query: query.to_owned(),
+        include_programmatic: false,
+        page: ListingRequest {
+            limit: Some(LIST_LIMIT),
+            detail: ListingDetail::Compact,
+            kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
+            ..Default::default()
+        },
+        wait_ms: None,
+        after_revision: None,
+    };
+    serde_json::to_value(request).map_err(|error| Failure::Said(error.to_string()))
 }
 
 /// A listing's rows and whether more were left out.
@@ -527,7 +529,7 @@ struct Listing {
 
 fn listing(desktop: &mut Desktop, query: &str, kinds: &[&str]) -> Result<Listing, Failure> {
     let answer = desktop
-        .request(&listing_request(query, kinds))
+        .request(&listing_request(query, kinds)?)
         .map_err(Failure::Unreachable)?;
     if let Some(err) = answer.get("err") {
         return Err(Failure::Refused(err.clone()));
@@ -840,8 +842,16 @@ fn invoke(
     spelling: &Spelling,
     io: &mut Io<'_>,
 ) -> u8 {
-    let request =
-        crate::client::invoke_wire(&action.provider, &action.id, args, None, Some(RUN_WAIT_MS));
+    let request = match crate::client::invoke_wire(
+        &action.provider,
+        &action.id,
+        args,
+        None,
+        Some(RUN_WAIT_MS),
+    ) {
+        Ok(request) => request,
+        Err(error) => return report(&Failure::Said(error.to_string()), spelling, io),
+    };
     let answer = match desktop.request(&request) {
         Ok(answer) => answer,
         Err(why) => return report(&Failure::Unreachable(why), spelling, io),
