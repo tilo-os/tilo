@@ -230,6 +230,10 @@ impl Default for WindowsApp {
     }
 }
 
+/// Why an operation an app's row reports as unavailable is refused when it
+/// is invoked anyway: rows hide nothing from an agent that names it.
+const UNAVAILABLE: &str = "Windows operation is no longer available";
+
 pub struct WindowsApp {
     provider: SharedProvider,
     pub(crate) catalogue: Catalogue,
@@ -600,23 +604,17 @@ impl WindowsApp {
         effect: &actions::WindowsEffect,
         cx: &mut ui::framework::EffectCx<crate::resource::Windows, Self>,
     ) -> ui::framework::EffectAnswer {
-        if let actions::WindowsEffect::Show { app } = effect {
-            let index = self
-                .catalogue
-                .apps
-                .iter()
-                .position(|item| item.id == *app)
-                .ok_or_else(|| "the application is no longer in the catalogue".to_owned())?;
-            self.apply_intent(Intent::SelectApp(index));
+        use actions::WindowsEffect as E;
+        // Showing an app is a selection, not a service call: it neither waits
+        // for nor blocks an operation already running.
+        if let E::Show { .. } = effect {
+            self.perform_effect(effect)?;
             return Ok(ui::framework::Effected::done());
         }
         if self.resource_reply.is_some() {
             return Err("another Windows operation is still running".into());
         }
-        let (type_id, _) = effect.operation();
-        if !self.invoke_effect_operation(type_id, &effect.payload())? {
-            return Err(format!("`{type_id}` is not a Windows operation"));
-        }
+        self.perform_effect(effect)?;
         let deferred = self.portal_rx.is_some()
             || self.document_portal_rx.is_some()
             || self.iso_portal_rx.is_some()
@@ -628,6 +626,208 @@ impl WindowsApp {
         self.resource_waits_for_appliance = effect.waits_for_appliance();
         self.resource_reply = Some(cx.reply());
         Ok(ui::framework::Effected::Pending)
+    }
+
+    /// Carry out `effect` on this machine: choose the app `Show` names, open
+    /// the picker an install or file operation needs, call the compatibility
+    /// service, or command the appliance.
+    ///
+    /// The effect is the whole request: each arm names the operation it
+    /// performs, and operations an app's row reports as unavailable are
+    /// refused here rather than merely hidden.
+    fn perform_effect(&mut self, effect: &actions::WindowsEffect) -> Result<(), String> {
+        use actions::WindowsEffect as E;
+        match effect {
+            E::Show { app } => self.show_app(app),
+            E::Install { path } => self.install(path.as_deref()),
+            E::ImportIso { path } => self.import_iso(path.as_deref()),
+            E::Recovery => self.appliance_owner.open_recovery(),
+            E::Start => self.appliance_owner.lifecycle(LifecycleAction::Start),
+            E::Restart => self.appliance_owner.lifecycle(LifecycleAction::Restart),
+            E::Suspend => self.appliance_owner.lifecycle(LifecycleAction::Suspend),
+            E::Resume => self.appliance_owner.lifecycle(LifecycleAction::Resume),
+            E::Shutdown => self.appliance_owner.lifecycle(LifecycleAction::Shutdown),
+            E::TemporaryNetwork => self
+                .appliance_owner
+                .open_temporary_egress(EgressPurpose::Activation),
+            E::UpdateNetwork => self
+                .appliance_owner
+                .open_temporary_egress(EgressPurpose::WindowsUpdate),
+            E::RevokeNetwork => self.appliance_owner.revoke_temporary_egress(),
+            E::InstallPrivateCapsule => self.provider.borrow_mut().confirm_capsule_install(),
+            E::InstallWindowsAppliance => self.provider.borrow_mut().confirm_vm_install(),
+            E::Launch { app } => self.launch_app(app),
+            E::LaunchVmFallback { app } => self.launch_app_in_vm(app),
+            E::OpenFile { app, path } => self.open_file_in_windows(app, path.as_deref()),
+            E::Publish { app } => self.publish_launcher(app),
+            E::RetryInstall { capsule } => self.retry_install(capsule),
+            E::EscalateInstall { capsule } => self.escalate_install(capsule),
+            E::RemoveLauncher { app } => self.remove_launcher(app),
+            E::Uninstall { app } => self.uninstall_app(app),
+            E::DeleteData { capsule } => self.delete_app_data(capsule),
+        }
+    }
+
+    /// Show the application `app` names, as choosing its row does.
+    fn show_app(&mut self, app: &str) -> Result<(), String> {
+        let index = self
+            .catalogue
+            .apps
+            .iter()
+            .position(|item| item.id == app)
+            .ok_or_else(|| "the application is no longer in the catalogue".to_owned())?;
+        self.apply_intent(Intent::SelectApp(index));
+        Ok(())
+    }
+
+    /// Install the installer at `path`, or ask the person for one.
+    fn install(&mut self, path: Option<&str>) -> Result<(), String> {
+        let path = path.unwrap_or_default();
+        if path.trim().is_empty() {
+            if self.portal_rx.is_some() {
+                return Err("an installer picker is already open".into());
+            }
+            self.portal_rx = Some(installer_pick_request().send_open_file());
+            return Ok(());
+        }
+        let path = std::path::PathBuf::from(path);
+        let source_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "installer path has no valid file name".to_string())?;
+        let source = File::open(&path)
+            .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+        self.provider.borrow_mut().install(source, source_name)
+    }
+
+    /// Import the Windows ISO at `path`, or ask the person for one.
+    fn import_iso(&mut self, path: Option<&str>) -> Result<(), String> {
+        let path = path.unwrap_or_default();
+        if path.trim().is_empty() {
+            if self.iso_portal_rx.is_some() {
+                return Err("a Windows ISO picker is already open".into());
+            }
+            self.iso_portal_rx = Some(windows_iso_pick_request().send_open_file());
+            return Ok(());
+        }
+        let source = File::open(path).map_err(|error| format!("could not open {path}: {error}"))?;
+        self.appliance_owner.import_iso(source)
+    }
+
+    /// The catalogue application an operation names, by its id or its private
+    /// capsule: the service's current report is what an invocation is
+    /// resolved against, never the arguments it arrived with.
+    fn app_named(&self, name: &str) -> Result<crate::model::WindowsApp, String> {
+        self.catalogue
+            .app(name)
+            .cloned()
+            .or_else(|| {
+                self.catalogue
+                    .apps
+                    .iter()
+                    .find(|app| app.capsule == name)
+                    .cloned()
+            })
+            .ok_or_else(|| "Windows application is no longer available".to_string())
+    }
+
+    /// `app`, if the service still reports this operation as available now.
+    fn offered_app(
+        &self,
+        app: &str,
+        available: fn(&crate::model::WindowsApp) -> bool,
+    ) -> Result<crate::model::WindowsApp, String> {
+        let app = self.app_named(app)?;
+        if available(&app) {
+            Ok(app)
+        } else {
+            Err(UNAVAILABLE.to_owned())
+        }
+    }
+
+    /// A catalogue change requested on this machine was accepted.
+    fn requested(&mut self) {
+        self.notice = Some(Notice::info(strings::t("windows-operation-requested")));
+    }
+
+    fn launch_app(&mut self, app: &str) -> Result<(), String> {
+        let app = self.offered_app(app, |app| app.launch_available)?;
+        if app.route == Route::Vm {
+            self.provider.borrow_mut().launch_vm_fallback(&app.id)?;
+        } else {
+            self.provider.borrow_mut().launch(&app.id)?;
+        }
+        self.requested();
+        Ok(())
+    }
+
+    fn launch_app_in_vm(&mut self, app: &str) -> Result<(), String> {
+        let app = self.offered_app(app, |app| app.vm_fallback_available)?;
+        self.provider.borrow_mut().launch_vm_fallback(&app.id)?;
+        self.requested();
+        Ok(())
+    }
+
+    fn open_file_in_windows(&mut self, app: &str, path: Option<&str>) -> Result<(), String> {
+        let path = path.unwrap_or_default();
+        if path.trim().is_empty() {
+            if self.document_portal_rx.is_some() {
+                return Err("a document picker is already open".into());
+            }
+            self.document_target = Some(app.to_owned());
+            self.document_portal_rx = Some(windows_document_pick_request().send_open_file());
+            return Ok(());
+        }
+        let source = File::open(path).map_err(|error| format!("could not open {path}: {error}"))?;
+        self.provider.borrow_mut().launch_vm_with_file(app, source)
+    }
+
+    fn publish_launcher(&mut self, app: &str) -> Result<(), String> {
+        let app = self.offered_app(app, |app| app.can_publish_vm_candidate)?;
+        self.provider.borrow_mut().publish_vm_candidate(&app.id)?;
+        self.requested();
+        Ok(())
+    }
+
+    fn retry_install(&mut self, capsule: &str) -> Result<(), String> {
+        let app = self.offered_app(capsule, |app| app.can_retry_install)?;
+        self.provider.borrow_mut().retry_install(&app.capsule)?;
+        self.requested();
+        Ok(())
+    }
+
+    fn escalate_install(&mut self, capsule: &str) -> Result<(), String> {
+        let app = self.offered_app(capsule, |app| app.can_escalate_install_to_vm)?;
+        self.provider
+            .borrow_mut()
+            .escalate_install_to_vm(&app.capsule)?;
+        self.requested();
+        Ok(())
+    }
+
+    fn remove_launcher(&mut self, app: &str) -> Result<(), String> {
+        let app = self.offered_app(app, |app| app.can_remove_launcher)?;
+        self.provider.borrow_mut().remove_launcher(&app.id)?;
+        self.requested();
+        Ok(())
+    }
+
+    fn uninstall_app(&mut self, app: &str) -> Result<(), String> {
+        let app = self.offered_app(app, |app| app.can_vendor_uninstall)?;
+        if app.route == Route::Vm {
+            self.provider.borrow_mut().vendor_uninstall_vm(&app.id)?;
+        } else {
+            self.provider.borrow_mut().vendor_uninstall(&app.capsule)?;
+        }
+        self.requested();
+        Ok(())
+    }
+
+    fn delete_app_data(&mut self, capsule: &str) -> Result<(), String> {
+        let app = self.offered_app(capsule, |app| app.can_delete_data)?;
+        self.provider.borrow_mut().delete_data(&app.capsule)?;
+        self.requested();
+        Ok(())
     }
 
     /// Show the outcome of a request: its error, or `done` when it was
@@ -1033,171 +1233,6 @@ impl WindowsApp {
             }
             _ => {}
         }
-    }
-
-    fn invoke_portal_operation(&mut self, type_id: &str, payload: &[u8]) -> Result<bool, String> {
-        match type_id {
-            "windows.install" => {
-                let path: String =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                if path.trim().is_empty() {
-                    if self.portal_rx.is_some() {
-                        return Err("an installer picker is already open".into());
-                    }
-                    self.portal_rx = Some(installer_pick_request().send_open_file());
-                } else {
-                    let path = std::path::PathBuf::from(path);
-                    let source_name = path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .ok_or_else(|| "installer path has no valid file name".to_string())?;
-                    let source = File::open(&path)
-                        .map_err(|error| format!("could not open {}: {error}", path.display()))?;
-                    self.provider.borrow_mut().install(source, source_name)?;
-                }
-            }
-            "windows.import-iso" => {
-                let path: String =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                if path.trim().is_empty() {
-                    if self.iso_portal_rx.is_some() {
-                        return Err("a Windows ISO picker is already open".into());
-                    }
-                    self.iso_portal_rx = Some(windows_iso_pick_request().send_open_file());
-                } else {
-                    let source = File::open(&path)
-                        .map_err(|error| format!("could not open {path}: {error}"))?;
-                    self.appliance_owner.import_iso(source)?;
-                }
-            }
-            "windows.confirm-capsule-install" => {
-                self.provider.borrow_mut().confirm_capsule_install()?;
-            }
-            "windows.confirm-vm-install" => self.provider.borrow_mut().confirm_vm_install()?,
-            "windows.open-file" => {
-                let (app_id, file_path): (String, String) = serde_json::from_slice(payload)
-                    .map_err(|_| "open-file names the Windows app and the file".to_string())?;
-                let app_id = &app_id;
-                let file_path = file_path.as_str();
-                if file_path.trim().is_empty() {
-                    if self.document_portal_rx.is_some() {
-                        return Err("a document picker is already open".into());
-                    }
-                    self.document_target = Some(app_id.clone());
-                    self.document_portal_rx =
-                        Some(windows_document_pick_request().send_open_file());
-                } else {
-                    let source = File::open(file_path)
-                        .map_err(|error| format!("could not open {file_path}: {error}"))?;
-                    self.provider
-                        .borrow_mut()
-                        .launch_vm_with_file(app_id, source)?;
-                }
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-
-    fn invoke_appliance_operation(&mut self, type_id: &str) -> Result<bool, String> {
-        match type_id {
-            "windows.recovery" => self.appliance_owner.open_recovery()?,
-            "windows.start" => self.appliance_owner.lifecycle(LifecycleAction::Start)?,
-            "windows.restart" => self.appliance_owner.lifecycle(LifecycleAction::Restart)?,
-            "windows.suspend" => self.appliance_owner.lifecycle(LifecycleAction::Suspend)?,
-            "windows.resume" => self.appliance_owner.lifecycle(LifecycleAction::Resume)?,
-            "windows.shutdown" => self.appliance_owner.lifecycle(LifecycleAction::Shutdown)?,
-            "windows.temporary-network" => self
-                .appliance_owner
-                .open_temporary_egress(EgressPurpose::Activation)?,
-            "windows.update-network" => self
-                .appliance_owner
-                .open_temporary_egress(EgressPurpose::WindowsUpdate)?,
-            "windows.revoke-network" => self.appliance_owner.revoke_temporary_egress()?,
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-
-    fn invoke_application_operation(
-        &mut self,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        if !matches!(
-            type_id,
-            "windows.launch"
-                | "windows.launch-vm-fallback"
-                | "windows.publish"
-                | "windows.retry-install"
-                | "windows.escalate-install"
-                | "windows.remove-launcher"
-                | "windows.uninstall"
-                | "windows.delete-data"
-        ) {
-            return Ok(false);
-        }
-        let id: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let app = self
-            .catalogue
-            .app(&id)
-            .cloned()
-            .or_else(|| {
-                self.catalogue
-                    .apps
-                    .iter()
-                    .find(|app| app.capsule == id)
-                    .cloned()
-            })
-            .ok_or_else(|| "Windows application is no longer available".to_string())?;
-        match type_id {
-            "windows.launch" if app.launch_available => {
-                if app.route == Route::Vm {
-                    self.provider.borrow_mut().launch_vm_fallback(&app.id)?;
-                } else {
-                    self.provider.borrow_mut().launch(&app.id)?;
-                }
-            }
-            "windows.launch-vm-fallback" if app.vm_fallback_available => {
-                self.provider.borrow_mut().launch_vm_fallback(&app.id)?;
-            }
-            "windows.publish" if app.can_publish_vm_candidate => {
-                self.provider.borrow_mut().publish_vm_candidate(&app.id)?;
-            }
-            "windows.retry-install" if app.can_retry_install => {
-                self.provider.borrow_mut().retry_install(&app.capsule)?;
-            }
-            "windows.escalate-install" if app.can_escalate_install_to_vm => {
-                self.provider
-                    .borrow_mut()
-                    .escalate_install_to_vm(&app.capsule)?;
-            }
-            "windows.remove-launcher" if app.can_remove_launcher => {
-                self.provider.borrow_mut().remove_launcher(&app.id)?;
-            }
-            "windows.uninstall" if app.can_vendor_uninstall => {
-                if app.route == Route::Vm {
-                    self.provider.borrow_mut().vendor_uninstall_vm(&app.id)?;
-                } else {
-                    self.provider.borrow_mut().vendor_uninstall(&app.capsule)?;
-                }
-            }
-            "windows.delete-data" if app.can_delete_data => {
-                self.provider.borrow_mut().delete_data(&app.capsule)?;
-            }
-            _ => return Err("Windows operation is no longer available".into()),
-        }
-        self.notice = Some(Notice::info(strings::t("windows-operation-requested")));
-        Ok(true)
-    }
-
-    fn invoke_effect_operation(&mut self, type_id: &str, payload: &[u8]) -> Result<bool, String> {
-        if self.invoke_portal_operation(type_id, payload)?
-            || self.invoke_appliance_operation(type_id)?
-        {
-            return Ok(true);
-        }
-        self.invoke_application_operation(type_id, payload)
     }
 }
 
@@ -2144,6 +2179,9 @@ impl ui::widget::controls::ActionControls for WindowsApp {
 }
 
 #[cfg(test)]
+mod dispatch_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::provider::SampleProvider;
@@ -2358,13 +2396,13 @@ mod tests {
                 File::open(path).unwrap(),
                 "document.bin",
             )));
-            let payload = serde_json::to_vec(&[entry_id.as_str(), ""]).unwrap();
-            assert!(
-                ui::host::scoped(&services, || {
-                    app.invoke_portal_operation("windows.open-file", &payload)
+            ui::host::scoped(&services, || {
+                app.perform_effect(&actions::WindowsEffect::OpenFile {
+                    app: entry_id.clone(),
+                    path: None,
                 })
-                .unwrap()
-            );
+            })
+            .expect("the file picker opens for the guest application");
             assert_eq!(app.document_target.as_deref(), Some(entry_id.as_str()));
             assert_eq!(
                 recorder.pick_requests()[0].title(),
