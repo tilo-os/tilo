@@ -488,6 +488,15 @@ impl Device {
         self.channels = Some((channels, drain));
     }
 
+    /// Serve this device's session through a collaboration broker on its
+    /// network from now on, as a desktop session does: the broker opens the
+    /// session's channel service and runs the network's one drain, so this
+    /// device's own stand-in for both stops first. Two drains parked on the
+    /// network's one wake would each take pokes meant for the other.
+    pub(crate) fn serve_through_broker(&mut self) {
+        drop(self.channels.take().expect("the device is online"));
+    }
+
     /// Whether this device's channel service has anything for its pump to
     /// do, now or later.
     pub(crate) fn channels_live(&self) -> bool {
