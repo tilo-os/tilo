@@ -291,7 +291,11 @@ mod tests {
             within(|| *watched.get() == "two"),
             "the change was not read"
         );
-        assert!(told.load(Ordering::Acquire) >= 1, "no listener was told");
+        // The value is kept before the listeners are told, on the same worker.
+        assert!(
+            within(|| told.load(Ordering::Acquire) >= 1),
+            "no listener was told"
+        );
     }
 
     #[test]
