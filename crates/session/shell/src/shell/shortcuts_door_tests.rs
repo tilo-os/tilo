@@ -40,7 +40,6 @@ use crate::shell::automation_triggers::{Firing, ManualClock, TriggerEvent, Trigg
 use crate::shell::portal_dialog::{DialogView, PortalDialogController, PortalDialogQueue};
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ReadDoc};
-use ed25519_dalek::Signer as _;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
 use tilo_actions::remote::{
@@ -57,8 +56,8 @@ use tilo_automation::{
     TriggerSpec, action_rule, shortcut_resource_id,
 };
 use ui::collaboration::{
-    CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollaborationManager, ExportedAction,
-    ExportedInput,
+    CertifiedEndpointIdentity, ChannelAccessState, CollabEvent, CollabRequest,
+    CollaborationManager, ExportedAction, ExportedInput,
 };
 
 #[path = "shortcuts_door_tests/unhosted.rs"]
@@ -117,27 +116,6 @@ fn room_workspace(
         .iter()
         .find(|workspace| workspace.room() == room)
         .expect("the room's workspace")
-}
-
-/// An application's presentation of this device to the broker in `room`:
-/// the device the room's host admitted, whose key the network holds.
-fn endpoint_identity(room: crate::shell::state::RoomId) -> CertifiedEndpointIdentity {
-    let (device, certificate) =
-        tilo_identity_host::broker::trusted_current_device(&room.to_string())
-            .expect("this device's identity in the room");
-    let presentation = runtime_collab::CertifiedJoinIdentity {
-        workspace_id: room.to_string(),
-        device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
-        proof: device
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                &room.to_string(),
-            ))
-            .to_bytes()
-            .to_vec(),
-    }
-    .encode()
-    .expect("certified join encodes");
-    CertifiedEndpointIdentity::new(presentation, device)
 }
 
 /// This device, hosting a new workspace's room on its own host as every
@@ -306,6 +284,7 @@ impl FixtureApp {
     fn connect(
         path: &Path,
         room: crate::shell::state::RoomId,
+        identity: CertifiedEndpointIdentity,
         net: &std::sync::Arc<crate::shell::network::ShellNetwork>,
     ) -> Self {
         let stream = launched(path, FIXTURE, &room.to_string());
@@ -315,7 +294,7 @@ impl FixtureApp {
             room.to_string().parse().expect("a room is a UUID"),
             Some(RECORD.to_string()),
             Some(FIXTURE_HANDLE.to_string()),
-            endpoint_identity(room),
+            identity,
         )
         .expect("start the collaboration client");
         let mut doc = AutoCommit::new();
@@ -559,20 +538,19 @@ impl Door {
             "the broker's device is the one the network holds"
         );
         hosted.open_first(FIXTURE);
-        hosted.device.serve_through_broker();
         let socket = dir.path().join("collab.sock");
-        let broker = crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
-            socket.clone(),
-            hosted.device.tree.clone(),
-            vec![certificate.device_public_key],
-            hosted.network(),
-            None,
-        )
-        .expect("bind the collaboration service");
+        // The session serves its apps through its broker, which hands each
+        // the keys of the room's sealed channels, as a desktop's does.
+        let broker = hosted.device.start_broker(&socket);
         let host = crate::shell::remote_actions::BrokerActionHost::new(
             broker.app_action_broker().expect("the action broker"),
         );
-        let app = FixtureApp::connect(&socket, room, hosted.network());
+        let app = FixtureApp::connect(
+            &socket,
+            room,
+            hosted.device.endpoint_identity(room),
+            hosted.network(),
+        );
         let mut door = Self {
             broker,
             membership: hosted.device.tree.clone(),
@@ -1095,6 +1073,59 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
         doc.get(automerge::ROOT, "created").unwrap().is_some(),
         "what the run did not do stays"
     );
+}
+
+/// An app opening in the sealed room for the first time, which nobody let
+/// author there beforehand, is let author its own records by its opening
+/// and is handed its record channel's keys: the join asks the room's host
+/// for the authorship, as every opening of an app does, and the keys follow
+/// the grant. An app left without either can neither save nor sync.
+#[test]
+fn an_app_opening_in_the_room_is_let_author_its_own_records() {
+    const OPENING_APP: &str = "so.tilo.fixture-opening";
+    let mut door = Door::open();
+    let authors = |door: &Door| {
+        room_workspace(&door.membership.read(), door.room)
+            .policy
+            .app_authors(
+                OPENING_APP,
+                &tilo_action_policy::Context::at_time(std::time::SystemTime::now()),
+            )
+    };
+    assert!(!authors(&door), "nobody let the app author the room yet");
+
+    let stream = launched(
+        &door.dir.path().join("collab.sock"),
+        OPENING_APP,
+        &door.room.to_string(),
+    );
+    let mut opening = CollaborationManager::for_route_fd_with_identity(
+        stream.into_raw_fd(),
+        OPENING_APP,
+        door.room.to_string().parse().expect("a room is a UUID"),
+        Some("file:opening.qdoc".to_string()),
+        None,
+        door.hosted.device.endpoint_identity(door.room),
+    )
+    .expect("start the collaboration client");
+    let mut access = None;
+    while !(authors(&door) && access == Some(ChannelAccessState::Encrypted)) {
+        assert!(
+            Instant::now() < door.deadline,
+            "the opening app was never let author its records with its channel's keys \
+             (authors: {}, channel access: {access:?})",
+            authors(&door),
+        );
+        door.app.pump();
+        for event in opening.poll() {
+            if let CollabEvent::ChannelAccess { route, state } = event
+                && route.app_id == OPENING_APP
+            {
+                access = Some(state);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]
@@ -1650,7 +1681,7 @@ impl AppConnection {
             door.room.to_string().parse().expect("a room is a UUID"),
             Some(record),
             None,
-            endpoint_identity(door.room),
+            door.hosted.device.endpoint_identity(door.room),
         )
         .expect("start the collaboration client");
         Self {
