@@ -275,6 +275,9 @@ def main(directory, look_path=None):
              (240, 240, 250), "SemiBold")
     text_png(os.path.join(directory, "unlock-help.png"),
              "Enter your disk passphrase or recovery key", 18, (158, 163, 186))
+    # tilo-boot-signin unlock-prompt names what this volume's prompt takes.
+    for kind, text in UNLOCK_ASKS.items():
+        text_png(os.path.join(directory, f"unlock-help-{kind}.png"), text, 18, (158, 163, 186))
     text_png(os.path.join(directory, "unlock-retry.png"),
              "Unlock unsuccessful. Please try again.", 18, (244, 169, 154))
     text_png(os.path.join(directory, "starting-tilo.png"), "Starting Tilo", 26,
@@ -292,6 +295,13 @@ def main(directory, look_path=None):
 
 TEXT = (240, 240, 250)
 MUTED = (158, 163, 186)
+UNLOCK_ASKS = {
+    "password-recovery": "Enter your password or recovery key",
+    "passphrase-recovery": "Enter your disk passphrase or recovery key",
+    "password": "Enter your password",
+    "passphrase": "Enter your disk passphrase",
+    "recovery": "Enter your recovery key",
+}
 
 
 def read_look(path):

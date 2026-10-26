@@ -10,6 +10,14 @@
 //! in place of Plymouth's password agent (see [`tilo_boot_signin::relay`]).
 //! Exit 0: that program is done. 3: the person asked to go back to signing
 //! in. 2: Plymouth cannot ask; its own agent should.
+//!
+//! `tilo-boot-signin unlock-prompt --device DEV`
+//!
+//! Tells the boot screen what the volume's own prompt asks for: the
+//! password, a disk passphrase, the recovery key (see
+//! [`tilo_boot_signin::unlock_prompt`]). Exit 0: told. 2: the header could
+//! not be read or Plymouth is not running; the screen keeps its general
+//! wording.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -19,9 +27,11 @@ use tilo_boot_signin::auth::CliAuth;
 use tilo_boot_signin::flow::{self, Exit};
 use tilo_boot_signin::relay::{Relay, Relayed};
 use tilo_boot_signin::screen::{BootScreen, Plymouth};
+use tilo_boot_signin::unlock_prompt;
 
 const USAGE: &str = "usage: tilo-boot-signin --device DEV --volume NAME\n       \
-                     tilo-boot-signin other-ways --device DEV --pid PID";
+                     tilo-boot-signin other-ways --device DEV --pid PID\n       \
+                     tilo-boot-signin unlock-prompt --device DEV";
 
 /// A program the initramfs runs, unless the environment names a stand-in.
 fn program(variable: &str, default: &str) -> PathBuf {
@@ -34,15 +44,18 @@ fn usage() -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    let mut other_ways = false;
     let mut device = None;
     let mut volume = None;
     let mut pid = None;
     let mut args = std::env::args_os().skip(1).peekable();
-    if args.peek().and_then(|arg| arg.to_str()) == Some("other-ways") {
-        other_ways = true;
-        args.next();
-    }
+    let command = match args.peek().and_then(|arg| arg.to_str()) {
+        Some(command @ ("other-ways" | "unlock-prompt")) => {
+            let command = command.to_owned();
+            args.next();
+            Some(command)
+        }
+        _ => None,
+    };
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--device") => device = args.next().map(PathBuf::from),
@@ -52,7 +65,13 @@ fn main() -> ExitCode {
         }
     }
     let plymouth = Plymouth::running(program("TILO_SIGNIN_PLYMOUTH", "plymouth"));
-    if other_ways {
+    if command.as_deref() == Some("unlock-prompt") {
+        let Some(device) = device else {
+            return usage();
+        };
+        return tell_unlock_prompt(plymouth.as_ref(), &device);
+    }
+    if command.as_deref() == Some("other-ways") {
         let (Some(device), Some(pid)) = (device, pid) else {
             return usage();
         };
@@ -93,4 +112,25 @@ fn main() -> ExitCode {
         Exit::OtherWays => eprintln!("tilo-boot-signin: another way in was chosen"),
     }
     ExitCode::from(exit.code())
+}
+
+fn tell_unlock_prompt(plymouth: Option<&Plymouth>, device: &std::path::Path) -> ExitCode {
+    let cryptsetup = program("TILO_SIGNIN_CRYPTSETUP", "cryptsetup");
+    let Some(metadata) = unlock_prompt::read(&cryptsetup, device) else {
+        eprintln!(
+            "tilo-boot-signin: could not read the volume header of {}",
+            device.display()
+        );
+        return ExitCode::from(Exit::NothingToTry.code());
+    };
+    let Some(kind) = unlock_prompt::ways(&metadata).kind() else {
+        eprintln!("tilo-boot-signin: nothing typed opens {}", device.display());
+        return ExitCode::from(Exit::NothingToTry.code());
+    };
+    let Some(plymouth) = plymouth else {
+        return ExitCode::from(Exit::NothingToTry.code());
+    };
+    eprintln!("tilo-boot-signin: the volume's prompt asks for: {kind}");
+    plymouth.message(&format!("tilo-unlock-ask:{kind}"));
+    ExitCode::SUCCESS
 }

@@ -689,6 +689,14 @@ of it:
 | TPM without verified release chain | recovery key, passphrase | type the passphrase |
 | No TPM | recovery key, passphrase | type the passphrase |
 
+When the installer's startup secret is the account password (the wizard's one
+secret), `tilo-disk-encrypt enrol --pin-is-account-password` adds a
+`tilo-startup-secret` token naming that slot. It holds no secret. Before the
+volume opens, `tilo-boot-signin unlock-prompt` reads the header and the boot screen
+asks for "your password" where that token has a slot, "your disk passphrase" where
+a slot no token claims exists, and offers the recovery key only where a
+`systemd-recovery` token has a slot.
+
 An optional FIDO2 security key adds another slot to any row. Selecting it is a
 requirement: enrollment failure stops installation with an actionable retry
 message rather than silently finishing without the requested factor. The sealed

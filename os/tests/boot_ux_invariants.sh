@@ -57,6 +57,8 @@ assert "tilo-signin-" in body("display_message"), \
     "the theme must take the sign-in screen's messages"
 assert '"tilo-otherways:"' in body("display_message"), \
     "the theme must say how to go back to signing in from another way in"
+assert '"tilo-unlock-ask:"' in body("display_message"), \
+    "the theme must say what the volume's prompt asks for"
 # Every message tilo-boot-signin sends is one the theme reads.
 signin = body("signin_message")
 for key in ("people", "person", "choose", "face", "name", "account", "kind", "back",
@@ -146,7 +148,9 @@ expected = {"tilo-logo.png", "entry.png", "lock.png", "bullet.png",
             "signing-in.png", "hint-other-ways.png", "hint-someone-else.png", "hint-go-back.png",
             "list-heading.png", "list-keys.png", "row.png", "row-selected.png",
             "cant-sign-in.png", "account-1.png", "account-2.png", "account-3.png",
-            "account-4.png"} | {f"avatar-{slot}.png" for slot in range(12)}
+            "account-4.png"} | {f"avatar-{slot}.png" for slot in range(12)} \
+         | {f"unlock-help-{kind}.png" for kind in ("password-recovery", "passphrase-recovery",
+                                                   "password", "passphrase", "recovery")}
 assert {path.name for path in root.iterdir()} == expected
 # Every image the theme loads by name is one the build renders.
 loaded = set(re.findall(r'Image\("([^"]+\.png)"\)', open(sys.argv[2]).read()))
