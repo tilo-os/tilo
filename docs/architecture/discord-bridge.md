@@ -490,8 +490,7 @@ Moderation is Chat's own, decided by Tilo roles ([permissions.md](permissions.md
 | In Discord | Effect in Tilo |
 |---|---|
 | A Discord-origin message deleted | The mirrored message is deleted (§3). |
-| A Tilo-origin message deleted by a linked Tilo Moderator (read from the audit log's executor) | `remove-message` in Tilo, attributed to the bot, with the Moderator's link noted in the reason. |
-| A Tilo-origin message deleted by anyone else | Sent again by the bridge, because a Discord-only permission must not remove a Tilo person's message. |
+| A Tilo-origin message deleted by anyone but the bridge (its linked author, a server moderator or admin) | `remove-message` in Tilo, attributed to the bot, with the deleter's link noted in the reason when the audit log names a linked account. A message gone on one side is gone on both; it is never sent again. |
 | A Discord user banned | The persona is blocked (`block-persona`). |
 
 ## 8. Failure handling
@@ -798,7 +797,7 @@ service answers the origins in `TILO_ROOMS_SITE_ORIGINS` with CORS.
   remove it, and the removal reaches Discord. Kicking, banning and unbanning a
   linked person do the same to their Discord account, and leave an unlinked
   guest's Discord side alone. A lock blocks posts on both sides.
-  A Discord delete of a Tilo message by a non-Moderator is sent again.
+  A Discord delete of a Tilo message, by anyone, removes it in Tilo.
 - **Room-service.** Integration tests for persistent restart (same room id, same
   history), `/join` limits and the online cap, the hashed-IP cooldown, `PreAdmit`
   over operator protocol v2, and `/presence`.
