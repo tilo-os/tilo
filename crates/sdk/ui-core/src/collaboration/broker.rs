@@ -789,6 +789,14 @@ impl CollabTransport for BrokerTransport {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    fn controlled_request_whole_read_for_test(&self, channel: &str) -> bool {
+        // The owner's own ask (`initial`); a staged read it has not merged
+        // yet is answered instead, and nothing is asked.
+        self.state.document_reads.required(channel)
+            && self.state.document_reads.initial(channel).is_none()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     fn controlled_document_read_phase_for_test(&self, channel: &str) -> Option<serde_json::Value> {
         let phase = self.state.document_reads.readiness_diagnostic(channel)?;
         Some(serde_json::json!({

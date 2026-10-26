@@ -242,6 +242,10 @@ pub(super) enum Write {
     Append(Vec<u8>),
     /// The whole store rewritten as a snapshot through an atomic rename.
     Snapshot(Vec<u8>),
+    /// The snapshot a journal recovered from a failed barrier: every write
+    /// staged before it was stopped and touched nothing, and once it is
+    /// durable the writer goes on with the writes staged after it.
+    Recovery(Vec<u8>),
     /// One line appended to the side file `name` beside the store, created
     /// on first use. Its failure is reported, but leaves the store's own
     /// records untouched, so it fails no later write.
@@ -294,7 +298,6 @@ pub(super) struct Writer {
     jobs: Option<mpsc::Sender<Job>>,
     thread: Option<std::thread::JoinHandle<()>>,
     failed: Arc<AtomicBool>,
-    reestablish: Arc<AtomicBool>,
 }
 
 impl Made {
@@ -320,10 +323,7 @@ impl Writer {
         let (jobs, received) = mpsc::channel::<Job>();
         let failed = Arc::new(AtomicBool::new(false));
         let failing = failed.clone();
-        let reestablish = Arc::new(AtomicBool::new(false));
-        let reestablishing = reestablish.clone();
-        let stopped = Arc::new(Mutex::new(None));
-        let stopping = stopped.clone();
+        let stopping = Arc::new(Mutex::new(None));
         let thread = std::thread::Builder::new()
             .name("invocation-journal".into())
             .spawn(move || {
@@ -331,13 +331,10 @@ impl Writer {
                 let mut tail = tail;
                 for job in received {
                     let beside = matches!(job.write, Write::Beside { .. });
-                    let snapshot_written = matches!(job.write, Write::Snapshot(_));
-                    if reestablishing.swap(false, Ordering::AcqRel) {
-                        // The store was recovered: only its snapshot's bytes
-                        // can say where appends belong now.
-                        tail = None;
-                    }
-                    let made = if failing.load(Ordering::Acquire) {
+                    let recovery = matches!(job.write, Write::Recovery(_));
+                    let snapshot_written =
+                        matches!(job.write, Write::Snapshot(_) | Write::Recovery(_));
+                    let made = if failing.load(Ordering::Acquire) && !recovery {
                         // Everything staged before this one kept its own
                         // outcome; this one never touched the disk.
                         Made::Stopped(
@@ -353,7 +350,7 @@ impl Writer {
                             Err(error) => Made::withdrew(Err(error)),
                         }
                     };
-                    let mut error = match &made {
+                    let error = match &made {
                         Made::Durable => None,
                         Made::Withdrawn => Some(WITHDRAWN.to_string()),
                         Made::Unconfirmed => Some(FAILED.to_string()),
@@ -366,9 +363,10 @@ impl Writer {
                     if matches!(made, Made::Withdrawn) && snapshot_written {
                         tail = None;
                     }
-                    let mut fatal = matches!(made, Made::Unconfirmed);
+                    let fatal = matches!(made, Made::Unconfirmed);
                     #[cfg(test)]
-                    {
+                    let (error, fatal) = {
+                        let (mut error, mut fatal) = (error, fatal);
                         if error.is_none()
                             && let Some(after) = job.injected.after
                         {
@@ -382,6 +380,17 @@ impl Writer {
                             error = Some(FAILED.to_string());
                             fatal = true;
                         }
+                        (error, fatal)
+                    };
+                    // The recovered snapshot is the store's whole content:
+                    // the writes after it are made again. Until it is
+                    // durable, the store still holds what the journal cannot
+                    // account for, and the writer stays stopped.
+                    if recovery && error.is_none() {
+                        failing.store(false, Ordering::Release);
+                        *stopping
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                     }
                     if fatal && !beside {
                         failing.store(true, Ordering::Release);
@@ -402,19 +411,11 @@ impl Writer {
             jobs: Some(jobs),
             thread: Some(thread),
             failed,
-            reestablish,
         })
     }
 
     pub(super) fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
-    }
-
-    /// The journal rewrote the store as one recovered snapshot: writes may go
-    /// on, after one that rewrites the snapshot again to find the store's end.
-    pub(super) fn recovered(&self) {
-        self.reestablish.store(true, Ordering::Release);
-        self.failed.store(false, Ordering::Release);
     }
 
     /// Queue `write` after every write staged before it.
@@ -464,11 +465,6 @@ pub(super) fn withdrew(outcome: &Result<(), String>) -> bool {
     matches!(outcome, Err(error) if error != FAILED)
 }
 
-/// [`withdrew`], for a message alone.
-pub(super) fn withdrew_error(error: &String) -> bool {
-    error != FAILED
-}
-
 fn make_durable(
     root: &Path,
     tail: &mut Option<File>,
@@ -481,7 +477,7 @@ fn make_durable(
         hold();
     }
     match write {
-        Write::Snapshot(bytes) => {
+        Write::Snapshot(bytes) | Write::Recovery(bytes) => {
             *tail = None;
             *tail = Some(write_snapshot(root, &bytes, injected, counted)?);
             Ok(())

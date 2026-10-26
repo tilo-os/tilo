@@ -557,6 +557,18 @@ fn enrolled_fingerprint(username: &str) -> bool {
         && fingerprint_list_has_enrollment(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Whether this screen may offer `username`'s fingerprint: tilo-authd holds
+/// their key for a session of theirs running now, and fprintd has a print
+/// enrolled. At the first sign-in after boot, or once their sessions have
+/// ended, it may not (docs/security/sign-in.md §4.3); the sign-in service
+/// would not run the fingerprint step either.
+fn fingerprint_offered(username: &str) -> bool {
+    crate::handoff::key_held(
+        std::path::Path::new(crate::handoff::DEFAULT_SOCKET),
+        username,
+    ) && enrolled_fingerprint(username)
+}
+
 /// The time and date the screen shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ClockFace {
@@ -759,7 +771,7 @@ impl GreeterApp {
             (1, Some(_)) => users
                 .first()
                 .map_or(FingerprintAvailability::Unavailable, |user| {
-                    enrolled_fingerprint(&user.username).into()
+                    fingerprint_offered(&user.username).into()
                 }),
             _ => FingerprintAvailability::CheckNamedAccount,
         };
@@ -882,7 +894,7 @@ impl GreeterApp {
             ),
             login_user,
             fingerprint,
-            fingerprint_probe: enrolled_fingerprint,
+            fingerprint_probe: fingerprint_offered,
             password_buffer: Arc::new(Mutex::new(String::new())),
             auth_session: None,
             challenge_sequence: Arc::new(AtomicU64::new(1)),

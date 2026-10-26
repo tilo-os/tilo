@@ -41,17 +41,7 @@ impl LocalCaller {
         Ok(caller)
     }
     fn owner_of(admitted: &AdmittedJoinIdentity) -> Result<InvocationOwner, String> {
-        let cert = admitted
-            .certificate
-            .as_ref()
-            .ok_or("durable local caller certificate missing")?;
-        let owner = InvocationOwner::AuthenticatedLocal {
-            root: cert.user_public_key,
-            device: cert.device_public_key,
-            agent: admitted.agent_id.clone(),
-        };
-        owner.validate()?;
-        Ok(owner)
+        admitted.invocation_owner()
     }
     pub(super) fn owner(&self) -> InvocationOwner {
         self.owner.clone()
@@ -253,15 +243,15 @@ pub(super) enum DurableContext<'a> {
     },
 }
 impl<'a> DurableContext<'a> {
-    pub(super) fn owner(self) -> InvocationOwner {
+    pub(super) fn owner(self) -> Result<InvocationOwner, String> {
         match self {
             Self::Peer(c, _) => c.owner(),
-            Self::Local { caller, .. } => caller.owner(),
-            Self::Task { binding, .. } => InvocationOwner::NativeTask {
+            Self::Local { caller, .. } => Ok(caller.owner()),
+            Self::Task { binding, .. } => Ok(InvocationOwner::NativeTask {
                 agent: binding.agent_id.clone(),
                 task: binding.task_id.clone(),
                 epoch: binding.epoch,
-            },
+            }),
         }
     }
     pub(super) fn time(self) -> Option<&'a crate::peer_actions::PolicyTime> {

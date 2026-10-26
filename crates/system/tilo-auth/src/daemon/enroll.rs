@@ -92,8 +92,9 @@ impl Daemon {
         Ok(())
     }
 
-    /// What a successful sign-in can finish: the admin's system-volume
-    /// keyslot and the wrapping of the TPM lockout authorisation.
+    /// What a successful sign-in can finish: holding the key for the session,
+    /// the admin's system-volume keyslot and the wrapping of the TPM lockout
+    /// authorisation.
     pub(super) fn after_sign_in(
         &self,
         work: &Work,
@@ -102,6 +103,7 @@ impl Daemon {
         key: &UserKey,
         typed: Option<&str>,
     ) {
+        self.hold(account.uid, key.clone());
         match self.accounts.is_admin(account) {
             Ok(true) => {}
             Ok(false) => return,

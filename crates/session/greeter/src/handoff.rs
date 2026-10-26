@@ -45,19 +45,39 @@ pub fn pending_sign_in(socket: &Path, first_boot_autologin: &Path) -> Option<Str
     if first_boot_autologin.exists() {
         return None;
     }
-    exchange(socket, EXCHANGE_BOUND)
+    let line = exchange(socket, b"{\"op\":\"pending-sign-in\"}\n", EXCHANGE_BOUND)?;
+    parse_reply(&line)
 }
 
-fn exchange(socket: &Path, bound: Duration) -> Option<String> {
+/// Whether `tilo-authd` holds `user`'s key for a session of theirs running
+/// now: the only time this screen may offer their fingerprint (they are
+/// switching back to a session), because a fingerprint unwraps nothing.
+/// No daemon, no answer or anything unexpected reads as "no".
+#[must_use]
+pub fn key_held(socket: &Path, user: &str) -> bool {
+    let Ok(mut request) = serde_json::to_vec(&serde_json::json!({"op": "key-held", "user": user}))
+    else {
+        return false;
+    };
+    request.push(b'\n');
+    exchange(socket, &request, EXCHANGE_BOUND).is_some_and(|line| {
+        serde_json::from_str::<Value>(line.trim()).is_ok_and(|reply| {
+            reply.get("ok") == Some(&Value::Bool(true))
+                && reply.get("key_held") == Some(&Value::Bool(true))
+        })
+    })
+}
+
+fn exchange(socket: &Path, request: &[u8], bound: Duration) -> Option<String> {
     let mut stream = UnixStream::connect(socket).ok()?;
     stream.set_read_timeout(Some(bound)).ok()?;
     stream.set_write_timeout(Some(bound)).ok()?;
-    stream.write_all(b"{\"op\":\"pending-sign-in\"}\n").ok()?;
+    stream.write_all(request).ok()?;
     let mut line = String::new();
     BufReader::new(stream.take(REPLY_LIMIT))
         .read_line(&mut line)
         .ok()?;
-    parse_reply(&line)
+    Some(line)
 }
 
 /// `null`, or `{"name": "..."}` naming a local account.
@@ -137,10 +157,36 @@ mod tests {
 
         let (dir, served) = daemon(None);
         assert_eq!(
-            exchange(&dir.path().join("socket"), Duration::from_millis(50)),
+            exchange(
+                &dir.path().join("socket"),
+                b"{\"op\":\"pending-sign-in\"}\n",
+                Duration::from_millis(50)
+            ),
             None
         );
         served.join().unwrap();
+    }
+
+    #[test]
+    fn a_fingerprint_is_offered_only_when_the_daemon_says_the_key_is_held() {
+        let (dir, served) = daemon(Some("{\"ok\":true,\"key_held\":true}\n"));
+        assert!(key_held(&dir.path().join("socket"), "ada"));
+        assert_eq!(
+            served.join().unwrap(),
+            "{\"op\":\"key-held\",\"user\":\"ada\"}\n"
+        );
+
+        for reply in [
+            "{\"ok\":true,\"key_held\":false}\n",
+            "{\"ok\":false,\"error\":\"not-permitted\"}\n",
+            "{\"ok\":true}\n",
+        ] {
+            let (dir, served) = daemon(Some(reply));
+            assert!(!key_held(&dir.path().join("socket"), "ada"), "{reply}");
+            served.join().unwrap();
+        }
+        let empty = tempfile::tempdir().unwrap();
+        assert!(!key_held(&empty.path().join("socket"), "ada"));
     }
 
     #[test]
