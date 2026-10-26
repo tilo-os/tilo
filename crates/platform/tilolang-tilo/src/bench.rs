@@ -1,20 +1,24 @@
 //! `tilolang bench <package>`: the runtime's share of the performance budgets
 //! (docs/designs/app-language/native-apps.md section 4), measured headlessly.
 //!
-//! A room is seeded with N items in the package's root collection, and each scenario runs the
-//! path a frame takes through the runtime: the change reaches the store, the views that read it
-//! run again, and the patches for the host come out. Drawing is the host's share and is not
-//! measured here. Each scenario prints one JSON record per item count in the format of
-//! `tools/perf/record.py`.
+//! A room is seeded with N items in the package's root collection (or, for a root that refers to
+//! other packages' roots, as a board does, in theirs), and each scenario runs the path a frame
+//! takes through the runtime: the change reaches the store, the views that read it run again,
+//! and the patches for the host come out. Drawing is the host's share and is not measured here.
+//! Each scenario prints one JSON record per item count in the format of `tools/perf/record.py`.
 //!
 //! * `open`: a host over the seeded room loads the compiled module and opens the root view,
-//!   to its first tree.
-//! * `keystroke`: one character typed into the title of an item in the item's own window; the
-//!   change goes through the executor into the room and back, and the list view and the item's
-//!   view are brought up to date.
-//! * `peer_edit`: another replica retitles an item; the change merges into the room and the
-//!   list view is brought up to date.
+//!   to its first tree; `ready`, until search and publication have read the room.
+//! * `keystroke`: one character typed where a person types: into the title of an item in the
+//!   item's own window, or, when items have none, into the main window's first text input. The
+//!   change goes through the executor into the room and back, and the views are brought up to
+//!   date. A package with no text to type into (a counter) gets `press`: its main window's
+//!   first button.
+//! * `peer_edit`: another replica retitles an item, or bumps the root's counter; the change
+//!   merges into the room and the main view is brought up to date.
 //! * `scroll`: the list shows the next page of rows.
+//! * `memory_anon`: an app process's anonymous memory with the room open, measured in a
+//!   process of its own.
 //! * `idle`: ten seconds with nothing happening: how often the process was woken, and how
 //!   many views ran.
 
@@ -56,6 +60,8 @@ pub struct BenchConfig {
     /// Whether to count where the time of calls into wasm goes (it costs a clock read per
     /// import).
     pub profile: bool,
+    /// How to measure memory in a process of its own; not measured without.
+    pub memory: Option<Isolation>,
     pub env: Env,
 }
 
@@ -156,49 +162,99 @@ pub fn compile(dir: &Path) -> Result<Vec<Compiled>, String> {
     Ok(built.into_iter().map(|b| b.compiled).collect())
 }
 
-/// The root type of a package, its list field and the list's item type.
+/// What a package's root holds that the scenarios fill and edit.
 struct Shape {
     app: String,
     root_ty: String,
-    list_field: String,
+    /// The root's collection, seeded with the items.
+    list: Option<List>,
+    /// The root's first counter.
+    counter: Option<String>,
+    /// The roots of other packages the root refers to, by the field that holds the reference:
+    /// a board over notes and todos. Each is seeded too.
+    links: Vec<(String, Shape)>,
+}
+
+/// A collection of a root and its items.
+struct List {
+    field: String,
     item_ty: String,
     /// The item's text fields, the first being its title.
     texts: Vec<String>,
 }
 
-fn shape_of(meta: &Meta) -> Result<Shape, String> {
+impl Shape {
+    /// The root and collection the edits go to: the root's own, or that of the first root it
+    /// refers to that has one.
+    fn subject(&self) -> Option<(&Self, &List)> {
+        self.list.as_ref().map(|l| (self, l)).or_else(|| {
+            self.links
+                .iter()
+                .find_map(|(_, s)| s.list.as_ref().map(|l| (s, l)))
+        })
+    }
+}
+
+/// The root type of `meta`, and its id.
+fn root_type(meta: &Meta) -> Result<&tilolang_runtime::meta::TypeMeta, String> {
     let root = meta.roots.first().ok_or("the package declares no root")?;
-    let root_ty = meta
-        .types
+    meta.types
         .iter()
         .find(|t| &t.id == root || &t.name == root)
-        .ok_or("the root type is not declared")?;
+        .ok_or_else(|| "the root type is not declared".to_owned())
+}
+
+/// The shape of `meta`'s root; `others` are the packages its root may refer to.
+fn shape_of(meta: &Meta, others: &[&Meta]) -> Result<Shape, String> {
+    let root_ty = root_type(meta)?;
     let schema = lookup(&root_ty.id).ok_or("the root type is not registered")?;
     let list = schema
         .fields
         .iter()
-        .find(|f| f.kind == MergeKind::Collection)
-        .ok_or("the root type has no collection to fill")?;
-    let item_ty = list
-        .record
-        .clone()
-        .ok_or("the collection has no item type")?;
-    let item = lookup(&item_ty).ok_or("the item type is not registered")?;
-    let texts = item
+        .filter(|f| f.kind == MergeKind::Collection)
+        .find_map(|f| {
+            let item_ty = f.record.clone()?;
+            let texts = lookup(&item_ty)?
+                .fields
+                .iter()
+                .filter(|f| f.kind == MergeKind::Text)
+                .map(|f| f.id.clone())
+                .collect::<Vec<_>>();
+            (!texts.is_empty()).then(|| List {
+                field: f.id.clone(),
+                item_ty,
+                texts,
+            })
+        });
+    let counter = schema
         .fields
         .iter()
-        .filter(|f| f.kind == MergeKind::Text)
-        .map(|f| f.id.clone())
-        .collect::<Vec<_>>();
-    if texts.is_empty() {
-        return Err("the item type has no text field to type into".into());
+        .find(|f| f.kind == MergeKind::Counter)
+        .map(|f| f.id.clone());
+    let mut links = Vec::new();
+    for field in &root_ty.fields {
+        let ty = field.ty.trim();
+        let ty = ty
+            .strip_prefix("Option<")
+            .and_then(|t| t.strip_suffix('>'))
+            .unwrap_or(ty);
+        for other in others {
+            if let Ok(theirs) = root_type(other)
+                && ty == format!("{}.{}", other.app, theirs.name)
+            {
+                links.push((field.id.clone(), shape_of(other, &[])?));
+            }
+        }
+    }
+    if list.is_none() && counter.is_none() && links.is_empty() {
+        return Err("the root has no collection, counter or other root to edit".into());
     }
     Ok(Shape {
         app: meta.app.clone(),
         root_ty: root_ty.id.clone(),
-        list_field: list.id.clone(),
-        item_ty,
-        texts,
+        list,
+        counter,
+        links,
     })
 }
 
@@ -207,28 +263,39 @@ fn item_id(i: usize) -> String {
     format!("seed-{i:06}")
 }
 
-/// The root record with `n` items, each with its number in every text field.
+/// The root record with `n` items in its collection, each with its number in every text
+/// field, and referring to the roots it links.
 fn seeded_root(shape: &Shape, n: usize) -> Result<DynRecord, String> {
     let root_schema = lookup(&shape.root_ty).ok_or("unregistered root type")?;
-    let item_schema = lookup(&shape.item_ty).ok_or("unregistered item type")?;
     let mut root = DynRecord::empty(root_schema).map_err(|e| e.to_string())?;
-    let mut items = Collection::default();
-    for i in 0..n {
-        let mut item = DynRecord::empty(item_schema).map_err(|e| e.to_string())?;
-        for (k, field) in shape.texts.iter().enumerate() {
-            if let Some(DynValue::Text(text)) = item.get_mut(field) {
-                *text = if k == 0 {
-                    format!("Item {i}")
-                } else {
-                    format!("Text of item {i}")
-                };
+    if let Some(list) = &shape.list {
+        let item_schema = lookup(&list.item_ty).ok_or("unregistered item type")?;
+        let mut items = Collection::default();
+        for i in 0..n {
+            let mut item = DynRecord::empty(item_schema).map_err(|e| e.to_string())?;
+            for (k, field) in list.texts.iter().enumerate() {
+                if let Some(DynValue::Text(text)) = item.get_mut(field) {
+                    *text = if k == 0 {
+                        format!("Item {i}")
+                    } else {
+                        format!("Text of item {i}")
+                    };
+                }
             }
+            items.push(Id::from_raw(item_id(i)), item);
         }
-        items.push(Id::from_raw(item_id(i)), item);
+        match root.get_mut(&list.field) {
+            Some(DynValue::Collection(slot)) => *slot = items,
+            _ => return Err("the list field is not a collection".into()),
+        }
     }
-    match root.get_mut(&shape.list_field) {
-        Some(DynValue::Collection(slot)) => *slot = items,
-        _ => return Err("the list field is not a collection".into()),
+    for (field, linked) in &shape.links {
+        let target = ResourceRef::root(root_id(linked), linked.root_ty.clone());
+        let value = tilolang_runtime::value::to_json(&Value::some(Value::resource(&target)))?;
+        match root.get_mut(field) {
+            Some(DynValue::Register(slot)) => *slot = value,
+            _ => return Err(format!("the field {field} does not hold a reference")),
+        }
     }
     Ok(root)
 }
@@ -254,9 +321,11 @@ fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A room seeded with `n` items: the record, ready for a host.
-fn seeded_room(shape: &Shape, n: usize) -> Result<Doc, String> {
-    let mut doc = Doc::new();
+/// Create the root of `shape`, seeded with `n` items, in `doc`: the roots it links first.
+fn seed(doc: &mut Doc, shape: &Shape, n: usize) -> Result<(), String> {
+    for (_, linked) in &shape.links {
+        seed(doc, linked, n)?;
+    }
     let root = seeded_root(shape, n)?;
     let action = DynAction {
         app: shape.app.clone(),
@@ -269,7 +338,13 @@ fn seeded_room(shape: &Shape, n: usize) -> Result<Doc, String> {
             record: tilo_resource::Model::to_json(&root),
         }],
     };
-    execute(&mut doc, &action, "seed")?;
+    execute(doc, &action, "seed")
+}
+
+/// A room seeded with `n` items: the record, ready for a host.
+fn seeded_room(shape: &Shape, n: usize) -> Result<Doc, String> {
+    let mut doc = Doc::new();
+    seed(&mut doc, shape, n)?;
     // A window opens a room it loads, from storage or a peer: the seeded record, saved and
     // loaded again.
     Doc::load(&doc.save()).map_err(|e| e.to_string())
@@ -558,7 +633,18 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         crate::meta::MetaExt::register_schemas(&compiled.meta);
     }
     let meta = main.meta.clone();
-    let shape = shape_of(&meta)?;
+    let others: Vec<&Meta> = packages
+        .iter()
+        .map(|p| &p.meta)
+        .filter(|m| m.app != meta.app)
+        .collect();
+    let shape = shape_of(&meta, &others)?;
+    // A root without a collection holds no items to count: one room, of none.
+    let counts = if shape.subject().is_some() {
+        config.sizes.clone()
+    } else {
+        vec![0]
+    };
     let short = meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned();
     let mut out = Recorder {
         records: Vec::new(),
@@ -572,7 +658,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         samples: vec![compiled_in],
         meta: json!({"package": meta.app, "packages": packages.len()}),
     });
-    for &n in &config.sizes {
+    for n in counts {
         let sized = Sized {
             config,
             packages: &packages,
@@ -582,6 +668,9 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
             n,
             base: seeded_room(&shape, n)?,
         };
+        if let Some(isolation) = &config.memory {
+            out.push(memory(&sized, isolation)?);
+        }
         for record in open(&sized)? {
             out.push(record);
         }
@@ -592,7 +681,11 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         }
         room.frame(&mut [])?;
         room.phases.take();
-        out.push(keystroke(&sized, &mut room)?);
+        if shape.subject().is_some() || text_input(&room.host, room.list.tree()).is_some() {
+            out.push(keystroke(&sized, &mut room)?);
+        } else {
+            out.push(press(&sized, &mut room)?);
+        }
         out.push(peer_edit(&sized, &mut room)?);
         if let Some(record) = scroll(&sized, &mut room)? {
             out.push(record);
@@ -600,6 +693,93 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         out.push(idle(&sized, &mut room)?);
     }
     Ok(out.records)
+}
+
+/// The process's anonymous memory, in MiB.
+fn anon_mib() -> Option<f64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kib = status
+        .lines()
+        .find_map(|l| l.strip_prefix("RssAnon:"))?
+        .trim()
+        .strip_suffix("kB")?
+        .trim()
+        .parse::<u32>()
+        .ok()?;
+    Some(f64::from(kib) / 1024.0)
+}
+
+/// The room a memory child loads, saved, and the package it opens it with.
+const MEMORY_ROOM: &str = "TILOLANG_BENCH_MEMORY_ROOM";
+const MEMORY_PACKAGE: &str = "TILOLANG_BENCH_MEMORY_PACKAGE";
+/// How a memory child reports.
+const MEMORY_LINE: &str = "tilolang-bench-memory-anon-mib=";
+
+/// How the memory scenario gets a process of its own: this program, run again with these
+/// arguments, does what [`memory_child`] says when it finds the room in its environment.
+#[derive(Clone, Debug)]
+pub struct Isolation {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+}
+
+/// An app process's anonymous memory with a room of the size open: a process of its own (seeding
+/// a room leaves the bench's own process with memory the allocator keeps) loads the saved room,
+/// opens the main view and its first page, lets search and publication read the room, and runs a
+/// frame. It loads the packages by compiling their source, which a launcher does not.
+fn memory(sized: &Sized<'_>, isolation: &Isolation) -> Result<Record, String> {
+    let room = std::env::temp_dir().join(format!(
+        "tilolang-bench-{}-{}.room",
+        std::process::id(),
+        sized.n
+    ));
+    std::fs::write(&room, sized.base.clone().save()).map_err(|e| e.to_string())?;
+    let output = std::process::Command::new(&isolation.program)
+        .args(&isolation.args)
+        .env(MEMORY_ROOM, &room)
+        .env(MEMORY_PACKAGE, &sized.config.package)
+        .output();
+    let _ = std::fs::remove_file(&room);
+    let output = output.map_err(|e| format!("the memory process: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mib = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(MEMORY_LINE))
+        .and_then(|v| v.parse::<f64>().ok())
+        .ok_or_else(|| {
+            format!(
+                "the memory process reported nothing: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })?;
+    Ok(sized.record("memory_anon", "MiB", vec![mib], Json::Null))
+}
+
+/// In a process [`memory`] started: measure, print the result for it, and say so. `None` in any
+/// other process.
+#[must_use]
+pub fn memory_child() -> Option<Result<(), String>> {
+    let room = std::env::var_os(MEMORY_ROOM)?;
+    let package = std::env::var_os(MEMORY_PACKAGE)?;
+    Some(
+        measure_memory(Path::new(&room), Path::new(&package)).map(|mib| {
+            println!("{MEMORY_LINE}{mib}");
+        }),
+    )
+}
+
+fn measure_memory(room: &Path, package: &Path) -> Result<f64, String> {
+    let packages = compile(package)?;
+    for compiled in &packages {
+        crate::meta::MetaExt::register_schemas(&compiled.meta);
+    }
+    let app = packages.last().ok_or("no package")?.meta.app.clone();
+    let doc =
+        Doc::load(&std::fs::read(room).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut room = Room::open(doc, &packages, &app, false)?;
+    room.settle();
+    room.frame(&mut [])?;
+    anon_mib().ok_or_else(|| "the process's memory is not readable".to_owned())
 }
 
 /// Opening the package's main view on a room of the size, through the first frame; and until
@@ -666,63 +846,165 @@ fn index_everything(sized: &Sized<'_>, room: &Room) -> [Record; 2] {
     ]
 }
 
-/// Typing into the title of an item, in the item's own window, one letter a frame.
-fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
-    let shape = sized.shape;
-    let target = sized.target(room);
-    let item = ResourceRef::root(root_id(shape), shape.root_ty.clone()).item(
-        &shape.list_field,
-        &item_id(target),
-        shape.item_ty.clone(),
-    );
-    let mut editor = room
-        .host
-        .open_resource(&item, None)
-        .map_err(|e| e.to_string())?;
-    let title = shape.texts.first().cloned().unwrap_or_default();
-    let input = bound_input(editor.tree(), &title)
-        .ok_or("the item's view has no input bound to its title")?;
-    let mut samples = Vec::new();
-    let mut text = format!("Item {target}");
-    for _ in 0..sized.config.samples {
-        text.push('x');
-        let start = Instant::now();
-        editor
-            .edit(&input, &Value::text(text.clone()))
-            .map_err(|e| e.to_string())?;
-        room.phases.edit.push(ms(start.elapsed()));
-        room.frame(&mut [&mut editor])?;
-        samples.push(ms(start.elapsed()));
-    }
-    Ok(sized.record("keystroke", "ms", samples, room.phases.take()))
+/// Where the keystrokes go.
+enum Typing {
+    /// The input bound to an item's title, in the item's own window.
+    Item(Box<ViewInstance>, String),
+    /// An input of the main window bound to text: where a person types in an app whose items
+    /// have no window of their own (todo's entry for a new item).
+    Main(String),
 }
 
-/// A peer retitling the same item, its change merged into the room.
-fn peer_edit(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
-    let shape = sized.shape;
-    let target = sized.target(room);
-    let title = shape.texts.first().cloned().unwrap_or_default();
-    let mut peer = room.doc.fork();
+/// Whether a loaded package gives `ty` a default view.
+fn has_default_view(packages: &[Compiled], ty: &str) -> bool {
+    packages.iter().any(|p| {
+        p.meta
+            .types
+            .iter()
+            .filter(|t| t.id == ty || t.name == ty)
+            .any(|t| p.meta.default_view(&t.id).is_some() || p.meta.default_view(&t.name).is_some())
+    })
+}
+
+/// The key and text of the first input of `node` bound to a text field.
+fn text_input(host: &Host, node: &UiNode) -> Option<(String, String)> {
+    if let Some((target, field)) = node.binding.as_ref().and_then(|b| b.field())
+        && let Ok(Value::Text(text)) = host.runtime().read(target, field)
+    {
+        return Some((node.key.clone(), text));
+    }
+    node.children.iter().find_map(|c| text_input(host, c))
+}
+
+fn typing(sized: &Sized<'_>, room: &Room) -> Result<(Typing, String), String> {
+    if let Some((root, list)) = sized.shape.subject()
+        && has_default_view(sized.packages, &list.item_ty)
+    {
+        let target = sized.target(room);
+        let item = ResourceRef::root(root_id(root), root.root_ty.clone()).item(
+            &list.field,
+            &item_id(target),
+            list.item_ty.clone(),
+        );
+        let editor = room
+            .host
+            .open_resource(&item, None)
+            .map_err(|e| e.to_string())?;
+        let title = list.texts.first().cloned().unwrap_or_default();
+        let input = bound_input(editor.tree(), &title)
+            .ok_or("the item's view has no input bound to its title")?;
+        return Ok((
+            Typing::Item(Box::new(editor), input),
+            format!("Item {target}"),
+        ));
+    }
+    let (key, text) = text_input(&room.host, room.list.tree())
+        .ok_or("the main window has no text input, and the items no window of their own")?;
+    Ok((Typing::Main(key), text))
+}
+
+/// Typing one letter a frame where a person types in the package: into the title of an item
+/// in the item's own window, or else into the main window's first text input.
+fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
+    let (mut typing, mut text) = typing(sized, room)?;
     let mut samples = Vec::new();
-    for sample in 0..sized.config.samples {
+    for _ in 0..sized.config.samples {
+        text.push('x');
+        let value = Value::text(text.clone());
+        let start = Instant::now();
+        match &mut typing {
+            Typing::Item(editor, input) => {
+                editor.edit(input, &value).map_err(|e| e.to_string())?;
+                room.phases.edit.push(ms(start.elapsed()));
+                room.frame(&mut [editor.as_mut()])?;
+            }
+            Typing::Main(input) => {
+                room.list.edit(input, &value).map_err(|e| e.to_string())?;
+                room.phases.edit.push(ms(start.elapsed()));
+                room.frame(&mut [])?;
+            }
+        }
+        samples.push(ms(start.elapsed()));
+    }
+    let mut extra = room.phases.take();
+    if let Json::Object(m) = &mut extra {
+        let into = match typing {
+            Typing::Item(..) => "item window",
+            Typing::Main(_) => "main window",
+        };
+        m.insert("into".into(), json!(into));
+    }
+    Ok(sized.record("keystroke", "ms", samples, extra))
+}
+
+/// Pressing the main window's first button, one press a frame.
+fn press(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
+    let button = first_of(room.list.tree(), "button").ok_or("the main window has no button")?;
+    let mut samples = Vec::new();
+    for _ in 0..sized.config.samples {
+        let start = Instant::now();
+        room.list.press(&button).map_err(|e| e.to_string())?;
+        room.phases.edit.push(ms(start.elapsed()));
+        if room.frame(&mut [])? == 0 {
+            return Err(format!("pressing {button} changed nothing on screen"));
+        }
+        samples.push(ms(start.elapsed()));
+    }
+    Ok(sized.record("press", "ms", samples, room.phases.take()))
+}
+
+/// The key of the first node of `kind` in `node`.
+fn first_of(node: &UiNode, kind: &str) -> Option<String> {
+    if node.kind == kind {
+        return Some(node.key.clone());
+    }
+    node.children.iter().find_map(|c| first_of(c, kind))
+}
+
+/// What a peer changes: the title of the item the edits go to, or else the root's counter; and
+/// the root it is in.
+fn peer_change<'a>(
+    sized: &Sized<'a>,
+    room: &Room,
+    sample: usize,
+) -> Result<(&'a Shape, Edit<DynRecord>), String> {
+    let shape = sized.shape;
+    if let Some((root, list)) = shape.subject() {
+        let title = list.texts.first().cloned().unwrap_or_default();
         let edit = Edit::new(
             vec![
-                Segment::Field(shape.list_field.clone()),
-                Segment::Item(Id::from_raw(item_id(target))),
-                Segment::Field(title.clone()),
+                Segment::Field(list.field.clone()),
+                Segment::Item(Id::from_raw(item_id(sized.target(room)))),
+                Segment::Field(title),
             ],
             EditOp::Replace {
                 text: format!("Peer title {sample}"),
             },
         );
+        return Ok((root, edit));
+    }
+    let counter = shape
+        .counter
+        .clone()
+        .ok_or("the root has nothing a peer edits")?;
+    let edit = Edit::new(vec![Segment::Field(counter)], EditOp::Add { by: 1 });
+    Ok((shape, edit))
+}
+
+/// A peer changing what is on screen, its change merged into the room.
+fn peer_edit(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
+    let mut peer = room.doc.fork();
+    let mut samples = Vec::new();
+    for sample in 0..sized.config.samples {
+        let (subject, edit) = peer_change(sized, room, sample)?;
         let action = DynAction {
-            app: shape.app.clone(),
-            kind: format!("tl.{}.edit", shape.app),
+            app: subject.app.clone(),
+            kind: format!("tl.{}.edit", subject.app),
             action_id: "$edit".into(),
             args: Json::Null,
             authorship: Authorship::default(),
             edits: vec![DynEdit::Edit {
-                id: root_id(shape),
+                id: root_id(subject),
                 edit,
             }],
         };
@@ -815,6 +1097,15 @@ impl Recorder<'_> {
 /// Prints one JSON record per line.
 #[must_use]
 pub fn main(args: &[String]) -> std::process::ExitCode {
+    if let Some(measured) = memory_child() {
+        return match measured {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("tilolang bench: {error}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     match parse(args).and_then(|config| {
         let env = config.env.clone();
         run(&config, &mut |record| println!("{}", record.to_json(&env)))?;
@@ -836,6 +1127,10 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
         idle: Duration::from_secs(10),
         translation: Translation::default(),
         profile: false,
+        memory: std::env::current_exe().ok().map(|program| Isolation {
+            program,
+            args: Vec::new(),
+        }),
         env: Env {
             commit: std::env::var("TILO_COMMIT").unwrap_or_else(|_| "unknown".into()),
             virtualization: "none".into(),

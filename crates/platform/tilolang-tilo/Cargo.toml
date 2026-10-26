@@ -24,6 +24,10 @@ tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 name = "it"
 path = "tests/it.rs"
 
+[[test]]
+name = "budgets"
+path = "tests/budgets.rs"
+
 [lints]
 workspace = true
 
