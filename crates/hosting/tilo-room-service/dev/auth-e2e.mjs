@@ -1435,7 +1435,18 @@ async function main() {
     const mailsTo = to => resend.mails.filter(mail => mail.to?.[0] === to);
     const mailTo = (to, count = 1) => until(async () => (mailsTo(to).length >= count ? mailsTo(to)[count - 1] : null), 30_000);
     const outsider = await browser.context();
-    const door = await page(browser, outsider);
+    // Whether Try again ever showed or took the keyboard on the way to the
+    // door: a refusal has nothing to try again, and the door's field is
+    // where the keyboard belongs.
+    const RETRY_WATCH = `addEventListener('DOMContentLoaded', () => {
+      const retry = document.getElementById('arrival-retry');
+      if (!retry) return;
+      retry.addEventListener('focus', () => { globalThis.tiloRetrySeen = 'focused'; });
+      new MutationObserver(() => {
+        if (!globalThis.tiloRetrySeen && getComputedStyle(retry).display !== 'none') globalThis.tiloRetrySeen = 'shown';
+      }).observe(document.documentElement, {attributes: true});
+    });`;
+    const door = await page(browser, outsider, {before: [RETRY_WATCH]});
     // Until its relay has the room back, the door answers 503 and the page
     // watches live; asked again once it is back, it turns them away.
     let doorTurned = await open(door, `${web}/`, settleOptions);
@@ -1462,6 +1473,13 @@ async function main() {
         invalid: document.getElementById('arrival-wait-email')?.getAttribute('aria-invalid') === 'true'};
     })()`;
     const field = await door.evaluate(DOOR).catch(error => ({error: error.message}));
+    // A click in the wait list's field keeps the keyboard there.
+    const emailAt = await door.evaluate(`(() => { const r = document.getElementById('arrival-wait-email').getBoundingClientRect();
+      return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()`).catch(() => null);
+    if (emailAt) await click(door, emailAt);
+    await sleep(3000);
+    const keyboard = await door.evaluate(`({retry: globalThis.tiloRetrySeen ?? null, focused: document.activeElement?.id ?? null})`)
+      .catch(error => ({error: error.message}));
     for (const [name, width, height, mobile, deviceScaleFactor = 1] of [['invite-door-1440x900', 1440, 900, false],
       ['invite-door-390x844', 390, 844, true], ['invite-door-2560x1440-dpr2', 2560, 1440, false, 2]]) {
       await door.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor, mobile});
@@ -1481,8 +1499,8 @@ async function main() {
       && /invite-only/.test(field.heading) && /email you a link to confirm/.test(field.note) && unfolded.link && unfolded.inDoor
       && doorJoins.at(-1)?.status === 403 && /invitation-only/.test(doorJoins.at(-1)?.body ?? '')
       && /"waitList":true/.test(doorJoins.at(-1)?.body ?? '') && /"mail":true/.test(doorJoins.at(-1)?.body ?? '')
-      && /isn’t an invite link/.test(notALink),
-    {entry: doorTurned.entry, desktop: doorTurned.desktop, membership: doorTurned.membership, status: doorTurned.status, field, unfolded,
+      && /isn’t an invite link/.test(notALink) && keyboard.retry === null && keyboard.focused === 'arrival-wait-email',
+    {entry: doorTurned.entry, desktop: doorTurned.desktop, membership: doorTurned.membership, status: doorTurned.status, field, unfolded, keyboard,
       joins: doorJoins.map(j => ({status: j.status, body: j.body})), notALink});
 
     // stranger-own: the own desktop, asked for directly, is that door.
