@@ -174,5 +174,11 @@ cd "$src"
 as_user env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
   python3 scripts/vm-acceptance/run.py "${args[@]}" || status=$?
 [[ ! -f $report/report.md ]] || cat "$report/report.md"
+# A failed check keeps no outputs, so its text evidence (tracebacks, boot gate,
+# memory maps, shell runtime excerpts) is printed here, bounded by report.py.
+if [[ -s $report/failure-evidence.txt ]]; then
+  echo "## Evidence of the failed checks"
+  cat "$report/failure-evidence.txt"
+fi
 [[ ! -f $report/report.json ]] || jq -r '"score: \([.results[] | select(.status == "pass")] | length)/\(.results | length) checks pass (\(.overall))"' "$report/report.json"
 exit "$status"
