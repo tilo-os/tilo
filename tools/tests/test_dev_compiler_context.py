@@ -35,16 +35,19 @@ class DevCompilerContextTests(unittest.TestCase):
             SOURCE_DATE_EPOCH=1791750000
             dev_image=localhost/tilo-vm:ci
             """ + build
+            output = Path(directory) / "output"
             env = {"PATH": os.environ["PATH"], "LOG": str(log), "TILO_COMPILED_DEV": str(compiled),
-                   **(overrides or {})}
+                   "TILO_OUTPUT": str(output), **(overrides or {})}
             result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
-            return result, log.read_text().splitlines() if log.exists() else [], compiled
+            return result, log.read_text().splitlines() if log.exists() else [], compiled, output
 
     def test_a_compiled_tree_is_given_as_the_build_context_and_nothing_compiles(self):
-        result, calls, compiled = self.invoke()
+        result, calls, compiled, output = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(calls), 1, calls)
         build = calls[0]
+        # No runtime given: an empty one, so the build fails unless the base ships one.
+        self.assertIn(f"--build-context dev-env-runtime={output}/no-env-runtime", build)
         self.assertIn("-f /fixture/os/Containerfile.dev", build)
         self.assertIn(f"--build-context compiled-dev={compiled.resolve()}", build)
         for argument in ("RPMS_REF=registry.tilo.so/tilo/rpms@sha256:fixture",
@@ -53,6 +56,18 @@ class DevCompilerContextTests(unittest.TestCase):
             self.assertIn(argument, build)
         self.assertNotIn("--secret", build)
         self.assertNotIn("TILO_CARGO_FRESHNESS", build)
+
+    def test_a_given_env_runtime_is_the_dev_env_runtime_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            result, calls, _, _ = self.invoke({"TILO_DEV_ENV_RUNTIME": str(runtime)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"--build-context dev-env-runtime={runtime.resolve()}", calls[0])
+
+    def test_the_dev_image_recipe_ensures_an_env_runtime(self):
+        recipe = (ROOT / "os/Containerfile.dev").read_text()
+        self.assertIn("from=dev-env-runtime", recipe)
+        self.assertIn("ensure-dev-env-runtime.sh", recipe)
 
     def test_the_dev_image_recipe_compiles_nothing(self):
         recipe = (ROOT / "os/Containerfile.dev").read_text()

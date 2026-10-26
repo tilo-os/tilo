@@ -195,11 +195,14 @@ case ${1:-} in
     # tilo-vm moves a machine only onto a dev image whose base is no older than the one it
     # runs; the OS image's own clock is its base's and RPM snapshot's, so the commit's time
     # orders dev bases, as it did in Build / OS dev. The dev components come compiled
-    # (os-compile-dev-<arch>): nothing compiles here.
+    # (os-compile-dev-<arch>): nothing compiles here. While stable has not published this tree's
+    # env-runtime the OS image ships none, and the dev image ships the one env-runtime-preview
+    # sealed in this run with a throwaway key instead, trusted by the dev image alone.
     phase build
     TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
       TILO_DEV_BASE_CREATED=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ) \
       TILO_COMPILED_DEV=$compiled \
+      TILO_DEV_ENV_RUNTIME=/target/publish/env-runtime/preview \
       TILO_DISTROBOX= TILO_OUTPUT=$scratch/dev-output TMPDIR=/var/tmp \
       bash os/dev/build-dev-image.sh
     # Kept as the layers it added over the OS image's, composed with them: the OS image's

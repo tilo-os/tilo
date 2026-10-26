@@ -94,7 +94,8 @@ COPY os/usr/lib/systemd/user/tilo-ush.service /tilo/os/usr/lib/systemd/user/
 COPY os/usr/share/tilo/system-interfaces.toml /tilo/os/usr/share/tilo/
 COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
      os/scripts/install-components.py os/scripts/finalize-dev-image.py \
-     os/scripts/verify-boot-ordering.sh os/scripts/install-dev-toolchain.sh /tilo/os/scripts/
+     os/scripts/verify-boot-ordering.sh os/scripts/install-dev-toolchain.sh \
+     os/scripts/install-env-runtime.sh os/scripts/ensure-dev-env-runtime.sh /tilo/os/scripts/
 COPY Cargo.lock rust-toolchain.toml /tilo/
 
 # ---- The base, unsealed, with the builder's toolchain -------------------------
@@ -230,6 +231,17 @@ COPY crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service /usr/lib/systemd/s
 COPY crates/dev/tilo-vmd/data/tilo-vm-vkms.conf /usr/lib/modprobe.d/tilo-vm-vkms.conf
 COPY crates/dev/tilo-vmd/data/tilo-vm-community.toml /usr/share/tilo/tilo-vm-community.toml
 COPY os/dev-image/ /
+
+# An env-runtime, so environments (Terminal's shell among them) start in the tree under test.
+# The image below ships the published runtime of its definition, and none while stable has not
+# published this tree's: then the runtime this build is given (`dev-env-runtime`, sealed in the
+# same t run with a throwaway key, or an empty directory) goes into the system store, its
+# publisher trusted by this dev image alone. With neither the build fails.
+RUN --network=none \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    --mount=type=bind,from=dev-env-runtime,source=/,target=/run/tilo-dev-env-runtime,ro \
+    bash /run/tilo-dev/os/scripts/ensure-dev-env-runtime.sh /run/tilo-dev-env-runtime \
+      /usr/libexec/tilo/tilo-install
 
 # base.json for tilo-vmd's layer checks, the dev-only update policy and the
 # flavour marker; then proof that every piece above is really in place.

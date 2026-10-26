@@ -11,6 +11,9 @@
 #   env-runtime.sh seal TREES PACKER OUT    seal both trees into OUT/env-runtime-ARCH.tapp: with
 #                                           TAPP_PUBLISHER_IDENTITY when given, else a throwaway
 #                                           key, which no release accepts (builder)
+#   env-runtime.sh preview TREES PACKER OUT seal them with a throwaway key on any branch, stable
+#                                           included: the runtime a run's dev images ship while
+#                                           stable has published none, which nothing publishes
 #   env-runtime.sh image SEALED OUT         the published image of both tapps, one per platform,
 #                                           joined into one index (buildah image)
 #   env-runtime.sh release OUT              publish OUT signed as set-<fingerprint>, unless that
@@ -52,13 +55,15 @@ case ${1:-} in
     mkdir -p "$out"
     cp "${CARGO_TARGET_DIR:-target}/release/tilo-app-package" "$out/"
     ;;
-  seal)
-    trees=${2:?usage: env-runtime.sh seal TREES PACKER OUT}
+  seal|preview)
+    trees=${2:?usage: env-runtime.sh seal|preview TREES PACKER OUT}
     packer=${3:?}/tilo-app-package
     out=${4:?}
     version=$(bash os/dev/resolve-env-runtime.sh --version)
     identity_args=()
-    if [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]]; then
+    if [[ $1 == preview ]]; then
+      echo "sealing with a throwaway key for this run's dev images: nothing is published"
+    elif [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]]; then
       identity=$scratch/env-runtime-publisher.json
       (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$identity")
       trap 'rm -f "$identity"' EXIT
