@@ -948,6 +948,21 @@ impl ShellDriver {
         }
     }
 
+    /// The active workspace's room as a booted desktop holds it: placed on
+    /// this device's own host, which governs it, and entered through the
+    /// native owner, the driver acting as the person governing it. A room
+    /// no host holds offers no invitation, so its roster has no Invite. The
+    /// host is the shell's `test-support` fixture, which every build of
+    /// `shots` that renders the catalogue carries.
+    #[cfg(feature = "test-support")]
+    fn place_active_room_here(&mut self) {
+        let handle = self.chrome_handle();
+        let tree = handle.borrow().tree_handle();
+        let room = shell::shell::test_support::host_active_room(&tree);
+        handle.borrow_mut().act_as(room.person.clone());
+        self.held.push(Box::new(room));
+    }
+
     /// Record what an accepted invite and a couple of shares would have
     /// recorded: memberships in this room and in Research (whose peers
     /// are already present, so their faces are backed by a capability
@@ -2960,6 +2975,8 @@ impl ShellDriver {
     /// one invited, and — the local user owning the room — the Invite / Join
     /// band and the Workspace activity footer row.
     fn scene_collaborators(&mut self) {
+        #[cfg(feature = "test-support")]
+        self.place_active_room_here();
         self.seed_shared_room();
         self.seed_agent_member_for_shots();
         self.seed_room_bots_for_shots();
