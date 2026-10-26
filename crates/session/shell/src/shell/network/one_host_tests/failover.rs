@@ -280,9 +280,20 @@ fn with_every_host_out_of_reach_a_member_tries_each_once_a_heartbeat() {
     });
     let (governor_before, hosts_before) = dials_of(&second);
     let end = Instant::now() + HEARTBEAT_INTERVAL * HEARTBEATS;
+    // The laptop's loop sleeps while nothing wakes it, as an idle session's
+    // does: the window's end wakes it, so the dials counted are those of
+    // the window and not of however long the loop next slept past it.
+    let window = {
+        let wakes = Arc::clone(&second.wakes);
+        std::thread::spawn(move || {
+            std::thread::sleep(end.saturating_duration_since(Instant::now()));
+            wakes.wake();
+        })
+    };
     until(&[&second], "the window to pass", || {
         (Instant::now() >= end).then_some(())
     });
+    window.join().unwrap();
     let (governor_after, hosts_after) = dials_of(&second);
     let governor = governor_after - governor_before;
     let hosts = hosts_after - hosts_before;
