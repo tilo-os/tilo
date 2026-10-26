@@ -194,6 +194,83 @@ fn the_window_search_replaces_hex_bytes_as_one_undo_step() {
     assert_eq!(app.state().bytes, [0xde, 0xad, 0x00, 0xde, 0xad, 0x01]);
 }
 
+/// A clipboard this test has to itself: the process clipboard is shared with
+/// every test running beside it.
+fn own_clipboard() -> ui::host::HostScope {
+    let (services, _recorder) = ui::host::HostServices::recording();
+    ui::host::enter(&services)
+}
+
+/// Press `key` with Ctrl held on the grid.
+fn chord(app: &mut TestApp<HexEditorShell>, key: &str) {
+    app.harness().set_modifiers(&["Ctrl".to_owned()]);
+    app.harness().key(key);
+    app.harness().set_modifiers(&[]);
+    app.settle();
+}
+
+#[test]
+fn copying_pasting_and_cutting_carry_bytes_in_the_focus_mode() {
+    let _clipboard = own_clipboard();
+    let (_directory, mut app) = launched(&[0xde, 0xad, 0xbe, 0xef]);
+    app.harness()
+        .perform_named("hex_view", &ui::a11y::Action::Focus)
+        .expect("the grid takes the keyboard");
+    chord(&mut app, "a");
+    chord(&mut app, "c");
+    assert_eq!(ui::clipboard_paste().as_deref(), Some("de ad be ef"));
+
+    // Pasted back over the whole selection as one step: one Undo returns the
+    // file as it was opened. Overwrite mode keeps the length, so the paste is
+    // the same size as what it replaces.
+    ui::clipboard_copy("ca fe ff 00");
+    chord(&mut app, "v");
+    assert_eq!(app.state().bytes, [0xca, 0xfe, 0xff, 0x00]);
+    assert!(app.undo(), "a paste is one step");
+    assert_eq!(app.state().bytes, [0xde, 0xad, 0xbe, 0xef]);
+
+    // Cut takes the bytes away and keeps them on the clipboard, as one step.
+    chord(&mut app, "a");
+    chord(&mut app, "x");
+    assert_eq!(ui::clipboard_paste().as_deref(), Some("de ad be ef"));
+    assert!(app.state().bytes.is_empty(), "cut removed the selection");
+    assert!(app.undo(), "a cut is one step");
+    assert_eq!(app.state().bytes, [0xde, 0xad, 0xbe, 0xef]);
+}
+
+#[test]
+fn paste_reads_the_clipboard_in_the_column_the_person_is_in() {
+    let _clipboard = own_clipboard();
+    let (_directory, mut app) = launched(b"PNGD");
+    app.harness()
+        .perform_named("hex_view", &ui::a11y::Action::Focus)
+        .expect("the grid takes the keyboard");
+    // Insert mode, so a paste may be another length than the selection, and
+    // the ASCII column, which reads text and writes its UTF-8 bytes.
+    let view = app.surface_mut::<HexView>();
+    view.model_mut().toggle_mode();
+    view.model_mut().toggle_column();
+    app.harness().relayout();
+    ui::clipboard_copy("!?");
+    chord(&mut app, "a");
+    chord(&mut app, "v");
+    assert_eq!(app.state().bytes, b"!?");
+
+    // The hex column reads hexadecimal bytes.
+    let view = app.surface_mut::<HexView>();
+    view.model_mut().toggle_column();
+    app.harness().relayout();
+    ui::clipboard_copy("de ad");
+    chord(&mut app, "a");
+    chord(&mut app, "v");
+    assert_eq!(app.state().bytes, [0xde, 0xad]);
+
+    // Hex text the column cannot read is refused, and the file is untouched.
+    ui::clipboard_copy("not bytes");
+    chord(&mut app, "v");
+    assert_eq!(app.state().bytes, [0xde, 0xad]);
+}
+
 #[test]
 fn insert_mode_replaces_text_with_utf8_bytes_of_another_length_as_one_undo_step() {
     let (_directory, mut app) = launched(b"cat, cat; cat");
