@@ -16,7 +16,7 @@ use canvas::model::{Adjust, Artwork, Ground, Shape};
 use serde_json::json;
 use ui::automerge::{ObjType, ROOT, ReadDoc, Value};
 use ui::prelude::history_source::{AuthorDirectory, revert_step};
-use ui::tilo_resource::{Replica, Slot};
+use ui::tilo_resource::{Edit, EditOp, Id, Invoke, Model, Replica, Segment, Slot};
 
 /// An artwork with one layer and one named rectangle on it.
 fn drawn() -> Replica<Artwork> {
@@ -177,6 +177,147 @@ fn a_first_adjustment_is_one_value_either_way() {
                     ..Adjust::default()
                 },
         "the first adjustment created the record: one of them is it, not both"
+    );
+}
+
+/// A shape's fields are edited on their own: a text's position and its
+/// width are not one value, so the two replicas keep both.
+#[test]
+fn two_people_changing_a_shapes_position_and_width_keep_both() {
+    let mut ours = drawn();
+    let mut theirs = ours.fork();
+    let field = |name: &str, value: serde_json::Value| {
+        Edit::new(
+            vec![
+                Segment::Field("marks".into()),
+                Segment::Item(Id::from_raw("tree")),
+                Segment::Field("shape".into()),
+                Segment::Field("rect".into()),
+                Segment::Field(name.into()),
+            ],
+            EditOp::Set { value },
+        )
+    };
+    ours.apply(Invoke::edit(&field("x", json!(30.0))).unwrap())
+        .expect("the position changes");
+    theirs
+        .apply(Invoke::edit(&field("width", json!(320.0))).unwrap())
+        .expect("the width changes");
+    ours.sync_with(&mut theirs).expect("the changes merge");
+
+    let shape = ours
+        .state()
+        .expect("the artwork reads")
+        .mark("tree")
+        .expect("the mark is there")
+        .shape
+        .clone();
+    assert_eq!(
+        shape,
+        Shape::Rect {
+            x: 30.0,
+            y: 10.0,
+            width: 320.0,
+            height: 120.0,
+            radius: 0.0,
+        },
+        "each field keeps the change the other person made"
+    );
+}
+
+/// Changing a shape's variant is one write of its name; a concurrent edit of
+/// a field of the old variant stays as unused history, so undoing the
+/// transition brings that edit back rather than an older value.
+#[test]
+fn undoing_a_variant_change_keeps_a_concurrent_edit_of_the_old_variant() {
+    let mut ours = drawn();
+    let mut theirs = ours.fork();
+    let before_transition = theirs.heads();
+    let radius = Edit::new(
+        vec![
+            Segment::Field("marks".into()),
+            Segment::Item(Id::from_raw("tree")),
+            Segment::Field("shape".into()),
+            Segment::Field("rect".into()),
+            Segment::Field("radius".into()),
+        ],
+        EditOp::Set { value: json!(12.0) },
+    );
+    ours.apply(Invoke::edit(&radius).unwrap())
+        .expect("the corner rounds");
+    let path = Shape::Path {
+        d: "M 10 10 L 90 90".into(),
+    };
+    let change = Edit::new(
+        vec![
+            Segment::Field("marks".into()),
+            Segment::Item(Id::from_raw("tree")),
+            Segment::Field("shape".into()),
+        ],
+        EditOp::Set {
+            value: path.to_json(),
+        },
+    );
+    theirs
+        .apply(Invoke::edit(&change).unwrap())
+        .expect("the shape becomes a path");
+    let taken = theirs
+        .heads()
+        .into_iter()
+        .find(|head| !before_transition.contains(head))
+        .expect("the transition was one change");
+
+    ours.sync_with(&mut theirs).expect("the changes merge");
+    assert!(
+        matches!(
+            ours.state()
+                .expect("the artwork reads")
+                .mark("tree")
+                .unwrap()
+                .shape,
+            Shape::Path { .. }
+        ),
+        "the variant change wins while it is in force"
+    );
+    let (Value::Object(ObjType::Map), marks) = theirs.doc().get(ROOT, "marks").unwrap().unwrap()
+    else {
+        panic!("the marks are a map");
+    };
+    let (Value::Object(ObjType::Map), mark) = theirs.doc().get(&marks, "tree").unwrap().unwrap()
+    else {
+        panic!("a mark is a map");
+    };
+    let (Value::Object(ObjType::Map), shape) = theirs.doc().get(&mark, "shape").unwrap().unwrap()
+    else {
+        panic!("the shape names its variant");
+    };
+    assert!(
+        theirs.doc().get(&shape, "radius").unwrap().is_some(),
+        "the old variant's concurrent field edit is still stored, unused"
+    );
+
+    let kept = revert_step(theirs.doc_mut(), &taken, None, &AuthorDirectory::default())
+        .expect("the transition is in the document");
+    theirs.doc_mut().commit();
+    assert!(kept.kept.is_empty(), "nothing of the undo is overruled");
+    ours.sync_with(&mut theirs).expect("the undo merges");
+    let shape = ours
+        .state()
+        .expect("the artwork reads")
+        .mark("tree")
+        .expect("the mark is there")
+        .shape
+        .clone();
+    assert_eq!(
+        shape,
+        Shape::Rect {
+            x: 10.0,
+            y: 10.0,
+            width: 200.0,
+            height: 120.0,
+            radius: 12.0,
+        },
+        "the old variant's concurrent field edit is still there"
     );
 }
 
@@ -358,7 +499,7 @@ fn a_document_from_before_a_style_was_fields_is_migrated_on_open() {
     let migrated =
         ui::tilo_resource::evolution::migrate::<Artwork>(doc).expect("the document migrates");
     assert!(migrated, "the document was older than the app");
-    assert_eq!(ui::tilo_resource::evolution::stored_version(doc), 2);
+    assert_eq!(ui::tilo_resource::evolution::stored_version(doc), 3);
 
     let art = Artwork::from_doc(doc).expect("the migrated artwork reads");
     let mark = art.mark("tree").expect("the mark is back");
@@ -370,6 +511,17 @@ fn a_document_from_before_a_style_was_fields_is_migrated_on_open() {
     );
     assert_eq!(art.ground.texture, "linen");
     assert_eq!(art.ground.colour, "#101820");
+    assert_eq!(
+        mark.shape,
+        Shape::Rect {
+            x: 10.0,
+            y: 10.0,
+            width: 200.0,
+            height: 120.0,
+            radius: 0.0,
+        },
+        "the shape the old file held is the shape now read"
+    );
     assert_eq!(
         art.layer("layer-1").expect("the layer is back").adjust,
         Some(Adjust {
@@ -394,4 +546,84 @@ fn a_document_from_before_a_style_was_fields_is_migrated_on_open() {
         ),
         "the style is a map of its fields now"
     );
+    let (Value::Object(ObjType::Map), shape) = doc.get(&mark, "shape").unwrap().unwrap() else {
+        panic!("the shape is a map naming its variant");
+    };
+    assert_eq!(
+        doc.get(&shape, ui::tilo_resource::VARIANT_KEY)
+            .unwrap()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(scalar) => match scalar.as_ref() {
+                    ui::automerge::ScalarValue::Str(name) => Some(name.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .as_deref(),
+        Some("rect"),
+        "the old shape string is the data enum's map now"
+    );
+}
+
+/// The shape a version-2 document was written in: its style, adjustments and
+/// ground are field maps already, but each mark's shape is still one JSON
+/// string.
+fn version_two() -> serde_json::Value {
+    let mut before = version_one();
+    let style = canvas::model::Style {
+        fill: Some("#204020".into()),
+        stroke_width: 1.0,
+        ..canvas::model::Style::default()
+    };
+    let adjust = Adjust {
+        contrast: Some(0.1),
+        ..Adjust::default()
+    };
+    before["ground"] = serde_json::to_value(Ground {
+        texture: "linen".into(),
+        colour: "#101820".into(),
+    })
+    .unwrap();
+    before["layers"]["layer-1"]["adjust"] = serde_json::to_value(&adjust).unwrap();
+    before["marks"]["tree"]["style"] = serde_json::to_value(&style).unwrap();
+    before
+}
+
+/// A version-2 document, whose style and ground are already fields but whose
+/// shape is still one string, is brought to version 3 through the artwork's
+/// production resource migration.
+#[test]
+fn a_document_from_before_a_shape_was_fields_is_migrated_on_open() {
+    let mut replica = Replica::<Artwork>::new();
+    let doc = replica.doc_mut();
+    let before = version_two();
+    ui::tilo_resource::evolution::fixture(doc, &ROOT, &before).expect("the old document writes");
+    Slot::Key(&ROOT, ui::tilo_resource::evolution::VERSION_KEY)
+        .put_scalar(doc, ui::automerge::ScalarValue::Uint(2))
+        .expect("the old version writes");
+    assert_eq!(ui::tilo_resource::evolution::stored_version(doc), 2);
+    assert!(
+        Artwork::from_doc(doc).is_err(),
+        "a version-2 shape is unreadable until it is migrated"
+    );
+
+    assert!(
+        ui::tilo_resource::evolution::migrate::<Artwork>(doc).expect("the document migrates"),
+        "the document was older than the app"
+    );
+    assert_eq!(ui::tilo_resource::evolution::stored_version(doc), 3);
+    let art = Artwork::from_doc(doc).expect("the migrated artwork reads");
+    let mark = art.mark("tree").expect("the mark is back");
+    assert_eq!(
+        mark.shape,
+        Shape::Rect {
+            x: 10.0,
+            y: 10.0,
+            width: 200.0,
+            height: 120.0,
+            radius: 0.0,
+        }
+    );
+    assert_eq!(mark.style.fill.as_deref(), Some("#204020"));
+    assert_eq!(art.ground.texture, "linen");
 }

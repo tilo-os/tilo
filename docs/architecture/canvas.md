@@ -56,9 +56,13 @@ incrementally:
   `ground` (colour + texture: `paper`, `cold-press`, `linen`, `none`).
 - `layers.<id>`: name, fractional `order`, `medium` (preset id or empty for
   plain), opacity, visible, locked.
-- `marks.<id>`: layer id, fractional `order`, kind (`path`, `rect`,
-  `ellipse`, `text`, `stroke`), name, geometry (compact JSON), style (fill,
-  stroke, opacity, blend), transform.
+- `marks.<id>`: layer id, fractional `order`, name, shape, style (fill,
+  stroke, opacity, blend), transform. A shape is a data enum: `$variant`
+  names `rect`, `ellipse`, `polygon`, `line`, `path`, `text`, `stroke` or
+  `image`, and that variant's fields live beside it (`shape.rect.width`,
+  `shape.text.x`, …), so position and size controls merge rather than
+  replacing one another. A variant change is one write of the name; fields
+  the new variant does not carry stay as unused history.
 - `media.<id>`: user presets (JSON).
 
 ## Vocabulary

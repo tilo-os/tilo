@@ -22,7 +22,9 @@ use ui::prelude::TestApp;
 /// mark's style and adjustments and the ground became fields of their own
 /// rather than one value each: each is now an editable path an agent can
 /// name, which is what lets two people change one mark at once without
-/// overwriting each other.
+/// overwriting each other. It still holds when a mark's shape became a
+/// per-variant set of fields (`marks.*.shape.rect.x`): those paths are the
+/// geometry controls that merge.
 const BUDGET: usize = 76 * 1024;
 
 #[test]
