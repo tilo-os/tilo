@@ -124,6 +124,8 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "live-context",
     "context",
     "msgmenu",
+    "msgbar",
+    "msgbar-shift",
     "attach",
     "attach-loading",
     "attach-error",
