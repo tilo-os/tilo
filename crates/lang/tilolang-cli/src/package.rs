@@ -134,6 +134,9 @@ mode = "off"
 [sandbox.services]
 collab = "optional@2"
 tilo-fs = "optional@2"
+# The shell's side of the window: where it is shown (the workspace's appearance), and whether
+# its room has synced, which every empty state says until it has.
+shell-ui = "optional@{shell_ui}"
 
 [entrypoint]
 runtime = {tilolang}
@@ -152,6 +155,7 @@ ext = []
         tilolang = toml_string(&options.tilolang_runtime),
         record_kind = toml_string(RECORD_KIND),
         bin = toml_string(RUNTIME_BIN),
+        shell_ui = ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION,
     )
 }
 
