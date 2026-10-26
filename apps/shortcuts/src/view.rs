@@ -28,7 +28,7 @@ use ui::prelude::*;
 use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::Path;
 use ui::widget::{
-    Actions as ActionGroup, ArrivingView, ButtonRole, ControlSize, Filterable, Filtered, ListRow,
+    Actions as ActionGroup, ArrivingView, ButtonRole, ControlSize, Filterable, ListRow,
     ModalDialog, NumberInput, Section, SectionHeader, SkeletonShape, labeled_field,
 };
 use ui::{LocalState, RemoteActions, TextKind};
@@ -1585,9 +1585,7 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
             action_picker_body(&ui, &input, &draft_id, &address, query)
         })
     };
-    Box::new(
-        Filtered::new(Box::new(PickerChoices { query, view })).with_placeholder("Filter actions"),
-    )
+    Box::new(PickerChoices { query, view })
 }
 
 fn action_picker_body(
@@ -2243,7 +2241,7 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
 
 #[cfg(test)]
 mod tests {
-    use super::matches_query;
+    use super::*;
 
     #[test]
     fn the_action_filter_matches_labels_apps_and_resources() {
@@ -2264,5 +2262,20 @@ mod tests {
             "calendar",
             &["Create note", "Notes", "Notes note"]
         ));
+    }
+
+    #[test]
+    fn the_open_picker_is_the_view_the_window_search_narrows() {
+        let query = LocalState::new(String::new());
+        let view = ModelView::from_state(&query, |query: &String| {
+            Box::new(Text::new(query)) as Element
+        });
+        let mut picker = PickerChoices {
+            query: query.clone(),
+            view,
+        };
+        picker.set_filter("new note");
+        assert_eq!(query.get(), "new note");
+        assert_eq!(picker.filter_count(), None);
     }
 }

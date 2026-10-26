@@ -371,17 +371,6 @@ fn the_bar_duplicates_the_open_draft() {
 }
 
 #[test]
-fn the_action_picker_has_a_filter_field() {
-    let mut app = TestApp::<App>::capture(Some("picker")).expect("the picker scenario stages");
-    app.harness().relayout();
-    app.harness()
-        .a11y_nodes()
-        .into_iter()
-        .find(|(_, node)| node.label() == Some("Filter"))
-        .expect("the action picker has a filter field");
-}
-
-#[test]
 fn every_operation_is_a_published_action() {
     let (_host, _guard, mut app) = open();
     let resources = app.harness().resources();
