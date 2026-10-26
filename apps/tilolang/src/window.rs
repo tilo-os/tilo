@@ -43,6 +43,7 @@ use tilolang_tilo::runtime::{
     Resolution, ResourceRef, Suggestion, UiNode, Value, ViewEvent, ViewInstance,
 };
 use tilolang_tilo::sink::LogSink;
+use tilolang_tilo::upgrade::Upgrade;
 use tilolang_tilo::{HostEffect, OpenEffect};
 use ui::framework::{ResourceSurface, RunMode};
 use ui::icons::Icon;
@@ -553,6 +554,9 @@ struct Shape {
 /// One window of the lane: a resource shown through a view.
 struct Lane {
     target: ResourceRef,
+    /// The view `open(r, view: v)` named, when it named one; the default view of the type
+    /// otherwise.
+    with: Option<String>,
     /// The view, shared with the list column, which renders the rows it shows.
     view: Rc<RefCell<ViewInstance>>,
     /// The `list` frame whose rows the list column shows: the root's, when its frame is one.
@@ -615,6 +619,19 @@ pub struct Window {
     staged: Option<String>,
     started: bool,
     moved: bool,
+    /// The later build of the package this window runs (`crate::updates`), 0 for the installed
+    /// one.
+    generation: u64,
+    /// Whether this window is woken when a later build arrives.
+    follows: bool,
+    /// A later build this window took and has not drawn yet: its first frame says so.
+    undrawn: Option<Undrawn>,
+}
+
+/// A later build a window took, until its first frame.
+struct Undrawn {
+    generation: u64,
+    read_at: std::time::Instant,
 }
 
 /// The other packages of the room whose records the package `app` holds references to.
@@ -846,6 +863,9 @@ impl Window {
             staged: None,
             started: false,
             moved: false,
+            generation: 0,
+            follows: false,
+            undrawn: None,
         }
     }
 
@@ -911,7 +931,11 @@ impl Window {
         if let Some(sink) = self.sink.borrow_mut().take() {
             host.runtime().set_sink(BoxedSink(sink));
         }
-        crate::app::load(&host);
+        self.generation = crate::app::load(&host);
+        if crate::updates::followed() && self.mode != RunMode::Past && !self.follows {
+            self.follows = true;
+            crate::updates::subscribe(ui::wake::WakeHandle::new());
+        }
         if self.mode != RunMode::Past {
             // What is published and found of the room is read off the frame the first time;
             // the window takes it in when it is ready.
@@ -977,6 +1001,7 @@ impl Window {
         show_content_rows(&mut view, &[list.as_deref(), thread.as_deref()]);
         Lane {
             target,
+            with: None,
             view: Rc::new(RefCell::new(view)),
             list,
             thread,
@@ -1001,6 +1026,96 @@ impl Window {
             reconciler: Reconciler::new(Rc::clone(&lane.events), self.field_names())
                 .with_lookups(self.case_lookup(), self.people()),
         })
+    }
+
+    // ----- later builds --------------------------------------------------------------------
+
+    /// Take over the latest later build of the package (`crate::updates`), when this window
+    /// runs an older one: in place when it reads the state the old one wrote, and otherwise by
+    /// starting over on the room record `doc` with it, as the app's next start would. The host
+    /// the window runs on afterwards.
+    fn follow_updates(&mut self, doc: &ui::automerge::AutoCommit, host: Host) -> Host {
+        let Some(update) = crate::updates::latest()
+            .filter(|update| update.generation > self.generation && self.mode != RunMode::Past)
+        else {
+            return host;
+        };
+        self.generation = update.generation;
+        let Some(old) = host.package(&self.app) else {
+            return host;
+        };
+        let title = old.meta.title.clone();
+        let host = match tilolang_tilo::upgrade::compare(&old.meta, &update.bundle.meta) {
+            Upgrade::InPlace => match host.load_bundle(&update.bundle) {
+                Ok(_) => {
+                    self.reopen(&host);
+                    eprintln!("tilolang: {title} runs the new build, with its state");
+                    host
+                }
+                Err(error) => {
+                    eprintln!(
+                        "tilolang: {title} keeps the last build: the new one does not load: {error}"
+                    );
+                    return host;
+                }
+            },
+            Upgrade::Restart(reason) => {
+                eprintln!(
+                    "tilolang: {title}: {reason}; it starts over on the new build, with its data"
+                );
+                self.start_over(doc).unwrap_or(host)
+            }
+        };
+        ui::app_surface::register_package(&self.app, &update.bundle.surface());
+        self.undrawn = Some(Undrawn {
+            generation: update.generation,
+            read_at: update.read_at,
+        });
+        self.structure_dirty = true;
+        host
+    }
+
+    /// Open the root and the detail again on the package `host` now runs: the same resources,
+    /// so the same windows and their view state, under the shell that shows them.
+    fn reopen(&mut self, host: &Host) {
+        let detail = self
+            .detail
+            .as_ref()
+            .map(|lane| (lane.target.clone(), lane.with.clone()));
+        let (Ok(target), Ok(view)) = (host.root_of(&self.app), host.open_main(&self.app)) else {
+            tracing::warn!(app = self.app, "the new build has no root to open");
+            return;
+        };
+        self.root = Some(self.lane(target, view, true));
+        self.detail = detail.and_then(|(target, with)| {
+            let view = host.open_resource(&target, with.as_deref()).ok()?;
+            let mut lane = self.lane(target, view, false);
+            lane.with = with;
+            Some(lane)
+        });
+        // What is published and offered follows the new build's declarations.
+        if self.live.take().is_some() {
+            let wake = ui::wake::WakeHandle::new();
+            self.live = Some(Live::register(host, Arc::new(move || wake.wake())));
+        }
+        self.compose();
+        self.commit_planned();
+    }
+
+    /// Start the window over on the room record `doc`: a new runtime that loads the latest build
+    /// and reads the record afresh, as a start of the app does. View state and the open detail
+    /// start over; the record, and so every resource, is the one the window had.
+    fn start_over(&mut self, doc: &ui::automerge::AutoCommit) -> Option<Host> {
+        self.live = None;
+        self.root = None;
+        self.detail = None;
+        self.shape = None;
+        *self.host.borrow_mut() = None;
+        if self.sink.borrow().is_none() {
+            *self.sink.borrow_mut() = Some(Box::new(LogSink::dev()));
+        }
+        self.started = false;
+        self.host_for(doc)
     }
 
     /// Open the package's root window.
@@ -1049,7 +1164,9 @@ impl Window {
         }
         match host.open_resource(target, with) {
             Ok(view) => {
-                self.detail = Some(self.lane(target.clone(), view, false));
+                let mut lane = self.lane(target.clone(), view, false);
+                lane.with = with.map(str::to_owned);
+                self.detail = Some(lane);
                 self.compose();
                 self.commit_planned();
                 if let Some(source) = front {
@@ -2705,6 +2822,7 @@ impl Widget for Window {
             self.body.sync(state, path);
             return;
         };
+        let host = self.follow_updates(doc, host);
         if !self.started {
             self.started = true;
             self.open_root(&host);
@@ -2804,6 +2922,18 @@ impl Widget for Window {
             self.peers_changed = true;
         }
         self.body.draw(scene, transform, text, theme, presence);
+        if let Some(undrawn) = self.undrawn.take() {
+            let at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            eprintln!(
+                "tilolang: {} draws build {} at {} ms, {} ms after it arrived",
+                self.app,
+                undrawn.generation,
+                at.as_millis(),
+                undrawn.read_at.elapsed().as_millis()
+            );
+        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {

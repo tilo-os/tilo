@@ -24,6 +24,7 @@ pub mod packages;
 pub mod reconcile;
 pub mod resource;
 pub mod search;
+pub mod updates;
 pub mod window;
 
 use std::sync::{Arc, OnceLock};
