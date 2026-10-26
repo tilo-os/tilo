@@ -1,7 +1,7 @@
-//! A window arriving, maximizing and leaving: its place opens at once,
-//! content drawn inside the grace appears whole, later content cross-fades
-//! in, a new tab keeps the tab before it until it has drawn, a springing
-//! window is moved and clipped but never stretched, and a key closes at once.
+//! A window arriving, maximizing and leaving: its place opens at once (its
+//! content's arrival inside it is `window_group_arrival_tests`), a new tab
+//! keeps the tab before it until it has drawn, a springing window is moved
+//! and clipped but never stretched, and a key closes at once.
 
 use super::tests::make_group;
 use super::*;
@@ -9,19 +9,13 @@ use crate::widget::{AppKind, TabDescriptor, TileContent};
 use std::collections::HashMap;
 
 #[test]
-fn a_window_drawn_inside_the_grace_appears_whole_and_a_late_one_cross_fades_in() {
+fn a_window_asked_for_opens_its_slot_and_its_content_arrives_inside_its_frame() {
     // One instant for the whole test: each case backdates its own
     // timestamps, so a descheduled runner cannot move them.
     crate::time::testing::with_monotonic_time(crate::time::now(), || {
-        let now = crate::time::now();
-        let settle = crate::motion::CROSS_FADE.settle_time(
-            crate::motion::Direction::Enter,
-            crate::tokens::EffectiveMotion::default(),
-            crate::tokens::MotionSource::Pointer,
-        );
         {
-            // Asked for: the slot opens from nothing; the content is
-            // never faded or scaled.
+            // Asked for: the slot opens from nothing; the window is never
+            // faded or scaled as a whole for its content's sake.
             let mut g = make_group();
             g.start_spawn_animation();
             assert!(g.layout_width_px() < 1.0, "the slot opens from nothing");
@@ -33,40 +27,7 @@ fn a_window_drawn_inside_the_grace_appears_whole_and_a_late_one_cross_fades_in()
             );
         }
         {
-            // Its first frame 50 ms after it was asked for: whole.
-            let mut g = make_group();
-            g.start_spawn_animation();
-            g.spawned_at = now.checked_sub(Duration::from_millis(50));
-            g.held_back = true;
-            g.take_first_paint();
-            assert_eq!(g.fade_transform_params(), (1.0, 0.0, 0.0, 1.0));
-            assert!(g.arrival_fade_at.is_none());
-        }
-        {
-            // Its first frame 400 ms after: it cross-fades in over the
-            // ground its place held, without moving or scaling.
-            let mut g = make_group();
-            g.start_spawn_animation();
-            g.spawned_at = now.checked_sub(Duration::from_millis(400));
-            g.held_back = true;
-            g.take_first_paint();
-            let (alpha, x, y, scale) = g.fade_transform_params();
-            assert!(alpha < 0.05, "the late content starts clear, got {alpha}");
-            assert_eq!((x, y, scale), (0.0, 0.0, 1.0));
-            assert!(g.needs_animation_frame(), "the cross-fade asks for frames");
-            g.arrival_fade_at = now.checked_sub(settle / 4);
-            let mid = g.fade_transform_params().0;
-            assert!(mid > 0.0 && mid < 1.0, "mid cross-fade, got {mid}");
-            g.arrival_fade_at = now.checked_sub(settle + Duration::from_millis(16));
-            g.take_first_paint();
-            assert_eq!(g.fade_transform_params().0, 1.0);
-            assert!(
-                g.arrival_fade_at.is_none(),
-                "a finished cross-fade is dropped"
-            );
-        }
-        {
-            // A shortcut lands: no slot opening, nothing to fade.
+            // A shortcut lands: no slot opening.
             let mut g = make_group();
             g.set_motion_source(crate::tokens::MotionSource::Keyboard);
             g.start_spawn_animation();

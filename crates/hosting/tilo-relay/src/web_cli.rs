@@ -223,6 +223,7 @@ impl AgentArgs {
             state_dir,
             model,
             catalogue: None,
+            feedback_reviewer: None,
         }))
     }
 }
@@ -265,10 +266,36 @@ fn announce_web_entry(cfg: &mut tilo_relay::RelayConfig, args: &WebArgs) {
     allow(unused_variables, reason = "agents only")
 )]
 pub async fn start_relay(
+    cfg: tilo_relay::RelayConfig,
+    identity: RelayIdentity,
+    args: &WebArgs,
+    state_root: &Path,
+) -> anyhow::Result<HostedRelay> {
+    start_relay_lending(cfg, identity, args, state_root, Lent::default()).await
+}
+
+/// What a host lends its rooms besides serving their records.
+#[derive(Default)]
+pub struct Lent {
+    /// The model its rooms' reporters may have look over their reports.
+    #[cfg(feature = "agents")]
+    pub feedback_reviewer: Option<std::sync::Arc<dyn tilo_agent_participant::FeedbackReviewer>>,
+}
+
+/// [`start_relay`], lending the rooms what `lent` holds.
+///
+/// # Errors
+/// The relay did not start, or the agent state could not be read.
+#[cfg_attr(
+    not(feature = "agents"),
+    allow(unused_variables, reason = "agents only")
+)]
+pub async fn start_relay_lending(
     mut cfg: tilo_relay::RelayConfig,
     identity: RelayIdentity,
     args: &WebArgs,
     state_root: &Path,
+    lent: Lent,
 ) -> anyhow::Result<HostedRelay> {
     if let Some(max) = env_count("TILO_RELAY_MAX_ROOM_GRANTS") {
         cfg.max_room_grants = Some(max);
@@ -279,7 +306,8 @@ pub async fn start_relay(
     #[cfg(feature = "agents")]
     let options = args.agents.options(state_root.join("agents"))?;
     #[cfg(feature = "agents")]
-    if let Some(options) = options {
+    if let Some(mut options) = options {
+        options.feedback_reviewer = lent.feedback_reviewer;
         let (relay, agents) = tilo_relay::agents::start(cfg, identity, options)
             .await
             .context("start the relay with agents")?;
@@ -291,9 +319,10 @@ pub async fn start_relay(
     }
     #[cfg(feature = "agents")]
     if args.agents.room_records {
-        let relay = tilo_relay::agents::start_serving_records(cfg, identity, None)
-            .await
-            .context("start the relay serving its rooms' records")?;
+        let relay =
+            tilo_relay::agents::start_serving_records(cfg, identity, None, lent.feedback_reviewer)
+                .await
+                .context("start the relay serving its rooms' records")?;
         return Ok(HostedRelay {
             relay,
             agents: None,
@@ -1090,11 +1119,17 @@ async fn approve_admitted(
                 }
                 Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
                 Some(Ok(
-                    command @ (OperatorCommand::PreAdmit { .. }
+                    OperatorCommand::PreAdmit { .. }
                     | OperatorCommand::Spectate { .. }
-                    | OperatorCommand::WaitList { .. }),
+                    | OperatorCommand::WaitList { .. }
+                    | OperatorCommand::Unlist { .. }
+                    | OperatorCommand::Confirm { .. }
+                    | OperatorCommand::Standing { .. }
+                    | OperatorCommand::InviteMailQueued { .. },
                 )) => {
-                    anyhow::bail!("a short-lived room takes no {command:?}");
+                    // Not the command itself: a wait-list command carries an
+                    // email address, which no log keeps.
+                    anyhow::bail!("a short-lived room takes no command but admit and shutdown");
                 }
                 Some(Err(error)) => {
                     tracing::error!(%error, "unreadable room operator line");

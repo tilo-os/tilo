@@ -278,8 +278,8 @@ class ShellLayersTests(unittest.TestCase):
         self.assertEqual(
             layers.check(root, path),
             [
-                "extracted crate carved no longer reaches wgpu: remove it from [extracted.allow] "
-                "in baseline.toml"
+                "baseline.toml: extracted crate carved no longer reaches wgpu: "
+                "remove it from [extracted.allow]"
             ],
         )
 
@@ -315,7 +315,7 @@ class ShellLayersTests(unittest.TestCase):
         )
         self.assertEqual(
             layers.check(root, baseline),
-            ["shell no longer depends on serde: remove it from [shell_dependencies] in baseline.toml"],
+            ["baseline.toml: shell no longer depends on serde: remove it from [shell_dependencies]"],
         )
 
     def test_entries_without_a_reason_are_rejected(self):

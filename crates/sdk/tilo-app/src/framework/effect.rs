@@ -171,12 +171,25 @@ enum JobEvent {
 
 /// A running job's channel back to the app: report progress, notice
 /// cancellation. Cloneable and `Send`, for the worker.
-#[derive(Clone)]
 pub struct Progress {
     events: Sender<JobEvent>,
     cancelled: Arc<AtomicBool>,
     wake: WakeHandle,
     custody: Option<ResourceEffectScope>,
+}
+
+// Written out rather than derived: a derived `clone` is inlined into every
+// app that clones a `Progress`, and this one is compiled once, in the
+// runtime.
+impl Clone for Progress {
+    fn clone(&self) -> Self {
+        Self {
+            events: self.events.clone(),
+            cancelled: Arc::clone(&self.cancelled),
+            wake: self.wake.clone(),
+            custody: self.custody.clone(),
+        }
+    }
 }
 
 impl Progress {

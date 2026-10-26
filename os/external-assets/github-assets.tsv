@@ -15,6 +15,31 @@ e264f0639ab775338311036f207b35cebe99bc417b016b53931ebca8b30b3d94	steam-runtime-s
 87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8	umu-database-8297d420.csv	https://raw.githubusercontent.com/Open-Wine-Components/umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv
 65cd49136305dccaa3d327cc948fa508f8e1d33de3e6c36ba0d9bf4646ca1727	bottles-programs-d1160b8.tar.gz	https://github.com/bottlesdevs/programs/archive/d1160b816ca44a1cc803ab9a0050071517cc1960.tar.gz
 e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7	doubletake-ae06722.tar.gz	https://github.com/omarroth/doubletake/archive/ae067228d76df011375164814b729932ed55ca2f.tar.gz
+# Doubletake's Go modules at its go.sum versions, served to its offline build as a file GOPROXY.
+1a3a5b259aa95f63d592ac030bd7f32a91a3cf8bfa7c9a3bcc4c78aa4f553dca	gomod-github.com-aead-chacha20poly1305-v0.0.0-20201124145622-1a5aba2a8b29.mod	https://proxy.golang.org/github.com/aead/chacha20poly1305/@v/v0.0.0-20201124145622-1a5aba2a8b29.mod
+b64f1b8a5d4496584df2ec7db5cdb4752fb47ed29efcdf3fc63c11ee00f5b259	gomod-github.com-aead-chacha20poly1305-v0.0.0-20201124145622-1a5aba2a8b29.zip	https://proxy.golang.org/github.com/aead/chacha20poly1305/@v/v0.0.0-20201124145622-1a5aba2a8b29.zip
+1c1794b68a52747b4886d9db475d49d33292c58de410c3c100864977f8bf05b9	gomod-github.com-aead-chacha20-v0.0.0-20180709150244-8b13a72661da.mod	https://proxy.golang.org/github.com/aead/chacha20/@v/v0.0.0-20180709150244-8b13a72661da.mod
+b16187c03f4b29b84aaaf661f5e5dc7d15d66611e1b45b4add5fca42784ca74c	gomod-github.com-aead-chacha20-v0.0.0-20180709150244-8b13a72661da.zip	https://proxy.golang.org/github.com/aead/chacha20/@v/v0.0.0-20180709150244-8b13a72661da.zip
+7f1a24e13bb4749abf8e74a5896d923a8162ac113147599e0d298ef03038c13c	gomod-github.com-aead-poly1305-v0.0.0-20180717145839-3fee0db0b635.mod	https://proxy.golang.org/github.com/aead/poly1305/@v/v0.0.0-20180717145839-3fee0db0b635.mod
+8dc77a2ba9677a2342bfffdf9ed542149783792c68f22ffa21fd0b9ecabdf9d7	gomod-github.com-aead-poly1305-v0.0.0-20180717145839-3fee0db0b635.zip	https://proxy.golang.org/github.com/aead/poly1305/@v/v0.0.0-20180717145839-3fee0db0b635.zip
+41d7319b70378af7cb977378fae5719e9b1936c19026eb2454515d676a5a460e	gomod-github.com-cenkalti-backoff-v2.2.1+incompatible.mod	https://proxy.golang.org/github.com/cenkalti/backoff/@v/v2.2.1+incompatible.mod
+f8196815a1b4d25e5b8158029d5264801fc8aa5ff128ccf30752fd169693d43b	gomod-github.com-cenkalti-backoff-v2.2.1+incompatible.zip	https://proxy.golang.org/github.com/cenkalti/backoff/@v/v2.2.1+incompatible.zip
+d008ac84f404c6fbc7a1f378099dd21794843d10d6cdc129cfc403d39656f5a6	gomod-github.com-godbus-dbus-v5-v5.2.2.mod	https://proxy.golang.org/github.com/godbus/dbus/v5/@v/v5.2.2.mod
+5c6f37c725a481fb0f1e7866ae273429525d8cc6a6cace87da28e53370f5596a	gomod-github.com-godbus-dbus-v5-v5.2.2.zip	https://proxy.golang.org/github.com/godbus/dbus/v5/@v/v5.2.2.zip
+f936aacdf60ad99dc639e1b0939e96b1e612ef0d939eee3f91dce02985c9dffb	gomod-github.com-grandcat-zeroconf-v1.0.0.mod	https://proxy.golang.org/github.com/grandcat/zeroconf/@v/v1.0.0.mod
+afddd62b6cade582909d69068401165eec0e69ba8e5b684e0d9f219925c89d19	gomod-github.com-grandcat-zeroconf-v1.0.0.zip	https://proxy.golang.org/github.com/grandcat/zeroconf/@v/v1.0.0.zip
+ace3eb4e78bd5054707b24ac1eae7f7bed7a27b03a6ecc0260b2de9bae903dc2	gomod-github.com-miekg-dns-v1.1.62.mod	https://proxy.golang.org/github.com/miekg/dns/@v/v1.1.62.mod
+468b7ffd2c69396ba98f1266d43f75251aaf8c6371b059c345611d63f4c5cd62	gomod-github.com-miekg-dns-v1.1.62.zip	https://proxy.golang.org/github.com/miekg/dns/@v/v1.1.62.zip
+582f27ac41f2bd0c05436116ff91436aa36d4687c1dad243d4d74e780f3feb87	gomod-github.com-zalando-go-keyring-v0.2.8.mod	https://proxy.golang.org/github.com/zalando/go-keyring/@v/v0.2.8.mod
+af9d1310d6e1eaadb6c975f2f9b1c22c8a2d1ea2497645f5ee62eac26472c97a	gomod-github.com-zalando-go-keyring-v0.2.8.zip	https://proxy.golang.org/github.com/zalando/go-keyring/@v/v0.2.8.zip
+d9b77e394a68075877cb53b5034517bcff5a0d537e758cde578e5ed20713a5ec	gomod-golang.org-x-crypto-v0.31.0.mod	https://proxy.golang.org/golang.org/x/crypto/@v/v0.31.0.mod
+7cbc5fbc206b07db3c691ad59bc1b31f2c32a1dae2b04c9a7772f93a696381bf	gomod-golang.org-x-crypto-v0.31.0.zip	https://proxy.golang.org/golang.org/x/crypto/@v/v0.31.0.zip
+4622990828c557f34c1e64b967fdef5ce0ba6c43a2c466a4adbb0bcaaca8e5c1	gomod-golang.org-x-net-v0.33.0.mod	https://proxy.golang.org/golang.org/x/net/@v/v0.33.0.mod
+a85014e77369f99c3f9eebe1289b4d0757d58248ca12337642923818ae22ca19	gomod-golang.org-x-net-v0.33.0.zip	https://proxy.golang.org/golang.org/x/net/@v/v0.33.0.zip
+d227b325f621f4ebe28d39ba773ea99b870f393b7c09c34592c365b16dd560de	gomod-golang.org-x-sys-v0.28.0.mod	https://proxy.golang.org/golang.org/x/sys/@v/v0.28.0.mod
+0ed47a83fe7d7a7e743e815172bc10c1ac0ed0d31ebb095e75717428e09aa895	gomod-golang.org-x-sys-v0.28.0.zip	https://proxy.golang.org/golang.org/x/sys/@v/v0.28.0.zip
+c82cd5b5579d83db1ba908f04184b56c04fb4a9052042e832ce68f7adc739335	gomod-howett.net-plist-v1.0.1.mod	https://proxy.golang.org/howett.net/plist/@v/v1.0.1.mod
+a73da26d715d28d6086411893d10d9efdf7c023f208518180aeaec7da7485a21	gomod-howett.net-plist-v1.0.1.zip	https://proxy.golang.org/howett.net/plist/@v/v1.0.1.zip
 a78c32ec651aa445a2e5fbae08b91fb046aa9c538547ada4019f9d3ada9ba4d1	joycond-0df025a.tar.gz	https://github.com/DanielOgorchock/joycond/archive/0df025ac5dc284b1f31172b6b252321ba788c4de.tar.gz
 e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac	bootc-fa0d3f9.tar.gz	https://github.com/bootc-dev/bootc/archive/fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60.tar.gz
 # xwayland-satellite v0.8.2, built with os/external-assets/xwayland-satellite/.

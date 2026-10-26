@@ -30,10 +30,21 @@ pub mod room;
 
 /// What to build, for which target.
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent CLI-exposed build knob (release, assertions, \
+              allow_planned, no_default_features), not combinatorial state: every combination is \
+              a build someone can ask for"
+)]
 pub struct TargetRequest {
     pub target: Target,
     /// Optimized build (`release` natively, the web release profile on the web).
     pub release: bool,
+    /// Web only: a release-optimised bundle that keeps `debug_assertions` and
+    /// overflow checks (Cargo's `wasm-assert` profile), so a measured bundle
+    /// is never one that gained speed by dropping the qualification checks.
+    /// Requires `release`.
+    pub assertions: bool,
     /// Accept required capabilities whose backend is only planned.
     pub allow_planned: bool,
     /// Web only: which bundle to build.
@@ -48,6 +59,7 @@ impl TargetRequest {
         Self {
             target,
             release: false,
+            assertions: false,
             allow_planned: false,
             bundle: WebBundle::Auto,
             features: Vec::new(),

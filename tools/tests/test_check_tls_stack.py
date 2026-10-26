@@ -41,10 +41,10 @@ class TlsStackTests(unittest.TestCase):
             self.assertEqual(
                 checker.check(root),
                 [
-                    "Cargo.lock contains native-tls 0.2.14",
-                    "Cargo.lock contains openssl 0.10.73",
-                    "native-tls 0.2.14 depends on openssl",
-                    "reqwest 0.12.0 depends on native-tls",
+                    "Cargo.lock: contains native-tls 0.2.14",
+                    "Cargo.lock: contains openssl 0.10.73",
+                    "Cargo.lock: native-tls 0.2.14 depends on openssl",
+                    "Cargo.lock: reqwest 0.12.0 depends on native-tls",
                 ],
             )
 

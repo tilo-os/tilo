@@ -680,6 +680,7 @@ fn publish_draft(id: &str, granted: &[&str]) -> Shortcut {
                 &[("draft", Binding::step("draft", "/draft"))],
             ),
         ],
+        step_timeout_secs: None,
         output: Some(Binding::step("draft", "/draft")),
         grant: granted
             .iter()

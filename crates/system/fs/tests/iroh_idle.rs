@@ -23,6 +23,11 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 const IDLE_WINDOW: Duration = Duration::from_secs(30);
 
+/// How long the endpoint's runtime must have been still before an idle
+/// window opens: well under the shortest removed period (15 s).
+#[cfg(target_os = "linux")]
+const SETTLED: Duration = Duration::from_secs(3);
+
 /// The endpoint's own runtime threads, so the test's and the relay's are
 /// not counted.
 #[cfg(target_os = "linux")]
@@ -106,6 +111,18 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
         threads.retain(|thread| thread.comm.starts_with(ENDPOINT_THREADS));
         threads
     };
+    // The relay counts the disconnect as soon as the endpoint's relay task
+    // drops the connection, and the endpoint reaps that task a moment
+    // later on its own runtime; on a loaded machine that last wake can fall
+    // inside the window. Start the window once the runtime has been still
+    // for a few seconds: shorter than any of the periods the window must
+    // catch, so a periodic wake still shows within it.
+    tilo_test_env::wait_until("the endpoint's runtime to finish closing the relay", || {
+        let before = threads();
+        let started = std::time::Instant::now();
+        std::thread::sleep(SETTLED);
+        tilo_test_env::idle::Wakeups::between(before, threads(), started.elapsed()).blocking() == 0
+    });
     let before = threads();
     let started = std::time::Instant::now();
     std::thread::sleep(IDLE_WINDOW);

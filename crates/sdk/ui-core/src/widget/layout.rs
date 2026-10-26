@@ -174,6 +174,78 @@ pub fn with_layout_clip<T>(clip: vello::kurbo::Rect, place: impl FnOnce() -> T) 
     place()
 }
 
+thread_local! {
+    /// The tree whose widgets are being placed again from the layout they
+    /// were last placed from ([`placing_again`]), by address.
+    static PLACING_AGAIN: std::cell::Cell<Option<*const ()>> = const { std::cell::Cell::new(None) };
+}
+
+/// A layout tree by address, to name it to [`placing_again_in`] while the
+/// tree's owner is borrowed to place its widgets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TreeId(*const ());
+
+impl TreeId {
+    pub(crate) fn of(taffy: &TaffyTree<()>) -> Self {
+        Self(std::ptr::from_ref(taffy).cast::<()>())
+    }
+}
+
+/// Run `place` (the host placing its widgets) knowing that nothing of the
+/// tree `tree` names was solved, built or rebuilt since its widgets were
+/// last placed from it: only where things stand moved (a scroll, a glide),
+/// so every box stands where it stood relative to its parent. A long
+/// collection then places only what is near its [`layout_clip`]
+/// ([`placing_again`]).
+#[cfg_attr(
+    not(any(feature = "native", test)),
+    expect(dead_code, reason = "only a native host's layout pass places again")
+)]
+pub(crate) fn placing_again_in<T>(tree: TreeId, place: impl FnOnce() -> T) -> T {
+    struct Restore(Option<*const ()>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PLACING_AGAIN.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(PLACING_AGAIN.with(|cell| cell.replace(Some(tree.0))));
+    place()
+}
+
+/// Maximum `rect.y1` across a widget subtree, for finding the true bottom
+/// edge when taffy's `content_size` under-reports.
+pub(crate) fn max_bottom_edge(w: &dyn super::Widget) -> f64 {
+    let mut deepest = w.get_rect().y1;
+    if w.child_clip_rect().is_some() {
+        return deepest;
+    }
+    for c in w.children() {
+        deepest = deepest.max(max_bottom_edge(c));
+    }
+    deepest
+}
+
+/// Whether `event` happens at a place in the window (a pointer, a touch),
+/// so only what stands there may take it.
+pub(crate) fn at_a_place(event: &winit::event::WindowEvent) -> bool {
+    use winit::event::WindowEvent;
+    matches!(
+        event,
+        WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_)
+    )
+}
+
+/// From [`Widget::apply_layout`]: whether `taffy` is a tree its widgets are
+/// being placed again from unchanged ([`placing_again_in`]). A widget that
+/// lays out a tree of its own solves it, so its children are placed anew.
+#[must_use]
+pub fn placing_again(taffy: &TaffyTree<()>) -> bool {
+    PLACING_AGAIN.with(std::cell::Cell::get) == Some(TreeId::of(taffy).0)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WidgetLayoutError {
     #[error(transparent)]
@@ -1866,3 +1938,7 @@ pub(crate) fn lay_out_detached(
     widget.apply_layout(&taffy, child, rect.origin());
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "scrollable_placement_tests.rs"]
+mod scrollable_placement_tests;

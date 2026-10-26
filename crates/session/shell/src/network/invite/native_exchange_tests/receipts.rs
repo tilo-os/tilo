@@ -114,8 +114,8 @@ impl Governor {
                     postcard::from_bytes(&frame).map_err(|error| error.to_string())?,
                 )?;
             }
-            state.refresh_checkpoint()?;
-            super::refresh::publish_committed(state, &self.publisher);
+            state.commit_changes()?;
+            super::refresh::publish_changes(state, &self.publisher);
             Ok(receipt)
         })();
         // The broker answers every refusal with one opaque code; keep the

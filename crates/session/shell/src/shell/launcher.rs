@@ -13,7 +13,9 @@
 //! through [`drain_events`], drained once per frame.
 
 pub(crate) mod diagnostics;
+mod embed_launch;
 pub(crate) mod launch_history;
+pub(crate) use embed_launch::queue_embed_launch;
 mod recorded_use;
 #[cfg(target_os = "linux")]
 pub(crate) mod retained_home;
@@ -1697,6 +1699,9 @@ struct PendingPlacement {
     metric_spawned: bool,
     /// One supervisor owns the diagnostic join even before its child spawns.
     diagnostic_reserved: bool,
+    /// The live view this launch runs ([`crate::shell::live_embeds`]): its
+    /// window is drawn inside another window, never placed as one.
+    embed: Option<u64>,
 }
 
 impl PendingPlacement {
@@ -4456,11 +4461,20 @@ fn native_app_open_access(
         // A member who just joined holds the room's governance before any of
         // its app data: an app the governor lets write in the room opens
         // before this device has its document.
-        if view.peer().document(package, "").is_some() {
+        //
+        // The authorship decides, not whether this device happens to hold a
+        // copy of the app's document. A member whose device already has one
+        // opens the app exactly as a member whose device is still catching up
+        // does, so every launch path gives the same answer for the same
+        // member, room and app.
+        if !administrator && !application_writes {
+            if view.peer().document(package, "").is_none() {
+                return Err(
+                    "creating an application requires governor-authorized authorship".into(),
+                );
+            }
             view.peer()
                 .check_document_read(certificate.device_public_key, package, "", now)?;
-        } else if !administrator && !application_writes {
-            return Err("creating an application requires governor-authorized authorship".into());
         }
         if person_writes && application_writes {
             return Ok(NativeAppOpenAccess::Author);
@@ -6087,6 +6101,7 @@ pub fn set_pending_placement_for_identities(
             launch_metric_id,
             metric_spawned: false,
             diagnostic_reserved: false,
+            embed: None,
         });
     });
 }
@@ -6183,6 +6198,26 @@ pub fn placement_and_instance_for_toplevel(
     app_id: &str,
     surface_id: u64,
 ) -> Option<(crate::shell::tab_binding::Placement, Option<u64>)> {
+    claim_toplevel_note(app_id, surface_id).map(|(placement, instance, _)| (placement, instance))
+}
+
+/// The live view whose launch `surface_id` (of `app_id`) is the window of,
+/// claiming that launch's note as [`placement_and_instance_for_toplevel`]
+/// does: such a window is drawn inside another, never placed as one.
+pub(crate) fn embed_for_toplevel(app_id: &str, surface_id: u64) -> Option<u64> {
+    claim_toplevel_note(app_id, surface_id).and_then(|(_, _, embed)| embed)
+}
+
+/// Claim the first launch note `app_id`'s window `surface_id` answers to:
+/// its placement, launch instance and live view.
+fn claim_toplevel_note(
+    app_id: &str,
+    surface_id: u64,
+) -> Option<(
+    crate::shell::tab_binding::Placement,
+    Option<u64>,
+    Option<u64>,
+)> {
     LaunchSession::with(|session| {
         let mut pending = lock(&session.pending);
         loop {
@@ -6198,6 +6233,7 @@ pub fn placement_and_instance_for_toplevel(
             let claimed_by = pending.get(idx)?.claimed_by;
             let placement = pending.get(idx)?.placement;
             let instance = pending.get(idx)?.continuity_instance;
+            let embed = pending.get(idx)?.embed;
             match claimed_by {
                 None => {
                     if let Some(entry) = pending.get_mut(idx) {
@@ -6213,9 +6249,11 @@ pub fn placement_and_instance_for_toplevel(
                         entry.retire_after =
                             Some(pending_placement_deadline(PENDING_PLACEMENT_CLAIM_GRACE));
                     }
-                    return Some((placement, instance));
+                    return Some((placement, instance, embed));
                 }
-                Some(claimed) if claimed == surface_id => return Some((placement, instance)),
+                Some(claimed) if claimed == surface_id => {
+                    return Some((placement, instance, embed));
+                }
                 // This note belongs to an earlier window. Retire it and let this
                 // surface claim the next queued launch for the same app, if any.
                 Some(_) => {
@@ -6257,6 +6295,7 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
                 launch_metric_id,
                 metric_spawned: false,
                 diagnostic_reserved: false,
+                embed: None,
             });
         }
     });
@@ -6437,7 +6476,12 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
         // A clean parent's handoff deadline can precede the presentation
         // deadline. Report its unclaimed launch too, so the saved opening
         // card is answered rather than losing the only expiry observer.
-        if presentation_timed_out || (retired && note.claimed_by.is_none()) {
+        // A live view that never opened says so where it is drawn
+        // (`live_embeds`), not in a notification of a launch the person
+        // never asked for.
+        if (presentation_timed_out || (retired && note.claimed_by.is_none()))
+            && note.embed.is_none()
+        {
             expired.push(note.key.clone());
         }
         if !keep {

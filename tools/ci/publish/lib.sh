@@ -14,15 +14,26 @@ export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-${CARGO_TARGET_DIR:-$repo_
 
 die() { printf 'publish: %s\n' "$*" >&2; exit 1; }
 
-# The channel of this run: `dev` on main, `release` on stable and release tags. Anything else
-# (a working tree, an unknown branch) publishes nothing.
+# The channel of this run: `dev` on main, `release` on stable and release tags, `branch` on any
+# other branch, which publishes only its own build under tags that name the branch (`t dispatch
+# --ref BRANCH` of a check that publishes there). A working tree publishes nothing.
 channel() {
   case ${T_REF:-} in
     main) echo dev ;;
     stable | tag:*) echo release ;;
     '') die 'T_REF is not set: publishing runs only in trusted runs (on = [...] or t dispatch)' ;;
-    *) die "no channel for $T_REF" ;;
+    *) echo branch ;;
   esac
+}
+
+# The branch of a `branch` run as a tag part: lower case, every run of other characters a dash,
+# at most 48 characters (tilo-vm's ci.rs ref_slug computes the same).
+ref_slug() {
+  local slug
+  slug=$(printf '%s' "${T_REF:?}" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9.' '-' | sed 's/^[-.]*//; s/-*$//' | cut -c1-48)
+  slug=${slug%-}
+  [[ -n $slug ]] || die "no tag can name the branch $T_REF"
+  printf '%s' "$slug"
 }
 
 require_commit() {
@@ -170,6 +181,35 @@ use_cosign() {
 # The manifest digest of the single image in an OCI archive, from its index.json.
 archive_digest() {
   tar -xOf "$1" index.json | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | head -1 | cut -d'"' -f4
+}
+
+# The image a build left in OUT, as an OCI archive (OUT/image.oci.tar) or an OCI layout
+# (OUT/oci, as the OS image layers compose one): a reference skopeo copies from, and the
+# manifest digest of its single image.
+built_image() {
+  if [[ -f $1/image.oci.tar ]]; then printf 'oci-archive:%s/image.oci.tar' "$1"; else printf 'oci:%s/oci' "$1"; fi
+}
+built_digest() {
+  if [[ -f $1/image.oci.tar ]]; then
+    archive_digest "$1/image.oci.tar"
+  else
+    grep -o '"digest":"sha256:[0-9a-f]\{64\}"' "$1/oci/index.json" | head -1 | cut -d'"' -f4
+  fi
+}
+
+# Whether a moving development tag that now names commit $1 (nothing, this commit, or an
+# ancestor of it) may move to T_COMMIT: main's builds may finish out of order, and an older one
+# never takes a tag back.
+moves_forward() {
+  local current=$1 ahead
+  [[ -z $current || $current == "<no value>" || $current == "$T_COMMIT" ]] && return 0
+  # The commits the named one has that this one lacks: none, when it is an ancestor.
+  ahead=$(curl -fsS "https://code.tilo.so/api/v1/repos/tilo/tilo/compare/$T_COMMIT...$current" \
+    | sed -n 's/.*"total_commits":\([0-9]*\).*/\1/p') || ahead=
+  [[ $ahead == 0 ]] && return 0
+  printf 'it names %s, %s; leaving it\n' "$current" \
+    "${ahead:+which is not an ancestor of $T_COMMIT}${ahead:-whose history could not be compared}" >&2
+  return 1
 }
 
 # The simple-signing payload Cosign signs for an image: its repository and manifest digest.

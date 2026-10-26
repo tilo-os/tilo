@@ -9,6 +9,7 @@
 #include "capabilities.h"
 #include "site_info.h"
 #include "navigation_history.h"
+#include "include/cef_drag_handler.h"
 #include "page_automation.h"
 #include "agent_log.h"
 #include "paint_snapshot.h"
@@ -316,7 +317,7 @@ CefRefPtr<tilo::Downloads> downloads;
 tilo::DownloadOwnerReservations download_owners;
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
-                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler, public CefJSDialogHandler, public CefAudioHandler {
+                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler, public CefJSDialogHandler, public CefAudioHandler, public CefDragHandler {
  public:
   explicit Client(int id):id_(id),credential_document_(private_mode),capabilities_(new tilo::Capabilities([this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
   void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
@@ -401,7 +402,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
 #if defined(OS_MAC)
-    Event("file_dialog");return ShowHostFileDialog(mode,title,extensions,callback);
+    Event("file_dialog");
+    // An agent's page action cannot drive a native panel, so while it is
+    // driving the chooser is held for fill-page-files instead. A person's
+    // own click keeps the platform panel.
+    if(page_automation_ && page_automation_->HoldFileDialog(callback)) return true;
+    return ShowHostFileDialog(mode,title,extensions,callback);
 #else
     return false;
 #endif
@@ -544,6 +550,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return capabilities_; }
   CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+  CefRefPtr<CefDragHandler> GetDragHandler() override { return this; }
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
   CefRefPtr<CefFrameHandler> GetFrameHandler() override { return this; }
@@ -633,6 +640,21 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(report==text_field_report_)return;
     text_field_report_=report;text_field_editable_=d->GetBool("editable");Event("text_field",d);
   }
+  // Windowless: the page's drag begins here and ends when the gesture does.
+  // A windowless view has no file to offer an editor, so the page's text
+  // moves, which is what the gesture asked for.
+  bool StartDragging(CefRefPtr<CefBrowser>,CefRefPtr<CefDragData> data,DragOperationsMask,int x,int y) override {
+    if(!data) return false;
+    if(data->IsFile() && !data->IsFragment()) data->ResetFileContents();
+    dragging_=data;dragging_entered_=false;
+    // The drag begins where the hand is, so the page hears it enter there
+    // and every later move is an over.
+    CefMouseEvent at;at.x=x;at.y=y;at.modifiers=EVENTFLAG_LEFT_MOUSE_BUTTON;
+    browser_->GetHost()->DragTargetDragEnter(dragging_,at,kPageDragOps);
+    browser_->GetHost()->DragTargetDragOver(at,kPageDragOps);
+    dragging_entered_=true;
+    return true;
+  }
   void GetViewRect(CefRefPtr<CefBrowser>,CefRect& rect) override { rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height()); }
   bool GetScreenInfo(CefRefPtr<CefBrowser>,CefScreenInfo& info) override {
     info.device_scale_factor=geometry_.scale();info.rect=info.available_rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height());return true;
@@ -684,7 +706,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     })())JS");
     navigation_history_=new tilo::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
     page_automation_=new tilo::PageAutomation(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);},
-        [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);});
+        [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);},
+        [this](CefRefPtr<CefDictionaryValue> event){PagePointer(event);});
     page_automation_->Attach();
     agent_log_=new tilo::AgentLog(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     agent_log_->Attach();
@@ -1498,6 +1521,46 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     event.modifiers|=EVENTFLAG_LEFT_MOUSE_BUTTON;host->SendMouseClickEvent(event,MBT_LEFT,false,1);
     event.modifiers&=~EVENTFLAG_LEFT_MOUSE_BUTTON;host->SendMouseClickEvent(event,MBT_LEFT,true,1);
   }
+  // One pointer step of a gesture: where a person's hand put the pointer.
+  // A press that starts dragging a page element hands the drag to
+  // StartDragging below, which the gesture's own moves then carry; the page
+  // stays the target, so a drop lands where the hand let go.
+  void PagePointer(CefRefPtr<CefDictionaryValue> step) {
+    if(!browser_)return;auto host=browser_->GetHost();const double zoom=std::pow(1.2,host->GetZoomLevel());
+    const auto kind=step->GetString("kind").ToString();
+    const bool down=kind=="down",press=down||kind=="up";
+    const bool right=step->GetString("button")=="right";
+    const int button=right?EVENTFLAG_RIGHT_MOUSE_BUTTON:EVENTFLAG_LEFT_MOUSE_BUTTON;
+    // The button a step presses stays held for the steps after it, so a move
+    // travels as a hand's does: with the button still down.
+    if(down) mouse_modifiers_|=button;
+    // Modifiers describe this instant, so a release is reported without the
+    // button that just let go.
+    CefMouseEvent event;
+    event.x=static_cast<int>(std::lround(Number(step,"x")*zoom));event.y=static_cast<int>(std::lround(Number(step,"y")*zoom));
+    event.modifiers=mouse_modifiers_|key_modifiers_;
+    if(dragging_) { DragPointer(kind,event);if(kind=="up")mouse_modifiers_&=~button;return; }
+    host->SendMouseMoveEvent(event,false);
+    // The page may have begun a drag on this very move: carry it to where the
+    // hand went, so the element under the pointer hears the drag over it.
+    if(dragging_) {host->DragTargetDragOver(event,kPageDragOps);return;}
+    if(press) host->SendMouseClickEvent(event,right?MBT_RIGHT:MBT_LEFT,!down,1);
+    if(kind=="up")mouse_modifiers_&=~button;
+  }
+  // A drag the page started is a target drag in every windowless view.
+  void DragPointer(const std::string& kind,CefMouseEvent& event) {
+    auto host=browser_->GetHost();
+    if(kind=="up") {
+      host->DragTargetDrop(event);
+      host->DragSourceEndedAt(event.x,event.y,kPageDragOps);
+      host->DragSourceSystemDragEnded();
+      dragging_=nullptr;dragging_entered_=false;
+      return;
+    }
+    if(kind=="down") return;
+    if(!dragging_entered_) { host->DragTargetDragEnter(dragging_,event,kPageDragOps);dragging_entered_=true; }
+    else host->DragTargetDragOver(event,kPageDragOps);
+  }
   void PageKey(CefRefPtr<CefDictionaryValue> key) {
     if(!browser_)return;const int held=key_modifiers_;
     // Keys reach only a focused view; the page's own focused element is kept.
@@ -1522,6 +1585,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   bool records_agent() const {return agent_log_ && agent_log_->active();}
   void LoadUrl(const std::string& url) {if(browser_)browser_->GetMainFrame()->LoadURL(url);}
   void ReloadPage(bool bypass) {if(!browser_)return;if(bypass)browser_->ReloadIgnoreCache();else browser_->Reload();}
+  // What a gesture's drag may do here: a page reorders its own items with a
+  // move, and a drop that copies leaves the original where it was. A page's
+  // own drag offers both, so accepting only a move would refuse its drops.
+  static constexpr DragOperationsMask kPageDragOps=static_cast<DragOperationsMask>(DRAG_OPERATION_MOVE|DRAG_OPERATION_COPY);
+  // The page's own drag while a gesture carries it, and whether the element
+  // under the pointer has heard it arrive.
+  CefRefPtr<CefDragData> dragging_;bool dragging_entered_=false;
   bool detached() const {return transfer_owner_;}
   // The person clicked here or pressed a key within the last few seconds,
   // as long as Chromium counts it as their activation of the page.
@@ -2032,6 +2102,18 @@ class App final : public CefApp,public CefBrowserProcessHandler {
       AddFeature(command_line,"enable-features","NetworkServiceInProcess2");
       AddFeature(command_line,"disable-features","SpareRendererForSitePerProcess");
     }
+#if defined(OS_MAC)
+    // Chromium keeps the key that encrypts cookies and saved site data in the
+    // login keychain ("Chromium Safe Storage"), and the keychain grants that
+    // item to one code signature. Every development build is signed ad hoc,
+    // so each rebuilt engine asks the person again, and until someone answers
+    // the network service (in this process) waits and no page loads. Without
+    // a team identity the keychain cannot hold a grant across builds: keep the
+    // key out of it, as Tilo's own identity keeps an unsigned build's secrets
+    // in owner-only profile files instead. A signed engine keeps the keychain.
+    if(process_type.empty() && !HostHasStableSigningIdentity() && !command_line->HasSwitch("use-mock-keychain"))
+      command_line->AppendSwitch("use-mock-keychain");
+#endif
 #if defined(OS_LINUX)
     // Every frame is rendered offscreen, yet Chromium's default Linux platform
     // exits unless it reaches an X server, and a Tilo app sandbox has none.
@@ -2188,6 +2270,11 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   auto op=d->GetString("op").ToString();
   auto type=[&](const char* key,cef_value_type_t expected){return d->GetType(key)==expected;};
   auto number=[&](const char* key){auto t=d->GetType(key);return t==VTYPE_INT || (t==VTYPE_DOUBLE && std::isfinite(d->GetDouble(key)));};
+  auto number_in=[&](CefRefPtr<CefDictionaryValue> value,const char* key) {
+    auto t=value->GetType(key);if(t!=VTYPE_INT && t!=VTYPE_DOUBLE)return false;
+    const double n=t==VTYPE_DOUBLE?value->GetDouble(key):static_cast<double>(value->GetInt(key));
+    return std::isfinite(n) && n>=0 && n<=100000;
+  };
   auto no_payload=[&]{CefDictionaryValue::KeyList keys;d->GetKeys(keys);return std::all_of(keys.begin(),keys.end(),[](const CefString& key){return key=="op" || key=="tab";});};
   if(op=="create_tab" || op=="close_tab" || op=="try_close_tab") return d->HasKey("tab");
   if(op=="visibility") return type("visible",VTYPE_BOOL);
@@ -2301,10 +2388,25 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="page") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
     const auto action=d->GetString("action").ToString();
-    if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="press" && action!="submit" &&
-       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" && action!="reader")return false;
+    if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="fill_files" && action!="press" && action!="submit" &&
+       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" && action!="reader" &&
+       action!="pointer")return false;
     const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
-      action=="console" || action=="network" || action=="reader";
+      action=="console" || action=="network" || action=="reader" || action=="pointer";
+    if(action=="pointer") {
+      if(!type("steps",VTYPE_LIST) || !type("button",VTYPE_STRING))return false;
+      const auto button=d->GetString("button").ToString();
+      if(button!="left" && button!="right")return false;
+      auto steps=d->GetList("steps");
+      if(!steps->GetSize() || steps->GetSize()>256)return false;
+      for(size_t i=0;i<steps->GetSize();++i) {
+        auto step=steps->GetDictionary(i);
+        if(!step || step->GetType("kind")!=VTYPE_STRING || !number_in(step,"x") || !number_in(step,"y"))return false;
+        const auto kind=step->GetString("kind").ToString();
+        if(kind!="move" && kind!="down" && kind!="up")return false;
+        if(step->HasKey("element") && (step->GetType("element")!=VTYPE_STRING || step->GetString("element").empty() || step->GetString("element").length()>64))return false;
+      }
+    }
     if((action=="reader")!=d->HasKey("enabled") || (d->HasKey("enabled") && !type("enabled",VTYPE_BOOL)))return false;
     if(d->HasKey("element") ? !type("element",VTYPE_STRING) || d->GetString("element").empty() || d->GetString("element").length()>64
                             : !elementless)return false;
@@ -2318,6 +2420,18 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
       if(!type("values",VTYPE_LIST))return false;auto values=d->GetList("values");
       if(!values->GetSize() || values->GetSize()>64)return false;
       for(size_t i=0;i<values->GetSize();++i)if(values->GetType(i)!=VTYPE_STRING || values->GetString(i).length()>1024)return false;
+    }
+    if(action=="fill_files") {
+      if(!type("paths",VTYPE_LIST))return false;auto paths=d->GetList("paths");
+      if(!paths->GetSize() || paths->GetSize()>16)return false;
+      for(size_t i=0;i<paths->GetSize();++i) {
+        if(paths->GetType(i)!=VTYPE_STRING)return false;
+        const auto path=paths->GetString(i).ToString();
+        // The app checks that each path is a readable regular file; the
+        // engine only insists it is absolute, so no relative path is ever
+        // resolved against the browser's own working folder.
+        if(path.empty() || path.size()>4096 || path.front()!='/')return false;
+      }
     }
     if(action=="press") {
       if(!type("key",VTYPE_STRING) || d->GetString("key").empty() || d->GetString("key").length()>16)return false;
@@ -2613,7 +2727,10 @@ int RunHost(int argc,char** argv) {
 #endif
   if(!CefInitialize(CefMainArgs(argc,argv),settings,MakeHostApp(),nullptr)) return CefGetExitCode();
 #if defined(OS_MAC)
-  if(!private_mode) {
+  // Saved passwords live in the login keychain only for an engine with a team
+  // identity: an item one ad hoc build saved would make every rebuild ask the
+  // person for it again (as tilo-secrets never lets an unsigned build ask).
+  if(!private_mode && HostHasStableSigningIdentity()) {
     auto store=tilo::MakeMacCredentialStore(tilo::CredentialServiceForProfile(profile));
     if(store)credential_worker=std::make_shared<tilo::CredentialWorker>(false,std::move(store));
   }

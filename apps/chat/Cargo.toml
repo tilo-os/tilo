@@ -36,6 +36,7 @@ video = ["ui/realtime-video"]
 [dependencies]
 fnv.workspace = true
 emoji = { path = "../../crates/text/emoji" }
+tilo-emoji-catalogue = { path = "../../crates/text/emoji-catalogue" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-emoji-engine = { path = "../../crates/runtime/engines/emoji", optional = true }

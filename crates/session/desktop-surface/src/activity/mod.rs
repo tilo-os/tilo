@@ -170,10 +170,22 @@ pub trait ActivityHost {
     fn undo_task_run(&self, _undo: TaskRunUndo) -> Result<(), String> {
         Err(crate::i18n::t("activity-undo-task-unavailable"))
     }
-    /// How the undo `invocation` ended; `None` while it runs.
-    fn poll_task_run_undo(&self, _invocation: uuid::Uuid) -> Option<Result<(), String>> {
+    /// How the undo `invocation` ended: the records it was carried out in,
+    /// or why nothing was undone. `None` while it runs.
+    fn poll_task_run_undo(
+        &self,
+        _invocation: uuid::Uuid,
+    ) -> Option<Result<Vec<TaskRunDocument>, String>> {
         None
     }
+}
+
+/// One document an undo of an agent's task was carried out in: the step's
+/// app and record, so the task view reports what came back and what did not.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskRunDocument {
+    pub app: String,
+    pub record: String,
 }
 
 /// An agent's run of a task to undo as one.

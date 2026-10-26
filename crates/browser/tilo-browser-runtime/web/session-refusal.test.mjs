@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 
-import {followRefusal, hostUnreachable, reachedHost, REJOIN_WINDOW_MS, REJOINED, refusalText, rejoinedName, rejoinedRecently, retryRejoin, retryUnreachable, UNREACHED} from './session-refusal.mjs';
+import {followRefusal, hostUnreachable, reachedHost, REJOIN_WINDOW_MS, REJOINED, refusalText, rejoinedName, rejoinedRecently, retryUnreachable, UNREACHED} from './session-refusal.mjs';
 
 /** A peer whose snapshots the test sends; records recover requests. */
 function fakePeer({recover = async () => {}} = {}) {
@@ -110,22 +110,13 @@ test('what the person is told names the workspace and never asks them to certify
   assert.match(refusalText('device-revoked'), /removed from your devices/);
 });
 
-test('a door that does not answer yet after joining again is tried again a bounded number of times', () => {
+test('a host that does not answer before the page got in counts its tries across reloads, without end', () => {
   const storage = memoryStorage();
-  assert.equal(retryRejoin({storage, now: 5}), null, 'only after joining again by itself');
-  storage.setItem(REJOINED, JSON.stringify({at: 1, name: 'Brave Otter'}));
-  const waits = [];
-  for (let wait = retryRejoin({storage, now: 2}); wait !== null; wait = retryRejoin({storage, now: 2})) waits.push(wait);
-  assert.deepEqual(waits, [1000, 2000, 4000, 8000, 15_000, 15_000, 15_000, 15_000]);
-  assert.equal(rejoinedName({storage, now: 2}), 'Brave Otter');
-});
-
-test('a host that does not answer before the page got in is asked again, later each time, a bounded number of times', () => {
-  const storage = memoryStorage();
-  const waits = [];
-  for (let wait = retryUnreachable({storage, now: 10}); wait !== null; wait = retryUnreachable({storage, now: 20})) waits.push(wait);
-  assert.deepEqual(waits, [1000, 2000, 4000, 8000, 15_000, 15_000, 15_000, 15_000]);
-  assert.equal(retryUnreachable({storage, now: 10 + 10 * 60 * 1000}), 1000, 'tries long ago count no more');
+  const tries = Array.from({length: 12}, (_, index) => retryUnreachable({storage, now: 10 + index * 60_000}));
+  assert.deepEqual(tries.map(t => t.attempt), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], 'it never gives up');
+  assert.ok(tries.every(t => t.since === 10), 'failing since the first');
+  assert.deepEqual(retryUnreachable({storage, now: 11 * 60_000 + 10 + 10 * 60 * 1000}), {attempt: 0, since: 11 * 60_000 + 10 + 10 * 60 * 1000},
+    'a try long after the last starts over');
   reachedHost({storage});
   assert.equal(storage.getItem(UNREACHED), null, 'getting in starts them over');
 });

@@ -177,6 +177,7 @@ impl Widget for ShellOverlayHost {
             apps.pump_messaging_records();
             apps.pump_feedback();
         }
+        self.settle_workspace_emoji();
         steps.mark("in-process-apps");
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network
@@ -333,6 +334,7 @@ impl Widget for ShellOverlayHost {
         self.harvest_pending_search_open();
         let tab_rename_dirty = self.harvest_tab_renames();
         let hosted_windows_dirty = self.sync_hosted_windows();
+        let hosted_windows_dirty = self.sync_window_shares() | hosted_windows_dirty;
         let chips_dirty = self.sync_desktop_control_chips();
         // Refreshing here (not inside the harvest) means the palette never
         // shows "Nothing to show" before the user's first keystroke.
@@ -1269,6 +1271,12 @@ impl ShellOverlayHost {
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
+        // Picking what to report takes every event: nothing underneath
+        // reacts to a pick, and Escape leaves.
+        if self.route_feedback_picker_event(event, ctx.modifiers.state()) {
+            *ctx.handled = true;
+            return;
+        }
         let people_open = self.overlay_flags().collaborators;
         if self
             .collaborators_overlay
@@ -1640,6 +1648,11 @@ impl ShellOverlayHost {
             return;
         }
         if (Self::is_pointer_event(event) || matches!(event, WindowEvent::Focused(false)))
+            && self.route_people_overlay_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
+            return;
+        }
+        if (Self::is_pointer_event(event) || matches!(event, WindowEvent::Focused(false)))
             && self.route_collaborators_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
@@ -1707,6 +1720,12 @@ impl ShellOverlayHost {
         if !Self::is_pointer_event(event)
             && !self.keyboard_held_ahead_of_wifi_password()
             && self.route_wifi_password_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
+            return;
+        }
+        if !Self::is_pointer_event(event)
+            && !matches!(event, WindowEvent::Focused(false))
+            && self.route_people_overlay_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
             return;
         }

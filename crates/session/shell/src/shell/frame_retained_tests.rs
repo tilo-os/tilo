@@ -95,7 +95,7 @@ fn assert_xrgb_pixels_eq(actual: &[u8], expected: &[u8], label: &str) {
 
 /// A settled fixture, and the guard pinning the bar's clock while it lives: two paints
 /// compared pixel for pixel must not straddle a minute.
-fn settled_builder() -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
+pub(super) fn settled_builder() -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
     settled_builder_in(Theme::dark())
 }
 
@@ -139,7 +139,7 @@ fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::Sc
 /// fading in (reduced motion keeps fades). Two paints a moment apart, while
 /// that pause runs out or the fade runs, catch the glance at different
 /// opacities, so a comparison of two paints waits for both.
-fn settle_desk(frame: &mut PopulatedShellFixture) {
+pub(super) fn settle_desk(frame: &mut PopulatedShellFixture) {
     let deadline = tilo_test_env::hang_deadline();
     let desk_pending = |frame: &PopulatedShellFixture| {
         let now = std::time::Instant::now();
@@ -167,7 +167,7 @@ fn assert_legacy_and_segmented_match(
     let _ = legacy_and_segmented_pixels(frame, label, expect_quick_settings);
 }
 
-fn legacy_and_segmented_pixels(
+pub(super) fn legacy_and_segmented_pixels(
     frame: &mut FrameBuilder,
     label: &str,
     expect_quick_settings: bool,
@@ -880,7 +880,7 @@ fn foreign_replacement_pixel_oracle(
     let mut clock = tilo_test_env::ScopedEnv::new();
     clock.set("TILO_CLOCK", "09:41");
     let surface = if imported { 8_493_104 } else { 8_493_103 };
-    let (mut fixture, size) = foreign_damage_fixture(window_width, surface);
+    let (mut fixture, size, opened) = foreign_damage_fixture(window_width, surface);
     let store = crate::shell::foreign::store();
     let mut retained = bridge();
     let mut oracle = bridge();
@@ -890,7 +890,8 @@ fn foreign_replacement_pixel_oracle(
         [255, 0, 0, 255],
         imported.then_some(&retained),
     );
-    let first = fixture.paint_with_damage();
+    // Pinned: the client answers the instant it is asked, so set-up is no slow client.
+    let first = ui::time::testing::with_monotonic_time(opened, || fixture.paint_with_damage());
     assert_eq!(
         fixture
             .last_produced_sections
@@ -979,12 +980,28 @@ fn foreign_replacement_pixel_oracle(
 fn foreign_damage_fixture(
     window_width: ui::widget::WindowWidth,
     surface: u64,
-) -> (PopulatedShellFixture, (u32, u32)) {
+) -> (PopulatedShellFixture, (u32, u32), ui::time::Instant) {
     foreign_damage_fixture_on(window_width, surface, (NATIVE_WIDTH, NATIVE_HEIGHT))
 }
 
-/// [`foreign_damage_fixture`] on a desktop of `output` pixels.
+/// [`foreign_damage_fixture`] on a desktop of `output` pixels. Also returns
+/// the instant the window was asked for, at which a test paints its first
+/// frame.
 fn foreign_damage_fixture_on(
+    window_width: ui::widget::WindowWidth,
+    surface: u64,
+    output: (u32, u32),
+) -> (PopulatedShellFixture, (u32, u32), ui::time::Instant) {
+    let opened = ui::time::now();
+    let (fixture, size) = ui::time::testing::with_monotonic_time(opened, || {
+        foreign_damage_window(window_width, surface, output)
+    });
+    (fixture, size, opened)
+}
+
+/// The window [`foreign_damage_fixture_on`] opens, asked for at the instant
+/// its caller pins.
+fn foreign_damage_window(
     window_width: ui::widget::WindowWidth,
     surface: u64,
     output: (u32, u32),
@@ -1198,7 +1215,7 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
         // frame resident while its next one arrives, and two 2x frames of a
         // taller tile cannot be stacked in it, so the new one would be
         // omitted (an atlas budget, not the damage tracking under test).
-        let (mut fixture, logical_size) = foreign_damage_fixture_on(
+        let (mut fixture, logical_size, opened) = foreign_damage_fixture_on(
             ui::widget::WindowWidth::Wide,
             surface,
             (NATIVE_WIDTH, NATIVE_HEIGHT - 32),
@@ -1214,7 +1231,8 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
             [255, 0, 0, 255],
             imported.then_some(&retained),
         );
-        let first = fixture.paint_with_damage();
+        // Pinned: the client answers the instant it is asked, so set-up is no slow client.
+        let first = ui::time::testing::with_monotonic_time(opened, || fixture.paint_with_damage());
         paint_retained_and_compare(&mut retained, &mut oracle, &first, "wide original buffer");
         let logical_rect = fixture.foreign_surface_rect(surface).unwrap();
         let placement = fixture.layout_rect_to_scene(logical_rect).unwrap();
@@ -1307,13 +1325,15 @@ fn one_line_of_client_damage_repaints_only_that_line() {
     let mut clock = tilo_test_env::ScopedEnv::new();
     clock.set("TILO_CLOCK", "09:41");
     let surface = 8_493_301;
-    let (mut fixture, size) = foreign_damage_fixture(ui::widget::WindowWidth::Narrow, surface);
+    let (mut fixture, size, opened) =
+        foreign_damage_fixture(ui::widget::WindowWidth::Narrow, surface);
     let mut retained = bridge();
     let mut oracle = bridge();
     let mut pixels = [32, 32, 32, 255].repeat(size.0 as usize * size.1 as usize);
     let store = crate::shell::foreign::store();
     store.publish_rgba(surface, &pixels, size.0, size.1);
-    let first = fixture.paint_with_damage();
+    // Pinned: the client answers the instant it is asked, so set-up is no slow client.
+    let first = ui::time::testing::with_monotonic_time(opened, || fixture.paint_with_damage());
     paint_retained_and_compare(&mut retained, &mut oracle, &first, "the empty grid");
     // One line of a text grid, 20 buffer rows, across the whole buffer.
     let line = Rect::new(0.0, 100.0, f64::from(size.0), 120.0);
@@ -3970,3 +3990,6 @@ fn moving_to_another_strip_shows_the_whole_other_screen() {
 #[cfg(target_os = "linux")]
 #[path = "frame_scroll_copy_tests.rs"]
 mod scroll_copy;
+
+#[path = "frame_modal_paint_tests.rs"]
+mod modal_paint;

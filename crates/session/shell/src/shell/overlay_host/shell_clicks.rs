@@ -128,7 +128,7 @@ impl ShellOverlayHost {
     }
 
     pub(super) fn handle_workspace_navigation_click(&mut self, p: Point) -> bool {
-        if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
+        if !self.cursor_over_open_overlay(p) && self.follow_banner.stop_rect().contains(p) {
             self.set_followed_peer(None);
             return true;
         }
@@ -137,7 +137,7 @@ impl ShellOverlayHost {
         // continues routing that very click to its intended target.
         if self.followed_peer.is_some()
             && !self.cursor_over_open_overlay(p)
-            && !self.follow_chip_rect.contains(p)
+            && !self.follow_banner.chip_rect().contains(p)
         {
             self.stop_following_for_local_input();
         }

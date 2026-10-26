@@ -118,6 +118,7 @@ impl ResourceApp for NotesShell {
         crate::scenario::actions(name)
             .iter()
             .filter_map(|action| Invoke::apply(action).ok())
+            .chain(crate::scenario::reactions(name))
             .collect()
     }
 
@@ -161,6 +162,7 @@ impl ResourceSurface<Notebook, NotesEffect> for NotesApp {
     fn attach(&mut self, cx: SurfaceCx<Notebook>) {
         self.wake_asset_reads_through(cx.waker());
         self.attach_framework(cx.dispatcher(), cx.actions(), cx.live());
+        self.attach_people(cx.people());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {

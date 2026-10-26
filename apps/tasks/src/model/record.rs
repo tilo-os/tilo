@@ -651,6 +651,7 @@ impl Tracker {
             resource: question.resource,
             arguments_digest: question.arguments_digest,
             draft: question.draft,
+            preview: question.preview,
             ..Confirmation::default()
         });
         Ok(())

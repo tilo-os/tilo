@@ -579,7 +579,9 @@ that agent steps aside, and the console prompts offer no way back. The key file 
 the volume is attached, because `/run` is carried into the booted system. The
 `tilo-rollback` dracut module installs the binary, its TPM tools and public policy
 key, the root generator and the discovery helper. The hook asks for the PIN only
-when the LUKS header actually contains a `tilo-rollback` token. A command line
+when the LUKS header contains a `tilo-rollback` token that carries one: a token
+sealed without a PIN is the automatic unlock, and prompting for a secret nothing
+checks would defeat it. A command line
 that still names the volume with `rd.luks.uuid=` (an older layout) is served by
 `tilo-rollback-unlock-generator`, which writes
 `/run/cryptsetup-keys.d/luks-<LUKS-UUID>.key` instead. A cancelled or failed
@@ -712,6 +714,16 @@ cannot truthfully manufacture firmware trust without the owner's physical
 ceremony. Even an OEM-provisioned machine remains on the strong-passphrase path
 unless the media also carries the signed measured-artifact policy for its exact
 target UKI.
+
+Once that ceremony is done, a machine may finish with a system volume that opens
+by itself. `tilo-rollback enroll --automatic` seals a generation slot with no PIN,
+and refuses unless the boot it is running is one the machine can prove it
+approved: Secure Boot on, kernel lockdown active, and a signature database holding
+exactly the authorities recorded when the slot was sealed
+([rollback.md](rollback.md), "A keyslot with no PIN"). The same check runs at every
+unlock, so a machine whose Secure Boot policy changed — a `db` that gained a
+third-party CA, say — asks for the typed secret instead of opening on a boot it no
+longer recognises, rather than opening anyway or leaving an unbootable disk.
 
 The privileged installer enforces the same startup-secret policy shown by the
 graphical installer. It requires at least fifteen characters (the NIST

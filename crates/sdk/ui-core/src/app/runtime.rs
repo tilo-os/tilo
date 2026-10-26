@@ -31,6 +31,12 @@ pub(super) struct HistoryNodes {
     pub(super) any_unbound: bool,
 }
 
+/// What a placement of every widget saw: where the keyboard focus was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PlacedAll {
+    pub(super) focus: Option<NodeId>,
+}
+
 /// Retained layout and widget lookup state.
 #[cfg_attr(
     not(feature = "native"),
@@ -94,6 +100,18 @@ pub(super) struct LayoutRuntime {
     pub(super) undescribed_by: Option<&'static std::panic::Location<'static>>,
     /// Frames whose layout failed, skipped, and when that was last logged.
     pub(super) skipped_frames: crate::widget::SkippedFrames,
+    /// The last placement that placed every widget (`None` before one): a
+    /// focus move since places them all again, so a view revealing the
+    /// focused widget reads where it truly stands.
+    pub(super) placed_all: Option<PlacedAll>,
+    /// The last placement placed only what long collections show
+    /// ([`crate::widget::placing_again`]): a widget far from every view
+    /// stands where an earlier placement put it until the next full one
+    /// (`App::place_all`).
+    pub(super) placed_partly: bool,
+    /// What a host that draws only its frames' damage keeps from frame to
+    /// frame ([`crate::draw_cull`]).
+    pub(super) cull: crate::draw_cull::Culling,
 }
 
 impl LayoutRuntime {
@@ -120,6 +138,9 @@ impl LayoutRuntime {
             #[cfg(test)]
             undescribed_by: None,
             skipped_frames: crate::widget::SkippedFrames::default(),
+            placed_all: None,
+            placed_partly: false,
+            cull: crate::draw_cull::Culling::default(),
         }
     }
 
@@ -282,6 +303,12 @@ pub(super) struct ActionRuntime {
     /// Requests to the session action host awaiting their answer, keyed by
     /// the answer they expect, to the local request id they correlate with.
     pub(super) broker_requests: std::collections::HashMap<BrokerReply, u64>,
+    /// Invocations of this app's own actions, in the order they were made,
+    /// waiting for the route to carry the surface that offers them. The host
+    /// resolves an invocation against the surface it last received from this
+    /// connection, so one sent ahead of that surface is refused as unknown.
+    pub(super) held_own_invocations:
+        std::collections::VecDeque<tilo_actions::remote::InvokeRequest>,
     /// Why the session action host last refused an invocation outright, so
     /// a fixture fails on the refusal instead of waiting out what it asked.
     #[cfg(any(test, feature = "test-support"))]
@@ -345,6 +372,7 @@ impl ActionRuntime {
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
+            held_own_invocations: std::collections::VecDeque::new(),
             #[cfg(any(test, feature = "test-support"))]
             refused_broker_receipt: None,
             next_broker_request_id: Some(0),

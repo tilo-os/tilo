@@ -56,7 +56,10 @@ fn feedback_opens_once_beside_the_window_in_front_through_its_action() {
         "op": "actions_invoke", "provider": "device-local", "id": review, "wait_ms": 8000,
     }));
     assert!(
-        refused.to_string().contains("feedback-unconfigured"),
+        // The refusal says the composer's sentence, not its message key.
+        refused
+            .to_string()
+            .contains("Feedback is not configured for this workspace."),
         "a desktop without a destination refuses review: {refused}"
     );
     desktop.check();

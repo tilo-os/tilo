@@ -542,10 +542,15 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
         // read-only in the sandbox below.
         let staging = root.path().join("staging");
         fs::create_dir_all(&staging).unwrap();
+        // Bounded by the shared hang bound, not a fixed half minute: on a
+        // loaded machine the sandboxed run of this binary outlived 30 s and
+        // was killed after its test had passed.
+        let bound = tilo_test_env::hang_bound().as_secs().to_string();
         let output = Command::new("timeout")
             .args([
-                "30",
+                bound.as_str(),
                 "bwrap",
+                "--die-with-parent",
                 "--unshare-all",
                 "--uid",
                 "0",
@@ -574,7 +579,8 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
             .unwrap();
         assert!(
             output.status.success(),
-            "{case}: {}{}",
+            "{case} ({}): {}{}",
+            output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );

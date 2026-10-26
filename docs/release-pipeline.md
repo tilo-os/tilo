@@ -199,30 +199,42 @@ t dispatch publish-os-release --ref stable
   `latest`; a `gen<N>` already published is never moved.
 
 The generation is the next one of the signed published series
-(os/dev/next-generation.sh), and the image carries it. `t test os-release-rehearsal-x86_64`
-runs the boot signing, signing and publishing of this tree with throwaway keys into an
-OCI layout, without credentials.
+(os/dev/next-generation.sh), and the image carries it. A series starts with
+`gen1`: `next-generation.sh` reads an absent repository as empty only under
+`TILO_ALLOW_EMPTY_SERIES=1`, and only when the registry authenticated the read
+and answered "name unknown". A genuinely absent repository, a deleted or
+renamed one, and an unreadable one are otherwise the same answer, so the
+first publication is published from a tree whose generation was allocated
+that way on purpose with no signed series to read. `t test
+os-release-rehearsal-x86_64` runs the boot signing, signing and publishing of
+this tree with throwaway keys into an OCI layout, without credentials.
 
 ## Dev VM disks
 
-`publish-os-dev-<arch>` publishes main's dev image and its disk for one architecture every
-night (and when dispatched: `t dispatch publish-os-dev-<arch> --ref main`) once
-`os-acceptance-<arch>` passed on them: the dev image
+`publish-os-dev-<arch>` publishes main's dev image and its disk for one architecture, the dev
+channel, on main's newest head whenever t has room (and when dispatched: `t dispatch
+publish-os-dev-<arch> --ref main`) once `os-dev-gate-<arch>` passed on them: the dev image
 (os/Containerfile.dev) on the OS image of the same commit, installed onto a 64 GiB
 sparse disk with `os/dev/build-image.sh`, never booted itself (the gates boot overlays
-of it). The OS image goes to `registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>`, a
+of it). The gate is what a dev device needs: the image boots to a greeter that takes input with
+`boot-complete.target` reached, and takes the next update live. A device falls back by itself
+from an image that does not boot, so the heavier `os-acceptance-<arch>` (devices, the desktop's
+journeys, the splash) gates stable releases and runs on main when t has room, without holding
+back the dev channel. The OS image goes to `registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>`, a
 development-only repository that production policy (`os/etc/containers/policy.json`)
 rejects, which `tools/policy/check_dev_image_contract.py` keeps so. Dev images are never
-signed with the OS release authority.
+signed with the OS release authority: `sign-dev-os-<arch>` signs each with the development key
+(`keys/cosign-dev.pub`, main only), which `publish-os-dev-<arch>` attaches.
 
 `os/dev/publish-dev-disk.sh` then writes, for one architecture:
 
-- `registry.tilo.so/tilo/tilo-vm:<tag>-<arch>`: the dev image child.
+- `registry.tilo.so/tilo/tilo-vm:<tag>-<arch>`: the dev image child, signed, pushed by
+  `tools/ci/publish/os-dev-publish.sh`, which moves `tilo-vm:<arch>-ci`, the architecture's dev
+  channel, forward to it. Installed disks follow that tag.
 - `registry.tilo.so/tilo/tilo-vm:<tag>`: an OCI index of every child of `<tag>`
   published so far. It is rebuilt from the child tags, and each lane repeats
   that until a fresh read agrees, so it grows from one architecture to both
-  without either lane waiting. The installed disk updates from this tag.
-  `latest` follows the newest revision's index, only forward, for `main` and
+  without either lane waiting. `latest` follows the newest revision's index, only forward, for `main` and
   release-tag runs.
 - `tilo-vm-disk/<tag>/tilo-vm-<tag>-<arch>.<format>` in the generic package
   registry, each with a `.sha256` sidecar. qcow2 uses zstd-compressed clusters,
@@ -234,8 +246,7 @@ signed with the OS release authority.
   architecture is published once its file exists, and a lane whose file exists
   has nothing left to do.
 
-`<tag>` is `main-<sha7>-ci`; `tilo-vm:main-ci` follows the newest whose index
-holds both architectures.
+`<tag>` is `main-<sha7>-ci`.
 
 To fetch a disk, use a Forgejo token with package read access:
 

@@ -1894,6 +1894,26 @@ impl State {
 
     /// Ask the client showing `surface_id` to close. Its tab remains available
     /// for a deferred save decision until actual destruction removes it.
+    /// Take `surface_id` (of `app_id`) as the window of a live view when its
+    /// launch was one ([`crate::shell::live_embeds`]): the window that embeds
+    /// the view draws it, so it is never placed, focused or handed input,
+    /// and it is configured at the size a view is laid out at. Returns
+    /// whether it was one.
+    fn promote_embed_toplevel(&mut self, surface_id: u64, app_id: &str) -> bool {
+        if crate::shell::live_embeds::is_embed_surface(surface_id) {
+            return true;
+        }
+        let Some(key) = crate::shell::launcher::embed_for_toplevel(app_id, surface_id) else {
+            return false;
+        };
+        self.client_input.promote_to_overlay(surface_id);
+        let (width, height) = ui::window_share::host::VIEW;
+        crate::compositor::foreign::store()
+            .note_placement(surface_id, vello::kurbo::Rect::new(0.0, 0.0, width, height));
+        crate::shell::live_embeds::bind(key, surface_id);
+        true
+    }
+
     pub fn close_surface_on_request(&mut self, surface_id: u64) {
         // xdg close is a request, not admission. Destruction owns durable
         // removal so a client's save/refusal decision stays visible.
@@ -7063,6 +7083,11 @@ impl XdgShellHandler for State {
         let floating = app_id
             .as_deref()
             .is_some_and(|app_id| self.promote_floating_toplevel(surface_id, app_id));
+        let embed = !floating
+            && !presentation
+            && app_id
+                .as_deref()
+                .is_some_and(|app_id| self.promote_embed_toplevel(surface_id, app_id));
         let attributed_room_log = attributed_room;
         let app_id_log = app_id.clone();
         if trusted_osk_identity(surface.wl_surface(), app_id.as_deref()) {
@@ -7075,7 +7100,7 @@ impl XdgShellHandler for State {
             // temporary tab or move the person's focus. Overlay authority
             // still waits for the exact OSK app-id.
             self.client_input.promote_to_overlay(surface_id);
-        } else if !floating && !presentation {
+        } else if !floating && !presentation && !embed {
             if let Some(room) = attributed_room {
                 let adopted = {
                     let mut tree = self.workspace_tree.write();
@@ -7134,6 +7159,7 @@ impl XdgShellHandler for State {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let launch = crate::shell::launcher::launch_key_for_surface(surface_id);
         let asked_to_close = self.closing_toplevels.remove(&surface_id).is_some();
+        crate::shell::live_embeds::surface_gone(surface_id);
         eprintln!(
             "window-destroyed: surface={surface_id} launch={} asked_to_close={asked_to_close}",
             launch.as_deref().unwrap_or("-")
@@ -7279,6 +7305,12 @@ impl XdgShellHandler for State {
                 // `new_toplevel` may have inserted an anonymous placeholder
                 // before the app-id arrived. Remove it before the next tree
                 // mirror can expose a one-frame phantom tab.
+                self.withdraw_provisional_tab(surface_id);
+                return;
+            }
+            if self.promote_embed_toplevel(surface_id, &app_id) {
+                // As for a floating surface: a live view's window is never
+                // a tab, not even for a frame.
                 self.withdraw_provisional_tab(surface_id);
                 return;
             }

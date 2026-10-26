@@ -143,6 +143,7 @@ pub mod storage;
 pub mod surface;
 pub mod table;
 pub mod text;
+pub mod unreadable;
 mod upsert;
 mod value;
 pub mod vocabulary;
@@ -193,6 +194,7 @@ pub use text::{PlainText, TextEdit};
 pub use tilo_action_policy::edits::Weaker;
 pub use tilo_actions::Availability;
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, resource};
+pub use unreadable::withhold_document_actions;
 pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};
 
 /// Items the generated code refers to. Not part of the public API.

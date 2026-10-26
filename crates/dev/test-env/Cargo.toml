@@ -6,7 +6,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Serialised, self-restoring process environment, XDG fixtures and hang-bounded waits for tests"
+description = "Serialised, self-restoring process environment, XDG fixtures, scenarios and hang-bounded waits for tests"
 
 # Test support only: depend on this from [dev-dependencies], never from a
 # production dependency table.

@@ -28,8 +28,79 @@ const FRAME: usize = 960;
 /// A loop turn this late let a received frame wait past the client's
 /// 200 ms receive budget, with margin for when in the turn it arrived.
 const LOOP_STALL: Duration = Duration::from_millis(100);
-/// How long before a stall a frame may have been sent and still be waiting.
-const EXPOSURE_MARGIN: Duration = Duration::from_millis(200);
+/// How often the starvation probe looks at the process.
+const PROBE: Duration = Duration::from_millis(10);
+/// A probe that wakes this late, or finds the process's threads waited this
+/// many times its interval for a core, saw the process starved.
+const PROBE_LATE: Duration = Duration::from_millis(50);
+const PROBE_QUEUED: u32 = 3;
+/// Every budget a frame spends before it is read: the publisher's group
+/// (100 ms), the receiver's group read and its 200 ms receive budget. A frame
+/// sent this long before a starved stretch could still be in one of them.
+const BEFORE_STARVED: Duration = Duration::from_millis(400);
+/// A frame sent this soon after a starved stretch can still meet a receiver
+/// that is catching up on its backlog.
+const AFTER_STARVED: Duration = Duration::from_millis(200);
+
+/// The time every thread of this process has spent runnable and waiting for
+/// a core, per the scheduler's `/proc/self/task/*/schedstat`.
+fn process_run_queue_wait() -> Duration {
+    let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+        return Duration::ZERO;
+    };
+    let nanos: u64 = tasks
+        .flatten()
+        .filter_map(|task| std::fs::read_to_string(task.path().join("schedstat")).ok())
+        .filter_map(|stat| stat.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .sum();
+    Duration::from_nanos(nanos)
+}
+
+/// Stretches in which this process was starved of CPU, watched from a thread
+/// of its own: any of the call's tasks may have waited then, publisher,
+/// relay, receiver or reader, and the frames in their budgets expired.
+struct StarvationProbe {
+    stretches: Arc<std::sync::Mutex<Vec<(Instant, Instant)>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl StarvationProbe {
+    fn start() -> Self {
+        let stretches = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread = std::thread::spawn({
+            let (stretches, stop) = (Arc::clone(&stretches), Arc::clone(&stop));
+            move || {
+                let (mut before, mut queued) = (Instant::now(), process_run_queue_wait());
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(PROBE);
+                    let (now, waited) = (Instant::now(), process_run_queue_wait());
+                    let interval = now.duration_since(before);
+                    if interval >= PROBE + PROBE_LATE
+                        || waited.saturating_sub(queued) >= interval * PROBE_QUEUED
+                    {
+                        stretches.lock().unwrap().push((before, now));
+                    }
+                    (before, queued) = (now, waited);
+                }
+            }
+        });
+        Self {
+            stretches,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn finish(mut self) -> Vec<(Instant, Instant)> {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+        std::mem::take(&mut *self.stretches.lock().unwrap())
+    }
+}
 const CALL: &str = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0";
 
 fn namespace(publisher: char) -> String {
@@ -230,10 +301,11 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
     let bound = Instant::now() + tilo_test_env::hang_bound();
     // Once every frame is sent, a second for the last of them to arrive.
     let mut drain_until = None;
-    // When this loop itself did not run for longer than a received frame
-    // waits for its reader: frames arriving then expired unread, as a call's
-    // audio does when its player cannot run. That is the scheduler, not the
-    // transport this test measures.
+    // A live call drops audio its tasks could not handle within the frame
+    // budgets, as a player that cannot run must: that is the scheduler, not
+    // the transport this test measures. Starved stretches are watched from
+    // this loop (the reader) and from a thread looking at the whole process.
+    let probe = StarvationProbe::start();
     let mut stalls: Vec<(Instant, Instant)> = Vec::new();
     let mut last_turn = Instant::now();
     let mut next = 0;
@@ -296,20 +368,28 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             break;
         }
     }
+    stalls.extend(probe.finish());
+    let starved: Vec<(Instant, Instant)> = stalls
+        .iter()
+        .map(|(from, to)| {
+            (
+                from.checked_sub(BEFORE_STARVED).unwrap_or(*from),
+                *to + AFTER_STARVED,
+            )
+        })
+        .collect();
     let mut report = serde_json::Map::new();
     for (receiver, rows) in received.iter().enumerate() {
         let sender = 1 - receiver;
         let own = sides[receiver].frequency;
         let expected = sides[sender].frequency;
         let mut latencies: Vec<f64> = rows.iter().map(|row| row.1).collect();
-        // Frames sent while this loop was stalled may have expired unread.
+        // Frames whose budgets ran while the process was starved may have
+        // expired on the way.
         let exposed: Vec<usize> = (0..frames)
             .filter(|n| {
-                sent_at[sender][*n].is_some_and(|at| {
-                    stalls
-                        .iter()
-                        .any(|(from, to)| at + EXPOSURE_MARGIN >= *from && at <= *to)
-                })
+                sent_at[sender][*n]
+                    .is_some_and(|at| starved.iter().any(|(from, to)| at >= *from && at <= *to))
             })
             .collect();
         let delivered_unexposed = rows.iter().filter(|row| !exposed.contains(&row.0)).count();
@@ -342,7 +422,7 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             "senderCounters": format!("{:?}", sides[sender].client.counters()),
             "receiverCounters": format!("{:?}", sides[receiver].client.counters()),
             "deliveredTonePositions": tone_expected,
-            "loopStalls": stalls.iter().map(|(from, to)| to.duration_since(*from).as_millis()).collect::<Vec<_>>(),
+            "starvedMs": stalls.iter().map(|(from, to)| to.duration_since(*from).as_millis()).sum::<u128>(),
             "exposedFrames": exposed.len(),
             "missing": (0..frames).filter(|n| !rows.iter().any(|row| row.0 == *n)).collect::<Vec<_>>(),
             "transportLatencyMs": if latencies.is_empty() { serde_json::Value::Null } else { serde_json::json!({
@@ -365,9 +445,10 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
         // delivers nearly all; those it could not read were counted above.
         assert!(
             delivered_unexposed * 100 >= unexposed * 95,
-            "delivered {delivered_unexposed} of {unexposed} frames sent while the reader ran \
-             ({} more sent during loop stalls {stalls:?}): {counters:?}",
-            exposed.len()
+            "delivered {delivered_unexposed} of {unexposed} frames sent while the process ran \
+             ({} more sent around {} starved stretches): {counters:?}",
+            exposed.len(),
+            stalls.len()
         );
         assert!(
             tone_frames * 10 >= tone_expected * 8,

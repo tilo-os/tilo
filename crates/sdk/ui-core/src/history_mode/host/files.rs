@@ -958,7 +958,7 @@ mod tests {
         let rows = file_timeline_entries(&files);
         assert_eq!(rows[0].author.name, "Ada");
         assert_eq!(rows[0].author.attribution, None);
-        assert_eq!(rows[1].author.name, "Scribe · Agent, for Ada");
+        assert_eq!(rows[1].author.name, "Scribe · Software, for Ada");
         assert_eq!(rows[1].author.relation, AuthorRelation::Software);
         assert_eq!(rows[1].author.rgb(), (10, 20, 30));
         assert_eq!(
@@ -986,7 +986,7 @@ mod tests {
         files.versions = vec![version(4, ada, ada_laptop), version(5, ada, ada_laptop)];
         files.attributions = [(version(4, ada, ada_laptop).id, through_session)].into();
         let rows = file_timeline_entries(&files);
-        assert_eq!(rows[0].author.name, "Courier · Agent, for Ada");
+        assert_eq!(rows[0].author.name, "Courier · Software, for Ada");
         assert_eq!(rows[0].author.rgb(), (40, 50, 60));
         assert_eq!(
             rows[0].author.attribution,

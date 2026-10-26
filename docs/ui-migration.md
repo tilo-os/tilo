@@ -623,7 +623,8 @@ The previous `NavShell` API (file-explorer, mail, maps, weather):
 | `drawer.draw_scrim(scene, transform)` | `drawer.draw_scrim(scene, transform, theme)` (`surfaces.scrim`, no literal black, no stepped shadow bands). |
 | Filling the sidebar rect yourself (`surfaces.sidebar`, `raised`, `bg_primary`, a literal), or `surface::region(.., Region::Sidebar, ..)` under a drawer | `let sidebar_theme = drawer.paint_panel(scene, transform, theme);` and draw the drawer's contents with `sidebar_theme`. Docked it is the region tier with no radius; as an overlay it is the floating material with `radii.panel` and the floating shadow, floating `s2` inside the window. |
 | `drawer.draw_toggle(scene, transform, theme, rect, hovered)` | `drawer.draw_toggle(scene, transform, text, theme, rect, hovered)`: the same Plain `Icon::PanelLeft` button `NavShell` draws. Put it at the top-leading corner (`rect` = `min_pointer_target` square in an `s3` inset). |
-| Default docked width 320, default breakpoint 760 | 280 (`sidebar_width`) and 840 (`compact_breakpoint`, the sidebar plus the 560 the content needs); delete `.docked_width(..)` / `.breakpoint(..)` calls that restate the old defaults. |
+| Default docked width 280, default breakpoint 840 | 280 (`sidebar_width`) and 840 (`compact_breakpoint`, the sidebar plus the 560 the content needs); delete `.docked_width(..)` / `.breakpoint(..)` calls that restate the old defaults. |
+| `.content_min_width(..)` for the column beside the panel, or a `.breakpoint(..)` restating the panel's width plus that column | `.content_is_column(..)` for the app's own content column: the panel docks at its own width beside it and pans it out of view below `panel_min_width` instead of shrinking. `.content_kind(..)` for a `NavShell`-shaped list-or-page. |
 | A collapse that the drawer forgot after the window crossed the breakpoint | Remembered per size class now; delete app code that re-applies it. |
 | An app holding a `FlapState` for its own sidebar or side panel, with its own breakpoint, scrim and slide arithmetic | A `SidebarDrawer` (`.right()` for a trailing panel). `FlapState::tick(layout, dt)` is now `tick(layout, dt, theme.tokens.motion.durations.base())` and `slide()` is gone: `reveal()` is already eased. |
 | A hand-placed toggle rect, its hover tracking, the sidebar shortcut and the toggle's semantic node | `let face = drawer.header(area, theme);` (`header_with_history(area, theme, opener.is_shown())` with History): the window's `HeaderRowFace` with the toggle in it. Route events with `drawer.handle_event(event, ctx)` (hit-test, hover, `HostShortcut::Sidebar`, Escape and a scrim press), paint with `drawer.paint_toggle(..)`, publish `drawer.toggle_accessibility()` and route its `Activate` with `perform_toggle_action`. The floating drawer opens under the row. |
@@ -1018,8 +1019,9 @@ open list, a focused button).
 
 One family, styled by `ChipStyle`: `Neutral` (quiet, raised; a selected chip
 is a lift), `Tinted(Tone)` (a status or a person, a faint wash with neutral
-ink) and `Live` (the one filled pill, in your colour: an unread count, a
-mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
+ink), `Live` (filled in your colour: an unread count, a mention,
+something live) and `Accent` (filled in the accent with its own label: what
+you picked, numbered). Danger red is only a status: `Tinted(Tone::Danger)`.
 `Tone` is the shared `ui::widget::Tone`: `Neutral`, `Info`, `Success`,
 `Warning`, `Danger`, or a person with `Tone::of_identity(id)` /
 `Tone::Presence(hue)` (yourself: `Tone::Presence(colors.you)`).

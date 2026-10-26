@@ -362,6 +362,19 @@ output, not rendering speed. Sources:
 
 ## Build and dependency controls
 
+The browser bundles have their own Cargo profiles, and a browser frame-rate
+number is only comparable at one of them. `wasm-release` is the shipping
+build; `wasm-assert` is the same optimisation (`opt-level=3`, fat LTO) with
+`debug-assertions` and `overflow-checks` on, the two `wasm-split` and
+`wasm-assert-split` variants keep the symbol table the desktop bundle's
+splitter reads, and `wasm-dev` is the quick loop. Build a measured or
+qualified bundle with `crates/browser/tilo-browser-runtime/scripts/build.sh
+--profile assert`, or `tilo-app build --platform web --release --assertions`,
+and record the profile `build.json` names. A plain `release` bundle has the
+qualification surface compiled out; it is not a faster build of the same
+workload, and comparing it to a `dev` sample does not show what optimisation
+did. `build.json` and the module hash identify the bundle actually served.
+
 The standard release profile is `opt-level=3`, fat LTO, one codegen unit,
 `panic=abort`, stripped symbols, line-table debug information,
 `overflow-checks=false`, and `incremental=false`. `thin-app` changes
@@ -384,8 +397,7 @@ They are not runtime UI switches. Use a separate target directory per worktree.
 Do not call a cache-hit build-time reduction a frame-time improvement.
 
 The optional [PGO/BOLT scripts](../scripts/perf/README.md) are separate build
-experiments, not part of the default release recipe or the preserved A/B runs.
-`-C profile-generate=DIR`, `LLVM_PROFILE_FILE`, and `-C profile-use=FILE`
+experiments, not part of the default release recipe or the preserved A/B runs.`-C profile-generate=DIR`, `LLVM_PROFILE_FILE`, and `-C profile-use=FILE`
 control Rust instrumentation, training output, and profile-guided codegen. The
 scripts use fixed `target/pgo-*` directories and the named Distrobox
 environment; merging profiles writes `os/pgo/tilo.profdata` and does not itself

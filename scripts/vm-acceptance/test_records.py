@@ -393,7 +393,8 @@ class Gates(unittest.TestCase):
         self.assertLess(run.ORDER.index("R02"), run.ORDER.index("A15"))
         self.assertLess(run.ORDER.index("A16"), run.ORDER.index("R05"))
         # R08 starts a second compositor on seat0: after everything that measures the slot.
-        self.assertEqual(run.ORDER[-2:], ["R08", "P03"])
+        # C02 goes on with the account R08 signed in, measuring nothing.
+        self.assertEqual(run.ORDER[-3:], ["R08", "C02", "P03"])
 
 
 # systemd-analyze output from a plain reboot of the dev disk (vm-acceptance R99, run 94108).

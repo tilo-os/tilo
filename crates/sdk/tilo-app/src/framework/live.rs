@@ -31,9 +31,13 @@ struct Places<R: Resource> {
     landed: Landings,
     /// Applied here, not yet told: told once the state holds them.
     applied_here: Vec<R::Action>,
-    /// The actions applied here the state holds, numbered, for the surfaces
-    /// that follow them ([`Live::follow_applied`]).
-    here: std::collections::VecDeque<(u64, R::Action)>,
+    /// The last [`APPLIED_KEPT`] actions applied here the state holds, for
+    /// the surfaces that follow them ([`Live::follow_applied`]), oldest
+    /// first: the last is numbered `next_here - 1`. A `Vec` like
+    /// `applied_here`, so every app compiles one collection of its actions
+    /// for this, not two.
+    here: Vec<R::Action>,
+    /// The number the next action applied here takes.
     next_here: u64,
     /// How many surfaces follow the actions applied here: none, and they are
     /// not kept.
@@ -46,7 +50,7 @@ impl<R: Resource> Default for Places<R> {
             applied: Vec::new(),
             landed: Landings::new(),
             applied_here: Vec::new(),
-            here: std::collections::VecDeque::new(),
+            here: Vec::new(),
             next_here: 0,
             following_here: 0,
         }
@@ -192,12 +196,10 @@ impl<R: Resource> Live<R> {
     /// number to ask from next.
     pub(crate) fn applied_since(&self, from: u64) -> (Vec<R::Action>, u64) {
         let places = self.places.borrow();
-        let applied = places
-            .here
-            .iter()
-            .filter(|(number, _)| *number >= from)
-            .map(|(_, action)| action.clone())
-            .collect();
+        let kept = u64::try_from(places.here.len()).unwrap_or(u64::MAX);
+        let first = places.next_here.saturating_sub(kept);
+        let skip = usize::try_from(from.saturating_sub(first)).unwrap_or(usize::MAX);
+        let applied = places.here.iter().skip(skip).cloned().collect();
         (applied, places.next_here)
     }
 
@@ -208,14 +210,13 @@ impl<R: Resource> Live<R> {
     pub(crate) fn place_landings(&self) {
         {
             let mut places = self.places.borrow_mut();
-            let here = std::mem::take(&mut places.applied_here);
-            for action in here {
-                let number = places.next_here;
-                places.next_here = number.saturating_add(1);
-                places.here.push_back((number, action));
-                if places.here.len() > APPLIED_KEPT {
-                    places.here.pop_front();
-                }
+            let mut here = std::mem::take(&mut places.applied_here);
+            let landed = u64::try_from(here.len()).unwrap_or(u64::MAX);
+            places.next_here = places.next_here.saturating_add(landed);
+            places.here.append(&mut here);
+            let excess = places.here.len().saturating_sub(APPLIED_KEPT);
+            if excess > 0 {
+                places.here = places.here.split_off(excess);
             }
         }
         let applied = std::mem::take(&mut self.places.borrow_mut().applied);
@@ -271,6 +272,18 @@ impl<R: Resource> Live<R> {
     /// [`with`](Self::with) or call this again when you need it.
     pub fn get(&self) -> Rc<R::State> {
         Rc::clone(self.inner.borrow().state())
+    }
+
+    /// The current state, when the document reads as the resource: `None`
+    /// while it does not, so a caller publishing what the state says never
+    /// reports the last state that read as if it were what the document
+    /// holds.
+    pub fn get_checked(&self) -> Option<Rc<R::State>> {
+        let inner = self.inner.borrow();
+        inner
+            .unreadable()
+            .is_none()
+            .then(|| Rc::clone(inner.state()))
     }
 
     /// Read the current state.
@@ -344,4 +357,21 @@ impl<R: Resource> Live<R> {
         }
         Ok(moved)
     }
+
+    /// Read the state whole from `doc`, whatever the last sync said, so a
+    /// change this reader cannot apply whole is noticed and reported: for a
+    /// resource kept small enough to read that way, which nothing else
+    /// would find out about. Returns whether the state changed.
+    pub fn reread(&self, doc: &Doc) -> Result<bool, ModelError> {
+        let mut reader = self.inner.borrow_mut();
+        let moved = reader.reread_whole(doc)?;
+        if moved {
+            note_synced(&self.changes, reader.last_delta());
+        }
+        Ok(moved)
+    }
 }
+
+#[cfg(test)]
+#[path = "live_tests.rs"]
+mod tests;

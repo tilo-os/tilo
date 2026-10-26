@@ -32,6 +32,8 @@ pub(super) enum SlotKey {
     /// One of a notice's buttons in the row, by its id.
     Notice(String),
     Overflow,
+    /// The window's reactions, which move as the reaction strip moves them.
+    Reactions,
 }
 
 impl SlotKey {
@@ -64,6 +66,7 @@ impl SlotKey {
                     .map_or_else(String::new, |action| action.id.clone()),
             ),
             Slot::Overflow => Self::Overflow,
+            Slot::Reaction(_) | Slot::ReactionAdd => Self::Reactions,
         }
     }
 }

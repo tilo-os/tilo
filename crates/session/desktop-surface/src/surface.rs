@@ -48,6 +48,7 @@ mod arrivals;
 #[cfg(test)]
 mod close_motion_tests;
 mod history;
+mod live_shares;
 mod notices;
 #[cfg(test)]
 mod open_motion_tests;
@@ -59,7 +60,7 @@ mod window_bars;
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
 pub use personal_ask::PersonalAsk;
-pub use search::{HostAction, HostActionSource, is_host_offer};
+pub use search::{HostAction, HostActionSource, is_host_offer, search_chord_keys};
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -99,6 +100,38 @@ pub trait TileSource {
     fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
         Vec::new()
     }
+
+    /// The tab already showing what the launch `app` opens (a record
+    /// launch's record, [`crate::session::record_launch`]): it comes
+    /// forward in place of a second window on the same record.
+    fn showing(&self, _app: &str) -> Option<TabId> {
+        None
+    }
+
+    /// The record `tab`'s window shows and the kind of resource it keeps,
+    /// for the windows a person may share ([`ui::window_share`]).
+    fn window_record(&self, _tab: TabId) -> Option<(String, String)> {
+        None
+    }
+
+    /// The workspace the windows are in, which each window's app is told:
+    /// apps sharing one process have none of their own.
+    fn workspace_room(&self) -> Option<String> {
+        None
+    }
+
+    /// Whether this desktop draws the views windows embed of other apps'
+    /// resources ([`Self::embed`]).
+    fn draws_embeds(&self) -> bool {
+        false
+    }
+
+    /// `view`'s own app on this desktop's copy of its record, to be drawn
+    /// scaled into the window that embeds it: the app, or why it cannot
+    /// show. Never creates the record.
+    fn embed(&mut self, _view: &ui::window_share::ResourceView) -> Result<TileHost, String> {
+        Err("This desktop can't show it here".into())
+    }
 }
 
 struct Shared {
@@ -128,6 +161,9 @@ struct Shared {
     /// The shown strip, the area it is drawn in and how far it is
     /// panned, as last laid out.
     shown_strip: Option<(StripId, Rect, f64)>,
+    /// Where the shown strip's controls are for control hints, as last
+    /// drawn.
+    hint_places: ui::widget::HintPlaces,
     /// Carets and selections of the focused window's editors, as last laid
     /// out ([`ui::presence::capability::subtree_presence`]).
     focused_presence: Vec<(PresenceKey, PresencePayload)>,
@@ -208,6 +244,12 @@ impl DesktopHandle {
     /// strip, however wide the surface or wherever it is panned to.
     pub fn shown_strip(&self) -> Option<(StripId, Rect, f64)> {
         self.shared.borrow().shown_strip
+    }
+
+    /// Where the shown strip's window bars and edges are for control hints,
+    /// in the surface's coordinates, as last drawn.
+    pub fn hint_places(&self) -> ui::widget::HintPlaces {
+        self.shared.borrow().hint_places.clone()
     }
 
     /// The caret or selection this desktop publishes as its presence, given
@@ -612,6 +654,8 @@ pub struct DesktopSurface {
     /// it wholly into view: never during the press, which would move what
     /// was pressed from under the pointer.
     reveal_on_release: Option<(StripId, GroupId)>,
+    /// The windows shared live, and the views windows embed of them.
+    live_shares: live_shares::LiveShares,
 }
 
 /// What one app may ask of its host in one frame; more waits for the next.
@@ -738,6 +782,7 @@ impl DesktopSurface {
             replaced: false,
             shown_tabs: Vec::new(),
             shown_strip: None,
+            hint_places: ui::widget::HintPlaces::default(),
             focused_presence: Vec::new(),
             rebuild: Vec::new(),
             search_request: None,
@@ -783,6 +828,7 @@ impl DesktopSurface {
             keyboard_tab: None,
             activation: None,
             reveal_on_release: None,
+            live_shares: live_shares::LiveShares::default(),
         };
         surface.show_active_strip();
         (surface, DesktopHandle { shared })
@@ -1095,8 +1141,8 @@ impl DesktopSurface {
                 model,
             );
             // A window that held an app's place (its code or record still
-            // coming) hands its opening card to what is built there now.
-            rebuilt.continue_opening_card(host);
+            // coming) hands its arrival to what is built there now.
+            rebuilt.continue_arrival(host);
             *host = rebuilt;
             built = true;
             if ui::time::now().duration_since(started) >= BUILD_BUDGET {
@@ -1374,6 +1420,15 @@ impl DesktopSurface {
             for command in queue {
                 let command = match command {
                     Admitted::Open(app) => navigation::resolve_open(&shared.tree, &app),
+                    // A record already open in a window comes forward.
+                    Admitted::Launch(app) => match self
+                        .tiles
+                        .showing(&app)
+                        .and_then(|tab| route_of(&shared.tree, tab))
+                    {
+                        Some(ids) => Admitted::Select(ids),
+                        None => Admitted::Launch(app),
+                    },
                     // The workspace's history is the Activity app's to show:
                     // it opens, or comes forward, and is offered the view.
                     Admitted::Activity(_, view, author) => {
@@ -2174,7 +2229,9 @@ fn build_tile(
     let mut host = tiles.tile(workspace, tab);
     host.set_panic_scope(tab.id);
     // Its app's bar is drawn here: what it declares goes on its window.
-    host.set_hosted_window(ui::hosted_window::HostedWindow::new());
+    let window = ui::hosted_window::HostedWindow::new();
+    window.set_workspace(tiles.workspace_room());
+    host.set_hosted_window(window);
     if let Some(domain) = controls {
         ui::widget::controls::install_control_custody(
             &mut host,
@@ -2284,19 +2341,35 @@ impl Widget for DesktopSurface {
             || search_was_open != self.search.is_open()
             || held;
         let row_changed = self.shown_row().is_some_and(|row| row.update(state, path));
+        self.offer_window_shares();
         let bars_changed = self.sync_window_bars();
+        let share_asked = self.take_window_share_asks();
+        let embeds_changed = self.follow_embeds(state, path);
         self.refresh_presentation();
         self.sync_activity();
         self.refresh_notifications();
         if !self.shared.borrow().queue.is_empty() {
-            // The history or the centre opened a window.
+            // The history, the centre or a window's share opened a window.
             let (doc, root) = ui::doc::document_ref(state, path);
             self.apply_commands(doc, root);
             self.show_active_strip();
             self.present();
             self.refresh_presentation();
         }
-        changed || row_changed || bars_changed || self.structure_dirty
+        changed
+            || row_changed
+            || bars_changed
+            || share_asked
+            || embeds_changed
+            || self.structure_dirty
+    }
+
+    /// The windows' edits, then the views they embed.
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+        self.settle_embeds(edits, path);
     }
 
     fn build_layout(
@@ -2450,9 +2523,12 @@ impl Widget for DesktopSurface {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some(row) = self.shown_row() {
+        let hint_places = self.shown_row().map(|row| {
             ui::widget::draw_child(row, scene, transform, text, theme, presence);
-        }
+            row.hint_places()
+        });
+        self.shared.borrow_mut().hint_places = hint_places.unwrap_or_default();
+        self.draw_embeds(scene, transform, text, theme, presence);
         self.draw_overlays(scene, transform, text, theme, presence);
     }
 
@@ -2630,6 +2706,7 @@ impl Widget for DesktopSurface {
     fn needs_animation_frame(&self) -> bool {
         let shown = self.shown;
         self.activity_loading
+            || self.embeds_animate()
             || self.unbuilt.iter().any(|&(strip, _)| Some(strip) == shown)
             || self
                 .children()
@@ -2656,6 +2733,7 @@ impl Widget for DesktopSurface {
             .filter_map(Widget::next_wake_deadline)
             .chain(ends)
             .chain(answer)
+            .chain(self.embed_retry_deadline())
             .min()
     }
 

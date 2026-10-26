@@ -122,10 +122,23 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
         request_id: [44; 32],
         proof_digest,
         redemption: &redemption,
+        name: Some("Calm Owl"),
     }];
     let mut candidate = peer.clone();
     let refusals = ledger.admit(&mut candidate, &joins, &authority_key, now_ns);
     assert!(refusals.iter().all(Option::is_none), "{refusals:?}");
+    let guest_member = candidate
+        .governance()
+        .governed_members(now)
+        .unwrap()
+        .into_iter()
+        .find(|member| member.user_public_key == guest_cert.user_public_key)
+        .unwrap();
+    assert_eq!(
+        guest_member.display_name.as_deref(),
+        Some("Calm Owl"),
+        "the room names the guest as they named themself, not by their device"
+    );
     let committed = Governed {
         peer: &candidate,
         workspace_id: 7,

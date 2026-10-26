@@ -62,6 +62,7 @@ use ui::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::model::PageId;
 use crate::note_header::NoteHeader;
 use crate::num;
+use crate::status_bar::count_words;
 
 /// The empty notebook's title and its one action, in this locale.
 struct EmptyLabels {
@@ -176,6 +177,19 @@ fn pin_under_gutter(
             ..existing
         },
     );
+}
+
+/// The reactions to the note the header shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteReactions {
+    pub page: PageId,
+    /// A pill per emoji, the emoji reacted with first first, each reactor
+    /// named.
+    pub groups: Vec<ui::tilo_resource::ReactionGroup>,
+    /// Who the person is: their own reactions are the chosen pills.
+    pub me: String,
+    /// The person may react here, and the add button shows.
+    pub can_react: bool,
 }
 
 /// Presentation data for a durable tag. Keeping its id beside the label means
@@ -419,6 +433,10 @@ pub struct MainPanel {
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: NotesEditor,
+    /// Counting revision of the editor's blocks: bumped wherever this panel
+    /// changes what the editor shows without the editor itself editing — it
+    /// presents content, binds another page or clears.
+    content_generation: u64,
     /// The notebook's dispatcher, once the app is hosted: page bodies are
     /// edited through it.
     notebook: Option<Dispatcher<crate::resource::Notebook>>,
@@ -531,6 +549,7 @@ impl MainPanel {
             page_width: f64::INFINITY,
             pending_backlink_open: None,
             editor: notes_editor(None, None),
+            content_generation: 0,
             notebook: None,
             image_store: None,
             body: String::new(),
@@ -613,6 +632,7 @@ impl MainPanel {
     /// grammar that `BlockEditor::from_markdown` does not handle.
     pub fn load_page(&mut self, id: PageId, title: &str, body: impl AsRef<str>) {
         let body = body.as_ref();
+        self.content_generation = self.content_generation.wrapping_add(1);
         self.page_id = Some(id);
         self.dates = self.date_index.get(id);
         self.refresh_captions();
@@ -688,6 +708,7 @@ impl MainPanel {
             .unwrap_or((0, ui::widget::CursorPlacement::Start));
         editor.editor_mut().focus_block(index, placement);
         self.editor = editor;
+        self.content_generation = self.content_generation.wrapping_add(1);
         self.page_id = Some(page);
         self.dates = self.date_index.get(page);
         self.refresh_captions();
@@ -720,6 +741,9 @@ impl MainPanel {
         panel.date_index.clone_from(&self.date_index);
         if let Some(actions) = self.header.actions() {
             panel.header.attach(actions);
+        }
+        if let Some(notebook) = self.notebook.clone() {
+            panel.header.set_notebook(notebook);
         }
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
@@ -785,10 +809,12 @@ impl MainPanel {
         self.parent_path.clear();
         self.set_title_value("");
         self.header.set_tags(Vec::new());
+        self.header.set_reactions(None);
         self.header.set_backlinks(Vec::new());
         self.header.set_captions(Vec::new());
         self.metadata_height = 0.0;
         self.editor = self.fresh_editor(None);
+        self.content_generation = self.content_generation.wrapping_add(1);
         self.body = String::new();
         self.scroll_y = 0.0;
         self.glide.stop();
@@ -821,6 +847,13 @@ impl MainPanel {
     /// an otherwise idle collaboration sync.
     pub fn set_tags(&mut self, tags: Vec<TagChip>) {
         if self.header.set_tags(tags) {
+            self.header_changed();
+        }
+    }
+
+    /// Show the reactions to the note (`None`: none, and no add button).
+    pub fn set_reactions(&mut self, reactions: Option<NoteReactions>) {
+        if self.header.set_reactions(reactions) {
             self.header_changed();
         }
     }
@@ -908,8 +941,9 @@ impl MainPanel {
         actions: ui::framework::Actions<crate::resource::Notebook>,
     ) {
         self.editor.source_mut().attach(&notebook);
-        self.notebook = Some(notebook);
         self.header.attach(actions);
+        self.header.set_notebook(notebook.clone());
+        self.notebook = Some(notebook);
     }
 
     fn fresh_editor(&self, page: Option<(PageId, ObjId)>) -> NotesEditor {
@@ -926,6 +960,10 @@ impl MainPanel {
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.editor.editor_mut().take_external_link_open()
+    }
+
+    pub fn take_resource_link_open(&mut self) -> Option<String> {
+        self.editor.editor_mut().take_resource_link_open()
     }
 
     /// The slash command the person chose that Notes carries out, once.
@@ -1333,6 +1371,38 @@ impl MainPanel {
         self.editor.editor()
     }
 
+    /// A number that moves whenever the blocks the editor shows change: a
+    /// keystroke, an applied action, an undo, and every presentation, bind or
+    /// clear made on top of them. A caller that read something off the blocks
+    /// can reuse what it read until this moves.
+    #[must_use]
+    pub fn content_revision(&self) -> u64 {
+        ui::widget::find_bar::Findable::content_revision(self.editor.editor())
+            .wrapping_add(self.content_generation)
+    }
+
+    /// How many words the note's blocks hold, in the words a reader counts:
+    /// runs of non-whitespace in each block's plain text, plus the bullet or
+    /// check mark of one that carries no text of its own. The markdown chrome
+    /// around a word (`- `, `**`, a fence) is not counted as one.
+    ///
+    /// Walking every block, so a caller on a hot path counts once and reuses
+    /// the total until [`Self::content_revision`] moves.
+    #[must_use]
+    pub fn word_count(&self) -> usize {
+        let blocks = self.editor.editor().blocks();
+        blocks
+            .iter()
+            .map(|block| count_words(block.text()))
+            .sum::<usize>()
+            + blocks
+                .iter()
+                // A bullet or a checkbox is a word of its own when it holds
+                // nothing else.
+                .filter(|block| block.text().trim().is_empty() && block.kind.supports_indent())
+                .count()
+    }
+
     pub(crate) fn editor_route_available(&self) -> bool {
         self.editor_node.is_some()
     }
@@ -1472,6 +1542,12 @@ impl MainPanel {
             collect(header, &mut out);
         }
         out
+    }
+
+    /// Test hook: the reactions the header shows for the open note.
+    #[doc(hidden)]
+    pub fn reactions_for_test(&self) -> Option<&NoteReactions> {
+        self.header.reactions()
     }
 
     /// Test hook: where the document starts under the title and header.

@@ -304,6 +304,7 @@ impl TextInput {
         if !self.masked() {
             if let Some(layout) = &self.single_layout {
                 text_renderer.draw_rich(scene, layout, text_origin, text_color);
+                self.tint_selected_emoji(scene, text_origin, theme, layout);
             }
         } else if let Some(fam) = &self.family {
             text_renderer.draw_style(

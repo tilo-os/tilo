@@ -27,11 +27,13 @@ mod i18n;
 mod image_loads;
 mod native_editor;
 pub mod parse;
+pub mod preferences;
 pub mod resource;
 pub mod runs;
 mod scenarios;
 pub mod screen;
 pub mod target;
+pub mod undoability;
 
 pub use graphics::TerminalImagePlacement;
 

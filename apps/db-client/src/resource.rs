@@ -24,8 +24,6 @@ use crate::record::{SavedConnection, SavedQuery, id_of};
 
 pub use crate::record::Workspace;
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
-
 #[resource(
     kind = "db-client.workspace",
     label = "Database",
@@ -267,7 +265,7 @@ impl ResourceApp for DbClientShell {
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(crate::i18n::catalogs())
     }
 
     /// `empty` is the first run; every other scenario shows the bundled

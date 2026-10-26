@@ -400,8 +400,13 @@ fn upgrade(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError
         } else if let Some(source) = key.strip_prefix(legacy::TREE) {
             let text = scalar(doc, &ROOT, &key)
                 .ok_or_else(|| ModelError::invalid("an imported tree is no text").at(&key))?;
+            // Read the way the record reads a kept tree (`json_model!`): as
+            // JSON first, then the tree, so the app compiles one reader of it.
             let tree: ImportedTree = serde_json::from_str(&text)
-                .map_err(|error| ModelError::invalid(error.to_string()).at(&key))?;
+                .and_then(serde_json::from_value)
+                .map_err(|error: serde_json::Error| {
+                    ModelError::invalid(error.to_string()).at(&key)
+                })?;
             trees.insert(source, tree);
         } else if let Some(node) = key.strip_prefix(legacy::REMOVED_NODE) {
             hidden.insert(node.to_owned());

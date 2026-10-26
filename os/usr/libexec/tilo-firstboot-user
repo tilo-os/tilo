@@ -140,8 +140,9 @@ repair_enrolled_device_key() {
     IFS=: read -r key_owner key_mode key_links <<<"$key_meta"
     [ "$key_owner" = 0 ] && [ "$key_links" = 1 ] \
       && { [ "$key_mode" = 600 ] || [ "$key_mode" = 640 ]; } || return 1
+    # The directory's 2750 mode is tmpfiles' (tilo.conf), applied before this unit runs:
+    # RestrictSUIDSGID refuses any chmod here that carries the setgid bit.
     chgrp tilo-identity "$key_dir"
-    chmod 2750 "$key_dir"
     chgrp tilo-identity "$key"
     chmod 0640 "$key"
   fi

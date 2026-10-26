@@ -97,6 +97,30 @@ impl Rooms {
         *self.inner.content.source.write_recover() = Some(content);
     }
 
+    /// The bytes named `hash` this host keeps for the room of `workspace`
+    /// governed here, checked against the hash: what its bots fetched and
+    /// the files it keeps for members. `None` for a room not governed here
+    /// or content it does not keep.
+    pub async fn kept_content(&self, workspace: u64, hash: &str) -> Option<Vec<u8>> {
+        let source = self.inner.content.get()?;
+        let rooms = self
+            .inner
+            .rooms
+            .lock()
+            .await
+            .iter()
+            .map(|(room, governed)| (room.clone(), governed.clone()))
+            .collect::<Vec<_>>();
+        for (room, governed) in rooms {
+            if governed.lock().await.workspace_id() == workspace {
+                return source
+                    .read(&room, "", hash)
+                    .filter(|bytes| tilo_content::verify(hash, bytes));
+            }
+        }
+        None
+    }
+
     /// Hand the pieces of content members send this host to `keeper`.
     pub fn keep_content(&self, keeper: Arc<dyn ContentKeeper>) {
         *self.inner.content.keeper.write_recover() = Some(keeper);

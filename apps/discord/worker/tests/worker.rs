@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use discord_wire::event::{code_sha256, event_id, source};
-use discord_wire::op::{DiscordOp, FetchAssetOp, MemberOp, OutAttachment, SendOp};
+use discord_wire::op::{DiscordOp, FetchAssetOp, MemberOp, OutAttachment, ReactOp, SendOp};
 use fake_discord::{CHANNEL_GENERAL, FakeDiscord, TOKEN, User};
 use serde_json::{Map, Value, json};
 use tilo_connector::framing::{read_frame_async, write_frame_async};
@@ -313,7 +313,7 @@ fn message_id(outcome: &Outcome) -> String {
 async fn identifies_with_the_bridge_intents_and_reports_messages() {
     let host = Host::start(false).await;
     host.connected().await;
-    assert_eq!(host.fake.intents(), Some(34_439));
+    assert_eq!(host.fake.intents(), Some(34_447));
     let ada = User::new("3001", "ada");
     let id = host.fake.post(CHANNEL_GENERAL, &ada, "hello from Discord");
     let payload = host
@@ -741,5 +741,76 @@ async fn read_only_changes_nothing() {
             .await
             .is_some()
     );
+    host.stop().await;
+}
+
+/// The server's custom emoji reach the host with its layout, and the bot
+/// reacts with one by `name:id`; Discord's echo of it keeps the emoji's id.
+#[tokio::test]
+async fn custom_emoji_are_reported_and_reacted_with() {
+    let fake = FakeDiscord::start().await.expect("fake discord");
+    fake.set_emojis(&[("tilo_hello", "55", false)]);
+    let host = Host::with(fake, false, None);
+    host.connected().await;
+    let layout_with = |names: &'static [&'static str]| {
+        move |seen: &Seen| match seen {
+            Seen::Event(s, _, payload)
+                if s == source::LAYOUT_CHANGED
+                    && payload["emojis"]
+                        .as_array()
+                        .is_some_and(|e| e.iter().map(|e| &e["name"]).eq(names.iter())) =>
+            {
+                Some(())
+            }
+            _ => None,
+        }
+    };
+    assert!(host.wait(layout_with(&["tilo_hello"])).await.is_some());
+    // A moderator uploads another: the layout follows.
+    host.fake
+        .set_emojis(&[("tilo_hello", "55", false), ("wave", "56", true)]);
+    assert!(
+        host.wait(layout_with(&["tilo_hello", "wave"]))
+            .await
+            .is_some()
+    );
+
+    let bo = User::new("3001", "bo");
+    let message = host.fake.post(CHANNEL_GENERAL, &bo, "react to me");
+    let react = |emoji: &str| {
+        DiscordOp::React(ReactOp {
+            channel: CHANNEL_GENERAL.to_owned(),
+            message: message.clone(),
+            emoji: emoji.to_owned(),
+        })
+    };
+    let outcome = host.perform(&react("tilo_hello:55")).await;
+    assert!(matches!(outcome, Outcome::Done { .. }), "{outcome:?}");
+    assert_eq!(host.fake.bot_reactions_on(&message), ["tilo_hello:55"]);
+    let echo = host
+        .wait(|seen| match seen {
+            Seen::Event(s, _, payload)
+                if s == source::REACTION_ADDED && payload["user_id"] == fake_discord::BOT_USER =>
+            {
+                Some(payload.clone())
+            }
+            _ => None,
+        })
+        .await
+        .expect("Discord echoes the bot's reaction");
+    assert_eq!(echo["emoji"], ":tilo_hello:");
+    assert_eq!(echo["emoji_id"], "55");
+    // An emoji the server does not have is refused.
+    let unknown = host.perform(&react("nope:99")).await;
+    assert!(matches!(unknown, Outcome::Refused { .. }), "{unknown:?}");
+    let outcome = host
+        .perform(&DiscordOp::Unreact(ReactOp {
+            channel: CHANNEL_GENERAL.to_owned(),
+            message: message.clone(),
+            emoji: "tilo_hello:55".to_owned(),
+        }))
+        .await;
+    assert!(matches!(outcome, Outcome::Done { .. }), "{outcome:?}");
+    assert!(host.fake.bot_reactions_on(&message).is_empty());
     host.stop().await;
 }

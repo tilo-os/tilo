@@ -446,6 +446,7 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomP
         joined,
         grants,
     }
+    .with_current_roles()
 }
 
 /// Project a room's sandbox capabilities, by id.

@@ -885,6 +885,49 @@ impl VideoEditorApp {
                 fill_round(scene, tf, Rect::new(ix, iy, ix + iw, iy + ih), 1.5, fg);
             }
         }
+        // Side by side: two sibling buttons, each a miniature frame with the
+        // picture in its half, so the row reads as the arrangement rather
+        // than as two unexplained words.
+        if let Some((_, _, first)) = l.sides.first() {
+            caption_above(scene, tr, tf, theme, "Side by side", x0, first.y0);
+            for (_, side, rect) in &l.sides {
+                let placement = side.placement();
+                let on = placement.is_some_and(|p| {
+                    (clip.transform.scale_x - p.scale_x).abs() < 1e-6
+                        && (clip.transform.pos_x - p.pos_x).abs() < 1e-6
+                });
+                draw_toggle_button(
+                    &mut PaintCtx::new(scene, tf, tr, theme),
+                    *rect,
+                    "",
+                    on,
+                    rect.contains(self.last_mouse),
+                );
+                let fg = if on { c.text_primary } else { c.text_dim };
+                let g = Rect::new(
+                    rect.center().x - 14.0,
+                    rect.center().y - 6.0,
+                    rect.center().x + 14.0,
+                    rect.center().y + 6.0,
+                );
+                stroke_round(scene, tf, g, 2.0, fg, 1.0);
+                let half = Rect::new(
+                    if *side == Side::Left {
+                        g.x0
+                    } else {
+                        g.center().x
+                    },
+                    g.y0,
+                    if *side == Side::Left {
+                        g.center().x
+                    } else {
+                        g.x1
+                    },
+                    g.y1,
+                );
+                fill_round(scene, tf, half.inset(1.5), 1.0, fg);
+            }
+        }
         if l.crop_label_y > 0.0 {
             text(
                 scene,

@@ -423,11 +423,14 @@ impl<P: Chained> ChainState<P> {
                     &verb,
                 )
             } else {
+                // A field edit, at the field it changes, as the published
+                // `field-edit`: a grant on that action covers it too.
                 TreePath::root()
                     .app(self.room.app_id)
                     .kind(P::KIND)
                     .resource(self.id.clone())
                     .field(need.field.as_deref().unwrap_or_default())
+                    .action(tilo_resource::FIELD_EDIT)
             };
             if !permissions.check(&PermissionScope::Action {
                 node,

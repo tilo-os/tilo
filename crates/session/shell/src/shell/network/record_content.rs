@@ -557,7 +557,7 @@ pub(super) mod tests {
         let mut delivered = 0_usize;
         while let Ok(command) = from.commands.try_recv() {
             let (ws, msg) = match command {
-                NetCmd::Publish { ws, msg } => (ws, msg),
+                NetCmd::Publish { ws, msg, .. } => (ws, msg),
                 NetCmd::PublishRecordContent(delivery) => {
                     assert_eq!(
                         delivery.target,

@@ -42,6 +42,9 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(select(["os/hardware/profiles/lenovo-83ed/input/touchpad.json"]), "B04,W17,input")
         self.assertEqual(select(["crates/runtime/tilo-runtime/src/session_door.rs"]), "agent")
         self.assertEqual(select([S + "guest/mcp_client.py"]), "agent")
+        self.assertEqual(select(["crates/system/secret-service/src/store.rs"]), "secrets")
+        self.assertEqual(select(["crates/session/shell/src/portal/secret.rs"]), "secrets")
+        self.assertEqual(select(["crates/session/shell/src/shell/mls_vault.rs"]), "secrets")
         both = set(select(["crates/dev/tilo-vmd/src/input.rs",
                            "crates/runtime/tilo-runtime/src/mcp.rs"]).split(","))
         self.assertEqual(both, {"B04", "W17", "input", "agent"})

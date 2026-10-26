@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::task::Poll;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -38,7 +39,9 @@ use tilo_actions::remote::{
 use uuid::Uuid;
 
 use crate::catalog::{ResourceTarget, find_row};
-use crate::grant::{StepGrant, grant_answer, step_node};
+use crate::grant::{
+    EDIT_PARAM, FIELD_EDIT, StepGrant, edit_reach, grant_answer, step_node, step_node_at,
+};
 use crate::path::StepPath;
 use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
 use crate::template::{self, Piece, render_value};
@@ -169,6 +172,38 @@ pub trait RunHooks: Sync {
     /// cannot tell when the invocation changes. Abandoning the answer stops
     /// the run.
     fn settle(&self, invocation: InvocationId) -> Pending<()>;
+
+    /// Resolve once `what` has been asked, and every run in this process has
+    /// stopped (`Err`), so the run stops too.
+    ///
+    /// The interpreter holds a step that is waiting; it is called before the
+    /// step runs and before every look at a running invocation, so a stop
+    /// takes effect before the next step is started, while an action already
+    /// under way finishes and its effect is recorded as it is. A hook whose
+    /// runs cannot be stopped outside their own questions need not answer;
+    /// the default never stops one.
+    fn stopped(&self, _what: StopWatch<'_>) -> Pending<Result<(), String>> {
+        Pending::ready(Ok(()))
+    }
+}
+
+/// What a run was doing when [`RunHooks::stopped`] was asked: the step it is
+/// at, and when it got there.
+#[derive(Clone, Copy, Debug)]
+pub struct StopWatch<'a> {
+    /// Where the step is; [`StepPath::root`] before the first one and at the
+    /// shortcut's output binding.
+    pub path: &'a StepPath,
+    /// When the run reached this step.
+    pub since: std::time::Instant,
+}
+
+impl StopWatch<'_> {
+    /// How long the step has been running.
+    #[must_use]
+    pub fn elapsed(&self) -> std::time::Duration {
+        self.since.elapsed()
+    }
 }
 
 /// Why a step did not complete. Every variant stops the run.
@@ -215,6 +250,10 @@ pub enum StepFailure {
     Contract { reason: String },
     #[error("the answer never came")]
     Abandoned,
+    #[error("the run was stopped: {reason}")]
+    Stopped { reason: String },
+    #[error("the step did not finish within {seconds} s")]
+    TimedOut { seconds: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -245,9 +284,15 @@ pub struct StepRecord {
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum RunOutcome {
     Completed,
+    /// A step failed; nothing after it ran.
     Failed {
         path: StepPath,
         failure: StepFailure,
+    },
+    /// The run was stopped before the step at `at`: what it had already done
+    /// stands, and can be undone as one step like a completed run's.
+    Cancelled {
+        at: StepPath,
     },
 }
 
@@ -256,6 +301,11 @@ pub enum RunOutcome {
 pub struct RunReport {
     pub run: RunId,
     pub shortcut: String,
+    /// BLAKE3 hex of the version of the shortcut that ran
+    /// ([`program_hash`](crate::program::program_hash)), so the record of a
+    /// run says which program produced it after the shortcut is edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// The trigger kind (`manual`, `schedule`, …).
     pub trigger: String,
     pub mode: RunMode,
@@ -297,6 +347,9 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
     let mut report = RunReport {
         run,
         shortcut: shortcut.id.clone(),
+        version: crate::program::canonical_bytes(shortcut)
+            .ok()
+            .map(|bytes| crate::program::program_hash(&bytes)),
         trigger: trigger.kind().to_string(),
         mode,
         steps: Vec::new(),
@@ -329,6 +382,12 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         outputs: BTreeMap::new(),
         records: Vec::new(),
         caused_by,
+        timeout: shortcut
+            .step_timeout_secs
+            .map_or(DEFAULT_STEP_TIMEOUT, |secs| {
+                std::time::Duration::from_secs(secs.max(1))
+            }),
+        stopped: None,
     };
     let finished = runner.block(&shortcut.steps, StepPath::root()).await;
     let finished = finished.and_then(|()| match &shortcut.output {
@@ -339,11 +398,18 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         None => Ok(()),
     });
     if let Err((path, failure)) = finished {
-        report.outcome = RunOutcome::Failed { path, failure };
+        report.outcome = match runner.stopped.clone() {
+            Some(at) => RunOutcome::Cancelled { at },
+            None => RunOutcome::Failed { path, failure },
+        };
     }
     report.steps = runner.records;
     report
 }
+
+/// How long a step may run before the run stops waiting for it, when the
+/// shortcut names no [`Shortcut::step_timeout_secs`].
+pub const DEFAULT_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 type Stop = (StepPath, StepFailure);
 type Block<'s> = Pin<Box<dyn Future<Output = Result<(), Stop>> + Send + 's>>;
@@ -362,6 +428,10 @@ struct Runner<'a, H, K> {
     outputs: BTreeMap<String, Value>,
     records: Vec<StepRecord>,
     caused_by: Option<tilo_actions::context::Cause>,
+    /// How long each step of the run may take.
+    timeout: std::time::Duration,
+    /// The step the run was told to stop at, when it was.
+    stopped: Option<StepPath>,
 }
 
 /// A step's result before it is recorded.
@@ -375,6 +445,102 @@ impl Done {
         Self {
             invocation: None,
             result,
+        }
+    }
+}
+
+/// How often a wait looks again while its other answers are still pending.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Whether running `kind` invokes a published action — the steps a stop must
+/// keep from starting, whose effect would otherwise land.
+fn invokes(kind: &StepKind) -> bool {
+    matches!(kind, StepKind::Invoke { .. } | StepKind::Ai { .. })
+}
+
+/// Which of the waits a step is in answered first.
+enum Wait {
+    /// The host said the invocation may have moved.
+    Moved(Result<(), StepFailure>),
+    /// The caller stopped the run.
+    Stopped(String),
+    /// The step outstayed its patience.
+    TimedOut,
+}
+
+/// Poll `moved`, `stopped` and the clock `left` until one of them answers
+/// that the wait is over.
+///
+/// A future that already answered is not polled again — a [`Pending`] may be
+/// polled any number of times, and polling a settled one reads as abandoned.
+/// Looking at the move first keeps a host that pushes changes on the fast
+/// path: its answer ends the wait. A host that cannot tell falls back to
+/// [`POLL_INTERVAL`] while `refreshing` says so, and every look at the clock
+/// asks the stop first, so a long wait still ends as soon as someone stops
+/// it.
+async fn wait_for<M, S>(moved: M, stopped: S, left: std::time::Duration, refreshing: bool) -> Wait
+where
+    M: Future<Output = Result<(), StepFailure>>,
+    S: Future<Output = Option<Result<(), String>>>,
+{
+    let mut moved = std::pin::pin!(moved);
+    let mut stopped = std::pin::pin!(stopped);
+    let mut moved_done = false;
+    let mut stopped_done = false;
+    let mut left = left;
+    loop {
+        let mut clock = std::pin::pin!(WaitUntil(std::time::Instant::now().checked_add(left)));
+        let outcome = std::future::poll_fn(|waker| {
+            if !moved_done && let Poll::Ready(outcome) = moved.as_mut().poll(waker) {
+                return Poll::Ready(match outcome {
+                    Ok(()) => Wait::Moved(Ok(())),
+                    Err(failure) => Wait::Moved(Err(failure)),
+                });
+            }
+            if !stopped_done {
+                match stopped.as_mut().poll(waker) {
+                    Poll::Ready(Some(Err(reason))) => return Poll::Ready(Wait::Stopped(reason)),
+                    // Nothing stopped the run: only the move is left to wait
+                    // for, and the clock bounds it.
+                    Poll::Ready(Some(Ok(()))) | Poll::Pending => {}
+                    // The hook gave no answer: it cannot stop this run.
+                    Poll::Ready(None) => stopped_done = true,
+                }
+            }
+            if clock.as_mut().poll(waker).is_ready() {
+                return Poll::Ready(Wait::TimedOut);
+            }
+            Poll::Pending
+        })
+        .await;
+        match outcome {
+            // The host pushed a change: the step looks at its invocation.
+            Wait::Moved(Ok(())) => return Wait::Moved(Ok(())),
+            Wait::Moved(Err(failure)) => return Wait::Moved(Err(failure)),
+            Wait::Stopped(reason) => return Wait::Stopped(reason),
+            // A host that cannot tell when an invocation moves falls back to
+            // a poll interval: the move is tried again before the wait ends.
+            Wait::TimedOut if refreshing && !moved_done => {
+                moved_done = true;
+                left = left.saturating_sub(POLL_INTERVAL);
+            }
+            Wait::TimedOut => return Wait::TimedOut,
+        }
+    }
+}
+
+/// Resolve once `at` has passed, on the waker that looks at it: the timer
+/// belongs to whoever waits, so the interpreter needs none of its own.
+/// `None` is a deadline already gone.
+struct WaitUntil(Option<std::time::Instant>);
+
+impl Future for WaitUntil {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        match self.0 {
+            Some(at) if std::time::Instant::now() >= at => std::task::Poll::Ready(()),
+            _ => std::task::Poll::Pending,
         }
     }
 }
@@ -394,6 +560,13 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
 
     /// Append the record of a finished step; a failure stops the run.
     fn record(&mut self, step: &Step, path: &StepPath, done: Done) -> Result<(), Stop> {
+        // A run that was stopped ends as cancelled: it did not fail at the
+        // step, it was told to stop there, and what it did until then
+        // stands. The record says which step, so a resumed run can say where
+        // it stopped.
+        if matches!(done.result, Err(StepFailure::Stopped { .. })) {
+            self.stopped = Some(path.clone());
+        }
         let (status, halt) = match done.result {
             Ok(output) => {
                 let shown = output.as_ref().map(|value| redacted(step, value));
@@ -419,6 +592,15 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     }
 
     async fn step(&mut self, step: &'a Step, path: StepPath) -> Result<(), Stop> {
+        // A step that would invoke something is not begun once the run is
+        // stopped: nothing it could do is left to take back. A question or an
+        // assignment is only ever recorded as not taken.
+        if invokes(&step.kind)
+            && let Err(reason) = self.stopped(&path).await
+        {
+            let stopped = StepFailure::Stopped { reason };
+            return self.record(step, &path, Done::local(Err(stopped)));
+        }
         match &step.kind {
             StepKind::Invoke {
                 action,
@@ -584,13 +766,16 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             Err(failure) => return Done::local(Err(failure)),
         };
         let invocation = prepared.request.invocation;
-        let result = self.complete(prepared.request).await.and_then(|output| {
-            prepared
-                .result
-                .validate(&output)
-                .map_err(|reason| StepFailure::Contract { reason })?;
-            Ok(result_value(&prepared.result, output))
-        });
+        let result = self
+            .complete(prepared.request, path)
+            .await
+            .and_then(|output| {
+                prepared
+                    .result
+                    .validate(&output)
+                    .map_err(|reason| StepFailure::Contract { reason })?;
+                Ok(result_value(&prepared.result, output))
+            });
         Done {
             invocation: Some(invocation),
             result,
@@ -658,15 +843,6 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 reason: "the row offers no action".into(),
             });
         };
-        let granted = self.granted(app_id, action, descriptor)?;
-        if let tilo_actions::contract::Availability::Unavailable { code, reason } =
-            &descriptor.contract.availability
-        {
-            return Err(StepFailure::Unavailable {
-                code: code.clone(),
-                reason: reason.clone(),
-            });
-        }
         let mut supplied = Map::new();
         for (name, binding) in args {
             let Some(value) = self.evaluate(binding)? else {
@@ -682,6 +858,15 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             if !omitted {
                 supplied.insert(name.clone(), value);
             }
+        }
+        let granted = self.granted(app_id, action, descriptor, &supplied)?;
+        if let tilo_actions::contract::Availability::Unavailable { code, reason } =
+            &descriptor.contract.availability
+        {
+            return Err(StepFailure::Unavailable {
+                code: code.clone(),
+                reason: reason.clone(),
+            });
         }
         let bound = ActionArgs::bind_json(&descriptor.params, &supplied).map_err(|error| {
             StepFailure::Arguments {
@@ -730,18 +915,37 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
 
     /// What the shortcut's grant answers for the step: a refusal, or an
     /// answer the step may proceed under.
+    /// A field edit is decided where its path (in `supplied`) acts, as
+    /// the room decides it.
     fn granted(
         &self,
         app_id: &str,
         action: &str,
         descriptor: &ActionDescriptor,
+        supplied: &Map<String, Value>,
     ) -> Result<StepGrant, StepFailure> {
-        let node = step_node(
-            self.caller.room(),
-            app_id,
-            &descriptor.resource_kind,
-            &descriptor.address,
-        );
+        let at = (action == FIELD_EDIT)
+            .then(|| {
+                supplied
+                    .get(EDIT_PARAM)
+                    .and_then(|edit| edit_reach(&Binding::Literal(edit.clone())))
+            })
+            .flatten();
+        let node = match &at {
+            Some(at) => step_node_at(
+                self.caller.room(),
+                app_id,
+                &descriptor.resource_kind,
+                &descriptor.address,
+                at,
+            ),
+            None => step_node(
+                self.caller.room(),
+                app_id,
+                &descriptor.resource_kind,
+                &descriptor.address,
+            ),
+        };
         let granted = grant_answer(&self.shortcut.grant, &node, descriptor.contract.kind);
         let (app_id, action) = (app_id.to_string(), action.to_string());
         match (granted.answer, self.mode) {
@@ -897,8 +1101,16 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     }
 
     /// Invoke — or, when this run already did, pick up the earlier
-    /// invocation — and wait for its outcome.
-    async fn complete(&self, request: InvokeRequest) -> Result<ActionOutput, StepFailure> {
+    /// invocation — and wait for its outcome, or give up waiting when the
+    /// caller stops the run or the step outstays its patience. Giving up
+    /// never cancels the action itself: an effect that still lands is the
+    /// host's to record like any other.
+    async fn complete(
+        &self,
+        request: InvokeRequest,
+        path: &StepPath,
+    ) -> Result<ActionOutput, StepFailure> {
+        let deadline = std::time::Instant::now().checked_add(self.timeout);
         let id = request.invocation;
         let mut status = match self.host.observe(&self.caller, &id) {
             Some(state) => state.receipt().status,
@@ -930,12 +1142,33 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     return Err(StepFailure::Cancelled { message });
                 }
                 ReceiptStatus::Accepted => {
+                    let left = deadline.and_then(|deadline| {
+                        deadline.checked_duration_since(std::time::Instant::now())
+                    });
+                    let Some(left) = left else {
+                        return Err(self.timed_out());
+                    };
                     // Wake when the host says the invocation may have moved;
                     // only a host that cannot tell falls back to the hooks'
-                    // poll interval.
-                    match self.host.next_change(&self.caller, &id) {
-                        Some(change) => change.await.ok_or(StepFailure::Abandoned)?,
-                        None => self.hooks.settle(id).await.ok_or(StepFailure::Abandoned)?,
+                    // poll interval. A stop or a timeout ends the wait; the
+                    // invocation itself is left to the host.
+                    let change = self.host.next_change(&self.caller, &id);
+                    let refreshing = change.is_none();
+                    let moved = async {
+                        match change {
+                            Some(change) => change.await.ok_or(StepFailure::Abandoned),
+                            None => self.hooks.settle(id).await.ok_or(StepFailure::Abandoned),
+                        }
+                    };
+                    let stopped = self.hooks.stopped(StopWatch {
+                        path,
+                        since: std::time::Instant::now(),
+                    });
+                    match wait_for(moved, stopped, left, refreshing).await {
+                        Wait::Moved(Ok(())) => {}
+                        Wait::Moved(Err(failure)) => return Err(failure),
+                        Wait::Stopped(reason) => return Err(StepFailure::Stopped { reason }),
+                        Wait::TimedOut => return Err(self.timed_out()),
                     }
                     self.host
                         .observe(&self.caller, &id)
@@ -947,6 +1180,24 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 }
             };
         }
+    }
+
+    fn timed_out(&self) -> StepFailure {
+        StepFailure::TimedOut {
+            seconds: self.timeout.as_secs(),
+        }
+    }
+
+    /// Ask the caller whether the run must stop, naming the step it is at.
+    /// A hook that gives no answer never stops a run.
+    async fn stopped(&self, path: &StepPath) -> Result<(), String> {
+        self.hooks
+            .stopped(StopWatch {
+                path,
+                since: std::time::Instant::now(),
+            })
+            .await
+            .unwrap_or(Ok(()))
     }
 
     fn condition(&self, condition: &Condition) -> Result<bool, StepFailure> {
@@ -1034,6 +1285,20 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 }
                 Ok(Some(Value::String(rendered)))
             }
+            Binding::Object(members) => {
+                let mut object = Map::new();
+                for (name, member) in members {
+                    if let Some(value) = self.evaluate(member)? {
+                        object.insert(name.clone(), value);
+                    }
+                }
+                Ok(Some(Value::Object(object)))
+            }
+            Binding::List(items) => items
+                .iter()
+                .map(|item| Ok(self.evaluate(item)?.unwrap_or(Value::Null)))
+                .collect::<Result<Vec<_>, _>>()
+                .map(|items| Some(Value::Array(items))),
         }
     }
 
@@ -1055,6 +1320,8 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     )
             }),
             Binding::Var(name) => self.secret_vars.contains(Binding::named_part(name).0),
+            Binding::Object(members) => members.values().any(|member| self.is_secret(member)),
+            Binding::List(items) => items.iter().any(|item| self.is_secret(item)),
             Binding::Literal(_) | Binding::Template(_) => false,
         }
     }

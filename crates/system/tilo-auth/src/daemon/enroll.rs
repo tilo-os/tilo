@@ -77,7 +77,6 @@ impl Daemon {
         record.set_secret_wrapper(wrapper);
         record.secret = Some(SecretKind::of(secret));
         record.attention = None;
-        record.unlocks_system = self.accounts.is_admin(account)?;
         self.store.save(&record)?;
         eprintln!(
             "tilo-authd: uid {} signs in with their user key from now on",
@@ -103,14 +102,42 @@ impl Daemon {
         key: &UserKey,
         typed: Option<&str>,
     ) {
-        if !record.unlocks_system {
-            return;
+        match self.accounts.is_admin(account) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                eprintln!("tilo-authd: {e:#}");
+                return;
+            }
         }
+        // Whether this sign-in unlocks the system is a fact about the volume,
+        // settled on every sign-in, so a volume found later still gets the
+        // admin's keyslot.
         if let Some(volume) = self.cfg.volume.find(&work.runner) {
+            record.unlocks_system = true;
             if record.system_keyslot.is_none() {
                 self.add_system_slot(work, &volume, &mut record, key, typed);
+            } else if let Err(e) = self.store.save(&record) {
+                eprintln!("tilo-authd: {e:#}");
             }
             self.mirror(work, &record);
+        } else if let Some(slot) = record.system_keyslot {
+            eprintln!(
+                "tilo-authd: found no LUKS2 volume, though uid {} holds keyslot {slot} on one",
+                account.uid
+            );
+        } else {
+            eprintln!(
+                "tilo-authd: found no LUKS2 volume under /sysroot, / or the initrd's root \
+                 device; uid {} gets no system keyslot",
+                account.uid
+            );
+            if record.unlocks_system {
+                record.unlocks_system = false;
+                if let Err(e) = self.store.save(&record) {
+                    eprintln!("tilo-authd: {e:#}");
+                }
+            }
         }
         self.adopt_lockout(
             &Opener::User {

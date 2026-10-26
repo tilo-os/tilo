@@ -60,30 +60,12 @@ function noteRejoin({storage, now, name}) {
   } catch { /* No storage: the page cannot loop past a reload either way. */ }
 }
 
-/** Waits between tries at a door that did not answer yet, in ms. */
-const DOOR_RETRIES_MS = [1000, 2000, 4000, 8000, 15_000, 15_000, 15_000, 15_000];
-
-/**
- * After joining again by itself, the door did not answer (a host set up
- * again starts its relay before its door): how long to wait before the page
- * tries again, or `null` once it has tried enough or did not come here by
- * itself. Counts the try.
- */
-export function retryRejoin({storage = globalThis.sessionStorage, now = Date.now()} = {}) {
-  const kept = recentRejoin({storage, now});
-  if (!kept) return null;
-  const tries = Number.isInteger(kept.tries) ? kept.tries : 0;
-  if (tries >= DOOR_RETRIES_MS.length) return null;
-  try {
-    storage?.setItem(REJOINED, JSON.stringify({...kept, tries: tries + 1}));
-  } catch { return null; }
-  return DOOR_RETRIES_MS[tries];
-}
-
-/** Session storage key: how often this tab tried a host that did not
- * answer before it got in, since when: `{at, tries}`. */
+/** Session storage key: the tries of this tab at a host that did not
+ * answer before it got in: `{since, last, tries}` (ms since the epoch of the
+ * first and the latest, and how many). */
 export const UNREACHED = 'tilo-unreached';
-/** How long tries at a host that did not answer count together. */
+/** How long after the latest try the next one still counts with it: longer
+ * than the longest backoff (`reconnect.mjs`). */
 const UNREACHED_WINDOW_MS = 10 * 60 * 1000;
 
 /** Whether `error` is a host not answering at all (restarting, or the
@@ -93,20 +75,21 @@ export const hostUnreachable = error => (error?.name === 'HostAdmissionError' &&
 
 /**
  * The host did not answer the page before it got in (a host restarting
- * starts its relay and door a moment apart): how long to wait before the
- * page tries again, or `null` once it has tried enough. Counts the try.
+ * starts its relay and door a moment apart): which try this was, counted
+ * across the page's reloads (`attempt`, 0 for the first failure), and since
+ * when it fails (`since`), for the reconnect screen's backoff. Counts it.
  */
 export function retryUnreachable({storage = globalThis.sessionStorage, now = Date.now()} = {}) {
   let kept;
   try { kept = JSON.parse(storage?.getItem(UNREACHED) ?? 'null'); } catch { kept = null; }
-  const at = Number(kept?.at);
-  const recent = Number.isFinite(at) && at > 0 && now - at >= 0 && now - at < UNREACHED_WINDOW_MS;
-  const tries = recent && Number.isInteger(kept.tries) ? kept.tries : 0;
-  if (tries >= DOOR_RETRIES_MS.length) return null;
+  const last = Number(kept?.last);
+  const recent = Number.isFinite(last) && last > 0 && now - last >= 0 && now - last < UNREACHED_WINDOW_MS;
+  const attempt = recent && Number.isInteger(kept.tries) ? kept.tries : 0;
+  const since = recent && Number.isFinite(Number(kept.since)) ? Number(kept.since) : now;
   try {
-    storage?.setItem(UNREACHED, JSON.stringify({at: recent ? at : now, tries: tries + 1}));
-  } catch { return null; }
-  return DOOR_RETRIES_MS[tries];
+    storage?.setItem(UNREACHED, JSON.stringify({since, last: now, tries: attempt + 1}));
+  } catch { /* No storage: each reload starts over, still waiting. */ }
+  return {attempt, since};
 }
 
 /** The page got in: tries at a host that did not answer start over. */

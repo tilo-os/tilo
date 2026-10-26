@@ -241,6 +241,7 @@ fn ai_shortcut(transform: AiTransform, input: Binding) -> Shortcut {
         name: "Digest".into(),
         inputs: Vec::new(),
         steps: vec![Step::new("ai", StepKind::Ai { transform, input })],
+        step_timeout_secs: None,
         output: Some(Binding::step("ai", "")),
         grant: vec![tilo_action_policy::Rule::new(
             tilo_action_policy::TreePath::root()
@@ -272,7 +273,7 @@ fn run_shortcut(host: &AgentHost, shortcut: &Shortcut, inputs: Map<String, Value
 
 fn failure(report: &RunReport) -> Option<&StepFailure> {
     match &report.outcome {
-        RunOutcome::Completed => None,
+        RunOutcome::Completed | RunOutcome::Cancelled { .. } => None,
         RunOutcome::Failed { failure, .. } => Some(failure),
     }
 }

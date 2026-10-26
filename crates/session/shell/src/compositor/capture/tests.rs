@@ -1247,7 +1247,7 @@ fn every_target_captures_host_windows_off_screen_windows_at_scale_on_two_display
                 "{arrangement}: the GPU frame takes the dmabuf path"
             );
         } else {
-            eprintln!("no wgpu adapter; the dmabuf window shows its opening card");
+            eprintln!("no wgpu adapter; the dmabuf window still holds its place");
         }
         // Until the host windows show their frames, past the opening
         // card's hand-over.

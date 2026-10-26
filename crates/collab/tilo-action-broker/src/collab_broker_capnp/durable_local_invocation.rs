@@ -5,8 +5,9 @@ use super::{
     DIRECTORY_MAX_IDENTIFIER_BYTES, DIRECTORY_MAX_PARAMS_BYTES, DIRECTORY_MAX_QUERY_REVISION_BYTES,
     DirectoryActionConfirmation, DurableInvocation, InvocationCaller, InvocationEnvelope,
     InvocationInputs, InvocationKey, InvocationOwner, LocalActionDirectoryRegistry, Promise,
-    PublishedAction, PublishedSurface, Rc, VerifiedActionCaller, channel_handle, mpsc,
-    resolved_invocation, validate_directory_identifier, validate_directory_text,
+    PublishedAction, PublishedSurface, Rc, VerifiedActionCaller, channel_handle,
+    legacy_door_may_act_as_person, mpsc, resolved_invocation, validate_directory_identifier,
+    validate_directory_text,
 };
 use resolved_invocation::ResolvedOffer;
 
@@ -810,6 +811,18 @@ pub(super) fn invoke(
             .await
             .map_err(capnp::Error::failed)?;
         let publication = offer.offered(request.binding.peer_id);
+        // The binding names the target, so the target's application must be
+        // the caller's own. Checked before the person is asked anything.
+        let asked = caller.current(state).map_err(capnp::Error::failed)?;
+        let invoke_access = state.app_action_access(&caller.route.app_id).invoke;
+        if !legacy_door_may_act_as_person(
+            &asked,
+            &caller.route,
+            &publication.0.app_id,
+            invoke_access,
+        ) {
+            return Err(capnp::Error::failed(super::LEGACY_DOOR_FOREIGN_APP.into()));
+        }
         let store_answer = if super::requires_store_witness(&publication.0.app_id, &request.action)
         {
             let mut binding = state.native_witness_binding(
@@ -893,6 +906,17 @@ pub(super) fn invoke(
             return Err(capnp::Error::failed(
                 "original invocation target binding changed".into(),
             ));
+        }
+        // The binding names the target, so the target's application must be
+        // the caller's own. Checked before any confirmation is minted.
+        let invoke_access = state.app_action_access(&caller.route.app_id).invoke;
+        if !legacy_door_may_act_as_person(
+            &current,
+            &caller.route,
+            &request.binding.app_id,
+            invoke_access,
+        ) {
+            return Err(capnp::Error::failed(super::LEGACY_DOOR_FOREIGN_APP.into()));
         }
         let offered = offer.offered(request.binding.peer_id);
         let actor = current.broker_actor();
