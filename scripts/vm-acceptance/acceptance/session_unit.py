@@ -136,6 +136,8 @@ def dump_script(slot: str) -> str:
         "echo \"=== coredumps (core_pattern $(cat /proc/sys/kernel/core_pattern), "
         "suid_dumpable $(cat /proc/sys/fs/suid_dumpable))\"; coredumpctl --no-pager list 2>/dev/null | tail -n 8; "
         "coredumpctl --no-pager info -1 2>/dev/null | head -n 250 | cut -c1-400; "
+        "echo '=== systemd-oomd'; journalctl -b -u systemd-oomd --no-pager -o short-precise 2>/dev/null "
+        "| tail -n 20 | cut -c1-400; "
         "echo '=== system journal'; journalctl -b --no-pager -o short-precise 2>/dev/null "
         "| grep -aE 'tilo-vm-session|systemd-coredump|oom|logind.*(Removed|Session)|tilo-vmd' "
         "| tail -n 60 | cut -c1-400; "
@@ -145,6 +147,24 @@ def dump_script(slot: str) -> str:
 
 
 MAIN_EXITED = re.compile(r"Main process exited, code=(\w+), status=(\S+)")
+
+
+# What ends a session from outside it: the kernel's OOM killer, systemd-oomd, a hung task.
+KILLER = re.compile(r"oom|out of memory|killed process|memory pressure|blocked for more", re.I)
+
+
+def killer_evidence(dump_text: str) -> str | None:
+    """The last few lines of the dump's kernel, systemd-oomd and system journal sections that
+    name an OOM kill or memory pressure, joined: the cause of a SIGKILL (status 137) a failed
+    run's detail can carry, since its report data is not published. None when none does."""
+    section, found = "", []
+    for line in dump_text.splitlines():
+        if line.startswith("=== "):
+            section = line
+            continue
+        if section in ("=== kernel", "=== systemd-oomd", "=== system journal") and KILLER.search(line):
+            found.append(line.strip()[:300])
+    return " | ".join(found[-3:]) or None
 
 
 def dump(ctx, label: str, fields: dict[str, str] | None) -> tuple[str, str]:
@@ -157,4 +177,6 @@ def dump(ctx, label: str, fields: dict[str, str] | None) -> tuple[str, str]:
     except (VmError, AttributeError) as exc:
         text = f"the session dump could not be read: {exc}"
     ctx.write(name, text)
-    return f"data/{name}", how_it_ended(fields or {}, text)
+    how = how_it_ended(fields or {}, text)
+    killer = killer_evidence(text)
+    return f"data/{name}", (f"{how}; the kernel and systemd-oomd said: {killer}" if killer else how)
