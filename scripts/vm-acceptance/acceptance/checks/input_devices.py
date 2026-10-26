@@ -95,13 +95,45 @@ def search_text(ctx, *combos: str) -> str:
     """What these physical key presses put into the search field, read back from the state dump."""
     ctx.close_overlays()
     ctx.vm.key("super+space")
-    ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
+    try:
+        ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
+    except CheckFailed as exc:
+        raise CheckFailed(f"{exc}: {keyboard_diagnosis(ctx)}") from exc
     for combo in combos:
         ctx.vm.key(combo)
     ctx.settle(0.8)
     query = (ctx.state()["chrome"].get("palette") or {}).get("query") or ""
     ctx.close_overlays()
     return query
+
+
+def keyboard_diagnosis(ctx) -> str:
+    """Why Super+Space may not have reached the compositor: the keyboards it has opened (its
+    published input snapshot, `$XDG_RUNTIME_DIR/tilo/input-state.json`), the one it last
+    took keys from, and how udev tagged the profile keyboard. Kept as evidence too."""
+    found = {}
+    try:
+        found["compositor"] = json.loads(ctx.vm.exec(
+            'cat "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo/input-state.json" 2>/dev/null || echo "{}"'))
+    except (VmError, ValueError) as exc:
+        found["compositor"] = {"unreadable": str(exc)[:200]}
+    try:
+        dev = find_device(parse_input_devices(ctx.vm.root_exec("cat /proc/bus/input/devices")), KEYBOARD_ID)
+        node = dev and event_node(dev)
+        found["udev"] = ({p: v for p, v in parse_properties(ctx.vm.root_exec(
+            f"udevadm info -q property -n /dev/input/{node}")).items()
+            if p.startswith(("ID_INPUT", "ID_SEAT", "ID_INTEGRATION", "LIBINPUT", "TAGS", "CURRENT_TAGS"))}
+            if node else "the profile keyboard is not registered")
+    except VmError as exc:
+        found["udev"] = {"unreadable": exc.reason()}
+    if ctx.current is not None:
+        ctx.write(f"{ctx.current.id}-keyboards.json", json.dumps(found, indent=1))
+    compositor = found["compositor"] if isinstance(found["compositor"], dict) else {}
+    names = [d.get("name") for d in compositor.get("devices", []) if isinstance(d, dict)]
+    seen = KEYBOARD_ID["name"] in names
+    return (f"the compositor {'has' if seen else 'has not'} opened the profile keyboard "
+            f"{KEYBOARD_ID['name']!r} (its devices: {names}; it last typed from "
+            f"{compositor.get('active_keyboard')!r}); udev: {found['udev']}")
 
 
 # -- what the guest kernel and udev say --------------------------------------------------------
