@@ -721,18 +721,11 @@ fn connector_secrets_are_the_known_ones_and_request_inputs_are_text() {
 /// installs their own build, which the room records with who signed and
 /// installed it, and taking the choice back lets each member run their own.
 #[tokio::test]
-#[cfg_attr(
-    feature = "agents",
-    expect(
-        clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
-    )
-)]
 async fn a_developer_chooses_the_version_of_an_app_the_whole_room_runs() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let (room, workspace, host) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
     let release = |version: &str, surface: u8| {
