@@ -9,8 +9,9 @@ homepage.workspace = true
 description = "Tilo's search layer: tantivy with Tilo's folding, tiers and ranking"
 
 [package.metadata.cargo-machete]
-# The self dev-dependency only turns on `disk` for the tests.
-ignored = ["tilo-search"]
+# The self dev-dependency only turns on `disk` for the tests; getrandom03
+# only selects the browser entropy backend for tantivy.
+ignored = ["tilo-search", "getrandom03"]
 
 [features]
 # `DiskIndex`, a persistent index in an mmap'ed directory. Native only.
@@ -23,9 +24,10 @@ lazy-engine = []
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-# The engine. Default features add on-disk compression, mmap and the
-# stemmers, none of which an in-memory index of short fields uses.
-tantivy = { version = "0.22", default-features = false }
+# The engine. Default features add on-disk compression (lz4, and zstd for
+# column dictionaries), mmap and the stemmers, none of which an in-memory
+# index of short fields uses. Without them tantivy links no zstd at all.
+tantivy = { version = "0.27", default-features = false }
 # ICU word breaking, so words are found in scripts written without spaces.
 icu_segmenter = "2.3"
 # Compatibility decomposition behind folding: `ｃａｆé` finds `cafe`.
@@ -42,6 +44,11 @@ tilo-search = { path = ".", features = ["disk"] }
 
 [lints]
 workspace = true
+
+# tantivy's columnar writer seeds a tie-breaker column through rand 0.9,
+# whose OS entropy is getrandom 0.3: in the browser it needs its JS backend.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
