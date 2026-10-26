@@ -109,6 +109,8 @@ fn finish_surface_fanout(
 
 /// Encoded delta frames reference earlier units: only raw captures may be
 /// coalesced. Keep their order within the existing one-frame byte budget.
+/// A stream's start travels in the same queue, ahead of its frames, and
+/// is never superseded by them.
 struct SurfaceFrameBacklog {
     frames: VecDeque<NeighbourMsg>,
     bytes: usize,
@@ -138,9 +140,18 @@ impl SurfaceFrameBacklog {
         payload.saturating_add(std::mem::size_of::<NeighbourMsg>().saturating_mul(4))
     }
 
+    /// Drop the queued frames (they reference what is lost) and wait for
+    /// the next keyframe. The stream's start stays queued.
     fn lose_references(&mut self) {
-        self.frames = VecDeque::new();
-        self.bytes = 0;
+        self.frames
+            .retain(|msg| !matches!(msg, NeighbourMsg::SurfaceFrame { .. }));
+        if self.frames.is_empty() {
+            self.frames = VecDeque::new();
+        }
+        self.bytes = self
+            .frames
+            .iter()
+            .fold(0, |bytes, msg| bytes.saturating_add(Self::frame_bytes(msg)));
         self.awaiting_keyframe = self.codec.is_some();
     }
 
@@ -149,7 +160,8 @@ impl SurfaceFrameBacklog {
             NeighbourMsg::SurfaceFrame { encoded_h264, .. } => self
                 .codec
                 .is_none_or(|codec| media::realtime::is_keyframe(codec, encoded_h264)),
-            _ => false,
+            // The stream's start references nothing and is always kept.
+            _ => return true,
         };
         if self.awaiting_keyframe && !keyframe {
             return false;
@@ -727,6 +739,18 @@ enum InternalEvent {
         outcomes: Vec<SurfaceFanoutOutcome>,
         all_delivered: bool,
     },
+    /// The window-stream route to `peer` came up, or could not be opened
+    /// (`None`).
+    SurfaceRouteOpened {
+        peer: EndpointId,
+        connection: Option<iroh::endpoint::Connection>,
+    },
+    /// A unit held for a viewer while its route opened was written, or not.
+    HeldSurfaceUnitWritten {
+        key: (WorkspaceId, SurfaceId, EndpointId),
+        generation: u64,
+        delivered: bool,
+    },
     PersonalFabric {
         ws: WorkspaceId,
         peer: EndpointId,
@@ -769,31 +793,14 @@ enum InternalEvent {
     },
 }
 
+/// Write one unit of a window's stream on `peer`'s open route. Routes are
+/// opened apart from this ([`ActorState::open_surface_route`]); what is
+/// for a viewer whose route is still opening waits for it there.
 async fn deliver_surface_frame(
-    endpoint: Endpoint,
-    addr: EndpointAddr,
-    cached: Option<iroh::endpoint::Connection>,
+    peer: EndpointId,
+    connection: iroh::endpoint::Connection,
     bytes: Vec<u8>,
 ) -> SurfaceFanoutOutcome {
-    let peer = addr.id;
-    let connection = if let Some(connection) = cached {
-        Some(connection)
-    } else {
-        tokio::time::timeout(
-            Duration::from_millis(300),
-            endpoint.connect(addr, SURFACE_STREAM_ALPN),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok)
-    };
-    let Some(connection) = connection else {
-        return SurfaceFanoutOutcome {
-            peer,
-            connection: None,
-            delivered: false,
-        };
-    };
     let send_frame = async {
         let mut stream = connection.open_uni().await.map_err(|_| ())?;
         stream.write_all(&bytes).await.map_err(|_| ())?;
@@ -804,17 +811,23 @@ async fn deliver_surface_frame(
         tokio::time::timeout(Duration::from_millis(40), send_frame).await,
         Ok(Ok(()))
     );
-    SurfaceFanoutOutcome {
-        peer,
-        connection: Some(connection),
-        delivered,
-    }
+    SurfaceFanoutOutcome { peer, delivered }
 }
 
 struct SurfaceFanoutOutcome {
     peer: EndpointId,
-    connection: Option<iroh::endpoint::Connection>,
     delivered: bool,
+}
+
+/// A window's units for one viewer whose route is being opened, or whose
+/// route came up and is being given them in order. While this exists the
+/// viewer's further units join it rather than overtake it.
+struct HeldSurfaceUnits {
+    backlog: SurfaceFrameBacklog,
+    /// One of the units is being written now.
+    writing: bool,
+    /// Tells a write's completion from one for a stream since restarted.
+    generation: u64,
 }
 
 enum HostEvent {
@@ -1345,6 +1358,11 @@ struct ActorState {
     /// Windows streamed to named viewers only: their frames go to exactly
     /// these devices and never fall back to the workspace's gossip topic.
     surface_fanout_viewers: HashMap<(WorkspaceId, SurfaceId), Vec<EndpointId>>,
+    /// Window-stream routes being opened. A dial runs until it connects or
+    /// fails; nothing waits on it but the units held for that viewer.
+    surface_routes_opening: HashMap<EndpointId, tokio::task::JoinHandle<()>>,
+    /// Units for viewers whose route is not up yet, per window and viewer.
+    held_surface_units: HashMap<(WorkspaceId, SurfaceId, EndpointId), HeldSurfaceUnits>,
     active_personal_transfers: HashMap<(EndpointId, [u8; 16]), ActivePersonalTransfer>,
     next_personal_transfer_generation: u64,
     /// Every application message peers delivered here (see [`WireTally`]).
@@ -1660,6 +1678,11 @@ impl ActorState {
             if let Some(connection) = self.surface_connections.remove(&device) {
                 connection.close(0_u32.into(), reason);
             }
+            if let Some(dial) = self.surface_routes_opening.remove(&device) {
+                dial.abort();
+            }
+            self.held_surface_units
+                .retain(|(_, _, peer), _| *peer != device);
         }
     }
 
@@ -1817,6 +1840,8 @@ impl ActorState {
                 self.set_room_roster(ws, Vec::new(), false);
                 self.pending_surface_frames
                     .retain(|(frame_ws, _), _| *frame_ws != ws);
+                self.held_surface_units
+                    .retain(|(held_ws, _, _), _| *held_ws != ws);
                 self.surface_fanout_viewers
                     .retain(|(frame_ws, _), _| *frame_ws != ws);
                 self.surface_fanout_tasks.retain(|(task_ws, _), task| {
@@ -2121,11 +2146,14 @@ impl ActorState {
         }
     }
 
-    /// Send an encoded surface frame over the media ALPN to every directly
-    /// connected participant in this workspace. Returns true only when every
-    /// currently-known direct participant was reached; otherwise the caller
-    /// retains gossip as a compatibility fallback. The workspace host is
-    /// still published to separately.
+    /// Send an encoded surface frame (or a targeted stream's start) over the
+    /// media ALPN to every participant of this workspace it is for. A viewer
+    /// whose route is not up yet gets it held until the route is, in order
+    /// with the rest of its units. A unit that did not reach every
+    /// participant goes on gossip as a compatibility fallback, unless the
+    /// window streams to named viewers only. Returns false when the unit
+    /// cannot go on the media ALPN at all. The workspace host is still
+    /// published to separately.
     fn start_surface_fanout(&mut self, ws: WorkspaceId, msg: NeighbourMsg) -> bool {
         let key = (ws, fanout_surface(&msg));
         if self.surface_fanout_tasks.contains_key(&key) {
@@ -2158,30 +2186,46 @@ impl ActorState {
             tracing::warn!(ws, bytes = bytes.len(), "surface frame exceeds wire limit");
             return false;
         }
-        let only = self.surface_fanout_viewers.get(&key);
-        let members = self.surface_members(ws);
-        let workspace_peer_count = members.len();
-        let targets: Vec<_> = members
+        let only = self.surface_fanout_viewers.get(&key).cloned();
+        let targeted = only.is_some();
+        let peers: Vec<_> = self
+            .surface_members(ws)
             .into_iter()
-            .filter(|peer| only.is_none_or(|viewers| viewers.contains(peer)))
-            .map(|peer| {
-                self.peers
-                    .get(&peer)
-                    .cloned()
-                    .unwrap_or_else(|| EndpointAddr::new(peer))
-            })
+            .filter(|peer| only.as_ref().is_none_or(|viewers| viewers.contains(peer)))
             .collect();
-        let workspace_peer_count = match only {
-            Some(_) => targets.len(),
-            None => workspace_peer_count,
-        };
-        // Each viewer is an independent QUIC route. Dial/write them
-        // concurrently so one unreachable peer cannot add 300ms in front of
-        // every healthy viewer (or block later collaboration commands once
-        // per peer). The wall-clock bound stays one dial timeout plus one
-        // write timeout regardless of room size.
-        let cached = self.surface_connections.clone();
-        let endpoint = self.endpoint.clone();
+        // Units held for a device this window no longer streams to go.
+        self.held_surface_units
+            .retain(|(held_ws, surface, peer), _| {
+                (*held_ws, *surface) != key || peers.contains(peer)
+            });
+        let workspace_peer_count = peers.len();
+        // Each viewer is an independent QUIC route: write on the open ones
+        // concurrently, so one viewer whose route is still opening (or will
+        // not open) never holds up the healthy ones. Its units wait for its
+        // route instead, in their order.
+        let mut targets = Vec::new();
+        for peer in peers {
+            let held = self.held_surface_units.contains_key(&(ws, key.1, peer));
+            match self.live_surface_route(peer) {
+                Some(connection) if !held => targets.push((peer, connection)),
+                _ => self.hold_surface_unit((ws, key.1, peer), &msg),
+            }
+        }
+        if targets.is_empty() {
+            if !targeted {
+                publish(
+                    &self.topics,
+                    &self.host_sessions,
+                    &mut self.lanes,
+                    ws,
+                    &msg,
+                    false,
+                    true,
+                    false,
+                );
+            }
+            return true;
+        }
         let internal_tx = self.internal_tx.clone();
         let Some(generation) = self.next_surface_fanout_generation.checked_add(1) else {
             tracing::warn!(ws, "surface fanout generation exhausted");
@@ -2190,12 +2234,8 @@ impl ActorState {
         self.next_surface_fanout_generation = generation;
         let task = tokio::spawn(async move {
             let mut pending = FuturesUnordered::new();
-            for addr in targets {
-                let peer = addr.id;
-                let cached = cached.get(&peer).cloned();
-                let endpoint = endpoint.clone();
-                let bytes = bytes.clone();
-                pending.push(deliver_surface_frame(endpoint, addr, cached, bytes));
+            for (peer, connection) in targets {
+                pending.push(deliver_surface_frame(peer, connection, bytes.clone()));
             }
             let mut outcomes = Vec::new();
             let mut sent = 0usize;
@@ -2211,12 +2251,193 @@ impl ActorState {
                     generation,
                     msg,
                     outcomes,
-                    all_delivered: workspace_peer_count > 0 && sent == workspace_peer_count,
+                    all_delivered: sent == workspace_peer_count,
                 })
                 .await;
         });
         self.surface_fanout_tasks.insert(key, (generation, task));
         true
+    }
+
+    /// The open window-stream route to `peer`, if there is one.
+    fn live_surface_route(&mut self, peer: EndpointId) -> Option<iroh::endpoint::Connection> {
+        let connection = self.surface_connections.get(&peer)?;
+        if connection.close_reason().is_some() {
+            self.surface_connections.remove(&peer);
+            return None;
+        }
+        Some(connection.clone())
+    }
+
+    /// Hold `msg` for the viewer of `key` until its route is up, and open
+    /// that route if it is neither up nor being opened.
+    fn hold_surface_unit(&mut self, key: (WorkspaceId, SurfaceId, EndpointId), msg: &NeighbourMsg) {
+        let codec = self
+            .pending_surface_frames
+            .get(&(key.0, key.1))
+            .map_or(Some(media::StreamCodec::H264), |backlog| backlog.codec);
+        let generation = self.next_surface_fanout_generation.saturating_add(1);
+        self.next_surface_fanout_generation = generation;
+        self.held_surface_units
+            .entry(key)
+            .or_insert_with(|| HeldSurfaceUnits {
+                backlog: SurfaceFrameBacklog {
+                    codec,
+                    ..SurfaceFrameBacklog::default()
+                },
+                writing: false,
+                generation,
+            })
+            .backlog
+            .push(msg.clone());
+        if self.live_surface_route(key.2).is_some() {
+            self.write_held_surface_unit(key);
+        } else {
+            self.open_surface_route(key.2);
+        }
+    }
+
+    /// Open the window-stream route to `peer` unless it is being opened.
+    /// The dial runs as long as connecting takes; its outcome comes back as
+    /// [`InternalEvent::SurfaceRouteOpened`].
+    fn open_surface_route(&mut self, peer: EndpointId) {
+        if self.surface_routes_opening.contains_key(&peer) {
+            return;
+        }
+        let addr = self
+            .peers
+            .get(&peer)
+            .cloned()
+            .unwrap_or_else(|| EndpointAddr::new(peer));
+        let endpoint = self.endpoint.clone();
+        let internal_tx = self.internal_tx.clone();
+        let task = tokio::spawn(async move {
+            let connection = endpoint
+                .connect(addr, SURFACE_STREAM_ALPN)
+                .await
+                .inspect_err(|error| {
+                    tracing::debug!(peer = %peer, %error, "window-stream route failed to open");
+                })
+                .ok();
+            let _ = internal_tx
+                .send(InternalEvent::SurfaceRouteOpened { peer, connection })
+                .await;
+        });
+        self.surface_routes_opening.insert(peer, task);
+    }
+
+    /// [`InternalEvent::SurfaceRouteOpened`]: give the viewer what was held
+    /// for it, in order; or, when its route could not be opened, keep only
+    /// what does not reference lost units, until its next unit opens it
+    /// again.
+    fn surface_route_opened(
+        &mut self,
+        peer: EndpointId,
+        connection: Option<iroh::endpoint::Connection>,
+    ) {
+        self.surface_routes_opening.remove(&peer);
+        let mut keys: Vec<_> = self
+            .held_surface_units
+            .keys()
+            .filter(|(_, _, held_peer)| *held_peer == peer)
+            .copied()
+            .collect();
+        keys.retain(|key| {
+            let member = self.is_surface_member(key.0, peer);
+            if !member {
+                self.held_surface_units.remove(key);
+            }
+            member
+        });
+        let Some(connection) = connection else {
+            for key in keys {
+                if let Some(held) = self.held_surface_units.get_mut(&key) {
+                    held.backlog.lose_references();
+                }
+            }
+            return;
+        };
+        if keys.is_empty() && !self.surface_connections.contains_key(&peer) {
+            // Nothing is streamed to the device any more.
+            connection.close(0_u32.into(), b"no window streamed");
+            return;
+        }
+        self.surface_connections.insert(peer, connection);
+        for key in keys {
+            self.write_held_surface_unit(key);
+        }
+    }
+
+    /// Write the next unit held for `key`'s viewer on its open route, one at
+    /// a time; once none is left, the viewer takes the window's fanout.
+    fn write_held_surface_unit(&mut self, key: (WorkspaceId, SurfaceId, EndpointId)) {
+        let Some(connection) = self.live_surface_route(key.2) else {
+            return;
+        };
+        let (bytes, held) = loop {
+            let Some(held) = self.held_surface_units.get_mut(&key) else {
+                return;
+            };
+            if held.writing {
+                return;
+            }
+            let Some(message) = held.backlog.pop() else {
+                self.held_surface_units.remove(&key);
+                return;
+            };
+            let wire = SurfaceWireFrame {
+                workspace: key.0,
+                message,
+            };
+            match postcard::to_allocvec(&wire) {
+                Ok(bytes) if bytes.len() <= MAX_SURFACE_FRAME_BYTES => break (bytes, held),
+                _ => held.backlog.lose_references(),
+            }
+        };
+        held.writing = true;
+        let generation = held.generation;
+        let internal_tx = self.internal_tx.clone();
+        tokio::spawn(async move {
+            let outcome = deliver_surface_frame(key.2, connection, bytes).await;
+            let _ = internal_tx
+                .send(InternalEvent::HeldSurfaceUnitWritten {
+                    key,
+                    generation,
+                    delivered: outcome.delivered,
+                })
+                .await;
+        });
+    }
+
+    /// [`InternalEvent::HeldSurfaceUnitWritten`].
+    fn held_surface_unit_written(
+        &mut self,
+        key: (WorkspaceId, SurfaceId, EndpointId),
+        generation: u64,
+        delivered: bool,
+    ) {
+        let Some(held) = self.held_surface_units.get_mut(&key) else {
+            return;
+        };
+        if held.generation != generation {
+            return;
+        }
+        held.writing = false;
+        if !delivered {
+            // The route broke: what is left references the lost unit. The
+            // viewer's next unit opens a route again.
+            held.backlog.lose_references();
+            self.surface_connections.remove(&key.2);
+            return;
+        }
+        self.write_held_surface_unit(key);
+    }
+
+    /// Forget what is held for `surface`'s viewers: its stream restarted or
+    /// ended.
+    fn drop_held_surface_units(&mut self, ws: WorkspaceId, surface: SurfaceId) {
+        self.held_surface_units
+            .retain(|(held_ws, held_surface, _), _| (*held_ws, *held_surface) != (ws, surface));
     }
 
     async fn publish_personal_fabric(
@@ -2484,11 +2705,16 @@ impl ActorState {
                     .pending_surface_frames
                     .entry((ws, *surface))
                     .or_default();
-                backlog.codec = media::StreamCodec::from_wire_label(codec);
+                *backlog = SurfaceFrameBacklog {
+                    codec: media::StreamCodec::from_wire_label(codec),
+                    ..SurfaceFrameBacklog::default()
+                };
                 backlog.lose_references();
+                self.drop_held_surface_units(ws, *surface);
             }
             NeighbourMsg::SurfaceStreamEnd { surface, .. } => {
                 self.pending_surface_frames.remove(&(ws, *surface));
+                self.drop_held_surface_units(ws, *surface);
                 if let Some((_, task)) = self.surface_fanout_tasks.remove(&(ws, *surface)) {
                     task.abort();
                 }
@@ -2498,8 +2724,9 @@ impl ActorState {
     }
 
     /// [`NetCmd::PublishSurfaceTo`]: one window's stream to exactly its
-    /// viewers. Frames take the per-window media fanout restricted to them;
-    /// the stream's start, end and control grants go to each directly.
+    /// viewers. Its start and frames take the per-window media fanout
+    /// restricted to them, in order, held for a viewer until its route is
+    /// up; the stream's end and control grants go to each directly.
     fn publish_surface_to(&mut self, ws: WorkspaceId, msg: NeighbourMsg, viewers: &[u64]) {
         self.observe_surface_stream(ws, &msg);
         let targets = self
@@ -2508,14 +2735,12 @@ impl ActorState {
             .filter(|peer| viewers.contains(&crate::network::behaviour::peer_liveness_handle(peer)))
             .collect::<Vec<_>>();
         match msg {
-            NeighbourMsg::SurfaceFrame { .. } => {
+            NeighbourMsg::SurfaceFrame { .. } | NeighbourMsg::SurfaceStreamStart { .. } => {
                 let key = (ws, fanout_surface(&msg));
                 self.surface_fanout_viewers.insert(key, targets);
                 let _ = self.start_surface_fanout(ws, msg);
             }
-            NeighbourMsg::SurfaceStreamStart { .. }
-            | NeighbourMsg::SurfaceStreamEnd { .. }
-            | NeighbourMsg::PermissionGrant { .. } => {
+            NeighbourMsg::SurfaceStreamEnd { .. } | NeighbourMsg::PermissionGrant { .. } => {
                 if let NeighbourMsg::SurfaceStreamEnd { surface, .. } = &msg {
                     self.surface_fanout_viewers.remove(&(ws, *surface));
                 }
@@ -3049,6 +3274,16 @@ impl ActorState {
             }) => {
                 self.handle_surface_fanout_complete(ws, generation, &msg, outcomes, all_delivered);
             }
+            Some(InternalEvent::SurfaceRouteOpened { peer, connection }) => {
+                self.surface_route_opened(peer, connection);
+            }
+            Some(InternalEvent::HeldSurfaceUnitWritten {
+                key,
+                generation,
+                delivered,
+            }) => {
+                self.held_surface_unit_written(key, generation, delivered);
+            }
             Some(InternalEvent::PersonalFabric {
                 ws,
                 peer,
@@ -3220,19 +3455,20 @@ impl ActorState {
             self.pending_surface_frames.remove(&key);
             return;
         }
+        // A unit that failed on an open route broke the reference chain the
+        // window's queued units continue. One held for a viewer whose route
+        // is opening did not: it reaches that viewer once the route is up.
+        let mut lost = false;
         for outcome in outcomes {
-            if outcome.delivered && self.is_surface_member(ws, outcome.peer) {
-                if let Some(connection) = outcome.connection {
-                    self.surface_connections.insert(outcome.peer, connection);
-                }
-            } else {
+            if !outcome.delivered || !self.is_surface_member(ws, outcome.peer) {
+                lost |= !outcome.delivered;
                 self.surface_connections.remove(&outcome.peer);
             }
         }
         // A window streamed to named viewers only never falls back to the
         // workspace topic: a frame that missed them is superseded by the next.
         let targeted = self.surface_fanout_viewers.contains_key(&key);
-        if !all_delivered {
+        if lost {
             self.pending_surface_frames
                 .entry(key)
                 .or_default()
@@ -3989,7 +4225,11 @@ impl ActorState {
             "a room hosted elsewhere"
         } else if !self.active_personal_transfers.is_empty() {
             "one of the person's devices"
-        } else if !self.surface_connections.is_empty() || !self.surface_fanout_viewers.is_empty() {
+        } else if !self.surface_connections.is_empty()
+            || !self.surface_fanout_viewers.is_empty()
+            || !self.surface_routes_opening.is_empty()
+            || !self.held_surface_units.is_empty()
+        {
             "a window streamed with a peer"
         } else if !self.pending_remote_actions.is_empty() {
             "a remote action waiting for its peer"
@@ -4600,6 +4840,8 @@ async fn run(
         next_surface_fanout_generation: 0,
         surface_fanout_viewers: HashMap::new(),
         pending_surface_frames: HashMap::new(),
+        surface_routes_opening: HashMap::new(),
+        held_surface_units: HashMap::new(),
         active_personal_transfers: HashMap::new(),
         next_personal_transfer_generation: 0,
         tally: Arc::default(),
@@ -4827,7 +5069,9 @@ pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
 /// its own, so its frames are coalesced only with its own.
 fn fanout_surface(msg: &NeighbourMsg) -> SurfaceId {
     match msg {
-        NeighbourMsg::SurfaceFrame { surface, .. } => *surface,
+        NeighbourMsg::SurfaceFrame { surface, .. }
+        | NeighbourMsg::SurfaceStreamStart { surface, .. }
+        | NeighbourMsg::SurfaceStreamEnd { surface, .. } => *surface,
         _ => 0,
     }
 }
