@@ -23,6 +23,11 @@ pub use pane::{
     is_personal, is_read, refused_to_agent,
 };
 
+/// A room whose admitted document Activity reads: `Some(room)` when the host
+/// keeps one document per room, `None` when its one document holds every
+/// workspace's history (a host whose projection is a cache of a single log).
+pub type HistoryRoom = Option<tilo_desktop_model::RoomId>;
+
 /// A causal document paired with its admitted desktop projection. Implementors
 /// retain native mutation/persistence authority; the default snapshot is read-only.
 pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
@@ -30,6 +35,35 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
     fn document_mut(&mut self) -> &mut AutoCommit;
     /// Rebuild the desktop projection from the causal document.
     fn resync_activity_cache(&mut self) -> Result<(), String>;
+    /// The admitted documents Activity derives history from, the active
+    /// workspace's room first. A host whose one document holds every
+    /// workspace answers `[None]`; a host that keeps each room's admitted
+    /// document answers each room. History is never re-derived from a
+    /// projection cache, so a room whose document the host does not hold is
+    /// simply absent here.
+    fn history_rooms(&self) -> Vec<HistoryRoom> {
+        vec![None]
+    }
+    /// The admitted document `room` names, or `None` when this host holds
+    /// none for it: an unreadable or not-yet-installed room is unavailable
+    /// rather than replaced by a projection of it.
+    fn history_document(&self, room: HistoryRoom) -> Option<&AutoCommit> {
+        room.is_none().then(|| self.document())
+    }
+    fn history_document_mut(&mut self, room: HistoryRoom) -> Option<&mut AutoCommit> {
+        if room.is_none() {
+            Some(self.document_mut())
+        } else {
+            None
+        }
+    }
+    /// Whether a history write (a restore, a name, an undo) may be committed
+    /// into `room`'s document here. A room whose document this host only
+    /// holds as an admitted copy, or does not hold, is not writable: the
+    /// write is refused rather than committed where it would be lost.
+    fn history_room_writable(&self, room: HistoryRoom) -> bool {
+        self.history_document(room).is_some()
+    }
     fn replay_presentation_note(&self) -> Option<String> {
         None
     }
@@ -85,6 +119,15 @@ impl ActivityTree for ActivitySnapshot {
     }
     fn document_mut(&mut self) -> &mut AutoCommit {
         &mut self.doc
+    }
+    fn history_rooms(&self) -> Vec<HistoryRoom> {
+        vec![Some(self.room)]
+    }
+    fn history_document(&self, room: HistoryRoom) -> Option<&AutoCommit> {
+        (room == Some(self.room)).then_some(&self.doc)
+    }
+    fn history_document_mut(&mut self, room: HistoryRoom) -> Option<&mut AutoCommit> {
+        (room == Some(self.room)).then_some(&mut self.doc)
     }
     fn replay_presentation_note(&self) -> Option<String> {
         Some(crate::i18n::t("activity-replay-layout-not-recorded"))

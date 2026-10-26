@@ -185,21 +185,33 @@ impl ShellOverlayHost {
         use automerge::transaction::Transactable as _;
         let chrome = self.chrome.as_ref()?;
         let state = chrome.borrow();
-        let (external_revision, active, tree_heads, tree_pending) = {
+        let (external_revision, active, room_heads, room_pending) = {
             let tree = state.tree();
+            // What Activity derives from is each held room's admitted
+            // document, so a change to any of them is a reason to read again;
+            // the desktop's own reauthored document is not.
+            let room_heads = tree
+                .history_rooms()
+                .into_iter()
+                .filter_map(|room| {
+                    let room = room?;
+                    tree.history_document(Some(room))
+                        .map(|doc| (room, doc.base_heads()))
+                })
+                .collect();
             (
                 tree.desktop.external_revision,
                 tree.desktop.active.raw(),
-                tree.doc.base_heads(),
-                tree.doc.pending_ops(),
+                room_heads,
+                crate::shell::workspace_history::history_pending(&*tree),
             )
         };
         Some(ActivityRefreshKey {
             chrome_revision: state.revision,
             external_revision,
             active,
-            tree_heads,
-            tree_pending,
+            room_heads,
+            room_pending,
             records: state.records().content_revision(),
             room_records: self.room_records.borrow().revision(),
         })
@@ -487,8 +499,10 @@ pub(super) struct ActivityRefreshKey {
     pub(super) chrome_revision: u64,
     pub(super) external_revision: u64,
     pub(super) active: u64,
-    pub(super) tree_heads: Vec<automerge::ChangeHash>,
-    pub(super) tree_pending: usize,
+    /// The settled heads of every held room's admitted document.
+    pub(super) room_heads: Vec<(crate::shell::state::RoomId, Vec<automerge::ChangeHash>)>,
+    /// Whether any admitted document has an unfinished writer transaction.
+    pub(super) room_pending: bool,
     pub(super) records: String,
     pub(super) room_records: (u64, u64),
 }
