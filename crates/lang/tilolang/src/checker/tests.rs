@@ -408,3 +408,54 @@ fn a_composer_is_a_node_of_the_frame() {
         "{calls:#?}"
     );
 }
+
+/// The predicates a function hands the store (`coll_where`), as their text.
+fn asked(f: &Func) -> Vec<String> {
+    let mut out = Vec::new();
+    visit(f, &mut |e| {
+        if let Ek::Host(Imp::CollWhere, args) = &e.kind
+            && let Some(pred) = args.get(1).and_then(text)
+        {
+            out.push(pred.to_owned());
+        }
+    });
+    out
+}
+
+#[test]
+fn a_filter_or_count_over_item_fields_asks_the_store_beside_its_loop() {
+    let (m, ids) = lower(
+        "type Item {\n    title: Text\n    done: Bool = false\n    votes: Int merge counter\n    tags: Set<Text>\n}\n\
+type Bag {\n    items: Collection<Item>\n}\n\
+fn unfinished(b: Bag) -> Int {\n    return b.items.count(i -> not i.done and i.votes >= 2)\n}\n\
+fn titled(b: Bag) -> List<Item> {\n    return b.items.filter(i -> i.title == \"x\")\n}\n\
+fn outer(b: Bag, t: Text) -> List<Item> {\n    return b.items.filter(i -> i.title == t)\n}\n\
+fn tagged(b: Bag) -> Int {\n    return b.items.count(i -> i.tags.len() > 0)\n}\n\
+fn ordered(b: Bag) -> List<Item> {\n    return b.items.filter(i -> i.title < \"x\")\n}\n\
+fn listed(b: Bag) -> Int {\n    let l = b.items.filter(i -> true)\n    return l.count(i -> i.done)\n}",
+    );
+    let field = |name: &str| ids.get(&format!("Item.{name}")).expect("id").to_string();
+    let open = asked(func(&m, "unfinished"));
+    assert_eq!(open.len(), 1, "{open:?}");
+    let pred: crate::pred::Pred<String> = serde_json::from_str(&open[0]).expect("a predicate");
+    assert_eq!(pred.fields(), [&field("done"), &field("votes")]);
+    assert_eq!(asked(func(&m, "titled")).len(), 1);
+    // The loop stays beside it, for where the host does not answer.
+    assert!(
+        func(&m, "unfinished")
+            .body
+            .iter()
+            .any(|s| format!("{s:?}").contains("ForList")),
+        "the loop"
+    );
+    // A lambda reading a local of its caller, a set, or text by order is the loop's alone; so
+    // is a list, which is no collection the store keeps.
+    for loop_only in ["outer", "tagged", "ordered"] {
+        assert!(asked(func(&m, loop_only)).is_empty(), "{loop_only}");
+    }
+    assert_eq!(
+        asked(func(&m, "listed")).len(),
+        1,
+        "the collection's filter alone"
+    );
+}
