@@ -131,6 +131,7 @@ pub mod model;
 pub mod order;
 pub mod ordered;
 pub mod path;
+mod projection;
 pub mod reactions;
 pub mod reader;
 pub mod replica;
@@ -172,6 +173,7 @@ pub use model::{
 };
 pub use ordered::{Arranged, Ordered};
 pub use path::{At, Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};
+pub use projection::DocumentRead;
 pub use reactions::{
     Reaction, ReactionGroup, Reactions, Reactor, custom_emoji_name, reaction_emoji,
     valid_custom_emoji_name,
