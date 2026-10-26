@@ -12,6 +12,9 @@ pub const MEASURE_REM: f32 = 40.0;
 pub struct PageLayout {
     measure: Option<Length>,
     class: Option<WidthClass>,
+    /// One row of the page's content, which a virtual list stacks: the gutter at the sides
+    /// only, half the sibling rhythm above and below.
+    row: bool,
 }
 
 impl PageLayout {
@@ -34,6 +37,12 @@ impl Layout for PageLayout {
 
     fn container(&self, resolved: &Resolved) -> Style {
         let gutter = length(self.gutter(resolved));
+        let (top, bottom) = if self.row {
+            let half = length(resolved.gap(crate::tokens::Rhythm::Sibling) / 2.0);
+            (half, half)
+        } else {
+            (gutter, gutter)
+        };
         Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
@@ -41,8 +50,8 @@ impl Layout for PageLayout {
             padding: taffy::Rect {
                 left: gutter,
                 right: gutter,
-                top: gutter,
-                bottom: gutter,
+                top,
+                bottom,
             },
             size: Size {
                 width: taffy::style_helpers::percent(1.0_f32),
@@ -79,6 +88,7 @@ impl Arranged<PageLayout> {
         Self::with_layout(PageLayout {
             measure: Some(Length::Rem(MEASURE_REM)),
             class: None,
+            row: false,
         })
     }
 
@@ -88,7 +98,18 @@ impl Arranged<PageLayout> {
         Self::with_layout(PageLayout {
             measure: None,
             class: None,
+            row: false,
         })
+    }
+
+    /// One row of a page's content, for a virtual list that shows the page's rows one by one
+    /// (a transcript): the page's gutter at its sides, and half the sibling rhythm above and
+    /// below, so the rows it stacks sit a sibling apart in the page's column as a page's
+    /// children do.
+    #[must_use]
+    pub const fn row(mut self) -> Self {
+        self.layout.row = true;
+        self
     }
 
     /// Another readable width.
