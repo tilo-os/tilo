@@ -161,6 +161,7 @@ def run_check(ctx, chk: Check) -> Result:
         res.evidence.append(f"errors/{chk.id}.txt")
     leave_running(ctx, chk, res)
     leave_unlocked(ctx, chk, res)
+    leave_no_stuck_windows(ctx, chk, res)
     leave_no_dialog(ctx, chk, res)
     restarted = session_restart(ctx, chk.id)
     if restarted:
@@ -204,6 +205,95 @@ def leave_running(ctx, chk: Check, res: Result) -> None:
         return
     res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s; the harness "
                                    "restarted the slot session")
+
+
+LEFT_STUCK = "left a window that does not close"
+# How long the windows of an app the harness ended are given to go.
+STUCK_GONE_S = 15
+
+
+# Per thread of each pid: its name, the kernel function it sleeps in and the top of its
+# kernel stack, so a window that would not close says what its app was waiting for.
+_STUCK_THREADS = r'''for pid in __PIDS__; do for t in /proc/$pid/task/*; do
+  printf '%s/%s %s %s %s\n' "$pid" "${t##*/}" "$(cat $t/comm 2>/dev/null)" "$(cat $t/wchan 2>/dev/null)" \
+    "$(head -n 2 $t/stack 2>/dev/null | sed 's/^\[<[0-9a-f]*>\] //' | tr '\n' ' ')"
+done; done'''
+
+
+def stuck_threads(ctx, pids: list[int]) -> str | None:
+    """What the threads of `pids` sleep in, grouped by name and kernel function: e.g.
+    "store×3 futex_wait_queue; store-net poll_schedule_timeout". None when unreadable."""
+    try:
+        text = ctx.vm.root_exec(_STUCK_THREADS.replace("__PIDS__", " ".join(map(str, pids))), timeout=60)
+    except VmError:
+        return None
+    seen: dict[str, int] = {}
+    for line in text.splitlines():
+        parts = line.split(maxsplit=3)
+        if len(parts) < 3:
+            continue
+        key = f"{parts[1]} {parts[2]}" + (f" ({parts[3].strip()[:80]})" if len(parts) > 3 and parts[3].strip() else "")
+        seen[key] = seen.get(key, 0) + 1
+    return "; ".join(f"{k}×{n}" if n > 1 else k for k, n in list(seen.items())[:8]) or None
+
+
+def leave_no_stuck_windows(ctx, chk: Check, res: Result) -> None:
+    """No check may hand the next one a window that does not close: every later check
+    begins by closing every window, and one that survives fails all of them (after A05 left
+    the Store open, about 30 checks failed with "windows still open after closing every
+    group"). Windows a check leaves open are closed here, the way the next check would;
+    the app of one that survives its close has its processes ended, and the slot session
+    is restarted if its window still stays. The check that left it fails, however it ended."""
+    try:
+        if not all_groups(ctx.state()):
+            return
+    except (VmError, KeyError, TypeError):
+        return  # no state to read: leave_running owns that
+    try:
+        ctx.close_all_windows()
+        return
+    except CheckFailed:
+        pass
+    except VmError:
+        return
+    res.status = "fail"
+    try:
+        stuck = sorted({tab_app(t) for g in all_groups(ctx.state()) for t in g.get("tabs", [])} - {None})
+    except (VmError, KeyError, TypeError):
+        stuck = []
+    ended = []
+    try:
+        procs = processes(ctx)["procs"]
+        pids = sorted(p["pid"] for p in procs.values() if p.get("app") in stuck)
+        if pids:
+            waiting = stuck_threads(ctx, pids)
+            if waiting:
+                res.detail = _join(res.detail, f"its processes were waiting in: {waiting}")
+            ctx.vm.root_exec("kill -KILL " + " ".join(map(str, pids)) + " 2>/dev/null; true")
+            ended = sorted({procs[pid]["app"] for pid in pids})
+    except VmError:
+        pass
+
+    def gone():
+        try:
+            return not all_groups(ctx.state()) or None
+        except (VmError, KeyError, TypeError):
+            return None
+
+    how = (f"the harness ended {', '.join(ended)}" if ended
+           else "no process of it was found to end")
+    if ended and wait_until(gone, STUCK_GONE_S, 1.0):
+        res.detail = _join(res.detail, f"{LEFT_STUCK} ({', '.join(stuck) or 'unknown app'}); {how}")
+        return
+    ctx.facts.setdefault("session_recovered_after", []).append(chk.id)
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        res.detail = _join(res.detail, f"{LEFT_STUCK} ({', '.join(stuck) or 'unknown app'}); {how}, "
+                                       f"and restarting the slot session failed: {exc.reason()}")
+        return
+    res.detail = _join(res.detail, f"{LEFT_STUCK} ({', '.join(stuck) or 'unknown app'}); {how}, "
+                                   "and the harness restarted the slot session")
 
 
 LEFT_LOCKED = "left the session locked"
@@ -1249,6 +1339,7 @@ _USH_EVIDENCE = r'''set +e
 echo "journal: $(journalctl --user -u tilo-ush.service --no-pager -o cat -n 200 2>&1 | grep -v '^$' | tail -n 4 | tr '\n' '|' | cut -c1-900)"
 echo "session log: $(grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo/session-logs" 2>/dev/null | grep -v APP-STARTUP | tail -n 3 | tr '\n' '|' | cut -c1-900)"
 echo "guests: $(ps -u "$(id -u)" -o pid=,etimes=,time=,args= 2>/dev/null | grep -E 'tilo-ush (run|guest-init)' | grep -v grep | cut -c1-160 | tr '\n' '|')"
+echo "guest threads waiting in: $(for p in $(pgrep -u "$(id -u)" -f 'tilo-ush (run|guest-init)'); do ps -L -o comm=,wchan:32= -p "$p" 2>/dev/null; done | sort | uniq -c | sort -rn | head -n 8 | awk '{$1=$1; print}' | tr '\n' '|')"
 '''
 
 
