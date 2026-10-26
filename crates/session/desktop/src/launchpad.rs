@@ -482,7 +482,10 @@ impl CollaborationLaunchpad {
         };
         let context = tilo_actions::ActionContext::for_app("tilo.desktop", action.choice.path());
         match state.apply(&mut self.actions, LAUNCHPAD_ACTION_TYPE, &action, context) {
-            Ok(()) => true,
+            Ok(()) => {
+                tracing::info!(card = action.choice.path(), "launchpad card activated");
+                true
+            }
             Err(error) => {
                 tracing::warn!(%error, "launchpad action refused");
                 false
