@@ -416,11 +416,13 @@ pub(crate) fn own_recent_actions(
             let (action, resource) = match &entry.context {
                 Some(context) => (
                     ui::history_source::sentence::step_title(context),
-                    context
-                        .resource
-                        .as_ref()
-                        .filter(|_| !in_tree)
-                        .map(|r| r.label.clone()),
+                    context.resource.as_ref().and_then(|r| {
+                        if in_tree {
+                            shared_part(r)
+                        } else {
+                            Some(r.label.clone())
+                        }
+                    }),
                 ),
                 None => (None, None),
             };
@@ -454,6 +456,22 @@ pub(crate) fn own_recent_actions(
         actions.drain(..actions.len().saturating_sub(MAX_OWN_ACTIONS));
     }
     actions
+}
+
+/// The part of a window's tree a step went to, named where everyone the
+/// window is shared with sees it too: a channel, as `#general`. A private
+/// part (a direct conversation) is never named; the window's title stands
+/// in for it.
+fn shared_part(resource: &tilo_actions::ActionResource) -> Option<String> {
+    let label = resource.label.trim();
+    if label.is_empty() || !resource.kind.ends_with(".channel") {
+        return None;
+    }
+    Some(if label.starts_with('#') {
+        label.to_owned()
+    } else {
+        format!("#{label}")
+    })
 }
 
 /// Whether `entry` is something its author did, as workspace activity
