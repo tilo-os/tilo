@@ -643,7 +643,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // Windowless: the page's drag begins here and ends when the gesture does.
   // A windowless view has no file to offer an editor, so the page's text
   // moves, which is what the gesture asked for.
-  bool StartDragging(CefRefPtr<CefBrowser>,CefRefPtr<CefDragData> data,DragOperationsMask,int x,int y) override {
+  bool StartDragging(CefRefPtr<CefBrowser>,CefRefPtr<CefDragData> data,CefRenderHandler::DragOperationsMask,int x,int y) override {
     if(!data) return false;
     if(data->IsFile() && !data->IsFragment()) data->ResetFileContents();
     dragging_=data;dragging_entered_=false;
@@ -1588,7 +1588,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // What a gesture's drag may do here: a page reorders its own items with a
   // move, and a drop that copies leaves the original where it was. A page's
   // own drag offers both, so accepting only a move would refuse its drops.
-  static constexpr DragOperationsMask kPageDragOps=static_cast<DragOperationsMask>(DRAG_OPERATION_MOVE|DRAG_OPERATION_COPY);
+  static constexpr cef_drag_operations_mask_t kPageDragOps=static_cast<cef_drag_operations_mask_t>(DRAG_OPERATION_MOVE|DRAG_OPERATION_COPY);
   // The page's own drag while a gesture carries it, and whether the element
   // under the pointer has heard it arrive.
   CefRefPtr<CefDragData> dragging_;bool dragging_entered_=false;
