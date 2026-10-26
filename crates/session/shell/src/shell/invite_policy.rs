@@ -32,8 +32,12 @@ pub(crate) enum InviteRoute {
     /// The room is governed by a relay of this device's person: that relay
     /// issues the invitation.
     Relay,
-    /// This device governs a room no relay holds yet: it shares the room on
-    /// its person's home relay, which then issues the invitation.
+    /// This device governs a room no relay holds yet: it issues a direct
+    /// workspace-join invitation from its own endpoint, which the invitee
+    /// redeems over the same signed exchange a relay answers.
+    Governor,
+    /// This device governs a room no native owner holds yet: it shares the
+    /// room on its person's home relay, which then issues the invitation.
     ShareOnRelay,
     /// The actor may invite, but another person's device governs the room,
     /// and only that device can sign an invitation it will honour.
@@ -56,14 +60,14 @@ impl InviteRoute {
     /// Whether the invite composer should be offered: only when submitting it
     /// can produce an invitation.
     pub(crate) const fn issues_here(self) -> bool {
-        matches!(self, Self::Relay | Self::ShareOnRelay)
+        matches!(self, Self::Relay | Self::Governor | Self::ShareOnRelay)
     }
 
     /// The error the issuer answers with when it cannot issue, `None` when it
     /// can.
     pub(crate) const fn refusal(self) -> Option<&'static str> {
         match self {
-            Self::Relay | Self::ShareOnRelay => None,
+            Self::Relay | Self::Governor | Self::ShareOnRelay => None,
             Self::ViaGovernor => Some(
                 "only the governing workspace administrator can create invitations here; \
                  ask the workspace owner to invite this person",
@@ -134,7 +138,13 @@ pub(crate) fn may_issue_invitation(
     let room = workspace.room();
     match native_governor {
         Some(governor) if person_id_of(governor.person).as_ref() == Some(local_user) => {
-            InviteRoute::Relay
+            if governor.relay {
+                InviteRoute::Relay
+            } else {
+                // This device governs the room itself: it signs the
+                // invitation and answers the join exchange directly.
+                InviteRoute::Governor
+            }
         }
         // A relay governs the room: it issues invitations for every member
         // its policy lets invite, and decides that itself.

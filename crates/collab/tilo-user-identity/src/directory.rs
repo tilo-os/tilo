@@ -88,11 +88,31 @@ pub struct WorkspaceMeta {
     /// Device public keys with this workspace pinned (i.e. cache
     /// eagerly, do not evict). Independent from membership.
     pub pinned_devices: Vec<[u8; 32]>,
+    /// Signed workspace-join invitations this person's governing device
+    /// issued for the room, one per device of theirs that may join it. The
+    /// list is the person's own, like every other field: a device joins only
+    /// the invitation addressed to its key, and redeems it over the same
+    /// signed exchange any invitee uses.
+    #[serde(default)]
+    pub join_invitations: Vec<JoinInvitation>,
+}
+
+/// One signed workspace-join invitation addressed to a device of the
+/// directory's person. The text is the canonical invitation; the device key
+/// only chooses which device fetches it, and the grant inside binds it to
+/// the person's root.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinInvitation {
+    pub device_public_key: [u8; 32],
+    pub invitation: String,
 }
 
 /// Key prefix on a workspace entry marking a device that keeps the
 /// workspace off its desktop; the rest of the key is the device's hex key.
 const KEPT_OFF_PREFIX: &str = "kept_off:";
+/// Key prefix for one device's workspace-join invitation; the rest of the
+/// key is the device's hex public key.
+const JOIN_PREFIX: &str = "join:";
 
 /// A signed, incremental directory delta. Produced by
 /// [`WorkspaceDirectory::sync_incremental`] and consumed by
@@ -557,9 +577,69 @@ impl WorkspaceDirectory {
                 kept_off_devices: self.read_kept_off(&obj),
                 host_devices: self.read_pubkey_list(&obj, "hosts"),
                 pinned_devices: self.read_pubkey_list(&obj, "pinned"),
+                join_invitations: self.read_join_invitations(&obj),
             });
         }
         out.sort_by_key(|w| w.id);
+        out
+    }
+
+    /// Write (or replace) the canonical invitation `device` redeems for
+    /// workspace `id`. An empty invitation removes it.
+    ///
+    /// # Errors
+    /// Returns [`DirectoryError::Automerge`] if the underlying document
+    /// operation fails.
+    pub fn set_join_invitation(
+        &mut self,
+        id: WorkspaceId,
+        device: [u8; 32],
+        invitation: Option<&str>,
+    ) -> Result<(), DirectoryError> {
+        let obj = self.ensure_workspace_obj(id)?;
+        let key = format!("{JOIN_PREFIX}{}", hex::encode(device));
+        match invitation.filter(|text| !text.is_empty()) {
+            Some(text) => self.doc.put(&obj, key.as_str(), text),
+            None => match self.doc.get(&obj, key.as_str()) {
+                Ok(Some(_)) => self.doc.delete(&obj, key.as_str()),
+                _ => return Ok(()),
+            },
+        }
+        .map_err(DirectoryError::from)
+    }
+
+    /// The invitation addressed to `device` for workspace `id`.
+    #[must_use]
+    pub fn join_invitation(&self, id: WorkspaceId, device: [u8; 32]) -> Option<JoinInvitation> {
+        let key = Self::workspace_key(id);
+        let Some((Value::Object(ObjType::Map), obj)) = self.doc.get(ROOT, &key).ok().flatten()
+        else {
+            return None;
+        };
+        let key = format!("{JOIN_PREFIX}{}", hex::encode(device));
+        let invitation = self.doc.str_at(&obj, key.as_str())?;
+        Some(JoinInvitation {
+            device_public_key: device,
+            invitation,
+        })
+    }
+
+    fn read_join_invitations(&self, workspace_obj: &ObjId) -> Vec<JoinInvitation> {
+        let mut out: Vec<JoinInvitation> = self
+            .doc
+            .keys(workspace_obj)
+            .filter_map(|key| {
+                let hex = key.strip_prefix(JOIN_PREFIX)?;
+                let bytes = hex::decode(hex).ok()?;
+                let device: [u8; 32] = bytes.try_into().ok()?;
+                let invitation = self.doc.str_at(workspace_obj, key.as_str())?;
+                Some(JoinInvitation {
+                    device_public_key: device,
+                    invitation,
+                })
+            })
+            .collect();
+        out.sort_by_key(|join| join.device_public_key);
         out
     }
 
@@ -1233,5 +1313,76 @@ mod tests {
         assert!(!entry.kept_off_devices.contains(&later_pk));
         laptop.set_kept_off(4, a_pk, false).unwrap();
         assert_eq!(laptop.list_workspaces()[0].kept_off_devices, vec![b_pk]);
+    }
+
+    /// Each device of the person finds the signed room invitation addressed
+    /// to it, and only that one: the invitation text is not a bearer every
+    /// device reads out of the shared list.
+    #[test]
+    fn a_room_invitation_is_addressed_to_one_device_of_the_person() {
+        let f = fresh_user();
+        let (a_sk, a_pk, a_cert) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let (b_sk, b_pk, b_cert) =
+            enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
+        let (_, c_pk, _) =
+            enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
+        let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
+        laptop.add_workspace(9, "Garden").unwrap();
+        laptop
+            .set_join_invitation(9, b_pk, Some("invitation-for-the-board"))
+            .unwrap();
+        laptop
+            .set_join_invitation(9, c_pk, Some("invitation-for-the-phone"))
+            .unwrap();
+        let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
+        board
+            .apply_incremental(
+                &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
+                &a_cert,
+                &RevocationList::new(),
+                1_100,
+            )
+            .unwrap();
+        assert_eq!(
+            board
+                .join_invitation(9, b_pk)
+                .as_ref()
+                .map(|join| join.invitation.as_str()),
+            Some("invitation-for-the-board")
+        );
+        assert_eq!(
+            board
+                .join_invitation(9, c_pk)
+                .as_ref()
+                .map(|join| join.invitation.as_str()),
+            Some("invitation-for-the-phone")
+        );
+        let entries = board.list_workspaces();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].join_invitations.len(),
+            2,
+            "the list names both addressed devices"
+        );
+        let mut laptop_again = WorkspaceDirectory::new(f.user_pk, a_pk);
+        laptop_again
+            .apply_incremental(
+                &board.signed_snapshot(&b_sk, 1_200).unwrap(),
+                &b_cert,
+                &RevocationList::new(),
+                1_300,
+            )
+            .unwrap();
+        assert_eq!(
+            laptop_again
+                .join_invitation(9, b_pk)
+                .map(|join| join.invitation),
+            Some("invitation-for-the-board".into())
+        );
     }
 }

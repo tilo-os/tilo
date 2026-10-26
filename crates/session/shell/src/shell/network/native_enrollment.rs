@@ -22,6 +22,16 @@ pub(super) struct State {
     /// The open [`ShellNetwork::opened_native_owner`] runs off the frame loop.
     background: Arc<Mutex<Background>>,
     pub(super) attempts: Mutex<std::collections::HashMap<u64, enrollment_driver::Attempt>>,
+    /// Rooms this session is creating a governed owner record for, so one
+    /// room is never published twice at once.
+    governing: Arc<Mutex<std::collections::BTreeSet<RoomId>>>,
+    /// A governed-room creation that failed waits this long before another
+    /// attempt: the writer can refuse for a moment, and a loop must not
+    /// rewrite the state file every tick trying.
+    failed_governance: Arc<Mutex<std::collections::HashMap<RoomId, Instant>>>,
+    /// When governed-room creation last looked; the loop runs every frame,
+    /// and nothing changes in the few milliseconds between them.
+    governing_checked: Mutex<Option<Instant>>,
 }
 
 #[derive(Default)]
@@ -193,6 +203,9 @@ impl ShellNetwork {
     ) -> NativeWorkspaceOwner {
         *retained = Some(owner.clone());
         drop(retained);
+        // A device with an identity governs every room it owns with the
+        // native room owner, not only the rooms a host enrolled it in.
+        tree.write().enable_native_governance();
         let rooms = tree.read().rooms();
         for room in rooms {
             if owner.with_current(room, |_| Ok(())).is_ok()
@@ -203,6 +216,197 @@ impl ShellNetwork {
         }
         owner
     }
+
+    /// Move this device's governed rooms that have no native owner record yet
+    /// onto the native owner, one bounded publication each. A workspace made
+    /// after the session started is created here within a tick of its first
+    /// frame; a state file from before has every governed room created once.
+    pub(crate) fn govern_awaiting_rooms(&self) {
+        let now = Instant::now();
+        if self
+            .native_enrollment
+            .governing_checked
+            .lock()
+            .is_ok_and(|checked| {
+                checked.is_some_and(|at| {
+                    now.saturating_duration_since(at) < Duration::from_millis(250)
+                })
+            })
+        {
+            return;
+        }
+        if let Ok(mut checked) = self.native_enrollment.governing_checked.lock() {
+            *checked = Some(now);
+        }
+        let Some(owner) = self.opened_native_owner() else {
+            return;
+        };
+        let Some(identity) = self.host_identity.clone() else {
+            return;
+        };
+        let Ok(tree) = self.native_tree() else {
+            return;
+        };
+        let (rooms, salt) = {
+            let tree = tree.read();
+            (tree.rooms_awaiting_native_governance(), tree.local_salt())
+        };
+        if rooms.is_empty() {
+            let mut tree = tree.write();
+            if tree.native_governance_settled() {
+                tree.native_rooms_ready();
+            }
+            return;
+        }
+        if salt == 0 {
+            tracing::debug!("this session has no topology namespace; governed rooms wait");
+            return;
+        }
+        for (room, workspace, _name) in rooms {
+            let now = Instant::now();
+            if self
+                .native_enrollment
+                .failed_governance
+                .lock()
+                .is_ok_and(|failed| {
+                    failed
+                        .get(&room)
+                        .is_some_and(|at| now.saturating_duration_since(*at) < REOPEN_AFTER)
+                })
+            {
+                continue;
+            }
+            let fresh = self
+                .native_enrollment
+                .governing
+                .lock()
+                .is_ok_and(|mut governing| governing.insert(room));
+            if !fresh {
+                continue;
+            }
+            let Ok((device, _)) = identity.current_native_material(room_topic_id(room)) else {
+                if let Ok(mut governing) = self.native_enrollment.governing.lock() {
+                    governing.remove(&room);
+                }
+                continue;
+            };
+            let key = identity.device_signing_key.clone();
+            let owner = owner.clone();
+            let tree = tree.clone();
+            let governing = Arc::clone(&self.native_enrollment.governing);
+            let failed = Arc::clone(&self.native_enrollment.failed_governance);
+            let work = move || {
+                let result = crate::shell::native_workspace_owner::create_governed_workspace(
+                    &owner, &tree, room, workspace, &device, &key, salt,
+                );
+                if let Err(error) = &result {
+                    tracing::warn!(%error, %room, "a governed room was not created");
+                }
+                if let Ok(mut governing) = governing.lock() {
+                    governing.remove(&room);
+                }
+                if result.is_err()
+                    && let Ok(mut failures) = failed.lock()
+                {
+                    failures.insert(room, Instant::now());
+                }
+            };
+            match self.runtime.as_ref() {
+                Some(runtime) => {
+                    let _ = runtime.spawn_blocking(work);
+                }
+                None => work(),
+            }
+        }
+    }
+
+    /// Issue a workspace-join invitation for `room`, which this device
+    /// governs, from its own endpoint: the invitation a peer redeems over
+    /// the direct workspace-join exchange, with this device as the host and
+    /// governor. Reaches the same signed exchange a relay answers, so a
+    /// direct room and a hosted room admit an invitee the same way.
+    ///
+    /// # Errors
+    /// The room is not governed here, the device has no endpoint or
+    /// identity for it, or the invitation cannot be published.
+    pub(crate) fn issue_direct_invitation(
+        &self,
+        room: RoomId,
+        terms: &crate::shell::peer_sync_overlay::InvitationTerms,
+    ) -> Result<String, String> {
+        use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+        use tilo_peer_state::join::MemberRole;
+        use tilo_peer_state::join::invitations::IssueInvitationRequest;
+
+        let owner = self.native_owner()?;
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or("this device has no identity to invite as")?;
+        let (certificate, _) = identity.current_native_material(room_topic_id(room))?;
+        let governed = owner
+            .with_current(room, |view| Ok(view.governed_here()))
+            .unwrap_or(false);
+        if !governed {
+            return Err("this device does not govern that room".into());
+        }
+        let addr = self
+            .reachability
+            .relay_addr_within(super::INVITE_RELAY_WAIT)
+            .or_else(|| self.dial_addr())
+            .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
+        let workspace_id = tilo_peer_state::join::room_workspace_id(&room.to_string())
+            .map_err(|error| error.to_string())?;
+        let hint = IrohWorkspaceHostHintV1 {
+            version: 1,
+            mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+            room: room.to_string(),
+            workspace_id,
+            governing_authority: certificate.clone(),
+            endpoint_addr: addr,
+            host_user_public_key: certificate.user_public_key,
+            host_device_certificate: certificate.clone(),
+            packet_relay_url: "iroh:direct".into(),
+        }
+        .transport_hint(&identity.device_signing_key)
+        .map_err(|error| error.to_string())?;
+        let now = SystemTime::now();
+        let now_ns = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "the system clock is before the Unix epoch")?
+            .as_nanos()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        let lifetime = terms.expires_in_seconds.min(30 * 24 * 60 * 60).max(1);
+        let mut request_id = [0; 32];
+        getrandom::fill(&mut request_id).map_err(|error| error.to_string())?;
+        let role = match terms.role {
+            crate::network::invite::InviteRole::Viewer => MemberRole::Viewer,
+            crate::network::invite::InviteRole::Commenter => MemberRole::Commenter,
+            crate::network::invite::InviteRole::Editor => MemberRole::Editor,
+        };
+        let issued = owner
+            .issue_invitation(
+                room,
+                IssueInvitationRequest {
+                    request_id,
+                    role,
+                    recipient_user_public_key: terms.recipient_user_public_key,
+                    invitee_name: terms.invitee_name.clone(),
+                    expires_at_ns: now_ns.saturating_add(lifetime.saturating_mul(1_000_000_000)),
+                    inviter_name: Some(certificate.device_label.clone()),
+                },
+                hint,
+                &identity.device_signing_key,
+                tilo_joined_room::Nonces::fresh()?,
+                now,
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(tilo_peer_state::join::encode_invitation_text(
+            &issued.signed_invitation,
+        ))
+    }
+
     pub(crate) fn runtime_handle(&self) -> Result<tokio::runtime::Handle, String> {
         self.runtime
             .as_ref()

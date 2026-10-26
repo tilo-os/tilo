@@ -1083,3 +1083,119 @@ fn a_joined_room_follows_its_revoked_governors_successor_and_reopens_under_it() 
         "restored under the successor"
     );
 }
+
+/// The custody a direct input is admitted under. Direct provenance is
+/// decided by the room itself, so the local identity is never consulted;
+/// tests still name one, as the production caller has it.
+fn direct_custody(
+    cert: tilo_user_identity::DeviceCert,
+    key: SigningKey,
+) -> tilo_identity_host::custody::HostIdentity {
+    tilo_identity_host::custody::HostIdentity {
+        device_cert: cert,
+        device_signing_key: key,
+        workspace_device_certs: std::collections::HashMap::new(),
+        workspace_revocations: std::collections::HashMap::new(),
+        identity_paths: None,
+    }
+}
+
+#[test]
+fn a_direct_governor_change_is_admitted_and_survives_a_restart() {
+    use crate::session::Input;
+    let joined = enrolled();
+    let governor = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.governor().clone()))
+        .unwrap();
+    let mut doc = joined
+        .owner
+        .with_current(joined.room, |view| {
+            Ok(view.peer().admitted_room().unwrap().clone())
+        })
+        .unwrap();
+    let before = doc.get_heads();
+    doc.set_actor(automerge::ActorId::from(
+        governor.device_public_key.to_vec(),
+    ));
+    doc.put(ROOT, "name", "Renamed over the direct carrier")
+        .unwrap();
+    doc.commit();
+    let changes = doc
+        .get_changes(&before)
+        .iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    let input = Input::direct(
+        joined.owner.clone(),
+        joined.room,
+        governor.clone(),
+        NeighbourMsg::SyncResp {
+            changes,
+            room: joined.room.to_string(),
+        },
+    );
+    let custody = direct_custody(governor.clone(), SigningKey::from_bytes(&[99; 32]));
+    let report = input
+        .admit(&custody)
+        .expect("the governor is admitted directly");
+    assert!(
+        report.summary().changed || report.summary().metadata_changed,
+        "the direct room change was admitted: {report:?}"
+    );
+    let name = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(joined.room, |view| {
+                let doc = view.peer().admitted_room().unwrap();
+                Ok(doc
+                    .get(ROOT, "name")
+                    .unwrap()
+                    .and_then(|(value, _)| value.as_str().map(str::to_owned)))
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        name(&joined.owner),
+        Some("Renamed over the direct carrier".into())
+    );
+
+    drop(input);
+    drop(joined.owner);
+    let reopened = open_file(&joined.path).unwrap();
+    assert_eq!(
+        name(&reopened),
+        Some("Renamed over the direct carrier".into()),
+        "a direct carrier's admitted change is durable"
+    );
+}
+
+#[test]
+fn a_direct_input_from_a_device_the_room_does_not_admit_is_refused() {
+    use crate::session::Input;
+    let joined = enrolled();
+    let governor = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.governor().clone()))
+        .unwrap();
+    let stranger_key = SigningKey::from_bytes(&[111; 32]);
+    let stranger = crate::testing::certificate(
+        &SigningKey::from_bytes(&[112; 32]),
+        &stranger_key,
+        "Stranger",
+    );
+    let input = Input::direct(
+        joined.owner.clone(),
+        joined.room,
+        stranger.clone(),
+        NeighbourMsg::SyncResp {
+            changes: Vec::new(),
+            room: joined.room.to_string(),
+        },
+    );
+    let custody = direct_custody(governor, SigningKey::from_bytes(&[99; 32]));
+    let refused = input.admit(&custody);
+    assert!(
+        refused.is_err(),
+        "a device the room never admitted cannot inject room state: {refused:?}"
+    );
+}

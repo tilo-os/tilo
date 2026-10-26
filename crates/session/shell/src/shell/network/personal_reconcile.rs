@@ -18,7 +18,7 @@
 use super::{PERSONAL_WORKSPACES_RESTATE_INTERVAL, ShellNetwork, refresh_device_choices};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// How soon a reconcile that could not write everything into the list
 /// tries again while nothing else moves.
@@ -132,6 +132,24 @@ impl ShellNetwork {
             }
             drop(tree);
         }
+        if let Ok(mut workspaces) = workspaces.lock() {
+            // A room this device governs invites the person's other devices
+            // whether or not the list moved this pass: the owner may have
+            // opened after the room was listed.
+            changed |= self.publish_personal_join_invitations(&tree, &mut workspaces);
+            for (_, local, invitation) in workspaces.take_pending_joins() {
+                match self.accept_invitation_via(
+                    local,
+                    &invitation,
+                    crate::network::invite::enrollment_driver::Via::Iroh,
+                ) {
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, "a personal room's invitation was not redeemed");
+                    }
+                }
+            }
+        }
         let due = self
             .last_personal_workspaces_snapshot
             .lock()
@@ -142,6 +160,96 @@ impl ShellNetwork {
             self.publish_personal_workspaces();
         }
         changed || settle
+    }
+
+    /// Give every other device of this person a signed join invitation to
+    /// each room this device governs, in the person's own list. A room this
+    /// device made is governed here alone; the other devices hold it as
+    /// owner-role members, and the invitation is how they enter it. Answers
+    /// whether the list changed.
+    fn publish_personal_join_invitations(
+        &self,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+        workspaces: &mut crate::shell::personal_workspaces::PersonalWorkspaces,
+    ) -> bool {
+        let Some(owner) = self.opened_native_owner() else {
+            return false;
+        };
+        let Some(identity) = self.host_identity.as_ref() else {
+            return false;
+        };
+        let rooms: Vec<crate::shell::state::RoomId> = {
+            let tree = tree.read();
+            tree.rooms()
+                .into_iter()
+                .filter(|room| tree.governs_room(*room))
+                .collect()
+        };
+        let self_device = identity.device_cert.device_public_key;
+        let person = identity.device_cert.user_public_key;
+        let now = SystemTime::now();
+        let now_ns = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(u64::MAX, |since| {
+                since.as_nanos().try_into().unwrap_or(u64::MAX)
+            });
+        let mut changed = false;
+        for room in rooms {
+            let governed = owner
+                .with_current(room, |view| Ok(view.governed_here()))
+                .unwrap_or(false);
+            if !governed {
+                continue;
+            }
+            let pending: std::collections::BTreeSet<[u8; 32]> = owner
+                .pending_invitations(room, &identity.device_signing_key, now)
+                .map(|invitations| {
+                    invitations
+                        .into_iter()
+                        .map(|invitation| invitation.invite_id)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for device in workspaces.known_devices() {
+                if device == self_device {
+                    continue;
+                }
+                // A stored invitation that was redeemed, cancelled or expired
+                // is replaced, so a device that lost its state can always
+                // join again; one still pending is left alone.
+                let held_pending =
+                    workspaces
+                        .join_invitation_for(room, device)
+                        .is_some_and(|text| {
+                            tilo_peer_state::join::decode_and_verify_invitation_text(
+                                &text,
+                                Some(person),
+                                &tilo_user_identity::RevocationList::new(),
+                                now_ns,
+                            )
+                            .is_ok_and(|join| pending.contains(&join.invite_id()))
+                        });
+                if held_pending {
+                    continue;
+                }
+                let terms = crate::shell::peer_sync_overlay::InvitationTerms {
+                    role: crate::network::invite::InviteRole::Editor,
+                    expires_in_seconds: 30 * 24 * 60 * 60,
+                    invitee_name: None,
+                    recipient_user_public_key: Some(person),
+                };
+                match self.issue_direct_invitation(room, &terms) {
+                    Ok(invitation) => {
+                        changed |=
+                            workspaces.set_join_invitation(room, device, Some(invitation.as_str()));
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, %room, "no personal room invitation for a device");
+                    }
+                }
+            }
+        }
+        changed
     }
 
     fn note_personal_reconciled(&self, generation: u64, complete: bool) {
