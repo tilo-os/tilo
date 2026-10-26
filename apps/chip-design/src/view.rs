@@ -36,6 +36,13 @@ pub enum ChipEffect {
     /// Inspect a structural operator; omit node to clear local selection.
     #[effect(view, kind = "read")]
     InspectOperator { node: Option<String> },
+    /// Zoom the operator graph: out, in, or fit the whole design to the
+    /// canvas. The canvas keeps the level it shows.
+    #[effect(view, kind = "read")]
+    ZoomGraph {
+        #[param("One of: in, out, fit")]
+        step: String,
+    },
     /// Choose an output before invoking the typed connect action.
     #[effect(view, kind = "read")]
     SelectOutput { node: String, port: String },
@@ -72,24 +79,37 @@ fn opened_place(anchor: &str) -> String {
         .to_owned()
 }
 
-fn capture_notice(cx: &ViewCx<ChipProject>, selected: &ui::LocalState<Option<String>>) -> Element {
-    let invalid_file = crate::launch::invalid(&cx.launch());
+/// What a capture stages before the view is built, and the state that says
+/// whether what is on screen is a synthetic example.
+fn capture_notice(
+    cx: &ViewCx<ChipProject>,
+    selected: &ui::LocalState<Option<String>>,
+) -> ui::LocalState<bool> {
     let synthetic = cx.local(false);
     let notice = synthetic.clone();
     let staged = selected.clone();
     cx.on_stage(move |scenario| {
-        notice.set(scenario.is_some_and(|name| name != "empty" && name != "operator-graph"));
+        notice.set(scenario.is_some_and(|name| {
+            !matches!(name, "empty" | "operator-graph" | "operator-graph-node")
+        }));
         if scenario == Some("evidence-flow")
             && let Ok((id, _)) =
                 VerificationRecord::import(include_str!("../fixtures/evidence-flow.json"))
         {
             staged.set(Some(format!("{id}/stage/physical")));
         }
-        if scenario == Some("operator-graph") {
+        if matches!(scenario, Some("operator-graph" | "operator-graph-node")) {
             staged.set(Some(crate::operator_graph::RESOURCE_ID.into()));
         }
     });
-    cx.switch(&synthetic, move |_, synthetic| {
+    synthetic
+}
+
+/// The line saying a file could not be opened, or that what is shown is a
+/// synthetic example, above whatever the window shows.
+fn notice_label(cx: &ViewCx<ChipProject>, synthetic: &ui::LocalState<bool>) -> Element {
+    let invalid_file = crate::launch::invalid(&cx.launch());
+    cx.switch(synthetic, move |_, synthetic| {
         let label = if *synthetic {
             tr("chip-synthetic-fixture")
         } else if invalid_file {
@@ -98,6 +118,122 @@ fn capture_notice(cx: &ViewCx<ChipProject>, selected: &ui::LocalState<Option<Str
             String::new()
         };
         Box::new(Text::new(&label))
+    })
+}
+
+/// The app's own commands: the operator graph, every report, and importing
+/// one. They stand in the window bar, which already names the app.
+fn header_actions(cx: &ViewCx<ChipProject>) -> Vec<Element> {
+    vec![
+        Box::new(cx.effect_button(tr("chip-graph-title"), &ChipEffect::OperatorGraph)),
+        Box::new(cx.effect_button(tr("chip-show-all"), &ChipEffect::Inspect { report: None })),
+        Box::new(cx.effect_button(tr("chip-import"), &ChipEffect::ImportFile)),
+    ]
+}
+
+/// The window's local view state: which place it shows, which operator is
+/// chosen, how the canvas is zoomed and scrolled, and whether the operator's
+/// own facts are open.
+struct PageState {
+    selected: ui::LocalState<Option<String>>,
+    graph_selection: ui::LocalState<crate::operator_graph_view::Selection>,
+    zoom: ui::LocalState<ui::widget::ViewportZoom>,
+    scroll: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    details: ui::LocalState<bool>,
+    synthetic: ui::LocalState<bool>,
+}
+
+/// The window: the operator graph on its canvas, or the reports and receipts
+/// the project holds.
+fn page(cx: &ViewCx<ChipProject>, view: &PageState) -> Element {
+    let selected = view.selected.clone();
+    let zoom = view.zoom.clone();
+    let scroll = std::rc::Rc::clone(&view.scroll);
+    let details = view.details.clone();
+    let synthetic = view.synthetic.clone();
+    cx.switch(&view.graph_selection, move |cx, graph_selection| {
+        let graph_selection = graph_selection.clone();
+        let selected = selected.clone();
+        let zoom = zoom.clone();
+        let scroll = std::rc::Rc::clone(&scroll);
+        let details = details.clone();
+        let synthetic = synthetic.clone();
+        cx.switch(&selected, move |cx, selected| {
+            let selected = selected.clone();
+            let graph_selection = graph_selection.clone();
+            let zoom = zoom.clone();
+            let scroll = std::rc::Rc::clone(&scroll);
+            let details = details.clone();
+            let synthetic = synthetic.clone();
+            let evidence = cx.value(ProjectState::of);
+            cx.switch(&evidence, move |cx, state| {
+                let notice = notice_label(cx, &synthetic);
+                // The window bar already names the app; the header holds only
+                // its commands, which the bar shows as its actions.
+                let shell = NavShell::new()
+                    .content_kind(ui::widget::ContentKind::Canvas)
+                    .content_header("", header_actions(cx));
+                if selected.as_deref() == Some(crate::operator_graph::RESOURCE_ID) {
+                    operator_page(
+                        cx,
+                        &state.operator_graph,
+                        notice,
+                        &graph_selection,
+                        &zoom,
+                        &scroll,
+                        &details,
+                    )
+                } else {
+                    Box::new(shell.content(Box::new(
+                        Column::new().push(notice).push(evidence_body(
+                            cx,
+                            state,
+                            selected.as_deref(),
+                        )),
+                    )))
+                }
+            })
+        })
+    })
+}
+
+/// The graph: its operators beside it, its own canvas filling the rest, and
+/// the chosen operator's facts in the inspector the shell docks or sheets.
+fn operator_page(
+    cx: &ViewCx<ChipProject>,
+    state: &crate::operator_graph::OperatorState,
+    notice: Element,
+    selection: &crate::operator_graph_view::Selection,
+    zoom: &ui::LocalState<ui::widget::ViewportZoom>,
+    scroll: &std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    details: &ui::LocalState<bool>,
+) -> Element {
+    let canvas = Box::new(
+        Column::new()
+            .push(notice)
+            .push(crate::operator_graph_view::body(
+                cx, state, selection, zoom, scroll,
+            )),
+    );
+    let shell = NavShell::new()
+        .content_kind(ui::widget::ContentKind::Canvas)
+        .content_header("", header_actions(cx))
+        .sidebar(crate::operator_graph_view::operators(cx, state, selection))
+        .sidebar_header(tr("chip-graph-operators"), Vec::new())
+        .content(canvas);
+    let Some(pane) = crate::operator_graph_view::details(cx, state, selection) else {
+        return Box::new(shell);
+    };
+    let shell = shell
+        .inspector(pane)
+        .inspector_header(tr("chip-graph-operator"), Vec::new())
+        .with_inspector_state(details);
+    // Choosing an operator shows its facts; closing the pane keeps them a
+    // press away.
+    Box::new(if details.with(|open| *open) {
+        shell.with_inspector_revealed()
+    } else {
+        shell
     })
 }
 
@@ -123,19 +259,46 @@ impl ResourceApp for ChipDesignShell {
     fn view(cx: &mut ViewCx<ChipProject>) -> Element {
         let selected = cx.local(None::<String>);
         let graph_selection = cx.local(crate::operator_graph_view::Selection::default());
-        let notice = capture_notice(cx, &selected);
+        // The graph opens showing all of itself, and keeps where a person
+        // moved it: the local view state of one window.
+        let graph_zoom = cx.local(ui::widget::ViewportZoom::Fit);
+        let operator_details = cx.local(false);
+        // A capture of the graph with one operator chosen: the list, the
+        // canvas and the operator's own facts all in one frame.
+        let staged_selection = graph_selection.clone();
+        let staged_details = operator_details.clone();
+        cx.on_stage(move |scenario| {
+            if scenario == Some("operator-graph-node") {
+                staged_selection.set(crate::operator_graph_view::Selection {
+                    node: Some("rms".into()),
+                    output: None,
+                });
+                staged_details.set(true);
+            }
+        });
+        let graph_scroll: std::rc::Rc<std::cell::Cell<(f32, f32)>> =
+            std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0)));
+        let synthetic = capture_notice(cx, &selected);
         let opened = selected.clone();
         cx.on_open(move |anchor| opened.set(Some(opened_place(anchor))));
         let inspected = selected.clone();
         let graph_opened = selected.clone();
         let graph_inspected = graph_selection.clone();
+        let effect_zoom = graph_zoom.clone();
+        let effect_details = operator_details.clone();
         cx.effects(move |effect: ChipEffect, cx| match effect {
             effect @ (ChipEffect::OperatorGraph
             | ChipEffect::AddOperator { .. }
             | ChipEffect::InspectOperator { .. }
-            | ChipEffect::SelectOutput { .. }) => {
-                crate::operator_graph_view::present(effect, cx, &graph_opened, &graph_inspected)
-            }
+            | ChipEffect::ZoomGraph { .. }
+            | ChipEffect::SelectOutput { .. }) => crate::operator_graph_view::present(
+                effect,
+                cx,
+                &graph_opened,
+                &graph_inspected,
+                &effect_zoom,
+                &effect_details,
+            ),
             effect @ (ChipEffect::OpenEvidenceSubflow { .. }
             | ChipEffect::InspectEvidence { .. }) => {
                 crate::evidence_flow_view::present(effect, cx, &inspected)
@@ -186,36 +349,16 @@ impl ResourceApp for ChipDesignShell {
                 },
             )),
         });
-        let content = cx.switch(&graph_selection, move |cx, graph_selection| {
-            let graph_selection = graph_selection.clone();
-            cx.switch(&selected, move |cx, selected| {
-                let selected = selected.clone();
-                let graph_selection = graph_selection.clone();
-                let evidence = cx.value(ProjectState::of);
-                cx.switch(&evidence, move |cx, state| {
-                    if selected.as_deref() == Some(crate::operator_graph::RESOURCE_ID) {
-                        crate::operator_graph_view::body(
-                            cx,
-                            &state.operator_graph,
-                            &graph_selection,
-                        )
-                    } else {
-                        evidence_body(cx, state, selected.as_deref())
-                    }
-                })
-            })
-        });
-        let import = Box::new(cx.effect_button(tr("chip-import"), &ChipEffect::ImportFile));
-        let all =
-            Box::new(cx.effect_button(tr("chip-show-all"), &ChipEffect::Inspect { report: None }));
-        let graph = Box::new(cx.effect_button(tr("chip-graph-title"), &ChipEffect::OperatorGraph));
-        Box::new(
-            NavShell::new()
-                .content_kind(ui::widget::ContentKind::Document)
-                .content(Box::new(Column::new().push(notice).push(content)))
-                // The window bar already names the app; the header holds only
-                // its commands, which the bar shows as its actions.
-                .content_header("", vec![graph, all, import]),
+        page(
+            cx,
+            &PageState {
+                selected,
+                graph_selection,
+                zoom: graph_zoom,
+                scroll: graph_scroll,
+                details: operator_details,
+                synthetic,
+            },
         )
     }
 
@@ -223,6 +366,7 @@ impl ResourceApp for ChipDesignShell {
         &[
             "empty",
             "operator-graph",
+            "operator-graph-node",
             "storage-report",
             "checkpoint-verification",
             "q4k-superblock",
@@ -234,7 +378,9 @@ impl ResourceApp for ChipDesignShell {
     fn scenario(name: Option<&str>) -> Vec<Invoke<ChipProject>> {
         let verification = |json: &str| vec![ChipProject::IMPORT_VERIFICATION.with(json)];
         match name {
-            Some("operator-graph") => crate::operator_graph_view::scenario(),
+            Some("operator-graph" | "operator-graph-node") => {
+                crate::operator_graph_view::scenario()
+            }
             Some("evidence-flow") => verification(include_str!("../fixtures/evidence-flow.json")),
             Some("storage-report") => vec![
                 ChipProject::IMPORT_REPORT.with(include_str!("../fixtures/storage-report.json")),
@@ -522,7 +668,13 @@ fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyLis
             if let Some(synthesis) = &variant.synthesis {
                 for memory in &synthesis.memories {
                     sections.push((
-                        format!("{} / {}", variant.identity, memory.name),
+                        I18nManager::format(
+                            "chip-study-memory-of",
+                            &[
+                                ("memory", memory.name.clone().into()),
+                                ("variant", variant.identity.clone().into()),
+                            ],
+                        ),
                         study_memory_properties(&variant.identity, memory),
                     ));
                 }
@@ -672,7 +824,13 @@ fn study_memory_properties(
     vec![
         property(
             "chip-study-memory-name",
-            &format!("{variant} / {}", memory.name),
+            &I18nManager::format(
+                "chip-study-memory-of",
+                &[
+                    ("memory", memory.name.clone().into()),
+                    ("variant", variant.into()),
+                ],
+            ),
         ),
         property("chip-study-memory-width", &memory.width_bits),
         property("chip-study-memory-depth", &memory.depth_words),

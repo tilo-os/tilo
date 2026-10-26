@@ -44,6 +44,12 @@ pub(crate) enum Intent {
         action: ActionKind,
         partition: Option<usize>,
     },
+    /// Open a mounted filesystem in Files: `partition` of the selected drive,
+    /// or its first mounted filesystem.
+    OpenInFiles(Option<usize>),
+    /// Show what a mounted filesystem's files take up, in the Disk Usage
+    /// analyzer.
+    DiskUsage(Option<usize>),
     Rescan,
 }
 
@@ -177,9 +183,30 @@ fn operations_menu(
 ) -> impl Fn(Option<ui::vello::kurbo::Point>) -> Vec<MenuEntry> + 'static {
     let part = partition.and_then(|i| drive.partitions.get(i));
     let offers = offer::shown(drive, part);
+    let mounted = part.is_some_and(|part| part.mountpoint.is_some());
     let intents = intents.clone();
     move |_| {
         let mut entries = Vec::new();
+        // A mounted filesystem's files are reachable: going to them, and
+        // seeing what they take up, come before anything that changes the
+        // device.
+        if mounted {
+            let open = intents.clone();
+            entries.push(
+                MenuEntry::new("Open in Files", move || {
+                    open.push(Intent::OpenInFiles(partition));
+                })
+                .with_icon(Icon::Folder),
+            );
+            let usage = intents.clone();
+            entries.push(
+                MenuEntry::new("How much space is left?", move || {
+                    usage.push(Intent::DiskUsage(partition));
+                })
+                .with_icon(Icon::BarChart),
+            );
+            entries.push(MenuEntry::separator());
+        }
         for &(action, offer) in &offers {
             let intents = intents.clone();
             let run = move || intents.push(Intent::RunOn { action, partition });
@@ -449,7 +476,74 @@ fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Sec
                 .dimmed(),
         ));
     }
+    // The two ways on from the drive page, under the filesystems they act
+    // for, so they are reachable without opening a menu.
+    if let Some(target) = mounted_target(drive, selected) {
+        let mount = drive
+            .partitions
+            .get(target)
+            .and_then(Partition::mount_display)
+            .unwrap_or_else(|| "these files".to_owned());
+        items.push(Box::new(
+            Row::new()
+                .push(Box::new(mounted_action(
+                    "disks-open-in-files",
+                    "Open in Files",
+                    Icon::Folder,
+                    &mount,
+                    Intent::OpenInFiles(Some(target)),
+                    intents,
+                )))
+                .push(Box::new(mounted_action(
+                    "disks-space-left",
+                    "How much space is left?",
+                    Icon::BarChart,
+                    &mount,
+                    Intent::DiskUsage(Some(target)),
+                    intents,
+                ))),
+        ));
+    }
     Section::titled("Filesystems", items)
+}
+
+/// The mounted partition the drive page's two ways on act for: the chosen
+/// one when it is mounted, else the one holding the most — what a person
+/// means by "the drive" when they have not chosen a partition, rather than
+/// whichever partition happens to be first (usually a boot partition).
+fn mounted_target(drive: &Drive, selected: Option<usize>) -> Option<usize> {
+    if let Some((index, part)) = selected.map(|index| (index, drive.partitions.get(index)))
+        && let Some(part) = part
+        && part.mountpoint.is_some()
+    {
+        return Some(index);
+    }
+    drive
+        .partitions
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| part.mountpoint.is_some())
+        .max_by_key(|(_, part)| part.used.unwrap_or(0))
+        .map(|(index, _)| index)
+}
+
+/// One of the two ways on from a mounted filesystem, as a button that says
+/// what it does and, in its tooltip, which filesystem it does it for.
+fn mounted_action(
+    id: &str,
+    label: &str,
+    icon: Icon,
+    mount: &str,
+    intent: Intent,
+    intents: &Intents,
+) -> ui::widget::Button {
+    ui::widget::Button::new(id, label)
+        .with_icon(icon)
+        .tooltip(match intent {
+            Intent::DiskUsage(_) => format!("How much space {mount} has left"),
+            _ => format!("Open {mount} in Files"),
+        })
+        .on_effect(intents.sender(intent))
 }
 
 /// Share of a filesystem in use above which it needs attention.

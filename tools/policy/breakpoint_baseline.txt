@@ -5,7 +5,6 @@
 1 apps/browser/src/browser_widget.rs
 1 apps/canvas/tests/history.rs
 4 apps/chat/src/local_voice.rs
-1 apps/chip-design/src/verification/operators.rs
 2 apps/feeds/src/list_pane/copy_tests.rs
 1 apps/file-explorer/src/files_app/tests.rs
 1 apps/music/src/app/spotify.rs

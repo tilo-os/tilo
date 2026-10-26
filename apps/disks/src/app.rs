@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, LiveRow, RunMode};
+use ui::portal::LaunchOutcome;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -171,6 +172,14 @@ impl ActionKind {
     pub(crate) fn destructive(self) -> bool {
         matches!(self, ActionKind::Format)
     }
+}
+
+/// Where a mounted filesystem opens: beside it, in Files, or in the analyzer
+/// that says how much room its files take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Open {
+    Files,
+    Usage,
 }
 
 /// What a transient result means. The toast takes its colour from this, so
@@ -518,8 +527,35 @@ impl DisksApp {
                 Intent::SelectDrive(index) => self.select(index),
                 Intent::SelectPartition(part) => self.select_part(part),
                 Intent::RunOn { action, partition } => self.trigger_action(action, partition),
+                Intent::OpenInFiles(partition) => self.open_partition(partition, Open::Files),
+                Intent::DiskUsage(partition) => self.open_partition(partition, Open::Usage),
                 Intent::Rescan => self.rescan(),
             }
+        }
+    }
+
+    /// Open partition `partition` of the selected drive (`None`: the
+    /// filesystem holding the most) in Files or in the Disk Usage analyzer.
+    fn open_partition(&self, partition: Option<usize>, how: Open) {
+        let Some(device) = self
+            .drive()
+            .and_then(|drive| match partition {
+                Some(index) => drive.partitions.get(index),
+                None => drive
+                    .partitions
+                    .iter()
+                    .find(|part| part.mountpoint.is_some()),
+            })
+            .map(|part| part.name.clone())
+        else {
+            return;
+        };
+        let effect = match how {
+            Open::Files => DisksEffect::OpenFolder { device },
+            Open::Usage => DisksEffect::DiskUsage { device },
+        };
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect(&effect);
         }
     }
 
@@ -662,6 +698,8 @@ impl DisksApp {
                 self.set_tab(tab);
                 return Ok(Effected::done());
             }
+            DisksEffect::OpenFolder { device } => return self.open_folder(&device, cx),
+            DisksEffect::DiskUsage { device } => return self.open_usage(&device, cx),
             DisksEffect::Mount { device } => (ActionKind::Mount, device),
             DisksEffect::Unmount { device } => (ActionKind::Unmount, device),
             DisksEffect::Format { device } => (ActionKind::Format, device),
@@ -669,6 +707,82 @@ impl DisksApp {
             DisksEffect::Eject { device } => (ActionKind::Eject, device),
         };
         self.run_operation(operation.0, &operation.1, cx)
+    }
+
+    /// Open the mounted filesystem `device` where it lives, in Files: the
+    /// mount point the probe reported, through the host's own path opener,
+    /// so the files are reachable from the row that named them.
+    fn open_folder(&mut self, device: &str, cx: &mut EffectCx<Disks, Self>) -> EffectAnswer {
+        let Some(mount) = crate::resource::mount_point(&self.topo, device) else {
+            return Err(format!("/dev/{device} is not mounted"));
+        };
+        if self.backend == Backend::Sample {
+            self.report(
+                format!("Sample machine: would open {mount} in Files"),
+                StatusTone::Info,
+            );
+            return Ok(Effected::value(&self.status));
+        }
+        let path = std::path::PathBuf::from(&mount);
+        Ok(cx.thread(
+            move |_| {
+                ui::portal::LaunchRequest::open(path)
+                    .send()
+                    .recv_timeout(ui::time::Duration::from_secs(30))
+                    .unwrap_or_else(|_| LaunchOutcome::Failed("Files did not answer".into()))
+            },
+            move |app: &mut Self, outcome: LaunchOutcome, _| match outcome {
+                LaunchOutcome::Opened => {
+                    app.report(format!("Opened {mount} in Files"), StatusTone::Success);
+                    Ok(Effected::value(&mount))
+                }
+                LaunchOutcome::Failed(reason) => {
+                    app.report(
+                        format!("Couldn't open {mount}: {reason}"),
+                        StatusTone::Danger,
+                    );
+                    Err(reason)
+                }
+            },
+        ))
+    }
+
+    /// Show how much room the mounted filesystem `device`'s files take up:
+    /// the Disk Usage analyzer, opened where this window is.
+    ///
+    /// The analyzer is a job of its own, not a tab of this one; the link is
+    /// the session's own (`tilo://open`), so it lands in the workspace the
+    /// person is in.
+    fn open_usage(&mut self, device: &str, cx: &mut EffectCx<Disks, Self>) -> EffectAnswer {
+        let Some(mount) = crate::resource::mount_point(&self.topo, device) else {
+            return Err(format!("/dev/{device} is not mounted"));
+        };
+        if self.backend == Backend::Sample {
+            self.report(
+                format!("Sample machine: would open Disk Usage for {mount}"),
+                StatusTone::Info,
+            );
+            return Ok(Effected::value(&self.status));
+        }
+        Ok(cx.thread(
+            move |_| ui::portal::open_uri(crate::resource::USAGE_LINK).map_err(|e| e.to_string()),
+            move |app: &mut Self, opened: Result<(), String>, _| match opened {
+                Ok(()) => {
+                    app.report(
+                        format!("Opened Disk Usage for {mount}"),
+                        StatusTone::Success,
+                    );
+                    Ok(Effected::value(&mount))
+                }
+                Err(reason) => {
+                    app.report(
+                        format!("Couldn't open Disk Usage: {reason}"),
+                        StatusTone::Danger,
+                    );
+                    Err(reason)
+                }
+            },
+        ))
     }
 
     /// Select the drive or partition named `device`.
@@ -1198,6 +1312,48 @@ mod tests {
             node.children
                 .iter()
                 .any(|child| child.name.as_deref() == Some("Mount failed: busy"))
+        );
+    }
+
+    /// A mounted filesystem's files are reachable from the drive page, and
+    /// from the row's own menu: the two ways on are there without opening
+    /// anything else.
+    #[test]
+    fn a_mounted_filesystem_offers_its_files_from_the_drive_page() {
+        let mut app = framed(sample_app(), 1280.0, 800.0);
+        Framed::harness_mut(&mut app).poll_frame().unwrap();
+        let inspection = Framed::harness_mut(&mut app).inspection_json().unwrap();
+        for label in ["Open in Files", "How much space is left?"] {
+            assert!(
+                inspection.contains(label),
+                "the drive page offers {label}: {inspection}"
+            );
+        }
+        // Both are real controls on the page, laid out and pressable.
+        for id in ["disks-open-in-files", "disks-space-left"] {
+            let button = target(&app, id);
+            assert!(
+                button.width() > 0.0 && button.height() > 0.0,
+                "{id} is drawn: {button:?}"
+            );
+        }
+    }
+
+    /// A filesystem with no mount point has nowhere to go, so the drive page
+    /// offers neither way on.
+    #[test]
+    fn an_unmounted_drive_page_offers_no_way_on() {
+        let mut topology = crate::model::Topology::sample();
+        topology.drives[0].partitions.clear();
+        let mut app = DisksApp::sample();
+        app.show_reading(Ok(topology));
+        let mut app = framed(app, 1280.0, 800.0);
+        Framed::harness_mut(&mut app).poll_frame().unwrap();
+        let inspection = Framed::harness_mut(&mut app).inspection_json().unwrap();
+        assert!(!inspection.contains("Open in Files"), "{inspection}");
+        assert!(
+            !inspection.contains("How much space is left?"),
+            "{inspection}"
         );
     }
 
