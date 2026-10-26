@@ -312,9 +312,10 @@ fn governance_made_while_the_host_is_away_applies_once_it_is_back() {
         "the desktop to host the workspace again",
         || first.hosted_rooms().contains(&room).then_some(()),
     );
-    until(
+    until_caught_up(
         &[&first, &second],
         "the laptop to ask the host again",
+        room,
         || {
             assert!(!refused_on(&second), "a host out of reach refused nothing");
             second.tree.read().room_outbox.is_empty().then_some(())

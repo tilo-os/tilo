@@ -82,6 +82,11 @@ pub struct WorkspaceRuntime {
     /// retained body a device's admitted delta carries. Bounded; a full queue
     /// drops the notice.
     pub(crate) governor_tap: Option<mpsc::Sender<([u8; 32], Vec<u8>)>>,
+    /// For a room this host serves for its governing device: that device,
+    /// and the wake of this host's dial loop to it
+    /// ([`crate::federation::PeerRelayDialer::spawn_woken`]). A session that
+    /// device opens here says it is back, and this host dials it at once.
+    pub(crate) governor_dial: Option<([u8; 32], Arc<tokio::sync::Notify>)>,
     /// The in-process authority governing this workspace's room, if any: it
     /// answers the room's calls.
     pub room_authority: Option<crate::rooms::RoomAuthority>,
@@ -418,6 +423,7 @@ impl WorkspaceRuntime {
             presence_mailboxes: HashMap::new(),
             recent_deltas: HashMap::new(),
             governor_tap: None,
+            governor_dial: None,
             room_authority: None,
             standings: None,
             live_members: HashMap::new(),

@@ -202,6 +202,13 @@ pub(super) async fn handle_subscribe(
         SubscribeReplayCompletion::Ready(handle) => handle,
         SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
     };
+    // The device governing a room served here is back: this host's own
+    // session to it is dialled now, not once its dial loop's backoff ends.
+    if let Some((governor, wake)) = &ws.lock().await.governor_dial
+        && *governor == peer.device_public_key
+    {
+        wake.notify_one();
+    }
     *replay = Some((workspace_id, ticket, handle, catchup));
     session.metrics.inc_subscribes();
     if !subscribed.contains(&workspace_id) {

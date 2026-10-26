@@ -272,12 +272,14 @@ impl Hosting {
             .cloned()
             .ok_or("the room's workspace did not open")?;
         let (tap, notices) = tokio::sync::mpsc::channel(NOTICES);
+        let wake = std::sync::Arc::new(tokio::sync::Notify::new());
         {
             let mut runtime = workspace.lock().await;
             if runtime.room_authority.is_some() {
                 return Err("this host governs that room itself".into());
             }
             runtime.governor_tap = Some(tap);
+            runtime.governor_dial = Some((authority.device_public_key, wake.clone()));
         }
         drop(workspace);
         let identity = LiveIdentity {
@@ -293,12 +295,13 @@ impl Hosting {
             metrics: services.metrics.clone(),
             scope: Some(vec![request.workspace_id]),
         }
-        .spawn(
+        .spawn_woken(
             Upstream::OwnDevice {
                 addr: governor.endpoint_addr.clone(),
                 device: authority.device_public_key,
             },
             format!("governor of {}", request.room),
+            wake,
         );
         let follower = Follower {
             services: services.clone(),
@@ -424,7 +427,9 @@ async fn admit(
 async fn stop_following(services: &RoomServices, workspace_id: u64) {
     let workspace = services.workspaces.lock().await.get(&workspace_id).cloned();
     if let Some(workspace) = workspace {
-        workspace.lock().await.governor_tap = None;
+        let mut runtime = workspace.lock().await;
+        runtime.governor_tap = None;
+        runtime.governor_dial = None;
     }
 }
 

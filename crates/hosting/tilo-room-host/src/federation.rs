@@ -20,9 +20,12 @@
 //!
 //! A session carries changes one way, from the host dialed to the host
 //! dialing. Two certified hosts each dial the other. A device governing a
-//! room another host of its person serves dials nothing on its own: when
-//! that host's session arrives, the device answers it with one back
-//! ([`PeerRelayDialer::answer`]) that lasts as long as it does.
+//! room another host of its person serves keeps no dial loop: as its host
+//! opens the room it opens one session to each such host, which brings what
+//! that host took in meanwhile, and that host dials it back at once
+//! ([`PeerRelayDialer::spawn_woken`]). Each session such a host opens is
+//! answered with one back ([`PeerRelayDialer::answer`]) that lasts as long
+//! as it does.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -88,10 +91,21 @@ impl PeerRelayDialer {
     /// after a session ends or a dial fails it waits `1s, 2s, 4s, …` up to
     /// 60s before dialing again.
     pub fn spawn(self, upstream: Upstream, label: String) -> JoinHandle<()> {
-        tokio::spawn(self.dial_loop(upstream, label))
+        self.spawn_woken(upstream, label, Arc::default())
     }
 
-    async fn dial_loop(self, upstream: Upstream, label: String) {
+    /// [`Self::spawn`], dialing again at once whenever `wake` is notified
+    /// while it waits out a backoff: the upstream is back and said so.
+    pub fn spawn_woken(
+        self,
+        upstream: Upstream,
+        label: String,
+        wake: Arc<tokio::sync::Notify>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(self.dial_loop(upstream, label, wake))
+    }
+
+    async fn dial_loop(self, upstream: Upstream, label: String, wake: Arc<tokio::sync::Notify>) {
         let mut backoff_ms: u64 = 1_000;
         loop {
             match self.dial(&upstream).await {
@@ -106,7 +120,10 @@ impl PeerRelayDialer {
                     tracing::debug!(%label, "peer relay dial failed: {error}");
                 }
             }
-            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
+                () = wake.notified() => backoff_ms = 1_000,
+            }
             backoff_ms = backoff_ms.saturating_mul(2).min(60_000);
         }
     }
@@ -155,33 +172,45 @@ impl PeerRelayDialer {
         client.map_err(|error| error.to_string())
     }
 
-    /// Answer the host that opened `inbound` here, a host serving a room
-    /// this device governs, with one session back to it at `upstream`: what
-    /// its members change there reaches this device that way, as what
-    /// changes here reaches it over its own session. The answer lasts as
-    /// long as `inbound` does. When it cannot be held, `inbound` is ended
-    /// too, and the host, which keeps dialing while it is up, opens it again
-    /// and is answered again: this device keeps no timer for it.
+    /// Open one session to `upstream`, a host serving a room this device
+    /// governs: what its members change there reaches this device that way,
+    /// as what changes here reaches it over the host's own session.
+    ///
+    /// Given `inbound`, the session that host opened here, this answers it
+    /// and lasts as long as it does; when it cannot be held, `inbound` is
+    /// ended too, and the host, which keeps dialing while it is up, opens it
+    /// again and is answered again. Without, it is the session this device
+    /// opens as its host opens the room, and lasts until it ends or the
+    /// host's own session is answered. This device keeps no timer for
+    /// either.
     pub fn answer(
         self,
         upstream: Upstream,
-        inbound: mpsc::Sender<()>,
+        inbound: Option<mpsc::Sender<()>>,
         label: String,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let session = async {
                 let client = self.dial(&upstream).await?;
-                tracing::info!(%label, "answered a host serving a room governed here");
+                tracing::info!(%label, "in session with a host serving a room governed here");
                 self.run_session(&client, false).await
+            };
+            let answered = async {
+                match &inbound {
+                    Some(inbound) => inbound.closed().await,
+                    None => std::future::pending().await,
+                }
             };
             tokio::select! {
                 result = session => {
                     if let Err(error) = result {
-                        tracing::debug!(%label, "answer to a host ended: {error}");
+                        tracing::debug!(%label, "session to a host ended: {error}");
                     }
-                    let _ = inbound.try_send(());
+                    if let Some(inbound) = &inbound {
+                        let _ = inbound.try_send(());
+                    }
                 }
-                () = inbound.closed() => {}
+                () = answered => {}
             }
         })
     }

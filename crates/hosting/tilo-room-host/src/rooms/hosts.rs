@@ -33,11 +33,13 @@ use crate::host_authority::HostOperation;
 use crate::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
 use tilo_lock::RwLockRecover as _;
 
-/// This host's answer to the session a host serving one of its rooms opened
-/// here ([`Rooms::answer_host`]).
+/// This host's session to a host serving one of its rooms: its answer to
+/// the session that host opened here ([`Rooms::answer_host`]), or the one
+/// it opened as it opened the room ([`Rooms::reach_hosts`]).
 pub(super) struct Answer {
-    /// The session answered.
-    inbound: tokio::sync::mpsc::Sender<()>,
+    /// The session answered; `None` for the one this host opened as it
+    /// opened the room ([`Rooms::reach_hosts`]).
+    inbound: Option<tokio::sync::mpsc::Sender<()>>,
     /// The session back to the host.
     session: tokio::task::AbortHandle,
 }
@@ -252,8 +254,10 @@ impl Rooms {
 
     /// Answer the host `device` serving `room` as well, over the session
     /// `inbound` it opened here, with a session back to it
-    /// ([`PeerRelayDialer::answer`]): once for each session it opens.
-    /// Nothing when `device` does not serve the room.
+    /// ([`PeerRelayDialer::answer`]): once for each session it opens. It
+    /// takes the place of the session this host opened as it opened the
+    /// room ([`Self::reach_hosts`]). Nothing when `device` does not serve
+    /// the room.
     pub(crate) async fn answer_host(
         &self,
         room: &str,
@@ -265,13 +269,50 @@ impl Rooms {
         };
         let mut governed = governed.lock().await;
         if inbound.is_closed()
-            || governed
-                .answered
-                .get(&device)
-                .is_some_and(|answered| answered.inbound.same_channel(&inbound))
+            || governed.answered.get(&device).is_some_and(|answered| {
+                answered
+                    .inbound
+                    .as_ref()
+                    .is_some_and(|answered| answered.same_channel(&inbound))
+            })
         {
             return;
         }
+        self.open_host_session(&mut governed, device, Some(inbound));
+        drop(governed);
+    }
+
+    /// Open a session to each host serving `governed` beside this one, as
+    /// this host opens the room: what its members changed there while this
+    /// host was away reaches it now, and the host, told this host is back,
+    /// dials it in turn ([`crate::federation`]). Nothing waits for that
+    /// host's dial timer.
+    pub(super) fn reach_hosts(&self, governed: &mut super::GovernedRoom) {
+        let devices: Vec<[u8; 32]> = governed
+            .peer()
+            .governance()
+            .room_hosts()
+            .iter()
+            .map(host_device)
+            .filter(|device| *device != self.inner.host.cert.device_public_key)
+            .collect();
+        for device in devices {
+            if !governed.answered.contains_key(&device) {
+                self.open_host_session(governed, device, None);
+            }
+        }
+    }
+
+    /// A session to the host `device` serving `governed`, at the address
+    /// the room's governance names for it, answering `inbound` when given
+    /// ([`PeerRelayDialer::answer`]). Nothing when `device` does not serve
+    /// the room.
+    fn open_host_session(
+        &self,
+        governed: &mut super::GovernedRoom,
+        device: [u8; 32],
+        inbound: Option<tokio::sync::mpsc::Sender<()>>,
+    ) {
         let Some(addr) = governed
             .peer()
             .governance()
@@ -300,7 +341,7 @@ impl Rooms {
         .answer(
             Upstream::OwnHost { addr, device },
             inbound.clone(),
-            format!("host {} of {room}", hex::encode(&device[..4])),
+            format!("host {} of {}", hex::encode(&device[..4]), governed.room()),
         )
         .abort_handle();
         governed

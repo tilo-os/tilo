@@ -255,8 +255,10 @@ struct GovernedRoom {
     /// what the relay retains of it from before is still to be archived,
     /// ahead of the base's publication ([`Rooms::settle`]).
     rebased: bool,
-    /// The session each of those hosts last opened here that this host
-    /// answered ([`Rooms::answer_host`]), by the host's device.
+    /// This host's session to each of those hosts, by the host's device:
+    /// its answer to the session that host last opened here
+    /// ([`Rooms::answer_host`]), or the one it opened as it opened the room
+    /// ([`Rooms::reach_hosts`]).
     answered: HashMap<[u8; 32], hosts::Answer>,
 }
 
@@ -988,6 +990,8 @@ impl Rooms {
             this.recall(&mut room).await?;
             // What the relay's log revoked while the room was closed.
             this.carry_revocations(&mut room, &[]).await?;
+            // What the room's other hosts took in while this one was away.
+            this.reach_hosts(&mut room);
         }
         this.settle_layouts().await;
         this.follow_activity();
