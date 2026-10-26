@@ -92,6 +92,8 @@ impl Look {
 /// The card's contents, for measuring and painting.
 pub(super) struct Contents<'a> {
     pub gesture: Gesture,
+    /// The person points by touch ([`super::HintPlace::touch`]).
+    pub touch: bool,
     pub words: &'a str,
     pub keys: &'a [String],
 }
@@ -313,7 +315,7 @@ fn paint_contents(
         scene,
         transform,
         tile,
-        frame.contents.gesture,
+        &frame.contents,
         frame.phase,
         Ink {
             line: look.ink,

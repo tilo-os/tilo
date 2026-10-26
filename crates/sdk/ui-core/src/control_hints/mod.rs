@@ -49,6 +49,9 @@ pub struct HintSpec<S: 'static> {
     pub gesture: Gesture,
     /// Its words: a catalogue key, a few words at most.
     pub words: &'static str,
+    /// Its words for a person who points by touch, where a finger does it
+    /// differently: a catalogue key.
+    pub touch_words: Option<&'static str>,
 }
 
 /// A moment a hint is useful.
@@ -86,7 +89,8 @@ pub enum Gesture {
     MoveWindow,
     /// A pointer drawing a window's edge out and back.
     ResizeEdge,
-    /// A pointer dragging the canvas, the windows sliding with it.
+    /// The windows sliding sideways under the person's fingers: two on a
+    /// touchpad scrolling sideways, or one swiping a touchscreen.
     PanView,
 }
 
