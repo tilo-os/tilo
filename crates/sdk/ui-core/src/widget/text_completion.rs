@@ -318,7 +318,7 @@ impl CompletionList {
             return Some(CompletionToken {
                 kind: CompletionKind::Mention,
                 start: query.start,
-                end: caret.min(text.len()),
+                end: text.floor_char_boundary(caret.min(text.len())),
                 query: query.query,
             });
         }

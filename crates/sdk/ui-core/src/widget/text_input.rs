@@ -5836,7 +5836,6 @@ impl Widget for TextInput {
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
             self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
-            self.paint_completion(scene, transform, text_renderer, theme, presence);
             #[cfg(test)]
             let _probe = crate::profiling::frame_probe::span("text.note");
             self.note_shown(transform, theme, text_renderer);
@@ -5943,7 +5942,6 @@ impl Widget for TextInput {
         self.draw_autocorrection(scene, transform, theme);
         self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
         self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
-        self.paint_completion(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -6496,8 +6494,8 @@ impl Widget for TextInput {
         Some((self.core.caret(), self.text.clone()))
     }
 
-    /// Paints the open context menu here so it floats above every sibling
-    /// regardless of tree order.
+    /// Paints the open context menu and the candidate list here so they
+    /// float above every sibling regardless of tree order.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -6516,6 +6514,7 @@ impl Widget for TextInput {
             theme,
             presence,
         );
+        self.paint_completion(scene, transform, text_renderer, theme, presence);
     }
 }
 
@@ -7157,7 +7156,7 @@ impl TextInput {
         // An open candidate list owns its keys before editing does: the
         // caret stays put while Up and Down arm a row, and Enter or Tab
         // accepts it instead of submitting or leaving the field.
-        if !ctrl && !modifiers.state().alt_key() {
+        if !ctrl && !modifiers.state().alt_key() && !self.is_composing() {
             match self.completion.handle_key(logical_key) {
                 CompletionKey::Handled => {
                     *handled = true;
