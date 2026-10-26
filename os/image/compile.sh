@@ -60,8 +60,13 @@ if [[ ${1:-} == --dev ]]; then
   dev_bins=$(python3 os/scripts/install-components.py --dev --dry-run --format bins)
   [[ -n $dev_cargo_args && -n $dev_bins ]] || { echo 'install-components.py names no dev components' >&2; exit 1; }
   printf 'dev image build: cargo build --release %s\n' "$dev_cargo_args"
+  # The image compile's settings without LTO (16 codegen units, no line tables, which the
+  # release profile strips from what it links anyway), so the crates both build come from
+  # one compiler cache entry, and the shell, rebuilt by most changes, compiles in parallel.
   # shellcheck disable=SC2086
-  CARGO_PROFILE_RELEASE_LTO=$TILO_DEV_RUST_LTO CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+  CARGO_PROFILE_RELEASE_LTO=$TILO_DEV_RUST_LTO \
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS=$([ "$TILO_DEV_RUST_LTO" = off ] && echo 16 || echo 8) \
+  CARGO_PROFILE_RELEASE_DEBUG=0 \
     bash tools/ci/measure.sh "dev cargo" -- cargo build --release $dev_cargo_args
   for b in $dev_bins; do cp "$CARGO_TARGET_DIR/release/$b" "$out/"; done
   os/scripts/verify-elf-hardening.sh "$out"
