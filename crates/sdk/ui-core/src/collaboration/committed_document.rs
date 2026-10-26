@@ -1369,13 +1369,6 @@ const MERGE_RECHECK: Duration = Duration::from_millis(100);
 /// `Await` keeps failing.
 const READ_RECHECK: Duration = Duration::from_millis(200);
 
-/// How long a reader waits for a change before it confirms its read with an
-/// Open anyway. Every change it depends on ends the wait at once; this only
-/// bounds how long a broker that stopped answering (a wedged owner) goes
-/// unnoticed, which the Open's own deadline then turns into the renewal it
-/// always was. 2 requests per 30 s instead of 5 per second.
-const AWAIT_KEEPALIVE: Duration = Duration::from_secs(30);
-
 /// What ended a reader's wait for its committed read to change.
 #[derive(Debug, PartialEq, Eq)]
 enum Woke {
@@ -1385,8 +1378,6 @@ enum Woke {
     /// Something on this side changed: the route closed or was replaced,
     /// or the owner asked for a fresh read.
     Local,
-    /// Nothing changed for [`AWAIT_KEEPALIVE`]: confirm the read.
-    Keepalive,
     /// The wait failed or was answered with something other than `Stale`:
     /// the next Open decides.
     Refused,
@@ -1397,6 +1388,13 @@ enum Woke {
 /// (`None` after `Unavailable`), or until something on this side changes.
 /// The answer is never a read: the caller Opens, under its delivery turn,
 /// and only that Open publishes readiness or hands out bytes.
+///
+/// No clock ends the wait. An owner that stops answering matters only to a
+/// reader that asks it something, and every ask has its deadline: the Open
+/// that follows any wake (a change, the owner asking for a fresh read, a
+/// route replaced) gives up after two seconds and renews the read as it
+/// always did. A read nobody asks about arms no timer, so an idle app's
+/// shovel sleeps; a hang meanwhile is met by the next ask.
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
@@ -1422,11 +1420,10 @@ async fn until_stale(
     };
     tokio::select! {
         () = &mut local => Woke::Local,
-        reply = tokio::time::timeout(AWAIT_KEEPALIVE, channel.committed_document(&request)) => {
+        reply = channel.committed_document(&request) => {
             match reply {
-                Ok(Ok(Reply::Stale)) => Woke::Stale,
-                Ok(_) => Woke::Refused,
-                Err(_) => Woke::Keepalive,
+                Ok(Reply::Stale) => Woke::Stale,
+                _ => Woke::Refused,
             }
         }
     }

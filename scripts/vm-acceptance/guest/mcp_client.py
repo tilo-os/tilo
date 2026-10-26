@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """An MCP client the way Claude Code runs one, for the acceptance suite to run in the guest.
 
-    mcp_client.py session   # connect, initialize, tools/list, list apps, Notes new-page, a refusal
+    mcp_client.py session   # connect, initialize, tools/list, list apps, a new Notes note, a refusal
     mcp_client.py deny      # connect and initialize only (the person refuses)
 
 It spawns `tilo-runtime-mcp --connect` (override with ACC_MCP_BIN) with no profile, as
@@ -26,6 +26,10 @@ BIN = os.environ.get("ACC_MCP_BIN", "tilo-runtime-mcp")
 INITIALIZE_S = float(os.environ.get("ACC_MCP_INITIALIZE_S", "90"))
 CALL_S = float(os.environ.get("ACC_MCP_CALL_S", "30"))
 PROTOCOL = "2025-06-18"
+# The note the agent makes, found again by its title (ACC_MCP_TITLE from the harness).
+TITLE = os.environ.get("ACC_MCP_TITLE", "Acceptance agent note")
+# How long an app's directory may take to appear on the door after it opens.
+LISTED_S = 20.0
 
 
 def daemons() -> set[int]:
@@ -134,46 +138,26 @@ def text_of(reply) -> str:
         return ""
 
 
-def payload_of(reply):
-    """A tool's answer as data: structuredContent, else the text as JSON, else None."""
+def failed(reply) -> bool | None:
+    """Whether a tool reply is an error; None when it is no tool result at all."""
     try:
-        if reply["result"].get("structuredContent") is not None:
-            return reply["result"]["structuredContent"]
-    except (KeyError, TypeError):
+        value = reply["result"].get("isError", False)
+    except (KeyError, TypeError, AttributeError):
         return None
-    try:
-        return json.loads(text_of(reply))
-    except json.JSONDecodeError:
-        return None
+    return value if isinstance(value, bool) else None
 
 
-def find_all(node, key: str):
-    """Every value under `key` anywhere in `node`."""
-    if isinstance(node, dict):
-        for k, v in node.items():
-            if k == key:
-                yield v
-            yield from find_all(v, key)
-    elif isinstance(node, list):
-        for item in node:
-            yield from find_all(item, key)
-
-
-def find_action(node, action: str):
-    """The first dict that names `action` as its `id`/`action`, with its resource if it has one."""
-    if isinstance(node, dict):
-        if action in (node.get("id"), node.get("action")) and ("resource" in node or "resource_id" in node):
-            return node
-        for v in node.values():
-            found = find_action(v, action)
-            if found:
-                return found
-    elif isinstance(node, list):
-        for item in node:
-            found = find_action(item, action)
-            if found:
-                return found
-    return None
+def tool_until(client: Client, name: str, arguments: dict, ready, timeout: float = LISTED_S):
+    """Call a tool until it succeeds and `ready(text)` holds, or the time is up: an app
+    publishes its directory a moment after it opens. The last reply either way."""
+    deadline = time.monotonic() + timeout
+    while True:
+        reply = client.tool(name, arguments)
+        if failed(reply) is False and ready(text_of(reply)):
+            return reply
+        if not isinstance(reply, dict) or time.monotonic() >= deadline:
+            return reply
+        time.sleep(1.0)
 
 
 def initialize(client: Client):
@@ -191,23 +175,17 @@ def session(out: dict) -> None:
             return
         client.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         out["tools_list"] = client.call("tools/list")
-        out["list_apps"] = client.tool("tilo_list_apps", {})
-        apps = payload_of(out["list_apps"])
-        out["app_ids"] = sorted({str(v) for v in find_all(apps, "app_id")})
-        # Notes: find its new-page action in the directory, run it, keep what it answers.
-        query = client.tool("tilo_query", {"app_id": "so.tilo.notes", "needle": "new page", "detail": "full"})
-        out["query_new_page"] = query
-        row = find_action(payload_of(query), "new-page")
-        out["new_page_target"] = row
-        if row:
-            resource = row.get("resource") or row.get("resource_id")
-            out["new_page"] = client.tool("tilo_invoke", {"app_id": "so.tilo.notes", "resource": resource,
-                                                          "action": "new-page", "arguments": {}})
-            created = payload_of(out["new_page"])
-            out["created_pages"] = sorted({str(v) for v in find_all(created, "page")})
-        # A refusal must reach the model as isError, carrying the compositor's own reason.
-        out["refusal"] = client.tool("tilo_invoke", {"app_id": "so.tilo.notes", "resource": "notes",
-                                                     "action": "not.a.real.action", "arguments": {}})
+        # The apps, one line each: `notes  Notes  running` for the open notebook.
+        out["list_apps"] = tool_until(client, "tilo_ls", {}, lambda text: any(
+            line.startswith("notes ") and line.endswith("running") for line in text.splitlines()))
+        out["apps_text"] = text_of(out["list_apps"])
+        # A new note through the action Notes publishes, then found by its title.
+        out["new_note_params"] = client.tool("tilo_ls", {"path": "notes#new-note"})
+        out["new_note"] = client.tool("tilo_do", {"path": "notes#new-note", "args": {"title": TITLE}})
+        out["found_note"] = tool_until(client, "tilo_find", {"query": TITLE, "app": "notes"},
+                                       lambda text: TITLE in text)
+        # A refusal must reach the model as isError, carrying the reason.
+        out["refusal"] = client.tool("tilo_do", {"path": "notes#not-a-real-action"})
     finally:
         out["daemons_after"] = sorted(daemons())
         out["stderr"] = client.close()

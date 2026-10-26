@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# What a development device needs of main's dev image before it follows it: it installs, boots
-# to a greeter that takes input, which the device's own boot assessment (tilo-boot-health)
-# requires before it keeps a new image instead of falling back, and takes the
-# next update: bootc stages a newer image and `tilo-extension live:system` applies it.
-# As root in a micro-VM step with a /dev/kvm of its own. Nothing here holds a secret or publishes.
+# What a development device needs of main's dev image before it follows it, checked the way a
+# device takes it: the dev disk published last (os/dev/publish-dev-disk.sh) boots, stages this
+# image with bootc and applies it with `tilo-extension live:system` (live, or recording that a
+# restart applies it), restarts into it to a greeter that takes input and the device's own boot
+# assessment (tilo-boot-health) accepts, and from there takes the next update live. As root in a
+# micro-VM step with a /dev/kvm of its own. Nothing here holds a secret or publishes.
 #
-#   os-dev-gate.sh ARCH DEV OUT   DEV: os-dev-image-ARCH's layout; the disk and logs into OUT
+#   os-dev-gate.sh ARCH DEV OUT   DEV: os-dev-image-ARCH's layout; the logs into OUT
 #
-# The dev image is installed onto a disk (os/dev/build-image.sh with TILO_SKIP_BUILD=1), kept in
-# OUT/disk for publish-os-dev-ARCH and os-acceptance-ARCH, which boot throwaway overlays of it.
-# This is the dev channel's whole gate: a device falls back by itself from an image that does
-# not reach a working greeter, so a failure the gate misses costs a dev device a reboot, not its
-# data, as long as every published image can boot and take the update that fixes it.
+# A device falls back by itself from an image that does not reach a working greeter, so a
+# failure the gate misses costs a dev device a reboot, not its data, as long as every published
+# image boots and takes the update that fixes it. Installing an image onto a disk is
+# os-dev-disk-ARCH's, which os-acceptance-ARCH boots.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
@@ -29,51 +29,91 @@ esac
 [[ -c /dev/kvm ]] || die 'no /dev/kvm: the check needs requires = ["/dev/kvm"]'
 
 missing=()
-for p in dosfstools btrfs-progs systemd-container binutils socat qemu-img ipxe-roms-qemu sshpass \
-  openssh-clients jq cryptsetup mtools zstd procps-ng "${qemu[@]}"; do
+for p in socat qemu-img ipxe-roms-qemu sshpass openssh-clients jq procps-ng "${qemu[@]}"; do
   rpm -q "$p" >/dev/null 2>&1 || missing+=("$p")
 done
 command -v podman >/dev/null || missing+=(podman skopeo fuse-overlayfs e2fsprogs util-linux python3)
 ((${#missing[@]} == 0)) || dnf install -y --setopt=install_weak_deps=False "${missing[@]}" >/dev/null
 modprobe fuse 2>/dev/null || true
-modprobe loop 2>/dev/null || true
-use_cosign
 rm -rf "$out"
-mkdir -p "$out/disk"
+mkdir -p "$out"
+revision=$(git rev-parse --verify HEAD) || die 'the gate names its commit: git = true'
+digest=$(cat "$dev/digest")
 
-# The disk: never booted itself (the gates boot overlays of it), uncompressed so they read it
-# fast (publication compresses it), following the dev image it is published beside.
-revision=$(git rev-parse --verify HEAD) || die 'the disk names its commit: git = true'
-id=$(podman pull -q "oci:$dev/oci")
-[[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$dev/digest")" ]] || die "$dev/oci is not the image $dev/digest names"
-podman tag "$id" localhost/tilo-vm:ci
-export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo
-if [[ $arch == aarch64 ]]; then export TILO_DEV_DIRECT_BUNDLE_DIR=$out/disk/direct-boot; fi
-TILO_IMAGE=localhost/tilo-vm:ci TILO_SKIP_BUILD=1 TILO_OUTPUT=$scratch/dev-disk TILO_RUN=$scratch/dev-disk-run \
-  TILO_DISK_SIZE=64G TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:$arch-ci" \
-  bash os/dev/build-image.sh > "$out/install.log" 2>&1 \
-  || { tail -n 80 "$out/install.log"; die 'the dev image does not install onto a disk'; }
-unset TILO_DEV_DIRECT_BUNDLE_DIR
-# The update: the dev image with one file added, served by the registry the install left
-# running, which the guest reaches as the host (10.0.2.2).
+# The disk the dev channel published last for ARCH: the newest main-<commit7>-ci version of the
+# tilo-vm-disk package with this architecture's manifest, as `tilo-vm vm create` finds it.
+packages=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk
+manifest=
+for tag in $(curl -fsS --retry 3 "https://code.tilo.so/api/v1/packages/tilo?type=generic&q=tilo-vm-disk&limit=50" \
+  | jq -r '[.[] | select(.name == "tilo-vm-disk" and (.version | test("^main-[0-9a-f]{7}-ci$")))]
+           | sort_by(.created_at) | reverse | .[].version'); do
+  manifest=$(curl -fsS --retry 3 "$packages/$tag/tilo-vm-disk-$arch.json") && break
+  manifest=
+done
+[[ -n $manifest ]] || die "no dev disk is published for $arch to update from: publish-os-dev-disk-$arch publishes one"
+old_digest=$(jq -r .imageDigest <<< "$manifest")
+read -r url sha256 < <(jq -r '.disks[] | select(.format == "qcow2") | "\(.url) \(.sha256)"' <<< "$manifest")
+printf 'updating from %s (%s, %s)\n' "$(jq -r .tag <<< "$manifest")" "$(jq -r .sourceRevision <<< "$manifest")" "$old_digest"
+old=$scratch/published.qcow2
+curl -fsSL --retry 3 -o "$old" "$url"
+[[ $(sha256sum "$old" | cut -d' ' -f1) == "$sha256" ]] || die "$url is not the disk its manifest names"
+
+# The updates, served by a registry on the host, which the guest reaches as 10.0.2.2: this dev
+# image, and the next update, the same image with one file added.
+podman run -d --name tilo-gate-registry -p 127.0.0.1::5000 docker.io/library/registry:2 >/dev/null
+trap 'podman rm -f tilo-gate-registry >/dev/null 2>&1 || true' EXIT
+port=$(podman port tilo-gate-registry 5000/tcp | head -n 1)
+port=${port##*:}
+[[ $port =~ ^[0-9]+$ ]] || die 'the update registry has no port'
+for _ in $(seq 30); do curl -fs "http://127.0.0.1:$port/v2/" >/dev/null && break; sleep 1; done
+update=gate-${revision:0:12}
+next=live-update-check
 probe=/usr/share/tilo/live-update-probe
-probe_text="live update of ${revision:0:12}"
-mkdir -p "$scratch/live-update"
-printf '%s\n' "$probe_text" > "$scratch/live-update/probe"
-printf 'FROM localhost/tilo-vm:ci\nCOPY probe %s\n' "$probe" > "$scratch/live-update/Containerfile"
-podman build -q -t localhost/tilo-vm:live-update-check "$scratch/live-update" >/dev/null
-registry_port=$(podman port tilo-disk-registry 5000/tcp | head -n 1)
-registry_port=${registry_port##*:}
-[[ $registry_port =~ ^[0-9]+$ ]] || die 'the install left no local registry for the update'
-skopeo copy -q --dest-tls-verify=false containers-storage:localhost/tilo-vm:live-update-check \
-  "docker://localhost:$registry_port/tilo-vm:live-update-check"
-podman rmi -f localhost/tilo-vm:ci localhost/tilo-vm:live-update-check >/dev/null
-disk=$out/disk/disk.qcow2
-mv "$scratch/dev-disk/qcow2/disk.qcow2" "$disk"
-printf '%s\n' "$revision" > "$out/disk/revision"
-cp "$dev/digest" "$out/disk/image-digest"
+printf 'live update of %s\n' "${revision:0:12}" > "$scratch/probe"
+python3 -I - "$dev/oci" "$scratch/next" "$probe" "$scratch/probe" <<'PY'
+# The next update: the dev image with one more layer, the probe. Its layout holds only what the
+# dev image lacks; the registry has the dev image's layers already, so the copy sends no more.
+import gzip, io, json, os, sys, tarfile
+dev, root, path, content = sys.argv[1:]
+sys.path.insert(0, "tools/ci/os")
+import oci_layers as L
+manifest, config = L.image_of_layout(dev)
+data = open(content, "rb").read()
+raw = io.BytesIO()
+with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar:
+    info = tarfile.TarInfo(path.lstrip("/"))
+    info.size, info.mode = len(data), 0o644
+    tar.addfile(info, io.BytesIO(data))
+layer, size = L.put_blob(root, gzip.compress(raw.getvalue(), mtime=0))
+manifest["layers"].append({"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": layer, "size": size})
+config["rootfs"]["diff_ids"].append(L.sha256_bytes(raw.getvalue()))
+config.setdefault("history", []).append({"created_by": "live-update-probe"})
+digest, size = L.put_blob(root, L.canonical(config))
+manifest["config"] = dict(manifest["config"], digest=digest, size=size)
+digest, size = L.put_blob(root, L.canonical(manifest))
+L.write_layout(root, {"mediaType": L.MANIFEST, "digest": digest, "size": size})
+PY
+skopeo copy -q --preserve-digests --dest-tls-verify=false "oci:$dev/oci" "docker://127.0.0.1:$port/tilo-vm:$update"
+skopeo copy -q --preserve-digests --dest-tls-verify=false "oci:$scratch/next" "docker://127.0.0.1:$port/tilo-vm:$next"
 
-export TILO_VM_DISPLAY=2d
+# What this image's /usr/share/tilo-vm/base.json holds (its topmost layer writes it), which the
+# live update must leave in place.
+base_sha256=$(python3 -I - "$dev/oci" <<'PY'
+import gzip, hashlib, sys, tarfile
+sys.path.insert(0, "tools/ci/os")
+import oci_layers
+manifest, _ = oci_layers.image_of_layout(sys.argv[1])
+for layer in reversed(manifest["layers"]):
+    with gzip.open(oci_layers.blob_path(sys.argv[1], layer["digest"])) as f, tarfile.open(fileobj=f, mode="r|") as tar:
+        for member in tar:
+            if member.name.lstrip("./") == "usr/share/tilo-vm/base.json":
+                print(hashlib.sha256(tar.extractfile(member).read()).hexdigest())
+                sys.exit(0)
+sys.exit("the dev image has no /usr/share/tilo-vm/base.json")
+PY
+)
+
+export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo TILO_VM_DISPLAY=2d
 for node in /dev/dri/renderD*; do
   [[ -c $node && -r $node && -w $node ]] && { TILO_VM_DISPLAY=gl; break; }
 done
@@ -92,16 +132,25 @@ finish() {
   "$vm" stop >/dev/null 2>&1 || true
   cp -f "$TILO_RUN/serial.log" "$out/" 2>/dev/null || true
   rm -rf -- "$TILO_RUN"
+  podman rm -f tilo-gate-registry >/dev/null 2>&1 || true
   exit "$rc"
 }
 trap finish EXIT
-"$vm" tool qemu-img create -f qcow2 -F qcow2 -b "$disk" "$TILO_DISK" >/dev/null
+as_root="printf '%s\\n' '$TILO_PASS' | sudo -S -p ''"
+"$vm" tool qemu-img create -f qcow2 -F qcow2 -b "$old" "$TILO_DISK" >/dev/null
 "$vm" boot "--$TILO_VM_DISPLAY"
 "$vm" wait
-# The device's own boot assessment, which decides whether a boot is kept or falls back:
-# boot-complete.target pulls it in only on a counted boot entry, which a fresh install has none of.
-TILO_SSH_BOUND=780 "$vm" ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' systemctl start tilo-boot-health.service" \
+echo 'ok    the published disk boots to a greeter'
+"$vm" with-tests "$as_root \"\$TILO_GUEST_TESTS/live-update-check.sh\" --or-restart '10.0.2.2:$port/tilo-vm' registry.tilo.so/tilo/tilo-vm:$update /usr/share/tilo-vm/base.json $base_sha256"
+echo 'ok    it stages this image and applies it'
+"$vm" shutdown
+"$vm" boot "--$TILO_VM_DISPLAY"
+"$vm" wait
+booted=$("$vm" ssh "$as_root bootc status --format json" | jq -r .status.booted.image.imageDigest)
+[[ $booted == "$digest" ]] || die "it restarted into $booted, not this image ($digest)"
+# The device's own boot assessment, which decides whether a boot is kept or falls back.
+TILO_SSH_BOUND=780 "$vm" ssh "$as_root systemctl start tilo-boot-health.service" \
   || die 'tilo-boot-health failed: a device would fall back from this image'
-echo 'ok    boots to a greeter that takes input, as the boot assessment requires'
-"$vm" with-tests "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' \"\$TILO_GUEST_TESTS/live-update-check.sh\" '10.0.2.2:$registry_port/tilo-vm' registry.tilo.so/tilo/tilo-vm:live-update-check '$probe' '$probe_text'"
-echo 'ok    stages the next image and applies it live'
+echo 'ok    it restarts into this image, to a greeter that takes input, as the boot assessment requires'
+"$vm" with-tests "$as_root \"\$TILO_GUEST_TESTS/live-update-check.sh\" '10.0.2.2:$port/tilo-vm' registry.tilo.so/tilo/tilo-vm:$next $probe $(sha256sum "$scratch/probe" | cut -d' ' -f1)"
+echo 'ok    from it, it stages the next image and applies it live'

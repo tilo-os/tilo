@@ -118,9 +118,10 @@ check passes.
 
 M01-M04 (`checks/agent.py`) run `guest/mcp_client.py` in the guest, as Claude Code would run
 `tilo-runtime-mcp --connect`: the person's consent is answered through the control socket's
-`permission-prompts` actions, `tilo_list_apps` must list the desktop's live apps (Notes is
-open), a Notes `new-page` is read back through the desktop, and refusals must reach the agent
-as `isError` / a JSON-RPC error. Until the image serves `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
+`permission-prompts` actions, the door must offer the path-addressed agent tools, `tilo_ls`
+must list Notes as a running app (it is open), a note made with `notes#new-note` (the harness
+grants the test agent Notes for the session) is read back through the desktop, and refusals
+must reach the agent as `isError` / a JSON-RPC error. Until the image serves `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
 (fix/agent-door) they report **xfail** with that reason: an expected failure does not fail the
 run (`core.ExpectedFailure`), is listed in the report, and becomes an ordinary check when the
 socket appears.

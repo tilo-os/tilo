@@ -70,9 +70,11 @@ pub enum Note {
     Wait {
         seconds: u64,
     },
-    /// The entry is one already refused: it was not tried again.
+    /// The entry is one already refused: it was not tried again, so the
+    /// tries left are those the last refusal reported.
     Repeated {
         secret: SecretKind,
+        tries_left: Option<u32>,
     },
 }
 
@@ -114,8 +116,13 @@ impl Note {
             Self::Wait { seconds } => {
                 format!("Too many failed attempts. Try again in {}.", wait(seconds))
             }
-            Self::Repeated { secret } => {
-                format!("You already tried that {}. Try another.", secret.noun())
+            Self::Repeated { secret, tries_left } => {
+                let noun = secret.noun();
+                match tries_left {
+                    Some(1) => format!("You already tried that {noun}. 1 try left."),
+                    Some(left) => format!("You already tried that {noun}. {left} tries left."),
+                    None => format!("You already tried that {noun}. Try another."),
+                }
             }
         }
     }
@@ -259,6 +266,7 @@ fn sign_in(
     tried: &mut Tried,
 ) -> Option<Exit> {
     let mut note = Note::None;
+    let mut tries_left = None;
     loop {
         let secret = match screen.ask(&Prompt {
             person,
@@ -272,6 +280,7 @@ fn sign_in(
         if tried.already(person.uid, &secret) {
             note = Note::Repeated {
                 secret: person.secret,
+                tries_left,
             };
             continue;
         }
@@ -283,6 +292,7 @@ fn sign_in(
             }
             Unlock::Wrong(limit) => {
                 note = Note::after(limit, person.secret);
+                tries_left = limit.tries_left;
                 // A refusal during a wait never reached the check, so the
                 // same entry may still be right once the wait is over.
                 if limit.wait_seconds.unwrap_or(0) == 0 {
@@ -499,7 +509,7 @@ mod tests {
             [
                 "ask Anna Password []",
                 "ask Anna Password [Incorrect password. 9 tries left.]",
-                "ask Anna Password [You already tried that password. Try another.]",
+                "ask Anna Password [You already tried that password. 9 tries left.]",
             ]
         );
     }

@@ -22,8 +22,9 @@ use crate::tpm::{self, Tries};
 use crate::userkey::UserKey;
 use crate::wrapper::{self, Kind, Outcome, Tpm, Wrapper};
 use anyhow::{Context as _, Result, bail};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tilo_rollback::exec::Real;
 use tilo_rollback::policy::Workspace;
@@ -55,6 +56,8 @@ pub struct Config {
     pub handoff: Option<String>,
     /// The linked volume key's description; `None` uses none.
     pub volume_key: Option<String>,
+    /// Where logind keeps a state file per signed-in uid.
+    pub sessions: PathBuf,
 }
 
 impl Default for Config {
@@ -74,6 +77,7 @@ impl Default for Config {
             volume: Locate::Root,
             handoff: Some(handoff::DESCRIPTION.into()),
             volume_key: Some(volume::LINKED_VOLUME_KEY.into()),
+            sessions: PathBuf::from("/run/systemd/users"),
         }
     }
 }
@@ -93,10 +97,21 @@ pub enum Answer {
 struct BootSignIn {
     uid: u32,
     name: String,
-    /// Held for the personal storage that unlocks with it.
-    _key: UserKey,
+    /// Held until the session it starts takes it over.
+    key: Option<UserKey>,
     at: Instant,
     claimed: bool,
+}
+
+/// A person's user key, held for their sessions after a factor that unwraps
+/// it: what a fingerprint may then confirm, and what personal storage
+/// unlocks with.
+struct Held {
+    _key: UserKey,
+    since: Instant,
+    /// A session of theirs has been seen since; when none is left, the key
+    /// goes.
+    in_session: bool,
 }
 
 struct State {
@@ -111,6 +126,9 @@ pub struct Daemon {
     accounts: Accounts,
     lockout: LockoutStore,
     state: Mutex<State>,
+    /// Signalled after every request, which may have remembered a wrong entry.
+    requests: Condvar,
+    held: Mutex<HashMap<u32, Held>>,
 }
 
 /// One request's scratch directory and tool runner.
@@ -208,6 +226,8 @@ impl Daemon {
                 guard: Guard::new()?,
                 boot: None,
             }),
+            requests: Condvar::new(),
+            held: Mutex::new(HashMap::new()),
             legacy,
             cfg,
         })
@@ -235,6 +255,28 @@ impl Daemon {
         })
     }
 
+    /// Forgets each remembered wrong entry when its ten minutes are up, not
+    /// at the next request, so none stays in memory longer. Never returns.
+    pub fn forget_wrong_entries_when_due(&self) {
+        let mut state = self.lock();
+        loop {
+            state.guard.forget_expired(Instant::now());
+            state = match state.guard.next_expiry() {
+                Some(due) => {
+                    let wait = due.saturating_duration_since(Instant::now());
+                    self.requests
+                        .wait_timeout(state, wait)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0
+                }
+                None => self
+                    .requests
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
+            };
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -259,7 +301,7 @@ impl Daemon {
                 self.lock().boot = Some(BootSignIn {
                     uid: handoff.uid,
                     name,
-                    _key: handoff.key,
+                    key: Some(handoff.key),
                     at: Instant::now(),
                     claimed: false,
                 });
@@ -322,6 +364,13 @@ impl Daemon {
     }
 
     pub fn handle(&self, peer: Peer, request: Request) -> Answer {
+        let answer = self.answer(peer, request);
+        self.settle_held();
+        self.requests.notify_all();
+        answer
+    }
+
+    fn answer(&self, peer: Peer, request: Request) -> Answer {
         let result = match request {
             Request::PendingSignIn => return Answer::Pending(self.pending_sign_in(peer)),
             Request::Verify { user, secret } => self.verify(peer, &user, &secret),
@@ -345,6 +394,7 @@ impl Daemon {
                 recovery,
             } => self.add_recovery(peer, &user, &secret, &recovery),
             Request::ClaimBootSignIn { user } => Ok(self.claim_boot_sign_in(peer, &user)),
+            Request::KeyHeld { user } => self.key_held(peer, &user),
         };
         Answer::Reply(result.unwrap_or_else(|e| {
             eprintln!("tilo-authd: {e:#}");
@@ -398,15 +448,85 @@ impl Daemon {
             })
             .map(|boot| {
                 boot.claimed = true;
-                boot.uid
+                (boot.uid, boot.key.take())
             });
         match claimed {
-            Some(uid) => {
+            Some((uid, key)) => {
+                if let Some(key) = key {
+                    self.hold(uid, key);
+                }
                 eprintln!("tilo-authd: uid {uid} started their session from the boot sign-in");
                 Reply::success()
             }
             None => Reply::refused(Refusal::NoBootSignIn),
         }
+    }
+
+    fn held(&self) -> MutexGuard<'_, HashMap<u32, Held>> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Keep `uid`'s key for the session this sign-in starts or confirms.
+    pub(super) fn hold(&self, uid: u32, key: UserKey) {
+        let in_session = self.has_session(uid);
+        self.held().insert(
+            uid,
+            Held {
+                _key: key,
+                since: Instant::now(),
+                in_session,
+            },
+        );
+    }
+
+    /// Whether logind counts a session of `uid`'s right now.
+    fn has_session(&self, uid: u32) -> bool {
+        std::fs::read_to_string(self.cfg.sessions.join(uid.to_string())).is_ok_and(|state| {
+            state.lines().any(|line| {
+                line.strip_prefix("SESSIONS=")
+                    .is_some_and(|ids| !ids.trim_matches('"').trim().is_empty())
+            })
+        })
+    }
+
+    /// Drop each key whose sessions have all ended, and any whose sign-in
+    /// started no session within the boot sign-in's ten minutes.
+    fn settle_held(&self) {
+        let mut held = self.held();
+        held.retain(|uid, entry| {
+            if self.has_session(*uid) {
+                entry.in_session = true;
+                true
+            } else {
+                !entry.in_session && entry.since.elapsed() < BOOT_SIGN_IN_FOR
+            }
+        });
+    }
+
+    fn key_held(&self, peer: Peer, user: &str) -> Result<Reply> {
+        let greeter = self
+            .accounts
+            .by_name(&self.cfg.greeter_user)
+            .ok()
+            .flatten()
+            .map(|a| a.uid);
+        let account = if greeter == Some(peer.uid) && !self.privileged(peer) {
+            match self.accounts.by_name(user)? {
+                Some(account) => account,
+                None => return Ok(Reply::refused(Refusal::NotEnrolled)),
+            }
+        } else {
+            match self.subject(peer, user)? {
+                Ok(account) => account,
+                Err(reply) => return Ok(reply),
+            }
+        };
+        self.settle_held();
+        let held = self.has_session(account.uid) && self.held().contains_key(&account.uid);
+        Ok(Reply {
+            key_held: Some(held),
+            ..Reply::success()
+        })
     }
 
     fn status(&self, peer: Peer, user: &str) -> Result<Reply> {

@@ -5882,6 +5882,16 @@ pub(crate) fn attribute_unresolved_host_window(surface_id: u64, app_id: &str) {
 /// The compositor observed a toplevel. Record it against the launch that
 /// owns the window, including when the announced id is not the desktop id.
 pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
+    // A window that names no application (an X11 client without a class, such as
+    // glxgears, shows as `anon-<id>`) still proves its launch opened when the
+    // kernel-authenticated launch identity of its connection names the launch: its
+    // later exit is then not "crashed before opening".
+    let attributed = lock(&LaunchSession::current().surfaces)
+        .get(&surface_id)
+        .cloned();
+    if let Some(key) = attributed {
+        note_launch_presented(&key);
+    }
     if app_id.trim().is_empty() || app_id.starts_with("anon-") {
         return;
     }

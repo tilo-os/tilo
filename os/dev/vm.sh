@@ -611,7 +611,7 @@ cmd_wait_greeter_return() {
 
 cmd_shutdown() {
   msg "requesting clean guest shutdown"
-  gssh "sudo systemctl poweroff" >/dev/null 2>&1 || true
+  gssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' systemctl poweroff" >/dev/null 2>&1 || true
   local attempts="${TILO_SHUTDOWN_ATTEMPTS:-60}" i
   for i in $(seq 1 "$attempts"); do
     if ! vm_running; then
