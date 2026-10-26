@@ -162,6 +162,10 @@ enum Identity {
         root: Box<SigningKey>,
         capabilities: DeviceCapabilities,
     },
+    /// The identity this host was set up with, under `root`: its device key
+    /// and the certificate its person's root gave it, read as a session's
+    /// network reads them.
+    ThisHost { root: PathBuf },
 }
 
 /// One of a person's devices: its session's network over its tree, its
@@ -289,6 +293,23 @@ impl Device {
         Self::start_from(identity, label, dir, salt, wakes, tree)
     }
 
+    /// A device acting as the identity this host was set up with under
+    /// `identity_root`, as a desktop session does, with an empty tree and
+    /// its state under `dir`, started.
+    pub(crate) fn start_as_this_host(
+        identity_root: &Path,
+        label: &str,
+        dir: &Path,
+        salt: u16,
+        wakes: &Arc<Wakes>,
+    ) -> Self {
+        let tree = WorkspaceTree::default();
+        let identity = Identity::ThisHost {
+            root: identity_root.to_path_buf(),
+        };
+        Self::start_from(identity, label, dir, salt, wakes, tree)
+    }
+
     fn start_from(
         identity: Identity,
         label: &str,
@@ -364,6 +385,20 @@ impl Device {
                     },
                 )
             }
+            Identity::ThisHost { root } => ShellNetwork::spawn_with(
+                self.tree.clone(),
+                &tilo_user_identity::IdentityPaths::under(root).device_privkey,
+                &peer_sync,
+                Reach::Loopback,
+                move |secret, keypair| {
+                    let identity = super::host_identity_for_key(secret, keypair)?;
+                    *custody.lock().unwrap() = Some((
+                        identity.device_signing_key.clone(),
+                        identity.device_cert.clone(),
+                    ));
+                    Some(identity)
+                },
+            ),
         }
         .unwrap();
         let wakes = Arc::clone(&self.wakes);
@@ -452,6 +487,15 @@ impl Device {
         let channels = self.open_channels(&net);
         let drain = Drain::start(&net, channels.clone(), &self.wakes);
         self.channels = Some((channels, drain));
+    }
+
+    /// Serve this device's session through a collaboration broker on its
+    /// network from now on, as a desktop session does: the broker opens the
+    /// session's channel service and runs the network's one drain, so this
+    /// device's own stand-in for both stops first. Two drains parked on the
+    /// network's one wake would each take pokes meant for the other.
+    pub(crate) fn serve_through_broker(&mut self) {
+        drop(self.channels.take().expect("the device is online"));
     }
 
     /// Whether this device's channel service has anything for its pump to
@@ -725,6 +769,43 @@ impl Device {
             .block_on(net.grant_app_authorship_at_host(room, &cert, NOTES))
             .unwrap_or_else(|| Err(format!("{} reaches no host governing the room", self.label)))
             .map(|_| ())
+    }
+
+    /// Let `app` keep records in `room`, as opening the app there first
+    /// does: the room's host lets it author, asked while this device's loop
+    /// keeps turning. Every hosted room is sealed: the app opens its
+    /// record's channel itself, so nothing is made here.
+    pub(crate) fn open_app_first(&self, room: RoomId, app: &str) {
+        let net = Arc::clone(self.net());
+        let cert = self.cert();
+        let asked = {
+            let app = app.to_owned();
+            async move { net.grant_app_authorship_at_host(room, &cert, &app).await }
+        };
+        self.answer("the host's answer for the app's authorship", asked)
+            .expect("the room's host answers for the app's authorship")
+            .unwrap_or_else(|error| panic!("the host lets {app} author: {error}"));
+        self.assert_sealed(room);
+    }
+
+    /// What `asked`, a request this device's session makes, answers, while
+    /// the device's loop keeps turning as the compositor's does meanwhile.
+    pub(crate) fn answer<T: Send + 'static>(
+        &self,
+        what: &str,
+        asked: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> T {
+        let runtime = self.net().runtime_handle().unwrap();
+        let wakes = Arc::clone(&self.wakes);
+        let task = runtime.spawn(async move {
+            let answer = asked.await;
+            wakes.wake();
+            answer
+        });
+        until(&[self], what, || task.is_finished().then_some(()));
+        runtime
+            .block_on(task)
+            .expect("the request runs to its answer")
     }
 
     /// Ask `room`'s host to let `app` author the room's records, as this
