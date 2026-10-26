@@ -796,9 +796,46 @@ impl Rooms {
             .map_err(CollaborationError::new)?
             .map_err(CollaborationError::new)?;
         drop(governed);
-        mail.send(super::WaitListMail { to, link, removal })
-            .map_err(|_| CollaborationError::new("this door sends no mail now"))?;
-        tracing::info!(%room, "an invitation was mailed to an address on the wait list");
+        let (queued, accepted) = tokio::sync::oneshot::channel();
+        let sent = mail
+            .send(super::WaitListMail {
+                queued,
+                to,
+                link,
+                removal,
+            })
+            .is_ok();
+        let accepted = if sent {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), accepted).await {
+                Ok(Ok(queued)) => Some(queued),
+                Ok(Err(_)) | Err(_) => None,
+            }
+        } else {
+            Some(false)
+        };
+        if accepted == Some(false) {
+            use sha2::Digest as _;
+            let mut governed = self.room(room).await?.lock_owned().await;
+            governed
+                .wait_list
+                .mail_failed(
+                    sha2::Sha256::digest(removal).into(),
+                    tilo_clock::unix_now_ns(),
+                )
+                .map_err(CollaborationError::new)?;
+            drop(governed);
+            return Err(CollaborationError::new(
+                "the door did not accept the invitation mail",
+            ));
+        }
+        if accepted.is_none() {
+            // Acceptance can precede a lost acknowledgement. Keep the
+            // reservation so an uncertain outcome cannot duplicate mail.
+            return Err(CollaborationError::new(
+                "invitation mail acceptance is uncertain; it may already be queued",
+            ));
+        }
+        tracing::info!(%room, "an invitation was queued for an address on the wait list");
         Ok(())
     }
 
@@ -913,20 +950,35 @@ impl Rooms {
         room: &str,
         removal: [u8; 32],
     ) -> Result<Option<super::Mailbox>, CollaborationError> {
+        self.leave_wait_list_for_operator(room, removal)
+            .await
+            .map(|(told, _)| told)
+    }
+
+    /// Remove an entry for the private door operator, returning its stable
+    /// contact digest for cancelling mail even when it was not confirmed.
+    /// Neither this digest nor the mailbox belongs in a public response.
+    ///
+    /// # Errors
+    /// The room is unknown, or its wait list could not be written.
+    pub async fn leave_wait_list_for_operator(
+        &self,
+        room: &str,
+        removal: [u8; 32],
+    ) -> Result<(Option<super::Mailbox>, Option<[u8; 32]>), CollaborationError> {
         let governed = self.room(room).await?;
         let mut governed = governed.lock().await;
         let now = tilo_clock::unix_now_ns();
-        let had = governed.wait_list.standing(removal, now)
-            != tilo_relay_protocol::room_operator::WaitListStanding::Gone;
+        let contact = governed.wait_list.removal_contact(removal, now);
         let told = governed
             .wait_list
             .leave(removal, now)
             .map_err(CollaborationError::new)?;
         drop(governed);
-        if had {
+        if contact.is_some() {
             tracing::info!(%room, "someone took their address off the wait list");
         }
-        Ok(told)
+        Ok((told, contact))
     }
 
     fn waiting(&self, room: &str, now: u64) -> Vec<JoinRequest> {
