@@ -1168,7 +1168,7 @@ impl Device {
     /// native owner, whether it holds the room, the note as the notes app
     /// here has it (and the changes it still lacks), the note's writes
     /// waiting in its inbound documents, what its own host retains of the
-    /// room, its tabs, and the dials it made.
+    /// room, its tabs, and its sessions with the room's hosts.
     pub(crate) fn catch_up(&self, room: RoomId) -> String {
         let Some(net) = self.net.as_ref() else {
             return format!("{}: offline", self.label);
@@ -1242,14 +1242,22 @@ impl Device {
         let dials = net.wire_tally().map(|tally| {
             let counts = tally.snapshot();
             let count = |kind| counts.get(kind).copied().unwrap_or(0);
-            (count("NativeGovernorDial"), count("NativeHostDial"))
+            format!(
+                "governor {}, other host {}; host inputs {}, ready {}, closed {}",
+                count("NativeGovernorDial"),
+                count("NativeHostDial"),
+                count("HostNativeInput"),
+                count("HostReady"),
+                count("HostClosed"),
+            )
         });
         format!(
             "{}: owner {owner}; holds the room {holds}, sealed {sealed}; note channel {access}; \
              note {text:?} ({heads} heads, {missing} changes missing, {writes} writes opened, \
              {waiting} waiting); own host retains {retained}; tabs {tabs:?}; \
-             dials (governor, other host) {dials:?}",
-            self.label
+             sessions {}",
+            self.label,
+            dials.unwrap_or_default()
         )
     }
 
