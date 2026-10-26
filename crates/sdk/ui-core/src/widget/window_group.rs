@@ -2212,6 +2212,12 @@ impl WindowGroup {
         !self.tab_rects().iter().any(|r| r.contains(p))
     }
 
+    /// Whether `p` is on the window's own controls at the end of its bar
+    /// (history, maximize, close).
+    pub(crate) fn window_control_hit(&self, p: Point) -> bool {
+        self.navigation_bar_visible() && self.bar.window_controls().hit(p).is_some()
+    }
+
     /// Where a finger can grab the whole group: anywhere on its tab bar,
     /// tabs included, except the new-tab button and the resize edge.
     pub fn touch_grab_hit(&self, p: Point) -> bool {
