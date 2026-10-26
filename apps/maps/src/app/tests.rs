@@ -2062,7 +2062,7 @@ fn directions_modes_and_route_replies_recompute_the_route() {
                 from: origin,
                 to: dest,
             };
-            tx.send(NetMsg::Route(Ok(route))).unwrap();
+            tx.send(NetMsg::Route(Ok(vec![route]))).unwrap();
             dense.len()
         });
         let dense_len = worker.join().expect("worker thread completes");
