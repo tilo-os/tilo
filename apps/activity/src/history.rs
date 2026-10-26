@@ -2,9 +2,11 @@
 //! the ledger's outcomes: what the system did that needs no decision.
 //!
 //! Changes a work group holds sit under its name, the rest under their
-//! day. The filter row narrows them by scope, period, person, lens and a
-//! find; the filter is the app's record ([`Filter`]), the scope is this
-//! window's.
+//! day. The filter row narrows them by scope, period, person and lens, and
+//! the window bar's search by what they say; the filter is the app's record
+//! ([`Filter`]), the scope is this window's. The feed answers the bar's
+//! search as a query view ([`ui::widget::QueryView`]): what is typed reaches
+//! the filter, and the bar counts what the filter left of the page it read.
 //! Choosing a change selects it; "Select through here" stretches the
 //! selection to another change, and a work group's "Select" takes all of
 //! it. The selection shows in the inspector ([`crate::detail`]).
@@ -14,7 +16,7 @@ use std::collections::HashMap;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
-use ui::widget::{ListRow, Section, SectionHeader, Segment, ToggleGroup};
+use ui::widget::{FilterCount, ListRow, QueryView, Section, SectionHeader, Segment, ToggleGroup};
 
 use crate::{Filter, Nav, Provider, ago, page, tr, trf};
 
@@ -35,9 +37,9 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
             let limit = *limit;
             cx.switch(&filter, move |cx, filter| {
                 let mut query = filter.query(scope);
-                // A find reaches past one page: the feed keeps reading while
-                // someone is looking for something.
-                query.limit = if filter.finding() {
+                // A search reaches past one page: the feed keeps reading
+                // while someone is looking for something.
+                query.limit = if filter.searching() {
                     limit.max(wire::FEED_PAGE).saturating_mul(4)
                 } else {
                     limit
@@ -60,33 +62,59 @@ fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery, narrows: bool) 
         let found = found(feed, &filter);
         if feed.entries.is_empty() {
             parts.push(empty(feed));
-            return page(parts);
+        } else {
+            let shown = feed.clone();
+            let listed = nav.clone();
+            let narrowed = filter.clone();
+            parts.push(cx.switch(&nav.selection, move |_, selection| {
+                list(&listed, &shown, selection.as_ref(), &narrowed)
+            }));
+            if feed.total > feed.entries.len() {
+                let more = nav.clone();
+                parts.push(Box::new(
+                    Button::new("activity-show-more", "activity-show-more").on_view(move || {
+                        more.limit.update(|limit| {
+                            *limit = (*limit)
+                                .max(wire::FEED_PAGE)
+                                .saturating_add(wire::FEED_PAGE);
+                        });
+                    }),
+                ));
+            }
         }
-        parts.push(find_field(cx, &filter, &found));
-        let shown = feed.clone();
-        let listed = nav.clone();
-        let finding = filter.clone();
-        parts.push(cx.switch(&nav.selection, move |_, selection| {
-            list(&listed, &shown, selection.as_ref(), &finding)
-        }));
-        if feed.total > feed.entries.len() {
-            let more = nav.clone();
-            parts.push(Box::new(
-                Button::new("activity-show-more", "activity-show-more").on_view(move || {
-                    more.limit.update(|limit| {
-                        *limit = (*limit)
-                            .max(wire::FEED_PAGE)
-                            .saturating_add(wire::FEED_PAGE);
-                    });
-                }),
-            ));
-        }
-        page(parts)
+        searchable(cx, page(parts), &filter, found.len(), feed.entries.len())
     }))
 }
 
-/// What a find leaves of the feed: the changes whose words, person or app
-/// contain it, and how many of all of them it found.
+/// The page, as the window bar's search narrows it: what is typed reaches the
+/// filter, and the bar counts what the filter left of the `total` the read
+/// returned.
+fn searchable(
+    cx: &ViewCx<Filter>,
+    content: Element,
+    filter: &Filter,
+    found: usize,
+    total: usize,
+) -> Element {
+    let dispatcher = cx.dispatcher();
+    let path = Filter::paths().query;
+    let current = filter.query.clone();
+    Box::new(
+        QueryView::new(content, move |text| {
+            if text == current {
+                return;
+            }
+            // A text field's edit always serializes.
+            if let Ok(invoke) = Invoke::edit(&path.set(text.to_owned())) {
+                dispatcher.submit(invoke);
+            }
+        })
+        .kept(FilterCount::new(found, total)),
+    )
+}
+
+/// What the search leaves of the feed: the changes whose words, person or
+/// app contain its query.
 fn found(feed: &wire::Feed, filter: &Filter) -> Vec<wire::Entry> {
     feed.entries
         .iter()
@@ -102,47 +130,6 @@ fn found(feed: &wire::Feed, filter: &Filter) -> Vec<wire::Entry> {
         })
         .cloned()
         .collect()
-}
-
-/// The find: one field, and how much of the history it leaves — the same
-/// words an app's search uses, reaching the shared history.
-fn find_field(cx: &ViewCx<Filter>, filter: &Filter, found: &[wire::Entry]) -> Element {
-    let paths = Filter::paths();
-    let field: Element = Box::new(cx.control(
-        |state| {
-            TextInput::from_state(state)
-                .with_id("activity-find")
-                .with_placeholder("activity-find-placeholder")
-        },
-        paths.query,
-    ));
-    let count = if filter.finding() {
-        Box::new(
-            Text::new(&trf(
-                "activity-find-count",
-                &[
-                    ("found", ui::i18n::ArgValue::from(found.len().to_string())),
-                    ("all", ui::i18n::ArgValue::from(0.0)),
-                ],
-            ))
-            .with_role(ui::tokens::TextRole::Caption)
-            .numeric(),
-        ) as Element
-    } else {
-        Box::new(Text::new(""))
-    };
-    Box::new(
-        Row::new()
-            .no_wrap()
-            .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(Box::new(
-                Container::new()
-                    .with_flex_grow()
-                    .with_no_padding()
-                    .with_child(field),
-            ))
-            .push(count),
-    )
 }
 
 fn empty(feed: &wire::Feed) -> Element {
@@ -344,7 +331,7 @@ fn list(nav: &Nav, feed: &wire::Feed, selection: Option<&wire::Range>, filter: &
 
 /// What the system did, from the ledger: outcomes that needed nobody, with
 /// the app that did them and when. They sit at the end of the history and
-/// are found by the same find as the changes.
+/// the window bar's search narrows them with the changes.
 fn ledger_section(filter: &Filter) -> Option<Element> {
     let entries: Vec<ui::attention::Entry> = ui::attention::entries()
         .into_iter()
