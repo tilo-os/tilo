@@ -674,3 +674,153 @@ fn check_kept(
         );
     }
 }
+
+/// The planned action moving `item` to the front of the list.
+fn plan_move_first(
+    replica: &Replica,
+    meta: &tilolang_runtime::Meta,
+    root: &str,
+    item: &str,
+) -> DynAction {
+    let move_first = meta
+        .actions
+        .iter()
+        .find(|a| a.name == "move_first")
+        .unwrap();
+    let items = field_id(meta, "TodoList", "items");
+    let args = json!({ "i": format!("{root}/{items}:{item}") })
+        .as_object()
+        .cloned()
+        .unwrap();
+    replica
+        .host
+        .plan(&PlanRequest {
+            app: APP,
+            kind: "tl.so.tilo.todo.TodoList",
+            action_id: &move_first.id,
+            resource: Some(root),
+            args: &args,
+            caller: None,
+        })
+        .unwrap()
+}
+
+/// Remove `item` from the list, as an edit of `replica`'s.
+fn remove(replica: &mut Replica, meta: &tilolang_runtime::Meta, root: &str, item: &str) {
+    let remove = Edit::new(
+        vec![Segment::Field(field_id(meta, "TodoList", "items"))],
+        EditOp::RemoveItem {
+            id: Id::from_raw(item),
+        },
+    );
+    replica.apply(&DynAction {
+        app: APP.to_owned(),
+        kind: "tl.so.tilo.todo.TodoList".to_owned(),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Edit {
+            id: root.to_owned(),
+            edit: remove,
+        }],
+    });
+}
+
+/// A collection's listing is kept across items added, moved and removed, by this replica and by
+/// a peer: the store moves each item a change touched and says how ([`Splice`]), and what it
+/// holds is what listing the collection anew reads.
+#[test]
+fn the_store_keeps_a_listing_by_the_items_a_change_touched() {
+    use tilolang_runtime::meta::FieldKind;
+    use tilolang_runtime::store::{FieldKey, FieldSpec, Splice, Store as _};
+    use tilolang_runtime::value::{ResourceRef, Value};
+
+    let (mut ada, meta, root, lock) = room_with_ids();
+    let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+    let items = field_id(&meta, "TodoList", "items");
+    let list_ty = meta
+        .types
+        .iter()
+        .find(|t| t.name == "TodoList")
+        .unwrap()
+        .id
+        .clone();
+    let list = ResourceRef::root(&root, list_ty);
+    let spec = FieldSpec {
+        id: items.clone(),
+        kind: FieldKind::Collection,
+    };
+    let key = FieldKey::new(&list, items);
+    let store = ada.host.store().clone();
+    let listed = || store.listing(&list, &spec).unwrap().items.clone();
+    assert_eq!(listed(), item_ids(&ada, &meta, &root));
+    let watch = store.watch();
+
+    // A peer's item arrives at the end.
+    add(&mut grace, &meta, &root, "tea");
+    ada.sync_with(&mut grace);
+    let ids = item_ids(&ada, &meta, &root);
+    let tea = ids[3].clone();
+    let arrived = [Splice::Insert {
+        at: 3,
+        item: tea.clone(),
+    }];
+    assert_eq!(watch.take().listing(&key), Some(&arrived[..]));
+    assert_eq!(listed(), ids);
+
+    // Moved to the front by its replica: out of its place, into the first.
+    let moved = plan_move_first(&ada, &meta, &root, &tea);
+    assert!(watch.take().is_empty(), "planning tells nobody");
+    ada.apply(&moved);
+    let steps = [
+        Splice::Remove {
+            at: 3,
+            item: tea.clone(),
+        },
+        Splice::Insert { at: 0, item: tea },
+    ];
+    assert_eq!(watch.take().listing(&key), Some(&steps[..]));
+    assert_eq!(listed(), item_ids(&ada, &meta, &root));
+
+    // Added by the runtime here: told when the action commits, and not again when the record
+    // holds it.
+    let add_action = meta.actions.iter().find(|a| a.name == "add").unwrap();
+    ada.host
+        .runtime()
+        .invoke_action(
+            &tilolang_runtime::Principal::new("ada"),
+            (
+                add_action.id.as_str(),
+                vec![Value::resource(&list), Value::text("jam")],
+            ),
+        )
+        .unwrap();
+    let told = watch.take();
+    let [Splice::Insert { at: 4, item: jam }] = told.listing(&key).unwrap() else {
+        panic!("{told:?}");
+    };
+    let jam = jam.clone();
+    ada.commit();
+    assert_eq!(watch.take().listing(&key), Some(&[][..]), "nothing moved");
+    let ids = item_ids(&ada, &meta, &root);
+    assert_eq!(ids[4], jam);
+    assert_eq!(listed(), ids);
+
+    // Removed by a peer.
+    grace.sync_with(&mut ada);
+    remove(&mut grace, &meta, &root, &ids[1]);
+    ada.sync_with(&mut grace);
+    let removed = [Splice::Remove {
+        at: 1,
+        item: ids[1].clone(),
+    }];
+    assert_eq!(watch.take().listing(&key), Some(&removed[..]));
+    assert_eq!(listed(), item_ids(&ada, &meta, &root));
+
+    // A store that lists the collection anew reads the same.
+    let fresh = Replica::new("ada", ada.doc.fork(), &[(TODO, &lock)]).0;
+    assert_eq!(
+        fresh.host.store().listing(&list, &spec).unwrap().items,
+        listed()
+    );
+}

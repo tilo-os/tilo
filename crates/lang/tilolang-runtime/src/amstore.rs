@@ -136,16 +136,10 @@ impl AmStore {
             let (before_a, before_b) = (a.get_heads(), b.get_heads());
             sync_pair(a, b)?;
             if a.get_heads() != before_a {
-                mine.notify(&ChangeSummary {
-                    doc: id.clone(),
-                    fields: Vec::new(),
-                });
+                mine.notify(&ChangeSummary::whole(id.clone()));
             }
             if theirs.docs.get_mut(&id).map(AutoCommit::get_heads).as_ref() != Some(&before_b) {
-                theirs.notify(&ChangeSummary {
-                    doc: id,
-                    fields: Vec::new(),
-                });
+                theirs.notify(&ChangeSummary::whole(id));
             }
         }
         Ok(())
@@ -645,6 +639,7 @@ impl Store for AmStore {
             inner.notify(&ChangeSummary {
                 doc: id,
                 fields: fields.into_iter().collect(),
+                listings: Vec::new(),
             });
         }
         Ok(())
