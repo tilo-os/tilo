@@ -29,6 +29,10 @@ use crate::widget::{Button, ButtonRole, PromptBody, Row, TextInput, Widget};
 /// What an irreversible action with no description of its own loses.
 const IRREVERSIBLE: &str = "This can't be undone.";
 
+/// What the question says under an action Undo takes back: Shift skips it
+/// ([`crate::widget::shift_skips_confirmation`]).
+pub(crate) const SHIFT_SKIPS: &str = "Hold Shift to skip this next time.";
+
 /// The answers in the order the palette keeps them: the action, then the way
 /// out. The keyboard's parts are the field for a name (0), then these (1, 2).
 pub(super) const SUBMIT: usize = 0;
@@ -44,6 +48,9 @@ pub(super) struct ConfirmState {
     pub(super) destructive: bool,
     /// The action's own button: its label, or its verb where a name is typed.
     pub(super) button_label: String,
+    /// Undo takes the action back, so Shift would have skipped this: the
+    /// sheet says so under its detail.
+    pub(super) skippable: bool,
     phrase: Option<PhraseField>,
 }
 
@@ -80,6 +87,7 @@ impl ConfirmState {
                 detail,
                 destructive,
                 button_label,
+                skippable: false,
                 phrase: None,
             };
         };
@@ -99,6 +107,7 @@ impl ConfirmState {
             detail: message,
             destructive: true,
             button_label: verb(label),
+            skippable: false,
             phrase: Some(PhraseField { body, placed: None }),
             pending,
         }
@@ -423,6 +432,63 @@ impl ActionPalette {
             .actions(&actions)
             .closable(false);
         match state.phrase.as_mut() {
+            None if state.skippable => {
+                // The detail, then the hint in a quieter caption below it.
+                let width = body_width(window, spec.max_width, theme);
+                let detail = state.detail.as_str();
+                let detail_h = crate::widget::ModalSheet::message_height(
+                    text_renderer,
+                    theme,
+                    window,
+                    spec.max_width,
+                    detail,
+                );
+                let caption = theme.text(crate::tokens::TextRole::Caption);
+                let (_, hint_h) = text_renderer.measure_style(
+                    SHIFT_SKIPS,
+                    Some(crate::num::f32_of_f64(width)),
+                    &caption,
+                );
+                let gap = if detail.is_empty() {
+                    0.0
+                } else {
+                    f64::from(theme.tokens.spacing.s3)
+                };
+                let spec = spec.body_height(detail_h + gap + f64::from(hint_h));
+                self.confirmation_sheet.paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    window,
+                    &spec,
+                    |scene, transform, text_renderer, theme, body: Rect| {
+                        let (_, dim) = crate::widget::modal_dialog::ink(theme);
+                        let wrap = Some(crate::num::f32_of_f64(body.width()));
+                        if !detail.is_empty() {
+                            text_renderer.draw_style(
+                                scene,
+                                detail,
+                                dim,
+                                transform.pre_translate(vello::kurbo::Vec2::new(body.x0, body.y0)),
+                                wrap,
+                                &theme.text(crate::tokens::TextRole::Body),
+                            );
+                        }
+                        text_renderer.draw_style(
+                            scene,
+                            SHIFT_SKIPS,
+                            dim,
+                            transform.pre_translate(vello::kurbo::Vec2::new(
+                                body.x0,
+                                body.y0 + detail_h + gap,
+                            )),
+                            wrap,
+                            &theme.text(crate::tokens::TextRole::Caption),
+                        );
+                    },
+                );
+            }
             None => self.confirmation_sheet.paint_message(
                 scene,
                 transform,

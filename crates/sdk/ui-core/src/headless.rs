@@ -7893,6 +7893,18 @@ impl FrameHarness {
         target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
         intent: &tilo_actions::ControlInvocation,
     ) {
+        self.ask_person(target, intent, false);
+    }
+
+    /// Ask the person before `intent` goes ahead: as the door asked
+    /// ([`Self::open_ordinary_confirmation`]), or, `confirming`, as the app
+    /// asked for a pick of theirs, as the window's host does.
+    fn ask_person(
+        &mut self,
+        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        intent: &tilo_actions::ControlInvocation,
+        confirming: bool,
+    ) {
         let request = crate::bound_dispatch::OrdinaryConfirmation::prepare(
             self.root.as_ref(),
             &self.state.doc,
@@ -7902,6 +7914,7 @@ impl FrameHarness {
             crate::bound_dispatch::ControlContinuationArguments::Json(intent.arguments.clone()),
         );
         let request = match request {
+            Ok(request) if confirming => request.confirming(),
             Ok(request) => request.asking_first(),
             Err(error) => {
                 self.refuse_visibly(&error);
@@ -7921,7 +7934,11 @@ impl FrameHarness {
             self.text.font_system.locale().to_owned(),
         ));
         palette.activate_ordinary(request);
+        let went_ahead = palette.went_ahead();
         self.action_palette = Some(palette);
+        if went_ahead {
+            self.finish_action_palette_input();
+        }
     }
 
     /// Keep why an invocation the person made did not run, and say it over
@@ -8110,6 +8127,14 @@ impl FrameHarness {
         on_behalf_of: Option<tilo_actions::InvocationId>,
         origin: crate::bound_dispatch::Origin,
     ) {
+        if origin == crate::bound_dispatch::Origin::PersonConfirming && on_behalf_of.is_none() {
+            self.ask_person(
+                crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(target),
+                intent,
+                true,
+            );
+            return;
+        }
         let invocation = tilo_actions::InvocationId::new();
         // An edit a job started for someone else submitted is theirs, as far
         // as they were admitted.
@@ -8146,7 +8171,7 @@ impl FrameHarness {
             .map_err(crate::bound_dispatch::BoundActionError::into_door);
         drop(answering);
         drop(scopes);
-        if origin == crate::bound_dispatch::Origin::Person {
+        if origin.is_persons() {
             crate::pick::note_invocation(&target.address, result.is_ok());
         }
         self.note_continuation(on_behalf_of, &result);
@@ -8174,7 +8199,7 @@ impl FrameHarness {
             // Only what the person asked for is refused over the window; the
             // app hears of its own invocation's refusal through the feedback
             // above.
-            Err(error) if acting.is_none() && origin == crate::bound_dispatch::Origin::Person => {
+            Err(error) if acting.is_none() && origin.is_persons() => {
                 tracing::warn!(code = error.code(), %error, "headless: bound control refused");
                 self.refuse_visibly(&error);
             }
