@@ -25,8 +25,12 @@ pub const MAX_RECORD_TRANSACTION_ENTRY_BYTES: usize = 1024 * 1024;
 #[serde(rename_all = "snake_case")]
 pub enum RecordTransactionPhase {
     Prepared,
+    /// Every participant record is durable. History is derived from those
+    /// signed records, so this phase is also the history commit; there is no
+    /// independent history phase to advance. `history_committed` is accepted
+    /// as its legacy journal spelling only.
+    #[serde(alias = "history_committed")]
     ParticipantRecordsCommitted,
-    HistoryCommitted,
     NamespaceCommitted,
     BroadcastCommitted,
 }
@@ -35,8 +39,7 @@ impl RecordTransactionPhase {
     fn successor(self) -> Option<Self> {
         match self {
             Self::Prepared => Some(Self::ParticipantRecordsCommitted),
-            Self::ParticipantRecordsCommitted => Some(Self::HistoryCommitted),
-            Self::HistoryCommitted => Some(Self::NamespaceCommitted),
+            Self::ParticipantRecordsCommitted => Some(Self::NamespaceCommitted),
             Self::NamespaceCommitted => Some(Self::BroadcastCommitted),
             Self::BroadcastCommitted => None,
         }
@@ -151,7 +154,7 @@ impl RecordTransactionJournalEntry {
                 return Err(RecordTransactionJournalError::InvalidEnvelopeBatch);
             }
         }
-        if self.phase < RecordTransactionPhase::HistoryCommitted
+        if self.phase == RecordTransactionPhase::Prepared
             && self.namespace_delta.is_some()
             && !matches!(
                 self.transaction.manifest.operation,
@@ -289,10 +292,10 @@ impl RecordTransactionJournal {
             .entries
             .get(&id)
             .ok_or(RecordTransactionJournalError::UnknownTransaction(id))?;
-        if current.phase != RecordTransactionPhase::HistoryCommitted {
+        if current.phase != RecordTransactionPhase::ParticipantRecordsCommitted {
             return Err(RecordTransactionJournalError::InvalidPhaseTransition {
                 current: current.phase,
-                proposed: RecordTransactionPhase::HistoryCommitted,
+                proposed: RecordTransactionPhase::NamespaceCommitted,
             });
         }
         if let Some(existing) = &current.namespace_delta {
@@ -589,19 +592,12 @@ mod tests {
             let mut journal = RecordTransactionJournal::open(&root).unwrap();
             assert!(journal.insert_prepared(prepared.clone()).unwrap());
             assert!(!journal.insert_prepared(prepared).unwrap());
-            assert!(matches!(
-                journal.advance(id, RecordTransactionPhase::HistoryCommitted, None),
-                Err(RecordTransactionJournalError::InvalidPhaseTransition { .. })
-            ));
             journal
                 .advance(
                     id,
                     RecordTransactionPhase::ParticipantRecordsCommitted,
                     None,
                 )
-                .unwrap();
-            journal
-                .advance(id, RecordTransactionPhase::HistoryCommitted, None)
                 .unwrap();
             let delta = vec![1, 2, 3];
             assert!(journal.stage_namespace_delta(id, delta.clone()).unwrap());
@@ -730,6 +726,22 @@ mod tests {
     }
 
     #[test]
+    fn legacy_history_committed_phase_reopens_as_participant_records_committed() {
+        let value = entry();
+        let mut json = serde_json::to_value(&value).unwrap();
+        assert_eq!(json["phase"], "prepared");
+        json["phase"] = serde_json::json!("history_committed");
+        let reopened: RecordTransactionJournalEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            reopened.phase,
+            RecordTransactionPhase::ParticipantRecordsCommitted,
+            "a legacy journal keeps its durable participant records without a second history authority"
+        );
+        let encoded = serde_json::to_value(&reopened).unwrap();
+        assert_eq!(encoded["phase"], "participant_records_committed");
+    }
+
+    #[test]
     fn checked_journal_retention_keeps_signed_dedupe_and_ordinary_pruning() {
         let directory = tempfile::tempdir().unwrap();
         let mut journal = RecordTransactionJournal::open(directory.path()).unwrap();
@@ -743,7 +755,6 @@ mod tests {
         let receipt = journal.checked_receipt(restore_id).unwrap();
         for phase in [
             RecordTransactionPhase::ParticipantRecordsCommitted,
-            RecordTransactionPhase::HistoryCommitted,
             RecordTransactionPhase::NamespaceCommitted,
             RecordTransactionPhase::BroadcastCommitted,
         ] {
