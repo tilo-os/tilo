@@ -31,6 +31,11 @@
           "type": "reject"
         }
       ],
+      "code.tilo.so/tilo/tilo-vm-ref": [
+        {
+          "type": "reject"
+        }
+      ],
       "docker.io": [
         {
           "type": "insecureAcceptAnything"
@@ -107,6 +112,11 @@
         }
       ],
       "registry.tilo.so/tilo/tilo-vm": [
+        {
+          "type": "reject"
+        }
+      ],
+      "registry.tilo.so/tilo/tilo-vm-ref": [
         {
           "type": "reject"
         }
