@@ -25,6 +25,8 @@ mod app;
 #[cfg(test)]
 mod app_tests;
 pub mod i18n;
+#[cfg(test)]
+mod record_tests;
 pub mod widgets;
 pub use app::{ProviderSettingsApp, definition};
 /// The person's agent providers, as their settings hold them: the hosted
@@ -66,8 +68,238 @@ impl ui::storage::SettingsSchema for AgentProviders {
         ui::storage::Scope::Shared(agent_provider_config::SETTINGS_SECTION);
 }
 
-#[ui::tilo_resource::resource(kind = "settings.agent-providers", label = "Agent model providers")]
-impl AgentProviders {}
+#[ui::tilo_resource::resource(
+    kind = "settings.agent-providers",
+    label = "Agent model providers",
+    version = 2,
+    migrate = migrate_providers
+)]
+impl AgentProviders {
+    /// Add the provider `preset` names, with the id this action mints.
+    #[action(label = "Add provider")]
+    pub fn add_provider(
+        &mut self,
+        cx: &mut ui::tilo_resource::ActionCx,
+        preset: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let preset = Preset::from_slug(&preset)
+            .filter(|preset| !matches!(preset.authentication(), Authentication::SignIn(_)))
+            .ok_or_else(|| ui::tilo_resource::Refusal::new(t("agent-preset-unknown")))?;
+        self.config
+            .upsert(preset.profile_with_id(cx.uuid().to_string()));
+        Ok(())
+    }
+
+    /// Make `model` the one agents use from `provider`, adding it when the
+    /// provider does not offer it yet.
+    #[action(label = "Use model")]
+    pub fn set_provider_model(
+        &mut self,
+        provider: String,
+        model: String,
+        listed: Option<String>,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let descriptor = listed
+            .and_then(|text| serde_json::from_str::<ModelDescriptor>(&text).ok())
+            .unwrap_or_else(|| ModelDescriptor::new(model.clone()));
+        let profile = find(&mut self.config, &provider).map_err(ui::tilo_resource::Refusal::new)?;
+        if !profile.models.iter().any(|known| known.id == descriptor.id) {
+            profile.models.push(descriptor.clone());
+        }
+        profile.default_model = Some(descriptor.id);
+        Ok(())
+    }
+
+    /// Speak another protocol to a provider.
+    #[action(label = "Set protocol")]
+    pub fn set_provider_protocol(
+        &mut self,
+        provider: String,
+        slug: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        find(&mut self.config, &provider)
+            .map_err(ui::tilo_resource::Refusal::new)?
+            .protocol = protocol(&slug).map_err(ui::tilo_resource::Refusal::new)?;
+        Ok(())
+    }
+
+    /// Offer a provider to agents, or stop offering it.
+    #[action(label = "Set provider enabled")]
+    pub fn set_provider_enabled(
+        &mut self,
+        provider: String,
+        on: bool,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        find(&mut self.config, &provider)
+            .map_err(ui::tilo_resource::Refusal::new)?
+            .enabled = on;
+        Ok(())
+    }
+
+    /// Name a provider, where it is, and the model agents use from it.
+    #[action(label = "Set provider details")]
+    pub fn set_provider_details(
+        &mut self,
+        provider: String,
+        label: String,
+        endpoint: String,
+        model: Option<String>,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if label.trim().is_empty() || endpoint.trim().is_empty() {
+            return Err(ui::tilo_resource::Refusal::new(t(
+                "agent-provider-details-required",
+            )));
+        }
+        let profile = find(&mut self.config, &provider).map_err(ui::tilo_resource::Refusal::new)?;
+        profile.label = label;
+        profile.endpoint = endpoint;
+        if let Some(model) = model.filter(|model| !model.trim().is_empty()) {
+            if !profile.models.iter().any(|candidate| candidate.id == model) {
+                profile.models.push(ModelDescriptor::new(model.clone()));
+            }
+            profile.default_model = Some(model);
+        }
+        Ok(())
+    }
+
+    /// Set this model's request allowance; omit every value to restore the
+    /// defaults.
+    #[action(label = "Set model request limits")]
+    pub fn set_model_request_limits(
+        &mut self,
+        provider: String,
+        model: String,
+        max_output_tokens: Option<u32>,
+        runtime_context_tokens: Option<u32>,
+        plan_timeout_ms: Option<u32>,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        set_model_limits(
+            &mut self.config,
+            &provider,
+            &model,
+            (max_output_tokens, runtime_context_tokens, plan_timeout_ms),
+        )
+        .map_err(ui::tilo_resource::Refusal::new)
+    }
+
+    /// Make a provider the one agents use unless told otherwise.
+    #[action(label = "Use by default")]
+    pub fn set_default_provider(
+        &mut self,
+        provider: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let available = self.config.profiles.iter().any(|profile| {
+            profile.id == provider && profile.enabled && profile.default_model.is_some()
+        });
+        if !available {
+            return Err(ui::tilo_resource::Refusal::new(t(
+                "agent-provider-not-default",
+            )));
+        }
+        self.config.default_profile = Some(provider);
+        Ok(())
+    }
+
+    /// Choose the model one agent plans with; omit both to let it use the
+    /// default again.
+    #[action(label = "Set agent model")]
+    pub fn set_agent_model(
+        &mut self,
+        agent: String,
+        provider: Option<String>,
+        model: Option<String>,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let chosen = match (provider, model) {
+            (Some(profile), Some(model)) => Some(AgentModel { profile, model }),
+            (None, None) => None,
+            _ => {
+                return Err(ui::tilo_resource::Refusal::new(t(
+                    "agent-model-choice-incomplete",
+                )));
+            }
+        };
+        self.config
+            .set_agent_model(&agent, chosen)
+            .map_err(|_| ui::tilo_resource::Refusal::new(t("agent-model-gone")))
+    }
+
+    /// Remove a provider and every choice that named it.
+    #[action(label = "Remove provider")]
+    pub fn remove_provider(&mut self, provider: String) -> Result<(), ui::tilo_resource::Refusal> {
+        self.config
+            .remove(&provider)
+            .ok_or_else(|| ui::tilo_resource::Refusal::new(t("agent-provider-gone")))?;
+        Ok(())
+    }
+
+    /// Add a provider this area set up itself (a Google sign-in), or replace
+    /// the fields of the one already there. Only the profile that changed is
+    /// written, field by field.
+    #[action(label = "Set a signed-in provider")]
+    pub fn set_provider_profile(
+        &mut self,
+        profile: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let profile = serde_json::from_str::<ProviderProfile>(&profile)
+            .map_err(|error| ui::tilo_resource::Refusal::new(error.to_string()))?;
+        self.config.upsert(profile);
+        Ok(())
+    }
+}
+
+/// Bring an older provider record to the keyed profile map.
+///
+/// Version 1 stored `profiles` as a list: first each profile as one JSON
+/// string, then, after profiles became records, still a list whose items
+/// moved by position. Version 2 stores each profile under its id, so two
+/// people changing different providers do not overwrite one another. The
+/// old items are read with the same serde form the file uses, then written
+/// under their ids.
+fn migrate_providers(
+    doc: &mut ui::tilo_resource::Doc,
+    from: u32,
+) -> Result<(), ui::tilo_resource::ModelError> {
+    use ui::automerge::transaction::Transactable as _;
+    use ui::tilo_resource::__private::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
+
+    if from >= 2 {
+        return Ok(());
+    }
+    let Some((Value::Object(ObjType::Map), config)) = doc.get(ROOT, "config")? else {
+        return Ok(());
+    };
+    let Some((Value::Object(ObjType::List), profiles)) = doc.get(&config, "profiles")? else {
+        // Already a keyed map: a document written by this version but not
+        // yet stamped, or one whose list a repair removed.
+        return Ok(());
+    };
+    let mut read = Vec::new();
+    for index in 0..doc.length(&profiles) {
+        let Some((value, id)) = doc.get(&profiles, index)? else {
+            continue;
+        };
+        let profile = match value {
+            Value::Object(_) => {
+                <ProviderProfile as ui::tilo_resource::Model>::load(doc, &value, &id)?
+            }
+            Value::Scalar(scalar) => match scalar.as_ref() {
+                ScalarValue::Str(text) => serde_json::from_str::<ProviderProfile>(text)
+                    .map_err(|error| ui::tilo_resource::ModelError::invalid(error.to_string()))?,
+                ScalarValue::Null => continue,
+                _ => {
+                    return Err(ui::tilo_resource::ModelError::shape("a provider profile"));
+                }
+            },
+        };
+        read.push(profile);
+    }
+    doc.delete(&config, "profiles")?;
+    let profiles = doc.put_object(&config, "profiles", ObjType::Map)?;
+    for profile in read {
+        ui::tilo_resource::write_key(doc, &profiles, &profile.id, &profile)?;
+    }
+    Ok(())
+}
 
 pub trait PanelBindings: Clone + 'static {
     fn offline_metadata(&self) -> bool {
@@ -209,6 +441,96 @@ pub enum ProviderEffect {
         provider: String,
     },
 }
+impl ProviderEffect {
+    /// The typed field change of an [`AgentProviders`] record this panel
+    /// effect makes, when it changes provider metadata. `model` is the
+    /// descriptor a provider listed for a "use model" effect; without one
+    /// the id alone makes a minimal descriptor. Credential custody and
+    /// listing are the host's, and have no record action here.
+    pub fn agent_action(&self, model: Option<&ModelDescriptor>) -> Option<AgentProvidersAction> {
+        use agent_providers as action;
+        Some(match self {
+            Self::AddProvider { preset } => {
+                AgentProvidersAction::AddProvider(action::AddProvider {
+                    preset: preset.clone(),
+                })
+            }
+            Self::SetProviderModel {
+                provider,
+                model: id,
+            } => AgentProvidersAction::SetProviderModel(action::SetProviderModel {
+                provider: provider.clone(),
+                model: id.clone(),
+                listed: model
+                    .as_ref()
+                    .and_then(|model| serde_json::to_string(model).ok()),
+            }),
+            Self::SetProviderProtocol { provider, protocol } => {
+                AgentProvidersAction::SetProviderProtocol(action::SetProviderProtocol {
+                    provider: provider.clone(),
+                    slug: protocol.clone(),
+                })
+            }
+            Self::SetProviderEnabled { provider, on } => {
+                AgentProvidersAction::SetProviderEnabled(action::SetProviderEnabled {
+                    provider: provider.clone(),
+                    on: *on,
+                })
+            }
+            Self::SetProviderDetails {
+                provider,
+                label,
+                endpoint,
+                model,
+            } => AgentProvidersAction::SetProviderDetails(action::SetProviderDetails {
+                provider: provider.clone(),
+                label: label.clone(),
+                endpoint: endpoint.clone(),
+                model: model.clone(),
+            }),
+            Self::SetModelRequestLimits {
+                provider,
+                model,
+                max_output_tokens,
+                runtime_context_tokens,
+                plan_timeout_ms,
+            } => AgentProvidersAction::SetModelRequestLimits(action::SetModelRequestLimits {
+                provider: provider.clone(),
+                model: model.clone(),
+                max_output_tokens: *max_output_tokens,
+                runtime_context_tokens: *runtime_context_tokens,
+                plan_timeout_ms: *plan_timeout_ms,
+            }),
+            Self::SetDefaultProvider { provider } => {
+                AgentProvidersAction::SetDefaultProvider(action::SetDefaultProvider {
+                    provider: provider.clone(),
+                })
+            }
+            Self::SetAgentModel {
+                agent,
+                provider,
+                model,
+            } => AgentProvidersAction::SetAgentModel(action::SetAgentModel {
+                agent: agent.clone(),
+                provider: provider.clone(),
+                model: model.clone(),
+            }),
+            Self::RemoveProvider { provider } => {
+                AgentProvidersAction::RemoveProvider(action::RemoveProvider {
+                    provider: provider.clone(),
+                })
+            }
+            Self::RefreshProviders
+            | Self::ListProviderModels { .. }
+            | Self::InspectModelRequestLimits { .. }
+            | Self::SaveProviderKey { .. }
+            | Self::MigrateProviderKey { .. }
+            | Self::RemoveLegacyProviderKey { .. }
+            | Self::RemoveProviderKey { .. } => return None,
+        })
+    }
+}
+
 fn protocol_slug(protocol: ProviderProtocol) -> &'static str {
     match protocol {
         ProviderProtocol::Anthropic => "anthropic",
@@ -668,7 +990,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
     ///
     /// # Errors
     /// Returns an error for unsupported effects, missing profiles or invalid details.
-    pub fn proposed_config(&self, effect: ProviderEffect) -> Result<ProviderConfig, String> {
+    pub fn config_after(&self, effect: ProviderEffect) -> Result<ProviderConfig, String> {
         let mut config = self.provider_config().clone();
         match effect {
             ProviderEffect::SetModelRequestLimits {

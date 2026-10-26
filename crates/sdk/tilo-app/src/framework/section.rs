@@ -52,6 +52,10 @@ pub(crate) struct SectionKind {
     pub(crate) label: &'static str,
     /// The section keeps a value per device.
     pub(crate) device_local: bool,
+    /// The storage version its records are written at, and how an older
+    /// record is brought up to it before it is read.
+    version: u32,
+    migrate: fn(&mut Doc, u32) -> Result<(), tilo_resource::ModelError>,
     action_type: &'static str,
     /// The app whose settings the section is, and the document they live in.
     app_id: String,
@@ -68,6 +72,8 @@ impl SectionKind {
             kind: T::KIND,
             label: T::LABEL,
             device_local: matches!(T::SCOPE, ui_core::storage::Scope::DeviceLocal),
+            version: T::VERSION,
+            migrate: T::migrate,
             action_type: T::ACTION_TYPE,
             app_id: settings.app_id().to_owned(),
             document: settings.document().clone(),
@@ -310,6 +316,22 @@ impl SectionDoor {
             };
             match opened {
                 Ok(Some(opened)) => {
+                    let stored = opened
+                        .read(tilo_resource::evolution::stored_version)
+                        .unwrap_or(1);
+                    if stored < self.kind.version {
+                        let migrate = self.kind.migrate;
+                        if let Err(error) = opened.edit(false, |doc| {
+                            migrate(doc, stored).map_err(|error| error.to_string())
+                        }) {
+                            tracing::warn!(
+                                kind = self.kind.kind,
+                                %error,
+                                "settings record could not be brought up to its storage version"
+                            );
+                            return None;
+                        }
+                    }
                     opener.owners.borrow_mut().push(opened.history_owner());
                     *record.borrow_mut() = Some(Box::new(opened));
                     self.moved();

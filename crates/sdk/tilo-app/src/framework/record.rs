@@ -690,6 +690,18 @@ impl<R: Resource> SurfaceCx<R> {
             door,
         ))
     }
+
+    /// A dispatcher for the settings section `record`, which its host runs
+    /// as the person: an effect that changes it invokes its typed action
+    /// here, so the change is one field edit rather than a whole value.
+    /// `None` where the record cannot be held.
+    pub fn record_dispatcher<P: Resource>(
+        &self,
+        record: &impl OtherRecord<P>,
+    ) -> Option<Dispatcher<P>> {
+        let held = record.held(sealed::Storage(&self.storage))?;
+        Some(record_dispatch(&self.dispatch, &held))
+    }
 }
 
 /// `parent`'s door, submitting to the held record `held`: what applies now
