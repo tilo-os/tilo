@@ -318,7 +318,10 @@ containerfile="$repo/os/Containerfile"
 # with tilo-verified-update in the component files: one payload row.
 # tilo-authselect-unchanged rides the libexec COPY: one payload row (the
 # authselect-apply-changes drop-in that uses it is installed by the systemctl RUN).
-expected_contract=489eeb7ab9917fc8fb175ea443dbd78bc0d65041cb74f82b664ad39c770bc351
+# The one sign-in service, tilo-auth, and the polkit-1 and sudo services that
+# take their authentication from it ride the existing PAM COPY: three payload
+# rows.
+expected_contract=b12e85d601eb1b5250e429dc1eaac0044e2f88656dd8b406b6af4442609a120f
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

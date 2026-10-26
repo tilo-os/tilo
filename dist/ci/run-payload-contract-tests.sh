@@ -92,7 +92,7 @@ install -m755 "$repo_root/dist/session/tilo-session-runner" "$fhs/usr/libexec/ti
 install -m755 "$repo_root/dist/session/tilo-session-dev" "$fhs/usr/libexec/tilo-session-dev"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$fhs/usr/share/wayland-sessions/tilo.desktop"
 install -m644 "$repo_root/dist/session/tilo-app.desktop" "$fhs/usr/share/wayland-sessions/tilo-app.desktop"
-install -m644 "$repo_root/os/etc/pam.d/tilo-unlock" "$fhs/etc/pam.d/tilo-unlock"
+install -m644 "$repo_root/dist/session/tilo-unlock.pam" "$fhs/etc/pam.d/tilo-unlock"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \
     "$fhs/usr/share/xdg-desktop-portal/portals/tilo.portal"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" \
@@ -238,7 +238,7 @@ sed "s#/usr/bin/tilo-import-folders#$nix/bin/tilo-import-folders#g" "$repo_root/
 install -m755 "$repo_root/dist/session/tilo-session" "$nix/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$nix/libexec/tilo-session-runner"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$nix/share/wayland-sessions/tilo.desktop"
-install -m644 "$repo_root/os/etc/pam.d/tilo-unlock" "$nix/etc/pam.d/tilo-unlock"
+install -m644 "$repo_root/dist/session/tilo-unlock.pam" "$nix/etc/pam.d/tilo-unlock"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \
     "$nix/share/xdg-desktop-portal/portals/tilo.portal"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" \

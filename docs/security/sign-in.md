@@ -250,6 +250,9 @@ whose system volume is encrypted. AES on the Snapdragon and on any x86 machine T
 supports runs at several GB/s per core. A storage benchmark against the single-layer
 layout gates the switch, under the perf bar that applies to every change.
 
+Until then the PAM services carry no `pam_systemd_home` lines; they come back with
+personal storage (§8).
+
 ### 5.2 `tilo-authd` and one PAM service
 
 A small root service owns every user record (the user key's wrappers, enrolled
@@ -258,6 +261,20 @@ to authenticate a person by any of their factors. The greeter, the lock screen h
 polkit, the privileged-access tool and the saved-password prompt all use one PAM
 service built from that module, so every surface accepts the same factors and none
 carries its own stack.
+
+That service is `/etc/pam.d/tilo-auth`. `greetd`, `tilo-unlock`, `polkit-1` (which
+polkit's agent helper uses) and `sudo` take their auth, account and password phases
+from it and keep only their own session phase. `run0` has no PAM authentication of
+its own; it asks polkit. Hosts without `tilo-authd` (the distribution packages) keep
+their own unlock stack.
+
+The fingerprint step runs only when `tilo-authd` answers that it holds the person's
+key for a session of theirs running now (§4.3). The daemon holds a key from the
+sign-in that unwrapped it until that person's sessions end. So the greeter after
+boot, the first sign-in and any screen after the key was dropped never offer a
+fingerprint, and fprintd's "match" can only confirm someone already signed in. The
+greeter asks the same question before showing its fingerprint button. Moving the
+fingerprint request itself into `tilo-authd` comes later.
 
 Factor-specific hardware stays in its own daemon: fprintd for fingerprints, libfido2
 for keys, the TPM through `/dev/tpmrm0`. `tilo-authd` asks them and never parses

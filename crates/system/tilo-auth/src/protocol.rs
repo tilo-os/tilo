@@ -47,6 +47,10 @@ pub enum Request {
     /// Use the boot sign-in for `user`, once. Root only (the greeter's PAM
     /// service runs as root).
     ClaimBootSignIn { user: String },
+    /// Whether `user`'s key is held for a session of theirs running now,
+    /// which is when a fingerprint may confirm them (sign-in.md §4.3).
+    /// Answered in `key_held`. The peer is root, that person or the greeter.
+    KeyHeld { user: String },
 }
 
 /// Why a request did not succeed.
@@ -86,6 +90,8 @@ pub struct Reply {
     pub enrolled: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub factors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_held: Option<bool>,
 }
 
 impl Reply {

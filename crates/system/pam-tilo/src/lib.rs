@@ -3,8 +3,13 @@
 //!
 //! Module arguments:
 //! - `socket=PATH`: the daemon's socket, for tests.
-//! - `boot_sign_in`: in the greeter's service, start the session of the
-//!   person who signed in at boot without asking again, once.
+//! - `boot_sign_in=SERVICE`: when the PAM service is SERVICE (the greeter's),
+//!   start the session of the person who signed in at boot without asking
+//!   again, once. Any other service steps aside.
+//! - `fingerprint`: no secret; succeed when tilo-authd holds the person's key
+//!   for a session of theirs running now, the one time a fingerprint may
+//!   confirm them (sign-in.md §4.3), and step aside otherwise. The service
+//!   puts the fingerprint module behind this step.
 //! - `use_first_pass`, `try_first_pass`, `use_authtok`: as for every module;
 //!   libpam's `pam_get_authtok` reads them.
 //!
@@ -23,7 +28,8 @@ use tilo_auth::protocol::{Refusal, Reply, Request};
 
 struct Args {
     socket: PathBuf,
-    boot_sign_in: bool,
+    boot_sign_in: Option<String>,
+    fingerprint: bool,
 }
 
 impl Args {
@@ -33,7 +39,8 @@ impl Args {
     unsafe fn parse(arg_count: c_int, arg_values: *const *const c_char) -> Self {
         let mut parsed = Self {
             socket: PathBuf::from(tilo_auth::SOCKET),
-            boot_sign_in: false,
+            boot_sign_in: None,
+            fingerprint: false,
         };
         let count = usize::try_from(arg_count).unwrap_or(0);
         for i in 0..count {
@@ -46,8 +53,10 @@ impl Args {
             let arg = unsafe { CStr::from_ptr(ptr) }.to_string_lossy();
             if let Some(path) = arg.strip_prefix("socket=") {
                 parsed.socket = PathBuf::from(path);
-            } else if arg == "boot_sign_in" {
-                parsed.boot_sign_in = true;
+            } else if let Some(service) = arg.strip_prefix("boot_sign_in=") {
+                parsed.boot_sign_in = Some(service.to_owned());
+            } else if arg == "fingerprint" {
+                parsed.fingerprint = true;
             }
         }
         parsed
@@ -95,20 +104,35 @@ fn message(reply: &Reply) -> Option<String> {
 }
 
 fn authenticate(pamh: &Handle, args: &Args) -> Status {
+    if let Some(greeter) = &args.boot_sign_in
+        && pamh
+            .item_text(ffi::PAM_SERVICE)
+            .as_deref()
+            .map(String::as_str)
+            != Some(greeter.as_str())
+    {
+        return Status::Ignore;
+    }
     let Some(user) = pamh.user() else {
         return Status::UserUnknown;
     };
     let Ok(mut client) = Client::connect(&args.socket) else {
         pamh.log_warning("tilo-authd is not running; leaving the check to the rest of the stack");
-        return if args.boot_sign_in {
+        return if args.boot_sign_in.is_some() || args.fingerprint {
             Status::Ignore
         } else {
             Status::AuthinfoUnavail
         };
     };
-    if args.boot_sign_in {
+    if args.boot_sign_in.is_some() {
         return match client.call(&Request::ClaimBootSignIn { user }) {
             Ok(reply) if reply.ok => Status::Success,
+            _ => Status::Ignore,
+        };
+    }
+    if args.fingerprint {
+        return match client.call(&Request::KeyHeld { user }) {
+            Ok(reply) if reply.ok && reply.key_held == Some(true) => Status::Success,
             _ => Status::Ignore,
         };
     }
