@@ -840,6 +840,7 @@ impl ChatApp {
             Hit::OpenResource(message) => self.open_shared_resource(&message),
             Hit::OpenShare(message) => self.open_share(&message),
             Hit::StopShare(message) => self.stop_share(doc, &message),
+            Hit::SwitchShare(message, access) => self.switch_share(doc, &message, access),
             Hit::ShareWindowPanel if self.can_participate() => self.open_share_panel(None),
             Hit::ShareAccess(access) => self.choose_share_access(access),
             Hit::SharePick(tab) => self.choose_share_window(tab),

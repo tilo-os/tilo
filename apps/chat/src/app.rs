@@ -406,6 +406,8 @@ pub(crate) enum Hit {
     OpenShare(Id),
     /// Stop sharing the window a message of yours shares.
     StopShare(Id),
+    /// Let the others do this with the window a message of yours shares.
+    SwitchShare(Id, crate::record::ShareAccess),
     /// Open the "Share a window" panel from the attach menu.
     ShareWindowPanel,
     /// What the people a window is shared with may do there.
@@ -482,6 +484,7 @@ impl Hit {
             Self::OpenResource(id) => format!("chat.open-resource:{id}"),
             Self::OpenShare(id) => format!("chat.open-share:{id}"),
             Self::StopShare(id) => format!("chat.stop-sharing:{id}"),
+            Self::SwitchShare(id, access) => format!("chat.switch-share:{id}:{}", access.as_str()),
             Self::ShareWindowPanel => "chat.share-window".into(),
             Self::ShareAccess(access) => format!("chat.share-access:{}", access.as_str()),
             Self::SharePick(tab) => format!("chat.share-pick:{tab}"),
@@ -3951,6 +3954,16 @@ impl ChatApp {
                         false,
                     ),
                     Hit::StopShare(_) => (copy("chat-share-stop"), Role::Button, false),
+                    Hit::SwitchShare(id, access) => (
+                        ControlName {
+                            text: crate::live_share::access_label(*access),
+                            interface: true,
+                        },
+                        Role::ToggleButton,
+                        self.message(id)
+                            .and_then(|m| m.share.as_ref())
+                            .is_some_and(|share| share.access == *access),
+                    ),
                     Hit::ShareWindowPanel => (copy("chat-share-window"), Role::Button, false),
                     Hit::ShareAccess(access) => (
                         ControlName {

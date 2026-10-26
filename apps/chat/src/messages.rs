@@ -389,6 +389,34 @@ impl ChatPart {
         Ok(())
     }
 
+    /// Change what a shared window lets people do.
+    ///
+    /// Switch a window you share live between `view` and `edit`, in place:
+    /// the room grants what the new access gives from then on, and takes
+    /// back what the old one gave.
+    #[action(item = messages)]
+    pub fn set_share_access(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        #[param("What the people who open it may do now: view or edit")] access: ShareAccess,
+    ) -> Result<(), Refusal> {
+        let row = self
+            .messages
+            .get_mut(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        own(cx, row)?;
+        let share = row
+            .share
+            .as_mut()
+            .ok_or_else(|| Refusal::new("the message shares no window"))?;
+        if share.ended {
+            return Err(Refusal::new("the window is no longer shared"));
+        }
+        share.access = access;
+        Ok(())
+    }
+
     /// Say whether a shared window is open.
     ///
     /// Its sharer's Chat says so when they close the window or open it
@@ -833,6 +861,7 @@ impl ChatPart {
             | ChatPartAction::RemoveMessage(chat_part::RemoveMessage { message })
             | ChatPartAction::Pin(chat_part::Pin { message, .. })
             | ChatPartAction::StopSharing(chat_part::StopSharing { message })
+            | ChatPartAction::SetShareAccess(chat_part::SetShareAccess { message, .. })
             | ChatPartAction::ShareOpen(chat_part::ShareOpen { message, .. }) => {
                 Some(message.clone())
             }
