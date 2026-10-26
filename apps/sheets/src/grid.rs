@@ -1106,11 +1106,15 @@ impl Grid {
             ScrollAxis::Horizontal => {
                 ScrollMetrics::new(self.total_width(), self.body_rect().width(), self.scroll_x)
             }
-            ScrollAxis::Vertical => ScrollMetrics::new(
-                self.total_height(),
-                self.body_rect().height(),
-                self.scroll_y,
-            ),
+            ScrollAxis::Vertical => {
+                // The bar shows the sheet's own extent: scrolled up under the
+                // search's options, its thumb still starts at the track's top.
+                ScrollMetrics::new(
+                    self.total_height(),
+                    self.body_rect().height(),
+                    self.scroll_y.max(0.0),
+                )
+            }
         }
     }
 
@@ -1342,7 +1346,10 @@ impl Grid {
         let max_x = (self.total_width() - body.width()).max(0.0);
         let max_y = (self.total_height() - body.height()).max(0.0);
         self.scroll_x = self.scroll_x.clamp(0.0, max_x);
-        self.scroll_y = self.scroll_y.clamp(0.0, max_y);
+        // What the window's search covers is room to scroll into: the first
+        // rows move down under its options instead of staying hidden there.
+        let covered = self.cover_inset(body);
+        self.scroll_y = self.scroll_y.clamp(-covered, max_y);
     }
 
     /// Scroll so the active cell is fully inside the body — and, while the
@@ -1363,9 +1370,8 @@ impl Grid {
             self.scroll_x = right - body.width();
         }
         if top - self.scroll_y < covered {
-            // A sheet starts at its first row: a cell among the first ones
-            // stays where it is, under the cover, rather than scrolling to
-            // blank space above row 1.
+            // The space the search's options cover is scrolled into, so a
+            // cell among the sheet's first rows comes down clear of them.
             self.scroll_y = top - covered;
         } else if bottom - self.scroll_y > body.height() {
             self.scroll_y = bottom - body.height();
@@ -1381,8 +1387,9 @@ impl Grid {
     }
 
     /// The window bar's search covers the top of the body while its find's
-    /// options stand open: what it reveals stands clear of it. `None`
-    /// uncovers the body and shows the active cell whole again.
+    /// options stand open: what it reveals stands clear of it, the grid
+    /// scrolling up past its first row into the space the options take.
+    /// `None` uncovers the body, which scrolls back to its start.
     pub fn set_find_cover(&mut self, cover: Option<Rect>) {
         let inset = cover.map_or(0.0, |cover| {
             let body = self.body_rect();
