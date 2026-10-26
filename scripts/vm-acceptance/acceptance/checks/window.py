@@ -294,6 +294,35 @@ def _app_groups(st, app_id: str) -> list:
                    for t in g["tabs"])]
 
 
+def _session_log_lines(ctx) -> int:
+    """How many lines the session log holds now, to read only what follows."""
+    out = ctx.vm.exec(f'wc -l < "{core.SESSION_LOG}" 2>/dev/null || echo 0', check=False) or "0"
+    return next((int(word) for word in out.split() if word.isdigit()), 0)
+
+
+def _launch_evidence(ctx, check_id: str, log_lines: int, card) -> str:
+    """What the desktop did after a launch was asked for that did not arrive: every
+    window's tile, the overlays and notices, whether the card is still offered, and what
+    the session log said since; written in full beside the check, summarised for its
+    failure."""
+    st = ctx.state()
+    tiles = [[core.tab_app(tab) for tab in group["tabs"]] for group in core.all_groups(st)]
+    chrome = st.get("chrome", {})
+    notices = [n.get("title") for n in chrome.get("notifications", []) if isinstance(n, dict)]
+    still = core.target_map(ctx.vm.targets()).get("launchpad:notes")
+    said = ctx.vm.exec(
+        f'tail -n +{log_lines + 1} "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
+        '| grep -aiE "launchpad|notes|launch|refused|app tab request|placeholder|spawn" '
+        '| tail -n 80 | cut -c1-400', check=False) or "the session log said nothing about it"
+    ctx.write(f"{check_id}-launch-evidence.log", json.dumps(
+        {"tiles": tiles, "overlays": chrome.get("overlays"), "notices": notices,
+         "card_before": card, "card_after": still, "pointer": chrome.get("pointer"),
+         "input": chrome.get("input")}, indent=1, default=str) + "\n--- session log since the tap\n" + said)
+    last = [line for line in said.splitlines() if line.strip()][-3:]
+    return (f"tiles {tiles}; overlays open {[k for k, v in (chrome.get('overlays') or {}).items() if v]}; "
+            f"notices {notices}; card still offered at {still}; session log: {last}")
+
+
 @check("W18", AREA, "Touch is not the mouse: a tap on a launchpad card opens its app, the cursor "
                     "stays hidden while touch is in use and returns with the mouse")
 def touch_first(ctx, res):
@@ -307,12 +336,16 @@ def touch_first(ctx, res):
         raise Unobservable("the empty workspace shows no launchpad:notes target "
                            f"(targets: {sorted(n for n in t if n.startswith('launchpad'))})")
     x, y = int(card[0] + card[2] / 2), int(card[1] + card[3] / 2)
+    log_lines = _session_log_lines(ctx)
     ctx.vm.input("touch", "tap", str(x), str(y))
     st = ctx.wait_state(lambda s: _pointer_kind(s) == "hidden", 5,
                         "the cursor hidden after a touch")
     res.metrics["pointer_after_tap"] = st["chrome"].get("pointer")
-    st = ctx.wait_state(lambda s: _app_groups(s, "so.tilo.notes"), 25,
-                        f"Notes opened by a tap on its launchpad card at {x},{y}")
+    try:
+        st = ctx.wait_state(lambda s: _app_groups(s, "so.tilo.notes"), 25,
+                            f"Notes opened by a tap on its launchpad card at {x},{y}")
+    except CheckFailed as failure:
+        raise CheckFailed(f"{failure}; {_launch_evidence(ctx, 'W18', log_lines, card)}") from failure
     expect(st["chrome"]["input"]["modality"] == "touch",
            f"touch is the input in use after a tap ({st['chrome']['input']})")
     ctx.shot("W18-tapped-card")
