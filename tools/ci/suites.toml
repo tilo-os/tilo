@@ -558,6 +558,8 @@ suites = [
   "scripts/vm-acceptance/test_skip.py",
   "scripts/vm-acceptance/test_ui.py",
   "scripts/vm-acceptance/test_vm_actions.py",
+  "scripts/vm-acceptance/test_basics.py",
+  "scripts/vm-acceptance/test_report.py",
 ]
 
 [[group]]
