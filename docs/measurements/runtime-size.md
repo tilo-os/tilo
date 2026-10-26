@@ -98,13 +98,19 @@ panel, the NTFS mount protocol, the wallpaper catalogue, the accessibility
 settings, the PC keyboard outlines and the time-zone globe, with Settings'
 core and the panes people rarely open (settings-core, settings-rare):
 `libtilo_settings_engine.so` for
-Settings; the emoji catalogue with
-its names and keywords in every locale: `libtilo_emoji_engine.so` for Chat and
-the on-screen keyboard). It is
+Settings). It is
 signed into the runtime bundle beside `libruntime_dylib.so`, so the runtime's
 id, signature and verity cover it, but only its apps name it `DT_NEEDED`;
 every other app no longer maps or relocates it. Apps share one engine library
-rather than each carrying a copy in its tapp. The conventions the build
+rather than each carrying a copy in its tapp.
+
+The emoji catalogue with its names and keywords in every locale is not an
+engine: every text field resolves `:name:` by default and every app can open
+the picker, so the catalogue belongs to the toolkit and travels in the runtime
+itself. The engine library Chat, Notes and the on-screen keyboard still name
+is emptied out as they migrate off it.
+
+The conventions the build
 relies on:
 
 - the package is `tilo-<name>-engine`, its library `tilo_<name>_engine`; every
