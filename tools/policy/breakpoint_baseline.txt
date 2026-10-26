@@ -6,17 +6,14 @@
 2 apps/calculator/src/model.rs
 1 apps/canvas/tests/history.rs
 4 apps/chat/src/local_voice.rs
-1 apps/chip-design/src/verification/operators.rs
 1 apps/clocks/src/app_tests.rs
 2 apps/feeds/src/list_pane/copy_tests.rs
 1 apps/file-explorer/src/files_app/tests.rs
 1 apps/music/src/app/spotify.rs
 2 apps/notes/examples/notes-latency.rs
-1 apps/notes/src/app.rs
 2 apps/notes/tests/accessibility_publication.rs
 2 apps/notes/tests/scroll_damage.rs
 2 apps/notes/tests/typing_damage.rs
-2 apps/pdf-viewer/src/app.rs
 2 apps/photos/tests/end_to_end.rs
 2 apps/settings/examples/settings-latency.rs
 1 apps/settings/src/keyboard_preview.rs

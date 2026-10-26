@@ -3,7 +3,6 @@
 # (tools/policy/check_primitives.py). Counts only shrink.
 glyph-icon 1 apps/canvas/src/panels/shortcuts.rs
 glyph-icon 1 apps/chip-design/src/evidence_flow_view.rs
-glyph-icon 1 apps/chip-design/src/operator_graph_view.rs
 glyph-icon 1 apps/diffmerge/src/doc.rs
 glyph-icon 3 apps/file-explorer/src/files_app.rs
 glyph-icon 1 apps/imager/src/app.rs
@@ -25,8 +24,6 @@ glyph-join 8 apps/chat/src/demo.rs
 glyph-join 3 apps/chat/src/render_chat.rs
 glyph-join 1 apps/chat/src/resource.rs
 glyph-join 2 apps/chip-design/src/evidence_flow_view.rs
-glyph-join 2 apps/chip-design/src/view.rs
-glyph-join 1 apps/code-editor/src/app.rs
 glyph-join 3 apps/code-editor/src/sample_project.rs
 glyph-join 1 apps/containers/src/app.rs
 glyph-join 1 apps/containers/src/model.rs
@@ -60,9 +57,7 @@ glyph-join 1 apps/music/src/search_type.rs
 glyph-join 2 apps/notes/src/scenario.rs
 glyph-join 8 apps/notes/src/shortcuts_overlay.rs
 glyph-join 1 apps/passwords/src/actions.rs
-glyph-join 1 apps/pdf-viewer/src/resource.rs
 glyph-join 2 apps/pdf-viewer/src/scenarios.rs
-glyph-join 1 apps/pdf-viewer/src/search.rs
 glyph-join 1 apps/photos/src/app/accessibility.rs
 glyph-join 4 apps/settings/src/input_sources.rs
 glyph-join 2 apps/slides/src/model.rs
