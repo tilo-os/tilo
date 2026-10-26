@@ -253,6 +253,110 @@ fn publication_rebuilds_the_changed_item_and_matches_publishing_anew() {
     );
 }
 
+/// Search and publication starting in one frame read one copy of the mirror; a change makes
+/// the next reader take a new one.
+#[test]
+fn readers_share_a_snapshot_until_the_mirror_changes() {
+    let (mut ada, meta, root) = room();
+    let first = ada.host.store().snapshot();
+    assert!(Arc::ptr_eq(&first, &ada.host.store().snapshot()));
+    let ids = item_ids(&ada, &meta, &root);
+    retype(&mut ada, &meta, &root, &ids[0], "oat milk");
+    let after = ada.host.store().snapshot();
+    assert!(
+        !Arc::ptr_eq(&first, &after),
+        "a snapshot of the mirror before the change"
+    );
+    let list_type = meta
+        .types
+        .iter()
+        .find(|t| t.name == "TodoList")
+        .unwrap()
+        .id
+        .clone();
+    let list = tilolang_runtime::value::ResourceRef::root(&root, list_type);
+    assert_eq!(
+        after.first_text(&list),
+        ada.host.store().first_text(&list),
+        "the new snapshot holds the change"
+    );
+}
+
+/// What names a record is its first text, in field id order and a collection's items in order.
+/// A republish reads it again only where a change can move it, and gets it right each time.
+#[test]
+fn the_label_follows_whatever_names_the_record() {
+    let (mut ada, meta, root) = room();
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let label = |published: &Publications| published.trees()[&root].label.clone();
+    assert_eq!(label(&published), "milk");
+
+    let ids = item_ids(&ada, &meta, &root);
+    let check = |ada: &Replica, published: &Publications, step: &str| {
+        assert_eq!(
+            shape(&published.trees()[&root]),
+            published_anew(ada, &meta, &root),
+            "after {step}"
+        );
+    };
+    retype(&mut ada, &meta, &root, &ids[0], "almond milk");
+    published.update(&ada.host, &planner);
+    check(&ada, &published, "retyping the item that names the list");
+    assert_eq!(label(&published), "almond milk");
+
+    retype(&mut ada, &meta, &root, &ids[0], "");
+    published.update(&ada.host, &planner);
+    check(&ada, &published, "emptying it");
+    assert_eq!(label(&published), "eggs", "the next item names the list");
+
+    retype(&mut ada, &meta, &root, &ids[2], "rye bread");
+    published.update(&ada.host, &planner);
+    check(
+        &ada,
+        &published,
+        "retyping an item after the one that names it",
+    );
+
+    let tag = meta.actions.iter().find(|a| a.name == "tag").unwrap();
+    let args = json!({ "t": "groceries" }).as_object().cloned().unwrap();
+    let tagged = ada
+        .host
+        .plan(&PlanRequest {
+            app: APP,
+            kind: "tl.so.tilo.todo.TodoList",
+            action_id: &tag.id,
+            resource: Some(&root),
+            args: &args,
+            caller: None,
+        })
+        .unwrap();
+    ada.apply(&tagged);
+    published.update(&ada.host, &planner);
+    check(&ada, &published, "tagging the list");
+
+    let title = Edit::new(
+        vec![Segment::Field(field_id(&meta, "TodoList", "title"))],
+        EditOp::Replace {
+            text: "Shopping".to_owned(),
+        },
+    );
+    ada.apply(&DynAction {
+        app: APP.to_owned(),
+        kind: "tl.so.tilo.todo.TodoList".to_owned(),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Edit {
+            id: root.clone(),
+            edit: title,
+        }],
+    });
+    published.update(&ada.host, &planner);
+    check(&ada, &published, "titling the list");
+}
+
 #[test]
 fn planning_an_action_changes_nothing_anyone_follows() {
     let (ada, meta, root) = room();
