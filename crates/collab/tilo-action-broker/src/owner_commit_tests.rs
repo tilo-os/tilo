@@ -530,7 +530,10 @@ mod owner_commit_tests {
         native: bool,
         enrolled: bool,
     ) -> OwnerFixture {
-        let owner = crate::test_owner::SessionOwner::initialize(&root.join("owner")).unwrap();
+        let mut owner = crate::test_owner::SessionOwner::initialize(&root.join("owner")).unwrap();
+        // The room's own person has a second device, so a test can present
+        // the same root from another device and only the device differs.
+        owner.admit_second_device().unwrap();
         let (handle, mailbox) = crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(2);
         let route = CrdtRoute::record(
             "so.tilo.word-processor",
@@ -2041,6 +2044,28 @@ mod owner_commit_tests {
         effect_owner_caller(f).delegated_to(agent)
     }
 
+    /// A member device of the fixture's own person, other than the one that
+    /// admitted: the same root, a second device. It is a real device of this
+    /// room's person, so only its device key tells the two apart.
+    fn sibling_device_caller(f: &OwnerFixture) -> VerifiedActionCaller {
+        let certificate = f.owner.second_device();
+        let device = crate::test_owner::SessionOwner::second_device_key();
+        let room = f.route.cluster_id.clone();
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: room.clone(),
+            device_certificate: serde_json::to_vec(&certificate).unwrap(),
+            proof: device
+                .sign(&runtime_identity::collaboration_join_signing_bytes(&room))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .unwrap();
+        f.state
+            .verify_action_caller(&f.route.cluster_id, &presentation)
+            .unwrap()
+    }
+
     /// Exactly `prepare_owner_effect`, but the receipt names `actor` instead
     /// of the caller's own effective actor: the shape a mismatched terminal
     /// takes. Prepares the journal's own invocation, so `validate` decides.
@@ -2142,41 +2167,85 @@ mod owner_commit_tests {
     }
 
     /// The certified door re-verifies a caller on every status, retry and
-    /// effect barrier. A delegated caller's own recheck must still pass, and
-    /// the owner it derives must name the agent the person delegated to; a
-    /// changed delegation is refused, never silently re-owned.
+    /// effect barrier. That recheck proves the same person and device and
+    /// keeps this caller's own delegation, so it cannot be satisfied by
+    /// another person's or another device's evidence, and a caller that
+    /// cannot back its delegation is refused rather than re-owned.
     #[test]
-    fn a_delegated_callers_own_reverification_keeps_the_agent_owner() {
+    fn a_delegated_callers_reverification_keeps_its_agent_owner() {
         let root = canonical_tempdir();
         let f = owner_fixture(root.path());
         let caller = delegated_owner_caller(&f, "mcp-7");
         let current = effect_owner_caller(&f);
+        let owner = caller.owner().unwrap();
         assert_eq!(
-            caller.reverified_owner(&current),
-            Some(caller.owner()),
-            "fresh verification of the same person and device keeps the owner"
-        );
-        assert_eq!(
-            caller.owner(),
+            owner,
             InvocationOwner::AuthenticatedLocal {
                 root: f.owner.peer().authority().user_public_key,
                 device: f.owner.peer().authority().device_public_key,
                 agent: Some("mcp-7".into()),
             }
         );
-        // The same person and device, admitted for another agent.
-        let elsewhere = delegated_owner_caller(&f, "mcp-8");
-        assert_ne!(elsewhere.owner(), caller.owner());
+        assert_eq!(
+            caller.reverified(&current),
+            Ok(()),
+            "fresh verification of the same person and device passes"
+        );
         // Re-verification re-establishes only the person and device. The
         // delegation re-applied is the caller's own, never whatever the
         // re-verified identity happened to admit, so this caller cannot
         // drift onto the other agent's owner.
-        assert_eq!(caller.reverified_owner(&elsewhere), Some(caller.owner()));
-        // Another person's broker verifies another root: never this caller.
+        let elsewhere = delegated_owner_caller(&f, "mcp-8");
+        assert_ne!(elsewhere.owner().unwrap(), owner);
+        assert_eq!(caller.reverified(&elsewhere), Ok(()));
+        assert_eq!(caller.owner().unwrap(), owner);
+        // Another person's broker verifies another root and device: refused.
         let other_root = canonical_tempdir();
         let other = owner_fixture(other_root.path());
         let stranger = effect_owner_caller(&other);
-        assert_eq!(caller.reverified_owner(&stranger), None);
+        assert_eq!(
+            caller.reverified(&stranger),
+            Err("certified caller changed".into())
+        );
+        // The same person from a second device is a different device, too.
+        let sibling = sibling_device_caller(&f);
+        assert_eq!(
+            caller.reverified(&sibling),
+            Err("certified caller changed".into())
+        );
+        // A caller that lost the certificate backing its delegation is
+        // refused: never downgraded to the person it also happens to be.
+        let mut keyless = caller.clone();
+        keyless.admitted.certificate = None;
+        assert_eq!(
+            keyless.owner().unwrap_err(),
+            "admitted caller certificate missing"
+        );
+        assert_eq!(
+            caller.reverified(&keyless),
+            Err("admitted caller certificate missing".into())
+        );
+        assert!(keyless.reverified(&current).is_err());
+        // A delegation and its admission must agree, in either direction.
+        for admission in [
+            current.admitted.clone().delegated_to(Some("mcp-8")),
+            current.admitted.clone().delegated_to(None),
+        ] {
+            let mut mismatched = caller.clone();
+            mismatched.admitted = admission;
+            assert_eq!(
+                mismatched.owner().unwrap_err(),
+                "admitted caller does not carry its delegation"
+            );
+        }
+        // The person themselves is never owned as an agent's.
+        assert_eq!(
+            current.owner().unwrap(),
+            InvocationOwner::Certified {
+                root: f.owner.peer().authority().user_public_key,
+                device: f.owner.peer().authority().device_public_key,
+            }
+        );
     }
 
     fn prepare_owner_effect(

@@ -479,6 +479,11 @@ impl Drop for Running<'_> {
 }
 
 /// The agent an MCP connection is: one per connection, named after its run.
+///
+/// The name is part of a durable invocation owner and of the delegation the
+/// broker re-verifies, so it carries the whole run id rather than a prefix of
+/// it: two runs must never share an agent. Anything shown to people labels
+/// it separately ([`agent_label`]).
 #[must_use]
 pub fn agent_id(caller: &Caller) -> String {
     let run = caller
@@ -486,7 +491,18 @@ pub fn agent_id(caller: &Caller) -> String {
         .unwrap_or_else(uuid::Uuid::new_v4)
         .simple()
         .to_string();
-    format!("mcp-{}", run.get(..12).unwrap_or(&run))
+    format!("mcp-{run}")
+}
+
+/// What people are shown for [`agent_id`]: its kind and the start of its run,
+/// which is enough to tell concurrent agents apart in a crowd.
+#[must_use]
+pub fn agent_label(agent: &str) -> String {
+    let agent = agent.strip_prefix("agent:").unwrap_or(agent);
+    match agent.strip_prefix("mcp-") {
+        Some(run) => format!("mcp-{}", run.get(..12).unwrap_or(run)),
+        None => agent.to_owned(),
+    }
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {

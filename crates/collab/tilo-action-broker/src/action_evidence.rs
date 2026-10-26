@@ -32,7 +32,10 @@ pub enum VerifiedActor {
     AuthenticatedLocal {
         root: [u8; 32],
         device: [u8; 32],
-        #[serde(deserialize_with = "required_agent")]
+        /// The agent this session was delegated to, or `null` for the person.
+        /// The field must be present: reading an omission as the person would
+        /// hand a delegated agent's invocation to them.
+        #[serde(default = "omitted_agent")]
         agent: Option<String>,
     },
     Enrolled {
@@ -51,11 +54,22 @@ pub enum VerifiedActor {
     },
 }
 
-fn required_agent<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    Option::<String>::deserialize(deserializer)
+/// The value an omitted `agent` deserializes to. Serde's default for an
+/// `Option` field is `None`, which would read a dropped field as the person
+/// themselves; this sentinel cannot be a real agent name, so
+/// [`Self::validate`] (and [`crate::action_evidence::verify`]) refuses it
+/// instead.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "serde's field default must match the Option field type"
+)]
+fn omitted_agent() -> Option<String> {
+    Some(String::from(OMITTED_AGENT))
 }
+
+/// The omission sentinel. Never a valid agent: it holds a control character,
+/// which every agent-name check refuses.
+const OMITTED_AGENT: &str = "\u{0}omitted-agent";
 
 /// Public routing and identity facts. Never put arguments, context, cause,
 /// results, or other private intent contents in these fields.
@@ -294,6 +308,7 @@ fn mint_with_nonce(
 /// still verify: the durable journal owns execution uniqueness and dispatch.
 /// Local reports instead use content-bound capture identities, never dispatch.
 pub fn verify(receipt: &AdmissionReceipt, expected_facts: &AdmissionFacts) -> Result<(), String> {
+    receipt.facts.actor.validate()?;
     if receipt.facts != *expected_facts {
         return Err("admission facts do not match".into());
     }
@@ -308,6 +323,24 @@ pub fn verify(receipt: &AdmissionReceipt, expected_facts: &AdmissionFacts) -> Re
         &signature,
     )
     .map_err(|_| "invalid admission signature".into())
+}
+
+impl VerifiedActor {
+    /// Reject an agent name that no delegated session could have: the
+    /// omission sentinel, an empty or over-long name, or control characters.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Self::AuthenticatedLocal {
+            agent: Some(agent), ..
+        } = self
+            && (agent == OMITTED_AGENT
+                || agent.is_empty()
+                || agent.len() > 512
+                || agent.bytes().any(|byte| byte.is_ascii_control()))
+        {
+            return Err("invalid authenticated local admission agent".into());
+        }
+        Ok(())
+    }
 }
 
 impl AdmissionEvidence {
@@ -535,6 +568,32 @@ mod tests {
         assert!(recovered.opening_for_owner(&foreign).is_err());
     }
 
+    /// An authenticated local actor must say whether it is the person
+    /// (`null`) or the agent named: a statement that drops the field is not
+    /// read as the person's.
+    #[test]
+    fn an_authenticated_local_actor_that_omits_its_agent_is_refused() {
+        let evidence = evidence();
+        let mut encoded = serde_json::to_value(evidence.public_receipt()).unwrap();
+        assert_eq!(
+            encoded["facts"]["actor"]["AuthenticatedLocal"]["agent"],
+            "agent"
+        );
+        encoded["facts"]["actor"]["AuthenticatedLocal"]
+            .as_object_mut()
+            .unwrap()
+            .remove("agent");
+        // serde's field attribute does not fire through `Value` for this
+        // shape, so the omission arrives as the sentinel and is refused when
+        // the statement is validated: it is never read as the person's.
+        let receipt: AdmissionReceipt = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            receipt.facts.actor.validate(),
+            Err("invalid authenticated local admission agent".into())
+        );
+        assert!(verify(&receipt, &facts()).is_err());
+    }
+
     #[test]
     fn every_intent_field_and_private_opening_are_bound() {
         let evidence = evidence();
@@ -689,11 +748,16 @@ mod tests {
             .is_err()
         );
         let zeros = [0u8; 32];
-        assert!(
-            serde_json::from_value::<VerifiedActor>(
-                serde_json::json!({"AuthenticatedLocal":{"root":zeros,"device":zeros}})
-            )
-            .is_err()
+        // An authenticated local actor that drops its `agent` is refused: an
+        // omitted field is not the person. `validate` refuses it, and so does
+        // every path that checks a statement before believing it.
+        let omitted: VerifiedActor = serde_json::from_value(
+            serde_json::json!({"AuthenticatedLocal":{"root":zeros,"device":zeros}}),
+        )
+        .unwrap();
+        assert_eq!(
+            omitted.validate(),
+            Err("invalid authenticated local admission agent".into())
         );
     }
 }

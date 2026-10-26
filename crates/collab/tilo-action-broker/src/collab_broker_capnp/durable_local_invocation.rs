@@ -243,15 +243,15 @@ pub(super) enum DurableContext<'a> {
     },
 }
 impl<'a> DurableContext<'a> {
-    pub(super) fn owner(self) -> InvocationOwner {
+    pub(super) fn owner(self) -> Result<InvocationOwner, String> {
         match self {
             Self::Peer(c, _) => c.owner(),
-            Self::Local { caller, .. } => caller.owner(),
-            Self::Task { binding, .. } => InvocationOwner::NativeTask {
+            Self::Local { caller, .. } => Ok(caller.owner()),
+            Self::Task { binding, .. } => Ok(InvocationOwner::NativeTask {
                 agent: binding.agent_id.clone(),
                 task: binding.task_id.clone(),
                 epoch: binding.epoch,
-            },
+            }),
         }
     }
     pub(super) fn time(self) -> Option<&'a crate::peer_actions::PolicyTime> {

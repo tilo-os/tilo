@@ -62,7 +62,10 @@ pub(super) enum InvocationOwner {
     AuthenticatedLocal {
         root: [u8; 32],
         device: [u8; 32],
-        #[serde(deserialize_with = "required_agent")]
+        /// The agent this session was delegated to, or `null` for the person.
+        /// The field must be present: reading an omission as the person would
+        /// hand a delegated agent's invocation to them.
+        #[serde(default = "omitted_agent")]
         agent: Option<String>,
     },
     /// Retained ownership data only; observation still requires live task authority.
@@ -82,13 +85,22 @@ pub(super) enum InvocationOwner {
     },
 }
 
-// Unlike serde's implicit Option default, an omitted field must not silently
-// turn a delegated-agent owner into an ordinary person owner.
-fn required_agent<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    Option::<String>::deserialize(deserializer)
+/// The value an omitted `agent` deserializes to. Serde's default for an
+/// `Option` field is `None`, which would read a dropped field as the person
+/// themselves; this sentinel cannot be a real agent name, so
+/// [`Self::validate`] (and [`crate::action_evidence::verify`]) refuses it
+/// instead.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "serde's field default must match the Option field type"
+)]
+fn omitted_agent() -> Option<String> {
+    Some(String::from(OMITTED_AGENT))
 }
+
+/// The omission sentinel. Never a valid agent: it holds a control character,
+/// which every agent-name check refuses.
+const OMITTED_AGENT: &str = "\u{0}omitted-agent";
 
 impl InvocationOwner {
     pub(super) fn verified_actor(&self) -> Option<crate::action_evidence::VerifiedActor> {
