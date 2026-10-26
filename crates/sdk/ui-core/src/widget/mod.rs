@@ -3217,7 +3217,9 @@ pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
-pub use context_menu::{ContextMenu, MenuButton, MenuItem};
+pub use context_menu::{
+    ContextMenu, MenuButton, MenuItem, note_shift, shift_held, shift_skips_confirmation,
+};
 mod row_menu;
 pub use primitives::{
     BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureState, Fact, Facts,
