@@ -422,12 +422,64 @@ enum CertificateProvisioning {
     HarnessDevices(Arc<Vec<[u8; 32]>>, Option<NativeReadHarnessWrapper>),
 }
 
-impl CertificateProvisioning {
-    fn uses_harness_devices(&self) -> bool {
-        match self {
-            Self::Production => false,
-            #[cfg(any(test, feature = "test-support"))]
-            Self::HarnessDevices(..) => true,
+/// A harness's certificate authority: the devices it enrolled, in every
+/// room, under a policy clock of its own as a session's identity store is.
+#[cfg(any(test, feature = "test-support"))]
+struct HarnessCertificates {
+    devices: Arc<Vec<[u8; 32]>>,
+    origin: Result<
+        tilo_action_broker::peer_actions::PolicyOrigin,
+        tilo_action_broker::peer_actions::PolicyClockError,
+    >,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl HarnessCertificates {
+    fn new(devices: Arc<Vec<[u8; 32]>>) -> Self {
+        Self {
+            devices,
+            origin: tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+                .map(|clock| clock.new_origin()),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl tilo_action_broker::peer_actions::CertificateAuthority for HarnessCertificates {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+        self.origin
+            .as_ref()
+            .map_err(ToString::to_string)?
+            .capture()
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+
+    fn authorize_with_policy_time(
+        &self,
+        room: uuid::Uuid,
+        certificate: &tilo_user_identity::DeviceCert,
+        time: &tilo_action_broker::peer_actions::PolicyTime,
+    ) -> Result<(), String> {
+        let origin = self.origin.as_ref().map_err(ToString::to_string)?;
+        if !origin.owns(time) {
+            return Err("harness certificate policy origin changed".into());
+        }
+        let now = time.now_ns().map_err(|error| error.to_string())?;
+        tilo_user_identity::verify_device_cert_at(certificate, now)
+            .map_err(|_| "harness certificate expired at retained policy time")?;
+        self.authorize(room, certificate)
+    }
+
+    fn authorize(
+        &self,
+        _room: uuid::Uuid,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        if self.devices.contains(&certificate.device_public_key) {
+            Ok(())
+        } else {
+            Err("device not enrolled".into())
         }
     }
 }
@@ -1038,8 +1090,16 @@ fn spawn_inner(
     services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
         local_session.lifecycle(),
     )));
-    if certificate_provisioning.uses_harness_devices() && config.is_none() {
-        services.native_certificates = None;
+    // A harness admits its enrolled devices where a session's broker asks
+    // the identity store, under its own policy clock as a session's does:
+    // membership changes, an opening app's authorship among them, keep
+    // their original custody as they do in a session.
+    #[cfg(any(test, feature = "test-support"))]
+    if let CertificateProvisioning::HarnessDevices(devices, _) = &certificate_provisioning
+        && config.is_none()
+    {
+        services.native_certificates =
+            Some(Arc::new(HarnessCertificates::new(Arc::clone(devices))));
         services.local_person = None;
     }
     let realtime_fabric = if config.is_none() {
