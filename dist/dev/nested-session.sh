@@ -282,7 +282,14 @@ fi
 stamps=$state/stamps
 mkdir -p "$stamps" "$TILO_APPS_DATA_DIR"
 installed=$("$bin/tilo-install" list 2>/dev/null || true)
+# The selected apps' catalog entries, read before the loop: a failing filter
+# in a process substitution would install nothing and say nothing.
+catalog=$(jq -r '.catalog[] | select(.name | IN($ARGS.positional[]))
+    | [.name,.binary,.id,.version,.manifest] | @tsv' \
+    --args ${selected[@]+"${selected[@]}"} < "$plan") \
+    || die "cannot read the selected apps from $plan"
 while IFS=$'\t' read -r name binary id version manifest; do
+    [[ -n $name ]] || continue
     built=$thin/$binary
     [[ -x $built ]] || die "missing app binary $built"
     work=$state/work/app-$name
@@ -313,7 +320,7 @@ while IFS=$'\t' read -r name binary id version manifest; do
         --ignore-missing-runtime >/dev/null
     printf '%s\n' "$digest" > "$stamps/$name"
     rm -rf "$work"
-done < <(jq -r --arg selected " ${selected[*]} " '.catalog[] | select($selected | contains(" " + .name + " ")) | [.name,.binary,.id,.version,.manifest] | @tsv' "$plan")
+done <<<"$catalog"
 for tapp in "${install_tapps[@]}"; do
     [[ -f $tapp ]] || die "no package $tapp"
     say "installing $(basename "$tapp")"
