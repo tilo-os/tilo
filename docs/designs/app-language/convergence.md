@@ -256,7 +256,11 @@ Links between them and people exist only where something actually recorded them.
 
 ## 6. Flows: actions across homes
 
-A `flow` sequences actions at different homes.
+A `flow` is a durable sequence of atomic actions at different homes. Every action already goes
+over the network; what a flow adds is the honest answer to atomicity. An action is atomic at
+one home, and nothing is atomic across homes. **Calling another home's action is allowed only in
+a flow;** inside a plain action the compiler refuses it, because it would pretend to be atomic.
+In the literature this is a saga.
 
 ```
 flow book(w: Workshop, p: Principal, card: Card) {
