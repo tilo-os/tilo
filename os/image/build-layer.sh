@@ -146,6 +146,32 @@ fragments_through() {
   fragment_dir "$1"
 }
 
+# A layer over others is dated as they are: by the clock the layer below it was built with (its
+# org.tilo.source-date-epoch label), not by one read again from this run's RPM snapshot. The
+# snapshot is dated when it was resolved, and t serves the layers below by their keys, which a
+# snapshot built again under the same key with a later date doesn't change: a layer dated anew
+# then stamped its packages' install times after those of the layers it builds on, and the
+# image's checks (tilo-verify-rpm-files) found no package installed at its clock. So every layer
+# of an image takes the clock of the bottom one, which read it from the snapshot it installed.
+below_dated() {
+  local epoch
+  epoch=$(python3 -I - "$below" <<'PY'
+import sys
+sys.path.insert(0, "tools/ci/os")
+import oci_layers
+labels = oci_layers.image_of_layout(sys.argv[1])[1].get("config", {}).get("Labels") or {}
+print(labels.get("org.tilo.source-date-epoch", ""))
+PY
+) || die "could not read the clock of the layers below"
+  [[ -z $epoch ]] && return 0
+  [[ $epoch =~ ^[1-9][0-9]*$ ]] || die "the layers below carry no clock but '$epoch'"
+  if [[ $epoch != "$SOURCE_DATE_EPOCH" ]]; then
+    printf 'dated %s as the layers below it (SOURCE_DATE_EPOCH=%s), not %s from this run'"'"'s snapshot\n' \
+      "$name" "$epoch" "$SOURCE_DATE_EPOCH"
+  fi
+  export SOURCE_DATE_EPOCH=$epoch
+}
+
 # Build TARGET of NAME's Containerfile through build-image.sh, given GIVEN (stage names) as
 # images; tagged $image.
 build_target() {
@@ -243,6 +269,7 @@ cmd_layer() {
     fi
     layer_args+=(--build-arg BASE_REF=localhost/tilo-base:pinned)
     below=$below/oci
+    below_dated
   else
     # The helper stages FROM ${BASE_REF} build on the base as its layout has it.
     id=$(load "$os/base/oci")
