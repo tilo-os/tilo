@@ -236,6 +236,15 @@ fn control_specs() -> Vec<Spec> {
         widget("Button, plain", 56.0, |c, _| {
             button(ButtonRole::Plain, "Details", c)
         }),
+        widget("Menu button", 56.0, |c, _| match c.st {
+            St::Selected | St::Error => None,
+            st => boxed(
+                Button::new("menu", "Editor")
+                    .control_size(c.size)
+                    .with_enabled(st != St::Disabled)
+                    .with_menu(Vec::new()),
+            ),
+        }),
         widget("Key", 56.0, |c, _| match c.st {
             St::Error => None,
             st => boxed(
@@ -331,6 +340,21 @@ fn control_specs() -> Vec<Spec> {
                     ["Overview", "Activity", "Members", "Settings"]
                         .iter()
                         .map(|tab| Segment::new(*tab))
+                        .collect(),
+                    usize::from(c.st == St::Selected),
+                )
+                .with_style(SegmentedStyle::Tabs)
+                .control_size(c.size),
+            ),
+        }),
+        // Past their room, tabs take their short labels before they scroll.
+        filling("Tabs, short labels", 56.0, |c, _| match c.st {
+            St::Error | St::Disabled => None,
+            _ => boxed(
+                ToggleGroup::new(
+                    [("Privacy & Security", "Privacy"), ("Apps & Files", "Apps")]
+                        .iter()
+                        .map(|(tab, short)| Segment::new(*tab).short(*short))
                         .collect(),
                     usize::from(c.st == St::Selected),
                 )
@@ -1479,7 +1503,7 @@ fn content_blocks() -> Vec<Block> {
                 Box::new(StatTile::new("Uptime", "99.9").unit("%")),
             ]))
         }),
-        block("Media", 600.0, 340.0, |_| {
+        block("Media", 600.0, 700.0, |_| {
             Box::new(MediaGrid::new(vec![
                 MediaCard::new("a", MediaSource::Image(art().clone()))
                     .title("Coastline")
@@ -1520,7 +1544,7 @@ fn content_blocks() -> Vec<Block> {
         block("Error", 380.0, 220.0, |_| {
             Box::new(EmptyState::error(
                 "Could not load messages",
-                "The server did not answer.",
+                "The server did not answer. Check the connection and try again in a moment.",
             ))
         }),
         block("Loading", 380.0, 220.0, |_| {
@@ -1528,7 +1552,11 @@ fn content_blocks() -> Vec<Block> {
                 Column::new()
                     .with_no_padding()
                     .with_gap(16.0)
-                    .push(Box::new(Skeleton::row()))
+                    .push(Box::new(Skeleton::row(
+                        tilo_ui::widget::RowShape::TITLE
+                            .led_by(tilo_ui::widget::RowLeadingShape::Avatar)
+                            .with_secondary(1),
+                    )))
                     .push(Box::new(Skeleton::text(3)))
                     .push(Box::new(Spinner::new())),
             )

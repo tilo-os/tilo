@@ -128,7 +128,17 @@ fn main() -> std::process::ExitCode {
 /// minute repaint and nothing else. Its top plus a margin that still
 /// catches one thread waking once a second in the windows without a
 /// minute turn: 1/s.
-const IDLE_WAKEUP_BUDGET: f64 = 1.0;
+///
+/// The privacy indicator then stopped starting `pw-dump --monitor` each time
+/// the frame loop left idle, the clock's minute repaint included: running
+/// capture streams are followed on the status reader's own `PipeWire`
+/// connection, and an idle desktop with nothing recording starts no process
+/// for them. The scheduled lane's 60 s windows, each holding one minute
+/// turn, blocked 0.57–0.62/s on main before (run r366e8b0aa1, of it
+/// 0.08/s the privacy worker) and 0.52–0.58/s with it (run r6fff70b7cb).
+/// Its top plus a margin that still catches a thread waking once every
+/// three seconds: 0.9/s.
+const IDLE_WAKEUP_BUDGET: f64 = 0.9;
 
 /// Most CPU the idle desktop's threads may use, in percent of one core over
 /// the window. The wakeup count leaves out preemptions, so this is what

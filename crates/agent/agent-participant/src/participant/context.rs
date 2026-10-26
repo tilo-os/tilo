@@ -62,7 +62,12 @@ impl AgentParticipant {
         let mut known = self.known_titled(&apps);
         // A follow-up is about the records the request named too: its own
         // text ("check the work", "now export it") names none of them.
-        let naming = naming_text(task, request.as_deref());
+        let mut naming = naming_text(task, request.as_deref());
+        // An item of a coordinated task is about the records its request
+        // names, as one agent planning the whole would be.
+        if let Some(whole) = self.item_request() {
+            naming = naming_text(&naming, Some(&whole));
+        }
         let mut about = self.open_named(&naming, &apps, &known);
         about.extend(self.open_new(&naming, &apps, &known));
         known.retain(|(route, _)| !self.apps.contains_key(route));
@@ -128,7 +133,7 @@ impl AgentParticipant {
             .cloned()
             .collect();
         let reference = self.reference(referenced);
-        let (produced, observed, (pictures, rendered)) = self
+        let (produced, observed, (pictures, rendered), obligations) = self
             .running
             .as_ref()
             .map(|running| {
@@ -136,6 +141,7 @@ impl AgentParticipant {
                     running.produced.clone(),
                     running.observations(),
                     running.pictures(request.is_some()),
+                    request.as_ref().map(|_| running.checklist.shown()),
                 )
             })
             .unwrap_or_default();
@@ -156,13 +162,20 @@ impl AgentParticipant {
             pictures,
             rendered,
             room_pictures: self.room_pictures == crate::vision::RoomPictures::Shown,
-            new_documents: self
-                .running
-                .as_ref()
-                .map(|running| running.new_documents.clone())
-                .unwrap_or_default(),
+            new_documents: self.new_documents(),
             retries: self.task_retries.clone(),
+            obligations: obligations.unwrap_or_default(),
+            role: crate::planner::Role::Whole,
         }
+    }
+
+    /// The apps the running task is offered a new document of
+    /// ([`PlanContext::new_documents`]).
+    fn new_documents(&self) -> Vec<String> {
+        self.running
+            .as_ref()
+            .map(|running| running.new_documents.clone())
+            .unwrap_or_default()
     }
 
     /// The room's records of `apps` for the planner's search
@@ -328,7 +341,8 @@ impl AgentParticipant {
 
     /// What the records at `about` (of `open`, each with what it publishes)
     /// hold now: [`Self::snapshot`]s of the first [`MOST_SNAPSHOTS`], within
-    /// [`MOST_SNAPSHOTS_CHARS`] together.
+    /// [`MOST_SNAPSHOTS_CHARS`] together; on a check, the facts of what the
+    /// task changed too ([`Self::check_facts`]).
     pub(super) fn snapshots(
         &mut self,
         about: &[DocumentRoute],
@@ -347,6 +361,7 @@ impl AgentParticipant {
                 snapshots.push(seen);
             }
         }
+        snapshots.extend(self.check_facts(open));
         snapshots
     }
 
@@ -480,7 +495,8 @@ impl AgentParticipant {
 }
 
 /// What the task's `tilo.content:` addresses hold, as far as a plan needs
-/// it without reading them: a picture's format and size.
+/// it without reading them: a picture's format and size, a video's length,
+/// frame, rate, sound and weight.
 pub(super) fn content_facts(task: &str, content: &tilo_content::ContentStore) -> Vec<String> {
     const PREFIX: &str = "tilo.content:";
     let mut facts = Vec::new();
@@ -491,12 +507,13 @@ pub(super) fn content_facts(task: &str, content: &tilo_content::ContentStore) ->
             .chars()
             .take_while(char::is_ascii_hexdigit)
             .collect();
-        let fact = content
-            .read(&hash)
-            .and_then(|bytes| crate::vision::picture_size(&bytes))
-            .map(|(format, width, height)| {
-                format!("{PREFIX}{hash} is a {format} picture {width}×{height} pixels.")
-            });
+        let fact = content.read(&hash).and_then(|bytes| {
+            crate::vision::picture_size(&bytes)
+                .map(|(format, width, height)| {
+                    format!("{PREFIX}{hash} is a {format} picture {width}×{height} pixels.")
+                })
+                .or_else(|| video_facts(&bytes).map(|video| format!("{PREFIX}{hash} {video}")))
+        });
         if let Some(fact) = fact
             && !facts.contains(&fact)
         {
@@ -504,6 +521,33 @@ pub(super) fn content_facts(task: &str, content: &tilo_content::ContentStore) ->
         }
     }
     facts
+}
+
+/// What an MP4 or MOV file `bytes` holds, as a sentence (`is a video
+/// of 8.50 s, 1280×720 at 30 fps, with sound, 412 kB.`): `None` for
+/// anything else.
+pub(super) fn video_facts(bytes: &[u8]) -> Option<String> {
+    if bytes.get(4..8) != Some(b"ftyp".as_slice()) {
+        return None;
+    }
+    let probed =
+        video_editor::probe::probe_bytes(bytes, std::path::Path::new("content.mp4")).ok()?;
+    if probed.kind != video_editor::model::MediaKind::Video {
+        return None;
+    }
+    let sound = if probed.has_audio {
+        "with sound"
+    } else {
+        "without sound"
+    };
+    Some(format!(
+        "is a video of {:.2} s, {}×{} at {} fps, {sound}, {}.",
+        probed.duration,
+        probed.width,
+        probed.height,
+        (probed.fps * 100.0).round() / 100.0,
+        ui::format::size(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+    ))
 }
 
 /// The content `reader` reads, to show a planning model: at most one byte

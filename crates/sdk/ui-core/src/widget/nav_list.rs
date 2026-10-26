@@ -33,7 +33,7 @@ use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::widget::tree_view::{
-    NavItemSpec, NavPresentation, NavRowSpec, NavStatus, NodeId, TreeModel, TreeView,
+    NavItemSpec, NavPresentation, NavRowSpec, NavStatus, NodeId, TreeImpl, TreeModel,
 };
 use crate::widget::{AppModel, FilterCount, Filterable, ModelPath, RowStatus, Tone, TreeRowAction};
 
@@ -67,9 +67,15 @@ pub struct NavSection {
 impl NavSection {
     #[must_use]
     pub fn new(id: impl Into<String>, title: impl Into<String>, items: Vec<NavItem>) -> Self {
+        Self::new_owned(id.into(), title.into(), items)
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, title: String, items: Vec<NavItem>) -> Self {
         Self {
-            id: id.into(),
-            title: title.into(),
+            id,
+            title,
             collapsible: false,
             collapsed: false,
             trailing_action: None,
@@ -172,10 +178,16 @@ pub struct NavAction {
 impl NavAction {
     #[must_use]
     pub fn new(id: impl Into<String>, icon: Icon, label: impl Into<String>) -> Self {
+        Self::new_owned(id.into(), icon, label.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, icon: Icon, label: String) -> Self {
         Self {
-            id: id.into(),
+            id,
             icon,
-            label: label.into(),
+            label,
             opens_menu: false,
         }
     }
@@ -334,9 +346,15 @@ impl NavItemStatus {
 impl NavItem {
     #[must_use]
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self::new_owned(id.into(), label.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, label: String) -> Self {
         Self {
-            id: id.into(),
-            label: label.into(),
+            id,
+            label,
             icon: None,
             count: None,
             actions: true,
@@ -1073,7 +1091,7 @@ struct NavShared {
 
 /// The navigation list. See the module docs.
 pub struct NavList {
-    tree: TreeView<(), NavModel>,
+    tree: TreeImpl<(), NavModel>,
     shared: Rc<RefCell<NavShared>>,
     keys: NavKeys,
     /// The sections as the app handed them, before any filter.
@@ -1116,7 +1134,7 @@ impl NavList {
         let action_shared = Rc::clone(&shared);
         let rename_shared = Rc::clone(&shared);
         let expand_shared = Rc::clone(&shared);
-        let tree = TreeView::from_model(model)
+        let tree = TreeImpl::from_model(model)
             .hide_root()
             .fill()
             .with_expanded(openings.expanded)
@@ -1778,7 +1796,7 @@ impl NavList {
 
     /// The list's tree, for tests reading its engine state.
     #[cfg(test)]
-    pub(crate) fn tree(&self) -> &TreeView<(), NavModel> {
+    pub(crate) fn tree(&self) -> &TreeImpl<(), NavModel> {
         &self.tree
     }
 }
@@ -2038,7 +2056,7 @@ fn has_unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
 // methods (with the tree view they forward to) are compiled once, here
 // (`concrete_decorator_widget!` in decorator.rs).
 impl crate::widget::decorator::concrete::Decorator for NavList {
-    type Inner = TreeView<(), NavModel>;
+    type Inner = TreeImpl<(), NavModel>;
 
     fn inner(&self) -> &Self::Inner {
         &self.tree

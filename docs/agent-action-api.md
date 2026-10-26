@@ -167,6 +167,18 @@ tilo-control read so.tilo.notes notes.page:<id>    # {"title": …, "text": …,
 `read APP [ITEM]` finds the open app's `read` row among the `app-actions` the
 desktop lists and invokes it, so the caller needs no opaque id.
 
+A resource that declares `#[resource(facts = path)]` (`Resource::HAS_FACTS`,
+`Resource::facts`) is also published with the framework's `facts` view: what
+it holds as a compact summary of plain values, to check it against a request
+(a cut's shots with their source, in and out points and fades; a deck's slide
+titles and text), with no ids, so two answers compare field by field. With
+`version` it states the resource as of that version. An agent's host shows the
+facts of the records a task changed when it checks the task's work, with what
+changed since an earlier task exported one, and a planning model's `read_view`
+compares two answers of one read with `compare`. The video editor and Slides
+state facts; an agent's video export answers the facts of the cut it rendered
+and the version it rendered.
+
 The CLI teaches its own use: `tilo-control --help` leads with the action
 model, a socket it cannot reach is explained (and how to get one), and
 `unknown_action` / `invalid_arguments` refusals print the next command to try.

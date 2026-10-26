@@ -2646,11 +2646,11 @@ impl CalendarApp {
             };
             let payload = String::from_utf8(file.bytes)
                 .map_err(|_| format!("{} is not an iCalendar file", file.name))?;
-            let import = crate::resource::import(&payload)
+            let (import, unknown_zones) = crate::resource::import_reporting(&payload)
                 .ok_or_else(|| format!("{} holds no events or tasks", file.name))?;
             cx.submit(import);
             app.status
-                .show(format!("Imported calendar items from {}", file.name));
+                .show(crate::resource::imported_status(&file.name, &unknown_zones));
             app.dirty = true;
             Ok(ui::framework::Effected::done())
         })
@@ -4528,9 +4528,11 @@ impl Widget for CalendarApp {
 impl CalendarApp {
     /// Declare the window bar's slots ([`crate::window_bar`]).
     fn declare_window_toolbar(&self) {
+        // The location names the task list only on the Tasks screen.
         ui::window_toolbar::declare(Some(crate::window_bar::window_toolbar(
             self.view,
             self.anchor,
+            &self.tasks_source().title(),
             self.sidebar_open(),
         )));
     }

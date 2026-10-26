@@ -32,7 +32,7 @@ use crate::shell::chrome_state::Chrome;
 /// The portal file chooser's complete on-screen state.
 #[derive(Default)]
 pub(crate) struct FilePickerOverlay {
-    queue: Option<crate::portal::FilePickerQueue>,
+    queue: Option<crate::portal::prompt::PromptQueue>,
     active: Option<Box<ActiveFilePicker>>,
     actions: actions::PickerActions,
     /// A press the sheet took is followed to its release, wherever the
@@ -93,7 +93,7 @@ impl FilePickerOverlay {
         self.actions.clone()
     }
 
-    pub(crate) fn set_queue(&mut self, queue: crate::portal::FilePickerQueue) {
+    pub(crate) fn set_queue(&mut self, queue: crate::portal::prompt::PromptQueue) {
         self.queue = Some(queue);
     }
 
@@ -201,7 +201,7 @@ impl FilePickerOverlay {
         let Some(queue) = self.queue.as_ref() else {
             return dirty;
         };
-        for request in queue.drain() {
+        for request in queue.take_pickers() {
             if self.active.is_some() {
                 let _ = request.reply.send(None);
                 continue;
@@ -1287,7 +1287,7 @@ mod tests {
             });
 
             let mut overlay = FilePickerOverlay::default();
-            overlay.set_queue(queue);
+            overlay.set_queue(queue.prompts().clone());
             assert!(overlay.pump(Some(&chrome)));
             settle(&mut overlay, &chrome);
             let widget = overlay.widget_mut().expect("mounted picker");
@@ -1334,7 +1334,7 @@ mod tests {
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
-        overlay.set_queue(queue);
+        overlay.set_queue(queue.prompts().clone());
         assert!(overlay.pump(Some(&chrome)));
         let picker = overlay.widget_mut().unwrap();
         assert_eq!(
@@ -1432,7 +1432,7 @@ mod tests {
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
-        overlay.set_queue(queue);
+        overlay.set_queue(queue.prompts().clone());
         assert!(overlay.pump(Some(&chrome)));
         settle(&mut overlay, &chrome);
 
@@ -1511,7 +1511,7 @@ mod tests {
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
-        overlay.set_queue(queue);
+        overlay.set_queue(queue.prompts().clone());
         assert!(overlay.pump(Some(&chrome)));
         settle(&mut overlay, &chrome);
         let none = Modifiers::default();
@@ -1567,7 +1567,7 @@ mod tests {
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
-        overlay.set_queue(queue);
+        overlay.set_queue(queue.prompts().clone());
         assert!(overlay.pump(Some(&chrome)));
         settle(&mut overlay, &chrome);
         let widget = overlay.widget_mut().expect("mounted picker");

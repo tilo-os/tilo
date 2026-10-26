@@ -280,6 +280,9 @@ enum Action {
         home: String,
         action: Box<Action>,
     },
+    /// Ask the remote source with this id again for the open query, after
+    /// it could not answer.
+    RetryRemote(String),
     /// A no-op hit used to swallow clicks inside a modal surface so they don't
     /// fall through to the scrim behind it.
     None,
@@ -622,7 +625,8 @@ pub struct MusicApp {
     /// The real YouTube-Music Home page (charts / new releases / top artists),
     /// once fetched. `None` offline / before it lands → the sample home shows.
     home: Option<HomeContent>,
-    home_requested: bool,
+    /// When the Home fetch was asked: its placeholder steps on from then.
+    home_asked: Option<Instant>,
     /// Set once a Home fetch has come back empty-handed (offline build, network
     /// error). Stops the loading skeleton — and the animation loop — so the
     /// empty Home settles instead of shimmering forever.
@@ -630,6 +634,9 @@ pub struct MusicApp {
     /// Detail pages (artist / album / playlist ids) whose live fetch failed, so
     /// their skeleton stops and an honest "couldn't load" state shows instead.
     failed_pages: HashSet<String>,
+    /// When each live detail page was asked of the catalogue: its
+    /// placeholder steps on from then.
+    pages_asked: HashMap<String, Instant>,
     /// Real artist pages keyed by channel id, and the set already requested.
     artist_pages: HashMap<String, ArtistPage>,
     artist_requested: HashSet<String>,
@@ -960,9 +967,10 @@ impl MusicApp {
             art_urls: HashMap::new(),
             playlist_mosaics: std::cell::RefCell::default(),
             home: None,
-            home_requested: false,
+            home_asked: None,
             home_failed: false,
             failed_pages: HashSet::new(),
+            pages_asked: HashMap::new(),
             artist_pages: HashMap::new(),
             artist_requested: HashSet::new(),
             album_pages: HashMap::new(),
@@ -2465,6 +2473,11 @@ impl MusicApp {
             Action::KeepQuery => self.on_keep_query(),
             Action::ForgetKept(id) => self.on_forget_kept(&id),
             Action::ShowControl { home, action } => self.on_show_control(&home, *action),
+            Action::RetryRemote(source) => {
+                if self.search.engine.retry(&source) {
+                    self.dirty = true;
+                }
+            }
             Action::None => {}
         }
     }
@@ -3652,7 +3665,7 @@ impl MusicApp {
                                 self.home = None;
                                 self.spotify_library_offset = 50;
                                 self.spotify_library_more = true;
-                                self.home_requested = false;
+                                self.home_asked = None;
                                 self.home_failed = false;
                                 self.live_results = None;
                                 self.live_bundle = None;
@@ -4217,13 +4230,13 @@ impl MusicApp {
     /// is fetched: opening Music contacts no provider the person did not
     /// choose.
     fn ensure_home(&mut self) {
-        if self.home_requested || !self.allow_network || !self.catalogue_connected {
+        if self.home_asked.is_some() || !self.allow_network || !self.catalogue_connected {
             return;
         }
         self.ensure_worker();
         if let Some(w) = &self.worker {
             match w.request(StreamRequest::Home) {
-                Ok(()) => self.home_requested = true,
+                Ok(()) => self.home_asked = Some(ui::time::now()),
                 Err(error) => {
                     self.home_failed = true;
                     self.notify(
@@ -4273,7 +4286,10 @@ impl MusicApp {
             return false;
         };
         match w.request(request) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.pages_asked.insert(id.to_string(), ui::time::now());
+                true
+            }
             Err(error) => {
                 self.failed_pages.insert(id.to_string());
                 self.notify(
@@ -4730,9 +4746,10 @@ impl MusicApp {
                 self.name_dialog = None;
             }
             ShotStage::Skeleton => {
-                // Force the loading state offline so the shimmer skeleton renders
+                // Home asked of the catalogue a moment ago, past the ground
+                // its placeholder keeps at first: its skeleton shows,
                 // hermetically (no network fetch actually runs).
-                self.home_requested = true;
+                self.home_asked = ui::time::now().checked_sub(Duration::from_millis(500));
                 self.home = None;
             }
             ShotStage::NowPlaying => {
@@ -5584,6 +5601,9 @@ mod spotify;
 mod track_table;
 mod window_bar;
 
+#[cfg(test)]
+#[path = "app/home_arrival_tests.rs"]
+mod home_arrival_tests;
 #[cfg(test)]
 #[path = "app/stream_start_tests.rs"]
 mod stream_start_tests;

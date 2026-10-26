@@ -71,16 +71,15 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
     );
     call(&mut app, &item, "duplicate", serde_json::json!({}));
     let copy = note_titled(&app, "Roadmap copy");
-    assert!(
-        app.call_by(
-            agent.clone(),
-            &notes::actions::page_resource_id(copy),
-            "delete",
-            serde_json::json!({})
-        )
-        .is_err(),
-        "deleting asks for confirmation"
-    );
+    // Undo takes a deleted note back, so an agent's delete runs at once
+    // like a person's.
+    app.call_by(
+        agent.clone(),
+        &notes::actions::page_resource_id(copy),
+        "delete",
+        serde_json::json!({}),
+    )
+    .expect("an undoable delete asks nothing");
 
     let shown = crate::framework_support::shown(&app);
     assert_eq!(shown.children_of(Some(plan)).len(), 1);
@@ -113,6 +112,7 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
             "Tagged Plan with Release",
             "Renamed Plan to Roadmap",
             "Duplicated Roadmap",
+            "Deleted Roadmap copy",
         ]
     );
     let invoker = entries[0].invoker.as_ref().unwrap();

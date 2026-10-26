@@ -17,8 +17,8 @@
 //! its own (`build_composition`); outside a Tilo session it keeps its row.
 
 use ui::window_toolbar::{
-    LocationSuggestion, ToolbarAction, ToolbarEvent, ToolbarImage, ToolbarLocation,
-    ToolbarNavigation, WindowToolbar,
+    LocationSegment, LocationSuggestion, ToolbarAction, ToolbarEvent, ToolbarImage,
+    ToolbarLocation, ToolbarNavigation, WindowToolbar,
 };
 
 use crate::omnibox::{Row, RowKind};
@@ -31,7 +31,6 @@ const STOP: &str = "stop";
 const BOOKMARK: &str = "bookmark";
 const LIBRARY: &str = "library";
 const DOWNLOADS: &str = "downloads";
-const FIND: &str = "find";
 const READER_VIEW: &str = "reader-view";
 const PICTURE_IN_PICTURE: &str = "picture-in-picture";
 const DEVELOPER_TOOLS: &str = "developer-tools";
@@ -76,6 +75,36 @@ pub(super) struct BarInputs {
     actions: Vec<ToolbarAction>,
     favicon: Option<Vec<u8>>,
     suggestions: Vec<LocationSuggestion>,
+    /// The Library's place while it is shown.
+    library: Option<Vec<(&'static str, &'static str)>>,
+}
+
+/// The address field's mark for how the page arrived: a lock over
+/// `https://`, an open lock over `http://` from another machine, which
+/// anyone on the way can read or change. This machine's own pages are
+/// neither.
+fn connection_icon(uri: &str) -> Option<&'static str> {
+    let url = url::Url::parse(uri).ok()?;
+    match url.scheme() {
+        "https" => Some("lock"),
+        "http" if !this_machine(&url) => Some("lock-open"),
+        _ => None,
+    }
+}
+
+/// Whether `url` names this machine: `localhost`, a `.localhost` name or a
+/// loopback address.
+fn this_machine(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(name)) => {
+            let name = name.trim_end_matches('.');
+            name.eq_ignore_ascii_case("localhost")
+                || name.to_ascii_lowercase().ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
 }
 
 /// One omnibox row as the bar lists it: what it says, the line under it,
@@ -121,6 +150,7 @@ impl BrowserWidget {
             actions: self.bar_actions(),
             favicon: self.favicon_png.clone(),
             suggestions: self.bar_suggestions(),
+            library: self.show_library.then(|| self.library_segments()),
         }
     }
 
@@ -207,7 +237,6 @@ impl BrowserWidget {
         actions.push(
             ToolbarAction::new("page", "globe", t("browser-menu-page"))
                 .with_items(vec![
-                    item(FIND, "search", "browser-menu-find"),
                     item(READER_VIEW, "file-text", "browser-menu-reader-view").on(self.reader_view),
                     item(
                         PICTURE_IN_PICTURE,
@@ -271,32 +300,62 @@ impl BrowserWidget {
             // What marks a private window, now that it has no toolbar of
             // its own to tint.
             Some("eye-off".to_owned())
-        } else if self.current_uri.starts_with("https://") {
-            Some("lock".to_owned())
         } else {
-            None
+            connection_icon(&self.current_uri).map(str::to_owned)
+        };
+        let location = if self.show_library {
+            self.library_location()
+        } else {
+            self.address_location(icon)
         };
         WindowToolbar {
             sidebar: None,
             navigation: Some(self.bar_navigation()),
-            location: Some(ToolbarLocation {
-                label: site_label(&self.current_uri),
-                shorter: Vec::new(),
-                value: self.current_uri.clone(),
-                placeholder: t("browser-address-placeholder"),
-                icon,
-                editable: true,
-                name: t("browser-address"),
-                go_name: t("browser-go"),
-                segments: Vec::new(),
-                image: self.favicon_png.clone().map(|png| ToolbarImage { png }),
-                suggestions: self.bar_suggestions(),
-                choices: Vec::new(),
-                anchor: None,
-                edited: false,
-            }),
+            location: Some(location),
             actions: self.bar_actions(),
             ..WindowToolbar::default()
+        }
+    }
+
+    /// The Library in the bar's location: the Library, then its section.
+    fn library_location(&self) -> ToolbarLocation {
+        let segments: Vec<LocationSegment> = self
+            .library_segments()
+            .into_iter()
+            .map(|(label, value)| LocationSegment {
+                label: label.to_owned(),
+                value: value.to_owned(),
+            })
+            .collect();
+        ToolbarLocation {
+            label: segments
+                .last()
+                .map(|segment| segment.label.clone())
+                .unwrap_or_default(),
+            name: "Library".to_owned(),
+            segments,
+            ..ToolbarLocation::default()
+        }
+    }
+
+    /// The page's address in the bar's location.
+    fn address_location(&self, icon: Option<String>) -> ToolbarLocation {
+        ToolbarLocation {
+            label: site_label(&self.current_uri),
+            shorter: Vec::new(),
+            value: self.current_uri.clone(),
+            placeholder: t("browser-address-placeholder"),
+            icon,
+            editable: true,
+            name: t("browser-address"),
+            go_name: t("browser-go"),
+            segments: Vec::new(),
+            image: self.favicon_png.clone().map(|png| ToolbarImage { png }),
+            suggestions: self.bar_suggestions(),
+            choices: Vec::new(),
+            anchor: None,
+            edited: false,
+            view_only: false,
         }
     }
 
@@ -327,6 +386,12 @@ impl BrowserWidget {
             ToolbarEvent::ToggleSidebar => {}
             ToolbarEvent::Back => self.queue_unit_operation("browser.page", "back"),
             ToolbarEvent::Forward => self.queue_unit_operation("browser.page", "forward"),
+            // A Library segment shows its place, never a page.
+            ToolbarEvent::Commit { text } if self.show_library => {
+                if let Some(resource) = Self::library_section_at(&text) {
+                    self.queue_unit_operation(resource, "show");
+                }
+            }
             ToolbarEvent::Commit { text } => {
                 // Exactly what Enter in the window's own address field does;
                 // a chosen suggestion commits its address or its search.
@@ -360,7 +425,6 @@ impl BrowserWidget {
                 }
                 // The More menu's rows run these same commands.
                 DOWNLOADS => self.queue_unit_operation("browser.downloads", "show-downloads"),
-                FIND => (self.daily.command(crate::daily_controls::Action::Open))(),
                 READER_VIEW => self.queue_unit_operation("browser.page", "reader-view"),
                 PICTURE_IN_PICTURE => {
                     self.queue_unit_operation("browser.page", "picture-in-picture");
@@ -392,6 +456,7 @@ impl BrowserWidget {
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
             | ToolbarEvent::SearchOptions { .. }
+            | ToolbarEvent::SearchCover { .. }
             | ToolbarEvent::SearchReplace { .. }
             | ToolbarEvent::History => return,
         }
@@ -411,6 +476,26 @@ mod tests {
         );
         assert_eq!(site_label("http://127.0.0.1:42975/"), "127.0.0.1");
         assert_eq!(site_label(""), "");
+    }
+
+    #[test]
+    fn the_bar_marks_a_page_that_came_unencrypted() {
+        for (uri, icon) in [
+            ("https://example.com/", Some("lock")),
+            ("http://neverssl.com/", Some("lock-open")),
+            ("http://192.168.1.1/", Some("lock-open")),
+            ("http://localhost:3000/", None),
+            ("http://app.localhost/", None),
+            ("http://127.0.0.1:8080/", None),
+            ("http://[::1]:8443/", None),
+            ("chrome-extension://abc/options.html", None),
+            ("", None),
+        ] {
+            assert_eq!(connection_icon(uri), icon, "{uri}");
+            if let Some(icon) = icon {
+                assert!(ui::icons::Icon::from_name(icon).is_some(), "{icon}");
+            }
+        }
     }
 }
 
@@ -439,7 +524,6 @@ mod more_menu_tests {
         // the bar does not know.
         assert_eq!(ids(&bounded.actions), ids(&declared.actions));
         for id in [
-            FIND,
             READER_VIEW,
             PICTURE_IN_PICTURE,
             DEVELOPER_TOOLS,
@@ -490,8 +574,6 @@ mod more_menu_tests {
             DEVELOPER_TOOLS,
             WebViewCommand::ShowDeveloperTools,
         );
-        run(&mut widget, FIND);
-        assert!(widget.daily.open, "Find opens the find bar");
         // The rest queue the canonical action the More menu's row queues.
         for (id, resource, action) in [
             (READER_VIEW, "browser.page", "reader-view"),
@@ -515,5 +597,53 @@ mod more_menu_tests {
             id: PRIVATE_WINDOW.into(),
         });
         assert!(page.private_window_request.get());
+    }
+
+    /// On the Library the bar names it and its section, and the section
+    /// segment shows that section rather than loading it as an address;
+    /// the bar's search narrows the section and closing it clears that.
+    #[test]
+    fn the_bar_names_the_library_and_its_search_narrows_it() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.show_library = true;
+        widget.library_section = crate::effects::LibrarySection::History;
+        let toolbar = widget.window_toolbar();
+        let location = toolbar.location.expect("a location");
+        assert!(!location.editable, "the Library is no address to type");
+        assert_eq!(
+            location
+                .segments
+                .iter()
+                .map(|segment| segment.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Library", "History"]
+        );
+        let address = widget.current_uri.clone();
+        widget.run_window_toolbar_event(ToolbarEvent::Commit {
+            text: location.segments[1].value.clone(),
+        });
+        assert_eq!(widget.current_uri, address, "a segment loads no page");
+
+        assert_eq!(
+            ui::widget::InPlace::of(&mut widget),
+            ui::widget::InPlace::List,
+            "the bar's search narrows the Library in place"
+        );
+        ui::widget::apply_filter(&mut widget, " rust ");
+        assert_eq!(widget.library_filter.get(), "rust");
+        assert!(
+            widget
+                .window_toolbar()
+                .actions
+                .iter()
+                .all(|action| action.icon != "x" || action.id == STOP),
+            "no Clear filter of its own beside the bar's search"
+        );
+        ui::widget::apply_filter(&mut widget, "");
+        assert_eq!(
+            widget.library_filter.get(),
+            "",
+            "closing the search clears it"
+        );
     }
 }

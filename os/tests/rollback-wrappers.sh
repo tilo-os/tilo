@@ -33,6 +33,8 @@ BINDIR="$(mktemp -d)"
 ln -sf "$TILO_ROLLBACK_BIN" "$BINDIR/tilo-rollback"
 PATH="$BINDIR:$PATH"
 export PATH
+# The units run it from /usr/libexec/tilo; the helpers take this path instead.
+export TILO_ROLLBACK_BIN
 
 # shellcheck source=/dev/null
 . "$REPO/os/usr/libexec/tilo-rollback-common"
@@ -112,28 +114,14 @@ check "$(rollback_generation_from 'tilo.generationx=9')" "" "a similar key is no
 check "$(rollback_generation_from 'a=1 tilo.generation=abc b=2')" "" "a non-numeric value is not accepted"
 check "$(rollback_generation_from 'tilo.generation=0')" "0" "generation zero is a real generation"
 
-echo "== rollback_luks_device =="
-# The real function reads findmnt and cryptsetup status, which needs a booted
-# machine with a device-mapper root. What is checkable here is that a
-# non-device-mapper root reports "not encrypted" rather than guessing.
-if out="$(rollback_luks_device 2>/dev/null)"; then
-  if [ -z "$out" ]; then
-    ok "an unencrypted root reports no LUKS device"
-  else
-    ok "reported a LUKS device on this host: $out"
-  fi
-else
-  bad "rollback_luks_device exited non-zero"
-fi
-
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 if [ "$fail" -gt 0 ]; then exit 1; fi
 
 cat <<'NOTE'
 
 Not covered here, and not pretended to be:
-  * rollback_luks_device against a real device-mapper root — needs a booted
-    machine with an encrypted root.
+  * rollback_luks_device: os/tests/rollback_luks_device.sh, against a fake
+    sysfs; on a real kernel, the sign-in end-to-end check.
   * rollback_system_is_healthy — needs a real boot; it reads systemctl state.
   * the units firing, and early userspace writing /run/cryptsetup-keys.d/<vol>.key
     before systemd-cryptsetup — needs a VM boot with a generation number on the

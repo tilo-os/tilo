@@ -59,6 +59,7 @@ pub mod attachment_store;
 pub mod avatars;
 pub mod compose;
 pub(crate) mod connect;
+pub mod copies;
 pub mod engine;
 #[cfg(test)]
 #[cfg(feature = "live")]

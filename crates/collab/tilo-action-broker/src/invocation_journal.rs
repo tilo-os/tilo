@@ -23,7 +23,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 #[path = "invocation_journal/content_puts.rs"]
 mod content_puts;
 #[path = "invocation_journal/effect.rs"]
@@ -33,7 +33,13 @@ mod guarded;
 #[cfg(test)]
 pub(crate) use content_puts::CONTENT_PUTS_FILE;
 pub(crate) use content_puts::ContentPutRecord;
+#[path = "invocation_journal/writer.rs"]
+mod writer;
 pub(crate) use effect::PreparedEffect;
+#[cfg(test)]
+pub(crate) use writer::Barriers;
+pub(crate) use writer::Durable;
+use writer::{Counted, Injected, Write as Staged, Writer};
 #[cfg(test)]
 #[path = "invocation_journal/effect_tests.rs"]
 mod effect_tests;
@@ -312,10 +318,9 @@ impl Index {
     }
 }
 
-/// The open store, positioned after its last acknowledged entry.
+/// The store the writer appends to, as the journal staged it.
 struct Tail {
-    file: File,
-    /// Durable length: the snapshot plus every acknowledged entry.
+    /// Staged length: the snapshot plus every staged entry.
     len: u64,
     /// Length of the snapshot this file was compacted to.
     snapshot: u64,
@@ -588,20 +593,62 @@ fn check_record(record: &DurableInvocation, version: u32, host: uuid::Uuid) -> R
 
 pub(super) struct InvocationJournal {
     root: PathBuf,
-    _lock: advisory_lock::FileLock,
     snapshot: Snapshot,
     index: Index,
-    /// The store open for appends; `None` makes the next transition compact
-    /// (an earlier writer's snapshot ends without an entry separator).
+    /// The store the writer appends to, as staged; `None` makes the next
+    /// transition compact (an earlier writer's snapshot ends without an
+    /// entry separator).
     tail: Option<Tail>,
+    /// Makes staged transitions durable, in order, off the caller's thread;
+    /// `None` only while the journal opens.
+    writer: Option<Writer>,
+    /// The store opened and its lock, until the writer takes them over.
+    opening: Option<(Option<File>, advisory_lock::FileLock)>,
+    counted: Counted,
+    /// What a reader may see of each invocation with a write in flight: as
+    /// it was before the first, until each write is durable.
+    undurable: HashMap<InvocationId, Undurable>,
+    /// The record [`Self::record_mut`] last handed out, as it was before.
+    before: Option<DurableInvocation>,
     poisoned: bool,
     #[cfg(test)]
     pub fail_at: Option<BarrierFailure>,
     /// One-shot pause after durable admission, while the writer is still held.
     #[cfg(test)]
     pub after_admission: Option<Box<dyn FnOnce() + Send>>,
+    /// Run before each write starts, on the thread making it, as a slow
+    /// disk would hold it.
     #[cfg(test)]
-    pub barriers: Barriers,
+    pub hold_writes: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// An invocation's writes in flight: readers see `durable` until a write
+/// resolves, then the record that write made durable.
+struct Undurable {
+    durable: Option<DurableInvocation>,
+    writes: Vec<(DurableInvocation, std::sync::Arc<writer::Ticket>)>,
+}
+
+impl Undurable {
+    /// The record as durable now, or `None` once no write is in flight.
+    fn visible(&self) -> Option<&DurableInvocation> {
+        self.writes
+            .iter()
+            .rev()
+            .find(|(_, ticket)| matches!(ticket.outcome(), Some(Ok(()))))
+            .map(|(record, _)| record)
+            .or(self.durable.as_ref())
+    }
+    fn settled(&self) -> bool {
+        self.writes
+            .iter()
+            .all(|(_, ticket)| ticket.outcome().is_some())
+    }
+    fn last(&self) -> Durable {
+        self.writes
+            .last()
+            .map_or_else(Durable::settled, |(_, ticket)| Durable::of(ticket.clone()))
+    }
 }
 
 /// An injected failure. `File` fails before the write is durable, so the
@@ -614,32 +661,6 @@ pub(super) enum BarrierFailure {
     Directory,
     AfterAdmission,
     Terminal,
-}
-
-/// What this writer asked of the disk. `elide` skips the barriers themselves
-/// for tests that measure size rather than durability.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct Barriers {
-    pub writes: u64,
-    pub file: u64,
-    pub directory: u64,
-    pub elide: bool,
-}
-
-/// Performs one durability barrier; under test it is counted, and elided
-/// when a size test asks.
-macro_rules! barrier {
-    ($barriers:expr, $kind:ident, $barrier:expr) => {{
-        #[cfg(test)]
-        let elide = {
-            $barriers.$kind = $barriers.$kind.saturating_add(1);
-            $barriers.elide
-        };
-        #[cfg(not(test))]
-        let elide = false;
-        if elide { Ok(()) } else { $barrier }
-    }};
 }
 
 impl InvocationJournal {
@@ -740,17 +761,21 @@ impl InvocationJournal {
         };
         let mut journal = Self {
             root: root.to_owned(),
-            _lock: lock,
             snapshot: loaded.snapshot,
             index: loaded.index,
             tail: None,
+            writer: None,
+            opening: Some((None, lock)),
+            counted: Counted::default(),
+            undurable: HashMap::new(),
+            before: None,
             poisoned: false,
             #[cfg(test)]
             fail_at: None,
             #[cfg(test)]
             after_admission: None,
             #[cfg(test)]
-            barriers: Barriers::default(),
+            hold_writes: None,
         };
         let mut recovered = false;
         for record in &mut journal.snapshot.records {
@@ -790,18 +815,29 @@ impl InvocationJournal {
                 )
                 .map_err(|_| "invocation journal snapshot reconciliation failed")?;
             }
-            journal.tail = observed_store
-                .filter(|_| loaded.appendable)
-                .map(|file| Tail {
-                    file,
-                    len: loaded.len,
-                    snapshot: loaded.len,
-                });
+            let appended = observed_store.filter(|_| loaded.appendable);
+            journal.tail = appended.as_ref().map(|_| Tail {
+                len: loaded.len,
+                snapshot: loaded.len,
+            });
+            if let Some((tail, _)) = journal.opening.as_mut() {
+                *tail = appended;
+            }
         }
         // A failed initialization may leave a valid snapshot. Its existence
         // does not prove the directory entry was durable: retry on every open.
         parent_barrier(root.parent().ok_or("invocation journal needs a parent")?)
             .map_err(|_| "invocation journal parent barrier failed")?;
+        let (tail, lock) = journal
+            .opening
+            .take()
+            .ok_or("invocation journal opened twice")?;
+        journal.writer = Some(Writer::start(
+            journal.root.clone(),
+            tail,
+            lock,
+            journal.counted.clone(),
+        )?);
         Ok(journal)
     }
 
@@ -840,15 +876,33 @@ impl InvocationJournal {
             .records
             .get_mut(at)
             .ok_or("unknown invocation journal identity")?;
+        self.before = Some(record.clone());
         Ok((at, record))
     }
 
+    /// The write a transition of `invocation` must wait for: the last one in
+    /// flight, if any.
+    pub(crate) fn in_flight(&self, invocation: &InvocationId) -> Durable {
+        self.undurable
+            .get(invocation)
+            .map_or_else(Durable::settled, Undurable::last)
+    }
+
+    /// The record as durable now: a transition still being written is not
+    /// visible until it is.
     pub fn lookup(&self, key: &InvocationKey) -> Result<Option<DurableInvocation>, String> {
         self.check()?;
-        Ok(self
-            .position(key)
-            .and_then(|at| self.snapshot.records.get(at))
-            .cloned())
+        let Some(at) = self.position(key) else {
+            return Ok(None);
+        };
+        if let Some(undurable) = self
+            .undurable
+            .get(&key.invocation)
+            .filter(|undurable| !undurable.settled())
+        {
+            return Ok(undurable.visible().cloned());
+        }
+        Ok(self.snapshot.records.get(at).cloned())
     }
 
     /// Journal fixtures may exercise admission without signing identities.
@@ -859,17 +913,22 @@ impl InvocationJournal {
         intent: serde_json::Value,
         wire_id: u64,
     ) -> Result<bool, String> {
-        self.admit_with_evidence(key, intent, wire_id, None)
+        let (admitted, durable) = self.admit_with_evidence(key, intent, wire_id, None)?;
+        durable.wait_blocking()?;
+        Ok(admitted)
     }
 
     /// The evidence and admission share the original append and data barrier.
+    /// Whether this admitted the invocation, and the write to wait for before
+    /// it is delivered or acknowledged: this admission's, or the one still in
+    /// flight of an invocation already admitted.
     pub(super) fn admit_with_evidence(
         &mut self,
         key: InvocationKey,
         intent: serde_json::Value,
         wire_id: u64,
         admission: Option<crate::action_evidence::AdmissionEvidence>,
-    ) -> Result<bool, String> {
+    ) -> Result<(bool, Durable), String> {
         self.check()?;
         if let Some(evidence) = &admission {
             check_evidence(&key, &intent, evidence)?;
@@ -890,7 +949,7 @@ impl InvocationJournal {
             {
                 return Err("invocation identity reused with different intent".into());
             }
-            return Ok(false);
+            return Ok((false, self.in_flight(&key.invocation)));
         }
         // Application lifecycle routing and internal dedup use the full UUID
         // without the owner. Permanently reserve it for one durable key so a
@@ -930,27 +989,44 @@ impl InvocationJournal {
                 terminal: None,
             },
         )?;
-        self.commit(at)?;
+        self.before = None;
+        #[cfg_attr(
+            not(test),
+            expect(unused_mut, reason = "injections are made only under test")
+        )]
+        let mut injected = Injected::default();
         #[cfg(test)]
-        if let Some(hook) = self.after_admission.take() {
-            hook();
+        {
+            injected.after = self.after_admission.take();
+            if self.fail_at == Some(BarrierFailure::AfterAdmission) {
+                self.fail_at = None;
+                injected.crash_after = true;
+            }
         }
-        #[cfg(test)]
-        if self.fail_at.take() == Some(BarrierFailure::AfterAdmission) {
-            self.poisoned = true;
-            return Err("injected admission-before-delivery crash".into());
-        }
-        Ok(true)
+        let durable = self.commit(at, injected)?;
+        Ok((true, durable))
     }
 
-    /// A terminal outcome is durable before this returns. Nonterminal
-    /// progress is kept for observers only: recovery discards it anyway.
+    /// [`Self::record_update`], waiting for the write here.
+    #[cfg(test)]
     pub fn update(
         &mut self,
         key: &InvocationKey,
         update: InvocationUpdate,
         uncertain: bool,
     ) -> Result<(), String> {
+        self.record_update(key, update, uncertain)?.wait_blocking()
+    }
+
+    /// A terminal outcome is durable once the returned write resolves.
+    /// Nonterminal progress is kept for observers only: recovery discards it
+    /// anyway, so it is visible at once and nothing is written.
+    pub fn record_update(
+        &mut self,
+        key: &InvocationKey,
+        update: InvocationUpdate,
+        uncertain: bool,
+    ) -> Result<Durable, String> {
         self.check()?;
         let (at, record) = self.record_mut(key)?;
         if record.update.is_terminal() || update.invocation() != key.invocation {
@@ -969,7 +1045,25 @@ impl InvocationJournal {
         let terminal = update.is_terminal();
         record.update = update;
         record.uncertain = uncertain;
-        if terminal { self.commit(at) } else { Ok(()) }
+        if terminal {
+            let settled = self
+                .undurable
+                .get(&key.invocation)
+                .is_none_or(Undurable::settled);
+            let durable = self.commit(at, Injected::default())?;
+            // An uncertain outcome claims only what recovery would answer
+            // anyway, so it is seen at once over a durable record.
+            if uncertain
+                && settled
+                && let Some(undurable) = self.undurable.get_mut(&key.invocation)
+            {
+                undurable.durable = self.snapshot.records.get(at).cloned();
+            }
+            Ok(durable)
+        } else {
+            self.before = None;
+            Ok(self.in_flight(&key.invocation))
+        }
     }
 
     // Storage prerequisites only. No production caller is wired until the
@@ -997,7 +1091,7 @@ impl InvocationJournal {
         }
         record.guarded = Some(guarded::State::selected(selection));
         self.snapshot.version = self.snapshot.version.max(3);
-        self.commit(at)
+        self.commit(at, Injected::default())?.wait_blocking()
     }
 
     #[cfg(test)]
@@ -1024,10 +1118,17 @@ impl InvocationJournal {
         guarded.complete(key.invocation, output, basis, bytes)?;
         record.update = guarded::unavailable(key.invocation);
         record.uncertain = false;
-        self.commit(at)
+        self.commit(at, Injected::default())?.wait_blocking()
     }
 
+    /// [`Self::record_cancellation`], waiting for the write here.
+    #[cfg(test)]
     pub fn cancel(&mut self, key: &InvocationKey) -> Result<(), String> {
+        self.record_cancellation(key)?.wait_blocking()
+    }
+
+    /// The cancellation request is durable once the returned write resolves.
+    pub fn record_cancellation(&mut self, key: &InvocationKey) -> Result<Durable, String> {
         self.check()?;
         let (at, record) = self.record_mut(key)?;
         if record.update.is_terminal() {
@@ -1037,20 +1138,22 @@ impl InvocationJournal {
             return Err("guarded reads are noncancellable".into());
         }
         record.cancellation_requested = true;
-        self.commit(at)
+        self.commit(at, Injected::default())
     }
 
     pub(super) fn check(&self) -> Result<(), String> {
-        if self.poisoned {
+        if self.poisoned || self.writer.as_ref().is_some_and(Writer::failed) {
             Err("invocation journal requires recovery after a failed barrier".into())
         } else {
             Ok(())
         }
     }
 
-    /// Makes record `at` durable as it now stands: one appended entry, or a
-    /// compaction once the entries would outgrow the snapshot.
-    fn commit(&mut self, at: usize) -> Result<(), String> {
+    /// Stages record `at` as it now stands for the writer: one appended
+    /// entry, or a compaction once the entries would outgrow the snapshot.
+    /// Readers keep seeing the record as it was until the write is durable.
+    fn commit(&mut self, at: usize, injected: Injected) -> Result<Durable, String> {
+        let before = self.before.take();
         if let Some(record) = self.snapshot.records.get_mut(at)
             && let Some(admission) = &record.admission
             && record.terminal.is_none()
@@ -1064,20 +1167,48 @@ impl InvocationJournal {
             record.terminal =
                 crate::action_evidence::mint_terminal(admission.public_receipt(), category).ok();
         }
-        let outcome = self.write_entry(at);
-        if outcome.is_err() {
-            self.poison();
+        let record = self
+            .snapshot
+            .records
+            .get(at)
+            .ok_or("unknown invocation journal identity")?
+            .clone();
+        let staged = self
+            .encode_entry(&record)
+            .and_then(|write| self.stage(write, injected));
+        let durable = match staged {
+            Ok(durable) => durable,
+            Err(error) => {
+                self.poison();
+                return Err(error);
+            }
+        };
+        self.undurable.retain(|_, undurable| !undurable.settled());
+        if let Some(ticket) = durable.ticket() {
+            self.undurable
+                .entry(record.key.invocation)
+                .or_insert_with(|| Undurable {
+                    durable: before,
+                    writes: Vec::new(),
+                })
+                .writes
+                .push((record, ticket.clone()));
         }
-        outcome
+        Ok(durable)
     }
 
     /// Rewrites the whole store as one snapshot through an atomic rename.
     fn compact(&mut self) -> Result<(), String> {
-        let outcome = self.write_snapshot();
-        if outcome.is_err() {
-            self.poison();
+        let outcome = self
+            .encode_snapshot()
+            .and_then(|write| self.stage(write, Injected::default()));
+        match outcome {
+            Ok(durable) => durable.wait_blocking(),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
         }
-        outcome
     }
 
     fn poison(&mut self) {
@@ -1085,56 +1216,27 @@ impl InvocationJournal {
         self.tail = None;
     }
 
-    fn write_entry(&mut self, at: usize) -> Result<(), String> {
-        let record = self
-            .snapshot
-            .records
-            .get(at)
-            .ok_or("unknown invocation journal identity")?;
+    /// `record` as one entry line, or the whole store when the entries would
+    /// outgrow their snapshot.
+    fn encode_entry(&mut self, record: &DurableInvocation) -> Result<Staged, String> {
         let mut bytes = serde_json::to_vec(&EntryRef {
             version: self.snapshot.version,
             record,
         })
         .map_err(|_| "invocation journal encoding failed")?;
         bytes.push(b'\n');
-        let Some(mut tail) = self
+        let Some(tail) = self
             .tail
-            .take()
+            .as_mut()
             .filter(|tail| tail.takes(bytes.len() as u64))
         else {
-            return self.write_snapshot();
+            return self.encode_snapshot();
         };
-        #[cfg(test)]
-        {
-            self.barriers.writes = self.barriers.writes.saturating_add(1);
-        }
-        let mut durable = tail
-            .file
-            .write_all(&bytes)
-            .map_err(|_| "invocation journal write failed");
-        #[cfg(test)]
-        if durable.is_ok() && self.fail_at == Some(BarrierFailure::File) {
-            durable = Err("injected file barrier failure");
-        }
-        if durable.is_ok() {
-            durable = barrier!(self.barriers, file, tail.file.sync_data())
-                .map_err(|_| "invocation journal file barrier failed");
-        }
-        if let Err(error) = durable {
-            // No caller was told of it: take the bytes back if the disk lets us.
-            let _ = tail.file.set_len(tail.len);
-            return Err(error.into());
-        }
         tail.len = tail.len.saturating_add(bytes.len() as u64);
-        self.tail = Some(tail);
-        #[cfg(test)]
-        if self.fail_at == Some(BarrierFailure::Directory) {
-            return Err("injected failure after a durable entry".into());
-        }
-        Ok(())
+        Ok(Staged::Append(bytes))
     }
 
-    fn write_snapshot(&mut self) -> Result<(), String> {
+    fn encode_snapshot(&mut self) -> Result<Staged, String> {
         self.tail = None;
         let mut bytes =
             serde_json::to_vec(&self.snapshot).map_err(|_| "invocation journal encoding failed")?;
@@ -1142,50 +1244,43 @@ impl InvocationJournal {
         if bytes.len() as u64 > Self::MAX_BYTES {
             return Err("invocation journal storage limit reached".into());
         }
-        let temporary = self.root.join(format!(".write-{}", uuid::Uuid::new_v4()));
-        let result: Result<File, &'static str> = (|| {
-            // The renamed file stays open: later entries append to exactly it.
-            let mut file = OpenOptions::new()
-                .append(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&temporary)
-                .map_err(|_| "invocation journal temporary file unavailable")?;
-            #[cfg(test)]
-            {
-                self.barriers.writes = self.barriers.writes.saturating_add(1);
-            }
-            file.write_all(&bytes)
-                .map_err(|_| "invocation journal write failed")?;
-            #[cfg(test)]
-            if self.fail_at == Some(BarrierFailure::File) {
-                return Err("injected file barrier failure");
-            }
-            barrier!(self.barriers, file, file.sync_all())
-                .map_err(|_| "invocation journal file barrier failed")?;
-            std::fs::rename(&temporary, self.root.join("records.json"))
-                .map_err(|_| "invocation journal rename failed")?;
-            #[cfg(test)]
-            if self.fail_at == Some(BarrierFailure::Directory) {
-                return Err("injected directory barrier failure");
-            }
-            barrier!(
-                self.barriers,
-                directory,
-                File::open(&self.root).and_then(|directory| directory.sync_all())
-            )
-            .map_err(|_| "invocation journal directory barrier failed")?;
-            Ok(file)
-        })();
-        let _ = std::fs::remove_file(&temporary);
         let len = bytes.len() as u64;
-        self.tail = Some(Tail {
-            file: result?,
-            len,
-            snapshot: len,
-        });
-        Ok(())
+        self.tail = Some(Tail { len, snapshot: len });
+        Ok(Staged::Snapshot(bytes))
+    }
+
+    /// Hands `write` to the writer, after every write staged before it. While
+    /// the journal opens, before its writer starts, the write is made here.
+    fn stage(&mut self, write: Staged, injected: Injected) -> Result<Durable, String> {
+        #[cfg(test)]
+        let injected = Injected {
+            fail: injected.fail.or(self.fail_at),
+            hold: self.hold_writes.clone(),
+            ..injected
+        };
+        if let Some(writer) = &self.writer {
+            return Ok(Durable::of(writer.stage(write, injected)));
+        }
+        let Staged::Snapshot(bytes) = write else {
+            return Err("invocation journal appended before it opened".into());
+        };
+        let file = writer::write_snapshot(&self.root, &bytes, &injected, &self.counted)?;
+        if let Some((tail, _)) = self.opening.as_mut() {
+            *tail = Some(file);
+        }
+        Ok(Durable::settled())
+    }
+
+    /// What this writer asked of the disk so far.
+    #[cfg(test)]
+    pub(super) fn barriers(&self) -> Barriers {
+        self.counted.barriers()
+    }
+
+    /// Skip the barriers themselves, for tests that measure size.
+    #[cfg(test)]
+    pub(super) fn elide_barriers(&self) {
+        self.counted.elide();
     }
 }
 

@@ -71,6 +71,7 @@ const SCENARIOS: &[&str] = &[
     "find",
     "error",
     "image-object",
+    "reactions",
 ];
 
 pub struct WordProcessorApp;
@@ -152,7 +153,7 @@ impl ResourceApp for WordProcessorApp {
     /// staged on the editor, which knows the paragraphs these actions made.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Document>> {
         let texts: &[&str] = match name {
-            Some("comments" | "threaded-comments") => &["Quarterly planning summary"],
+            Some("comments" | "threaded-comments" | "reactions") => &["Quarterly planning summary"],
             Some("find") => &[
                 "Quarterly report",
                 "The report covers revenue, costs and headcount for the quarter.",
@@ -161,9 +162,19 @@ impl ResourceApp for WordProcessorApp {
             Some("image-object") => &["Product direction image"],
             _ => &[],
         };
+        let reactions: &[&str] = if name == Some("reactions") {
+            &["🎉", "👍"]
+        } else {
+            &[]
+        };
         texts
             .iter()
             .map(|text| Document::APPEND_PARAGRAPH.with(*text))
+            .chain(
+                reactions.iter().filter_map(|emoji| {
+                    Invoke::edit(&Document::paths().reactions.react(*emoji)).ok()
+                }),
+            )
             .collect()
     }
 }
@@ -377,5 +388,28 @@ mod tests {
             tilo_doc::model::meta_str(replica.doc(), &containers, "page_margin_right").as_deref(),
             Some("54")
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::WordProcessorApp::scenarios() {
+            let mut app = TestApp::<super::WordProcessorApp>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

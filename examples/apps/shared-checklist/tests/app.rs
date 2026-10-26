@@ -171,12 +171,9 @@ fn clearing_checked_items_is_one_undo_step() {
             .perform_named(&format!("items-{id}-done"), &Action::ToggleCheck)
             .expect("the row checkbox is addressable");
     }
-    assert!(
-        app.invoke(Checklist::CLEAR_DONE.invoke()).is_err(),
-        "a destructive action asks first"
-    );
-    app.invoke_confirmed(Checklist::CLEAR_DONE.invoke())
-        .expect("clear");
+    app.invoke(Checklist::CLEAR_DONE.invoke())
+        .expect("an undoable clear runs at once");
+    assert!(app.asking().is_none(), "the host asks nothing");
     assert_eq!(app.state().items.len(), 1);
     assert!(app.undo());
     assert_eq!(app.state().progress(), (2, 3));

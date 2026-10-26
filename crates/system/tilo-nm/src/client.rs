@@ -1,21 +1,23 @@
 //! The `NetworkManager` client: one reading, a followed reading, an explicit
-//! connectivity check, an explicit Wi-Fi scan and the captive-portal URI.
+//! connectivity check, an explicit Wi-Fi scan, the captive-portal URI, and
+//! the followed list of active VPNs.
 //!
 //! Everything goes to `org.freedesktop.NetworkManager` on the **system** bus.
 //! Reading its properties is open to every local client under the stock D-Bus
 //! policy; `CheckConnectivity` and `RequestScan` are subject to polkit, which
 //! may refuse callers outside an active session.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use futures_util::StreamExt;
+use futures_util::{FutureExt as _, StreamExt};
 use tokio::sync::watch;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use zbus::{Connection, MatchRule, MessageStream, Proxy};
 
 use crate::model::{
-    LinkKind, NetworkState, NmConnectivity, NmState, PrimaryLink, metered_from_raw,
+    ActiveState, ActiveVpn, LinkKind, NetworkState, NmConnectivity, NmState, PrimaryLink,
+    VpnReading, ended_on_purpose, is_vpn_type, metered_from_raw,
 };
 
 /// `NetworkManager`'s bus name.
@@ -24,8 +26,13 @@ pub const BUS_NAME: &str = "org.freedesktop.NetworkManager";
 pub const ROOT_PATH: &str = "/org/freedesktop/NetworkManager";
 /// The root object's interface.
 pub const ROOT_INTERFACE: &str = "org.freedesktop.NetworkManager";
-const ACTIVE_INTERFACE: &str = "org.freedesktop.NetworkManager.Connection.Active";
+/// An active connection's interface.
+pub const ACTIVE_INTERFACE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 const DEVICE_INTERFACE: &str = "org.freedesktop.NetworkManager.Device";
+/// The saved profiles' interface: a profile added or removed.
+const SETTINGS_INTERFACE: &str = "org.freedesktop.NetworkManager.Settings";
+/// One saved profile's interface: it was edited or removed.
+const PROFILE_INTERFACE: &str = "org.freedesktop.NetworkManager.Settings.Connection";
 /// A Wi-Fi device's interface: `RequestScan` and the `LastScan` it advances.
 pub const WIRELESS_INTERFACE: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
@@ -117,6 +124,129 @@ impl NmClient {
         let (sender, receiver) = watch::channel(initial);
         tokio::spawn(follow(self.connection.clone(), changes, owners, sender));
         Ok(NmWatch { receiver })
+    }
+
+    /// Follow the VPNs `NetworkManager` has active, and count each one going
+    /// down on purpose. The returned watch holds the current reading at
+    /// once and is updated on the root's and the active connections'
+    /// signals; nothing polls.
+    ///
+    /// Must be called inside a tokio runtime; the follower runs there until
+    /// every clone of the watch is dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`NmError::Bus`] when the signal subscriptions cannot be made.
+    pub async fn watch_vpns(&self) -> Result<VpnWatch, NmError> {
+        let root = MessageStream::for_match_rule(
+            MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender(BUS_NAME)?
+                .path(ROOT_PATH)?
+                .interface(PROPERTIES_INTERFACE)?
+                .member("PropertiesChanged")?
+                .arg(0, ROOT_INTERFACE)?
+                .build(),
+            &self.connection,
+            Some(SIGNAL_QUEUE),
+        )
+        .await?;
+        let properties = MessageStream::for_match_rule(
+            MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender(BUS_NAME)?
+                .interface(PROPERTIES_INTERFACE)?
+                .member("PropertiesChanged")?
+                .arg(0, ACTIVE_INTERFACE)?
+                .build(),
+            &self.connection,
+            Some(SIGNAL_QUEUE),
+        )
+        .await?;
+        let states = MessageStream::for_match_rule(
+            MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender(BUS_NAME)?
+                .interface(ACTIVE_INTERFACE)?
+                .member("StateChanged")?
+                .build(),
+            &self.connection,
+            Some(SIGNAL_QUEUE),
+        )
+        .await?;
+        let owners = name_owner_changes(&self.connection).await?;
+        let mut follower = VpnFollower::default();
+        follower.read(&self.connection).await;
+        let (sender, receiver) = watch::channel(follower.reading.clone());
+        tokio::spawn(follow_vpns(
+            self.connection.clone(),
+            VpnSignals {
+                root,
+                properties,
+                states,
+                owners,
+            },
+            follower,
+            sender,
+        ));
+        Ok(VpnWatch { receiver })
+    }
+
+    /// Follow every change a person can see in network settings: the
+    /// root's properties (radios, state, connectivity, the active
+    /// connections), a device or an active connection changing state (a
+    /// cable plugged in, a VPN coming up), a saved profile added, edited or
+    /// removed, and `NetworkManager` leaving or joining the bus. The
+    /// returned watch counts them; a reader re-reads what it shows when the
+    /// count moves. Signal strength and other access-point chatter are not
+    /// followed: they change all the time and a scan reads them.
+    ///
+    /// Must be called inside a tokio runtime; the follower runs there until
+    /// every clone of the watch is dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`NmError::Bus`] when the signal subscriptions cannot be made.
+    pub async fn watch_changes(&self) -> Result<NmChanges, NmError> {
+        let rules = [
+            (
+                Some(ROOT_PATH),
+                PROPERTIES_INTERFACE,
+                Some("PropertiesChanged"),
+                Some(ROOT_INTERFACE),
+            ),
+            (None, DEVICE_INTERFACE, Some("StateChanged"), None),
+            (None, ACTIVE_INTERFACE, Some("StateChanged"), None),
+            (None, SETTINGS_INTERFACE, None, None),
+            (None, PROFILE_INTERFACE, None, None),
+        ];
+        let mut streams = Vec::new();
+        for (path, interface, member, first) in rules {
+            let mut rule = MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender(BUS_NAME)?
+                .interface(interface)?;
+            if let Some(path) = path {
+                rule = rule.path(path)?;
+            }
+            if let Some(member) = member {
+                rule = rule.member(member)?;
+            }
+            if let Some(first) = first {
+                rule = rule.arg(0, first)?;
+            }
+            streams.push(
+                MessageStream::for_match_rule(rule.build(), &self.connection, Some(SIGNAL_QUEUE))
+                    .await?,
+            );
+        }
+        streams.push(name_owner_changes(&self.connection).await?);
+        let (sender, receiver) = watch::channel(0);
+        tokio::spawn(follow_changes(
+            futures_util::stream::select_all(streams),
+            sender,
+        ));
+        Ok(NmChanges { receiver })
     }
 
     /// Ask `NetworkManager` to probe its connectivity-check URI now, and
@@ -284,6 +414,206 @@ impl NmWatch {
     }
 }
 
+/// The changes [`NmClient::watch_changes`] follows, counted. Cloning shares
+/// the same follower.
+#[derive(Clone, Debug)]
+pub struct NmChanges {
+    receiver: watch::Receiver<u64>,
+}
+
+impl NmChanges {
+    /// How many changes there were so far.
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        *self.receiver.borrow()
+    }
+
+    /// Wait for the next change, and return how many there were so far.
+    /// `None` once the follower has stopped (its bus connection closed).
+    pub async fn changed(&mut self) -> Option<u64> {
+        self.receiver.changed().await.ok()?;
+        Some(*self.receiver.borrow_and_update())
+    }
+}
+
+/// A followed [`VpnReading`]. Cloning shares the same follower.
+#[derive(Clone, Debug)]
+pub struct VpnWatch {
+    receiver: watch::Receiver<VpnReading>,
+}
+
+impl VpnWatch {
+    /// The latest reading.
+    #[must_use]
+    pub fn current(&self) -> VpnReading {
+        self.receiver.borrow().clone()
+    }
+
+    /// Wait for the reading to change, and return it. `None` once the
+    /// follower has stopped (its bus connection closed); the last reading
+    /// it published is then an unknown one.
+    pub async fn changed(&mut self) -> Option<VpnReading> {
+        self.receiver.changed().await.ok()?;
+        Some(self.receiver.borrow_and_update().clone())
+    }
+}
+
+/// The signals the VPN follower wakes on.
+struct VpnSignals {
+    root: MessageStream,
+    properties: MessageStream,
+    states: MessageStream,
+    owners: MessageStream,
+}
+
+/// What the VPN follower keeps between readings.
+#[derive(Default)]
+struct VpnFollower {
+    reading: VpnReading,
+    /// Each active VPN's object, to name the profile a `StateChanged` is of:
+    /// those of the last two readings, since a reading may already miss a
+    /// connection whose going down is still queued.
+    profiles: HashMap<String, String>,
+    /// The objects of the last reading alone.
+    last: HashMap<String, String>,
+    /// The active connections already counted as gone down on purpose: one
+    /// going down signals more than once (deactivating, deactivated).
+    counted: HashSet<String>,
+}
+
+impl VpnFollower {
+    async fn read(&mut self, connection: &Connection) {
+        let Ok(active) = read_vpns(connection).await else {
+            self.reading.known = false;
+            self.reading.active.clear();
+            return;
+        };
+        let now: HashMap<String, String> = active
+            .iter()
+            .map(|(path, vpn)| (path.clone(), vpn.uuid.clone()))
+            .collect();
+        self.profiles = std::mem::replace(&mut self.last, now.clone());
+        self.profiles.extend(now);
+        self.counted.retain(|path| self.profiles.contains_key(path));
+        self.reading.known = true;
+        self.reading.active = active.into_iter().map(|(_, vpn)| vpn).collect();
+    }
+
+    /// Count an active connection going down on purpose.
+    fn state_changed(&mut self, signal: &zbus::Message) {
+        let header = signal.header();
+        let Some(path) = header.path().map(|path| path.as_str().to_owned()) else {
+            return;
+        };
+        let Ok((state, reason)) = signal.body().deserialize::<(u32, u32)>() else {
+            return;
+        };
+        let going = matches!(
+            ActiveState::from_raw(state),
+            ActiveState::Deactivating | ActiveState::Deactivated
+        );
+        if !going || !ended_on_purpose(reason) || self.counted.contains(&path) {
+            return;
+        }
+        if let Some(uuid) = self.profiles.get(&path) {
+            let count = self
+                .reading
+                .ended_on_purpose
+                .entry(uuid.clone())
+                .or_default();
+            *count = count.wrapping_add(1);
+            self.counted.insert(path);
+        }
+    }
+}
+
+async fn follow_vpns(
+    connection: Connection,
+    mut signals: VpnSignals,
+    mut follower: VpnFollower,
+    sender: watch::Sender<VpnReading>,
+) {
+    loop {
+        // A connection's `StateChanged` goes first: the bus delivers in
+        // order, so one queued behind it cannot be the root dropping that
+        // connection, whose object then names no profile any more.
+        let signal = tokio::select! {
+            biased;
+            signal = signals.states.next() => {
+                if let Some(Ok(signal)) = &signal {
+                    follower.state_changed(signal);
+                }
+                signal
+            }
+            () = sender.closed() => return,
+            signal = signals.properties.next() => signal,
+            signal = signals.root.next() => signal,
+            signal = signals.owners.next() => signal,
+        };
+        if signal.is_none() {
+            follower.reading.known = false;
+            follower.reading.active.clear();
+            publish_vpns(&sender, follower.reading.clone());
+            return;
+        }
+        follower.read(&connection).await;
+        // The reading may already miss a connection whose `StateChanged`
+        // came before the answer: the bus delivers in order, so it is queued
+        // by now. Count it before publishing a reading without it.
+        while let Some(Some(signal)) = signals.states.next().now_or_never() {
+            if let Ok(signal) = signal {
+                follower.state_changed(&signal);
+            }
+        }
+        publish_vpns(&sender, follower.reading.clone());
+    }
+}
+
+fn publish_vpns(sender: &watch::Sender<VpnReading>, reading: VpnReading) {
+    sender.send_if_modified(|current| {
+        if *current == reading {
+            false
+        } else {
+            *current = reading;
+            true
+        }
+    });
+}
+
+/// The VPNs among `NetworkManager`'s active connections, with their objects.
+/// One torn down mid-read is left out.
+async fn read_vpns(connection: &Connection) -> Result<Vec<(String, ActiveVpn)>, NmError> {
+    ensure_running(connection).await?;
+    let root = proxy(connection, ROOT_PATH, ROOT_INTERFACE).await?;
+    let active: Vec<OwnedObjectPath> = root.get_property("ActiveConnections").await?;
+    let mut vpns = Vec::new();
+    for path in active {
+        let Ok(object) = proxy(connection, path.as_str(), ACTIVE_INTERFACE).await else {
+            continue;
+        };
+        let Ok(kind) = object.get_property::<String>("Type").await else {
+            continue;
+        };
+        if !is_vpn_type(&kind) {
+            continue;
+        }
+        let (Ok(uuid), Ok(state)) = (
+            object.get_property::<String>("Uuid").await,
+            object.get_property::<u32>("State").await,
+        ) else {
+            continue;
+        };
+        vpns.push((
+            path.as_str().to_owned(),
+            ActiveVpn {
+                uuid,
+                state: ActiveState::from_raw(state),
+            },
+        ));
+    }
+    Ok(vpns)
+}
+
 /// Follow the global state on the system bus; see [`NmClient::watch`].
 ///
 /// # Errors
@@ -382,6 +712,24 @@ async fn follow(
             .await
             .unwrap_or_else(|_| NetworkState::unknown());
         publish(&sender, state);
+    }
+}
+
+/// Count each signal of `signals` until they end or nobody watches.
+async fn follow_changes(
+    mut signals: futures_util::stream::SelectAll<MessageStream>,
+    sender: watch::Sender<u64>,
+) {
+    loop {
+        let signal = tokio::select! {
+            () = sender.closed() => return,
+            signal = signals.next() => signal,
+        };
+        // Every stream ends with the connection.
+        if signal.is_none() {
+            return;
+        }
+        sender.send_modify(|count| *count = count.wrapping_add(1));
     }
 }
 

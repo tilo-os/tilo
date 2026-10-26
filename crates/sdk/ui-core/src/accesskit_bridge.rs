@@ -66,7 +66,7 @@ use crate::widget::Widget;
 #[cfg(any(feature = "native", test))]
 mod floating_surface;
 #[cfg(feature = "native")]
-pub(crate) use floating_surface::{surface_action_target, surface_tree_update};
+pub(crate) use floating_surface::{publish_host_part, surface_action_target, surface_tree_update};
 
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
@@ -1086,6 +1086,9 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     }
     if let Some(desc) = &access.description {
         ak.set_description(desc.clone());
+    }
+    if let Some(kind) = &access.role_description {
+        ak.set_role_description(kind.clone());
     }
     // This must be part of the platform tree, not only the built-in reader's
     // narration pass.  `accesskit_unix` turns these into AT-SPI live-region

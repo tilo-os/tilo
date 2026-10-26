@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tilo_desktop::chrome::{
     ActiveMediaUse, AppTrayIcon, AppTrayItem, AppTrayRequest, AppTrayStatus, Chrome, ChromeIntent,
     ChromeOverlays, ClockActivity, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
-    LinkKind, LinkStatus, MediaKind, OwnChip, StripPlaces, SystemStatus, VolumeState,
+    LinkKind, LinkStatus, MediaKind, OwnChip, SystemStatus, VolumeState,
 };
 pub use tilo_desktop::topbar::*;
 use vello::kurbo::Rect;
@@ -33,13 +33,12 @@ pub fn native_source(chrome: chrome_state::Chrome) -> Chrome {
     })
 }
 
-/// Who is where, as the bar shows it: this person's own chip and the
-/// strips people are on, worked out once per chrome revision.
+/// This person's own chip, as the bar shows it, worked out once per chrome
+/// revision.
 #[derive(Clone)]
 struct People {
     key: (u64, u64),
     own: OwnChip,
-    places: StripPlaces,
 }
 
 /// The name this person goes by here, numbered like anyone else's when
@@ -75,43 +74,6 @@ pub(crate) fn own_rgb(state: &chrome_state::ChromeState) -> (u8, u8, u8) {
         crate::shell::state::local_presence_hue()
     };
     ui::presence::identity_rgb(hue)
-}
-
-/// The strips of the active workspace people are on: the others at the
-/// strip holding the tab their presence names, this person on the one shown.
-fn strip_places(state: &chrome_state::ChromeState) -> StripPlaces {
-    let local_user = state.active_local_user();
-    let tree = state.tree();
-    let desktop = &tree.desktop;
-    let others: Vec<tilo_desktop_model::StripId> = desktop
-        .active_workspace()
-        .map(|workspace| {
-            workspace
-                .collaborators
-                .iter()
-                .filter(|person| person.id != local_user && !person.own_device)
-                .filter_map(|person| {
-                    let tab = person.active_tab?;
-                    workspace
-                        .strips
-                        .iter()
-                        .find(|strip| {
-                            strip
-                                .window_groups
-                                .iter()
-                                .any(|group| group.tabs.iter().any(|t| t.id == tab))
-                        })
-                        .map(|strip| strip.id)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let places = StripPlaces::in_active_workspace(desktop, &others);
-    drop(tree);
-    StripPlaces {
-        can_add: state.can_add_strip(),
-        ..places
-    }
 }
 
 #[derive(Default)]
@@ -249,8 +211,8 @@ impl NativeChrome {
             own: OwnChip {
                 name: own_shown_name(state),
                 rgb: own_rgb(state),
+                identity: String::new(),
             },
-            places: strip_places(state),
         };
         *self.people.borrow_mut() = Some(people.clone());
         people
@@ -296,13 +258,13 @@ impl DesktopChromeSource for NativeChrome {
             active_exposures: state.active_exposures().to_vec(),
             // Native presence has no spectator role yet.
             watching: 0,
-            strip_places: Some(people.places),
             top_bar: state.top_bar_presence(),
             own: Some(people.own),
             invite: tilo_desktop::chrome::Invite::when(
                 crate::shell::invite_policy::may_invite_here(&state),
             ),
             waved: state.wave_notice.clone(),
+            arrived: state.arrival_notice.clone(),
         }
     }
 
@@ -342,7 +304,6 @@ impl DesktopChromeSource for NativeChrome {
                 return true;
             }
             ChromeIntent::HideClock => state.overlays.clock = false,
-            ChromeIntent::SwitchStrip(strip) => return state.focus_strip(strip),
             // The overlay host opens the strip switcher's card on its next
             // update, as Super+S does, with the focused strip chosen.
             ChromeIntent::ShowStrips => state.request_strip_switcher(),
@@ -381,7 +342,6 @@ impl DesktopChromeSource for NativeChrome {
                 }
                 return true;
             }
-            ChromeIntent::AddStrip { name } => return state.add_named_strip(&name),
             ChromeIntent::RenameWorkspace { name } => {
                 if !state.may_rename_active_workspace() {
                     return false;

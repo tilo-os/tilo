@@ -3,7 +3,7 @@ name = "tilo-agent-models"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-license.workspace = true
+license = "MIT"
 description = "The models a person's providers offer for an agent's run, as a record every app of theirs reads"
 
 [dependencies]

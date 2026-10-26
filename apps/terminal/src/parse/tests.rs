@@ -196,6 +196,30 @@ fn every_run_gets_links_locations_and_errors_without_escapes() {
     assert_eq!(kinds(&found, ItemKind::Error).len(), 1);
 }
 
+/// `tput sgr0` prints `ESC ( B ESC [ m`: the charset designation goes with the
+/// rest of the escapes and leaves no stray `B`, as do the other designations
+/// and the string sequences.
+#[test]
+fn charset_designations_and_string_sequences_leave_no_residue() {
+    let sgr0 = "\x1b(B\x1b[m";
+    let output = format!("\x1b[1mBold{sgr0} plain\n");
+    assert_eq!(strip_ansi(&output), "Bold plain\n");
+    assert_eq!(
+        strip_ansi("\x1b)0\x1b$(Bmulti\x1b(0q\x1b(B\x1b7saved\x1b8\n"),
+        "multiqsaved\n"
+    );
+    assert_eq!(
+        strip_ansi("\x1bPq#0;2;0;0;0\x1b\\after \x1b_app\x07done\n"),
+        "after done\n"
+    );
+    let found = items("make", format!("{sgr0}error: disk full{sgr0}\n").as_bytes());
+    let errors: Vec<&str> = kinds(&found, ItemKind::Error)
+        .iter()
+        .map(|item| item.text.as_str())
+        .collect();
+    assert_eq!(errors, ["error: disk full"]);
+}
+
 /// "Open the second diagnostic" finds it among a run's items and opens its
 /// file at its line, relative to where the run ran; a link opens as a page.
 #[test]

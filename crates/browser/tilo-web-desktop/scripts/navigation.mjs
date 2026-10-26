@@ -296,6 +296,8 @@ async function travels(what, from, {sent, before}) {
     if (got.notches === sent && moved.lines * Math.sign(sent) >= 1) break;
     if (Date.now() > deadline) {
       if (process.env.SHOTS_DIR) writeFileSync(join(process.env.SHOTS_DIR, 'navigation-failed.png'), await tab.screenshot());
+      // What the page said last: a frame it skipped, a panic.
+      console.error(tab.log.slice(-30).join('\n'));
       assert.fail(`${what}: ${JSON.stringify({moved, got})} from ${from}; [ms, offset, notches, group]: ${JSON.stringify(await evaluate('wheelTrace'))}; windows: ${JSON.stringify((await snapshot()).entries.map(e => [e.label, e.route.group]))}`);
     }
     await sleep(250);
@@ -377,29 +379,27 @@ await chord('ArrowRight');
 await settles('Alt+Shift+Right steps back', label, 'Notes');
 console.log(JSON.stringify({step: 'shortcuts from a text field', ok: true}));
 
-// Workspace Activity over the windows opened above. The pane is its own
-// module (src/activity.rs), fetched the first time it opens; the request
-// stays open until the pane draws it, on the frame after the module
-// arrived. That is one frame more than a view already in the start module
-// takes, and a frame of this software-rendered debug bundle can take over
-// ten seconds in CI.
+// Workspace Activity: the Activity app opens as a window over the history
+// this desktop keeps. The history model it reads is its own module
+// (src/activity.rs), fetched the first time the app reads it, and the app
+// is a module of its own too; a frame of this software-rendered debug
+// bundle can take over ten seconds in CI.
 const active = (await snapshot()).activeWorkspace;
+const activityWindows = s => s.entries.filter(e => e.app === 'so.tilo.activity').length;
 await command({kind: 'workspace-activity', workspace: active, view: 'explore'});
-await settles('Explore opens in the desktop once the pane has loaded',
-  s => s.workspaceActivity && [s.workspaceActivity.view, s.workspaceActivity.inSurface], ['explore', true], 600);
-// A split bundle fetched it now; a bundle left whole (`build.sh --no-split`)
-// has it in place.
+await settles('History opens the Activity app', activityWindows, 1, 600);
+// A split bundle fetches the model once the app reads it; a bundle left
+// whole (`build.sh --no-split`) has it in place.
 const split = join(resolve(bundle), 'pkg', 'split.json');
-if (existsSync(split) && JSON.parse(readFileSync(split, 'utf8')).modules.some(m => m.module === 'activity')) {
-  assert.ok(
-    (await evaluate("performance.getEntriesByType('resource').map(e => e.name)")).some(name => name.endsWith('.activity.wasm')),
-    'the pane came from its own module');
+if (existsSync(split) && JSON.parse(readFileSync(split, 'utf8')).modules.some(m => m.module === 'workspace_activity')) {
+  await polls('the app reads the history, whose model came from its own module',
+    async () => (await evaluate("performance.getEntriesByType('resource').map(e => e.name)"))
+      .some(name => name.endsWith('.workspace_activity.wasm')), true, 600);
 }
 await command({kind: 'workspace-activity', workspace: active, view: 'catch-up'});
-await settles('the open pane switches to Catch up',
-  s => s.workspaceActivity && [s.workspaceActivity.view, s.workspaceActivity.inSurface], ['catch-up', true]);
+await settles('asked again, its window comes forward rather than a second', activityWindows, 1);
 await command({kind: 'close-workspace-activity', workspace: active});
-await settles('and closes', s => s.workspaceActivity, null);
+await settles('and closes', activityWindows, 0);
 console.log(JSON.stringify({step: 'workspace activity', ok: true}));
 
 const errors = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));

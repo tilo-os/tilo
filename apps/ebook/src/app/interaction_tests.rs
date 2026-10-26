@@ -3457,7 +3457,10 @@ fn importing_and_removing_books_keeps_one_identity() {
         );
     }
 
-    // --- phase: removing_a_book_takes_it_off_the_shelf_and_out_of_the_registry ---
+    // --- phase: removing_a_book_asks_and_changes_nothing_until_confirmed ---
+    // Removing forgets this device's access to the book's file, which Undo
+    // cannot give back, so it is asked first and nothing changes here until
+    // the person agreed (app/remove_tests.rs follows it through the door).
     {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("book.epub");
@@ -3469,56 +3472,32 @@ fn importing_and_removing_books_keeps_one_identity() {
         app.import_and_open_for_test(&mut Edits::lend(&mut doc), &path);
         assert_eq!(app.library.len(), 1);
         assert_eq!(TestLibrary::read_library_entries(&doc).len(), 1);
-
         let id = app.library[0].id.clone();
+        let source = PathBuf::from("/watched/book.epub");
+        app.watched_sources.insert(source.clone(), id.clone());
+
         app.dispatch(
             Action::RemoveFromLibrary(id.clone()),
             &mut Edits::lend(&mut doc),
         );
-        assert!(app.library.is_empty(), "removed from the shelf");
         assert_eq!(
             TestLibrary::read_library_entries(&doc).len(),
             1,
             "the library asks the person before it removes the book"
         );
-        let mut library =
-            ui::tilo_resource::Replica::<crate::resource::Ebook>::from_doc(doc.clone());
-        library
-            .apply_confirmed(
-                crate::resource::Ebook::REMOVE_FROM_LIBRARY
-                    .with(crate::resource::books::RemoveFromLibrary { book: id }),
-            )
-            .unwrap();
-        doc = library.doc().clone();
-        assert!(
-            TestLibrary::read_library_entries(&doc).is_empty(),
-            "and from the registry"
+        assert_eq!(
+            app.library.len(),
+            1,
+            "the book stays on the shelf meanwhile"
         );
-    }
-
-    // --- phase: removing_one_watched_book_preserves_other_source_deduplication ---
-    {
-        let mut app = app_with_sample();
-        let mut doc = library_doc();
-        let removed_id = app.library[0].id.clone();
-        let retained_id = app.library[1].id.clone();
-        let removed_source = PathBuf::from("/watched/removed.epub");
-        let retained_source = PathBuf::from("/watched/retained.epub");
-        app.watched_sources
-            .insert(removed_source.clone(), removed_id);
-        app.watched_sources
-            .insert(retained_source.clone(), retained_id);
-
-        let id = app.library[0].id.clone();
-        app.dispatch(Action::RemoveFromLibrary(id), &mut Edits::lend(&mut doc));
-
-        assert!(
-            !app.watched_sources.contains_key(&removed_source),
-            "only the removed book becomes eligible for watch retry"
+        assert_eq!(
+            app.local_library.books.get(&id),
+            Some(&path),
+            "and this device still opens it from its file"
         );
         assert!(
-            app.watched_sources.contains_key(&retained_source),
-            "unrelated watched books stay deduplicated"
+            app.watched_sources.contains_key(&source),
+            "its watched file stays known"
         );
     }
 }

@@ -52,7 +52,8 @@ def clock_behind_the_certificate(ctx, res):
     try:
         ctx.vm.root_exec(f"date -s @{behind} >/dev/null && systemctl restart {FS_UNIT}", timeout=120)
         ctx.vm.restart_session(timeout=180)
-        state = ctx.vm.state()
+        # The shell's state dump carries the desktop's own fields under `chrome`.
+        state = ctx.vm.state()["chrome"]
         res.metrics["identity_while_behind"] = state.get("identity")
         expect(not state["input_capture"]["onboarding"],
                "the desktop shows first-use setup for an identity it has")
@@ -76,8 +77,9 @@ def clock_behind_the_certificate(ctx, res):
         stepped_to = _real_now(ctx, real, behind)
         ctx.vm.root_exec(f"date -s @{stepped_to} >/dev/null", timeout=60)
         stepped = ctx.wait_state(
-            lambda s: not s["identity"]["waits_for_clock"] and s["collab"]["available"],
-            90, "the session's network and broker after the clock stepped")
+            lambda s: not s["chrome"]["identity"]["waits_for_clock"]
+            and s["chrome"]["collab"]["available"],
+            90, "the session's network and broker after the clock stepped")["chrome"]
         res.metrics["identity_after_step"] = stepped.get("identity")
         expect(not stepped["input_capture"]["onboarding"], "setup appeared after the clock stepped")
         if not wait_until(lambda: _fs_said(ctx, f"@{stepped_to}", "Enforcing"), 60, interval=2):

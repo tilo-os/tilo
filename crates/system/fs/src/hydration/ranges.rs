@@ -201,6 +201,32 @@ impl Flights {
     }
 }
 
+/// Ranges claimed from [`Flights`], given back when dropped: a fetch
+/// abandoned part way (a predictive prefetch cancelled when the policy
+/// changes) never leaves them claimed for readers to wait on forever.
+struct Claim<'a> {
+    flights: &'a Flights,
+    content: Hash,
+    ranges: Vec<Range<u64>>,
+}
+
+impl Claim<'_> {
+    /// Gives the ranges back and returns them.
+    fn release(mut self) -> Vec<Range<u64>> {
+        let ranges = std::mem::take(&mut self.ranges);
+        self.flights.release(self.content, &ranges);
+        ranges
+    }
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        if !self.ranges.is_empty() {
+            self.flights.release(self.content, &self.ranges);
+        }
+    }
+}
+
 /// One chunk's share of a request: which bytes of it are wanted.
 #[derive(Clone, Debug)]
 struct ChunkWant {
@@ -370,10 +396,15 @@ impl Hydrator {
                 }
                 continue;
             }
+            let claim = Claim {
+                flights: &self.flights,
+                content,
+                ranges: claimed,
+            };
             let result = self
-                .fetch_claimed(content, manifest, &claimed, priority)
+                .fetch_claimed(content, manifest, &claim.ranges, priority)
                 .await;
-            self.flights.release(content, &claimed);
+            let claimed = claim.release();
             drop(admission);
             result?;
             fetched.extend(claimed);
@@ -879,6 +910,43 @@ mod tests {
                 .unwrap(),
             &data[second.start as usize..second.end as usize],
             "intact chunks are still served"
+        );
+    }
+
+    /// A fetch abandoned while a quiet peer holds its ranges (a predictive
+    /// prefetch cancelled when the policy changes) gives them back, so the
+    /// next reader asks for them itself instead of waiting on a fetch that
+    /// no longer exists.
+    #[tokio::test]
+    async fn an_abandoned_fetch_gives_its_ranges_back() {
+        use iroh::endpoint::{Endpoint, presets};
+        let data = pseudo(3 * 1024 * 1024, 17);
+        let source = crate::store::ContentStore::memory();
+        let id = source.write_content(&data).await.unwrap().unwrap();
+        let quiet = crate::hydration::test_peers::silent().await;
+        let hydrator = Hydrator::new(
+            Endpoint::bind(presets::N0).await.unwrap(),
+            Arc::new(crate::store::ContentStore::memory()),
+        );
+        // The manifest is here; the bytes only the quiet peer holds.
+        let manifest = source.local(id).await.unwrap();
+        assert_eq!(hydrator.store.ingest(manifest).await.unwrap(), id);
+        hydrator.add_peer(quiet.endpoint().addr());
+
+        let abandoned = tokio::time::timeout(
+            Duration::from_millis(500),
+            hydrator.read_with(id, 0, 64 * 1024, Priority::Predictive),
+        )
+        .await;
+        assert!(abandoned.is_err(), "a quiet peer serves nothing");
+        assert_eq!(
+            hydrator
+                .flights
+                .lock()
+                .get(&id)
+                .map(|(busy, _)| busy.clone()),
+            None,
+            "the abandoned fetch still claims ranges"
         );
     }
 

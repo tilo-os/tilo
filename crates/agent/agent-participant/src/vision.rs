@@ -456,16 +456,7 @@ impl From<bool> for RoomPictures {
 /// pictures to its model, as [`ROOM_PICTURES_ENV`] reads `setting`.
 #[must_use]
 pub fn room_pictures_allowed(agent_id: &str, label: &str, setting: Option<&str>) -> bool {
-    let Some(setting) = setting.map(str::trim).filter(|setting| !setting.is_empty()) else {
-        return false;
-    };
-    match setting.to_ascii_lowercase().as_str() {
-        "1" | "on" | "true" | "yes" | "all" => true,
-        "0" | "off" | "false" | "no" | "none" => false,
-        _ => setting.split(',').map(str::trim).any(|named| {
-            !named.is_empty() && (named == agent_id || named.eq_ignore_ascii_case(label))
-        }),
-    }
+    crate::profile::named_on(agent_id, label, setting)
 }
 
 /// Whether pictures are turned on or off for every planning model

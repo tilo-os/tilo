@@ -388,6 +388,11 @@ impl ShellOverlayHost {
                     }
                 }
             }
+            WorkspaceSettingsOutcome::AddEmoji => self.choose_workspace_emoji(),
+            WorkspaceSettingsOutcome::RemoveEmoji(name, how) => {
+                self.remove_workspace_emoji(&name, how);
+            }
+            WorkspaceSettingsOutcome::DismissEmojiNotice => self.dismiss_workspace_emoji_notice(),
             WorkspaceSettingsOutcome::CommitName => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     chrome.borrow_mut().commit_workspace_name();
@@ -463,10 +468,12 @@ impl ShellOverlayHost {
         ) else {
             return;
         };
+        let emoji_grants = self.prepare_ws_emoji();
         if let Some(chrome) = self.chrome.as_ref() {
             let state = chrome.borrow();
             let tree = state.tree();
             let acting_user = state.active_local_user_in(&tree);
+            let emoji = ws_emoji::pane_model(self.ws_emoji.as_ref(), emoji_grants, &acting_user);
             let owner_controls = state.test_only_owner_override.unwrap_or_else(|| {
                 tree.desktop
                     .active_workspace()
@@ -534,6 +541,7 @@ impl ShellOverlayHost {
                     devices: &devices,
                     public: &public,
                     archived: &archived,
+                    emoji,
                 },
             );
         }
@@ -675,6 +683,13 @@ pub(super) fn public_card(
     use tilo_desktop::workspace_settings::overlay::PublicCard;
     match state {
         None | Some(PublicationState::Asking) => PublicCard::Asking,
+        // Without the network the host can't be asked or told, so there
+        // is nothing to show about being public.
+        Some(PublicationState::Unavailable(why))
+            if why == super::peer_sync_dispatch::NOT_RUNNING =>
+        {
+            PublicCard::Offline
+        }
         Some(PublicationState::Unavailable(why)) => PublicCard::Unavailable(why.clone()),
         Some(PublicationState::Known(known)) => PublicCard::Known {
             public: known.public,

@@ -320,11 +320,14 @@ impl RichTextLayout {
             strikes: Vec::new(),
             backgrounds: Vec::new(),
             baselines: Vec::new(),
+            inline_emoji: Vec::new(),
             discretionary_hyphen_width,
             line_height: style.line_height_px(),
             font_variations: style.resolved_variations(),
             hanging_punctuation: style.hanging_punctuation,
             fragmentation: style.fragmentation,
+            row_tops: std::cell::OnceCell::new(),
+            ink_reach: crate::richtext::InkReachCache::default(),
         })
     }
 
@@ -341,6 +344,8 @@ impl RichTextLayout {
         let Some(prepared) = self.prepared.take() else {
             return false;
         };
+        // The lines below are spliced and wrapped again in place.
+        self.row_tops = std::cell::OnceCell::new();
         let Some(old) = prepared.spans.first().map(|span| span.text.as_str()) else {
             self.prepared = Some(prepared);
             return false;
@@ -372,6 +377,7 @@ impl RichTextLayout {
                     .lines(fs, region, edit.start)
             });
             spliced = first..first.saturating_add(lines.len());
+            self.ink_reach.lines_replaced(first, last, lines.len());
             self.buffer.lines.splice(first..=last, lines);
             self.offset_map.insertions = splice_insertions(
                 &edit,
@@ -395,6 +401,9 @@ impl RichTextLayout {
         // its shape; spliced lines are shaped and wrapped once.
         let wrap_width = layout_width(width, self.discretionary_hyphen_width, prepared.align);
         let rewrapped = self.buffer.size().0 != Some(wrap_width);
+        if rewrapped {
+            self.ink_reach.forget();
+        }
         self.buffer.set_size(Some(wrap_width), None);
         self.buffer.shape_until_scroll(fs, false);
         // Fresh lines are not invalidated ones: cosmic-text shapes them on
@@ -456,11 +465,14 @@ impl RichTextLayout {
             strikes: self.strikes.clone(),
             backgrounds: self.backgrounds.clone(),
             baselines: self.baselines.clone(),
+            inline_emoji: self.inline_emoji.clone(),
             discretionary_hyphen_width: self.discretionary_hyphen_width,
             line_height: self.line_height,
             font_variations: self.font_variations.clone(),
             hanging_punctuation: self.hanging_punctuation,
             fragmentation: self.fragmentation,
+            row_tops: std::cell::OnceCell::new(),
+            ink_reach: self.ink_reach.duplicate(),
         }
     }
 

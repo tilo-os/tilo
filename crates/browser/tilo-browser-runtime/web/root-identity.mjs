@@ -658,15 +658,17 @@ export async function fetchEnvelope(rootPublicKeyHex, origins, {fetch: fetcher =
  * and of each the newest the root signed. Needs no kept identity: a device
  * paired to this one reads it from the same hosts.
  */
-export async function publishProfile({origin, identity = currentIdentity(), displayName, now = Date.now(), fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
+export async function publishProfile({origin, identity = currentIdentity(), displayName, photo = null, now = Date.now(), fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
   if (!identity?.sign || identity.locked) throw new IdentityError('locked', 'Unlock the identity first');
   const name = fitDisplayName(displayName);
   if (!name) throw new IdentityError('malformed', 'A profile needs a name');
-  const json = JSON.stringify({version: 1, user_public_key: identity.userPublicKey, display_name: name});
+  // The picture they chose (a `data:` URL, `profile-photos.mjs`) rides
+  // along; without one their initials show.
+  const json = JSON.stringify({version: 1, user_public_key: identity.userPublicKey, display_name: name, ...(photo ? {photo} : {})});
   await keepSigned({origin, identity, path: '/peer/v1/profile', field: 'profile', label: PROFILE_LABEL, json, now, fetcher});
 }
 
-/** The profile (`{version, user_public_key, display_name}`) of root
+/** The profile (`{version, user_public_key, display_name, photo?}`) of root
  * `rootPublicKeyHex` from the first of `origins` that keeps it, or `null`.
  * Hosts check the root's signature before keeping one. */
 export async function fetchProfile(rootPublicKeyHex, origins, {fetch: fetcher = (...args) => globalThis.fetch(...args)} = {}) {

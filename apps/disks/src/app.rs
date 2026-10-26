@@ -223,9 +223,9 @@ pub struct DisksApp {
     topo: Topology,
     /// Why the last probe found nothing, when it could not read the machine.
     unreadable: Option<String>,
-    /// No reading of this machine has arrived yet: the window shows the
-    /// page the drives will fill.
-    loading: bool,
+    /// No reading of this machine has arrived yet, asked then: the window
+    /// shows the page the drives will fill.
+    loading: Option<ui::time::Instant>,
     /// The reading taken when the window opened, on a worker.
     opening: Option<mpsc::Receiver<Probed>>,
     /// Bumped whenever `topo` is replaced.
@@ -283,7 +283,7 @@ impl DisksApp {
             intents,
             topo,
             unreadable: None,
-            loading: false,
+            loading: None,
             opening: None,
             topo_rev: 0,
             backend,
@@ -399,7 +399,7 @@ impl DisksApp {
     /// Rebuild the sidebar and the content when what they show changed.
     fn refresh_view(&mut self) {
         let key = ViewKey {
-            loading: self.loading,
+            loading: self.loading.is_some(),
             topology: self.topo_rev,
             names: self.names_rev,
             selected: self.selected,
@@ -426,16 +426,15 @@ impl DisksApp {
             self.shell.set_sidebar(Some(Box::new(view::drive_list(
                 &drives,
                 self.selected,
-                self.loading,
+                self.loading.is_some(),
                 &self.intents,
             ))));
         }
         let Some(drive) = self.topo.drives.get(self.selected) else {
             self.shell.set_content_title("");
-            self.shell.set_content(if self.loading {
-                view::loading(&self.scroll)
-            } else {
-                view::empty_state(self.unreadable.as_deref(), &self.intents)
+            self.shell.set_content(match self.loading {
+                Some(since) => view::loading(&self.scroll, since),
+                None => view::empty_state(self.unreadable.as_deref(), &self.intents),
             });
             return;
         };
@@ -621,9 +620,11 @@ impl DisksApp {
                 self.set_tab(Tab::Partitions);
                 self.select_part(Some(3));
             }
-            // The window as it opens, before this machine's storage is read.
+            // The window as it opens on a slow read of this machine's
+            // storage: past its frame budget, so the page the drives will
+            // fill stands in.
             Some("loading") => {
-                self.loading = true;
+                self.loading = ui::time::now().checked_sub(ui::time::Duration::from_millis(500));
             }
             Some("toast") => self.report("Mounted /dev/sdc1".into(), StatusTone::Success),
             Some("toast-error") => {
@@ -747,7 +748,7 @@ impl DisksApp {
             waker.wake();
         }));
         self.opening = Some(receiver);
-        self.loading = true;
+        self.loading = Some(ui::time::now());
         self.dirty = true;
     }
 
@@ -774,7 +775,7 @@ impl DisksApp {
     /// dropped.
     fn show_reading(&mut self, probed: Probed) {
         self.opening = None;
-        self.loading = false;
+        self.loading = None;
         self.unreadable = probed.as_ref().err().cloned();
         self.replace_topology(probed.unwrap_or_default());
     }
@@ -1219,7 +1220,8 @@ mod tests {
     #[test]
     fn the_opening_page_is_the_layout_the_drives_fill() {
         let mut opening = DisksApp::new();
-        opening.loading = true;
+        // A read that missed its frame budget: the page stands in.
+        opening.loading = ui::time::now().checked_sub(ui::time::Duration::from_millis(500));
         let mut app = framed(opening, 1280.0, 800.0);
         Framed::harness_mut(&mut app).poll_frame().unwrap();
         let map = partition_map(&app);
@@ -1227,8 +1229,8 @@ mod tests {
             Framed::harness_mut(&mut app)
                 .inspection_json()
                 .unwrap()
-                .contains("Reading drives…"),
-            "the opening page says the drives are being read"
+                .contains(&ui::i18n::I18nManager::lookup_plain("arriving-loading")),
+            "the opening page says the drives are on their way"
         );
         app.show_reading(Ok(Topology::sample()));
         Framed::harness_mut(&mut app).poll_frame().unwrap();

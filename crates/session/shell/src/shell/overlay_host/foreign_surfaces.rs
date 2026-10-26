@@ -151,6 +151,7 @@ impl ShellOverlayHost {
         let Some(tab_id) = tab_id else {
             return false;
         };
+        let from = stream_source_name(&chrome, tab_id, source_peer);
         let mut peer_view = crate::shell::peer_view::PeerView::new_for_stream(
             surface_id,
             local_peer,
@@ -158,7 +159,8 @@ impl ShellOverlayHost {
             crate::diagnostics::PeerSurfaceMetrics::default(),
             &crate::shell::hdr_display::DisplayCapabilities::sdr_default(),
             hdr_static_metadata,
-        );
+        )
+        .from_peer(&from);
         peer_view.restart_stream(codec, display_size);
         peer_view.set_input_sink(std::sync::Arc::clone(input_sink));
         peer_view.set_keyframe_sink(std::sync::Arc::clone(keyframe_sink));
@@ -341,13 +343,10 @@ impl ShellOverlayHost {
         false
     }
 
-    /// Whether any tab on screen is still holding a place for an app that
-    /// hasn't drawn yet (see [`ui::widget::WindowGroup::any_tile_opening`]).
-    /// A group in this state requests animation frames for as long as it
-    /// waits — deliberately indistinguishable from a wedged animation from
-    /// the outside; this method is how a caller waiting for the tree to go
-    /// quiet tells them apart.
-    pub fn any_tile_opening(&mut self) -> bool {
+    /// Whether any tab on screen is still holding a place for a window whose
+    /// first frame hasn't arrived yet (see
+    /// [`ui::widget::WindowGroup::any_tile_arriving`]).
+    pub fn any_tile_arriving(&mut self) -> bool {
         let mut any_opening = false;
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: same contract as every other `group_row_ptrs`
@@ -362,7 +361,7 @@ impl ShellOverlayHost {
             any_opening = row
                 .groups
                 .iter()
-                .map(ui::widget::WindowGroup::any_tile_opening)
+                .map(ui::widget::WindowGroup::any_tile_arriving)
                 .fold(any_opening, |seen, opening| opening || seen);
         }
         any_opening
@@ -461,4 +460,36 @@ impl ShellOverlayHost {
                 })
             })
     }
+}
+
+/// The name of the device a stream into `tab` comes from: the hosting
+/// device a legacy window's tab names, else the member at `source_peer`
+/// as the tab's room knows them. Empty when nobody named it.
+fn stream_source_name(chrome: &Chrome, tab: u64, source_peer: u64) -> String {
+    source_name_in(&chrome.borrow().tree(), tab, source_peer)
+}
+
+/// [`stream_source_name`] in `tree`.
+fn source_name_in(tree: &crate::shell::state::WorkspaceTree, tab: u64, source_peer: u64) -> String {
+    for workspace in &tree.desktop.workspaces {
+        let found = workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|candidate| candidate.id == tab);
+        let Some(found) = found else {
+            continue;
+        };
+        if let crate::shell::state::TileContent::HostedWindow { host_label, .. } = &found.tile
+            && !host_label.trim().is_empty()
+        {
+            return host_label.clone();
+        }
+        return tree
+            .room_peer_labels(workspace.room())
+            .remove(&source_peer)
+            .unwrap_or_default();
+    }
+    String::new()
 }

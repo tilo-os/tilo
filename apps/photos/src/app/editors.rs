@@ -220,6 +220,9 @@ impl PhotosApp {
         ] {
             input.set_placeholder(if mixed { &mixed_hint } else { &ordinary });
         }
+        self.metadata_seed = self
+            .metadata_draft_inputs()
+            .map(|input| input.value().to_owned());
         self.metadata_folder_input.set_focus(true);
         self.metadata_people_input.set_focus(false);
         self.metadata_tags_input.set_focus(false);
@@ -235,6 +238,30 @@ impl PhotosApp {
         // The sheet owns the full privacy explanation. Keeping a duplicate
         // in the persistent status band made it wrap below a phone viewport.
         self.notice = None;
+    }
+
+    /// The draft's text fields in [`Self::metadata_seed`] order.
+    fn metadata_draft_inputs(&self) -> [&TextInput; 7] {
+        [
+            &self.metadata_folder_input,
+            &self.metadata_people_input,
+            &self.metadata_tags_input,
+            &self.metadata_captured_at_input,
+            &self.metadata_place_input,
+            &self.metadata_latitude_input,
+            &self.metadata_longitude_input,
+        ]
+    }
+
+    /// Whether the details draft differs from what the editor opened with:
+    /// a field edited, or one marked to clear for every photo.
+    pub(super) fn metadata_draft_changed(&self) -> bool {
+        self.metadata_force_clear.contains(&true)
+            || self
+                .metadata_draft_inputs()
+                .iter()
+                .zip(&self.metadata_seed)
+                .any(|(input, seed)| input.value() != seed)
     }
 
     pub(super) fn cancel_metadata_editor(&mut self) {
@@ -256,7 +283,8 @@ impl PhotosApp {
         reason = "builds the single atomic batch metadata action from all sheet fields in one place"
     )]
     pub(super) fn save_metadata_editor(&mut self) {
-        if self.metadata_editor_ids.is_empty() {
+        // Save stands disabled while nothing changed; no path saves then.
+        if self.metadata_editor_ids.is_empty() || !self.metadata_draft_changed() {
             return;
         }
         let optional = |input: &TextInput| {
@@ -509,6 +537,38 @@ impl PhotosApp {
         self.album_editor_focus = 0;
     }
 
+    /// Back's first step while an editor stands as the narrow window's
+    /// sheet: raised to the whole window it comes down to half, else the
+    /// editor is put away as Cancel puts it. Returns whether there was such
+    /// a sheet to take the step; the window bar's Back, Escape and the
+    /// system's back gesture all ask it before anything navigates.
+    pub(super) fn sheet_back(&mut self) -> bool {
+        if !self.editor_sheet_shown() {
+            return false;
+        }
+        let motion = self.layout_theme.motion();
+        if !self.chrome.inspector.lower_sheet(motion) {
+            self.cancel_editor();
+        }
+        true
+    }
+
+    /// Whether an editor stands as the narrow window's sheet.
+    pub(super) fn editor_sheet_shown(&self) -> bool {
+        (self.album_editor || self.metadata_editor)
+            && self.chrome.inspector.is_open()
+            && self.chrome.inspector.sheet_detent().is_some()
+    }
+
+    /// Put the open editor away, its edits discarded.
+    fn cancel_editor(&mut self) {
+        if self.album_editor {
+            self.cancel_album_editor();
+        } else if self.metadata_editor {
+            self.cancel_metadata_editor();
+        }
+    }
+
     pub(super) fn cancel_album_editor(&mut self) {
         self.album_editor = false;
         self.album_editor_id = None;
@@ -653,7 +713,9 @@ impl PhotosApp {
                     return true;
                 }
                 Key::Named(NamedKey::Escape) => {
-                    self.cancel_album_editor();
+                    if !self.sheet_back() {
+                        self.cancel_album_editor();
+                    }
                     *ctx.handled = true;
                     return true;
                 }
@@ -795,7 +857,9 @@ impl PhotosApp {
                     return true;
                 }
                 Key::Named(NamedKey::Escape) => {
-                    self.cancel_metadata_editor();
+                    if !self.sheet_back() {
+                        self.cancel_metadata_editor();
+                    }
                     *ctx.handled = true;
                     return true;
                 }
@@ -1267,6 +1331,19 @@ impl PhotosApp {
                 }
             }
         }
+        // Fields cut by the list's edge fade out there, as a scrolling
+        // list's do, instead of leaving a sliver of a label. The sheet's
+        // material may show its backdrop, so the fields are masked rather
+        // than painted over with a ground colour.
+        let max_scroll = (content_h - region.height()).max(0.0);
+        for (edge, shown) in [
+            (Edge::Top, self.metadata_editor_scroll > 0.0),
+            (Edge::Bottom, self.metadata_editor_scroll < max_scroll),
+        ] {
+            if shown {
+                fade_out_at(scene, transform, region, edge, &local);
+            }
+        }
         scene.pop_layer();
         let metrics = ScrollMetrics::new(content_h, region.height(), self.metadata_editor_scroll);
         if metrics.overflows() {
@@ -1284,6 +1361,7 @@ impl PhotosApp {
             (4, 5)
         };
         let mut x1 = footer.x1;
+        let changed = self.metadata_draft_changed();
         for (hit, focused) in [
             (
                 MetadataEditorHit::Save,
@@ -1307,6 +1385,9 @@ impl PhotosApp {
                 .iter_mut()
                 .find(|(candidate, _)| *candidate == hit)
             {
+                if hit == MetadataEditorHit::Save {
+                    button.set_enabled(changed);
+                }
                 button.set_focus(focused);
                 button.apply_layout_external(rect);
                 button.draw(scene, transform, text_renderer, &local, presence);
@@ -1433,7 +1514,14 @@ pub(super) fn build_metadata_editor_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label)| {
+        // Save is the sheet's primary action, as in the album sheet.
+        let role = if hit == MetadataEditorHit::Save {
+            ButtonRole::Primary
+        } else {
+            ButtonRole::Secondary
+        };
         let button = Button::new(&format!("photos-metadata-{id}"), label)
+            .role(role)
             .tooltip(label)
             .with_accessible_name(label);
         (hit, bound(button, &hit.effect(), actions))
@@ -1484,4 +1572,58 @@ impl MetadataEditorHit {
             Self::PlaceOnMap => PhotosEffect::PlaceDraftOnMap,
         }
     }
+}
+
+/// An edge of the details sheet's field list that fields scroll past.
+#[derive(Clone, Copy)]
+enum Edge {
+    Top,
+    Bottom,
+}
+
+/// Fade what is already drawn in `region` out toward `edge`, over the
+/// toolkit's content fade reach: a mask on the drawn fields, so it holds on
+/// a translucent sheet as on an opaque one. Only the mask's alpha counts;
+/// its colour is the sheet's ground.
+fn fade_out_at(scene: &mut Scene, transform: Affine, region: Rect, edge: Edge, theme: &Theme) {
+    use vello::peniko::{BlendMode, ColorStop, Compose, Fill, Gradient, Mix};
+    const STOPS: usize = 7;
+    let band = surface::content_edge_fade_band(
+        region,
+        match edge {
+            Edge::Top => surface::ContentEdge::Top,
+            Edge::Bottom => surface::ContentEdge::Bottom,
+        },
+    );
+    if band.height() <= 0.0 {
+        return;
+    }
+    let (clear, kept) = match edge {
+        Edge::Top => ((band.x0, band.y0), (band.x0, band.y1)),
+        Edge::Bottom => ((band.x0, band.y1), (band.x0, band.y0)),
+    };
+    let stops: [ColorStop; STOPS] = std::array::from_fn(|i| {
+        #[allow(clippy::cast_precision_loss, reason = "i < STOPS, a single digit")]
+        let t = i as f32 / (STOPS - 1) as f32;
+        ColorStop {
+            offset: t,
+            color: theme
+                .tokens
+                .colors
+                .surfaces
+                .content
+                .with_alpha(1.0 - ui::overlay::scrim::fade_alpha(f64::from(t), 1.0))
+                .into(),
+        }
+    });
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::new(Mix::Normal, Compose::DestIn),
+        1.0,
+        transform,
+        &band,
+    );
+    let mask = Gradient::new_linear(clear, kept).with_stops(stops.as_slice());
+    scene.fill(Fill::NonZero, transform, &mask, None, &band);
+    scene.pop_layer();
 }

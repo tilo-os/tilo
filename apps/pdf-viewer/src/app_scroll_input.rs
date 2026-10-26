@@ -110,8 +110,7 @@ impl PdfApp {
             };
             self.viewport.pan_by(-raw_x, dy);
             if matches!(step, ui::WheelStep::Scroll(_)) {
-                let moved = self.scroll_y() - before;
-                self.glide.wheel_applied(moved, moved.abs() > 0.0);
+                self.glide.wheel_applied(dy, self.scroll_y() - before);
             }
         } else {
             self.glide.stop();

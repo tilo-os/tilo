@@ -16,13 +16,23 @@ class ProjectionTests(unittest.TestCase):
         with self.subTest(phase="actual_signer_dependencies_match_source"):
             root=tomllib.loads((ROOT/'Cargo.toml').read_text());member=tomllib.loads((ROOT/'crates/system/tilo-crypto/Cargo.toml').read_text())
             projected=module.project_manifest(root,member)
-            self.assertEqual(set(projected['dependencies']),set(member['dependencies']))
+            # The kernel builds the signer without default features: no optional dependency.
+            required={name for name,value in member['dependencies'].items()
+                      if not (isinstance(value,dict) and value.get('optional'))}
+            self.assertEqual(set(projected['dependencies']),required)
+            self.assertNotIn('features',projected)
             for name in ('ring','cms','x509-cert','rsa'):
                 self.assertEqual(projected['dependencies'][name],member['dependencies'][name])
             # Workspace-inherited dependencies are resolved against the root manifest.
             self.assertEqual(member['dependencies']['getrandom'],{'workspace':True})
             self.assertEqual(projected['dependencies']['getrandom'],root['workspace']['dependencies']['getrandom'])
             self.assertEqual(projected['dependencies']['sha2']['version'],root['workspace']['dependencies']['sha2'])
+        with self.subTest(phase="actual_signer_projects_from_registry_only"):
+            # The workspace's own lock and patches: a path patch the signer reaches
+            # would fail the kernel build here first.
+            with tempfile.TemporaryDirectory() as directory:
+                module.project(ROOT/'Cargo.toml',ROOT/'crates/system/tilo-crypto/Cargo.toml',
+                               ROOT/'Cargo.lock',Path(directory))
         with self.subTest(phase="inherited_alias_target_features_and_defaults"):
             root={'workspace':{'package':{'license':'AGPL-3.0-only'},'dependencies':{'alias':{'package':'upstream','version':'=2.0','features':['base'],'default-features':False},'defaulted':'1'},'lints':{'rust':{'unsafe_code':'deny'}}}}
             member={'package':{'name':'fixture','version':'1','license':{'workspace':True}},'dependencies':{'alias':{'workspace':True,'features':['base','extra'],'default-features':True},'defaulted':{'workspace':True,'default-features':False}},'target':{'cfg(unix)':{'build-dependencies':{'alias':{'workspace':True,'features':['unix']}}}},'lints':{'workspace':True}}
@@ -42,6 +52,19 @@ class ProjectionTests(unittest.TestCase):
                 (root/'member').write_text('[package]\nname="tool"\nversion="1"\n[dependencies]\npatched="1"\n')
                 (root/'lock').write_text('version=4\n[[package]]\nname="tool"\nversion="1"\ndependencies=["patched"]\n[[package]]\nname="patched"\nversion="1"\n')
                 with self.assertRaisesRegex(ValueError,'path/git patch'):module.project(root/'workspace',root/'member',root/'lock',root/'out')
+        with self.subTest(phase="optional_workspace_patch_left_out"):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)
+                (root/'workspace').write_text('[workspace]\n')
+                (root/'member').write_text('[package]\nname="tool"\nversion="1"\n[features]\nextra=["dep:patched"]\n'
+                                           '[dependencies]\nregistry="1"\npatched={version="1",optional=true}\n')
+                (root/'lock').write_text('version=4\n[[package]]\nname="tool"\nversion="1"\ndependencies=["patched","registry"]\n'
+                                         '[[package]]\nname="patched"\nversion="1"\n'
+                                         '[[package]]\nname="registry"\nversion="1"\nsource="registry+index"\n')
+                module.project(root/'workspace',root/'member',root/'lock',root/'out')
+                projected=tomllib.loads((root/'out/Cargo.toml').read_text())
+                self.assertEqual(set(projected['dependencies']),{'registry'})
+                self.assertNotIn('features',projected)
 
 
 class LockTests(unittest.TestCase):

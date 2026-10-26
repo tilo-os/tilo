@@ -9,6 +9,7 @@ mod adaptive;
 mod band;
 mod capabilities;
 mod hosted;
+mod inspector_sheet;
 mod nothing_listed;
 
 /// A pane that fills what it is given and counts the input it receives.
@@ -944,7 +945,7 @@ fn dragging_the_trailing_edge_resizes_and_below_its_minimum_hides() {
 }
 
 #[test]
-fn the_inspector_docks_beside_the_content_and_floats_when_narrow() {
+fn the_inspector_docks_beside_the_content_and_rises_as_a_sheet_when_narrow() {
     let shell = NavShell::new()
         .content(Probe::boxed("content").0)
         .inspector(Probe::boxed("inspector").0);
@@ -961,11 +962,11 @@ fn the_inspector_docks_beside_the_content_and_floats_when_narrow() {
 
     settle(&mut h, 600, 800);
     let g = geometry(&h);
-    assert_eq!(g.inspector, InspectorPlacement::Drawer);
+    assert_eq!(g.inspector, InspectorPlacement::Sheet);
     assert_eq!(
         g.inspector_column,
         Rect::ZERO,
-        "closed by default when it floats"
+        "closed by default as a sheet"
     );
     h.root_mut::<NavShell>().toggle_inspector();
     settle(&mut h, 600, 800);
@@ -983,6 +984,45 @@ fn a_column_without_a_shell_has_no_header_row() {
         child_rect(&h, "content"),
         Some(Rect::new(0.0, 0.0, 1024.0, 700.0))
     );
+}
+
+/// A header row stands over a column only while that column's header
+/// holds something: beside a docked sidebar's titled header, an empty
+/// content header leaves the content at the window's top, and the row
+/// comes back over it once the header has a title.
+#[test]
+fn an_empty_content_header_holds_no_row_beside_the_sidebars() {
+    for (title, holds) in [("", false), ("Draft", true)] {
+        let mut shell = notes_shell().content_header(title, Vec::new());
+        shell.set_sidebar_toggle_in_window_bar(true);
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        let g = geometry(&h);
+        assert_eq!(g.sidebar, SidebarPlacement::Docked);
+        assert!(
+            g.sidebar_header().height() > 0.0,
+            "{title:?}: the sidebar keeps its header"
+        );
+        let content = child_rect(&h, "content").expect("the content is laid out");
+        if holds {
+            assert!((g.content_header().height() - g.header_height).abs() < 1e-9);
+            assert!(
+                (content.y0 - g.header_height).abs() < 1e-9,
+                "{title:?}: the content starts under its header"
+            );
+        } else {
+            assert_eq!(
+                g.content_header(),
+                Rect::ZERO,
+                "{title:?}: no content header"
+            );
+            assert!(
+                content.y0.abs() < 1e-9,
+                "{title:?}: the content starts at the top, at {}",
+                content.y0
+            );
+        }
+    }
 }
 
 #[test]
@@ -2285,6 +2325,36 @@ fn each_window_on_one_thread_keeps_its_own_shells_slots() {
             "window {i} draws no header row under its bar"
         );
     }
+}
+
+/// A window's app built anew (its code arrived, its tile was rebuilt) after
+/// the one before was let go outside that window: the new shell declares
+/// the window's slots, and the bar shows none of the old shell's.
+#[test]
+fn a_shell_built_anew_in_its_window_takes_the_bar_over() {
+    use crate::hosted_window::HostedWindow;
+    use crate::window_toolbar::enter;
+    let window = HostedWindow::new();
+    let first = {
+        let _scope = enter(Some(&window));
+        let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+        h.present_in_window_bar();
+        settle(&mut h, 1280, 800);
+        h
+    };
+    assert!(window.declared().is_some(), "the first shell declares");
+    drop(first);
+    let _scope = enter(Some(&window));
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    settle(&mut h, 1280, 800);
+    assert!(window.declared().is_some(), "the new shell declares");
+    assert_eq!(
+        geometry(&h).header_height,
+        0.0,
+        "the new shell draws no header row under its bar"
+    );
 }
 
 /// A content that continues on another device and answers a diagnostic

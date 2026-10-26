@@ -277,11 +277,15 @@ mod caller_palette;
 mod capture;
 mod drive;
 mod invocation_results;
+mod nav_gesture;
 #[cfg(test)]
 mod palette_window_tests;
 mod retained_layout;
 mod root_wake;
 mod search_open;
+mod slot_row;
+pub use slot_row::WINDOW_SLOTS;
+mod cursor;
 pub mod system_search;
 pub mod test_support;
 mod tooltip_layer;
@@ -366,6 +370,9 @@ pub struct FrameHarness {
     /// The window bar's search over the app's widgets, painted in the bar
     /// ([`Self::search_in_window`]).
     window_search: crate::widget::WindowSearch,
+    /// The app's window-bar slots in a row of the frame's own, as a window
+    /// of its own hosts them ([`Self::host_window_slots`]).
+    slot_row: Option<Box<slot_row::HostedSlots>>,
     /// The app a concrete root stands for ([`Self::for_app`]): its kind and
     /// title, which its window's bar wears as a desktop window's tab does.
     window_app: Option<(crate::widget::AppKind, String)>,
@@ -1242,6 +1249,33 @@ impl FrameHarness {
     fn invalidate_layout_tree(&mut self) {
         self.layout_built = false;
     }
+
+    /// The style of the node the root is laid out in, across a window `w`
+    /// by `h`: the host's, its top below the row of window slots the frame
+    /// hosts ([`Self::host_window_slots`]).
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "viewport sizes and the row's height are small logical pixel lengths"
+    )]
+    fn host_root_style(&self, w: u32, h: u32) -> Style {
+        let mut style = Style {
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: if self.host.content_height {
+                    Dimension::auto()
+                } else {
+                    Dimension::length(h as f32)
+                },
+            },
+            ..self.host.style.clone()
+        };
+        let inset = self.slot_row_inset();
+        if inset > 0.0 {
+            style.padding.top = taffy::LengthPercentage::length(inset as f32);
+        }
+        style
+    }
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
         self.drain_component_wakes();
         &self.component_close_reports
@@ -1701,6 +1735,7 @@ impl FrameHarness {
             history_chrome_enabled: false,
             window_bar: false,
             window_search: crate::widget::WindowSearch::new(),
+            slot_row: None,
             window_app: None,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
             bound_resource_frames: 0,
@@ -2727,15 +2762,34 @@ impl FrameHarness {
             crate::undo::UndoStatus,
         )> = Vec::new();
         let mut visited = HashSet::new();
+        // Only an undo control takes the status: the others are asked
+        // whether they are one within one sweep, not each in its own scope.
+        let mut controls = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
         for (&node, pointer) in &self.node_map {
             // SAFETY: node_map pointers are valid until the next `relayout`.
             if !visited.insert(unsafe { crate::widget::node_sweep_identity(*pointer) }) {
                 continue;
             }
-            let binding = self.bindings.binding_for(node);
+            let binding = self.bindings.binding_ref(node);
+            // SAFETY: as in `drain_undo_requests`; the check reads the widget only.
+            let control =
+                unsafe { controls.layout(node, |widget| crate::undo::takes_undo_status(widget)) }
+                    .unwrap_or(false);
+            // A bound node that is no control, of a component whose status
+            // this sweep already read, has nothing to read or be told.
+            if !control
+                && binding.is_some_and(|binding| {
+                    bound_statuses
+                        .iter()
+                        .any(|(seen, _)| seen.same_component(binding))
+                })
+            {
+                continue;
+            }
+            // What follows enters each owner's scope itself.
+            controls.leave();
             // Preserve bound history label warming across pending edits.
             let bound_status = binding
-                .as_ref()
                 .map(|binding| {
                     if let Some((_, status)) = bound_statuses
                         .iter()
@@ -2761,6 +2815,9 @@ impl FrameHarness {
                         .clone()
                 })
             };
+            if !control {
+                continue;
+            }
             // SAFETY: as in `drain_undo_requests`.
             let _ = unsafe {
                 crate::bound_dispatch::mutate_bound_node(
@@ -2886,8 +2943,11 @@ impl FrameHarness {
                 .as_ref()
                 .is_some_and(crate::session_door::ClientDoor::is_busy)
             || self.wake_pending();
+        let (slots_declared, slots_moving) = self.slot_row_wants_frame();
+        let queued_work = queued_work || slots_declared;
         self.with_schedule_roots(|roots| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
+                || slots_moving
                 || self.settle_frame_owed
                 || self.tooltips.schedule().2
                 || crate::motion::frames_wanted(crate::time::now())
@@ -3367,6 +3427,8 @@ impl FrameHarness {
         // redraw runs in the App's: a read its layout starts wakes it.
         let _wake = self.enter_wake();
         self.activation_recomposed = false;
+        // The row's height is part of the app's frame: before it lays out.
+        self.refresh_slot_row();
         let mut result = self.try_relayout_once();
         for _ in 1..8 {
             if !matches!(
@@ -3376,6 +3438,11 @@ impl FrameHarness {
             {
                 break;
             }
+            result = self.try_relayout_once();
+        }
+        // The app declared other slots in this frame's sync (a press it
+        // took, a call it joined): the row shows them in the frame drawn.
+        if result.is_ok() && self.refresh_slot_row() {
             result = self.try_relayout_once();
         }
         if result.is_ok() {
@@ -3403,7 +3470,7 @@ impl FrameHarness {
         let owner = |frame: &Self, node: NodeId| {
             frame
                 .bindings
-                .binding_for(node)
+                .binding_ref(node)
                 .is_some_and(|binding| binding.instance_id == instance)
         };
         if self.focused.is_some_and(|node| owner(self, node)) {
@@ -3743,6 +3810,11 @@ impl FrameHarness {
                         .place_in_app_header(self.root.as_mut());
                     self.document_history.remove_fallback_bar();
                 }
+                // The header the rebuild builds hears whether the frame's row
+                // presents search, so it never shows a second search control.
+                if self.slot_row.is_some() {
+                    crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
+                }
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(
                         self.root.as_mut(),
@@ -3819,20 +3891,9 @@ impl FrameHarness {
                     self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
                 }
                 let (w, h) = self.viewport;
-                self.root_node = self.taffy.parent_node(
-                    Style {
-                        size: Size {
-                            width: Dimension::length(w as f32),
-                            height: if self.host.content_height {
-                                Dimension::auto()
-                            } else {
-                                Dimension::length(h as f32)
-                            },
-                        },
-                        ..self.host.style.clone()
-                    },
-                    &[presentation_node],
-                );
+                self.root_node = self
+                    .taffy
+                    .parent_node(self.host_root_style(w, h), &[presentation_node]);
                 self.layout_built = true;
             }
             // Sync and view restoration can revive an outgoing owner's local
@@ -3853,20 +3914,8 @@ impl FrameHarness {
                     // The retained root still carries the old window size in
                     // its style; a resize moves it in place.
                     let (w, h) = self.viewport;
-                    self.taffy.set_style(
-                        self.root_node,
-                        Style {
-                            size: Size {
-                                width: Dimension::length(w as f32),
-                                height: if self.host.content_height {
-                                    Dimension::auto()
-                                } else {
-                                    Dimension::length(h as f32)
-                                },
-                            },
-                            ..self.host.style.clone()
-                        },
-                    )?;
+                    self.taffy
+                        .set_style(self.root_node, self.host_root_style(w, h))?;
                 }
                 if !rebuilt_this_pass {
                     // Taffy caches every node's measurement; a retained tree
@@ -4011,7 +4060,7 @@ impl FrameHarness {
                         .is_some_and(|history| history.captures_input())
                     || self.active_input_instance.is_none_or(|instance| {
                         self.bindings
-                            .binding_for(node)
+                            .binding_ref(node)
                             .is_some_and(|binding| binding.instance_id == instance)
                             && self.app_focus_eligible(node)
                     }))
@@ -4241,6 +4290,9 @@ impl FrameHarness {
                 &self.presence,
             );
         }
+        // The window's row of slots over the app, as a window of its own
+        // paints it over everything the app draws.
+        self.draw_slot_row(transform);
         if let Some(palette) = self
             .action_palette
             .as_deref_mut()
@@ -4257,7 +4309,7 @@ impl FrameHarness {
                 .map(|window| window.intersect(surface))
                 .filter(|window| window.width() > 0.0 && window.height() > 0.0)
                 .unwrap_or(surface);
-            let (origin, card) = crate::action_palette::placement(window);
+            let (origin, card) = palette.place_in(window, &self.theme);
             palette.layout_with_text(&self.theme, origin, card, &mut self.text);
             palette.draw(
                 &mut self.scene,
@@ -4659,12 +4711,26 @@ impl FrameHarness {
         root: NodeId,
         restrictions: &crate::history_mode::embedded::FocusRestrictions,
     ) -> (Vec<NodeId>, bool) {
+        // One sweep asks every mapped node, entering each component's scope
+        // once rather than once a node.
+        let sweep = std::cell::RefCell::new(crate::bound_dispatch::NodeSweep::new(
+            &self.bindings,
+            &self.node_map,
+        ));
         crate::focus_navigation::layout_map_order(
             root,
             &self.taffy,
             restrictions,
             self.history.as_deref(),
-            |node| self.inspect_node(node, crate::focus_navigation::probe).ok(),
+            |node| {
+                // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
+                unsafe {
+                    sweep
+                        .borrow_mut()
+                        .inspect(node, crate::focus_navigation::probe)
+                }
+                .ok()
+            },
         )
     }
 
@@ -4687,9 +4753,10 @@ impl FrameHarness {
         {
             // The mapped walk inspects composed nodes, some of which are not
             // Widget children of the root; every one it can inspect is mapped.
+            let mut sweep = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
             self.node_map.keys().any(|&node| {
-                self.inspect_node(node, |widget| widget.traps_focus())
-                    .unwrap_or(false)
+                // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
+                unsafe { sweep.inspect(node, |widget| widget.traps_focus()) }.unwrap_or(false)
             })
         } else {
             crate::focus_navigation::any_trap(self.root.as_ref())
@@ -4837,7 +4904,7 @@ impl FrameHarness {
             .copied()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_some_and(|binding| binding.instance_id != active)
             })
             .collect();
@@ -4867,7 +4934,7 @@ impl FrameHarness {
         if self.active_input_instance != Some(instance)
             || self.focused.is_some_and(|node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_none_or(|binding| binding.instance_id != instance)
             })
         {
@@ -4894,7 +4961,7 @@ impl FrameHarness {
             .copied()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_some_and(|binding| binding.instance_id != instance)
             })
             .collect();
@@ -4952,7 +5019,7 @@ impl FrameHarness {
             .into_iter()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_some_and(|binding| binding.instance_id == instance)
                     && self.app_focus_eligible(node)
             })
@@ -5007,7 +5074,7 @@ impl FrameHarness {
             .copied()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_none_or(|binding| binding.instance_id == instance)
                     && self
                         .inspect_node(node, |widget| {
@@ -5737,6 +5804,11 @@ impl FrameHarness {
                 Err("palette owns input".into())
             };
         }
+        // The window's row of slots, under no search or palette covering
+        // the window.
+        if name == WINDOW_SLOTS {
+            return self.perform_slot_row_semantic(semantic_target, action);
+        }
         self.try_presentation(|_, _| ())?;
         if semantic_target.is_none() && !self.named_target_nodes().contains_key(name) {
             // A control a widget paints and publishes as a semantic child
@@ -6183,6 +6255,11 @@ impl FrameHarness {
         } else {
             collect_inspection(self.root.as_ref(), "", &mut sibling_counts)
         };
+        // The window's row of slots, first in reading order, under nothing
+        // that covers the whole window.
+        if self.global_search_query().is_none() && self.caller_palette.palette.is_none() {
+            root.children.splice(0..0, self.slot_row_inspection());
+        }
         root.children.extend(self.tooltip_inspection());
         fn owner_path(
             node: &InspectionNode,
@@ -6461,6 +6538,11 @@ impl FrameHarness {
         if self.system_search_event(event) {
             return;
         }
+        // The window's row of slots takes what is its before the app, as a
+        // window of its own routes it.
+        if self.slot_row_event(event) {
+            return;
+        }
         // Framework presentations own captured keyboard input before global
         // host navigation, matching native App's early History dispatch.
         let history_input = self
@@ -6563,6 +6645,33 @@ impl FrameHarness {
         }
     }
 
+    /// Lay out for the input the person now uses, as the live window does
+    /// after detecting it.
+    fn switch_interaction(&mut self, environment: crate::interaction::InteractionEnvironment) {
+        if environment == self.interaction {
+            return;
+        }
+        self.interaction = environment;
+        self.root.set_interaction_environment(environment);
+        self.invalidate_layout_tree();
+        // The live window lays out again in its next frame; a host on
+        // its own frame clock does the same.
+        if self.coalesce_input_frames {
+            self.input_frame_pending = true;
+        } else {
+            self.relayout();
+        }
+    }
+
+    /// Switch to touch once every gesture begun has landed, as the live
+    /// window does: until then the touch is hit-tested against the layout
+    /// the person saw when it began, not the touch-sized one it brings.
+    fn settle_touch_modality(&mut self) {
+        if !self.dispatching_touch_pointer && self.touch_pointer.settled() {
+            self.switch_interaction(self.interaction.with_touch_modality());
+        }
+    }
+
     fn send_with_host_navigation(&mut self, event: &WindowEvent, host_navigation_allowed: bool) {
         if !self.pans_without_drawing(event) {
             self.settle_replayed_draws();
@@ -6579,6 +6688,9 @@ impl FrameHarness {
         self.dispatch_with_host_navigation(event, host_navigation_allowed);
         if crate::pointer_replay::PointerReplay::ends_press(event) {
             self.pointer_replay.end_press();
+        }
+        if matches!(event, WindowEvent::Touch(_)) {
+            self.settle_touch_modality();
         }
     }
 
@@ -6664,11 +6776,12 @@ impl FrameHarness {
                 crate::bound_dispatch::bound_owner_standing(self.root.as_ref(), &self.state.doc),
             )
         });
+        // A touch lands on what was on screen when it began: the switch to
+        // touch waits for its gesture to land (`Self::settle_touch_modality`).
         let detected = if self.dispatching_touch_pointer {
             None
         } else {
             match event {
-                WindowEvent::Touch(_) => Some(self.interaction.with_touch_modality()),
                 WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
                 | WindowEvent::MouseWheel { .. } => Some(self.interaction.with_pointer_modality()),
@@ -6683,19 +6796,8 @@ impl FrameHarness {
                 _ => None,
             }
         };
-        if let Some(environment) = detected
-            && environment != self.interaction
-        {
-            self.interaction = environment;
-            self.root.set_interaction_environment(environment);
-            self.invalidate_layout_tree();
-            // The live window lays out again in its next frame; a host on
-            // its own frame clock does the same.
-            if self.coalesce_input_frames {
-                self.input_frame_pending = true;
-            } else {
-                self.relayout();
-            }
+        if let Some(environment) = detected {
+            self.switch_interaction(environment);
         }
         if self.active_input_instance.is_some()
             && self.focused.is_none()
@@ -8024,6 +8126,9 @@ impl FrameHarness {
             .map_err(crate::bound_dispatch::BoundActionError::into_door);
         drop(answering);
         drop(scopes);
+        if origin == crate::bound_dispatch::Origin::Person {
+            crate::pick::note_invocation(&target.address, result.is_ok());
+        }
         self.note_continuation(on_behalf_of, &result);
         if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
             self.root.as_mut(),
@@ -8978,6 +9083,7 @@ impl FrameHarness {
     fn poll_touch_hold(&mut self, now: crate::time::Instant) {
         if let Some((device_id, events)) = self.touch_pointer.poll(now) {
             self.dispatch_touch_pointer(device_id, events);
+            self.settle_touch_modality();
         }
     }
 
@@ -12873,6 +12979,12 @@ mod tests {
             assert_eq!(pointer.available, initial.available);
             assert_eq!(pointer.pointer_precision, crate::PointerPrecision::Fine);
             send_touch(&mut driver, winit::event::TouchPhase::Started, 10.0, 10.0);
+            assert_eq!(
+                driver.interaction_environment().pointer_precision,
+                crate::PointerPrecision::Fine,
+                "a touch is hit against the layout it began on"
+            );
+            send_touch(&mut driver, winit::event::TouchPhase::Ended, 10.0, 10.0);
             let touch = driver.interaction_environment();
             assert_eq!(touch.keyboard_family, initial.keyboard_family);
             assert_eq!(touch.available, initial.available);
@@ -14893,7 +15005,7 @@ mod prepared_driver_tests {
             let node = *driver
                 .node_map
                 .keys()
-                .find(|node| driver.bindings.binding_for(**node).is_some())
+                .find(|node| driver.bindings.binding_ref(**node).is_some())
                 .unwrap();
             driver.set_focused(Some(node));
             driver.type_text("first");
@@ -15050,10 +15162,7 @@ mod ordinary_confirmation_owner_tests {
             driver
                 .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
                 .unwrap();
-            driver.send(&super::key_input(
-                &winit::keyboard::Key::Character("CONFIRM".into()),
-                winit::event::ElementState::Pressed,
-            ));
+            assert!(driver.asking().is_some(), "the host asks");
             let old = driver.control_domain.clone();
             if replacement {
                 driver.control_domain = crate::ControlDomain::new();

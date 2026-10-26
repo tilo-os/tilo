@@ -419,6 +419,43 @@ fn the_window_bar_names_the_cloud_folder() {
     assert!(!location.editable, "a cloud folder has no path to type");
 }
 
+/// A cloud folder the window named itself before the bar hosted it moves
+/// into the bar: the bar is told the account and the folder, and the window
+/// stops drawing its own title for it.
+#[test]
+fn a_cloud_folder_named_before_the_bar_hosts_the_window_moves_into_the_bar() {
+    let root = tempfile::tempdir().unwrap();
+    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
+    ui::window_toolbar::set_hosted(false);
+    files.debug_show_cloud_folder();
+    files.sync_window_toolbar();
+    files.refresh_cloud_header();
+    assert!(
+        files.cloud.header_shown,
+        "outside a Tilo session the window names the cloud folder"
+    );
+
+    ui::window_toolbar::set_hosted(true);
+    files.sync_window_toolbar();
+    files.refresh_cloud_header();
+    assert!(
+        !files.cloud.header_shown,
+        "the window draws no cloud title while the bar names the place"
+    );
+    let location = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.location)
+        .expect("the bar is told the place");
+    assert_eq!(location.label, "Trip to Lisbon");
+    assert_eq!(
+        location
+            .segments
+            .iter()
+            .map(|segment| segment.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Drive", "Trip to Lisbon"]
+    );
+}
+
 /// The cloud folder as a window shows it, its place in the window's bar,
 /// in dark and light, for a person to look at: each picture is printed as
 /// hex between `capture <name>` and `end capture` lines. Run on request

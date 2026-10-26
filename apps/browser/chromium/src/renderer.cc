@@ -4,7 +4,9 @@
 #include "credential_document.h"
 #include "renderer_media_lifetime.h"
 #include "cosmetics.h"
+#include "page_clipboard.h"
 #include "include/cef_browser.h"
+#include "include/cef_command_line.h"
 #include "include/cef_dom.h"
 #include "include/cef_frame.h"
 #include "include/cef_parser.h"
@@ -16,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -31,6 +34,51 @@ class SelectionReader final : public CefDOMVisitor {
   std::string* text_;
   IMPLEMENT_REFCOUNTING(SelectionReader);
 };
+// What the focused node takes, for the input method: 0 nothing, then text,
+// multiline text, a password, an email address, an address, a telephone
+// number, a number and a search (the browser's purposes, host.cc).
+int TextFieldKind(CefRefPtr<CefDOMNode> node) {
+  if(!node || !node->IsEditable() || node->HasElementAttribute("readonly") || node->HasElementAttribute("disabled")) return 0;
+  // An editable node that is no form control is an editable document.
+  if(!node->IsFormControlElement()) return 2;
+  switch(node->GetFormControlElementType()) {
+    case DOM_FORM_CONTROL_TYPE_TEXT_AREA: return 2;
+    case DOM_FORM_CONTROL_TYPE_INPUT_PASSWORD: return 3;
+    case DOM_FORM_CONTROL_TYPE_INPUT_EMAIL: return 4;
+    case DOM_FORM_CONTROL_TYPE_INPUT_URL: return 5;
+    case DOM_FORM_CONTROL_TYPE_INPUT_TELEPHONE: return 6;
+    case DOM_FORM_CONTROL_TYPE_INPUT_NUMBER: return 7;
+    case DOM_FORM_CONTROL_TYPE_INPUT_SEARCH: return 8;
+    default: return 1;
+  }
+}
+// Tells the browser what the focused node in `frame` takes and where it is,
+// in the widget's device pixels. A box is given only for a frame whose
+// ancestors are all in this process, so the widget places it: a field in a
+// frame of another site goes without one. `probe` marks an answer to the
+// browser's question rather than a focus change.
+void ReportTextField(CefRefPtr<CefFrame> frame,CefRefPtr<CefDOMNode> node,bool probe) {
+  if(!frame || !frame->IsValid()) return;
+  auto message=CefProcessMessage::Create("tilo.text_field");auto args=message->GetArgumentList();
+  const int kind=TextFieldKind(node);
+  args->SetBool(0,probe);args->SetInt(1,kind);
+  bool placed=false;
+  for(auto ancestor=frame;ancestor;ancestor=ancestor->GetParent()) if(ancestor->IsMain()) {placed=true;break;}
+  if(kind && placed) {
+    const CefRect box=node->GetElementBounds();
+    const auto bounded=[](int value){return std::clamp(value,-65536,65536);};
+    args->SetInt(2,bounded(box.x));args->SetInt(3,bounded(box.y));args->SetInt(4,bounded(box.width));args->SetInt(5,bounded(box.height));
+  }
+  frame->SendProcessMessage(PID_BROWSER,message);
+}
+class FocusedFieldReader final : public CefDOMVisitor {
+ public:
+  explicit FocusedFieldReader(CefRefPtr<CefFrame> frame):frame_(frame) {}
+  void Visit(CefRefPtr<CefDOMDocument> document) override { ReportTextField(frame_,document?document->GetFocusedNode():nullptr,true); }
+ private:
+  CefRefPtr<CefFrame> frame_;
+  IMPLEMENT_REFCOUNTING(FocusedFieldReader);
+};
 void TraceCredential(const char* stage,int browser=0) {
   static const bool enabled=[] {const char* value=std::getenv("TILO_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
   static unsigned count=0;
@@ -45,6 +93,53 @@ bool IsWebDocument(CefRefPtr<CefFrame> frame) {
   const auto scheme=CefString(&parts.scheme).ToString();
   return scheme=="http" || scheme=="https";
 }
+// An extension's own page (its popup, its settings): it copies and pastes
+// as a web page does.
+bool IsExtensionDocument(CefRefPtr<CefFrame> frame) {
+  CefURLParts parts;
+  return frame && CefParseURL(frame->GetURL(), parts) && CefString(&parts.scheme).ToString()=="chrome-extension";
+}
+// A document a page wrote into one of its frames (about:blank,
+// about:srcdoc), as rich editors write the one they edit in: what is copied
+// and pasted there is the page's. The host's gates (the person's activation
+// for a copy, the site's setting for a read) do not rest on the document's
+// address. A tab's own blank page is no page's.
+bool IsWrittenDocument(CefRefPtr<CefFrame> frame) {
+  CefURLParts parts;
+  if(!frame || frame->IsMain() || !CefParseURL(frame->GetURL(), parts) || CefString(&parts.scheme).ToString()!="about") return false;
+  const auto path=CefString(&parts.path).ToString();
+  return path=="blank" || path=="srcdoc";
+}
+// Whether this renderer's engine has no clipboard of its own (page_clipboard.h).
+bool PageClipboard() {
+  static const bool enabled=CefCommandLine::GetGlobalCommandLine()->HasSwitch(tilo::kPageClipboardSwitch);
+  return enabled;
+}
+// What page_clipboard.js calls: `send` with a copy, `ask` with a callback
+// for the system clipboard's text.
+class ClipboardHandler final : public CefV8Handler {
+ public:
+  using Ask=std::function<void(CefRefPtr<CefFrame>,CefRefPtr<CefV8Context>,CefRefPtr<CefV8Value>)>;
+  ClipboardHandler(CefRefPtr<CefFrame> frame,Ask ask):frame_(frame),ask_(std::move(ask)) {}
+  bool Execute(const CefString& name,CefRefPtr<CefV8Value>,const CefV8ValueList& args,CefRefPtr<CefV8Value>&,CefString&) override {
+    if(!frame_ || !frame_->IsValid() || args.size()!=1) return true;
+    if(name=="ask") { if(args[0]->IsFunction()) ask_(frame_,CefV8Context::GetCurrentContext(),args[0]);return true; }
+    auto copy=args[0];
+    if(!copy->IsObject()) return true;
+    auto text=copy->GetValue("text"),html=copy->GetValue("html"),secret=copy->GetValue("secret");
+    if(!text || !text->IsString() || !html || !html->IsString() || !secret || !secret->IsBool()) return true;
+    const auto words=text->GetStringValue().ToString();
+    if(words.empty() || words.size()>tilo::kMaxClipboardText) return true;
+    auto markup=html->GetStringValue().ToString();
+    if(markup.size()>tilo::kMaxClipboardHtml) markup.clear();
+    auto message=CefProcessMessage::Create("tilo.clipboard_write");auto fields=message->GetArgumentList();
+    fields->SetString(0,words);fields->SetString(1,markup);fields->SetBool(2,secret->GetBoolValue());
+    frame_->SendProcessMessage(PID_BROWSER,message);return true;
+  }
+ private:
+  CefRefPtr<CefFrame> frame_;Ask ask_;
+  IMPLEMENT_REFCOUNTING(ClipboardHandler);
+};
 class MediaStateHandler final : public CefV8Handler {
  public: MediaStateHandler(CefRefPtr<CefFrame> frame,uint64_t token):frame_(frame),token_(token) {}
   bool Execute(const CefString&,CefRefPtr<CefV8Value>,const CefV8ValueList& args,CefRefPtr<CefV8Value>&,CefString&) override {
@@ -63,6 +158,11 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
 
   void OnContextCreated(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefV8Context> context) override {
     TraceCredential(IsWebDocument(frame)?"web-context-created":"nonweb-context-created",browser->GetIdentifier());
+    // The page's own world only: the host's isolated worlds share its events.
+    if(PageClipboard() && (IsWebDocument(frame) || IsExtensionDocument(frame) || IsWrittenDocument(frame))) {
+      auto main=frame->GetV8Context();
+      if(main && main->IsSame(context)) InstallClipboard(frame,context);
+    }
     if(!IsWebDocument(frame)) return;
     if(frame->IsMain() && credential_context_sequence_<9007199254740991ULL) {
       CefRefPtr<CefV8Value> forms;
@@ -100,6 +200,9 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
       context->Eval("(()=>{let playing=null;const update=()=>{const next=[...document.querySelectorAll('audio,video')].some(e=>!e.paused&&!e.ended&&e.readyState>1);if(next!==playing){playing=next;__tiloMediaState(next)}};for(const event of ['play','playing','canplay','pause','ended','emptied'])addEventListener(event,update,true);update()})()",frame->GetURL(),0,result,exception);context->Exit();
     }
   }
+  void OnFocusedNodeChanged(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,CefRefPtr<CefDOMNode> node) override {
+    ReportTextField(frame,node,false);
+  }
   void OnBrowserDestroyed(CefRefPtr<CefBrowser> browser) override {
     TraceCredential("browser-destroyed",browser->GetIdentifier());
     // CEF can create a replacement handle with the same numeric ID before
@@ -126,6 +229,9 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     auto browser_media=media_contexts.find(browser->GetIdentifier());
     if(browser_media!=media_contexts.end()) {auto media=browser_media->second.find(key);if(media!=browser_media->second.end() && media->second.context->IsSame(context)) {auto message=CefProcessMessage::Create("tilo.media_context_closed");message->GetArgumentList()->SetDouble(0,static_cast<double>(media->second.token));frame->SendProcessMessage(PID_BROWSER,message);browser_media->second.erase(media);}if(browser_media->second.empty())media_contexts.erase(browser_media);}
     filter_tokens_.erase(key);
+    auto clipboard=clipboards_.find(key);
+    if(clipboard!=clipboards_.end() && clipboard->second.context->IsSame(context)) clipboards_.erase(clipboard);
+    for(auto it=clipboard_asks_.begin();it!=clipboard_asks_.end();) it=it->second.context->IsSame(context)?clipboard_asks_.erase(it):std::next(it);
     auto cosmetic=cosmetics_.find(key);
     if(cosmetic!=cosmetics_.end() && cosmetic->second.context->IsSame(context)) cosmetics_.erase(cosmetic);
     auto found=applied_.find(key);
@@ -137,6 +243,10 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     if(source!=PID_BROWSER) return false;
     if(message->GetName()=="tilo.credential_action") {
       CredentialAction(browser,frame,message->GetArgumentList());return true;
+    }
+    if(message->GetName()=="tilo.text_field_probe") {
+      if(frame && frame->IsValid()) frame->VisitDOM(new FocusedFieldReader(frame));
+      return true;
     }
     if(message->GetName()=="tilo.credential_probe") {
       TraceCredential("probe-received",browser->GetIdentifier());
@@ -170,6 +280,8 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
       reply->GetArgumentList()->SetInt(0,request);reply->GetArgumentList()->SetString(1,text);
       frame->SendProcessMessage(PID_BROWSER,reply);return true;
     }
+    if(message->GetName()=="tilo.clipboard_text") {ClipboardText(message->GetArgumentList());return true;}
+    if(message->GetName()=="tilo.clipboard_prime") {ClipboardPrime(frame,message->GetArgumentList());return true;}
     auto& config=configs_[browser->GetIdentifier()];
     if(message->GetName()=="tilo.filters") {
       auto args=message->GetArgumentList();auto found=filter_tokens_.find(frame->GetIdentifier().ToString());
@@ -182,6 +294,57 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     ApplyScripts(frame,config.scripts);return true;
   }
  private:
+  // page_clipboard.js in a document: what keeps the system clipboard's text
+  // for its next paste.
+  struct Clipboard { CefRefPtr<CefV8Context> context;CefRefPtr<CefV8Value> prime; };
+  std::map<std::string,Clipboard> clipboards_;
+  // A document's reads of the system clipboard the host has yet to answer.
+  struct ClipboardAsk { CefRefPtr<CefV8Context> context;CefRefPtr<CefV8Value> callback; };
+  std::map<int,ClipboardAsk> clipboard_asks_;
+  int clipboard_ask_=0;
+  void InstallClipboard(CefRefPtr<CefFrame> frame,CefRefPtr<CefV8Context> context) {
+    if(!context->Enter()) return;
+    CefRefPtr<CefV8Value> factory;CefRefPtr<CefV8Exception> exception;
+    if(context->Eval(tilo::kPageClipboard,frame->GetURL(),0,factory,exception) && factory && factory->IsFunction()) {
+      auto ask=[this](CefRefPtr<CefFrame> frame,CefRefPtr<CefV8Context> context,CefRefPtr<CefV8Value> callback) {Ask(frame,context,callback);};
+      CefRefPtr<ClipboardHandler> handler=new ClipboardHandler(frame,ask);
+      CefV8ValueList arguments{CefV8Value::CreateFunction("send",handler),CefV8Value::CreateFunction("ask",handler)};
+      auto prime=factory->ExecuteFunction(nullptr,arguments);
+      if(prime && prime->IsFunction()) clipboards_[frame->GetIdentifier().ToString()]={context,prime};
+    }
+    context->Exit();
+  }
+  void Ask(CefRefPtr<CefFrame> frame,CefRefPtr<CefV8Context> context,CefRefPtr<CefV8Value> callback) {
+    // A document reads one at a time in practice; a flood is answered with
+    // nothing rather than kept.
+    if(!context || clipboard_asks_.size()>=16) { callback->ExecuteFunction(nullptr,{CefV8Value::CreateNull()});return; }
+    clipboard_ask_=clipboard_ask_%2147483647+1;
+    clipboard_asks_[clipboard_ask_]={context,callback};
+    auto message=CefProcessMessage::Create("tilo.clipboard_read");message->GetArgumentList()->SetInt(0,clipboard_ask_);
+    frame->SendProcessMessage(PID_BROWSER,message);
+  }
+  void ClipboardText(CefRefPtr<CefListValue> args) {
+    if(args->GetSize()!=2 || args->GetType(0)!=VTYPE_INT) return;
+    auto found=clipboard_asks_.find(args->GetInt(0));
+    if(found==clipboard_asks_.end()) return;
+    auto ask=found->second;clipboard_asks_.erase(found);
+    if(!ask.context->IsValid() || !ask.context->Enter()) return;
+    auto text=args->GetType(1)==VTYPE_STRING?CefV8Value::CreateString(args->GetString(1)):CefV8Value::CreateNull();
+    ask.callback->ExecuteFunction(nullptr,{text});
+    ask.context->Exit();
+  }
+  void ClipboardPrime(CefRefPtr<CefFrame> frame,CefRefPtr<CefListValue> args) {
+    if(!frame || !frame->IsValid() || args->GetSize()!=2 || args->GetType(0)!=VTYPE_INT || args->GetType(1)!=VTYPE_STRING) return;
+    auto found=clipboards_.find(frame->GetIdentifier().ToString());
+    if(found!=clipboards_.end() && found->second.context->IsValid() && found->second.context->Enter()) {
+      const auto clipboard=found->second;
+      clipboard.prime->ExecuteFunction(nullptr,{CefV8Value::CreateString(args->GetString(1))});
+      clipboard.context->Exit();
+    }
+    // Kept or not, the key goes on to the page now.
+    auto reply=CefProcessMessage::Create("tilo.clipboard_primed");reply->GetArgumentList()->SetInt(0,args->GetInt(0));
+    frame->SendProcessMessage(PID_BROWSER,reply);
+  }
   struct CredentialContext {
     CefRefPtr<CefBrowser> browser;
     CefRefPtr<CefV8Context> context;

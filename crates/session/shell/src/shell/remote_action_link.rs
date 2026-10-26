@@ -402,14 +402,18 @@ impl<L: RemoteActionLink> ActionHost for PeerActionHost<L> {
         Some(change)
     }
 
-    fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-        self.ask_now(
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(self.ask_now(
             RemoteActionMessage::Cancel { invocation: *id },
             |answer| match answer {
                 RemoteActionMessage::CancelResponse { result, .. } => result,
                 _ => Err(unexpected()),
             },
-        )
+        ))
     }
 }
 

@@ -7,7 +7,7 @@ name = "workspace-hack"
 version = "0.1.0"
 edition = "2024"
 description = "workspace-hack package, managed by hakari"
-license.workspace = true
+license = "MIT"
 publish.workspace = true
 
 # The parts of the file between the BEGIN HAKARI SECTION and END HAKARI SECTION comments
@@ -187,7 +187,7 @@ scopeguard = { version = "1" }
 sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
-serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value"] }
+serde_json = { path = "../../vendor/serde_json", features = ["alloc", "preserve_order", "raw_value"] }
 sha1 = { version = "0.10", features = ["oid"] }
 sha2-93f6ce9d446188ac = { package = "sha2", version = "0.10" }
 sha2-a6292c17cd707f01 = { package = "sha2", version = "0.11" }
@@ -429,7 +429,7 @@ scopeguard = { version = "1" }
 sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
-serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value"] }
+serde_json = { path = "../../vendor/serde_json", features = ["alloc", "preserve_order", "raw_value"] }
 sha1 = { version = "0.10", features = ["oid"] }
 sha2-93f6ce9d446188ac = { package = "sha2", version = "0.10" }
 sha2-a6292c17cd707f01 = { package = "sha2", version = "0.11" }

@@ -195,6 +195,11 @@ where
             .iter()
             .any(tilo_actions::Action::incoming_message)
     }
+
+    /// Undo cannot take a gesture back when it cannot take back a member.
+    fn irreversible(&self) -> bool {
+        self.actions.iter().any(tilo_actions::Action::irreversible)
+    }
 }
 
 /// Apply `members`, a group encoded as `payload`, in order as one.

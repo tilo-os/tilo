@@ -174,6 +174,13 @@ impl<'a> TextStackFace<'a> {
         rect.y0 + (rect.height() - self.height(text, theme)) / 2.0 + title / 2.0
     }
 
+    /// The baseline-side top of the title as [`Self::paint`] places it in
+    /// `rect`: where a quiet line beside the title starts.
+    #[must_use]
+    pub fn title_top(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        rect.y0 + (rect.height() - self.height(text, theme)) / 2.0
+    }
+
     /// Paint the stack in `rect`, centred vertically, each line elided to
     /// the rect's width. Inks are measured on `ctx.theme`'s ground, so a
     /// stack on a selected row or a floating panel reads.

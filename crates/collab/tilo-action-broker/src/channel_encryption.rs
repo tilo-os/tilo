@@ -2493,12 +2493,13 @@ mod tests {
     /// #4022: a grant that expires while nothing else happens is enforced
     /// when it expires: the steward registers the expiry to be announced
     /// at, parks with no timer of its own, and the announcement at the
-    /// expiry wakes the one pass that removes the member. The wall clock is
-    /// held, so the expiry is reached when the test moves it there.
+    /// expiry wakes the one pass that removes the member. The test thread's
+    /// wall clock is held, so the expiry is reached when the test moves it
+    /// there; no other test sees that time.
     #[test]
     fn a_grant_expiring_while_idle_is_enforced_at_its_expiry() {
         let start = tilo_clock::unix_now();
-        tilo_clock::freeze_wall(std::time::UNIX_EPOCH + Duration::from_secs(start));
+        let at = |second: u64| std::time::UNIX_EPOCH + Duration::from_secs(second);
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
         let channel = ChannelId::new();
@@ -2517,20 +2518,6 @@ mod tests {
         let watch = tilo_identity_host::policy_change::Watch::new(move || {
             let _ = woke.try_send(());
         });
-        assert!(ready_epoch(&owner.access(room_id, channel).0).is_some());
-        tilo_test_env::wait_until("the laptop joined", || {
-            let _ = owner.pump_until_due(&owner_endpoint);
-            let _ = laptop.pump_until_due(&laptop_endpoint);
-            ready_epoch(&laptop.access(room_id, channel).0).is_some()
-        });
-
-        // Replace the admitted member's permission with an expiring grant,
-        // announced through the production watch, and let the steward
-        // register the expiry and park.
-        let expiry = start.saturating_add(3);
-        policy.until.lock().unwrap().insert(public(2), expiry);
-        policy.allowed.lock().unwrap().remove(&public(2));
-        tilo_identity_host::policy_change::announce();
         let parked = |owner: &ChannelKeyAccess| {
             tilo_test_env::wait_until("the steward parked", || {
                 match owner.pump_until_due(&owner_endpoint) {
@@ -2542,36 +2529,57 @@ mod tests {
                 }
             });
         };
-        parked(&owner);
-        assert_eq!(
-            policy.announce_at.lock().unwrap().last(),
-            Some(&expiry),
-            "the steward registered the expiry"
-        );
-        let _ = laptop.pump_until_due(&laptop_endpoint);
-        assert!(ready_epoch(&laptop.access(room_id, channel).0).is_some());
+        let expiry = start.saturating_add(3);
+
+        // This thread pumps both devices, so the time it reads is the time
+        // the steward judges the grant by.
+        tilo_clock::testing::with_wall(at(start), || {
+            assert!(ready_epoch(&owner.access(room_id, channel).0).is_some());
+            tilo_test_env::wait_until("the laptop joined", || {
+                let _ = owner.pump_until_due(&owner_endpoint);
+                let _ = laptop.pump_until_due(&laptop_endpoint);
+                ready_epoch(&laptop.access(room_id, channel).0).is_some()
+            });
+
+            // Replace the admitted member's permission with an expiring
+            // grant, announced through the production watch, and let the
+            // steward register the expiry and park.
+            policy.until.lock().unwrap().insert(public(2), expiry);
+            policy.allowed.lock().unwrap().remove(&public(2));
+            tilo_identity_host::policy_change::announce();
+            parked(&owner);
+            assert_eq!(
+                policy.announce_at.lock().unwrap().last(),
+                Some(&expiry),
+                "the steward registered the expiry"
+            );
+            let _ = laptop.pump_until_due(&laptop_endpoint);
+            assert!(ready_epoch(&laptop.access(room_id, channel).0).is_some());
+        });
 
         // Short of the expiry, a pass (another announcement) keeps the member.
-        tilo_clock::freeze_wall(std::time::UNIX_EPOCH + Duration::from_secs(expiry - 1));
-        tilo_identity_host::policy_change::announce();
-        assert!(wakes.try_recv().is_ok(), "the armed watch woke");
-        parked(&owner);
-        let _ = laptop.pump_until_due(&laptop_endpoint);
-        assert!(
-            ready_epoch(&laptop.access(room_id, channel).0).is_some(),
-            "removed before the grant ended"
-        );
+        tilo_clock::testing::with_wall(at(expiry - 1), || {
+            tilo_identity_host::policy_change::announce();
+            assert!(wakes.try_recv().is_ok(), "the armed watch woke");
+            parked(&owner);
+            let _ = laptop.pump_until_due(&laptop_endpoint);
+            assert!(
+                ready_epoch(&laptop.access(room_id, channel).0).is_some(),
+                "removed before the grant ended"
+            );
+        });
 
         // The expiry: its announcement wakes the parked steward, whose
         // re-check (at most a reconcile interval after the last) removes the
         // member.
-        tilo_clock::freeze_wall(std::time::UNIX_EPOCH + Duration::from_secs(expiry));
-        tilo_identity_host::policy_change::announce();
-        assert!(wakes.try_recv().is_ok(), "the expiry woke the steward");
-        tilo_test_env::wait_until("the member applied the removal", || {
-            let _ = owner.pump_until_due(&owner_endpoint);
-            let _ = laptop.pump_until_due(&laptop_endpoint);
-            matches!(laptop.access(room_id, channel).0, ChannelAccess::Removed)
+        tilo_clock::testing::with_wall(at(expiry), || {
+            tilo_identity_host::policy_change::announce();
+            assert!(wakes.try_recv().is_ok(), "the expiry woke the steward");
+            tilo_test_env::wait_until("the member applied the removal", || {
+                let _ = owner.pump_until_due(&owner_endpoint);
+                let _ = laptop.pump_until_due(&laptop_endpoint);
+                matches!(laptop.access(room_id, channel).0, ChannelAccess::Removed)
+            });
         });
     }
 

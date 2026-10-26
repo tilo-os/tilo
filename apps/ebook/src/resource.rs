@@ -182,8 +182,10 @@ impl Ebook {
     /// Remove from library
     ///
     /// Takes the book off the shelf. Where the reader was and what they
-    /// marked in it stay, so adding it again brings them back.
-    #[action(destructive, writes = annotations)]
+    /// marked in it stay, so adding it again brings them back. Undo puts the
+    /// row back but not this device's access to the book's file, which the
+    /// reader forgets with it, so this is asked first.
+    #[action(destructive, irreversible, writes = annotations)]
     pub fn remove_from_library(&mut self, #[param("The book's id")] book: String) {
         self.entries.remove(&Id::from_raw(book));
     }
@@ -1128,6 +1130,16 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
         self.attach_host(&cx);
     }
 
+    const APPLIED: bool = true;
+
+    /// A removal applied here, from the shelf, the palette, a script or an
+    /// agent once the person agreed: this device forgets the book's file.
+    fn applied(&mut self, action: &<Ebook as tilo_resource::Resource>::Action) {
+        if let EbookAction::RemoveFromLibrary(removed) = &action.operation {
+            self.forget_removed(&removed.book);
+        }
+    }
+
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario.unwrap_or("read"));
     }
@@ -1234,3 +1246,26 @@ pub(crate) fn read_doc(doc: &ui::automerge::AutoCommit) -> Ebook {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::EbookShell::scenarios() {
+            let mut app = TestApp::<super::EbookShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

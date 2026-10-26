@@ -252,6 +252,14 @@ impl Capabilities {
             WebViewEvent::PermissionClosed { id } => {
                 self.permissions.remove(&id);
             }
+            // The page that asked closed first: the extension was told no,
+            // so the question goes without an answer.
+            WebViewEvent::ExtensionPermissionClosed { request } => {
+                let mut questions = self.extension_questions.borrow_mut();
+                if questions.open.remove(&request).is_some() {
+                    questions.version = questions.version.wrapping_add(1);
+                }
+            }
             WebViewEvent::NativeDownloadRequested { id, url, name } => {
                 self.request_download(id, url, name);
             }
@@ -689,6 +697,41 @@ mod tests {
             .borrow_mut()
             .answer(&engine, 5, true);
         assert_eq!(capture.commands().len(), 2);
+    }
+    #[test]
+    fn an_extensions_question_whose_page_closed_goes_unanswered() {
+        let capture = ui::webview::test_engine::TestEngine::new();
+        let engine: SharedEngine = capture.clone();
+        let mut capabilities = Capabilities::default();
+        for request in [4, 5] {
+            capabilities.ask_for_extension(ExtensionQuestion {
+                request,
+                name: "Permit".into(),
+                lines: vec!["Read your browsing history".into()],
+            });
+        }
+        assert!(capabilities.extension_questions_changed());
+        // Its popup closed itself before the person answered: the engine
+        // told the extension no, and its question is no longer on offer.
+        capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 4 });
+        assert!(capabilities.extension_questions_changed());
+        let prompt = capabilities.prompt(&engine).unwrap();
+        assert!(!contains(
+            prompt.as_ref(),
+            "browser.decision.extension.4.true"
+        ));
+        assert!(contains(
+            prompt.as_ref(),
+            "browser.decision.extension.5.true"
+        ));
+        // A question the window no longer holds changes nothing.
+        capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 4 });
+        assert!(!capabilities.extension_questions_changed());
+        capabilities.apply(WebViewEvent::ExtensionPermissionClosed { request: 5 });
+        assert!(!capabilities.asks_for_extension());
+        assert!(capabilities.prompt(&engine).is_none());
+        // Nothing was answered for the person.
+        assert!(capture.commands().is_empty());
     }
     #[test]
     #[allow(

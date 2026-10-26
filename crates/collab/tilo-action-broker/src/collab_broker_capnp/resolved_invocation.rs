@@ -5,8 +5,8 @@ use super::{
     DIRECTORY_MAX_QUERY_REVISION_BYTES, DirectoryActionConfirmation, Duration, HostWorkerReadGuard,
     InvocationCaller, InvocationInputs, LocalActionDirectoryRegistry, PrivateWorkerRegistration,
     Promise, PublishedAction, PublishedSurface, Rc, RegisteredActionDirectory, channel_handle,
-    invocation_target_peer, published_directory_action, validate_directory_identifier,
-    validate_directory_target_input, validate_directory_text,
+    invocation_target_peer, legacy_door_may_act_as_person, published_directory_action,
+    validate_directory_identifier, validate_directory_target_input, validate_directory_text,
 };
 
 enum ResolutionRevision<'a> {
@@ -659,6 +659,13 @@ fn invoke_checked(
                 "resolved worker original authorizer unavailable".into(),
             ));
         }
+        // The peer names the target, so the target's application must be the
+        // caller's own. Checked before any confirmation is minted.
+        let invoke_access = state.app_action_access(&route.app_id).invoke;
+        if !legacy_door_may_act_as_person(&current, &route, &offer.registered.app_id, invoke_access)
+        {
+            return Err(capnp::Error::failed(super::LEGACY_DOOR_FOREIGN_APP.into()));
+        }
         state.revalidate_admission(&offer.registered.route, &target)?;
         let actor = current.broker_actor();
         let offered = offer.offered(peer);
@@ -675,7 +682,7 @@ fn invoke_checked(
             .map_err(|error| {
                 capnp::Error::failed(format!("directory confirmation refused: {error:?}"))
             })?;
-        let job = state
+        let staged = state
             .dispatch_invocation_from_offered_owned(
                 peer,
                 offered,
@@ -701,6 +708,10 @@ fn invoke_checked(
                 },
             )
             .map_err(capnp::Error::failed)?;
+        // Answered once durable; the admission lock is not held across the
+        // wait.
+        drop(admission);
+        let job = staged.start(state).await.map_err(capnp::Error::failed)?;
         let update = state.invocation_status(job.id).ok_or_else(|| {
             capnp::Error::failed("accepted invocation has no broker state".into())
         })?;
@@ -709,7 +720,6 @@ fn invoke_checked(
         results.get().set_id(job.id);
         results.get().set_update_json(&update);
         drop(job.completion);
-        drop(admission);
         drop(offer);
         Ok(())
     })

@@ -298,11 +298,13 @@ impl PowerMenu {
         self.open = true;
         self.selected = 0;
         self.armed_by = ArmedBy::Pointer;
+        // It comes and goes as the input that asked: from a key (Ctrl+Alt+
+        // Delete, Escape) at once, from a click on its motion.
         self.transition.show(
             true,
             ui::motion::Appear::SPEC,
             self.motion,
-            ui::tokens::MotionSource::Pointer,
+            ui::motion::input_source(),
             ui::time::now(),
         );
     }
@@ -316,7 +318,7 @@ impl PowerMenu {
                 false,
                 ui::motion::Appear::SPEC,
                 self.motion,
-                ui::tokens::MotionSource::Pointer,
+                ui::motion::input_source(),
                 ui::time::now(),
             );
         }
@@ -884,6 +886,31 @@ mod tests {
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
     #[test]
+    fn the_menu_comes_and_goes_as_the_input_that_asked() {
+        let key =
+            ui::synthetic_input::key_press(winit::keyboard::Key::Named(NamedKey::Escape), None);
+        let click = ui::synthetic_input::mouse_press();
+        for (input, lands) in [(&key, true), (&click, false)] {
+            let mut menu = PowerMenu::default();
+            ui::motion::note_input(input);
+            menu.open();
+            assert_eq!(
+                !menu.is_animating(ui::time::now()),
+                lands,
+                "opened by {input:?}"
+            );
+            menu.force_settled_for_visual_test();
+            ui::motion::note_input(input);
+            assert!(menu.close());
+            assert_eq!(
+                !menu.is_animating(ui::time::now()),
+                lands,
+                "closed by {input:?}"
+            );
+        }
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -957,6 +984,8 @@ mod tests {
 
         fn opening_animation_hit_test_tracks_the_painted_logout_row() {
             let mut menu = PowerMenu::default();
+            // Opened by a click: it appears on its motion.
+            ui::motion::note_input(&ui::synthetic_input::mouse_press());
             menu.open();
             let now = ui::time::now();
             let stable = action_rect(VIEWPORT, 1).center();
@@ -1087,6 +1116,8 @@ mod tests {
 
         fn opening_requests_animation_frames_without_waiting_for_draw() {
             let mut menu = PowerMenu::default();
+            // Opened by a click: it appears on its motion.
+            ui::motion::note_input(&ui::synthetic_input::mouse_press());
             menu.open();
             assert!(menu.is_animating(Instant::now()));
         }

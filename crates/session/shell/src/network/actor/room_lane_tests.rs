@@ -192,6 +192,7 @@ async fn a_room_whose_device_stalls_holds_up_no_other_room() {
         .expect("the actor is running");
     cmd_a
         .send(NetCmd::Publish {
+            at: tokio::time::Instant::now(),
             ws: 42,
             msg: NeighbourMsg::SyncReq {
                 since: vec![],
@@ -204,6 +205,7 @@ async fn a_room_whose_device_stalls_holds_up_no_other_room() {
         .unwrap();
     cmd_a
         .send(NetCmd::Publish {
+            at: tokio::time::Instant::now(),
             ws: 42,
             msg: NeighbourMsg::PresenceMoved {
                 peer: 1,

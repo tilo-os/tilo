@@ -1,6 +1,6 @@
 //! `WorkspaceSettings` — the contextual lens opened from the `TopBar`'s
 //! workspace-name button, with General / People / Agents / Privacy & Security /
-//! Apps & Files tabs.
+//! Apps & Files / Emoji tabs.
 //!
 //! Members and Permissions are both views of [`Workspace::policy`]
 //! — the single list `decide_capability` consults, the sandbox turns
@@ -38,10 +38,11 @@ use ui::text_render::TextStyle;
 use ui::widget::ButtonRole;
 
 pub mod agent_access;
+pub mod emoji_pane;
 pub mod overlay;
 mod people_pane;
 
-pub use people_pane::{draw_members_pane, member_row_controls, ownership_button};
+pub use people_pane::{member_row_controls, member_row_offers, ownership_button};
 
 /// The host's application catalogue, as workspace settings name apps and
 /// offer them as default openers.
@@ -983,6 +984,9 @@ pub enum WsTab {
     Permissions,
     /// Shared default-app policy plus this person's explicit override.
     Apps,
+    /// The workspace's own emoji: every app of the workspace draws
+    /// `:name:` from them.
+    Emoji,
 }
 
 impl WsTab {
@@ -993,6 +997,7 @@ impl WsTab {
             WsTab::Agents => "workspace-settings-tab-agents",
             WsTab::Permissions => "workspace-settings-tab-privacy-security",
             WsTab::Apps => "workspace-settings-tab-apps-files",
+            WsTab::Emoji => "workspace-settings-tab-emoji",
         })
     }
 
@@ -1005,20 +1010,34 @@ impl WsTab {
             WsTab::Agents => "workspace-settings-tab-agents",
             WsTab::Permissions => "workspace-settings-tab-privacy",
             WsTab::Apps => "workspace-settings-tab-apps",
+            WsTab::Emoji => "workspace-settings-tab-emoji",
         })
     }
 
     /// Iteration order for the sidebar nav and tab strip. Every tab is
     /// always reachable — a host must reach Permissions before any
     /// grant exists.
-    pub fn all() -> [WsTab; 5] {
+    pub fn all() -> [WsTab; WsTab::COUNT] {
         [
             WsTab::General,
             WsTab::Members,
             WsTab::Agents,
             WsTab::Permissions,
             WsTab::Apps,
+            WsTab::Emoji,
         ]
+    }
+
+    /// How many tabs there are.
+    pub const COUNT: usize = 6;
+
+    /// Where the tab stands in [`Self::all`].
+    #[must_use]
+    pub fn index(self) -> usize {
+        Self::all()
+            .iter()
+            .position(|tab| *tab == self)
+            .unwrap_or_default()
     }
 }
 
@@ -1099,16 +1118,16 @@ impl WorkspaceSettings {
     }
 
     /// Per-row hit-test rects, one per [`WsTab`] in [`WsTab::all`] order.
-    pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); 5] {
+    pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); WsTab::COUNT] {
         let sidebar = self.sidebar_rect(modal_rect);
         let inset_x0 = sidebar.x0 + 16.0;
         let inset_x1 = sidebar.x1 - 16.0;
         let tabs = WsTab::all();
         std::array::from_fn(|i| {
-            // `i` is a `std::array::from_fn::<_, 3>` index, always 0..=2.
+            // `i` is an index of the fixed tab array, below `WsTab::COUNT`.
             #[allow(
                 clippy::cast_precision_loss,
-                reason = "i is a fixed 3-element array index, always 0..=2"
+                reason = "i indexes the fixed tab array, below WsTab::COUNT"
             )]
             let y0 = sidebar.y0 + NAV_ROWS_TOP + i as f64 * (NAV_ROW_HEIGHT + NAV_ROW_GAP);
             let y1 = y0 + NAV_ROW_HEIGHT;
@@ -1315,6 +1334,7 @@ fn tab_focus_id(tab: WsTab) -> u64 {
         WsTab::Agents => BASE + 2,
         WsTab::Permissions => BASE + 3,
         WsTab::Apps => BASE + 4,
+        WsTab::Emoji => BASE + 5,
     }
 }
 
@@ -3024,18 +3044,6 @@ pub fn members_authority_note(is_owner: bool) -> Option<String> {
     (!is_owner).then(|| t("workspace-settings-owner-only"))
 }
 
-/// Pointer and accessibility target for the ownership action entry point in
-/// the Members intro card.
-pub fn ownership_action_rect(pane_rect: Rect) -> Rect {
-    let center_y = pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT / 2.0;
-    Rect::new(
-        pane_rect.x1 - PANE_PAD_X - 168.0,
-        center_y - 18.0,
-        pane_rect.x1 - PANE_PAD_X - 8.0,
-        center_y + 18.0,
-    )
-}
-
 /// Plain-language ownership state shared by visual rendering, accessibility
 /// snapshots, and deterministic UI tests.
 pub fn ownership_transfer_status(
@@ -4664,7 +4672,8 @@ mod tab_tests {
                         WsTab::Members,
                         WsTab::Agents,
                         WsTab::Permissions,
-                        WsTab::Apps
+                        WsTab::Apps,
+                        WsTab::Emoji
                     ]
                 );
             }
@@ -4673,7 +4682,7 @@ mod tab_tests {
             {
                 assert_eq!(
                     WsTab::all().map(|tab| tab.compact_label()),
-                    ["General", "People", "Agents", "Privacy", "Apps"]
+                    ["General", "People", "Agents", "Privacy", "Apps", "Emoji"]
                 );
             }
 
@@ -4725,12 +4734,16 @@ mod tab_tests {
                 let ws = ws_settings_default();
                 let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
                 let rows = ws.nav_rows(modal);
-                assert_eq!(rows.len(), 5);
+                assert_eq!(rows.len(), WsTab::COUNT);
                 assert_eq!(rows[0].0, WsTab::General);
                 assert_eq!(rows[1].0, WsTab::Members);
                 assert_eq!(rows[2].0, WsTab::Agents);
                 assert_eq!(rows[3].0, WsTab::Permissions);
                 assert_eq!(rows[4].0, WsTab::Apps);
+                assert_eq!(rows[5].0, WsTab::Emoji);
+                for (index, (tab, _)) in rows.iter().enumerate() {
+                    assert_eq!(tab.index(), index);
+                }
                 for (_, r) in &rows {
                     assert!((r.height() - NAV_ROW_HEIGHT).abs() < f64::EPSILON);
                     assert!(r.x1 > r.x0);
@@ -5254,66 +5267,6 @@ mod members_pane_tests {
 
         let viewer = "viewer".to_string();
         assert!(governance_resource(&ws, &viewer).actions.is_empty());
-    }
-
-    #[test]
-    fn draw_members_pane_paints_members_and_skips_a_zero_area_pane() {
-        {
-            let theme = Theme::dark();
-            let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-            let mut tr = TextRenderer::new();
-
-            let mut empty = Scene::new();
-            draw_members_pane(
-                &mut empty,
-                Affine::IDENTITY,
-                pane,
-                (
-                    &Workspace::new(WorkspaceId::default(), "empty"),
-                    &crate::collaborators::PeopleNames::default(),
-                ),
-                &OWNER.to_string(),
-                true,
-                &mut tr,
-                &theme,
-            );
-            let mut full = Scene::new();
-            draw_members_pane(
-                &mut full,
-                Affine::IDENTITY,
-                pane,
-                (
-                    &ws_with_two_members(),
-                    &crate::collaborators::PeopleNames::default(),
-                ),
-                &OWNER.to_string(),
-                true,
-                &mut tr,
-                &theme,
-            );
-            assert!(
-                full.encoding().draw_tags.len() > empty.encoding().draw_tags.len(),
-                "a populated roster must paint more than the empty state"
-            );
-        }
-
-        {
-            let ws = ws_with_two_members();
-            let mut scene = Scene::new();
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            draw_members_pane(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(100.0, 100.0, 100.0, 100.0),
-                (&ws, &crate::collaborators::PeopleNames::default()),
-                &OWNER.to_string(),
-                true,
-                &mut tr,
-                &theme,
-            );
-            assert!(scene.encoding().draw_tags.is_empty());
-        }
     }
 }
 

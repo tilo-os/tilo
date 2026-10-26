@@ -213,7 +213,7 @@ fn nothing_the_window_publishes_or_reads_out_holds_a_secret() {
         Screen::Transfer,
     ] {
         shared.borrow_mut().screen = screen;
-        let page = crate::pages::content(&shared.borrow(), &shared, &app.requests);
+        let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
         let tree = page
             .accessibility()
             .map(|node| spoken(&node))
@@ -546,7 +546,7 @@ fn an_empty_vault_review_says_there_is_nothing_to_check() {
     let app = PasswordsSurface::new(crate::PasswordsModel::open_in(&root));
     let shared = Rc::clone(&app.core);
     shared.borrow_mut().screen = Screen::Review;
-    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests);
+    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
     let tree = spoken_tree(page.as_ref());
     assert!(tree.contains("Nothing to check yet"), "{tree}");
     assert!(!tree.contains("Nothing to fix"), "{tree}");
@@ -561,7 +561,7 @@ fn the_review_says_it_checked_this_vault() {
     let app = PasswordsSurface::demo();
     let shared = Rc::clone(&app.core);
     shared.borrow_mut().screen = Screen::Review;
-    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests);
+    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
     let tree = spoken_tree(page.as_ref());
     assert!(tree.contains("Only the passwords in this vault"), "{tree}");
     assert!(!tree.contains("on this device"), "{tree}");
@@ -575,7 +575,7 @@ fn the_editor_names_each_kind_in_full() {
     request(&mut app, Request::NewItem);
     request(&mut app, Request::SetKind(SecretItemKind::SecureNote));
     let shared = Rc::clone(&app.core);
-    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests);
+    let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
     let tree = spoken_tree(page.as_ref());
     assert!(tree.contains("ComboBox"), "{tree}");
     assert!(tree.contains("Secure note"), "{tree}");
@@ -846,4 +846,52 @@ fn every_capture_scenario_stages_on_the_fixture_vault() {
         drop(core);
         let _ = std::fs::remove_dir_all(root);
     }
+}
+
+#[test]
+fn hosted_by_the_window_bar_the_items_actions_are_the_bars() {
+    ui::window_toolbar::set_hosted(true);
+    let mut app = PasswordsSurface::demo();
+    app.settle();
+    let favorite = {
+        let core = app.core.borrow();
+        crate::vault::is_favorite(core.selected_item().expect("the demo shows an item"))
+    };
+    let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+    let ids: Vec<&str> = toolbar
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert_eq!(ids, [NEW_ITEM, COPY_SECRET, EDIT_ITEM, FAVORITE]);
+
+    let page = {
+        let shared = Rc::clone(&app.core);
+        crate::pages::content(&shared.borrow(), &shared, &app.requests, true)
+    };
+    for id in ["passwords.copy", "passwords.edit", "passwords.favorite"] {
+        assert!(
+            ui::widget::find_test_id(page.as_ref(), id).is_none(),
+            "the item's page draws no {id} of its own"
+        );
+    }
+
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+        id: FAVORITE.into(),
+    });
+    app.settle();
+    let now = {
+        let core = app.core.borrow();
+        crate::vault::is_favorite(core.selected_item().expect("the item is still shown"))
+    };
+    assert_ne!(now, favorite, "the bar's star toggles the item's favorite");
+    let star = ui::window_toolbar::declared()
+        .and_then(|toolbar| {
+            toolbar
+                .actions
+                .into_iter()
+                .find(|action| action.id == FAVORITE)
+        })
+        .expect("the bar still offers the star");
+    assert_eq!(star.on, now, "the star shows the item's state");
 }

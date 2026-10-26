@@ -31,6 +31,11 @@ path = "examples/notes-latency.rs"
 [features]
 thin = ["dep:runtime-dylib"]
 android = []
+# Reach the emoji catalogue a page's reactions pick from through its engine
+# library in the runtime bundle (libtilo_emoji_engine.so,
+# crates/runtime/engines/emoji) instead of linking it. The release collection
+# enables it (dist/apps/app-collections.toml), as for Chat.
+runtime-engine = ["thin", "tilo-emoji-engine/thin"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
@@ -82,3 +87,8 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+# The emoji catalogue for the picker of a page's reactions. The browser
+# desktop's start module holds Notes and must not carry it; there Chat's
+# module offers it.
+tilo-emoji-catalogue = { path = "../../crates/text/emoji-catalogue" }
+tilo-emoji-engine = { path = "../../crates/runtime/engines/emoji", optional = true }

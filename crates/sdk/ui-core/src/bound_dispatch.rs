@@ -11,7 +11,8 @@ pub use executing_host::{
 mod node_map;
 pub use node_map::{BoundNodeMap, invoke_bound_node};
 pub(crate) use node_map::{
-    enter_traversal, enter_widget, inspect_bound_node, layout_bound_node, mutate_bound_node,
+    NodeSweep, enter_traversal, enter_widget, inspect_bound_node, layout_bound_node,
+    mutate_bound_node,
 };
 
 mod hosted;
@@ -1185,6 +1186,67 @@ pub(crate) fn publication_visibility(
     visit(root, doc, owner, None, id)
 }
 
+/// [`publication_visibility`] for each of `wanted` (an owner and a resource
+/// id), in one walk of the widget tree: what each resource's first
+/// publisher in tree order says discloses it. A snapshot of an app with many
+/// resources asks for all of them, and a walk per resource made that cost
+/// its resources times its widgets.
+pub(crate) fn publication_visibilities(
+    root: &dyn Widget,
+    doc: &AutoCommit,
+    wanted: &[(Option<CallbackBinding>, String)],
+) -> Vec<Option<tilo_actions::ActionAddress>> {
+    fn visit(
+        widget: &dyn Widget,
+        doc: &AutoCommit,
+        inherited: Option<CallbackBinding>,
+        wanted: &[(Option<CallbackBinding>, String)],
+        found: &mut [Option<tilo_actions::ActionAddress>],
+    ) {
+        let boundary = widget.callback_binding();
+        let binding = boundary.clone().or(inherited);
+        let Ok(_entry) = binding.as_ref().map(CallbackBinding::enter).transpose() else {
+            return;
+        };
+        if boundary.is_none()
+            && crate::widget::capability::capability::<dyn crate::resources::PublishesResources>(
+                widget,
+            )
+            .is_some()
+        {
+            let mut answer = |doc: &AutoCommit| {
+                for ((owner, id), slot) in wanted.iter().zip(found.iter_mut()) {
+                    if slot.is_some() {
+                        continue;
+                    }
+                    let mine = match (owner, binding.as_ref()) {
+                        (Some(owner), Some(binding)) => owner.same_component(binding),
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    if mine {
+                        *slot = crate::resources::action_directory_visibility(widget, doc, id);
+                    }
+                }
+            };
+            if let Some(binding) = &binding {
+                let _ = binding.read_document(doc, |doc, _| answer(doc));
+            } else {
+                answer(doc);
+            }
+        }
+        if found.iter().all(Option::is_some) {
+            return;
+        }
+        widget.for_each_child(&mut |child| {
+            visit(child, doc, binding.clone(), wanted, found);
+        });
+    }
+    let mut found = vec![None; wanted.len()];
+    visit(root, doc, None, wanted, &mut found);
+    found
+}
+
 /// Opaque legacy navigation remains scoped to the provider that produced it.
 pub(crate) fn activate_bound_search(
     root: &mut dyn Widget,
@@ -1897,18 +1959,36 @@ fn discover_bound_resources_with_filter(
     fn visit(
         widget: &dyn Widget,
         doc: &AutoCommit,
-        inherited: Option<CallbackBinding>,
+        inherited: Option<&CallbackBinding>,
         address: Option<&tilo_actions::ActionAddress>,
         snapshots: &mut Vec<BoundResourceSnapshot>,
         filtered: bool,
     ) -> Result<(), BoundDispatchError> {
         let boundary = widget.callback_binding();
-        let binding = boundary.clone().or(inherited);
-        if let Some(binding) = &binding {
+        let binding = boundary.as_ref().or(inherited);
+        if let Some(binding) = binding {
             if binding.closing.get() || !binding.lifetime.is_active() {
                 return Ok(());
             }
-            if boundary.is_none() {
+            let snapshot = snapshots
+                .iter()
+                .position(|snapshot| snapshot.binding.same_component(binding));
+            // Most widgets of a component publish nothing and resolve no
+            // search: once the component's snapshot is open, reading the
+            // record for each of them found nothing, thousands of times for
+            // a long list.
+            let publishes = || {
+                crate::widget::capability::capability::<dyn crate::resources::PublishesResources>(
+                    widget,
+                )
+                .is_some()
+                    || (address.is_some()
+                        && crate::widget::capability::capability::<
+                            dyn crate::search::capability::SearchSource,
+                        >(widget)
+                        .is_some())
+            };
+            if boundary.is_none() && (snapshot.is_none() || publishes()) {
                 let resources = binding.read_document(doc, |doc, _| {
                     // A delivered invocation resolves in its invoker's own tree.
                     let participant = crate::invocation_scope::current_participant();
@@ -1935,20 +2015,17 @@ fn discover_bound_resources_with_filter(
                         resources
                     }
                 })?;
-                if let Some(snapshot) = snapshots
-                    .iter_mut()
-                    .find(|snapshot| snapshot.binding.same_component(binding))
-                {
-                    snapshot.extend(resources);
-                } else {
-                    snapshots.push(BoundResourceSnapshot::new(binding.clone(), resources));
+                match snapshot.and_then(|index| snapshots.get_mut(index)) {
+                    Some(snapshot) if !resources.is_empty() => snapshot.extend(resources),
+                    Some(_) => {}
+                    None => snapshots.push(BoundResourceSnapshot::new(binding.clone(), resources)),
                 }
             }
         }
         let mut result = Ok(());
         widget.for_each_child(&mut |child| {
             if result.is_ok() {
-                result = visit(child, doc, binding.clone(), address, snapshots, filtered);
+                result = visit(child, doc, binding, address, snapshots, filtered);
             }
         });
         result
@@ -4646,6 +4723,20 @@ impl CallbackBinding {
             && self.checkout == other.checkout
             && self.instance_id == other.instance_id
     }
+    /// Whether entering `other` sets exactly what entering `self` sets: the
+    /// same open lifetime and wake route, record, executing device, person
+    /// and author. A sweep inside `self`'s scope may then answer `other`'s
+    /// widgets without entering again ([`NodeSweep`]).
+    pub(crate) fn enters_same_scope(&self, other: &Self) -> bool {
+        self.lifetime_id == other.lifetime_id
+            && Rc::ptr_eq(&self.closing, &other.closing)
+            && self.lifetime.same_open_scope(&other.lifetime)
+            && self.records.same_owner(&other.records)
+            && self.checkout == other.checkout
+            && self.device_id == other.device_id
+            && self.host_person == other.host_person
+            && self.author == other.author
+    }
     fn check_record(&self) -> Result<Option<*const AutoCommit>, BoundDispatchError> {
         if self.closing.get() || !self.lifetime.is_active() {
             return Err(BoundDispatchError::ClosedLifetime);
@@ -4662,6 +4753,8 @@ impl CallbackBinding {
         })
     }
     pub(crate) fn enter(&self) -> Result<CallbackScopeGuard, BoundDispatchError> {
+        // Counted, for a test to bound how often a frame enters a scope.
+        let _profile = tilo_resource::profiling::Phase::start("ui.callback_scope");
         self.check_record()?;
         let wake = self
             .lifetime
@@ -4919,7 +5012,8 @@ impl CallbackBinding {
 struct BoundNode {
     pointer: *mut dyn Widget,
     semantic_name: String,
-    binding: Option<CallbackBinding>,
+    /// One binding shared by every node admitted under the same boundary.
+    binding: Option<Rc<CallbackBinding>>,
     legacy: Option<crate::history_mode::HistoryOwner>,
     inactive: bool,
 }

@@ -87,10 +87,14 @@ fn catalogue_toolbar_is_the_window_bars_and_sections_share_one_column() {
     let app = lay_out(store, (1200.0, 800.0));
     let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
     for id in CATALOGUE_ACTIONS {
-        assert!(
-            toolbar.actions.iter().any(|action| action.id == id),
-            "{id} is in the window's bar: {toolbar:?}"
-        );
+        let action = toolbar
+            .actions
+            .iter()
+            .find(|action| action.id == id)
+            .unwrap_or_else(|| panic!("{id} is in the window's bar: {toolbar:?}"));
+        // Occasional actions stand named in the More menu, not as bare icons.
+        assert!(action.menu, "{id} is a More menu item: {action:?}");
+        assert!(!action.name.trim().is_empty(), "{id} is named: {action:?}");
     }
     let views = toolbar
         .views

@@ -59,8 +59,8 @@ hosts = [
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@8"
-tilo-fs = "optional@8"
+collab = "optional@10"
+tilo-fs = "optional@10"
 
 [entrypoint]
 bin             = "bin/weather"

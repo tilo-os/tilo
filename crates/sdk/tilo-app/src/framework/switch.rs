@@ -65,6 +65,26 @@ impl Switch {
         })
     }
 
+    /// The part showing.
+    pub(crate) fn part(&self) -> &dyn Widget {
+        self.part.as_ref()
+    }
+
+    /// [`Self::part`], to change.
+    pub(crate) fn part_mut(&mut self) -> &mut dyn Widget {
+        self.part.as_mut()
+    }
+
+    /// Take the part out, with what keeps its bindings alive, for a host
+    /// that shows it in the switch's place from now on; `with` stands in it.
+    pub(crate) fn take_part(&mut self, with: Element) -> (Element, Rc<()>) {
+        self.structure_dirty = true;
+        (
+            std::mem::replace(&mut self.part, with),
+            std::mem::replace(&mut self.alive, Rc::new(())),
+        )
+    }
+
     fn reconcile(&mut self) {
         let alive = Rc::new(());
         if let Some(part) = (self.rebuild)(&alive) {
@@ -76,6 +96,14 @@ impl Switch {
 }
 
 impl Widget for Switch {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.reconcile();
         self.part.sync(state, path);

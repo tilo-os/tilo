@@ -234,18 +234,12 @@ impl InstallerPreview {
 
                 if self.live && self.journey.transfer.as_deref() == Some("backup") {
                     let commands = self.commands.clone();
-                    let edit_commands = self.commands.clone();
                     let submits = self.commands.clone();
                     body = body.push(self.existing_identity.view(
                         Rc::new(move || {
                             commands
                                 .borrow_mut()
                                 .push(InstallerPreviewEffect::ChooseExistingIdentityBackup)
-                        }),
-                        Rc::new(move |value| {
-                            edit_commands
-                                .borrow_mut()
-                                .push(InstallerPreviewEffect::SetExistingIdentityPassword { value })
                         }),
                         Rc::new(move || queue_continue(&submits)),
                     ));

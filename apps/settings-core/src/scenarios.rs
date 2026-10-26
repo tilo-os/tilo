@@ -81,9 +81,13 @@ const NETWORK_VPN_OPENVPN: &str = "network-vpn-openvpn";
 const NETWORK_VPN_ADD: &str = "network-vpn-add";
 /// The VPN list with the person's devices as exits, in use both ways.
 const NETWORK_VPN_DEVICES: &str = "network-vpn-devices";
+/// A connected `WireGuard` tunnel's page with its kill switch on.
+const NETWORK_VPN_KILL_SWITCH: &str = "network-vpn-kill-switch";
+/// That tunnel dropped: its kill switch blocks traffic until it is back.
+const NETWORK_VPN_BLOCKING: &str = "network-vpn-blocking";
 /// Every network capture.
 #[cfg(test)]
-const NETWORK_SCENARIOS: [&str; 15] = [
+const NETWORK_SCENARIOS: [&str; 17] = [
     NETWORK_LIST,
     NETWORK_WIFI_OFF,
     NETWORK_SCANNING,
@@ -99,6 +103,8 @@ const NETWORK_SCENARIOS: [&str; 15] = [
     NETWORK_VPN_OPENVPN,
     NETWORK_VPN_ADD,
     NETWORK_VPN_DEVICES,
+    NETWORK_VPN_KILL_SWITCH,
+    NETWORK_VPN_BLOCKING,
 ];
 
 /// Devices & sync with a device's row open, asking whether to remove it.
@@ -166,6 +172,8 @@ pub fn names() -> &'static [&'static str] {
                 NETWORK_VPN_OPENVPN,
                 NETWORK_VPN_ADD,
                 NETWORK_VPN_DEVICES,
+                NETWORK_VPN_KILL_SWITCH,
+                NETWORK_VPN_BLOCKING,
                 DEVICES_REMOVE,
                 SPEAKERS_LAYOUT,
                 SPEAKERS_LAYOUT_PICKED,
@@ -284,6 +292,10 @@ pub enum NetworkSample {
     VpnDevices,
     /// A `WireGuard` tunnel's page.
     VpnProfile,
+    /// That page with the tunnel's kill switch on, connected.
+    VpnKillSwitch,
+    /// That page with the tunnel dropped, its kill switch blocking traffic.
+    VpnBlocking,
     /// An `OpenVPN` profile's page.
     PluginVpnProfile,
     /// The kinds of VPN that can be added.
@@ -412,6 +424,8 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             Some(NETWORK_VPN_OPENVPN) => Some(NetworkSample::PluginVpnProfile),
             Some(NETWORK_VPN_ADD) => Some(NetworkSample::AddVpn),
             Some(NETWORK_VPN_DEVICES) => Some(NetworkSample::VpnDevices),
+            Some(NETWORK_VPN_KILL_SWITCH) => Some(NetworkSample::VpnKillSwitch),
+            Some(NETWORK_VPN_BLOCKING) => Some(NetworkSample::VpnBlocking),
             _ => None,
         },
         mobile: match fixture.scenario() {
@@ -724,6 +738,8 @@ pub fn staged(scenario: Option<&str>) -> Staged {
             | NETWORK_VPN_OPENVPN
             | NETWORK_VPN_ADD
             | NETWORK_VPN_DEVICES
+            | NETWORK_VPN_KILL_SWITCH
+            | NETWORK_VPN_BLOCKING
             | NETWORK_MOBILE
             | NETWORK_MOBILE_ROAMING
             | NETWORK_MOBILE_LOCKED
@@ -882,7 +898,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 42 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 44 + CODEC_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),

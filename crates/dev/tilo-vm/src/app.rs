@@ -1189,6 +1189,9 @@ impl App {
             &doctor::root_owned_build_dirs(&build_dirs(&root), 3),
             &std::env::var("USER").unwrap_or_else(|_| "$USER".into()),
         ));
+        checks.push(doctor::contended_build_check(
+            &doctor::contended_build_dirs(&root.join("target"), &build_dirs(&root)),
+        ));
         let listing = disk::AuthHeader::new(token.as_ref())
             .and_then(|auth| disk::get(&mut self.runner, disk::VERSIONS, &auth));
         checks.push(doctor::disk_check(

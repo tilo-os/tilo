@@ -31,6 +31,9 @@ ed25519-dalek.workspace = true
 durable-store = { path = "../../system/durable-store" }
 # The emoji picker's catalogue, search, skin tones and recents.
 emoji = { path = "../../text/emoji" }
+# The same catalogue for the toolkit's shared picker, which the window bars'
+# reaction pickers open.
+tilo-emoji-catalogue = { path = "../../text/emoji-catalogue" }
 
 [dev-dependencies]
 chat = { path = "../../../apps/chat", default-features = false }

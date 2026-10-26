@@ -2524,6 +2524,7 @@ fn gc_request(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> install::
         grace_secs,
         now: tilo_clock::unix_now(),
         dry_run,
+        keep: Vec::new(),
     }
 }
 
@@ -2573,11 +2574,24 @@ fn gc(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> Result<(), Error>
     Ok(())
 }
 
-/// After an install, update or uninstall: reclaim what it left unneeded.
-/// Never fails the change it follows; says what it freed on stderr, so the
-/// change's own output stays as scripts read it.
-fn collect_after_change() {
-    let request = install::gc::Request::after_change(package_store::DEFAULT_MAX_STORE_BYTES);
+/// After an install, update or uninstall that began at `started` (Unix
+/// seconds): reclaim what it left unneeded, keeping every app it wrote,
+/// which the person is about to open. Never fails the change it follows;
+/// says what it freed on stderr, so the change's own output stays as
+/// scripts read it.
+fn collect_after_change(started: u64) {
+    let written = store()
+        .map_err(|error| error.to_string())
+        .and_then(|store| install::gc::written_since(&store, started));
+    let written = match written {
+        Ok(written) => written,
+        Err(error) => {
+            eprintln!("tilo-install: warning: nothing reclaimed: {error}");
+            return;
+        }
+    };
+    let request =
+        install::gc::Request::after_change(package_store::DEFAULT_MAX_STORE_BYTES).keeping(written);
     match collect_garbage(request) {
         Ok(report) if report.freed_bytes() > 0 || !report.evicted.is_empty() => eprintln!(
             "tilo-install: reclaimed {} ({} runtime build(s), {} app(s) evicted)",
@@ -2665,6 +2679,7 @@ fn main() {
                 .then(|| bundles.install_lock().ok())?
         })
         .flatten();
+    let started = tilo_clock::unix_now();
     let result = dispatch(cli.cmd);
     drop(collection_held_off);
     if let Err(e) = result {
@@ -2672,7 +2687,7 @@ fn main() {
         std::process::exit(1);
     }
     if changes {
-        collect_after_change();
+        collect_after_change(started);
     }
 }
 

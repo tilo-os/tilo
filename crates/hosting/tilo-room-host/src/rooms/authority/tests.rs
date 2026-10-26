@@ -5,8 +5,9 @@
 use ed25519_dalek::Signer as _;
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
 use tilo_peer_state::join::MemberRole;
+use tilo_relay_protocol::room_operator::WaitListStanding;
 use tilo_relay_protocol::rooms::{
-    JoinReply, JoinStep, RoomsReply, RoomsRequest, join_proof_digest,
+    JoinReply, JoinStep, RoomRole, RoomsReply, RoomsRequest, join_proof_digest,
 };
 use tilo_relay_protocol::voice::{CallOperation, CallState};
 use tilo_relay_protocol::{AuthenticatedPeer, PeerRole};
@@ -15,7 +16,7 @@ use tilo_user_identity::{DeviceCert, sign_device_cert};
 use crate::rooms::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::rooms::{
     CancelInvitationRequest, IssueInvitationRequest, PreAdmitRequest, RemoveMemberRequest, Rooms,
-    SetMemberRoleRequest, WaitListed,
+    SetMemberRoleRequest, WaitListSecrets, WaitListed,
 };
 
 /// A new person admitted to `room` as an Editor, through the owner's
@@ -120,8 +121,11 @@ async fn an_address_left_at_the_door_is_on_the_wait_list_and_never_a_person_to_a
     let room = rooms.create("Team").await.unwrap().room;
     let ada = admit(rooms, &room, &owner, 1).await;
     assert_eq!(
-        rooms.wait(&room, " Bo@Example.org ", 10).await.unwrap(),
-        WaitListed::Added
+        rooms
+            .wait(&room, " Bo@Example.org ", listed_at_once(0x0b), "en", 10)
+            .await
+            .unwrap(),
+        WaitListed::Added { mail: false }
     );
     let ask = |request| rooms.page_rooms(&ada, request);
     let list = || RoomsRequest::WaitList { room: room.clone() };
@@ -135,7 +139,8 @@ async fn an_address_left_at_the_door_is_on_the_wait_list_and_never_a_person_to_a
     let [entry] = listed.as_slice() else {
         panic!("{listed:?}");
     };
-    assert_eq!(entry.contact, "bo@example.org");
+    // As typed, but for the spaces around it.
+    assert_eq!(entry.contact, "Bo@Example.org");
     let request_id = entry.request_id;
 
     // The address is nobody to let in: no join request, nothing to admit
@@ -168,6 +173,273 @@ async fn an_address_left_at_the_door_is_on_the_wait_list_and_never_a_person_to_a
     ));
     assert!(matches!(ask(unlist()).await, RoomsReply::Refused(_)));
     relay.shutdown().await;
+}
+
+/// Bo left an address where the door mails a confirmation link, and Cy one
+/// where it sends none; Bo is listed once confirmed. Bo's request id.
+async fn bo_confirmed_beside_cy(rooms: &Rooms, owner: &DeviceCert, room: &str) -> [u8; 32] {
+    let mailed = WaitListSecrets {
+        removal: [0x0b; 32],
+        confirm: Some([0x1b; 32]),
+    };
+    assert_eq!(
+        rooms
+            .wait(room, "bo@example.org", mailed, "de-DE", 10)
+            .await,
+        Ok(WaitListed::Added { mail: true })
+    );
+    rooms
+        .wait(room, "cy@example.org", listed_at_once(0x0c), "en", 10)
+        .await
+        .unwrap();
+    let listed = || read_wait_list(rooms, owner, room);
+    let contacts = || async {
+        listed()
+            .await
+            .into_iter()
+            .map(|entry| entry.contact)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        contacts().await,
+        ["cy@example.org"],
+        "unconfirmed is hidden"
+    );
+    assert_eq!(
+        rooms.wait_list_standing(room, [0x0b; 32]).await,
+        Ok(WaitListStanding::Pending)
+    );
+    assert_eq!(rooms.confirm_wait_list(room, [0xee; 32]).await, Ok(false));
+    assert_eq!(rooms.confirm_wait_list(room, [0x1b; 32]).await, Ok(true));
+    assert_eq!(contacts().await, ["bo@example.org", "cy@example.org"]);
+    listed().await[0].request_id
+}
+
+#[tokio::test]
+async fn a_mailed_address_is_listed_once_confirmed_mailed_its_invitation_and_leaves_on_joining() {
+    use sha2::Digest as _;
+    let digest = |secret: &[u8; 32]| -> [u8; 32] { sha2::Sha256::digest(secret).into() };
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
+    let room = rooms.create("Team").await.unwrap().room;
+    let bo = bo_confirmed_beside_cy(rooms, &owner, &room).await;
+    let ask = |request| rooms.page_rooms(&owner, request);
+    let listed = || read_wait_list(rooms, &owner, &room);
+    let contacts = || async {
+        listed()
+            .await
+            .into_iter()
+            .map(|entry| entry.contact)
+            .collect::<Vec<_>>()
+    };
+
+    let invite = |request_id: u8, wait_list_entry| RoomsRequest::Invite {
+        room: room.clone(),
+        request_id: [request_id; 32],
+        role: RoomRole::Editor,
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+        inviter_name: None,
+        wait_list_entry,
+    };
+    let mail_invite = |wait_list_entry| RoomsRequest::MailInvite {
+        room: room.clone(),
+        wait_list_entry,
+        link: "https://door.example/?invite=AAEC".into(),
+    };
+
+    // Invited: the entry says when, and is still on the list until someone
+    // joins with the invitation.
+    let RoomsReply::Invitation {
+        signed_invitation, ..
+    } = ask(invite(41, Some(bo))).await
+    else {
+        panic!("the owner invites the address");
+    };
+    let now = listed().await;
+    assert!(
+        now[0]
+            .invited_at_ns
+            .is_some_and(|at| at >= now[0].added_at_ns)
+            && now[1].invited_at_ns.is_none()
+    );
+    assert_eq!(
+        rooms.wait_list_standing(&room, [0x0b; 32]).await,
+        Ok(WaitListStanding::Invited)
+    );
+
+    // A relay whose operator sends no mail mails nothing.
+    assert!(matches!(
+        ask(mail_invite(bo)).await,
+        RoomsReply::Refused(reason) if reason.contains("no mail")
+    ));
+    let mut mail = rooms.mail_wait_list("https://door.example/").unwrap();
+    // Only an invitation on the operator's door is mailed.
+    assert!(matches!(
+        ask(RoomsRequest::MailInvite {
+            room: room.clone(),
+            wait_list_entry: bo,
+            link: "https://elsewhere.example/?invite=AAEC".into(),
+        })
+        .await,
+        RoomsReply::Refused(_)
+    ));
+    assert!(matches!(
+        ask(mail_invite(bo)).await,
+        RoomsReply::WaitList(_)
+    ));
+    let sent = mail.try_recv().unwrap();
+    assert_eq!(
+        (sent.to.contact.as_str(), sent.to.language.as_str()),
+        ("bo@example.org", "de")
+    );
+    assert_eq!(sent.link, "https://door.example/?invite=AAEC");
+    assert_eq!(
+        rooms.wait_list_standing(&room, digest(&sent.removal)).await,
+        Ok(WaitListStanding::Invited),
+        "the mail's removal link names the entry"
+    );
+    // Not twice within minutes.
+    assert!(matches!(ask(mail_invite(bo)).await, RoomsReply::Refused(_)));
+    assert!(mail.try_recv().is_err());
+
+    // Someone joins with it: asks, proves, and the owner lets them in.
+    let request_id = ask_to_join(rooms, signed_invitation).await;
+    assert_eq!(listed().await.len(), 2, "asking is not joining");
+    assert!(matches!(
+        ask(RoomsRequest::Admit {
+            room: room.clone(),
+            request_id,
+        })
+        .await,
+        RoomsReply::Room(_)
+    ));
+    assert_eq!(contacts().await, ["cy@example.org"]);
+    assert_eq!(
+        rooms.wait_list_standing(&room, [0x0b; 32]).await,
+        Ok(WaitListStanding::Gone)
+    );
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_removal_link() {
+    use sha2::Digest as _;
+    let digest = |secret: &[u8; 32]| -> [u8; 32] { sha2::Sha256::digest(secret).into() };
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
+    let room = rooms.create("Team").await.unwrap().room;
+    let mut mail = rooms.mail_wait_list("https://door.example/").unwrap();
+    assert!(
+        rooms.mail_wait_list("https://door.example/").is_none(),
+        "one operator hears the mail"
+    );
+    rooms
+        .wait(&room, "cy@example.org", listed_at_once(0x0c), "en", 10)
+        .await
+        .unwrap();
+    let ask = |request| rooms.page_rooms(&owner, request);
+    let listed = || read_wait_list(rooms, &owner, &room);
+    let cy = listed().await[0].request_id;
+    let mail_invite = || RoomsRequest::MailInvite {
+        room: room.clone(),
+        wait_list_entry: cy,
+        link: "https://door.example/?invite=AAEC".into(),
+    };
+    let invite = |wait_list_entry| RoomsRequest::Invite {
+        room: room.clone(),
+        request_id: rand::random(),
+        role: RoomRole::Editor,
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+        inviter_name: None,
+        wait_list_entry: Some(wait_list_entry),
+    };
+    // Not invited yet: nothing to mail. An invitation for an entry not on
+    // the list is refused.
+    assert!(matches!(ask(mail_invite()).await, RoomsReply::Refused(_)));
+    assert!(matches!(
+        ask(invite([0xee; 32])).await,
+        RoomsReply::Refused(_)
+    ));
+
+    // Invited by mail, Cy takes the address off with the mail's removal
+    // link: the room says where to tell them it did. A wrong secret is
+    // answered the same, and takes nothing off.
+    assert!(matches!(
+        ask(invite(cy)).await,
+        RoomsReply::Invitation { .. }
+    ));
+    assert!(matches!(ask(mail_invite()).await, RoomsReply::WaitList(_)));
+    let sent = mail.try_recv().unwrap();
+    assert_eq!(rooms.leave_wait_list(&room, [0x99; 32]).await, Ok(None));
+    assert_eq!(listed().await.len(), 1);
+    let told = rooms
+        .leave_wait_list(&room, digest(&sent.removal))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(told.contact, "cy@example.org");
+    assert!(listed().await.is_empty());
+    assert_eq!(rooms.leave_wait_list(&room, [0x0c; 32]).await, Ok(None));
+    relay.shutdown().await;
+}
+
+/// `room`'s wait list as `owner` reads it.
+async fn read_wait_list(
+    rooms: &Rooms,
+    owner: &DeviceCert,
+    room: &str,
+) -> Vec<tilo_relay_protocol::rooms::WaitListEntry> {
+    let RoomsReply::WaitList(listed) = rooms
+        .page_rooms(
+            owner,
+            RoomsRequest::WaitList {
+                room: room.to_owned(),
+            },
+        )
+        .await
+    else {
+        panic!("the owner reads the wait list");
+    };
+    listed
+}
+
+/// A new device asks to join with `invitation` and proves it holds its key:
+/// it waits to be let in, under the request id this returns.
+async fn ask_to_join(rooms: &Rooms, invitation: Vec<u8>) -> [u8; 32] {
+    let (guest_key, guest) = guest_device();
+    let request_id = rand::random();
+    let JoinReply::Challenge { challenge } = rooms
+        .page_join(JoinStep::Ask {
+            invitation,
+            device_cert: guest,
+            request_id,
+        })
+        .await
+    else {
+        panic!("no challenge");
+    };
+    let signature = guest_key.sign(&join_proof_digest(&challenge)).to_bytes();
+    let waiting = rooms
+        .page_join(JoinStep::Prove {
+            challenge,
+            signature,
+            name: "Bo".into(),
+        })
+        .await;
+    assert_eq!(waiting, JoinReply::Waiting);
+    request_id
+}
+
+/// Secrets for a door that sends no mail, which lists an address at once.
+const fn listed_at_once(removal: u8) -> WaitListSecrets {
+    WaitListSecrets {
+        removal: [removal; 32],
+        confirm: None,
+    }
 }
 
 #[tokio::test]

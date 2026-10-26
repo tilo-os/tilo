@@ -175,6 +175,32 @@ fn spliced_edits_match_a_fresh_layout() {
 }
 
 #[test]
+fn a_spliced_layout_knows_how_far_its_ink_reaches_as_a_fresh_one_does() {
+    let mut tr = crate::text_render::TextRenderer::with_font_system(
+        crate::font_catalog::fixture_font_system(),
+    );
+    let mut random = Lcg(0x1c4);
+    // Leading under the glyphs' height, so most edits move the reach.
+    let style = TextStyle::new(16.0).with_line_height(0.7);
+    let mut text = SEED.to_owned();
+    let mut layout = paragraphs(&mut tr.font_system, &text, &style, 220.0, None);
+    let _ = tr.rich_ink_reach(&layout);
+    for step in 0..40 {
+        text = edit(&text, &mut random);
+        let width = if step % 9 == 4 { 140.0 } else { 220.0 };
+        layout = paragraphs(&mut tr.font_system, &text, &style, width, Some(layout));
+        let fresh = paragraphs(&mut tr.font_system, &text, &style, width, None);
+        // A line kept from before the edit was measured where its rows
+        // stood then: the same reach, up to f32 rounding of the positions.
+        let (kept, fresh) = (tr.rich_ink_reach(&layout), tr.rich_ink_reach(&fresh));
+        assert!(
+            (kept.above - fresh.above).abs() < 1e-3 && (kept.below - fresh.below).abs() < 1e-3,
+            "step {step}: {kept:?} against {fresh:?} for {text:?}"
+        );
+    }
+}
+
+#[test]
 fn a_keystroke_shapes_only_its_paragraph() {
     let mut fs = crate::font_catalog::fixture_font_system();
     let style = TextStyle::new(16.0);
@@ -198,6 +224,20 @@ fn a_keystroke_shapes_only_its_paragraph() {
     edited.insert(at, 'x');
     let layout = paragraphs(&mut fs, &edited, &style, 200.0, Some(layout));
     assert_eq!(take_prepared_paragraphs(), 1, "only the edited paragraph");
+    // Placing the caret after the keystroke and moving it reads the rows of
+    // the edited paragraph only, not the hundred paragraphs above it.
+    let rows = layout.logical_line_bands(at).len();
+    let caret = TextPosition::new(at + 1);
+    for right in [false, true] {
+        super::super::tests::CARET_STOP_RUNS.with(|count| count.set(0));
+        layout.caret_geometry_at(caret);
+        layout.visual_motion_position(caret, right);
+        let visited = super::super::tests::CARET_STOP_RUNS.with(std::cell::Cell::get);
+        assert!(
+            visited <= 2 * rows,
+            "a caret and an arrow key built the stops of {visited} rows; the paragraph has {rows}"
+        );
+    }
     // Every other line kept its wrap: still laid out, at the same rows.
     assert_eq!(wraps(&layout), before);
     assert!(

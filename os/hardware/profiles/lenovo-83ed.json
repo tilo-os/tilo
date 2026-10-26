@@ -55,6 +55,11 @@
     "cdsp_dtbs.elf": "qcom/x1e80100/LENOVO/83ED/cdsp_dtbs.elf"
   },
   "wifi_wake_on_wlan": 0,
+  "crash_record": {
+    "storage": "ramoops",
+    "watchdog": "hardware",
+    "lockup": "buddy"
+  },
   "internal_keyboards": [
     {
       "name": "hid-over-i2c 048D:8987",

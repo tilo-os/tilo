@@ -10,7 +10,7 @@ use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::time::Duration;
 use ui::widget::{Card, ListRow, Pacer, Section, TransportControl};
 
-use crate::{Filter, Nav, Provider, ago, page, tr, trf, unanswered};
+use crate::{Filter, Nav, Provider, ago, page, tr, trf};
 
 /// How long each change shows while playing.
 const BEAT: Duration = Duration::from_millis(850);
@@ -78,10 +78,9 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
     });
 
     let shown = nav.clone();
-    let content = cx.switch(&read.answer(), move |cx, answer| match answer {
-        Answer::Ready(replay) => frames_view(cx, &shown, replay),
-        unread => unanswered(unread, "activity-replay-unread").unwrap_or_else(|| page(Vec::new())),
-    });
+    let content: Element = Box::new(cx.arriving(&read.answer(), move |cx, replay| {
+        frames_view(cx, &shown, replay)
+    }));
     let (paced, last) = (position, frames);
     let content = Pacer::new(content, &playing, BEAT, move || {
         let next = paced.get() + 1.0;

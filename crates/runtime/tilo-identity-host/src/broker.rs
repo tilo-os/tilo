@@ -468,9 +468,15 @@ fn sign_collaboration_op(
 ) -> Response {
     let bound_room = bound.room;
     let launch_room = workspace_id == bound_room.to_string();
-    // The launch route, or a record of the person's this app keeps in their
-    // own room: never another app's, and never a kind it does not declare.
-    if app_id != bound.app_id || (!launch_room && !bound.keeps_person_record(record_id)) {
+    // The launch route, a record every app of the launch room opens (its
+    // grants decide the change below, as for the app's own), or a record
+    // of the person's this app keeps in their own room: never another
+    // app's, and never a kind it does not declare.
+    let workspace_record =
+        launch_room && collab_types::workspace_record(app_id, record_id).is_some();
+    if (app_id != bound.app_id && !workspace_record)
+        || (!launch_room && !bound.keeps_person_record(record_id))
+    {
         return Response::Denied(
             "collaboration operation requested for a different launch route".into(),
         );
@@ -585,9 +591,12 @@ fn channel_keys(
 ) -> Response {
     let bound = &route.bound;
     let launch_room = route.workspace_id == bound.room.to_string();
-    // A route of the launch, or a record of the person's the app declares in
-    // their own room (its own, or another app's it reads).
-    if (launch_room && route.app_id != bound.app_id)
+    // A route of the launch, a record every app of the launch room opens,
+    // or a record of the person's the app declares in their own room (its
+    // own, or another app's it reads).
+    if (launch_room
+        && route.app_id != bound.app_id
+        && collab_types::workspace_record(route.app_id, route.record_id).is_none())
         || (!launch_room && !bound.keeps_person_record(route.record_id))
     {
         return Response::Denied("channel keys requested for a different launch route".into());
@@ -1215,6 +1224,78 @@ params = []
                 record_id,
                 &unsigned,
             ),
+            Response::Denied(reason) if reason.contains("denies this document action")
+        ));
+    }
+
+    /// Any app of a room writes the records every app of it opens (the
+    /// workspace's emoji, Chat's), decided by the room's grants on them,
+    /// and no other record of their owner's.
+    #[test]
+    fn any_app_of_the_room_signs_its_workspace_records_and_no_other_of_their_owner() {
+        let temp = tempfile::tempdir().expect("temp");
+        let xdg = temp.path().join("config");
+        let system_root = temp.path().join("system");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg)
+            .set("TILO_IDENTITY_ROOT", &system_root)
+            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+        let identity_dir = xdg.join("tilo/identity");
+        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+        ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+
+        let room = RoomId::new();
+        let workspace_id = room.to_string();
+        let launched = "so.tilo.notes";
+        let owner = collab_types::WORKSPACE_RECORDS[0];
+        let emoji = collab_types::workspace_record_id(owner.kind);
+        let profile = crate::registry::selected_identity_profile(&workspace_id)
+            .expect("registry")
+            .expect("profile");
+        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            .expect("device key");
+        let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+        let mut workspace = Workspace::in_room(WorkspaceId(1), room, "Room");
+        workspace.set_owner(profile.principal_id());
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let tree = tree.shared();
+        let unsigned = |record: &str| {
+            postcard::to_stdvec(&SignedOp::new_unsigned(
+                DocumentMutation::Snapshot(b"automerge document".to_vec())
+                    .encode()
+                    .expect("typed mutation"),
+                document_artifact_id(owner.app, &workspace_id, record),
+                author,
+                document_attestation_id(owner.app, &workspace_id, record),
+                collab_types::OpKind::Change,
+                std::time::SystemTime::now(),
+                1,
+            ))
+            .expect("unsigned envelope")
+        };
+        let sign = |record: &str| {
+            sign_collaboration_op(
+                &tree,
+                &bound(&room, launched),
+                &workspace_id,
+                owner.app,
+                record,
+                &unsigned(record),
+            )
+        };
+        assert!(matches!(sign(&emoji), Response::Signature(_)));
+        assert!(
+            matches!(sign("tab:0000000000000000"), Response::Denied(_)),
+            "the owner's other records stay its own"
+        );
+        let mut tree_guard = tree.write();
+        let workspace = &mut tree_guard.desktop.workspaces[0];
+        workspace.set_owner("someone-else");
+        workspace.admit(profile.principal_id(), Role::Viewer);
+        drop(tree_guard);
+        assert!(matches!(
+            sign(&emoji),
             Response::Denied(reason) if reason.contains("denies this document action")
         ));
     }

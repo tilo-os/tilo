@@ -768,6 +768,7 @@ impl<PI: PeerIdentity> State<PI> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::proto::topic;
     #[test]
     fn optimize_tree() {
         let mut io = VecDeque::new();
@@ -806,6 +807,11 @@ mod test {
             // we expect a dispatch timer schedule and receive event, but no Graft or Prune
             // messages
             let mut io = VecDeque::new();
+            // TILO PATCH: the first cached message arms the cache sweep.
+            io.push(OutEvent::ScheduleTimer(
+                config.cache_evict_interval,
+                Timer::EvictCache,
+            ));
             io.push(OutEvent::ScheduleTimer(
                 config.dispatch_timeout,
                 Timer::DispatchLazyPush,
@@ -953,8 +959,16 @@ mod test {
             content: b"swarm".to_vec().into(),
             scope: DeliveryScope::Swarm(Round(0)),
         };
-        state.handle(InEvent::RecvMessage(2, Message::Gossip(gossip.clone())), now, &mut io);
-        state.handle(InEvent::RecvMessage(3, Message::Gossip(gossip)), now, &mut io);
+        state.handle(
+            InEvent::RecvMessage(2, Message::Gossip(gossip.clone())),
+            now,
+            &mut io,
+        );
+        state.handle(
+            InEvent::RecvMessage(3, Message::Gossip(gossip)),
+            now,
+            &mut io,
+        );
         assert!(state.lazy_push_peers.contains(&3));
 
         let mut io = VecDeque::new();
@@ -966,7 +980,9 @@ mod test {
         let mut sent: Vec<i32> = io
             .iter()
             .filter_map(|event| match event {
-                OutEvent::SendMessage(peer, Message::Gossip(_)) => Some(*peer),
+                topic::OutEvent::SendMessage(peer, topic::Message::Gossip(Message::Gossip(_))) => {
+                    Some(*peer)
+                }
                 _ => None,
             })
             .collect();
@@ -1006,8 +1022,10 @@ mod test {
     fn cache_sweep_runs_only_while_something_is_cached() {
         let config: Config = Default::default();
         let mut state = State::new(1, config.clone(), 1024);
-        let evict = OutEvent::ScheduleTimer(config.cache_evict_interval, Timer::EvictCache);
-        let sweeps = |io: &VecDeque<OutEvent<i32>>| io.iter().filter(|e| **e == evict).count();
+        let evict: topic::OutEvent<i32> =
+            OutEvent::ScheduleTimer(config.cache_evict_interval, Timer::EvictCache).into();
+        let sweeps =
+            |io: &VecDeque<topic::OutEvent<i32>>| io.iter().filter(|e| **e == evict).count();
         let start = Instant::now();
         let mut now = start;
 

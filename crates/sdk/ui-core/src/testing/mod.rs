@@ -5,6 +5,8 @@ pub mod action_contract;
 #[cfg(test)]
 mod clicks;
 mod dispatch;
+#[cfg(all(test, unix))]
+mod executable;
 mod own_process;
 #[cfg(test)]
 mod owned_text;
@@ -13,6 +15,8 @@ mod widgets;
 #[cfg(test)]
 pub(crate) use clicks::{clicks, record_click};
 pub use dispatch::{Dispatch, Dispatched, dispatch};
+#[cfg(all(test, unix))]
+pub use executable::write_executable;
 #[cfg(test)]
 pub(crate) use own_process::{in_own_process, test_path};
 #[cfg(test)]

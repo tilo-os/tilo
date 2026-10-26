@@ -12,7 +12,7 @@ use super::{Action, Scenario};
 
 /// Where the pointer rests between motions: over a window, clear of the bar,
 /// the ribbon and the rail.
-const REST: Point = Point::new(800.0, 500.0);
+pub(super) const REST: Point = Point::new(800.0, 500.0);
 
 /// Beside search's card and below it, over a window: a click outside it.
 const OUTSIDE_SEARCH: Point = Point::new(300.0, 780.0);
@@ -21,26 +21,26 @@ const OUTSIDE_SEARCH: Point = Point::new(300.0, 780.0);
 /// pointer to dwell before it lays its strips out.
 const DWELL_FRAMES: u32 = 90;
 
-const NONE: ModifiersState = ModifiersState::empty();
-const SUPER: ModifiersState = ModifiersState::SUPER;
+pub(super) const NONE: ModifiersState = ModifiersState::empty();
+pub(super) const SUPER: ModifiersState = ModifiersState::SUPER;
 const SUPER_CTRL: ModifiersState = ModifiersState::SUPER.union(ModifiersState::CONTROL);
 const SUPER_SHIFT: ModifiersState = ModifiersState::SUPER.union(ModifiersState::SHIFT);
 const CTRL_ALT: ModifiersState = ModifiersState::CONTROL.union(ModifiersState::ALT);
 
-fn ch(c: &str) -> Key {
+pub(super) fn ch(c: &str) -> Key {
     Key::Character(c.into())
 }
 
-fn named(key: NamedKey) -> Key {
+pub(super) fn named(key: NamedKey) -> Key {
     Key::Named(key)
 }
 
-fn step(step: Step) -> Action {
+pub(super) fn step(step: Step) -> Action {
     Action::Step(step)
 }
 
 /// The pointer at rest and the scene settled, before a film.
-fn rest(actions: &mut Vec<Action>) {
+pub(super) fn rest(actions: &mut Vec<Action>) {
     actions.extend([
         Action::MoveCursor(REST),
         Action::Wait(20),
@@ -49,14 +49,14 @@ fn rest(actions: &mut Vec<Action>) {
 }
 
 /// Settle, then film `film`.
-fn then_film(actions: &mut Vec<Action>, film: Film) {
+pub(super) fn then_film(actions: &mut Vec<Action>, film: Film) {
     rest(actions);
     actions.push(Action::Film(film));
 }
 
 /// Settle with the pointer already on `target` (so its hover is not in the
 /// film), then film a click on it.
-fn click_film(actions: &mut Vec<Action>, prefix: &'static str, target: &'static str) {
+pub(super) fn click_film(actions: &mut Vec<Action>, prefix: &'static str, target: &'static str) {
     rest(actions);
     actions.extend([
         Action::MoveCursorNamed(target),
@@ -66,11 +66,20 @@ fn click_film(actions: &mut Vec<Action>, prefix: &'static str, target: &'static 
     actions.push(Action::Film(act_film(prefix, Action::ClickNamed(target))));
 }
 
-fn key(actions: &mut Vec<Action>, prefix: &'static str, modifiers: ModifiersState, k: Key) {
+pub(super) fn key(
+    actions: &mut Vec<Action>,
+    prefix: &'static str,
+    modifiers: ModifiersState,
+    k: Key,
+) {
     then_film(actions, key_film(prefix, modifiers, k));
 }
 
-fn scenario(name: &'static str, description: &'static str, actions: Vec<Action>) -> Scenario {
+pub(super) fn scenario(
+    name: &'static str,
+    description: &'static str,
+    actions: Vec<Action>,
+) -> Scenario {
     Scenario {
         name,
         description,
@@ -84,6 +93,7 @@ pub(super) fn all() -> Vec<Scenario> {
         quick_settings(),
         notifications(),
         windows(),
+        window_arrival(),
         overview_and_switching(),
         popovers(),
         tabs(),
@@ -485,6 +495,58 @@ fn ribbon_and_rail() -> Scenario {
     scenario(
         "motion_review_ribbon",
         "The strip ribbon laying its strips out under a resting pointer and folding when it leaves; the window rail under the pointer and clicks on its first and last segments. Every frame at 60 Hz (needs --features test-support).",
+        a,
+    )
+}
+
+/// A window's first frame arriving inside its frame: a local window that
+/// draws in time opens with no placeholder; another member's window holds
+/// its place, shows the skeleton, says where it comes from, and its first
+/// picture fades in; a start that fails shows its failure in the place.
+fn window_arrival() -> Scenario {
+    let mut a = vec![Action::LoneWindow(0), Action::Wait(20)];
+    then_film(
+        &mut a,
+        act_film(
+            "01-local-in-time",
+            Action::OpenWindow {
+                app_id: "org.example.right",
+                surface_id: 6301,
+            },
+        ),
+    );
+    a.extend([Action::LoneWindow(0), Action::SelectGroup(None)]);
+    then_film(
+        &mut a,
+        act_film(
+            "02-launch-waiting",
+            Action::HoldLaunchPlace {
+                app_id: "so.tilo.notes",
+                label: "Notes",
+            },
+        )
+        .at_least(40),
+    );
+    a.push(Action::Film(Film::new(
+        "03-launch-fails",
+        vec![Step::LaunchFails {
+            app_id: "so.tilo.notes",
+            detail: "Notes could not start.",
+        }],
+    )));
+    // Long enough to pass the skeleton's grace and the moment the place
+    // names where the window comes from.
+    then_film(
+        &mut a,
+        Film::new("04-peer-waiting", vec![Step::PeerWindowOpens]).at_least(170),
+    );
+    a.push(Action::Film(Film::new(
+        "05-peer-first-picture",
+        vec![Step::PeerWindowFirstPicture],
+    )));
+    scenario(
+        "motion_review_window_arrival",
+        "A window's first frame arriving inside its frame: a local window drawing in time opens with no placeholder; another member's window reserves its place, shows the skeleton, names the device it comes from and fades its first picture in; a start that fails shows its failure and retry in the place it held. Every frame at 60 Hz (needs --features test-support).",
         a,
     )
 }

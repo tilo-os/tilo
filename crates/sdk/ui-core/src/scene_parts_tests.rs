@@ -403,6 +403,99 @@ fn comparing_outermost_parts_still_refuses_a_change_outside_them() {
     );
 }
 
+/// A lane part holding a window part, whose menu, when `open`, is a part of
+/// its own; `shown` leaves the window out altogether, as a row does for a
+/// window another surface draws.
+fn lane(shown: bool, open: bool) -> (Box<Scene>, SectionParts) {
+    const LANE: Rect = Rect::new(0.0, 0.0, 200.0, 50.0);
+    section(move |scene| {
+        part(scene, PartKey::new("lane", 0_u64), vec![LANE], |scene| {
+            fill(scene, Affine::IDENTITY, LANE, Color::BLACK);
+            if shown {
+                part(scene, PartKey::new("window", 0_u64), vec![B], |scene| {
+                    fill(scene, Affine::IDENTITY, B, Color::WHITE);
+                    if open {
+                        part(scene, PartKey::new("menu", 0_u64), vec![B], |scene| {
+                            fill(scene, Affine::IDENTITY, B, Color::BLACK);
+                        });
+                    }
+                });
+            }
+        });
+        part(
+            scene,
+            PartKey::new("caret", 0_u64),
+            vec![A],
+            caret(Color::WHITE),
+        );
+    })
+}
+
+#[test]
+fn a_menu_deep_inside_damages_its_window_not_the_lane_around_it() {
+    let (closed, closed_parts) = lane(true, false);
+    let (open, open_parts) = lane(true, true);
+    assert_eq!(
+        damage(&closed, &closed_parts, &open, &open_parts),
+        Ok(vec![B])
+    );
+    assert_eq!(
+        damage(&open, &open_parts, &closed, &closed_parts),
+        Ok(vec![B])
+    );
+}
+
+#[test]
+fn a_window_a_lane_draws_again_damages_that_lane_alone() {
+    let (away, away_parts) = lane(false, false);
+    let (back, back_parts) = lane(true, false);
+    let lane_rect = Rect::new(0.0, 0.0, 200.0, 50.0);
+    assert_eq!(
+        damage(&away, &away_parts, &back, &back_parts),
+        Ok(vec![lane_rect])
+    );
+    assert_eq!(
+        damage(&back, &back_parts, &away, &away_parts),
+        Ok(vec![lane_rect])
+    );
+}
+
+#[test]
+fn a_hint_cannot_vouch_for_parts_that_came_inside_it() {
+    let tile = Rect::new(100.0, 0.0, 140.0, 40.0);
+    let frame = |menu: bool, from: u64, to: u64| {
+        section(move |scene| {
+            part(scene, PartKey::new("lane", 0_u64), vec![tile], |scene| {
+                part(scene, PartKey::new("tile", 0_u64), vec![tile], |scene| {
+                    let hint = DamageHint {
+                        source: 7,
+                        from,
+                        to,
+                        placement: Affine::IDENTITY,
+                        rects: vec![Rect::new(100.0, 0.0, 110.0, 10.0)],
+                        copies: Vec::new(),
+                        earlier: Vec::new(),
+                    };
+                    hinted(scene, PartKey::new("app", 0_u64), Some(hint), |scene| {
+                        fill(scene, Affine::IDENTITY, tile, Color::BLACK);
+                        if menu {
+                            let menu = Rect::new(120.0, 20.0, 140.0, 40.0);
+                            part(scene, PartKey::new("menu", 0_u64), vec![menu], |scene| {
+                                fill(scene, Affine::IDENTITY, menu, Color::WHITE);
+                            });
+                        }
+                    });
+                });
+            })
+        })
+    };
+    let (old, old_parts) = frame(false, 0, 1);
+    let (new, new_parts) = frame(true, 1, 2);
+    // The app's hint follows on, but names only its caret: the menu that
+    // came is inside the tile, which is repainted whole.
+    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![tile]));
+}
+
 /// An embedded app's content placed at `offset` inside a tile part, its
 /// caret painted in `color`, with a hint from `source` that generation
 /// `from` → `to` changed the caret.

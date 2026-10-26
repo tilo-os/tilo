@@ -3,10 +3,10 @@ name = "tilo-test-env"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Serialised, self-restoring process environment, XDG fixtures and hang-bounded waits for tests"
+description = "Serialised, self-restoring process environment, XDG fixtures, scenarios and hang-bounded waits for tests"
 
 # Test support only: depend on this from [dev-dependencies], never from a
 # production dependency table.

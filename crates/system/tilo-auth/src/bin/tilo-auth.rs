@@ -121,7 +121,7 @@ fn tries_json(error: &str, tries: Option<Tries>) -> String {
     serde_json::json!({
         "error": error,
         "tries_left": tries.map(|t| t.left),
-        "retry_in_s": tries.map(|t| t.retry_in_s),
+        "retry_in_s": tries.and_then(|t| t.retry_in_s),
     })
     .to_string()
 }

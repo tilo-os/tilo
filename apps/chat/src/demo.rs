@@ -7,7 +7,7 @@
 
 use automerge::AutoCommit;
 use ui::tilo_actions::DoorError;
-use ui::tilo_resource::{Atom, Id, Invoke, ModelError, Replica, Set};
+use ui::tilo_resource::{Atom, Id, Invoke, ModelError, Replica};
 
 use crate::messages::{Messages, chat_part};
 use crate::model::{Attachment, ChannelKind, EditRecord, Presence};
@@ -403,12 +403,14 @@ pub fn demo_part(me: &str) -> ChatPart {
         }
     };
     let mut post = |id: String, channel: &str, message: NewMessage| {
-        let mut reactions = Set::new();
+        let mut reactions = ui::tilo_resource::Reactions::new();
         for (emoji, users) in message.reactions {
             for user in users {
-                reactions.insert(crate::record::Reacted {
-                    emoji: emoji.clone(),
-                    user: mine(&user),
+                reactions.insert(ui::tilo_resource::Reaction {
+                    emoji: Atom(emoji.clone()),
+                    by: Atom(mine(&user)),
+                    at: message.ts.saturating_mul(1000),
+                    ..ui::tilo_resource::Reaction::default()
                 });
             }
         }

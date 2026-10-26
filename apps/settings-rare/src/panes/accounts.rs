@@ -2870,10 +2870,7 @@ impl AccountsPane {
         }
         if kind != AccountKind::Mail {
             let parsed = tilo_dav::Url::parse(server).map_err(|_| "enter a valid server URL")?;
-            let localhost_http = cfg!(debug_assertions)
-                && parsed.scheme() == "http"
-                && parsed.host_str() == Some("localhost");
-            if parsed.scheme() != "https" && !localhost_http {
+            if parsed.scheme() != "https" && !crate::account_probe::local_http_allowed(&parsed) {
                 return Err(
                     "use an HTTPS server URL (localhost HTTP is allowed in development)".into(),
                 );

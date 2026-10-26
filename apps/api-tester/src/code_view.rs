@@ -49,6 +49,9 @@ pub(crate) struct CodeView {
     /// Where the last paint set each token of each line, by line index.
     #[cfg(test)]
     painted: HashMap<usize, Vec<f64>>,
+    /// How many characters the last paint set.
+    #[cfg(test)]
+    painted_chars: usize,
     /// The theme of the last layout pass, which `measure` has no argument for.
     theme: Option<Theme>,
     rect: Rect,
@@ -91,6 +94,8 @@ impl CodeView {
             metrics: None,
             #[cfg(test)]
             painted: HashMap::new(),
+            #[cfg(test)]
+            painted_chars: 0,
             theme: None,
             rect: Rect::ZERO,
             folds: Vec::new(),
@@ -230,6 +235,11 @@ impl Widget for CodeView {
         #[cfg(test)]
         self.painted.clear();
         let number_style = metrics.style.clone().numeric();
+        let advance = f64::from(text_renderer.measure_style("0", None, &metrics.style).0);
+        #[cfg(test)]
+        {
+            self.painted_chars = 0;
+        }
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         let mut y = self.rect.y0 + metrics.pad_y;
         for index in visible {
@@ -273,16 +283,26 @@ impl Widget for CodeView {
             }
             let mut x = self.rect.x0 + Self::text_x(&metrics);
             for token in &line.tokens {
+                if x >= self.rect.x1 {
+                    break;
+                }
+                // The view does not scroll sideways, so text past its right
+                // edge never shows; shaping all of a megabyte-long line on
+                // every frame would freeze the pane.
+                let shown = prefix(&token.text, columns_within(self.rect.x1 - x, advance));
                 #[cfg(test)]
-                self.painted.entry(index).or_default().push(x);
+                {
+                    self.painted.entry(index).or_default().push(x);
+                    self.painted_chars += shown.chars().count();
+                }
                 ctx.text(
-                    &token.text,
+                    shown,
                     &metrics.style,
                     token_color(theme, token.kind),
                     Point::new(x, band.y0),
                     None,
                 );
-                x += f64::from(ctx.text.measure_style(&token.text, None, &metrics.style).0);
+                x += f64::from(ctx.text.measure_style(shown, None, &metrics.style).0);
             }
             if collapsed && line.opens_block {
                 ctx.text(
@@ -350,6 +370,21 @@ impl Widget for CodeView {
                 .with_bounds(self.rect),
         )
     }
+}
+
+/// How many characters of the code face can show in `width`, with room to
+/// spare for characters wider than a digit.
+fn columns_within(width: f64, advance: f64) -> usize {
+    ui::num::usize_of_f64((width / advance.max(1.0)).ceil())
+        .saturating_mul(2)
+        .saturating_add(1)
+}
+
+/// The first `count` characters of `text`.
+fn prefix(text: &str, count: usize) -> &str {
+    text.char_indices()
+        .nth(count)
+        .map_or(text, |(end, _)| text.get(..end).unwrap_or(text))
 }
 
 /// The hit target of a caret is the gutter cell it sits in, a full line tall.
@@ -443,6 +478,30 @@ mod tests {
         view.toggle(a);
         view.toggle(b);
         assert_eq!(view.visible(), all);
+    }
+
+    /// A line far longer than the view is wide is drawn only as far as it
+    /// shows, so a minified megabyte does not freeze the pane; its start is
+    /// still there.
+    #[test]
+    fn a_long_line_paints_only_what_fits() {
+        let body = format!("{}\nshort", "a".repeat(1024 * 1024));
+        let d = harness(CodeView::plain("Body", &body));
+        let _ = d.render_rgba();
+        let view = d.root::<CodeView>();
+        assert_eq!(view.visible().len(), 2);
+        assert!(
+            view.painted_chars > "short".len() + 20,
+            "the long line's start is drawn: {}",
+            view.painted_chars
+        );
+        assert!(
+            view.painted_chars < 2_000,
+            "a 600-pixel view draws no megabyte: {}",
+            view.painted_chars
+        );
+        assert_eq!(prefix("grün", 3), "grü");
+        assert_eq!(prefix("ab", 5), "ab");
     }
 
     /// Plain text has no folds and one numbered line per line of text.

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_lock::MutexRecover as _;
 
 mod held_frame;
+mod ime;
 #[cfg(target_os = "linux")]
 mod linux_header;
 mod private_text_input;
@@ -19,6 +20,13 @@ mod slot_bar;
 #[cfg(any(windows, target_os = "linux"))]
 pub(super) mod startup;
 mod wheel_batch;
+
+use ime::{
+    NativeImeWindowState, PrimaryPreeditUpdate, apply_native_ime, apply_native_ime_content,
+    pending_floating_ime_state, preedit_after_event, primary_floating_ime_state,
+    primary_ime_state_for_held_child, retained_return_ime_state, routes_to_floating_ime,
+    secondary_ime_state,
+};
 
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
@@ -51,6 +59,12 @@ fn create_accessibility_adapter(
     }
 }
 
+/// How often an occluded window runs the passes nobody asks it to draw.
+/// Long enough that a window left behind another app costs nothing, short
+/// enough that work queued behind an occlusion is answered while the person
+/// waits for it.
+const OCCLUDED_TICK_INTERVAL: Duration = Duration::from_millis(50);
+
 /// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` live on a
 /// dedicated worker thread (see [`crate::render_thread`]) — this struct
 /// keeps only the channel ends to ship frames and recycle scene buffers.
@@ -64,6 +78,9 @@ struct AppHandler {
     /// A frame held for a local read ([`crate::arriving`]): drawn when the
     /// read answers, or at this instant when its frame budget runs out.
     held_frame: Option<crate::time::Instant>,
+    /// When the next state pass of an occluded window is due (see
+    /// [`App::run_state_tick`]); `None` while nothing is pending.
+    occluded_tick_at: Option<crate::time::Instant>,
     /// Debug check that animation frames move something.
     still_animation: animation_schedule::StillAnimation,
     native_scenario: Option<crate::native_scenario::Scenario>,
@@ -792,92 +809,6 @@ fn dispatch_native_surface_accessibility(
     root.perform_floating_surface_accessibility_action(id, target, &action, state, path)
 }
 
-/// A held protocol resource can anchor an editor outside its native window.
-/// Wayland cursor positions are signed; the shared widget/browser contract
-/// stays unchanged, while native handoff translations must not clamp to zero.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct NativeImeWindowState {
-    content: crate::ime::InputContent,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
-impl NativeImeWindowState {
-    fn from_rect(content: crate::ime::InputContent, rect: KurboRect) -> Self {
-        let shared = ImeWindowState::from_rect(content, rect);
-        let signed = |value: f64| {
-            if value.is_finite() {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "rounded coordinate is bounded to the signed Wayland position range"
-                )]
-                {
-                    value
-                        .round()
-                        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-                }
-            } else {
-                0
-            }
-        };
-        Self {
-            content,
-            x: signed(rect.x0),
-            y: signed(rect.y0),
-            width: shared.width,
-            height: shared.height,
-        }
-    }
-}
-
-impl From<NativeImeWindowState> for ImeWindowState {
-    fn from(native: NativeImeWindowState) -> Self {
-        Self::from_rect(
-            native.content,
-            KurboRect::from_origin_size(
-                (f64::from(native.x), f64::from(native.y)),
-                (f64::from(native.width), f64::from(native.height)),
-            ),
-        )
-    }
-}
-
-impl From<ImeWindowState> for NativeImeWindowState {
-    fn from(shared: ImeWindowState) -> Self {
-        Self::from_rect(
-            shared.content,
-            KurboRect::from_origin_size(
-                (f64::from(shared.x), f64::from(shared.y)),
-                (f64::from(shared.width), f64::from(shared.height)),
-            ),
-        )
-    }
-}
-
-fn apply_native_ime(
-    window: &Window,
-    next: Option<NativeImeWindowState>,
-    previous: &mut Option<NativeImeWindowState>,
-) {
-    if next == *previous {
-        return;
-    }
-    match next {
-        Some(intent) => {
-            apply_native_ime_content(window, intent);
-            window.set_ime_allowed(true);
-            window.set_ime_cursor_area(
-                winit::dpi::LogicalPosition::new(intent.x, intent.y),
-                winit::dpi::LogicalSize::new(intent.width, intent.height),
-            );
-        }
-        None => window.set_ime_allowed(false),
-    }
-    *previous = next;
-}
-
 /// App-owned surfaces remain fixed to their live presentation rectangle.
 /// Winit's non-resizable Wayland window captures min/max at creation; a
 /// later request_inner_size does not advance those hints. Keep them aligned
@@ -887,170 +818,6 @@ fn resize_native_floating_window(window: &Window, rect: KurboRect) {
     window.set_min_inner_size(Some(size));
     window.set_max_inner_size(Some(size));
     let _ = window.request_inner_size(size);
-}
-
-fn apply_native_ime_content(window: &Window, intent: NativeImeWindowState) {
-    // Wayland takes the field's whole content type; other platforms take
-    // no more than winit's own purposes.
-    let (hint, purpose) = intent.content.wayland();
-    tilo_presentation::text_input::set_content_type(window, hint, purpose);
-    window.set_ime_purpose(intent.content.winit_purpose());
-}
-
-fn secondary_ime_state(
-    root: &dyn Widget,
-    id: &str,
-    desktop_rect: KurboRect,
-    focused: bool,
-) -> Option<NativeImeWindowState> {
-    if !focused {
-        return None;
-    }
-    let (content, rect) = root.floating_surface_ime(id)?;
-    Some(NativeImeWindowState::from_rect(
-        content,
-        rect - desktop_rect.origin().to_vec2(),
-    ))
-}
-
-fn primary_floating_ime_state(
-    root: &dyn Widget,
-    id: &str,
-    coordinate_offset: Vec2,
-) -> Option<NativeImeWindowState> {
-    let (content, rect) = root.floating_surface_ime(id)?;
-    Some(NativeImeWindowState::from_rect(
-        content,
-        rect - coordinate_offset,
-    ))
-}
-
-fn pending_floating_ime_state(
-    app: &App,
-    preedit_active: bool,
-    previous: Option<NativeImeWindowState>,
-) -> Option<NativeImeWindowState> {
-    preedit_active.then_some(())?;
-    app.pending_floating_ime_source()?;
-    previous
-}
-
-fn primary_ime_state_for_held_child(
-    primary: Option<ImeWindowState>,
-    primary_origin: Vec2,
-    child_origin: Vec2,
-) -> Option<NativeImeWindowState> {
-    let primary = primary?;
-    let rect = KurboRect::new(
-        f64::from(primary.x),
-        f64::from(primary.y),
-        f64::from(primary.x.saturating_add(primary.width)),
-        f64::from(primary.y.saturating_add(primary.height)),
-    ) + primary_origin
-        - child_origin;
-    Some(NativeImeWindowState::from_rect(primary.content, rect))
-}
-
-/// Refresh a held child's caret when the returned editor projects one, while
-/// keeping its real protocol alive across a transient missing projection.
-/// Only the exact retained, still-composing source may preserve prior state;
-/// every definitive lifecycle end returns the projected `None` and disables.
-fn retained_return_ime_state(
-    projected: Option<NativeImeWindowState>,
-    retained: Option<NativeImeWindowState>,
-    exact_source_active: bool,
-) -> Option<NativeImeWindowState> {
-    if exact_source_active {
-        projected.or(retained)
-    } else {
-        projected
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PrimaryPreeditUpdate {
-    Active,
-    PendingClear,
-    Finished,
-}
-
-fn preedit_after_event(event: &WindowEvent) -> Option<PrimaryPreeditUpdate> {
-    match event {
-        WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) if text.is_empty() => {
-            Some(PrimaryPreeditUpdate::PendingClear)
-        }
-        WindowEvent::Ime(winit::event::Ime::Preedit(_, _)) => Some(PrimaryPreeditUpdate::Active),
-        WindowEvent::Ime(winit::event::Ime::Commit(_) | winit::event::Ime::Disabled) => {
-            Some(PrimaryPreeditUpdate::Finished)
-        }
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod floating_ime_continuation_tests {
-    use super::*;
-
-    #[test]
-    fn returned_caret_keeps_signed_child_coordinates_and_content_type() {
-        let primary = ImeWindowState {
-            content: crate::ime::InputContent {
-                purpose: crate::ime::InputPurpose::Email,
-                hints: crate::ime::InputHints {
-                    multiline: true,
-                    ..crate::ime::InputHints::default()
-                },
-            },
-            x: 20,
-            y: 30,
-            width: 2,
-            height: 24,
-        };
-        let projected = primary_ime_state_for_held_child(
-            Some(primary),
-            Vec2::new(100.0, 80.0),
-            Vec2::new(300.0, 200.0),
-        )
-        .unwrap();
-        assert_eq!((projected.x, projected.y), (-180, -90));
-        assert_eq!((projected.width, projected.height), (2, 24));
-        assert_eq!(projected.content, primary.content);
-        assert_eq!(
-            retained_return_ime_state(None, Some(projected), true),
-            Some(projected)
-        );
-        assert_eq!(
-            retained_return_ime_state(None, Some(projected), false),
-            None
-        );
-    }
-
-    #[test]
-    fn empty_preedit_does_not_retire_custody_before_the_commit_in_the_same_batch() {
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Preedit(
-                String::new(),
-                None
-            ))),
-            Some(PrimaryPreeditUpdate::PendingClear)
-        );
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Commit("文字".into()))),
-            Some(PrimaryPreeditUpdate::Finished)
-        );
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Disabled)),
-            Some(PrimaryPreeditUpdate::Finished)
-        );
-        assert!(!routes_to_floating_ime(&WindowEvent::Focused(false)));
-    }
-}
-
-fn routes_to_floating_ime(event: &WindowEvent) -> bool {
-    matches!(
-        event,
-        WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-    )
 }
 
 fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
@@ -1998,6 +1765,7 @@ impl AppHandler {
                 damage_regions,
                 scroll_copies: Vec::new(),
                 full_redraw: true,
+                partial: false,
                 backdrop: crate::backdrop::BackdropFrame::default(),
             })
             .is_err()
@@ -2393,6 +2161,7 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
                 | crate::floating_surface::FloatingSurfaceHostMessage::ShareSelection
                 | crate::floating_surface::FloatingSurfaceHostMessage::PointAt { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::Pick { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HistoryDescriptions {
                     ..
@@ -2403,6 +2172,10 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
                     ..
                 }
+                | crate::floating_surface::FloatingSurfaceHostMessage::DrawsEmbeds
+                | crate::floating_surface::FloatingSurfaceHostMessage::EmbedStates { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::OpenWindows { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::WindowShareAsk { .. }
                 // Never delivered: the client's `pump` ends on it.
                 | crate::floating_surface::FloatingSurfaceHostMessage::VersionMismatch {
                     ..
@@ -2636,6 +2409,7 @@ impl AppHandler {
                 damage_regions,
                 scroll_copies: Vec::new(),
                 full_redraw: true,
+                partial: false,
                 // The compositor puts this window over the desktop; nothing
                 // under its surfaces is in this scene to blur.
                 backdrop: crate::backdrop::BackdropFrame::default(),
@@ -3037,7 +2811,7 @@ impl AppHandler {
                 .is_none_or(|history| history.live_interactive())
             && app.history_layout.is_none()
             && app.close_admission.dialog.is_none())
-        .then(|| crate::scroll_copy::placed(app.root_widget.as_ref()));
+        .then(|| crate::damage::widget_boxes(app.root_widget.as_ref()));
         let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
         let layout_phase = slow_event::phase("layout");
         let Some((geometry_changed, t_compute_us, t_apply_us)) = run_layout_pass(
@@ -3121,9 +2895,34 @@ impl AppHandler {
         // backdrop under the material before the frame renders.
         let backdrop_recording = crate::backdrop::BackdropRecording::begin();
         crate::backdrop::layer_scene(&scene, 0);
+        // The local render worker repaints only the damage from each scene,
+        // over the pixels it presented last: a frame that repaints neither
+        // whole nor under layers the widgets' damage does not describe is
+        // drawn only where its damage needs it (`crate::draw_cull`).
+        let culls = !full_redraw_required
+            && !self.top_layer_drawn
+            && app.history.is_none()
+            && app.history_layout.is_none()
+            && !crate::render_thread::remote::requested();
+        let mut culling = culls.then(|| std::mem::take(&mut app.layout.cull));
+        let culled = culling.is_some();
+        let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
         let draw_phase = slow_event::phase("draw");
-        let drawn = draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        let drawn = draw_frame_content_with(
+            app,
+            &mut scene,
+            (width, height),
+            scale_factor,
+            t_draw_start,
+            culling.as_mut().map(|culling| &mut culling.scenes),
+        );
         drop(draw_phase);
+        // Culled, what paints over the widgets waits with their layers, to
+        // be composed over them once the frame knows its damage.
+        let over: &mut Scene = match culling.as_mut() {
+            Some(culling) => &mut culling.scenes.layers,
+            None => &mut scene,
+        };
         // An empty state waiting for its room's first sync turns a spinner
         // no widget's damage covers (`crate::room_sync`): a new pose damages
         // its slot, in scene pixels.
@@ -3136,17 +2935,27 @@ impl AppHandler {
         let mut top_layer = drawn.top_layer.is_some() || drawn.tooltip.is_some();
         // What paints over the widgets without moving with a scroll and is no
         // widget the copy planner sees: the header bar another desktop gets.
-        let before_decorations = scene.encoding().draw_tags.len();
+        let before_decorations = over.encoding().draw_tags.len();
         #[cfg(target_os = "linux")]
         {
-            self.decorations.draw(app, &mut scene, transform);
+            self.decorations.draw(app, over, transform);
             full_redraw_required |= self.decorations.take_repaint();
         }
-        self.slot_bar.draw(app, &mut scene, transform);
+        self.slot_bar.draw(app, over, transform);
         full_redraw_required |= self.slot_bar.take_repaint();
-        let decorated = scene.encoding().draw_tags.len() != before_decorations;
-        let backdrop =
-            crate::backdrop::BackdropFrame::from_single_scene(backdrop_recording.finish());
+        let decorated = over.encoding().draw_tags.len() != before_decorations;
+        // Culled, the floating surfaces drawn into the frame's scenes reach
+        // its scene once they are composed into it.
+        let mut backdrop_recording = Some(backdrop_recording);
+        let mut backdrop = if culled {
+            crate::backdrop::BackdropFrame::default()
+        } else {
+            backdrop_recording
+                .take()
+                .map_or_else(crate::backdrop::BackdropFrame::default, |recording| {
+                    crate::backdrop::BackdropFrame::from_single_scene(recording.finish())
+                })
+        };
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         // Peer pointers, names and activity paint over the widgets and damage
         // only the marks that changed. Carets, selections and marks widgets
@@ -3159,9 +2968,9 @@ impl AppHandler {
             window_rect,
             crate::time::now(),
         );
-        scene.append(self.presence_layer.scene(), None);
+        over.append(self.presence_layer.scene(), None);
         full_redraw_required |= presence_damage.is_none();
-        let content_draw_tags = scene.encoding().draw_tags.len();
+        let content_draw_tags = over.encoding().draw_tags.len();
 
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);
@@ -3201,14 +3010,14 @@ impl AppHandler {
         record_main_stage(&mut native_main_stages, MainStage::AfterNativeFrameLog);
 
         if app.debug_mode {
-            draw_debug_outlines(app, &mut scene, transform);
+            draw_debug_outlines(app, over, transform);
         }
         record_main_stage(&mut native_main_stages, MainStage::AfterDebugOutlines);
 
         // Debug outlines paint over the widgets too. A layer drawn this
         // frame, or one erased since the last, covers pixels no widget's
         // damage reports. (The presence layer reports its own.)
-        top_layer |= scene.encoding().draw_tags.len() != content_draw_tags;
+        top_layer |= over.encoding().draw_tags.len() != content_draw_tags;
         full_redraw_required |=
             top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer);
 
@@ -3238,7 +3047,7 @@ impl AppHandler {
                 let moves = (!offers.is_empty()).then(|| {
                     crate::scroll_copy::moves_besides(
                         before,
-                        &crate::scroll_copy::placed(root),
+                        &crate::damage::widget_boxes(root),
                         &offers,
                     )
                 });
@@ -3303,6 +3112,40 @@ impl AppHandler {
                 scroll_copies = planned.copies;
             }
         }
+        // A culled frame shows only what it drew: nothing it left out may
+        // be repainted, and the worker must be able to repaint its damage
+        // alone. Otherwise its widgets are drawn again in full. Then its
+        // scenes are composed into the frame's.
+        let mut partial = false;
+        if let Some(mut culling) = culling {
+            let left_out = cull_frame
+                .as_ref()
+                .is_some_and(crate::draw_cull::Frame::skipped_any);
+            let holds = left_out
+                && !full_redraw_required
+                && crate::render_thread::renders_damage_alone(width, height, &damage_regions)
+                && cull_frame
+                    .as_ref()
+                    .is_some_and(|frame| frame.holds(Some(&damage_regions)));
+            drop(cull_frame);
+            if left_out && !holds {
+                redraw_culled_widgets(app, &mut culling.scenes, &drawn);
+            }
+            culling.tally(left_out, left_out && !holds);
+            partial = left_out && holds;
+            let secret = culling.shows_secret(app.floating.secret_on_screen, partial);
+            app.set_secret_on_screen(secret);
+            compose_culled(&mut scene, &culling.scenes);
+            if let Some(recording) = backdrop_recording.take() {
+                backdrop = crate::backdrop::BackdropFrame::from_single_scene(recording.finish());
+            }
+            culling.repainted(&damage_regions, !scroll_copies.is_empty());
+            app.layout.cull = culling;
+        } else if !full_redraw_required {
+            app.layout
+                .cull
+                .repainted(&damage_regions, !scroll_copies.is_empty());
+        }
         if !app.capture_frame_ready() {
             scene.reset();
             render.buffers.unprepare((scene, damage_regions));
@@ -3321,11 +3164,8 @@ impl AppHandler {
                 let _a11y = slow_event::phase("a11y");
                 let app_ref: &mut App = app;
                 let scale = window_scale;
-                adapter.update_if_active(|| {
-                    crate::accesskit_bridge::native_tree_update(
-                        app_ref.build_a11y_tree_update(scale),
-                    )
-                });
+                let bar = &self.slot_bar;
+                adapter.update_if_active(|| slot_bar::window_tree_update(app_ref, bar, scale));
             }
             record_main_stage(&mut native_main_stages, MainStage::AfterAccessibility);
         });
@@ -3398,6 +3238,7 @@ impl AppHandler {
                 damage_regions,
                 scroll_copies,
                 full_redraw: full_redraw_required,
+                partial,
                 backdrop,
                 on_present: self.dev_reload_timing.take().map(|timing| {
                     let submitted = crate::time::wall();
@@ -3768,6 +3609,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     && wake.requires_sync()
                     && let Some(window) = self.window.as_ref()
                 {
+                    // The wake may have come from this app's own engine or
+                    // worker, which an occluded window still hears. Run the
+                    // state passes now; a redraw is the paint's business.
+                    self.app.run_state_tick();
                     window.request_redraw();
                 }
                 return;
@@ -3883,6 +3728,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             UserEvent::HostCommand(invocation) => {
                 self.app.invoke_host_command(&invocation);
+                // The door is a wake too: what the command started is answered
+                // by the state passes even when no frame follows (a window
+                // macOS is not drawing, an agent driving it unseen).
+                self.app.run_state_tick();
                 self.app.needs_sync = true;
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
@@ -3926,10 +3775,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         if let Some(adapter) = self.a11y_adapter.as_mut() {
                             let scale = window.scale_factor();
                             let app_ref: &mut App = &mut self.app;
+                            let bar = &self.slot_bar;
                             adapter.update_if_active(|| {
-                                crate::accesskit_bridge::native_tree_update(
-                                    app_ref.build_a11y_tree_update(scale),
-                                )
+                                slot_bar::window_tree_update(app_ref, bar, scale)
                             });
                         }
                         window.request_redraw();
@@ -3943,7 +3791,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             req.action,
                             req.data.as_ref(),
                         ) {
-                            let click = self.app.dispatch_a11y_action(req.target_node, &action);
+                            // The window's row of slots is no widget of the
+                            // app's: its nodes run their slots.
+                            let slot_ran = self.slot_bar.perform_accessibility(
+                                &mut self.app,
+                                req.target_node,
+                                &action,
+                            );
+                            let click = if slot_ran {
+                                None
+                            } else {
+                                self.app.dispatch_a11y_action(req.target_node, &action)
+                            };
                             if let Some((x, y)) = click {
                                 let scale = window.scale_factor();
                                 let (px, py) = (x * scale, y * scale);
@@ -4370,6 +4229,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.poll_model_invocations() {
             request_primary_redraw();
         }
+        // Occlusion is not permission to stall. Once the surface has told us
+        // it is not being drawn, keep running the state passes on the loop's
+        // own pace while anything is pending: a frame may never come, and
+        // the work an agent or the engine is waiting on is theirs, not the
+        // pixels'. Nothing is marked dirty for paint that nobody asks for.
+        if self.primary_retry.known_occluded() && app.needs_sync {
+            let tick_due = self
+                .occluded_tick_at
+                .is_none_or(|at| at <= crate::time::now());
+            if tick_due {
+                app.run_state_tick();
+                self.occluded_tick_at = crate::time::now()
+                    .checked_add(OCCLUDED_TICK_INTERVAL)
+                    .filter(|_| app.needs_sync);
+            }
+        } else {
+            self.occluded_tick_at = None;
+        }
         // Reveal requests must not wait on rendering an occluded/minimized
         // window: consume them as soon as its admitted actions are polled.
         if crate::component_lifecycle::take_window_activation_intent(app.root_widget.as_ref()) {
@@ -4651,6 +4528,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .busy()
                     .then(|| crate::time::now() + Duration::from_millis(50)),
             )
+            .chain(self.occluded_tick_at)
             .min();
         match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
@@ -5055,8 +4933,6 @@ impl AppHandler {
         let WindowEvent::Touch(touch) = event else {
             return;
         };
-        self.app
-            .set_interaction_environment(self.app.input.interaction.with_touch_modality());
         let scale = window.scale_factor();
         let app = &self.app;
         let pointer_events = self.touch_pointer.events_claimed(touch, |position| {
@@ -5066,6 +4942,18 @@ impl AppHandler {
             ))
         });
         self.dispatch_touch_pointer(window, touch.device_id, pointer_events);
+        self.settle_touch_modality();
+    }
+
+    /// Lay out for touch once every gesture begun has landed: until then a
+    /// touch is hit-tested against the layout the person saw when it
+    /// began, not the touch-sized one it brings. A raw contact's own touch
+    /// events follow this in the same event, before any frame lays out.
+    fn settle_touch_modality(&mut self) {
+        if self.touch_pointer.settled() {
+            self.app
+                .set_interaction_environment(self.app.input.interaction.with_touch_modality());
+        }
     }
 
     fn dispatch_touch_pointer(
@@ -5086,6 +4974,7 @@ impl AppHandler {
     fn poll_touch_hold(&mut self, window: &Arc<Window>) {
         if let Some((device_id, events)) = self.touch_pointer.poll(crate::time::now()) {
             self.dispatch_touch_pointer(window, device_id, events);
+            self.settle_touch_modality();
             window.request_redraw();
         }
     }
@@ -5314,6 +5203,7 @@ impl App {
             mark_bounds: crate::scene_parts::DrawBounds::default(),
             last_primary_frame_presented: 0,
             primary_retry: crate::render_thread::retry::RenderRetryState::default(),
+            occluded_tick_at: None,
             floating_source_clear_frames: std::collections::HashMap::new(),
             floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),

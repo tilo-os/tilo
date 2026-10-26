@@ -34,13 +34,28 @@ fn hosted_address_edits_retain_the_page_and_its_viewport() {
             "an address edit must not replace the retained WebView"
         );
     }
-    widget.run_window_toolbar_event(ui::window_toolbar::ToolbarEvent::Action { id: "find".into() });
-    widget.sync(&state, &root);
-    // Opening Find still changes the composition through the real action.
+    // Finding in the page through the window bar's search keeps the
+    // retained WebView too: the bar hosts the query, the page's engine finds.
+    let mut driver = ui::widget::SearchDriver::default();
+    driver.open(ui::widget::InPlace::Document);
+    driver.drive(
+        &mut widget,
+        "rust",
+        ui::widget::FindOptions::default(),
+        None,
+        false,
+    );
     layout_at(&mut widget, 900.0, 700.0);
     assert!(
-        widget
-            .find_rect(crate::daily_controls::FIND_INPUT)
-            .is_some()
+        engine
+            .commands()
+            .iter()
+            .any(|command| matches!(command, WebViewCommand::Find { text, .. } if text == "rust")),
+        "the page's engine finds"
+    );
+    assert_eq!(
+        resize_count(),
+        initial_resizes,
+        "finding must not replace the retained WebView"
     );
 }

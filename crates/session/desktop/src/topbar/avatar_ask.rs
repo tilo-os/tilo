@@ -393,6 +393,7 @@ mod tests {
                 own: Some(OwnChip {
                     name: "Kim Lee".into(),
                     rgb: (0xe0, 0x7a, 0x5f),
+                    identity: String::new(),
                 }),
                 ..DesktopChromeSnapshot::default()
             }

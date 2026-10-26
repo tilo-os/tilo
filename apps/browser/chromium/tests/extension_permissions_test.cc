@@ -110,7 +110,29 @@ int main() {
   assert((kept.permissions == std::vector<std::string>{"tabs"}));
   assert((kept.origins == std::vector<std::string>{"http://127.0.0.1/*"}));
 
+  // The Browser takes back what the person revoked: what it held and holds
+  // no more is what the extension hears it lost.
+  permissions.SetOptional(id, PermissionSet{{"tabs"}, {"http://127.0.0.1/*"}}, PermissionSet{});
+  const auto lost = tilo::Without(kept, permissions.Granted(id));
+  assert((lost.permissions == std::vector<std::string>{"tabs"}));
+  assert((lost.origins == std::vector<std::string>{"http://127.0.0.1/*"}));
+  assert(!permissions.Has(id, "tabs") && tilo::Without(permissions.Granted(id), kept).empty());
+
   permissions.Forget(id);
   assert(!permissions.Has(id, "storage") && permissions.All(id).empty());
+
+  // Signing in asked for later: granted, it counts as the manifest's would,
+  // and only then.
+  const std::string signer = "ponmlkjihgfedcbaponmlkjihgfedcba";
+  permissions.SetRequired(signer, {}, {});
+  permissions.SetOptional(signer, PermissionSet{{"identity"}, {}}, PermissionSet{});
+  assert(!permissions.Has(signer, "identity"));
+  PermissionSet signing;
+  assert(!permissions.Ask(signer, PermissionSet{{"identity"}, {}}, signing));
+  assert((signing.permissions == std::vector<std::string>{"identity"}));
+  permissions.Grant(signer, signing);
+  assert(permissions.Has(signer, "identity"));
+  permissions.SetOptional(signer, PermissionSet{{"identity"}, {}}, PermissionSet{{"identity"}, {}});
+  assert(permissions.Has(signer, "identity"));
   return 0;
 }

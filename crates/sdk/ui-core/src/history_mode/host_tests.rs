@@ -1640,7 +1640,7 @@ fn history_host_messages_exist_in_every_shipped_language() {
         ("owner", "owner".into()),
         ("action", "app/action".into()),
         ("arguments", "{}".into()),
-        ("phrase", "CONFIRM".into()),
+        ("phrase", "nvme0n1".into()),
         ("file", "brief.md".into()),
         ("revision", "r1".into()),
         ("identity", "abcdef".into()),

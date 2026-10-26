@@ -224,7 +224,7 @@ publish = { inputs = ["rust-toolchain.toml"], requirement = { cores = 2, memory 
 [product.build]
 run = "bash tools/ci/publish/ci-builder.sh build {arch} {out}"
 needs = ["os-assets"]
-inputs = ["os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/install-xwayland-satellite.sh", "os/external-assets/xwayland-satellite/**", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh"]
+inputs = ["os/Containerfile.builder", "tools/ci/shstk-mark.py", "os/scripts/verify-elf-hardening.sh", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/install-xwayland-satellite.sh", "os/external-assets/xwayland-satellite/**", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh"]
 cost = "heavy"
 timeout_secs = 14400
 # Measured: 30 GiB peak on x86_64, at the edge of 32 GiB.
@@ -353,18 +353,20 @@ family = "os-base"
 name = "kernel"
 about = """
 The kernel (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config fragment, built
-natively FROM the pinned signed buildroot, then booted under emulation with its module signatures
-checked and the firmware's Secure Boot enforcement probed, as root in a micro-VM step
-(kernel-acceptance-<arch>). Stable
+FROM the pinned signed buildroot of the machine it builds on (natively, or the aarch64 kernel
+cross-compiled on x86_64, where `hosts` says so) through the compiler cache
+image-kernel-cache-<arch> compiled, then booted under emulation on its own architecture with its
+module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
+micro-VM step (kernel-acceptance-<arch>). Stable
 signs each architecture's image and attests its SLSA provenance (kernel-rpm/v1: the source
-commit and the buildroot it was built FROM, which os/dev/verify-kernel-provenance.sh checks),
+commit, the buildroot it was built FROM and the architecture it was built on, which
+os/dev/verify-kernel-provenance.sh checks),
 both with a transparency log entry, publishes them as `sha-<commit>-<arch>` and sets the
 `kernel` pointer, which pin-kernel commits to os/kernel-snapshot.env on main. That tag is
 pushed once: a stable run again on the same commit whose rebuild differs leaves it, and the
 digest pinned from it, where they are, rather than moving the tag and leaving the earlier digest
 untagged. Main publishes
-nothing, since the OS build verifies the kernel's signature. No compiler cache reaches checks yet, so every build compiles the
-whole kernel."""
+nothing, since the OS build verifies the kernel's signature."""
 repository = "registry.tilo.so/tilo/tilo-kernel"
 arches = ["x86_64", "aarch64"]
 release = ["once:sha-{commit}-{arch}"]
@@ -382,10 +384,10 @@ outputs = ["{dir}/pins.env"]
 pointers = { kernel = "{dir}/pins.env" }
 
 [product.build]
-run = "bash tools/ci/publish/kernel.sh build {arch} {out}"
-needs = ["os-assets"]
+run = "bash tools/ci/publish/kernel.sh build {arch} {out} /target/publish/kernel-cache/{arch}/compiler-cache.tar"
+needs = ["os-assets", "image-kernel-cache-{arch}"]
 inputs = ["os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
-outputs = ["{out}/secureboot/**"]
+outputs = ["{out}/secureboot/**", "{out}/buildroot", "{out}/build-architecture"]
 requires = ["disk-100g"]
 requirement = { cores = 16, memory = "24GiB" }
 timeout_secs = 14400
@@ -411,7 +413,7 @@ tlog = true
 [product.build]
 run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot {out}"
 needs = ["rpm-snapshot", "os-assets"]
-inputs = ["os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-governor/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/hosting/tilo-room-host/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-secrets/**", "crates/platform/tilo-sort/**", "crates/runtime/egress/**", "crates/browser/browser-continuity/**", "crates/browser/browser-continuity-core/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/session/control-cli/**", "crates/sdk/font-catalog/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/content-types/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/system-stats/**", "crates/system/block-devices/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "crates/system/documents/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/derive-rpm-package-set.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**", "vendor/wgpu/**", "vendor/wgpu-hal/**", "crates/platform/tilo-mime/**", "crates/platform/tilo-render-protocol/**", "crates/system/content-device/**", "vendor/pulldown-cmark/**", "vendor/regex-syntax/**", "vendor/vello_encoding/**"]
+inputs = ["os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-governor/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/hosting/tilo-room-host/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-secrets/**", "crates/platform/tilo-sort/**", "crates/runtime/egress/**", "crates/browser/browser-continuity/**", "crates/browser/browser-continuity-core/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/tilo-fs-client/**", "crates/runtime/tilo-identity-client/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/session/control-cli/**", "crates/sdk/font-catalog/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/content-types/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/system-stats/**", "crates/system/block-devices/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "crates/system/documents/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/derive-rpm-package-set.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**", "vendor/wgpu/**", "vendor/wgpu-hal/**", "crates/platform/tilo-mime/**", "crates/platform/tilo-render-protocol/**", "crates/system/content-device/**", "vendor/pulldown-cmark/**", "vendor/regex-syntax/**", "vendor/serde_json/**", "vendor/vello_encoding/**"]
 cost = "heavy"
 requirement = { cores = 16, memory = "24GiB" }
 
@@ -1025,15 +1027,45 @@ on = ["stable"]
 [[matrix]]
 family = "os-base"
 about = """
+The compiler cache image-kernel-<arch> compiles through (kernel.sh compile-cache): every object
+of the kernel and its modules, compiled on the machine the kernel builds on (`host`, as the
+kernel product's `hosts` says) into an empty ccache directory. Its inputs are the buildroot
+(the Fedora source and the toolchain) and the scripts that run it. The patches, the
+configuration and the rest of the build are deliberately not among them: it compiles the tree
+of the commit that first needs it and stays until the buildroot moves, so a patch or a config
+change recompiles just the objects it changes. Whatever it holds, the kernel is the one an
+uncached build makes: an object is found only for the same compiler, flags and preprocessed
+source, and the cache wrapper compiles every source naming .incbin without it. A trusted run
+takes only a trusted run's."""
+each = [{ arch = "x86_64", host = "x86_64" }, { arch = "aarch64", host = "aarch64" }]
+
+[[matrix.check]]
+name = "image-kernel-cache-{arch}"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/kernel.sh compile-cache {arch} /target/publish/kernel-cache/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/cc-wrapper.sh", "os/kernel-buildroot-snapshot.env", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
+needs = ["os-assets"]
+outputs = ["/target/publish/kernel-cache/{arch}/compiler-cache.tar"]
+requires = ["arch={host}", "disk-100g"]
+isolation = "vm"
+requirement = { cores = 16, memory = "24GiB" }
+timeout_secs = 14400
+default = false
+
+[[matrix]]
+family = "os-base"
+about = """
 The kernel image-kernel-<arch> built (tools/ci/products.toml), booted under emulation with
 its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
-micro-VM step."""
+micro-VM step on the kernel's own architecture. The probe's signer and initramfs maker of a
+cross-compiled kernel are built here (tilo-crypto, gen_init_cpio from the kernel's source)."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 
 [[matrix.check]]
 name = "kernel-acceptance-{arch}"
 run = "bash tools/ci/publish/kernel-acceptance.sh {arch} /target/publish/kernel/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
+cargo_packages = ["tilo-crypto"]
 needs = ["image-kernel-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
@@ -1679,7 +1711,7 @@ registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade 
 sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
 follow on their own; its flashable disk, which os-board-<board> installs (with the Lenovo's audio
 stack checked inside the image first), replaces tilo-vm-disk-latest/aarch64-<board> in the
-generic packages (DEVELOPMENT.md, "Board dev images on real hardware")."""
+generic packages (docs/development/hardware.md)."""
 each = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]
 
 [[matrix.check]]

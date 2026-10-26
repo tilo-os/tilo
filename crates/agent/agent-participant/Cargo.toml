@@ -18,6 +18,9 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The dates a step's computed arguments (`{{= workday(…) }}`) work with.
 chrono.workspace = true
+# The patterns a step's argument takes a part of a value out with
+# (`{{…|match:INV-\d+}}`): matched in linear time, compiled size bounded.
+regex.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.
@@ -30,6 +33,7 @@ agent = { path = "../../../apps/agent" }
 # The apps an agent can open in a browser session: the browser desktop's
 # registry, generated from the app manifests.
 # generated apps: begin (tools/web/generate_web_desktop.py)
+activity = { path = "../../../apps/activity" }
 api-tester = { path = "../../../apps/api-tester" }
 calculator = { path = "../../../apps/calculator" }
 calendar = { path = "../../../apps/calendar", default-features = false, features = [] }

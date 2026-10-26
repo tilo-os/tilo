@@ -167,6 +167,34 @@ impl ModelTable {
             _ => None,
         }
     }
+
+    /// Whether a value of this table's type holds a value of `target`'s:
+    /// it is one, or a field of it is, an option's value, or an item of a
+    /// collection of it, at any depth a record nests.
+    pub(crate) fn holds(&'static self, target: &'static Self) -> bool {
+        fn within(table: &'static ModelTable, target: &'static ModelTable, depth: u8) -> bool {
+            if std::ptr::eq(table, target) {
+                return true;
+            }
+            // Records nest a handful deep; a type that holds itself (a tree
+            // of boxed nodes) is not walked without end.
+            if depth >= 16 {
+                return false;
+            }
+            if let Some(option) = table.option() {
+                return within(option.inner, target, depth.saturating_add(1));
+            }
+            table.record().is_some_and(|record| {
+                record.fields.iter().any(|field| {
+                    within(field.table, target, depth.saturating_add(1))
+                        || field.items.is_some_and(|items| {
+                            within(items.item_table, target, depth.saturating_add(1))
+                        })
+                })
+            })
+        }
+        within(self, target, 0)
+    }
 }
 
 /// A collection type's [`ItemSource`] functions, its type erased.
@@ -1525,8 +1553,20 @@ pub fn edit_fields(
             };
             // The outside settling an outbox entry, or forgetting a settled
             // one, is no edit of the field's content: a read-only outbox
-            // takes them.
-            if field.readonly && !matches!(op, EditOp::Settle { .. } | EditOp::Forget { .. }) {
+            // takes them. A reaction is always the invoker's own (the
+            // `Reactions` it reaches stores who invoked it), so it cannot
+            // forge anything a read-only field protects: a read-only
+            // message takes its reactions. Only a `Reactions` value accepts
+            // them; anything else refuses them as unsupported.
+            if field.readonly
+                && !matches!(
+                    op,
+                    EditOp::Settle { .. }
+                        | EditOp::Forget { .. }
+                        | EditOp::React { .. }
+                        | EditOp::Unreact { .. }
+                )
+            {
                 return Err(ModelError::Refused(format!(
                     "`{}` is changed only by the record's actions",
                     field.name

@@ -44,6 +44,13 @@ mod cpu_raster {
         pub(super) fn upload(&self, _: &vello::wgpu::Queue, _: &vello::wgpu::Texture) {
             match self.0 {}
         }
+        #[expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "the same signature as the native canvas, which records the setting"
+        )]
+        pub(super) fn draw_damage_only(&mut self, _: bool) {
+            match self.0 {}
+        }
     }
 }
 
@@ -62,6 +69,49 @@ pub(crate) struct DamageCache {
     coarse_pool_high_water_pixels: u64,
     /// Scratch space for scroll copies within the retained target.
     copy_scratch: crate::scroll_copy::CopyScratch,
+    /// The frame's scene holds only what its damage needs
+    /// ([`RetainedRaster::rasterize_damage_only`]).
+    damage_only: bool,
+    /// A frame drawn for its damage only would have had to repaint more:
+    /// nothing was drawn.
+    refused: bool,
+}
+
+/// Why a frame drawn for its damage only was not rasterized.
+pub const DAMAGE_ONLY_REFUSED: &str =
+    "a scene drawn for its damage only cannot repaint more than the damage";
+
+/// Whether a frame of `width` × `height` with `damage` (physical pixels,
+/// not empty) is repainted region by region rather than whole: a damage
+/// that covers half the target, or whose window does, is rendered as one
+/// whole frame ([`repaint_damage`]).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "damage bounds are clamped to the u32 surface before narrowing"
+)]
+pub(crate) fn repaints_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
+    let full_pixels = u64::from(width).saturating_mul(u64::from(height));
+    let mut damage_pixels = 0u64;
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+    for rect in damage {
+        let rx0 = rect.x0.floor().max(0.0).min(f64::from(width)) as u32;
+        let ry0 = rect.y0.floor().max(0.0).min(f64::from(height)) as u32;
+        let rx1 = rect.x1.ceil().max(0.0).min(f64::from(width)) as u32;
+        let ry1 = rect.y1.ceil().max(0.0).min(f64::from(height)) as u32;
+        let (region_width, region_height) = (rx1.saturating_sub(rx0), ry1.saturating_sub(ry0));
+        damage_pixels = damage_pixels
+            .saturating_add(u64::from(region_width).saturating_mul(u64::from(region_height)));
+        if region_width != 0 && region_height != 0 {
+            (x0, y0, x1, y1) = (x0.min(rx0), y0.min(ry0), x1.max(rx1), y1.max(ry1));
+        }
+    }
+    if damage_pixels == 0 || damage_pixels >= full_pixels.saturating_div(2) {
+        return false;
+    }
+    let window_width = x1.saturating_sub(x0 / RASTER_TILE * RASTER_TILE);
+    let window_height = y1.saturating_sub(y0 / RASTER_TILE * RASTER_TILE);
+    u64::from(window_width).saturating_mul(u64::from(window_height)) < full_pixels.saturating_div(2)
 }
 
 /// What a host keeps between frames to rasterize them into one retained
@@ -164,6 +214,40 @@ impl RetainedRaster {
         (rasterized, backdrop_stats)
     }
 
+    /// [`Self::rasterize`] for a frame whose scene holds only what its
+    /// damage needs (`crate::draw_cull`): it is never repainted beyond its
+    /// damage. `Err` with [`DAMAGE_ONLY_REFUSED`] when it would have to be
+    /// (a whole frame, a backdrop, a copy that cannot be made, a damage too
+    /// large to repaint alone); the target then still holds the last frame.
+    pub fn rasterize_damage_only(
+        &mut self,
+        gpu: (&vello::wgpu::Device, &vello::wgpu::Queue),
+        renderer: &mut Renderer,
+        target: RetainedTarget<'_>,
+        frame: FrameContent<'_>,
+    ) -> (Result<u64, String>, Option<crate::backdrop::BackdropStats>) {
+        if frame.full_redraw
+            || !frame.backdrop.is_empty()
+            || !repaints_alone(frame.width, frame.height, frame.damage_regions)
+        {
+            return (Err(DAMAGE_ONLY_REFUSED.to_owned()), None);
+        }
+        self.damage_cache.damage_only = true;
+        self.damage_cache.refused = false;
+        if let Some(canvas) = self.cpu.as_mut() {
+            canvas.draw_damage_only(true);
+        }
+        let (rasterized, stats) = self.rasterize(gpu, renderer, target, frame);
+        self.damage_cache.damage_only = false;
+        if let Some(canvas) = self.cpu.as_mut() {
+            canvas.draw_damage_only(false);
+        }
+        if std::mem::take(&mut self.damage_cache.refused) {
+            return (Err(DAMAGE_ONLY_REFUSED.to_owned()), stats);
+        }
+        (rasterized, stats)
+    }
+
     /// Bring `target` up to date with `frame` on the GPU, repainting only
     /// its damage (or all of it): for a host whose frames have no scroll
     /// copies or backdrops and that never rasterizes on the CPU (the
@@ -247,6 +331,10 @@ pub(crate) fn rasterize_damage(
             &mut damage_cache.copy_scratch,
             frame.scroll_copies,
         ) {
+            if damage_cache.damage_only {
+                damage_cache.refused = true;
+                return Ok(0);
+            }
             let full = FrameContent {
                 full_redraw: true,
                 ..*frame
@@ -282,8 +370,13 @@ fn repaint_damage(
         ..
     } = *frame;
     let full_pixels = u64::from(width).saturating_mul(u64::from(height));
-    // The whole frame, after the partial targets and pools are let go.
+    // The whole frame, after the partial targets and pools are let go. A
+    // scene drawn for its damage only is not repainted whole.
     let render_full = |renderer: &mut Renderer, damage_cache: &mut DamageCache| {
+        if damage_cache.damage_only {
+            damage_cache.refused = true;
+            return Ok(0);
+        }
         if damage_cache
             .last_region_count
             .is_some_and(|previous| previous != 0)
@@ -616,6 +709,9 @@ pub enum Unknown {
     Target,
     /// The frames cannot be compared part by part.
     Unproven(crate::scene_parts::Unproven),
+    /// The renderer dropped geometry from a frame drawn since the target
+    /// was last repainted whole ([`RetainedFrames::note_overflows`]).
+    LostGeometry,
 }
 
 /// The frame a host presented last, to compare the next with. Where a scene
@@ -629,6 +725,11 @@ pub struct RetainedFrames {
     last: Option<(Scene, crate::scene_parts::SectionParts, TargetKey)>,
     /// The target holds the frame last presented, parts or not.
     shown: bool,
+    /// The renderer's overflows ([`crate::render_bump_recovery::Overflows`])
+    /// the target was last repainted whole for.
+    overflows: u64,
+    /// The target may show a frame with geometry missing.
+    lost: bool,
 }
 
 impl RetainedFrames {
@@ -640,6 +741,9 @@ impl RetainedFrames {
         parts: Option<&crate::scene_parts::SectionParts>,
         key: TargetKey,
     ) -> Repaint {
+        if self.lost {
+            return Repaint::Full(Unknown::LostGeometry);
+        }
         let Some(parts) = parts else {
             return Repaint::Full(Unknown::NoParts);
         };
@@ -680,6 +784,26 @@ impl RetainedFrames {
     ) {
         self.last = parts.map(|parts| (scene.clone(), parts.clone(), key));
         self.shown = true;
+        self.lost = false;
+    }
+
+    /// Whether the renderer has collected an overflow, `collected` in all,
+    /// that the target was not yet repainted whole for: a frame it shows may
+    /// have geometry missing.
+    #[must_use]
+    pub const fn shows_lost_geometry(&self, collected: u64) -> bool {
+        self.lost || self.overflows != collected
+    }
+
+    /// The renderer has collected `collected` overflows in all: after a new
+    /// one, the next frame repaints the whole target. Pixels drawn with
+    /// geometry missing stay on it otherwise, since later frames repaint
+    /// only what changes.
+    pub fn note_overflows(&mut self, collected: u64) {
+        if self.overflows != collected {
+            self.overflows = collected;
+            self.lost = true;
+        }
     }
 
     /// The target no longer shows the last frame presented.

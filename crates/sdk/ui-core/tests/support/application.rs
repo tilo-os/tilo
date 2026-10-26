@@ -291,6 +291,22 @@ pub struct ProbeHost {
 }
 impl ProbeHost {
     pub fn new() -> Self {
+        Self::over(RecordOwners::new)
+    }
+
+    /// A host whose record store writes nothing until a test flushes it:
+    /// a test can hold a save under way for as long as it checks what a
+    /// pending save does, however slowly a loaded machine runs it.
+    pub fn holding_writes() -> Self {
+        Self::over(|root| {
+            RecordOwners::with_store(std::rc::Rc::new(app_state::FsStore::with_debounce(
+                root,
+                std::time::Duration::from_secs(3600),
+            )))
+        })
+    }
+
+    fn over(owners: impl FnOnce(std::path::PathBuf) -> RecordOwners) -> Self {
         CALLS.set(0);
         OPERATIONS.with_borrow_mut(Vec::clear);
         COMMITTED_ACTION.set(None);
@@ -301,7 +317,7 @@ impl ProbeHost {
         NATIVE_LIFECYCLE.with_borrow_mut(Vec::clear);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
-        let mut owners = RecordOwners::new(root.clone());
+        let mut owners = owners(root.clone());
         let records = owners.open(APP, ROOM).unwrap();
         let views = Rc::new(InstanceViewStore::new(root, DEVICE, ROOM).unwrap());
         Self {
@@ -820,10 +836,10 @@ impl tilo_ui::resources::PublishesResources for ProbeRoot {
                         &ProbeAction("confirmed".into()),
                     )
                     .unwrap()
+                    // A question one Confirm answers: a typed name is only
+                    // for an irreversible action, and names what it loses.
                     .with_contract(tilo_actions::ActionContract {
-                        confirmation: tilo_actions::ConfirmationPolicy::Phrase {
-                            phrase: "JA".into(),
-                        },
+                        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                         ..tilo_actions::ActionContract::default()
                     }),
                 ),

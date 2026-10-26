@@ -732,6 +732,44 @@ fn validated_slot(decoded: Option<tilo_image_codec::DecodedImage>, max_dimension
     ))
 }
 
+/// A small picture held in memory, decoded ([`decode_held`]).
+pub(crate) enum HeldPicture {
+    Ready(PenikoImage),
+    /// The decoders are still to come (fetched on first use).
+    Pending,
+    /// It does not decode.
+    Broken,
+}
+
+/// Decode a small picture held in memory (a workspace emoji) at most
+/// `max_dimension` wide and tall.
+pub(crate) fn decode_held(encoded: &[u8], max_dimension: u32) -> HeldPicture {
+    match decoded_slot(Some(encoded), max_dimension) {
+        Slot::Ready(image) => HeldPicture::Ready(image),
+        Slot::Undecoded => HeldPicture::Pending,
+        Slot::Failed | Slot::Loading(_) => HeldPicture::Broken,
+    }
+}
+
+/// A picture made small ([`small_png`]).
+pub(crate) enum SmallPicture {
+    /// The PNG, at most the size asked.
+    Ready(Vec<u8>),
+    /// The decoders are still to come (fetched on first use).
+    Pending,
+    /// It does not decode.
+    Broken,
+}
+
+/// `encoded` (PNG, JPEG or WebP) as a PNG at most `max_dimension` wide and
+/// tall, aspect kept.
+pub(crate) fn small_png(encoded: &[u8], max_dimension: u32) -> SmallPicture {
+    let Some(decoders) = crate::image_decoders::decoders() else {
+        return SmallPicture::Pending;
+    };
+    (decoders.small_png)(encoded, max_dimension).map_or(SmallPicture::Broken, SmallPicture::Ready)
+}
+
 fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
     let Some(encoded) = bytes else {
         return Slot::Failed;

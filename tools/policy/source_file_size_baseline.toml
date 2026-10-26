@@ -124,12 +124,11 @@
 "crates/sdk/ui-core/src/widget/tree_view.rs" = 7000
 "crates/sdk/ui-core/src/widget/virtual_list.rs" = 3500
 "crates/sdk/ui-core/src/widget/window_group.rs" = 6500
-"crates/session/desktop-surface/src/activity/pane.rs" = 8000
-"crates/session/desktop-surface/src/activity/pane_tests.rs" = 4500
+"crates/session/desktop-surface/src/activity/pane.rs" = 4000
+"crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/desktop/src/topbar.rs" = 7500
 "crates/session/desktop/src/workspace_settings.rs" = 6000
-"crates/session/desktop/src/workspace_settings/overlay.rs" = 4000
 "crates/session/greeter/src/greeter_app.rs" = 4500
 "crates/session/installer/src/installer_app.rs" = 7500
 "crates/session/shell/examples/redraw_bench.rs" = 7000
@@ -142,7 +141,7 @@
 "crates/session/shell/src/compositor/native.rs" = 22000
 "crates/session/shell/src/compositor/selection.rs" = 3500
 "crates/session/shell/src/compositor/state.rs" = 10000
-"crates/session/shell/src/network/actor.rs" = 7000
+"crates/session/shell/src/network/actor.rs" = 6000
 "crates/session/shell/src/onboarding_view.rs" = 10000
 "crates/session/shell/src/shell/chrome_state.rs" = 5500
 "crates/session/shell/src/shell/device_fabric.rs" = 5000
@@ -150,7 +149,7 @@
 "crates/session/shell/src/shell/foreign.rs" = 8500
 "crates/session/shell/src/shell/frame.rs" = 11000
 "crates/session/shell/src/shell/frame_retained_tests.rs" = 4000
-"crates/session/shell/src/shell/launcher.rs" = 10000
+"crates/session/shell/src/shell/launcher.rs" = 7000
 "crates/session/shell/src/shell/network.rs" = 14500
 "crates/session/shell/src/shell/overlay_host/overlay_event_absorb_tests.rs" = 4500
 "crates/session/shell/src/shell/overlay_host/overlay_host_tests.rs" = 4000
@@ -165,7 +164,6 @@
 "crates/session/shell/src/shell/search/providers/live_app_actions.rs" = 6500
 "crates/session/shell/src/shell/state.rs" = 6500
 "crates/session/shell/src/shell/tab_binding.rs" = 3500
-"crates/session/shell/src/shell/test_control.rs" = 4500
 "crates/session/shell/tests/clipboard_e2e.rs" = 7500
 "crates/system/fs/src/fs.rs" = 7500
 "crates/system/fs/src/fs/tests.rs" = 4000

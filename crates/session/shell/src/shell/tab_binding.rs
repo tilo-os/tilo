@@ -331,12 +331,13 @@ pub fn open_hosted_app(
 }
 
 /// Hold the place a launch will open in from the moment it is asked for: a
-/// tab at `placement` showing the opening card, which the app's window then
-/// binds into ([`Placement::IntoTab`]). A cold start takes seconds, so
-/// without it nothing on screen answers the activation until the window
-/// maps. A failed launch or a missed deadline turns the card into the
-/// retry card (`peer_windows::settle_local_restore`), and the card is never
-/// saved as opening (`persist::clear_transient_launch_notes`).
+/// tab at `placement` where the app's window arrives
+/// (`pending_window::PendingWindow`), which the window then binds into
+/// ([`Placement::IntoTab`]). A cold start takes seconds, so without it
+/// nothing on screen answers the activation until the window maps. A failed
+/// launch or a missed deadline turns the place into the retry card
+/// (`peer_windows::settle_local_restore`), and the place is never saved as
+/// opening (`persist::clear_transient_launch_notes`).
 pub fn hold_place_for_launch(
     tree: &mut WorkspaceTree,
     package_id: &str,
@@ -392,7 +393,7 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
                         .any(|candidate| candidate.id == group)
                         .then_some((
                             strip.id,
-                            ui::widget::TabDropTarget::ExistingGroup {
+                            tilo_desktop_model::DropTarget::ExistingGroup {
                                 group_id: group,
                                 tab_index: index,
                             },
@@ -405,7 +406,7 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
                 strip.window_groups.iter().find_map(|candidate| {
                     (candidate.id == group).then_some((
                         strip.id,
-                        ui::widget::TabDropTarget::ExistingGroup {
+                        tilo_desktop_model::DropTarget::ExistingGroup {
                             group_id: group,
                             tab_index: candidate.tabs.len(),
                         },
@@ -415,7 +416,7 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
         }),
         Placement::GroupAt(strip, index) => Some((
             strip,
-            ui::widget::TabDropTarget::GroupGap { gap_index: index },
+            tilo_desktop_model::DropTarget::GroupGap { gap_index: index },
         )),
         Placement::NewGroup
         | Placement::RightOf(_)
@@ -449,23 +450,23 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
     };
     let source_group_len = source_group_state.tabs.len();
     match &mut target {
-        ui::widget::TabDropTarget::ExistingGroup {
+        tilo_desktop_model::DropTarget::ExistingGroup {
             group_id,
             tab_index,
         } if *group_id == source_group && source_index < *tab_index => {
             *tab_index = tab_index.saturating_sub(1);
         }
-        ui::widget::TabDropTarget::GroupGap { gap_index }
+        tilo_desktop_model::DropTarget::GroupGap { gap_index }
             if source_group_len == 1 && source_group_index < *gap_index =>
         {
             *gap_index = gap_index.saturating_sub(1);
         }
         _ => {}
     }
-    let mut topology: Vec<ui::widget::GroupTopology> = strip
+    let mut topology: Vec<tilo_desktop_model::GroupShape> = strip
         .window_groups
         .iter()
-        .map(|group| ui::widget::GroupTopology {
+        .map(|group| tilo_desktop_model::GroupShape {
             id: group.id,
             tab_ids: group.tabs.iter().map(|tab| tab.id).collect(),
             active_tab: group.active_tab,
@@ -494,7 +495,7 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
         topology.remove(source_group_index);
     }
     match target {
-        ui::widget::TabDropTarget::ExistingGroup {
+        tilo_desktop_model::DropTarget::ExistingGroup {
             group_id,
             tab_index,
         } => {
@@ -506,13 +507,13 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
                 .insert(tab_index.min(group.tab_ids.len()), tab_id);
             group.active_tab = tab_id;
         }
-        ui::widget::TabDropTarget::GroupGap { gap_index } => topology.insert(
+        tilo_desktop_model::DropTarget::GroupGap { gap_index } => topology.insert(
             gap_index.min(topology.len()),
-            ui::widget::GroupTopology {
+            tilo_desktop_model::GroupShape {
                 id: tree.mint_id(),
                 tab_ids: vec![tab_id],
                 active_tab: tab_id,
-                width: ui::widget::WindowWidth::Normal,
+                width: tilo_desktop_model::WindowWidth::Normal,
             },
         ),
     }
@@ -1353,7 +1354,7 @@ fn remove_tab_choosing(tree: &mut WorkspaceTree, tab_id: TabId, back_to_previous
     // ordering explicit, this guarantees that a revision/peer merge between
     // the two representations cannot treat the stale document entry as an
     // insertion and resurrect it. A newly adopted `Foreign` surface and a
-    // tab placed since the document last took the cache (an opening card
+    // tab placed since the document last took the cache (a pending place
     // whose launch was refused in the same frame) may never have entered the replicated
     // document; absence there is therefore already the desired durable
     // state, not a failed close.

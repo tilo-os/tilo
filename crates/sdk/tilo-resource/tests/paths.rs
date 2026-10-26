@@ -185,13 +185,9 @@ fn collection_edits_insert_move_and_remove_items() {
     assert_eq!(order(&library), ["c", "a", "b"]);
 
     let mut other = library.fork();
-    // Removing an item asks first, as a delete verb does.
-    assert!(
-        edit(&mut library, &snippets.remove(&ids[0]))
-            .unwrap_err()
-            .contains("confirmation")
-    );
-    library.apply_confirmed(snippets.remove(&ids[0])).unwrap();
+    // Removing an item is undoable: it asks nothing, as a delete verb of
+    // the record does not.
+    edit(&mut library, &snippets.remove(&ids[0])).unwrap();
     edit(&mut other, &snippets.insert(1, &titled("d"))).unwrap();
     library.sync_with(&mut other).unwrap();
     assert_eq!(order(&library), ["c", "d", "b"]);
@@ -826,7 +822,14 @@ fn search_finds_an_item_by_its_codes_and_variants() {
     .unwrap();
     let entries = Library::search(&library.state().unwrap());
     assert_eq!(entries.len(), 1);
-    assert!(entries[0].text.contains("rust"), "{:?}", entries[0].text);
+    assert!(
+        entries[0]
+            .fields
+            .iter()
+            .any(|(text, _)| text.contains("rust")),
+        "{:?}",
+        entries[0].fields
+    );
 }
 
 /// A path names the object its value is stored in, through the items of a

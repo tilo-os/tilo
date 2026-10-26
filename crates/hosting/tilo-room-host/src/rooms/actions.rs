@@ -100,6 +100,10 @@ pub(crate) const REQUEST_BOT: &str = "request-bot";
 /// Taking back the room's request for a bot: its host stops and
 /// uninstalls it.
 pub(crate) const WITHDRAW_BOT_REQUEST: &str = "withdraw-bot-request";
+/// Adding an agent to the room, with its preset's grants.
+pub(crate) const ADD_AGENT: &str = "add-agent";
+/// Removing an agent from the room, and every grant it held there.
+pub(crate) const REMOVE_AGENT: &str = "remove-agent";
 /// Giving the host a secret a requested bot's connector needs (a Discord
 /// bot token): kept in the host's secret store for that connector, never in
 /// the room's governance, a record or a log.
@@ -125,6 +129,8 @@ const MINUTE_MS: u64 = 60 * 1_000;
 const REQUEST_ID_CONTEXT: &str = "tilo-relay room governance action request v1";
 
 const ROLES: [&str; 4] = ["viewer", "commenter", "editor", "moderator"];
+/// The presets an agent added to a room holds.
+const AGENT_PRESETS: [&str; 4] = ["observer", "contributor", "operator", "custom"];
 const CALL_OPERATIONS: [&str; 4] = ["start", "restart", "set-directions", "set-denial"];
 /// The call operation that is destructive, and so not served yet.
 const END_CALL: &str = "end";
@@ -141,7 +147,7 @@ struct Verb {
 }
 
 /// What the rooms serve, in catalogue order.
-const VERBS: [Verb; 17] = [
+const VERBS: [Verb; 21] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -190,6 +196,34 @@ const VERBS: [Verb; 17] = [
         gate: governance::SET_ROLE,
         kind: roles::GOVERNANCE_KIND,
         params: set_role_params,
+    },
+    Verb {
+        id: ADD_AGENT,
+        label: "Add agent",
+        gate: governance::GRANT,
+        kind: roles::GOVERNANCE_KIND,
+        params: add_agent_params,
+    },
+    Verb {
+        id: REMOVE_AGENT,
+        label: "Remove agent",
+        gate: governance::REVOKE,
+        kind: roles::GOVERNANCE_KIND,
+        params: agent_params,
+    },
+    Verb {
+        id: governance::GRANT,
+        label: "Give a grant",
+        gate: governance::GRANT,
+        kind: roles::GOVERNANCE_KIND,
+        params: grant_params,
+    },
+    Verb {
+        id: governance::REVOKE,
+        label: "Take back a grant",
+        gate: governance::REVOKE,
+        kind: roles::GOVERNANCE_KIND,
+        params: revoke_params,
     },
     Verb {
         id: governance::RESTRICT,
@@ -349,6 +383,42 @@ fn join_request_params() -> Vec<ActionParam> {
 
 fn set_role_params() -> Vec<ActionParam> {
     vec![person_param(), role_param()]
+}
+
+fn add_agent_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "agent",
+            ParamType::Text,
+            "The agent's stable id, as the room's agents name it.",
+        ),
+        ActionParam::required("preset", ParamType::Text, "What the agent may do here.")
+            .with_choices(AGENT_PRESETS),
+    ]
+}
+
+fn agent_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "agent",
+        ParamType::Text,
+        "The agent's stable id, as the room's agents name it.",
+    )]
+}
+
+fn grant_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "grant",
+        ParamType::Object,
+        "The grant: its id, subject, node, kinds, answer and lifetime.",
+    )]
+}
+
+fn revoke_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "grant",
+        ParamType::Text,
+        "The grant's id, as the room's grants report it.",
+    )]
 }
 
 fn person_params() -> Vec<ActionParam> {
@@ -1203,6 +1273,13 @@ impl Rooms {
                 };
                 generation(self.set_member_role(room, device, request).await)
             }
+            ADD_AGENT | REMOVE_AGENT | governance::GRANT | governance::REVOKE => {
+                let command = membership_command(action, args)?;
+                generation(
+                    self.govern_room_membership(room, device, request_id, command)
+                        .await,
+                )
+            }
             governance::RESTRICT => {
                 let minutes = args
                     .integer("minutes")?
@@ -1244,6 +1321,37 @@ impl Rooms {
             _ => Err(ActionHostError::UnknownAction),
         }
     }
+}
+
+/// The membership command governance `action` carries with `args`.
+fn membership_command(
+    action: &str,
+    args: &Args,
+) -> Result<tilo_peer_state::workspace_membership::WorkspaceMembershipCommand, ActionHostError> {
+    use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+    Ok(match action {
+        ADD_AGENT => Command::AddAgent {
+            agent: args.required_text("agent")?.trim().to_lowercase(),
+            preset: tilo_action_policy::roles::AgentPreset::parse(args.required_text("preset")?)
+                .ok_or_else(|| invalid("no such agent preset"))?,
+        },
+        REMOVE_AGENT => Command::RemoveAgent {
+            agent: args.required_text("agent")?.trim().to_lowercase(),
+        },
+        governance::GRANT => Command::Grant {
+            grant: serde_json::from_value(
+                args.0
+                    .get("grant")
+                    .cloned()
+                    .ok_or_else(|| invalid("`grant` is required"))?,
+            )
+            .map_err(|error| invalid(format!("`grant` is not a grant: {error}")))?,
+        },
+        governance::REVOKE => Command::Revoke {
+            grant: tilo_action_policy::GrantId::new(args.required_text("grant")?),
+        },
+        other => return Err(invalid(format!("`{other}` is no membership command"))),
+    })
 }
 
 /// One governance invocation, as its room method takes it.
@@ -1436,12 +1544,17 @@ impl ActionHost for InWorkspace {
         self.host.ledger().get(caller, id).cloned()
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-        if !self.host.admitted(caller, id) {
-            return Err(ActionHostError::UnknownInvocation);
-        }
-        Err(ActionHostError::NotCancellable {
-            reason: "room governance completes at once".into(),
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(if self.host.admitted(caller, id) {
+            Err(ActionHostError::NotCancellable {
+                reason: "room governance completes at once".into(),
+            })
+        } else {
+            Err(ActionHostError::UnknownInvocation)
         })
     }
 }

@@ -246,7 +246,9 @@ async fn display_rpc_preserves_original_published_caller_and_refuses_missing_or_
                 )
                 .await
                 .unwrap();
-            let mut caller = rig.caller(&env, 905, None).await;
+            // The application that launched this connection is the one whose
+            // actions these are: its own door reaches them.
+            let mut caller = rig.app_caller(&env, 905, "so.tilo.settings", None).await;
             let settings = rig.worker.handle.settings().await.unwrap();
             let (_, receipt) = caller
                 .handle
@@ -321,7 +323,9 @@ async fn display_rpc_preserves_original_published_caller_and_refuses_missing_or_
                     KindSet::ALL,
                 );
             }
-            let agent = rig.caller(&env, 906, Some("display-agent")).await;
+            let agent = rig
+                .app_caller(&env, 906, "so.tilo.settings", Some("display-agent"))
+                .await;
             let (_, receipt) = agent
                 .handle
                 .invoke_published_action(903, "settings.display", "identify-displays", None, "{}")

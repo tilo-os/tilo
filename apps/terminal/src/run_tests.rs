@@ -10,7 +10,6 @@ use ui::tilo_actions::{ActionInvoker, ActorKind};
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Bytes, Settled};
 
-use crate::TerminalWidget;
 use crate::resource::{ItemKind, RunAnswer, Terminal};
 use crate::sessions::Sessions;
 use crate::target::RecentTarget;
@@ -29,10 +28,16 @@ fn prompt() -> String {
 }
 
 /// What the session's shell prints for one command: its marks around
-/// `output`.
+/// `output`, numbered as the shell's first command is.
 fn ran(command: &str, output: &str, status: i32) -> Vec<u8> {
+    numbered(1, command, output, status)
+}
+
+/// [`ran`] with the command's own place in the shell's history.
+fn numbered(number: u64, command: &str, output: &str, status: i32) -> Vec<u8> {
     format!(
-        "{command}\r\n\x1b]133;C;k={KEY};cmd={};cwd={}\x07{output}\x1b]133;D;{status};k={KEY}\x07{}",
+        "{command}\r\n\x1b]133;C;k={KEY};cmd={};cwd={};t={number}\x07{output}\
+         \x1b]133;D;{status};k={KEY};t={number}\x07{}",
         b64(command),
         b64("/src/demo"),
         prompt()
@@ -72,7 +77,8 @@ impl std::io::Write for Typed {
 }
 
 /// A shell that marks its runs: each line typed into it runs, printing
-/// `output` for it with status 0, and the lines are kept in `lines`.
+/// `output` for it with status 0, and the lines are kept in `lines`. Its
+/// numbers count the lines typed into it, its history being its own.
 fn shell(
     typed: Receiver<Vec<u8>>,
     print: Sender<Vec<u8>>,
@@ -81,6 +87,7 @@ fn shell(
 ) {
     std::thread::spawn(move || {
         let mut line = Vec::new();
+        let mut number = 0_u64;
         while let Ok(bytes) = typed.recv() {
             for byte in bytes {
                 match byte {
@@ -88,7 +95,19 @@ fn shell(
                     b'\r' => {
                         let command = String::from_utf8_lossy(&line).into_owned();
                         line.clear();
-                        let _ = print.send(ran(&command, output, 0));
+                        // Only a line with something in it runs, and only it
+                        // takes a place in the shell's history.
+                        if command.trim().is_empty() {
+                            let _ = print.send(prompt().into_bytes());
+                            continue;
+                        }
+                        // The shell counts a line before it runs it, as
+                        // its history does. The two count the same lines
+                        // (this one receives every line the terminal types,
+                        // and the person types none), so a line asked for is
+                        // at the place the terminal counted for it.
+                        number = number.saturating_add(1);
+                        let _ = print.send(numbered(number, &command, output, 0));
                         let _ = lines.send(command);
                     }
                     byte => line.push(byte),
@@ -121,7 +140,7 @@ fn run_shell(app: &mut App, output: &'static str) -> (Sender<Vec<u8>>, Receiver<
         backend.runs = Some(KEY.into());
         Ok(backend)
     });
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .expect("the terminal surface is hosted");
     app.settle();
     print.send(prompt().into_bytes()).unwrap();
@@ -139,7 +158,7 @@ fn settle_until(app: &mut App, done: impl Fn(&Terminal) -> bool) {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let inspected = app
-        .with_surface(|terminal: &mut TerminalWidget| terminal.inspect_session())
+        .with_surface(|terminal: &mut crate::TerminalView| terminal.inspect_session())
         .unwrap();
     panic!(
         "the session record never got there: {:#?} {inspected}",
@@ -368,11 +387,11 @@ fn tab_reaches_the_session_while_the_grid_has_the_keyboard() {
         backend.writer = Box::new(Typed(typed));
         Ok(backend)
     });
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .expect("the terminal surface is hosted");
     app.settle();
     let grid = app
-        .with_surface(|terminal: &mut TerminalWidget| terminal.grid_rect())
+        .with_surface(|terminal: &mut crate::TerminalView| terminal.grid_rect())
         .unwrap();
     assert!(grid.area() > 0.0, "the grid is laid out: {grid:?}");
     let centre = grid.center();
@@ -380,7 +399,9 @@ fn tab_reaches_the_session_while_the_grid_has_the_keyboard() {
     app.settle();
     while typed.try_recv().is_ok() {}
     let focused = app
-        .with_surface(|terminal: &mut TerminalWidget| ui::widget::Widget::is_focused(terminal))
+        .with_surface(|terminal: &mut crate::TerminalView| {
+            ui::widget::Widget::is_focused(terminal.terminal())
+        })
         .unwrap();
     assert!(focused, "a click on the grid gives it the keyboard");
 

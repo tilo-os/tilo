@@ -48,6 +48,11 @@ drop-ins, so they are sealed into the UKI command line and a console named
 there is the last `console=`, which the kernel makes `/dev/console`.
 The optional `internal_keyboards` (version 2) names built-in I2C or SPI
 keyboards libinput must treat as internal; see the Lenovo keyboard section.
+The optional `dmi` (version 2) names a firmware-described board's DMI system
+identity, `{"sys_vendor": ..., "product_name": ...}`, as `/sys/class/dmi/id`
+reports it. It is only for a board with `"devicetree": null` and is refused
+beside a device tree, which already names the model; see the handheld
+section.
 
 The reviewed definition is copied into the immutable rootfs beside the
 generated profile. The UKI builder checks both files' ownership and permissions,
@@ -79,6 +84,32 @@ device before systemd starts. The profile still sets `systemd.tpm2_wait=0`, so
 a firmware whose mssecapp refuses the TPM costs nothing at boot. Boards whose
 TPM driver is a module (an I2C or SPI TPM) still need the wait, so it stays on
 everywhere else.
+
+### Every board says what it keeps
+
+A hang leaves nothing behind unless the board was set up to record it, so each
+schema-2 definition carries a `crash_record` naming three things:
+
+- `storage` - where the kernel's record of a panic goes. `ramoops` is a region
+  the board's device tree reserves, `block` a reserved region on a block
+  device (pstore/blk), `efi-variable` firmware variables (which wear, and are
+  the last resort), and `none` a board that keeps no record. Only a
+  device-tree board can claim `ramoops` or `block`, because it is the device
+  tree that reserves the memory.
+- `watchdog` - what resets a machine that stops responding: `hardware` for a
+  watchdog built into the SoC, `module` for a driver the board installs (which
+  must then be in `boot_modules`, so it reaches the initramfs), and `none`.
+- `lockup` - what panics first when a CPU stops: `buddy` for ARM64's detector,
+  `nmi` for the perf detector x86 uses, and `none` for a board whose stuck CPU
+  only logs.
+
+The declaration is held to the board's own kernel arguments: a board may name
+a watchdog or a detector only when its command line sets one, and a board that
+says it resets nothing or panics from nothing may not carry the arguments that
+would. `hardware_profile.py` and its Rust mirror enforce this at image build,
+so a board cannot claim a watchdog it never feeds or a detector it never
+enables. A board that keeps no record says so rather than leaving it out.
+Schema-1 definitions predate the field and are still accepted unchanged.
 
 ### Lenovo 83ED crash evidence
 
@@ -417,10 +448,86 @@ uppercase vendor and product ids, exact evdev name and the board's first
 device-tree `compatible` string. The preparer writes them, ANDed, into
 `/usr/share/libinput/50-tilo-<profile>.quirks` as
 `AttrKeyboardIntegration=internal`. Values are literal: no glob characters,
-so the section can match only that keyboard on that board. Entries require a
-device-tree profile; a firmware-described board would need a DMI match first.
+so the section can match only that keyboard on that board. On a board with a
+device tree the entry carries that board's `compatible`; on a
+firmware-described board it carries `"devicetree_compatible": null` and the
+section matches the definition's `dmi` identity instead, through
+`MatchDMIModalias=dmi:<sys_vendor>:<product_name>:`. Something must confine
+the quirk either way, so an entry on a board with neither is refused.
 `/etc/libinput/local-overrides.quirks` stays the administrator's.
 
 On the laptop, `libinput quirks list /dev/input/event<N>` (libinput-utils)
 names the attribute for the keyboard node; with stock quirks alone it
 prints nothing.
+
+## Handheld PCs
+
+A handheld PC is a firmware-described x86-64 board: it has no device tree,
+its panel is mounted in portrait, and its built-in controls are not a
+laptop's. Six profiles describe the boards this image targets —
+`steamdeck-jupiter` (Steam Deck LCD, Aerith), `steamdeck-galileo` (Steam Deck
+OLED, Sephiroth), `rog-ally-rc71l`, `rog-ally-x-rc72l`, `legion-go-8apu1` and
+`legion-go-s-8aps1`. Each carries `"devicetree": null`, the DMI identity the
+firmware reports, and the panel orientation below.
+
+These are the board's *firmware* description, not a device tree: the kernel's
+ACPI tables describe the same devices, so nothing here needs a DTB and the
+UKI embeds none. A profile on these boards is what names the model to
+model-bound settings — the panel orientation and, for a keyboard whose
+`internal_keyboards` entry carries `"devicetree_compatible": null`, the
+libinput quirk that pairs it with the touchpad.
+
+### The panel is mounted in portrait
+
+The built-in panel is a portrait panel turned on its side. The kernel has to
+be told, because it is the kernel that draws the first console frame and
+sets up the scanout before the compositor runs: without it, the splash and
+the disk-unlock prompt are drawn sideways and the modesetting driver
+advertises the wrong orientation to the compositor, which then turns the
+picture a second time. The profile names the connector in `kernel_args`:
+
+```json
+"kernel_args": ["video=eDP-1:panel_orientation=right_side_up"]
+```
+
+The connector is `eDP-1` because it is the built-in panel, and the value is
+the orientation the panel is physically mounted at (its own long edge along
+the machine's left). This rides the same sealed-command-line path as every
+other profile argument, so it is measured into PCR 11 rather than patched in
+at runtime.
+
+The compositor takes the kernel's orientation at face value — a native-portrait
+panel therefore needs no second rotation and no copy pass. It only turns the
+panel further when the accelerometer reports the device was rotated
+(`crates/session/shell/src/compositor/device_rotation.rs`), and that path
+already refuses to touch an external monitor.
+
+### Controls
+
+The built-in keyboard and touchscreen are ordinary evdev devices and follow
+the same path as a laptop's: libinput, then the compositor, then the focused
+surface, with the on-screen keyboard driven by text focus rather than by any
+handheld-specific code. The DMI-bound quirk above is what makes the built-in
+keyboard pair with the touchpad for disable-while-typing.
+
+The face and shoulder buttons and the sticks are a different matter. The
+shell already decodes a physical controller through
+`crates/session/shell/src/shell/physical_gamepad.rs`, but that path forwards
+the controller to a focused application over the personal-device fabric — it
+is for play, not for moving focus around the desktop or dismissing a dialog.
+Driving Tilo's own UI from an XI2 gamepad is **not implemented**, and neither
+is a handheld-specific power or suspend policy (TDP limits and battery
+charge thresholds are firmware- and vendor-specific). Those need a design
+decision about which chords the shell owns, so this change does not invent
+one.
+
+### Verifying one of these boards
+
+`configure`-time checking is not booting. Before claiming a handheld works,
+build its profile image on an x86-64 builder with matching kernel, install
+it, and on the device check that the panel is upright from the firmware
+handle-off, that the greeter accepts the touchscreen and the built-in
+keyboard, and that the on-screen keyboard appears when a text field takes
+focus. A board whose DMI strings differ from those in its profile silently
+gets none of its model-bound settings, so read `/sys/class/dmi/id/product_name`
+on the machine and correct the definition rather than widening it.

@@ -1037,8 +1037,7 @@ mod tests {
             FloatingSurfaceService::start().expect("start floating service")
         });
         tilo_test_env::wait_until("the shell-ui acceptor to block in accept()", || {
-            std::fs::read_to_string(format!("/proc/self/task/{acceptor}/syscall"))
-                .is_ok_and(|syscall| !syscall.starts_with("running"))
+            tilo_test_env::idle::blocked(&acceptor)
         });
         tilo_test_env::idle::assert_stays_asleep(&acceptor, "shell-ui acceptor");
         UnixStream::connect(launcher::services::socket_for(FLOATING_SURFACE_SERVICE))

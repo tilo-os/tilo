@@ -19,7 +19,8 @@ mod testing;
 pub use index::*;
 pub use pane::{
     ACTIVITY_ACKNOWLEDGE, ActivityView, HISTORY_COMPARE, HISTORY_RESTORE, HISTORY_UNDO, Period,
-    RoomActivityOutcome, RoomActivityPane, RoomScope, TASKS_APP,
+    RoomActivityOutcome, RoomActivityPane, RoomScope, ServedTree, TASKS_APP, is_document_write,
+    is_personal, is_read, refused_to_agent,
 };
 
 /// A causal document paired with its admitted desktop projection. Implementors
@@ -169,10 +170,22 @@ pub trait ActivityHost {
     fn undo_task_run(&self, _undo: TaskRunUndo) -> Result<(), String> {
         Err(crate::i18n::t("activity-undo-task-unavailable"))
     }
-    /// How the undo `invocation` ended; `None` while it runs.
-    fn poll_task_run_undo(&self, _invocation: uuid::Uuid) -> Option<Result<(), String>> {
+    /// How the undo `invocation` ended: the records it was carried out in,
+    /// or why nothing was undone. `None` while it runs.
+    fn poll_task_run_undo(
+        &self,
+        _invocation: uuid::Uuid,
+    ) -> Option<Result<Vec<TaskRunDocument>, String>> {
         None
     }
+}
+
+/// One document an undo of an agent's task was carried out in: the step's
+/// app and record, so the task view reports what came back and what did not.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskRunDocument {
+    pub app: String,
+    pub record: String,
 }
 
 /// An agent's run of a task to undo as one.
@@ -263,9 +276,15 @@ mod admitted_history_tests {
         let mut pane = RoomActivityPane::new();
         pane.begin_view(9);
         pane.refresh(&mut snapshot);
-        // Setup/layout commits are omitted from the explorer feed; the
-        // title change is the one Change row people should see.
-        assert_eq!(pane.entries().len(), 1);
+        // The window opened and the title change are listed; setup and
+        // layout commits are not.
+        let summaries = pane
+            .entries()
+            .iter()
+            .map(|entry| entry.summary.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(summaries.len(), 2, "{summaries:?}");
+        assert!(summaries.contains(&"Opened Before"), "{summaries:?}");
         let labels = pane
             .replay_frames
             .iter()

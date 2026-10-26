@@ -24,7 +24,7 @@ durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-automerge.workspace = true
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-tilo-model-gateway = { default-features = false, version = "0.1.0", path = "../../agent/model-gateway" }
+tilo-model-client = { default-features = false, version = "0.1.0", path = "../../agent/model-client" }
 # The provider administration interface the page's deferred client implements.
 agent-provider-config = { version = "0.1.0", path = "../../agent/provider-config" }
 zeroize.workspace = true
@@ -67,6 +67,7 @@ tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-prot
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 hex.workspace = true
+uuid.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 tokio = { workspace = true, features = ["sync"] }
 
@@ -88,6 +89,11 @@ deferred-model-clients = []
 # fetched the first time it opens, and hands its code over through
 # `install_feedback_composer`. Without it the composer is linked in.
 deferred-feedback-composer = []
+# The bundling crate supplies the pinned people overlay's code through
+# `defer_people_overlay`, which the browser desktop fetches as its own module
+# the first time someone pins who is here. Without it the overlay is linked
+# in.
+deferred-people-overlay = []
 
 [dependencies]
 # Sorts without a copy of std's sort per call site, which kept the web

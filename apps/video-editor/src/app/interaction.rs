@@ -513,11 +513,25 @@ impl VideoEditorApp {
             }
             return;
         }
+        // The preview hint's Go to clip.
+        if let Some(button) = self.go_to_clip_button(r)
+            && button.contains(p)
+        {
+            self.go_to_clip();
+            return;
+        }
         // Empty-bin "Import media" affordance.
         if let Some(btn) = self.empty_bin_import_rect(r)
             && btn.contains(p)
         {
             self.trigger_import();
+            return;
+        }
+        // The empty timeline's action.
+        if let Some((btn, action)) = self.timeline_empty_action_rect(r)
+            && btn.contains(p)
+        {
+            self.run_timeline_empty_action(action);
             return;
         }
         // "+ Title" in the bin header.
@@ -1041,6 +1055,17 @@ impl VideoEditorApp {
             if rect.contains(p) {
                 self.edit_selected(move |c| {
                     c.transform = crate::model::Transform::pip(PIP_SCALE, corner, PIP_INSET);
+                });
+                return;
+            }
+        }
+        // The two halves of the frame.
+        for (_, side, rect) in l.sides.clone() {
+            if rect.contains(p) {
+                self.edit_selected(move |c| {
+                    if let Some(placement) = side.placement() {
+                        c.transform = placement;
+                    }
                 });
                 return;
             }

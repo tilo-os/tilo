@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use ui::widget::TaffyTreeExt;
-use ui::widget::{AppModel, EmptyState, EmptyStateContent, ModelPath};
+use ui::widget::{AppModel, EmptyState, ModelPath};
 
 use taffy::prelude::*;
 use vello::Scene;
@@ -41,7 +41,6 @@ use crate::merge_view::MergeView;
 use crate::resource::session;
 use ui::chrome::status_bar;
 use ui::icons::Icon;
-use ui::paint::PaintCtx;
 
 /// The error the `error` screenshot scenario shows.
 const SHOT_LOAD_ERROR: &str = "Couldn’t read the selected files. Check permissions and try again.";
@@ -133,6 +132,8 @@ pub struct DiffMergeApp {
     /// A human-readable reason the last open failed, surfaced in the status
     /// bubble. `None` in the normal (success / cancel) case.
     load_error: Option<String>,
+    /// The failure shown in place of the comparison, and the reason it says.
+    error_state: Option<(String, EmptyState)>,
     /// Paint changes and one-shot layout rebuilds when the active view changes.
     invalidation: ViewInvalidation,
     /// Where edits and effects go; `None` until the framework attaches the
@@ -146,15 +147,27 @@ pub struct DiffMergeApp {
 }
 
 impl DiffMergeApp {
-    fn draw_error(ctx: &mut PaintCtx<'_>, rect: Rect, reason: &str) {
-        let title = t("error-title");
-        let content = EmptyStateContent {
-            icon: Some(Icon::TriangleAlert),
-            message: Some(reason),
-            error: true,
-            ..EmptyStateContent::new(&title)
-        };
-        EmptyState::paint(ctx, rect, &content, Point::new(-1.0, -1.0));
+    /// Keep the failure surface on the last load error, in the content area.
+    fn sync_error_state(&mut self) {
+        match &self.load_error {
+            None => self.error_state = None,
+            Some(reason)
+                if self
+                    .error_state
+                    .as_ref()
+                    .is_none_or(|(shown, _)| shown != reason) =>
+            {
+                let state = EmptyState::error(t("error-title"), reason.clone())
+                    .with_icon(Icon::TriangleAlert)
+                    .with_id("diffmerge.load-error");
+                self.error_state = Some((reason.clone(), state));
+            }
+            Some(_) => {}
+        }
+        let content = self.content_rect();
+        if let Some((_, state)) = &mut self.error_state {
+            state.apply_layout_external(content);
+        }
     }
 
     fn status_readouts(&self) -> (String, String) {
@@ -250,6 +263,7 @@ impl DiffMergeApp {
             pending_left: None,
             open_reply: None,
             load_error: None,
+            error_state: None,
             invalidation: ViewInvalidation {
                 paint: true,
                 structure: false,
@@ -677,27 +691,43 @@ impl DiffMergeApp {
         match self.mode {
             Mode::Diff => {
                 let m = self.diff.model();
-                let active = self
-                    .diff
-                    .active_block()
-                    .map(|b| format!(" Change {}/{}.", b + 1, m.blocks.len().max(1)))
-                    .unwrap_or_default();
-                format!(
-                    "{} additions, {} deletions and {} modifications in {} change block(s).{}",
-                    m.added,
-                    m.removed,
-                    m.modified,
-                    m.blocks.len(),
-                    active
-                )
+                if m.rows.is_empty() {
+                    return t("diff-status-empty");
+                }
+                if m.is_identical() {
+                    return t("diff-status-identical");
+                }
+                let (added, removed, modified) = (
+                    ("added", count(m.added)),
+                    ("removed", count(m.removed)),
+                    ("modified", count(m.modified)),
+                );
+                match self.diff.active_block() {
+                    Some(block) => t_args(
+                        "diff-status-summary-at",
+                        &[
+                            added,
+                            removed,
+                            modified,
+                            ("current", count(block + 1)),
+                            ("total", count(m.blocks.len())),
+                        ],
+                    ),
+                    None => t_args(
+                        "diff-status-summary",
+                        &[added, removed, modified, ("blocks", count(m.blocks.len()))],
+                    ),
+                }
             }
             Mode::Merge => {
                 let m = self.merge.model();
-                format!(
-                    "{} change hunk(s)   {} resolved   {} conflict(s) remaining",
-                    m.change_count(),
-                    m.resolved_count(),
-                    m.conflict_count(),
+                t_args(
+                    "merge-status-summary",
+                    &[
+                        ("count", count(m.change_count())),
+                        ("resolved", count(m.resolved_count())),
+                        ("conflicts", count(m.conflict_count())),
+                    ],
                 )
             }
         }
@@ -828,6 +858,7 @@ impl Widget for DiffMergeApp {
         // views end at the window bottom rather than a toolbar's height below
         // it (the taffy content node is the full root height).
         self.place_views();
+        self.sync_error_state();
     }
 
     fn draw(
@@ -856,16 +887,15 @@ impl Widget for DiffMergeApp {
             self.status_h = status_h;
             self.place_views();
         }
-        let content = self.content_rect();
         let compact = self.rect.width() < f64::from(theme.tokens.metrics.compact_breakpoint);
         if compact != self.compact {
             self.compact = compact;
             self.publish_header();
         }
 
-        if let Some(reason) = &self.load_error {
-            let mut ctx = PaintCtx::new(scene, transform, tr, theme);
-            Self::draw_error(&mut ctx, content, reason);
+        self.sync_error_state();
+        if let Some((_, state)) = &mut self.error_state {
+            state.draw(scene, transform, tr, theme, presence);
         } else {
             match self.mode {
                 Mode::Diff => self.diff.draw(scene, transform, tr, theme, presence),
@@ -916,6 +946,9 @@ impl Widget for DiffMergeApp {
     // compact source switcher reach the actual Tilo accessibility tree rather
     // than only being available to pointer users.
     fn children(&self) -> Vec<&dyn Widget> {
+        if let Some((_, state)) = &self.error_state {
+            return vec![state];
+        }
         match self.mode {
             Mode::Diff => vec![&self.diff],
             Mode::Merge => vec![&self.merge],
@@ -930,6 +963,9 @@ impl Widget for DiffMergeApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if let Some((_, state)) = &mut self.error_state {
+            return vec![state];
+        }
         match self.mode {
             Mode::Diff => vec![&mut self.diff],
             Mode::Merge => vec![&mut self.merge],
@@ -953,14 +989,6 @@ impl Widget for DiffMergeApp {
                     .with_key(ui::a11y::hash_key(&"diffmerge.empty"))
                     .with_name("No files loaded")
                     .with_description("Use Open files to start a local comparison."),
-            );
-        }
-        if let Some(error) = &self.load_error {
-            children.push(
-                AccessNode::new(Role::Paragraph)
-                    .with_key(ui::a11y::hash_key(&"diffmerge.load-error"))
-                    .with_name("File loading failed")
-                    .with_description(error),
             );
         }
         children.push(
@@ -1372,6 +1400,41 @@ mod tests {
         );
     }
 
+    /// The status read to assistive technology counts in words, from the
+    /// catalogue: whole plurals, no "(s)", one sentence per fact group.
+    #[test]
+    fn the_status_counts_changes_and_conflicts_in_words() {
+        let mut app = TestApp::<DiffmergeShell>::new().unwrap();
+        let status = |app: &mut TestApp<DiffmergeShell>| {
+            app.with_surface::<DiffMergeApp, _>(|view| view.status_text())
+                .unwrap()
+        };
+        assert_eq!(status(&mut app), "No files open");
+        app.call(
+            "open-merge",
+            serde_json::json!({
+                "base_label": "base", "base": "a\nb\nc\nd\ne\n",
+                "ours_label": "ours", "ours": "a\nB1\nc\nD1\ne\n",
+                "theirs_label": "theirs", "theirs": "a\nB2\nc\nd\ne\n",
+            }),
+        )
+        .unwrap();
+        app.call("show-merge", serde_json::json!({})).unwrap();
+        app.settle();
+        assert_eq!(status(&mut app), "2 changes, 1 resolved, 1 conflict left");
+        app.call(
+            "open-merge",
+            serde_json::json!({
+                "base_label": "base", "base": "a\n",
+                "ours_label": "ours", "ours": "b\n",
+                "theirs_label": "theirs", "theirs": "a\n",
+            }),
+        )
+        .unwrap();
+        app.settle();
+        assert_eq!(status(&mut app), "1 change, 1 resolved, 0 conflicts left");
+    }
+
     /// The empty merge asks for what a merge is made of, not the
     /// comparison's "two files".
     #[test]
@@ -1453,7 +1516,7 @@ mod tests {
         assert!(format!("{failed:?}").contains("no portal"), "{failed:?}");
         app.settle();
         let tree = app.harness().inspection_json().unwrap();
-        assert!(tree.contains("File loading failed"), "the failure is shown");
+        assert!(tree.contains(&t("error-title")), "the failure is shown");
 
         for path in [left, right, chosen_left, chosen_right] {
             std::fs::remove_dir_all(path.parent().unwrap()).ok();
@@ -1547,7 +1610,7 @@ mod tests {
             match scenario {
                 "diff" => assert!(tree.contains("Diff between"), "{scenario}"),
                 "merge" | "status" => assert!(tree.contains("Three-way merge"), "{scenario}"),
-                _ => assert!(tree.contains("File loading failed"), "{scenario}"),
+                _ => assert!(tree.contains(&t("error-title")), "{scenario}"),
             }
         }
     }
@@ -2219,16 +2282,20 @@ mod tests {
             "error surface {error_area:?} in {:?}",
             app.rect
         );
-        let semantics = app
+        let surface = Widget::children(&*app)
+            .into_iter()
+            .find(|child| child.name() == "EmptyState")
+            .expect("the error replaces the comparison in the tree");
+        let semantics = surface
             .accessibility()
             .expect("the visible error remains accessible");
         assert!(
-            semantics
-                .children
-                .iter()
-                .any(|node| node.name.as_deref() == Some("File loading failed")
-                    && node.description.as_deref() == app.load_error.as_deref()),
+            semantics.description.as_deref() == app.load_error.as_deref(),
             "the shared error surface retains the full reason"
+        );
+        assert_eq!(semantics.live, Some(ui::a11y::Politeness::Assertive));
+        assert!(
+            surface.get_rect().width() > 0.0 && error_area.contains(surface.get_rect().center())
         );
     }
 
@@ -2277,13 +2344,15 @@ mod tests {
 
         let (error, state) = staged(Some("error"));
         let error = merge_frame(error, state, (980.0, 720.0));
-        let error_semantics = Widget::accessibility(&*error).expect("error semantics");
-        let names = error_semantics
-            .children
-            .iter()
-            .filter_map(|child| child.name.as_deref())
-            .collect::<Vec<_>>();
-        assert!(names.contains(&"File loading failed"), "{names:?}");
+        let error_semantics = Widget::children(&*error)
+            .into_iter()
+            .find(|child| child.name() == "EmptyState")
+            .and_then(Widget::accessibility)
+            .expect("error semantics");
+        assert_eq!(
+            error_semantics.name.as_deref(),
+            Some(t("error-title").as_str())
+        );
     }
 
     /// Both views get a layout node in either mode, the hidden one off-band,

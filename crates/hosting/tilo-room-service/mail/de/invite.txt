@@ -1,0 +1,8 @@
+Subject: Du bist zu {{workspace}} eingeladen
+
+Jemand in {{workspace}} hat dich eingeladen.
+
+Komm mit diesem Link dazu:
+{{link}}
+
+Kein Interesse mehr? Nimm mich von der Liste: {{remove_link}}

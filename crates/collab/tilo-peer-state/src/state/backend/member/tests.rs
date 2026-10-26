@@ -58,7 +58,7 @@ fn bounded_current_member_matches_actual_legacy_membership_and_rechecks_removal(
     let read = restored.read();
     let member = read.member(source, now).unwrap();
     assert_eq!(member.role(), expected.role);
-    assert_eq!(member.grants(), expected.policy.grants.as_slice());
+    assert_eq!(member.room_policy().grants, expected.policy.grants);
     assert_eq!(member.person(), expected.person);
     assert_eq!(peer.durable().unwrap(), bytes);
     // A blocked member is no longer current on either path.
@@ -123,7 +123,7 @@ fn compare_native(peer: &StatePeer, source: [u8; 32], now: SystemTime) {
     match (expected, actual) {
         (Ok(expected), Ok(member)) => {
             assert_eq!(member.role(), expected.role);
-            assert_eq!(member.grants(), expected.policy.grants.as_slice());
+            assert_eq!(member.room_policy().grants, expected.policy.grants);
             assert_eq!(member.person(), expected.person);
             assert_eq!(member.foreign(), expected.foreign);
         }

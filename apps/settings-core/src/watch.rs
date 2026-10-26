@@ -125,6 +125,47 @@ impl Watched {
     }
 }
 
+/// A device service followed by its own signals (`NetworkManager`,
+/// `BlueZ`): a count each change it reports moves, and what keeps the
+/// follow running. A pane holds it while shown
+/// ([`crate::pane_model::PaneModel::follow`]); its model reads the device
+/// again when [`Self::changes`] moves.
+pub struct Counted {
+    changes: Arc<std::sync::atomic::AtomicU64>,
+    /// What keeps the follow running; `None` when nothing is followed.
+    follow: Option<Box<dyn std::any::Any>>,
+}
+
+impl Counted {
+    /// Follow with `follow`, handing it what to call, on any thread, for
+    /// each change: the call counts it and wakes the window. `follow`
+    /// answers what keeps the follow running, or `None` when nothing can be
+    /// followed. Must be called on the UI thread, in the window's wake
+    /// scope.
+    #[must_use]
+    pub fn start(
+        follow: impl FnOnce(Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>>,
+    ) -> Self {
+        let changes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let count = Arc::clone(&changes);
+        let wake = ui::WakeHandle::new();
+        let follow = follow(Box::new(move || {
+            count.fetch_add(1, Ordering::AcqRel);
+            wake.wake();
+        }));
+        Self { changes, follow }
+    }
+
+    /// How many changes were reported so far; `None` when nothing is
+    /// followed, so nothing is ever reported.
+    #[must_use]
+    pub fn changes(&self) -> Option<u64> {
+        self.follow
+            .is_some()
+            .then(|| self.changes.load(Ordering::Acquire))
+    }
+}
+
 /// The guard in `slot` while a pane still holds it, else a new one from
 /// `start`, kept in `slot` for the next pane. Every pane showing an area
 /// shares one, so recomposing a pane never restarts what it follows.

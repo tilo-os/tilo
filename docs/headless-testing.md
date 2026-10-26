@@ -297,11 +297,25 @@ Error:
   {"err":{"code":"unknown_target","message":"no addressable widget named ..."}}
 
 Error codes:
-  parse_error      — malformed JSON or unknown command
-  unknown_target   — click_named / drag with a name not in the registry
-  invalid_path     — snapshot path is empty
-  not_implemented  — command parsed but execution deferred to a later phase
+  parse_error            — malformed JSON or unknown command
+  unknown_target         — click_named / drag with a name not in the registry
+  target_not_laid_out    — the named widget has no area yet
+  target_unpresented     — the named widget, or one it sits in, still shows a
+                           stand-in for content that has not drawn
+  no_frame_since         — no frame has been drawn since the one the press
+                           counts from
+  target_moved           — the target is no longer where it was read
+  desktop_in_transition  — the desktop is between two arrangements
+  invalid_path           — snapshot path is empty
+  not_implemented        — command parsed but execution deferred to a later phase
 ```
+
+A press is proven ready for the target it names and the widgets that target sits
+in, never for the desktop at large: a widget elsewhere asking for frames for its
+own reasons does not hold an unrelated target back. The desktop as a whole must
+still be settled — setup closed, no workspace, strip or window-group switch
+underway — because a rectangle read then is one the caller never saw.
+(`crates/session/shell/src/shell/pointer_readiness.rs`)
 
 ### Widget registry — how `click_named` finds things
 
@@ -339,11 +353,13 @@ concurrent clients and the same no-op through the MCP server. Give it
 compositor through `spawn-headless.sh`. A spawned compositor is removed on
 exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set. A
 release build serves the socket only with `--features dev-overrides`.
-`scripts/perf/agent_task.py` times a whole task the same way: a scripted,
-streamed fake model creates a note in Notes, writes its body and finds it by
-search, and the record splits the time between Tilo, the model and the
-agent loop. Its `--spawn` desktop is seeded by the `agent_task_desktop`
-example of `shell`.
+`scripts/perf/agent_task.py` times a whole task the way an agent in the
+login runs it: a scripted, streamed fake model drives `tilo-runtime-mcp
+--connect` through the session's agent door, creates a note in Notes,
+writes its body, finds it by its title and reads it back, and the record
+splits the time between Tilo, the model and the agent loop. Its `--spawn`
+desktop is seeded by the `agent_task_desktop` example of `shell` and
+serves the door (`TILO_AGENT_DOOR`) in its profile.
 
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash
@@ -803,7 +819,7 @@ window starts nothing on its own (no fetch, no projection drain), so what it
 shows stays the scenario's. `TestApp::drive(scenario)` is the same window in a
 Rust test, and `testing::unreachable_actions` invokes every action it publishes
 with sample arguments from each parameter's schema and names any the door could
-not address or bind. With `window_bar` it is how a review shows the app's real
+not address. With `window_bar` it is how a review shows the app's real
 content under the bar, from the one set of sample data the app's shots use:
 
 ```json

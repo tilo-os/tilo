@@ -151,7 +151,9 @@ thread_local! {
 /// viewport of the nearest enclosing scroll view (intersected with any
 /// outer one), or `None` when nothing clips it. A collection reads it in
 /// [`Widget::apply_layout`] to keep only the rows near what is shown laid
-/// out; drawing culls against `PresenceCtx::should_cull` instead.
+/// out; drawing culls against `PresenceCtx::should_cull` instead. It is in
+/// effect too while a scroll view collects its content's damage and while
+/// the host plans its copies ([`Widget::for_each_child_in_clip`]).
 #[must_use]
 pub fn layout_clip() -> Option<vello::kurbo::Rect> {
     LAYOUT_CLIP.with(std::cell::Cell::get)
@@ -170,6 +172,78 @@ pub fn with_layout_clip<T>(clip: vello::kurbo::Rect, place: impl FnOnce() -> T) 
     let clip = outer.map_or(clip, |outer| outer.intersect(clip));
     let _restore = Restore(LAYOUT_CLIP.with(|cell| cell.replace(Some(clip))));
     place()
+}
+
+thread_local! {
+    /// The tree whose widgets are being placed again from the layout they
+    /// were last placed from ([`placing_again`]), by address.
+    static PLACING_AGAIN: std::cell::Cell<Option<*const ()>> = const { std::cell::Cell::new(None) };
+}
+
+/// A layout tree by address, to name it to [`placing_again_in`] while the
+/// tree's owner is borrowed to place its widgets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TreeId(*const ());
+
+impl TreeId {
+    pub(crate) fn of(taffy: &TaffyTree<()>) -> Self {
+        Self(std::ptr::from_ref(taffy).cast::<()>())
+    }
+}
+
+/// Run `place` (the host placing its widgets) knowing that nothing of the
+/// tree `tree` names was solved, built or rebuilt since its widgets were
+/// last placed from it: only where things stand moved (a scroll, a glide),
+/// so every box stands where it stood relative to its parent. A long
+/// collection then places only what is near its [`layout_clip`]
+/// ([`placing_again`]).
+#[cfg_attr(
+    not(any(feature = "native", test)),
+    expect(dead_code, reason = "only a native host's layout pass places again")
+)]
+pub(crate) fn placing_again_in<T>(tree: TreeId, place: impl FnOnce() -> T) -> T {
+    struct Restore(Option<*const ()>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PLACING_AGAIN.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(PLACING_AGAIN.with(|cell| cell.replace(Some(tree.0))));
+    place()
+}
+
+/// Maximum `rect.y1` across a widget subtree, for finding the true bottom
+/// edge when taffy's `content_size` under-reports.
+pub(crate) fn max_bottom_edge(w: &dyn super::Widget) -> f64 {
+    let mut deepest = w.get_rect().y1;
+    if w.child_clip_rect().is_some() {
+        return deepest;
+    }
+    for c in w.children() {
+        deepest = deepest.max(max_bottom_edge(c));
+    }
+    deepest
+}
+
+/// Whether `event` happens at a place in the window (a pointer, a touch),
+/// so only what stands there may take it.
+pub(crate) fn at_a_place(event: &winit::event::WindowEvent) -> bool {
+    use winit::event::WindowEvent;
+    matches!(
+        event,
+        WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_)
+    )
+}
+
+/// From [`Widget::apply_layout`]: whether `taffy` is a tree its widgets are
+/// being placed again from unchanged ([`placing_again_in`]). A widget that
+/// lays out a tree of its own solves it, so its children are placed anew.
+#[must_use]
+pub fn placing_again(taffy: &TaffyTree<()>) -> bool {
+    PLACING_AGAIN.with(std::cell::Cell::get) == Some(TreeId::of(taffy).0)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -312,14 +386,12 @@ pub(super) unsafe fn compute_widget_layout_depth(
     }
     let mut policies = Vec::new();
     let mut pending = vec![root];
+    let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
     while let Some(node) = pending.pop() {
-        let policy = unsafe {
-            crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                widget.manual_layout_policy()
-            })
-        }
-        .ok()
-        .flatten();
+        // SAFETY: the caller's exact live-tree ownership contract.
+        let policy = unsafe { sweep.inspect(node, |widget| widget.manual_layout_policy()) }
+            .ok()
+            .flatten();
         if let Some(policy) = policy {
             policies.push((node, policy));
         }
@@ -333,16 +405,14 @@ pub(super) unsafe fn compute_widget_layout_depth(
     // descendant heights intact and clips paragraphs as they wrap while typing.
     for &node in nodes.keys() {
         // SAFETY: use the same admission/lifetime checks as measurement below.
-        let needs_measure = unsafe {
-            layout_bound_node(bindings, nodes, node, |widget| {
-                widget.layout_needs_measure()
-            })
-        }
-        .unwrap_or(false);
+        let needs_measure =
+            unsafe { sweep.layout(node, |widget| widget.layout_needs_measure()) }.unwrap_or(false);
         if needs_measure {
             taffy.mark_dirty(node)?;
         }
     }
+    // Measurement enters each measured node's own scope.
+    drop(sweep);
     // Outermost first: resetting a region dirties the regions inside it.
     for (node, policy) in &policies {
         super::manual::reset_region(policy, taffy, *node)?;
@@ -394,13 +464,12 @@ pub(super) unsafe fn compute_widget_layout_depth(
             }
             changed |= placed;
         }
+        let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
         for &node in nodes.keys() {
             // SAFETY: same contract as measurement; no topology mutation is
             // permitted by adjust_layout_style.
             let adjusted = unsafe {
-                layout_bound_node(bindings, nodes, node, |widget| {
-                    widget.adjust_layout_style(taffy, node, text)
-                })
+                sweep.layout(node, |widget| widget.adjust_layout_style(taffy, node, text))
             }
             .unwrap_or(false);
             if adjusted {
@@ -408,6 +477,7 @@ pub(super) unsafe fn compute_widget_layout_depth(
             }
             changed |= adjusted;
         }
+        drop(sweep);
         if !changed {
             return Ok(());
         }
@@ -844,19 +914,21 @@ impl CompositionFocus {
         // Asked of every node: look the order up, do not scan it each time.
         let allowed: Option<std::collections::HashSet<NodeId>> =
             allowed.map(|order| order.iter().copied().collect());
+        let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
         let focused: Vec<_> = nodes
             .keys()
             .copied()
             .filter(|&node| {
                 allowed.as_ref().is_none_or(|order| order.contains(&node))
                     && unsafe {
-                        crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
+                        sweep.inspect(node, |widget| {
                             widget.is_focusable() && widget.is_enabled() && widget.is_focused()
                         })
-                        .unwrap_or(false)
                     }
+                    .unwrap_or(false)
             })
             .collect();
+        drop(sweep);
         let mut candidates = focused.iter().copied().filter(|&candidate| {
             let owner = Self {
                 ambiguous: false,
@@ -1866,3 +1938,7 @@ pub(crate) fn lay_out_detached(
     widget.apply_layout(&taffy, child, rect.origin());
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "scrollable_placement_tests.rs"]
+mod scrollable_placement_tests;

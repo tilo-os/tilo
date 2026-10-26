@@ -1388,8 +1388,12 @@ mod tests {
             None
         }
 
-        fn cancel(&self, _: &Caller, _: &InvocationId) -> Result<(), ActionHostError> {
-            Err(ActionHostError::UnknownInvocation)
+        fn cancel(
+            &self,
+            _: &Caller,
+            _: &InvocationId,
+        ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+            tilo_actions::remote::Pending::ready(Err(ActionHostError::UnknownInvocation))
         }
     }
 

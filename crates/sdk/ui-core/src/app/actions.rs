@@ -1066,11 +1066,17 @@ impl App {
         clippy::indexing_slicing,
         reason = "every directory arithmetic/index is guarded by the hard page budgets and loop bounds directly above it"
     )]
-    /// The top-level resources `query` names by kind or label, whole. A
-    /// write drops the published snapshot until the next publication, and a
-    /// listing in between walks the widget tree a budgeted page at a time:
-    /// read from that, a name lookup would depend on where the resource falls
-    /// in the tree. The resources about to be published answer it instead.
+    /// The resources `query` names by kind or label, whole: at the top
+    /// level, or among the children of its parent resource when it names
+    /// one. A write drops the published snapshot until the next publication,
+    /// and a listing in between walks the widget tree a budgeted page at a
+    /// time: read from that, a name lookup would depend on where the resource
+    /// falls in the tree. The resources about to be published answer it
+    /// instead. A name under a parent costs the parent's children compared,
+    /// never a page of them sent: an agent finds one note in a notebook of
+    /// thousands in one answer. With a published snapshot, the children it
+    /// holds answer; a child only the live resource extends it with is
+    /// found by listing the parent.
     fn action_directory_named(
         &mut self,
         query: &runtime_collab::ActionDirectoryQuery,
@@ -1083,21 +1089,50 @@ impl App {
         let max_bytes = usize::try_from(query.max_bytes)
             .unwrap_or(ACTION_DIRECTORY_MAX_BYTES)
             .clamp(1, ACTION_DIRECTORY_MAX_BYTES);
+        let parent = query.parent_resource.as_str();
         let named = |kind: &str, label: &str| kind == name || label.eq_ignore_ascii_case(name);
         let found: Vec<_> = if let Some(snapshot) = &self.actions.action_directory_snapshot {
-            snapshot
-                .roots
-                .iter()
+            let rows = if parent.is_empty() {
+                Some(&snapshot.roots)
+            } else {
+                snapshot.nodes.get(parent).map(|node| &node.rows)
+            };
+            rows.into_iter()
+                .flatten()
                 .filter(|row| {
                     row.action.is_none() && named(&row.resource_kind, &row.resource_label)
                 })
                 .cloned()
                 .collect()
-        } else {
+        } else if parent.is_empty() {
             self.publication_resources()
                 .iter()
                 .filter(|resource| named(&resource.kind, &resource.label))
                 .filter_map(|resource| self.directory_resource_row(resource, "", true))
+                .collect()
+        } else {
+            fn find<'a>(
+                resources: &'a [tilo_actions::Resource],
+                id: &str,
+            ) -> Option<&'a tilo_actions::Resource> {
+                resources.iter().find_map(|resource| {
+                    (resource.id.as_str() == id)
+                        .then_some(resource)
+                        .or_else(|| find(&resource.children, id))
+                })
+            }
+            let published = self.publication_resources();
+            let children = match find(&published, parent) {
+                Some(resource) => resource.children.clone(),
+                None => self
+                    .resolve_publication_resource(parent, "")
+                    .map(|resource| resource.children)
+                    .unwrap_or_default(),
+            };
+            children
+                .iter()
+                .filter(|child| named(&child.kind, &child.label))
+                .filter_map(|child| self.directory_resource_row(child, parent, true))
                 .collect()
         };
         let mut rows = Vec::new();

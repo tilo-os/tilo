@@ -52,12 +52,31 @@ so the host outlives every process still using it.
 
 stdin/stdout are a binary protocol, not a terminal. Each packet starts with a
 little-endian u32 length including a one-byte kind. Kind 1 carries UTF-8 JSON;
-kind 2 carries u32 width, u32 height, then exactly width × height × 4 BGRA bytes.
+kind 2 carries u32 width, u32 height, then exactly width × height × 4 BGRA bytes;
+kind 3 is a frame of another tab, its u32 tab first. Kind 4 (with
+`--tilo-frame-damage`) changes a tab's last frame: u32 tab, width, height and
+rect count, then each rect's u32 x, y, width and height, then each rect's rows
+of BGRA pixels in turn.
 The limit is 64 MiB per packet, with dimensions 1–8192 and checked frame sizes.
+
+Whole frames need not go down the pipe. Started with `--frame-memory-fd=N`, the
+host maps the memory that descriptor names (`src/frame_memory.h`: a header page
+of per-slot state words, then two 64 MiB slots), closes it before anything else
+opens a descriptor, and copies each whole frame's BGRA pixels into a free slot.
+It marks the slot ready and sends kind 5: u32 tab, width, height and slot.
+Damage packets stay in the pipe: they are small. The
+reader copies the pixels out and marks the slot free; while both slots are
+being read the writer waits for one, still sending events. The app creates the
+memory, a memfd sealed against resizing on Linux and an unlinked POSIX shared
+memory object on macOS, and the host inherits it at spawn; a host without
+the flag, or given a descriptor of any other size, pipes its frames. The size
+may be rounded up to the system's page, as macOS reports a shared memory
+object's on Apple silicon, whose 16 KiB page is larger than the header.
 
 JSON commands use `op`; events use `event`. Supported operations are navigate,
 back, forward, reload, stop, resize, focus, mouse_move, mouse_button, scroll,
-key, scripts, filter_rules, clear_data, devtools, page, shutdown. `filter_rules` takes
+key, ime_composition, ime_commit, ime_cancel, ime_finish, scripts,
+filter_rules, clear_data, devtools, page, shutdown. `filter_rules` takes
 `rules` text and `enabled`: a boolean replaces the toggle, while null preserves
 the current toggle. Compilation failure retains the previous rules and reports
 an error. The shared protocol specification is in the browser implementation
@@ -90,6 +109,62 @@ host answers with a `selection_text` event carrying the same `request_id` and
 the frame's selection as `text` (empty when nothing is selected, at most 1 MiB).
 An offscreen engine cannot reach the system clipboard; the embedder copies it.
 
+### Keys and input methods
+
+`key` carries the key's logical name or text in `key` and, optionally, its
+place on the keyboard in `code`, a DOM `KeyboardEvent.code` for the keys a
+layout changes (`KeyA`–`KeyZ`, `Digit0`–`Digit9`, the US punctuation keys,
+`IntlBackslash`, `Space`; another key's code, at most 32 letters and digits,
+leaves the key to its name). The place decides the
+native key code, so a page's `code` is the key pressed: German z arrives as
+`z` on `KeyY`. A Latin letter or digit keeps its own key code, as Chromium
+gives it on each layout; a key whose text has no US key (Cyrillic, Greek, an
+umlaut) takes the key code of the US key in its place, so Ctrl+С on a Russian
+layout is the page's Ctrl+C, and Command+С copies on macOS. Extension
+shortcuts name the same Latin letter.
+
+`ready` / `tab_ready` advertise `ime_composition: true`. Such a host takes the
+platform input method's composition into the page's focused field as a native
+field does:
+
+- `ime_composition` with `text` (at most 4096 UTF-8 bytes) and
+  `selection_start` ≤ `selection_end`, the composition's caret in UTF-16 units
+  within `text`, sets the text being composed (`ImeSetComposition`). The page
+  sees `compositionstart`, then one `compositionupdate` per preedit.
+- `ime_commit` with nonempty `text` (at most 64 KiB) replaces the composition
+  with it (`ImeCommitText`): `compositionend` carries the committed text. With
+  nothing composed it goes in at the caret, as typed.
+- `ime_cancel` withdraws the composition (`ImeCancelComposition`);
+  `ime_finish` keeps it as it stands (`ImeFinishComposingText`).
+
+The host reports where the person types, so the window places the input
+method's candidates beside the text instead of at the view's corner:
+
+- `text_field` says whether the focused node takes text (`editable`), and when
+  it does its `purpose` (`text`, `password`, `email`, `url`, `phone`, `number`,
+  `search`), `multiline` (text areas and editable documents) and, when the main
+  frame's widget can place it, its box: `x`, `y`, `width`, `height` in physical
+  pixels. The renderer reports it on each focus change
+  (`CefRenderProcessHandler::OnFocusedNodeChanged`, `CefDOMNode` bounds); the
+  host asks again when the selection changes and once a scroll or resize has
+  settled, and sends it only when it changes. A field in a frame of another
+  site goes without a box; read-only fields do not take text.
+- `ime_composition_bounds` carries the box of the composition's first line, in
+  the same pixels, from `CefRenderHandler::OnImeCompositionRangeChanged`, and
+  no box once the composition ends.
+
+The WebView reads them as the field's input purpose and caret: the
+composition's box while composing, else the field's first line. Password
+fields never reach the input method; their keys go to the page as typed. With
+a host that takes compositions, ordinary input method commits reach the page;
+the guarded dictation path below is unchanged. The real-host regression sends
+a composition to a page input and checks its events, its committed text, both
+boxes and the physical key codes:
+
+```sh
+python3 apps/browser/chromium/tests/ime_composition.py target/chromium/tilo-chromium-host
+```
+
 `--tilo-sealed-documents` starts a host for sealed documents (Mail's reader;
 `ready` says `sealed_documents: true`). Its pages never navigate: a main-frame
 navigation to anything but `data:` or `about:blank` is cancelled, and when the
@@ -114,7 +189,9 @@ callbacks to a new action.
 Every tab starts on `about:blank` before its first address. That first entry is
 no page the person visited: `history` reports no `back` while it is all that is
 behind the page, `back` does not go to it, and `navigation_history` leaves it
-out.
+out. Once the first page commits, the session history forgets it
+(`Page.resetNavigationHistory`), so the page's own `history.back()` cannot reach
+it either and `history.length` starts at the page.
 
 A page's own questions (`alert`, `confirm`, `prompt`, and "leave this page?"
 from a `beforeunload` handler) are the embedder's to show. `ready` /
@@ -143,10 +220,81 @@ callback. Dropdown popup pixels are composited into a copy of the main image
 before emission. A blocked consumer cannot stall the CEF UI thread; a closed
 pipe triggers browser shutdown. In a shared host the owning process passes a
 client tab's frame on as it arrived, BGRA in the buffer it was read into; only
-the process that draws a frame converts it. `tests/frame_transport.py` prints
-what the host's process spends per frame of a full-screen animation, for the
-first tab and a routed one, and checks that every change of a still tab beside
-it arrives.
+the process that draws a frame converts it, as it copies the frame out of the
+frame memory; the owner's outbox, too, serves its client's tabs in turn.
+`tests/frame_transport.py` prints what the host's process and the reader spend
+per frame of a full-screen animation, through the pipe and through frame
+memory, for the first tab and a routed one, and checks that every change of a
+still tab beside it arrives and that two animating tabs both get their frames.
+
+With `--tilo-frame-damage`, which the toolkit always passes, a paint after a
+tab's first goes as a damage packet (kind 4): the rects Chromium repainted
+(`OnPaint`'s dirty rects, at most 16, else their bounding box) and their
+pixels, cut from the frame the tab keeps when the writer takes it. The writer
+keeps the rects of every paint a newer one replaced, and sends the frame whole
+when it is the tab's first, its size changed, a popup is composited onto it,
+the rects cover half of it, or the app asks (`resend_frame`, when it lacks the
+frame they change). The toolkit applies the rects to the frame it keeps whole,
+converts only their pixels, and repaints and uploads only them.
+`tests/frame_damage.py` checks that a blinking caret arrives as small rects
+inside its field, that the frame rebuilt from them is the frame the host sends
+whole, and prints the bytes per blink each way.
+
+### Page clipboard
+
+On Linux the engine runs with no display server (`ozone-platform=headless`),
+and Chromium's clipboard there is the engine's alone: a site's copy button, a
+script's `navigator.clipboard.writeText`, `document.execCommand('copy')`, the
+person's Ctrl+C and an extension's offscreen document all copied into it and
+no further, and a paste got only what the engine copied. The host bridges it
+(`src/page_clipboard.h`). `ready` (and `tab_ready`) then say
+`page_clipboard: true`, never for sealed documents, and an embedder that
+takes the page's clipboard sends `page_clipboard` (exactly `op` and `tab`)
+for a tab; a tab of one that does not keeps the engine's own.
+
+- Each renderer runs `src/page_clipboard.js` in every web document,
+  extension page and document a page wrote into a frame (`about:blank`,
+  `about:srcdoc`, where rich editors keep the text they edit) before the
+  page's scripts. Chromium decides what may copy,
+  as in Chrome: a copy or cut event fires only for a copy that may happen
+  (and a script's own event copies nothing), and `writeText` and `write`
+  resolve only once allowed. What the copy took (the selection with its
+  markup, the focused field's selected characters, or what a copy listener
+  set and cancelled the event for) goes to the host, which sends it as a
+  `clipboard` event with `text` (at most 4 MiB), `html` when it has markup
+  (at most 1 MiB, dropped when larger) and `secret`: true for a copy from a
+  password or one-time-code field, or of a password field's value, which the
+  Browser copies as a secret (kept out of clipboard history and device
+  sync). The host sends a page's copy only within five seconds of the
+  person's click, key or menu choice in the tab, as Chrome's activation
+  lasts; an extension's page with `clipboardWrite` copies at any time. A
+  page's popup and an extension's panel copy through the page they were
+  opened from.
+- A paste key (Ctrl+V, Ctrl+Shift+V, Shift+Insert) asks the embedder for the
+  system clipboard's text with `clipboard_read` (`request_id`), answered by
+  `clipboard_contents` with that `request_id` and `text`, or no `text` when
+  it holds none. The renderer keeps the text for the paste, then the key
+  goes on to the page, which sees its keydown as ever; the trusted paste
+  Chromium starts is replaced by one carrying the system clipboard's text
+  for the page's listeners, inserted into the focused field when no
+  listener took it. Keys pressed meanwhile follow in order. An answer that
+  does not come within three seconds leaves the paste to the engine.
+- `navigator.clipboard.readText` and `read` ask the person as Chromium does
+  (`permission_prompt`, `clipboard`); once allowed, they read the system
+  clipboard's text the same way. The host asks the embedder only for a page
+  the person can see, of a site whose clipboard setting allows reading (or
+  an extension's page with `clipboardRead`), whatever the page's script did.
+- An extension's offscreen document (`chrome.offscreen`, how MV3 extensions
+  copy) is no browser of the host's, so no renderer callback reaches it.
+  For an extension with `offscreen` and `clipboardWrite`, the tab script
+  asks the host once the document is made, and the host runs
+  `page_clipboard.js` there over the pipe with the worker's token: a copy
+  reaches the bridge (`clipboard.write`) and goes as `clipboard` through the
+  page the person used last.
+
+`tests/page_clipboard.py` covers the page and the person (a read the person
+allowed is not covered there: that node's Chromium refuses a site's read
+without asking); `tests/extension_tabs.py` the offscreen document.
 
 ## macOS packaging and sandbox
 
@@ -310,8 +458,9 @@ operation ACKs accompany standard text-input-v3 final delivery. Preparation
 enables the original deferred field for voice only; consent waits for the
 renderer start ACK before recording. The marked final is consumed before public
 app event dispatch, and focus changes or late cancellations cannot redirect it
-to a successor. Ordinary composition and OSK remain closed outside this voice
-session. Real Wayland protocol and bound native App dispatch tests qualify those
+to a successor. With a host that does not take compositions
+(`ime_composition`), ordinary composition and OSK remain closed outside this
+voice session. Real Wayland protocol and bound native App dispatch tests qualify those
 separate production boundaries; a complete standalone-window/microphone journey
 remains an acceptance gate.
 
@@ -455,8 +604,9 @@ content scripts (with `sender.tab`) work without help.
   button over it (`activeTab`), which also lets it script the page until the
   page navigates. A click gives an extension without `activeTab` nothing.
   The Browser sends an extension's host permissions apart from the sites its
-  content scripts run on (`extension_access`, `hosts` and `scriptable`), and
-  no tab API counts the second: as in Chrome, content scripts on every page
+  content scripts run on (`extension_access`, `hosts` and `scriptable`, and
+  of those, where they run in frames too, `framed`), and
+  no tab API counts the content scripts' sites: as in Chrome, content scripts on every page
   let an extension see no tab's address, script no page and capture none.
 - `tabs.detectLanguage` answers the language the page declares, and
   `tabs.getZoom` the page's zoom. `tabs.onZoomChange` fires when a tab's
@@ -489,8 +639,17 @@ content scripts (with `sender.tab`) work without help.
   the system's. `action.openPopup`, which finds no window here, opens the
   popup over the page in front (`extension_open_popup`).
 - `scripting.executeScript` runs in the extension's own world in the page,
-  where its content scripts run. Where it has none, the host makes a world
-  that gets a content script's `runtime`, `storage` and `i18n`
+  where its content scripts run. Where it has none yet but declares content
+  scripts for the page, the script waits up to one and a half seconds for
+  Chromium to make it, as their first script runs: AdGuard injects its
+  keep-alive on `tabs.onUpdated` as the page starts, before then, and it
+  needs their `chrome`. A page that finished loading without it (open before
+  the extension came, or left out by `exclude_matches`) gets no wait. Where
+  it has none, the host makes a world, in the
+  main frame and in each frame of the page's process it injects into
+  (`allFrames` reaches those the extension may script: a host permission for
+  the frame's address, or `activeTab` for the page's origin), that gets a
+  content script's `runtime`, `storage` and `i18n`
   (`src/extension_content.js`), through a binding only that world has:
   messages and ports both ways (`runtime.sendMessage` and `runtime.connect`
   from the script, `tabs.sendMessage` and `tabs.connect` from the
@@ -516,8 +675,19 @@ content scripts (with `sender.tab`) work without help.
   (`frameId`, `documentId`), as Bitwarden injects its form filler into each
   frame that asks. A message reaches the frame's content scripts, or the
   extension's own page in the frame, as Evernote Web Clipper answers the
-  panel it shows in the page. Chromium knows a frame and its document by
-  ids the inspector does not show, so the host asks the extension's world
+  panel it shows in the page. A message that names no frame reaches every
+  frame the extension has a world in, as in Chrome, so a password manager's
+  script in a login frame or a translator's in each frame hears it: the
+  first reply answers it, nothing does once every frame heard it and none
+  replied, and no receiver when none listens. It asks no frame its id, and
+  of the frames other sites' processes render it attaches only to those the
+  extension may have a world in: its own page, a page its content scripts
+  match where they run in frames too (`framed`, their `all_frames`), or one
+  the host met its world in before; another site's frame without one, as
+  every frame is to scripts that run in the main frame alone, costs no
+  session. Chromium knows a frame and
+  its document by ids the inspector does not show, so the host asks the
+  extension's world
   in the frame (or its page there) over a port only the tab script answers
   (`sender.frameId`, `sender.documentId`): a port, because an extension
   page without the tab script that answers every message itself cannot
@@ -531,7 +701,15 @@ content scripts (with `sender.tab`) work without help.
   `allFrames` passes over a frame the script cannot run in, as Chrome does:
   the extension's own page, and one that went to another site's page the
   extension's content scripts do not match, which keeps its id but has no
-  world of the extension in its new process.
+  world of the extension in its new process. A frame the extension has no
+  world in cannot say which it is, so the host reads the frames Chromium
+  lists for the tab (`webNavigation.getAllFrames`, through the Browser's own
+  extension) and places each under its parent, by its id where known, else
+  by its address in the page's order; the same list names the document of
+  a frame no world told of, so every result carries its `documentId`, as in
+  Chrome. The list is read while the script runs, once per document. Another
+  site's frame the extension has no world in gets none: the host keeps no
+  session to it for the world's messages.
 - A worker that asks for the last focused window before the person focused
   a page (it starts with the engine) gets the first page's, as in Chrome. A
   tab an extension was told of while the host could not learn its id among
@@ -583,7 +761,16 @@ content scripts (with `sender.tab`) work without help.
   button (`extension_execute_action`), which opens its popup or fires
   `action.onClicked`. `commands.getAll` lists the button's command first,
   then the rest by name, each with its key as Chrome shows it ("Ctrl+Shift+Y"
-  on Linux) or none, and its description localized.
+  on Linux) or none, and its description localized. The list of keys the
+  Browser keeps is `src/browser_keeps.inc`, and the Browser's own test
+  (`browser_window.rs`) presses every key a command could hold through its
+  key handling and fails when what it answers and the list differ. In an
+  extension's popup or side panel a command's key runs it over the page the
+  panel is for, as Chrome's keys belong to the window: the button's own key
+  pressed in its open popup closes it. The host tells the Browser which keys
+  the commands hold (`extension_shortcuts`), so while its address has the
+  keyboard the Browser hands such a key to the host (`extension_command_key`)
+  after its own keys and before the field sees it.
 - `notifications` are kept by the host (`src/extension_notifications.h`),
   which checks them as Chrome does (a type, an icon, a title and a message;
   a progress from 0 to 100 only for a progress notification; at most two
@@ -612,7 +799,16 @@ content scripts (with `sender.tab`) work without help.
   `getAll` and `remove` (never of what the manifest requires) answer from
   the same. An API Chromium itself gives only an extension that holds it
   in Chromium's own records (`chrome.bookmarks`) stays missing when the
-  person grants it here: what the host answers follows the grant.
+  person grants it here: what the host answers follows the grant, and the
+  tab script gives `chrome.identity` to an extension that may ask for it
+  later, which signs in once granted. The person sees what they granted in
+  the extension's Library row and revokes it there or through its resource
+  (`revoke-extension-access`): the Browser sends `extension_grants` without
+  it, which holds at once, and the extension hears of what it lost
+  (`onRemoved`). A question whose tab closes unanswered, its popup or the
+  window's page, is answered no, so the extension may ask again, and the
+  windows' pages hear `extension_permission_closed` with its `request`, so
+  a window still showing it takes it away.
 - `downloads.download` goes through the Browser's own downloads
   (`src/capabilities.h`): Chromium cancels a download an extension starts
   on none of its windows' tabs, so the host starts it on the page the call
@@ -629,7 +825,10 @@ content scripts (with `sender.tab`) work without help.
   shows it in its folder, as its own Open and Show in Files do; `open`
   needs `downloads.open` and, as in Chrome, the person's click or key in
   the extension's page, or on its button, menu item or shortcut, in the
-  last five seconds.
+  last five seconds. A page of the extension in a frame of a web page
+  counts a click or key in that frame, not one elsewhere on the page (the
+  focused frame, or one it is in, is the extension's), and so does
+  `sidePanel.open`.
 - The address's keyword (`omnibox`): the Browser reads each extension's
   manifest `omnibox.keyword`, and what the person types after it and a
   space, in the window's bar or the window's own address field, is the
@@ -662,7 +861,16 @@ content scripts (with `sender.tab`) work without help.
   once turned off for the tab) and `sidePanel.close` closes it. The person
   opens a panel from the Browser too (`extension_side_panel`, the page the
   extension names for the tab). The panel is a panel tab, as a popup is: no
-  tab to the extension, its window the page beside it.
+  tab to the extension, its window the page beside it. The Browser marks it
+  as the extension's side panel (`extension_panel` with `side_panel`), and the
+  first of the extension's pages it shows fires `sidePanel.onOpened`, its
+  closing `sidePanel.onClosed`, each with Chrome's `windowId`, `tabId` (both
+  the page's tab, each tab being a window of its own here) and the `path` of
+  the page it showed; another page in the open panel keeps it open. The
+  person drags the edge between the page and the panel, or steps it from the
+  keyboard or assistive technology, between a utility panel's width and a
+  readable column's, leaving the page a readable column, and each
+  extension's panel keeps its width on the device.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
@@ -695,6 +903,16 @@ content scripts (with `sender.tab`) work without help.
   page; `onRuleMatchedDebug` reports what Chromium reports, tab id -1.
   Rules that only change a request (headers, an upgrade to https) and a
   blocked page itself are not counted.
+- A rule's redirect to an extension's file at its address for the session
+  (`use_dynamic_url`, as uBlock Origin Lite's stand-ins for ad and
+  analytics scripts are) runs in the page. Chromium answers that address
+  with a redirect to the extension's own and allows the file there because
+  it remembers where the request came from; CEF starts each redirected
+  request anew and Chromium forgets, so it would refuse the file. The host
+  (`src/extension_standins.h`) answers that second request itself, with the
+  file from where Chromium says the extension is
+  (`Extensions.getExtensions`), when the extension's manifest makes it web
+  accessible to the page that asked.
 - An extension signs in to its service with `identity.launchWebAuthFlow`.
   Chrome shows the page in a window of its own; here the host asks the
   Browser to show it in a panel over the page in front
@@ -734,11 +952,13 @@ content scripts (with `sender.tab`) work without help.
 ## Remaining integration work
 
 - Extensions' side panels show beside the page they were opened for, one at a
-  time per window; `sidePanel.onOpened` and `onClosed` are not fired, and the
-  panel cannot be widened. Extensions' keyboard shortcuts run while
-  a page has the keyboard, not while the address bar or a popup has it; the
-  suggested keys are the ones given (there is no page to change them), and
-  `global` shortcuts work only in the Browser. On macOS a shortcut with
+  time per window; `sidePanel.onOpened` and `onClosed` always name the tab,
+  also for a panel the extension opened for the whole window. Extensions'
+  keyboard shortcuts run while a page, a popup, a side panel or the Browser's
+  address has the keyboard, but not while the address is the Tilo window
+  bar's location, which the desktop draws; the suggested keys are the ones
+  given (there is no page to change them), and `global` shortcuts work only
+  in the Browser. On macOS a shortcut with
   Option (Alt) and no Command or Control does not run: the Browser forwards
   the character Option types ("˚" for Option+K), not the key. A keyword's
   Enter always goes to the current tab (no Alt+Enter for a new one), and its
@@ -750,16 +970,17 @@ content scripts (with `sender.tab`) work without help.
   image, and a notification the person dismisses without choosing it stays
   in `getAll` until the extension clears it: Tilo's notification service
   says nothing of a dismissal.
-- A rule's redirect to an extension's file at an address of its own for the
-  session (`use_dynamic_url`, as uBlock Origin Lite's stand-ins for ad
-  scripts are) is counted but does not run in the page.
+- A rule's redirect of a frame (not a script or image) to an extension's
+  file at its address for the session is still refused.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs
   the full clear-data integration.
-- Keyboard input covers single UTF-16 characters and common named keys with
-  macOS native and Linux X11 key mappings. Physical codes use a US layout because
-  IPC carries logical names; IME, composed text, other layouts and full native
-  shortcut handling need platform integration.
+- Keyboard input covers single UTF-16 characters, common named keys and input
+  method compositions, with macOS native and Linux X11 key mappings from the
+  key's physical place. Outside a composition the input method is placed by
+  the focused field's first line, not its caret: CEF reports a caret only for
+  composed text. A field in a frame of another site has no box, and its
+  candidates open at the view's corner until the composition reports its own.
 - The isolated Linux ARM64 native navigation receipt regression is verified.
   Packaged hardware acceptance and macOS release signing/notarization remain separate checks.

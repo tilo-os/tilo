@@ -161,7 +161,6 @@ store-view-updates-count = Updates ({ $count })
 store-view-installed = Auf diesem Gerät
 store-view-bots = Bots
 store-views-label = Bereiche des Stores
-store-search-placeholder = Apps und Bots suchen
 store-search-title = Suche
 store-search-apps = Apps
 store-search-more-flathub = Mehr auf Flathub

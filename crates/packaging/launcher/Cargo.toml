@@ -137,6 +137,12 @@ tilo-sandbox-core = { path = "../../system/sandbox-core", features = ["test-supp
 # launch by the lease tests.
 install = { path = "../install" }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# A sandboxed app's real AT-SPI bridge behind the launcher's AT-SPI proxy
+# (`tests/bus_filters.rs`): what another client on the bus may do with its tree.
+accesskit = "0.25.0"
+accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
+
 [[test]]
 name = "it"
 path = "tests/it.rs"

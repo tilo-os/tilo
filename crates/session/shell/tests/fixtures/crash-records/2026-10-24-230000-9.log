@@ -1,0 +1,13 @@
+tilo shell panic
+================
+timestamp: 2026-10-24-230000
+version:   0.1.0
+binary:    /usr/bin/tilo-shell
+build-id:  <none>
+thread:    thumbnailer
+contained: yes: the failing helper restarts and the session continues
+location:  crates/session/shell/src/shell/window_previews.rs:40:5
+message:   preview larger than its surface
+
+backtrace:
+   0: shell::shell::window_previews::scale

@@ -576,7 +576,7 @@ impl Session {
             match self.run_task_step(run, index, action, &arguments)? {
                 Ok(outcome) => {
                     self.chooser
-                        .mark(tilo_model_gateway::TraceEvent::ActionSettled, index);
+                        .mark(tilo_model_client::TraceEvent::ActionSettled, index);
                     previous = Some(outcome);
                 }
                 Err(TaskActionStop::Cancelled(_)) => {
@@ -606,7 +606,7 @@ impl Session {
             ))));
         }
         self.chooser
-            .mark(tilo_model_gateway::TraceEvent::ActionSubmitted, index);
+            .mark(tilo_model_client::TraceEvent::ActionSubmitted, index);
         let settled = self.invoke_task_action(run, action, arguments)?;
         self.step_settled();
         Ok(settled)

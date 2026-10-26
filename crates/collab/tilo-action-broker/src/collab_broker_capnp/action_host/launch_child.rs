@@ -118,10 +118,10 @@ impl CapnpBrokerState {
                 },
             })),
         )?;
-        let workspace = self.reauthorize_launch_effect(
+        let workspace = self.reauthorize_launch_effect_as(
             (caller, Some(&child_origin), &room),
             &admitted,
-            &app.package_id,
+            (&app.package_id, super::launch_kind(parent)),
         )?;
         let result = self.launch_retained(&app.package_id, &workspace, record, place);
         let update = match &result {

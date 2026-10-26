@@ -6,18 +6,12 @@
 # links between listed pages to their site addresses and links to any other
 # file to this repository, and fails on a missing page, file or heading. The
 # repository policy suite runs it on every pull request. The site builds its
-# pages from `developer_docs.py export` and the API reference from
-# `tools/docs/build-api-reference.sh`.
+# pages from `developer_docs.py export`. SDK source links stay on the
+# repository host; Rustdoc is generated locally with `cargo doc`.
 
 base = "/docs/developers/"
 repository = "https://code.tilo.so/tilo/tilo"
-
-[api]
-title = "tilo-app API reference"
-# Relative to `base`; the site serves the rustdoc output there.
-path = "api/tilo_app/"
-# A link to one of these opens the API reference instead of the source tree.
-sources = ["crates/sdk/tilo-app", "crates/sdk/tilo-app/src/lib.rs"]
+related_manifests = ["docs/development/pages.toml"]
 
 [[page]]
 slug = ""

@@ -1047,7 +1047,7 @@ impl ApiTesterApp {
     }
 
     /// Delete the saved request `target` names (the one in the builder when
-    /// none): the host asks the person to confirm.
+    /// none). Undo takes it back, so nobody is asked first.
     fn delete_request(&mut self, target: FormTarget) {
         let target = self.resolve_target(target);
         if let (Some(collection), Some(request)) = (target.collection, target.request) {
@@ -1059,7 +1059,8 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
-    /// Delete the active environment: the host asks the person to confirm.
+    /// Delete the active environment. Undo takes it back, so nobody is asked
+    /// first.
     fn delete_environment(&mut self) {
         if let Some(id) = self.active_env.clone() {
             self.submit(Workspace::DELETE_ENVIRONMENT.with(id));
@@ -1620,12 +1621,12 @@ impl ApiTesterApp {
                             status: response.status,
                             duration_ms: response.duration_ms,
                         }));
+                        let answer = Effected::value(http::answer(&response));
                         app.response = Some(response);
                         app.response_view = ResponseView::Pretty;
                         app.stale.response = true;
                         app.stale.response_body = true;
-
-                        Ok(Effected::done())
+                        Ok(answer)
                     }
                     Err(error) => {
                         app.error = Some(error.clone());

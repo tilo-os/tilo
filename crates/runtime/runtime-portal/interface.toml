@@ -7,20 +7,20 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 8
+version = 10
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
 sources = [
-    "crates/runtime/runtime-identity/src/lib.rs",
-    "crates/runtime/runtime-identity/src/profile.rs",
+    "crates/runtime/tilo-identity-client/src/lib.rs",
+    "crates/runtime/tilo-identity-client/src/profile.rs",
     "crates/runtime/runtime-portal/src/tools.rs",
 ]
 roots = ["Request", "Response", "ToolRequest", "ToolReply"]
 capnp = [
     "crates/runtime/runtime-collab/schema/collab.capnp",
-    "crates/runtime/runtime-fs/schema/fs.capnp",
-    "crates/runtime/runtime-fs/schema/blobs.capnp",
+    "crates/runtime/tilo-fs-client/schema/fs.capnp",
+    "crates/runtime/tilo-fs-client/schema/blobs.capnp",
 ]
 
 [opaque]
@@ -164,6 +164,7 @@ capnp = [
 "VpnRoute::profile" = "#1 unit"
 "WorkspaceSettingsRoute" = "enum external"
 "WorkspaceSettingsRoute::apps_files" = "#3 unit"
+"WorkspaceSettingsRoute::emoji" = "#4 unit"
 "WorkspaceSettingsRoute::general" = "#0 unit"
 "WorkspaceSettingsRoute::members" = "#1 unit"
 "WorkspaceSettingsRoute::privacy_security" = "#2 unit"
@@ -194,6 +195,7 @@ capnp = [
 "capnp:blobs.capnp:ReadStatus.ready" = "@0"
 "capnp:blobs.capnp:ReadStatus.unavailable" = "@2"
 "capnp:blobs.capnp:SessionBlobs" = "interface"
+"capnp:blobs.capnp:SessionBlobs.attributeWrites" = "@2 (paths:List(Text),actor:Text,label:Text,color:UInt32,ttlMs:UInt32)->()"
 "capnp:blobs.capnp:SessionBlobs.refreshPublicContent" = "@1 ()->(refreshed:UInt32)"
 "capnp:blobs.capnp:SessionBlobs.scope" = "@0 (room:Text,app:Text)->(blobs:DocumentBlobs)"
 "capnp:collab.capnp:ActionCatalogueStream" = "interface"
@@ -284,6 +286,7 @@ capnp = [
 "capnp:collab.capnp:ChannelHandle" = "interface"
 "capnp:collab.capnp:ChannelHandle.actionCatalogue" = "@19 ()->(catalogueJson:Text)"
 "capnp:collab.capnp:ChannelHandle.admitLocalDocumentAction" = "@66 (request:Data)->(observation:PublishedInvocationObservation)"
+"capnp:collab.capnp:ChannelHandle.applicationsChanged" = "@70 (after:UInt64)->(change:UInt64)"
 "capnp:collab.capnp:ChannelHandle.approvedCheck" = "@58 (request:Data)->(receipt:Data)"
 "capnp:collab.capnp:ChannelHandle.approvedCheckReportedProgress" = "@60 (request:Data)->(stream:ApprovedCheckReportedProgressStream)"
 "capnp:collab.capnp:ChannelHandle.audioOutputCommand" = "@57 (command:Data)->(reply:Data)"
@@ -295,6 +298,7 @@ capnp = [
 "capnp:collab.capnp:ChannelHandle.committedDocument" = "@47 (request:Data)->(reply:Data)"
 "capnp:collab.capnp:ChannelHandle.completeInvocation" = "@15 (id:UInt64,code:Text,message:Text)->()"
 "capnp:collab.capnp:ChannelHandle.composeRemark" = "@16 (reference:Text,x:Float32,y:Float32,w:Float32,h:Float32)->()"
+"capnp:collab.capnp:ChannelHandle.drivesChanged" = "@69 (after:UInt64)->(change:UInt64)"
 "capnp:collab.capnp:ChannelHandle.fetchScrollbackFor" = "@7 (artifactId:Data,beforeSeq:UInt64,max:UInt32)->(batch:ScrollbackBatch)"
 "capnp:collab.capnp:ChannelHandle.handoff" = "@53 (appId:Text,message:Data)->()"
 "capnp:collab.capnp:ChannelHandle.invocationCancellation" = "@18 (id:UInt64)->(cancelled:Bool)"

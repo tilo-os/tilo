@@ -503,6 +503,14 @@ impl Replica {
         })
     }
 
+    /// Whether an agent or a bot holds it, so it is offered only what
+    /// reaches agents. The host acting for a person (the owner's room
+    /// actions, a member's comment) is offered what people are,
+    /// `audience = "people"` included.
+    const fn automated(&self) -> bool {
+        self.runs_effects || self.offers_reads
+    }
+
     #[must_use]
     pub const fn app_id(&self) -> &'static str {
         self.app_id
@@ -544,7 +552,7 @@ impl Replica {
     /// the host to run for themselves ([`tilo_actions::MEMBER_OWN_TAG`]);
     /// for a bot, the record's read effects too; for an agent, the effects
     /// and views [`offered_to_agents`], without a [`PATH_PARAM`] to write
-    /// to.
+    /// to. An agent or a bot is offered only what reaches agents.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
         let resources = self.view.resources();
@@ -552,8 +560,9 @@ impl Replica {
         tilo_actions::door::survey(&resources)
             .into_iter()
             // An action for people only (copying a link to the clipboard)
-            // means nothing to an agent.
-            .filter(|descriptor| descriptor.contract.reaches_agents())
+            // means nothing to an agent; the host acting for a person
+            // offers it (a reviewed feedback report a person files).
+            .filter(|descriptor| !self.automated() || descriptor.contract.reaches_agents())
             .filter(|descriptor| {
                 self.offers(descriptor, &in_chains)
                     || (self.runs_effects && offered_when_host_renders(descriptor))

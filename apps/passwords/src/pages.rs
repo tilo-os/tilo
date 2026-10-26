@@ -78,10 +78,17 @@ fn titled_page(title: &str, lead: Option<&str>, groups: Vec<Element>) -> Element
 }
 
 /// The content column: the page for the current screen, and the dialog
-/// over the window when one is open.
-pub(crate) fn content(core: &Core, shared: &Shared, requests: &Requests) -> Element {
+/// over the window when one is open. While the window bar hosts the
+/// window (`actions_in_bar`), what can be done to the item shown is the
+/// bar's ([`item_actions`]) and its page draws none of it.
+pub(crate) fn content(
+    core: &Core,
+    shared: &Shared,
+    requests: &Requests,
+    actions_in_bar: bool,
+) -> Element {
     let page = match core.screen {
-        Screen::Vault => detail(core, requests),
+        Screen::Vault => detail(core, requests, actions_in_bar),
         Screen::Editor => editor(core, shared, requests),
         Screen::Review => review(core, requests),
         Screen::AppAccess => app_access(core, requests),
@@ -93,7 +100,7 @@ pub(crate) fn content(core: &Core, shared: &Shared, requests: &Requests) -> Elem
     }
 }
 
-fn detail(core: &Core, requests: &Requests) -> Element {
+fn detail(core: &Core, requests: &Requests, actions_in_bar: bool) -> Element {
     let Some(item) = core.selected_item() else {
         // The list offers the next step; the wide pane beside it says what
         // the vault keeps instead of standing blank.
@@ -125,39 +132,71 @@ fn detail(core: &Core, requests: &Requests) -> Element {
     if let Some(error) = &core.recovery_error {
         children.push(Box::new(Banner::error(error.clone())));
     }
-    children.extend(detail_header(item, requests));
+    children.extend(detail_header(item, requests, actions_in_bar));
     children.push(Box::new(PropertyList::new(properties(
         core, item, requests,
     ))));
     page(children)
 }
 
-fn detail_header(item: &SecretItem, requests: &Requests) -> Vec<Element> {
-    let favorite = is_favorite(item);
-    let copy = format!("Copy {}", secret_noun(item.kind));
-    let star = {
-        let requests = Rc::clone(requests);
-        let id = item.id.clone();
-        Button::icon_only(
-            "passwords.favorite",
-            Icon::Star,
-            if favorite {
-                "Remove from favorites"
-            } else {
-                "Add to favorites"
-            },
-        )
-        .toggled(favorite)
-        .on_own_device_effect(move || {
-            requests
-                .borrow_mut()
-                .push(Request::ToggleFavorite(id.clone()));
-        })
-    };
+/// What can be done to the item shown: copy its secret, edit it and mark
+/// it a favorite, as the window bar offers them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ItemActions {
+    pub(crate) id: accounts::SecretId,
+    /// "Copy password", "Copy API key".
+    pub(crate) copy: String,
+    pub(crate) favorite: bool,
+}
+
+/// The actions on the item the vault shows, if it shows one.
+pub(crate) fn item_actions(core: &Core) -> Option<ItemActions> {
+    if core.screen != Screen::Vault {
+        return None;
+    }
+    let item = core.selected_item()?;
+    Some(ItemActions {
+        id: item.id.clone(),
+        copy: copy_label(item.kind),
+        favorite: is_favorite(item),
+    })
+}
+
+/// The name of copying a secret of `kind`: "Copy password".
+fn copy_label(kind: SecretItemKind) -> String {
+    format!("Copy {}", secret_noun(kind))
+}
+
+/// The name of the favorite toggle, by whether the item is one.
+pub(crate) fn favorite_label(favorite: bool) -> &'static str {
+    if favorite {
+        "Remove from favorites"
+    } else {
+        "Add to favorites"
+    }
+}
+
+fn detail_header(item: &SecretItem, requests: &Requests, actions_in_bar: bool) -> Vec<Element> {
     let title = ObjectHeader::new(&item.title)
         .avatar(&item.title, &item.id.0)
         .square()
         .caption(kind_label(item.kind));
+    if actions_in_bar {
+        return vec![Box::new(title)];
+    }
+    let favorite = is_favorite(item);
+    let copy = copy_label(item.kind);
+    let star = {
+        let requests = Rc::clone(requests);
+        let id = item.id.clone();
+        Button::icon_only("passwords.favorite", Icon::Star, favorite_label(favorite))
+            .toggled(favorite)
+            .on_own_device_effect(move || {
+                requests
+                    .borrow_mut()
+                    .push(Request::ToggleFavorite(id.clone()));
+            })
+    };
     let actions = Row::new()
         .push(Box::new(button(
             "passwords.copy",

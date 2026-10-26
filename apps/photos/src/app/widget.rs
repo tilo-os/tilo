@@ -28,6 +28,32 @@ use super::{
 impl Widget for PhotosApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
+    /// The system's back gesture lowers or puts away an editor's sheet
+    /// before anything navigates ([`PhotosApp::sheet_back`]).
+    fn on_nav_gesture(
+        &mut self,
+        dir: ui::gesture::NavDirection,
+        state: &AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        if dir == ui::gesture::NavDirection::Back && self.sheet_back() {
+            return true;
+        }
+        self.children_mut()
+            .into_iter()
+            .any(|child| child.on_nav_gesture(dir, state, path))
+    }
+
+    fn nav_availability(&self) -> ui::gesture::NavAvailability {
+        let own = ui::gesture::NavAvailability {
+            back: self.editor_sheet_shown(),
+            forward: false,
+        };
+        self.children()
+            .into_iter()
+            .fold(own, |seen, child| seen.or(child.nav_availability()))
+    }
+
     /// Shared controls remain retained children even in the painted media
     /// surface, with their own focus, action custody and accessibility.
     fn children(&self) -> Vec<&dyn Widget> {
@@ -36,6 +62,24 @@ impl Widget for PhotosApp {
             .map(|empty| empty as &dyn Widget)
             .into_iter()
             .collect()
+    }
+
+    /// Every widget the canvas may give a layout node: the empty state, the
+    /// photograph, and the People surface's name field and buttons. The
+    /// buttons live outside this widget, in a list, so the retained layout
+    /// check reaches them only through this walk.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        if let Some(empty) = &self.empty_state {
+            visitor(empty);
+        }
+        if let Some(viewer) = &self.viewer {
+            visitor(viewer);
+        }
+        visitor(&self.people_name_input);
+        for control in &self.people_controls {
+            visitor(&control.button);
+        }
+        true
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -484,6 +528,10 @@ impl Widget for PhotosApp {
         self.refresh_chrome_text(doc);
         self.refresh_empty_state(doc);
         self.publish_notice();
+        // A narrow window shows the places on a screen of their own, where
+        // the library is not drawn: they come with what the library holds,
+        // not with its frame.
+        self.show_places();
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -516,11 +564,15 @@ impl Widget for PhotosApp {
         self.sync_inspector();
         let beside = self.chrome.inspector.resolve(self.rect);
         let mut inspector_inset = (self.rect.x1 - beside.x1).max(0.0);
+        // A sheet keeps the foot it rests on clear: the timeline scrolls
+        // every photograph into view above it.
+        let sheet_inset = (self.rect.y1 - beside.y1).max(0.0);
         // A panel floating over an empty view would hide what the empty
         // state offers (Open, on an empty library): it stands in the part
         // the panel leaves, where that still holds it.
         if self.empty_state.is_some()
             && self.chrome.inspector.is_overlay()
+            && !self.chrome.inspector.rises_as_sheet()
             && self.chrome.inspector.is_open()
         {
             let covered =
@@ -544,7 +596,7 @@ impl Widget for PhotosApp {
                 left: LengthPercentage::length(0.0),
                 right: LengthPercentage::length(inspector_inset as f32),
                 top: LengthPercentage::length(0.0),
-                bottom: LengthPercentage::length(0.0),
+                bottom: LengthPercentage::length(sheet_inset as f32),
             },
             ..Default::default()
         };
@@ -653,8 +705,7 @@ impl Widget for PhotosApp {
             v.draw(scene, transform, text_renderer, theme, presence);
             self.draw_viewer_details(scene, transform, text_renderer, theme);
         } else {
-            let (title, body) = self.empty_state_text();
-            self.draw_empty_state(scene, transform, text_renderer, theme, &title, &body);
+            self.draw_empty_state(scene, transform, text_renderer, theme);
         }
 
         self.draw_directory_import_status(scene, transform, text_renderer, theme);
@@ -708,6 +759,19 @@ impl Widget for PhotosApp {
                 ));
             }
             self.pointer = next;
+        }
+        // The inspector's sheet takes a drag on its grip and the arrow keys
+        // on it; the timeline above it stays live.
+        self.chrome.inspector.resolve(self.rect);
+        let motion = self.layout_theme.motion();
+        if self
+            .chrome
+            .inspector
+            .handle_sheet_event(event, ctx, motion)
+            .taken()
+        {
+            *ctx.handled = true;
+            return;
         }
         if self.directory_import_details_open {
             let theme = self.layout_theme.clone();
@@ -1488,6 +1552,14 @@ impl Widget for PhotosApp {
             .empty_state
             .as_mut()
             .is_some_and(|empty| empty.perform_semantic_action(target, action, state, path))
+        {
+            return true;
+        }
+        let motion = self.layout_theme.motion();
+        if self
+            .chrome
+            .inspector
+            .perform_sheet_action(target, action, motion)
         {
             return true;
         }

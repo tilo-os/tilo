@@ -32,8 +32,8 @@ use ui::widget::{
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
-use super::{Action, BooksApp, ShelfCard, ShelfGrid, View, paint_scroll_thumb};
-use crate::library_index::{LibraryIndex, Read, Standing};
+use super::{Action, BooksApp, ShelfCard, ShelfGrid, View, button_width, paint_scroll_thumb};
+use crate::library_index::{BookUnreachable, LibraryIndex, Read};
 use crate::model::Book;
 use crate::search_provider::{
     ANNOTATION_KIND, AUTHOR_FACET, BOOK_FACET, BOOK_KIND, BookSearch, CHAPTER_KIND, LOCATION_KIND,
@@ -346,10 +346,9 @@ impl BooksApp {
         if fetching != book {
             return None;
         }
-        match standing {
-            Standing::Fetching => None,
-            Standing::Waiting => Some((WAITING_STATUS, Some(WAITING_DETAIL))),
-            Standing::Unavailable => Some((UNAVAILABLE_STATUS, None)),
+        match standing.failure()? {
+            BookUnreachable::Waiting => Some((WAITING_STATUS, Some(WAITING_DETAIL))),
+            BookUnreachable::Unavailable => Some((UNAVAILABLE_STATUS, None)),
         }
     }
 
@@ -1143,7 +1142,12 @@ impl BooksApp {
         let section = f64::from(ctx.theme.tokens.spacing.rhythm.section);
         let mut y = Self::query_heading(ctx, span, y, &remote.label);
         if let Some(clock) = remote.placeholder() {
-            let face = ui::widget::ArrivalFace::new(ui::widget::SkeletonShape::Row, clock, now);
+            // A result's row: its kind's mark, its title and where it is.
+            let kind = ui::widget::RowShape::TITLE
+                .led_by(ui::widget::RowLeadingShape::Mark)
+                .with_secondary(1);
+            let face =
+                ui::widget::ArrivalFace::new(ui::widget::SkeletonShape::Row(kind), clock, now);
             let h = face.height(ctx.text, ctx.theme, span.1 - span.0);
             face.paint(ctx, Rect::new(span.0, y, span.1, y + h));
             y += h;
@@ -1154,6 +1158,7 @@ impl BooksApp {
                 text.clone()
             };
             y = Self::query_note(ctx, span, y, &note);
+            y = self.query_retry(ctx, span, body, y, &remote.source);
         } else if remote.is_answered() && remote.groups.is_empty() {
             y = Self::query_note(ctx, span, y, &format!("No matches in {}.", remote.label));
         }
@@ -1161,6 +1166,44 @@ impl BooksApp {
             y = self.query_row(ctx, span, body, y, item);
         }
         y + section
+    }
+
+    /// The way to ask a source that could not answer again: a button
+    /// under its failure, reached by keyboard and screen reader as its
+    /// rows are.
+    fn query_retry(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        span: (f64, f64),
+        body: Rect,
+        y: f64,
+        source: &str,
+    ) -> f64 {
+        let theme = ctx.theme;
+        let label = ui::i18n::I18nManager::lookup_plain("arriving-retry");
+        let y = y + f64::from(theme.tokens.spacing.rhythm.related);
+        let width = button_width(ctx, &label, None, ControlSize::Small);
+        let height = ButtonFace::height(ControlSize::Small, theme);
+        let rect = Rect::new(span.0, y, span.0 + width, y + height);
+        let action = Action::RetryRemote(source.to_owned());
+        let row_index = self.query.rows.len();
+        self.query.rows.push(QueryRow {
+            rect,
+            action: action.clone(),
+            id: format!("retry:{source}"),
+            label: label.clone(),
+        });
+        if rect.y0 < body.y1 && rect.y1 > body.y0 {
+            self.button(
+                ctx,
+                ButtonFace::new(rect, &label)
+                    .control_size(ControlSize::Small)
+                    .role(ButtonRole::Secondary)
+                    .focused(self.query.cursor == Some(row_index)),
+                action,
+            );
+        }
+        y + height
     }
 
     /// Stage a search for a capture or a test: `text` typed into the window

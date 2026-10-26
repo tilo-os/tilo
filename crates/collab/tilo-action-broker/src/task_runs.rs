@@ -34,12 +34,14 @@ pub struct EndedTaskRun {
     pub outcome: String,
 }
 
-/// The runs history records once they end: shortcut runs and agent runs of
-/// issues, each until the recorder takes them.
+/// What the broker holds of a run while it lives and once it ends: a
+/// shortcut run going (and the steps waiting on its person) is stopped
+/// through here, and both kinds of run wait here until history takes them.
 #[derive(Default)]
 pub struct EndedRuns {
     pub shortcuts: crate::automation::ShortcutRuns,
     pub tasks: TaskRuns,
+    pub running: crate::automation::RunLedger,
 }
 
 /// Ended task runs, until the history recorder takes them.

@@ -20,6 +20,7 @@ pub mod providers;
 pub mod recent_places;
 #[cfg(test)]
 mod relevance_tests;
+mod timing;
 pub mod usage;
 pub mod visibility;
 
@@ -1140,6 +1141,33 @@ impl SearchRegistry {
         })
     }
 
+    /// Keep the indexes the launcher reads built while the palette is
+    /// closed, so its first opening lists what it settles on instead of
+    /// filling in over the next frames as builds that opening started land.
+    /// Each poll compares generations until a source changes; a build runs
+    /// on its own thread and wakes the loop when it is done.
+    pub fn maintain_launcher_indexes(
+        &self,
+        chrome: &ChromeState,
+        doc: &AutoCommit,
+        doc_root: &ObjId,
+    ) {
+        for provider in self.providers_iter() {
+            if provider.launcher_section().is_none() {
+                continue;
+            }
+            provider.refresh_search_index(&SearchContext {
+                query_scope: Some(SearchScope::Workspace),
+                include_programmatic: false,
+                needle: "",
+                wanted: provider.resource_kinds(),
+                chrome,
+                doc,
+                doc_root,
+            });
+        }
+    }
+
     /// Poll/start retained index maintenance without routing a query. This is
     /// intentionally separate from `query`, `query_revision`, and
     /// `query_provider_page`: a cold 100k source must never be flattened on
@@ -1387,15 +1415,18 @@ impl SearchRegistry {
             }
             out.push_str(provider.id());
             out.push('\0');
-            out.push_str(&provider.search_revision(&SearchContext {
-                query_scope: Some(args.scope),
-                include_programmatic: false,
-                needle: args.needle,
-                wanted: args.wanted_kinds,
-                chrome: args.chrome,
-                doc: args.doc,
-                doc_root: args.doc_root,
-            }));
+            {
+                let _cost = timing::Cost::new("search/provider-revision", provider.id());
+                out.push_str(&provider.search_revision(&SearchContext {
+                    query_scope: Some(args.scope),
+                    include_programmatic: false,
+                    needle: args.needle,
+                    wanted: args.wanted_kinds,
+                    chrome: args.chrome,
+                    doc: args.doc,
+                    doc_root: args.doc_root,
+                }));
+            }
             out.push('\0');
         }
         out
@@ -1492,19 +1523,22 @@ impl SearchRegistry {
                         .max_bytes
                         .min(HEADLESS_MAX_BYTES.saturating_sub(bytes));
                 }
-                let page = source.provider.query_page(
-                    SearchContext {
-                        query_scope: Some(args.scope),
-                        include_programmatic,
-                        needle: args.needle,
-                        wanted: &source.wanted,
-                        chrome: args.chrome,
-                        doc: args.doc,
-                        doc_root: args.doc_root,
-                    },
-                    source.cursor.as_ref(),
-                    budget,
-                );
+                let page = {
+                    let _cost = timing::Cost::new("search/provider-query", source.provider.id());
+                    source.provider.query_page(
+                        SearchContext {
+                            query_scope: Some(args.scope),
+                            include_programmatic,
+                            needle: args.needle,
+                            wanted: &source.wanted,
+                            chrome: args.chrome,
+                            doc: args.doc,
+                            doc_root: args.doc_root,
+                        },
+                        source.cursor.as_ref(),
+                        budget,
+                    )
+                };
                 pages = pages.saturating_add(1);
                 advanced = true;
                 source.note_page(&page);
@@ -2090,6 +2124,59 @@ mod tests {
             registry.refresh_indexes(args);
             registry.query_revision(args).contains("ready:")
         });
+    }
+
+    #[test]
+    fn the_launchers_indexes_are_kept_built_while_the_palette_is_closed() {
+        use std::cell::Cell;
+
+        struct Refreshed {
+            id: &'static str,
+            launcher: bool,
+            refreshes: Rc<Cell<usize>>,
+        }
+        impl SearchProvider for Refreshed {
+            fn id(&self) -> &str {
+                self.id
+            }
+            fn name(&self) -> &str {
+                self.id
+            }
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                &[ResourceKind::Application]
+            }
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                Vec::new()
+            }
+            fn launcher_section(&self) -> Option<launcher::LauncherSection> {
+                self.launcher.then_some(launcher::LauncherSection::Apps)
+            }
+            fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
+                self.refreshes.set(self.refreshes.get().saturating_add(1));
+            }
+        }
+
+        let (apps, files) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(Refreshed {
+            id: "apps",
+            launcher: true,
+            refreshes: Rc::clone(&apps),
+        }));
+        registry.register(Rc::new(Refreshed {
+            id: "files",
+            launcher: false,
+            refreshes: Rc::clone(&files),
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        registry.maintain_launcher_indexes(&chrome.borrow(), &doc, &root);
+        assert_eq!(
+            apps.get(),
+            1,
+            "what the launcher lists is built ahead of it"
+        );
+        assert_eq!(files.get(), 0, "nothing the launcher does not read");
     }
 
     #[test]

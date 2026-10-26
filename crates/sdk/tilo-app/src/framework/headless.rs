@@ -317,6 +317,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
+    /// The record `P` every app of the room opens that `owner` keeps, as
+    /// the app's views open it.
+    pub fn workspace<P: Resource>(
+        &mut self,
+        owner: &'static str,
+    ) -> Option<super::WorkspaceRecord<P>> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.workspace::<P>(owner))
+            .flatten()
+    }
+
     /// The person's shared record `P`, as the app's views open it.
     pub fn shared_person<P: tilo_resource::SharedRecord>(
         &mut self,
@@ -2031,14 +2042,24 @@ fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedIds {
     harness
         .with_widget_mut(|root: &mut ResourceRoot| {
             let typed = root.typed::<A::Resource>()?;
-            let effects = typed.effects.specs().into_iter().map(|spec| spec.id);
-            let views = <A::Resource as Resource>::views(&typed.live.get())
-                .into_iter()
-                .map(|view| view.id);
-            Some((effects.collect(), views.collect()))
+            let views = <A::Resource as Resource>::views(&typed.live.get());
+            Some(ids_of(typed.effects.specs(), views))
         })
         .flatten()
         .unwrap_or_default()
+}
+
+/// The ids of `effects` and of `views`: taken here once rather than in
+/// every app's [`published_ids`].
+#[inline(never)]
+fn ids_of(
+    effects: Vec<tilo_actions::ActionSpec>,
+    views: Vec<tilo_actions::ResourceViewSpec>,
+) -> PublishedIds {
+    (
+        effects.into_iter().map(|spec| spec.id).collect(),
+        views.into_iter().map(|view| view.id).collect(),
+    )
 }
 
 /// [`surface_report`] of the app `opening` describes, whose resource's

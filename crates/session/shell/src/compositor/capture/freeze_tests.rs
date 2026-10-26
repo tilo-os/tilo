@@ -132,7 +132,7 @@ impl Desk {
             desk.settle();
             std::thread::sleep(std::time::Duration::from_millis(8));
         }
-        // Past the opening card's hand-over, and the windows grown to
+        // Past the first frames' cross-fade in, and the windows grown to
         // their width; then each client draws at its window's size.
         std::thread::sleep(std::time::Duration::from_millis(300));
         desk.settle();

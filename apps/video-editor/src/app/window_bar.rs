@@ -24,6 +24,7 @@ use crate::actions::VideoEditorEffect;
 
 /// The bar actions, by the published action each runs.
 pub(crate) const SPLIT: &str = "video.split";
+pub(crate) const SIDE_BY_SIDE: &str = "video.side-by-side";
 pub(crate) const EXPORT: &str = "video.export";
 pub(crate) const INSPECTOR: &str = "video.inspector";
 pub(crate) const IMPORT: &str = "video.import";
@@ -50,6 +51,8 @@ impl VideoEditorApp {
             actions: vec![
                 ToolbarAction::new(SPLIT, "scissors", "Split at playhead")
                     .enabled(self.can_split_selection()),
+                ToolbarAction::new(SIDE_BY_SIDE, "columns-2", "Place side by side")
+                    .enabled(self.can_place_side_by_side()),
                 self.export_action(),
                 ToolbarAction::new(
                     INSPECTOR,
@@ -111,6 +114,13 @@ impl VideoEditorApp {
         })
     }
 
+    /// Whether there is a cut to make at the playhead: two pictures meeting
+    /// there, on tracks that may be edited, neither already beside the
+    /// other.
+    fn can_place_side_by_side(&self) -> bool {
+        self.project.side_by_side_available(self.playhead)
+    }
+
     /// Run what the person did in the window's bar, then declare the slots
     /// for what the editor shows now.
     pub(super) fn run_window_toolbar(&mut self) {
@@ -131,6 +141,14 @@ impl VideoEditorApp {
         );
         if ours && self.bin_overlay_is_open() {
             self.close_bin_overlay();
+        }
+        // Two angles in one frame is the project's own edit, submitted the
+        // way an agent or the palette submits it; the bar is the gesture.
+        if let ToolbarEvent::Action { id } = event
+            && id == SIDE_BY_SIDE
+        {
+            self.place_side_by_side();
+            return;
         }
         let effect = match event {
             ToolbarEvent::ToggleSidebar => VideoEditorEffect::ToggleMedia,

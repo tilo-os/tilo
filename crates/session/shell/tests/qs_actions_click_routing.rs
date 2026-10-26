@@ -701,7 +701,7 @@ fn only_the_invite_button_opens_the_signed_composer() {
         host.force_ws_settings_settled();
         // Paint once so the modal's geometry is populated the way it is in a
         // real frame before any click arrives.
-        let _ = &taffy;
+        paint(&mut host);
 
         let btn = host.ws_settings_invite_rect_for_tests();
         assert!(
@@ -735,9 +735,11 @@ fn only_the_invite_button_opens_the_signed_composer() {
         }
         let (taffy, host_node) = layout_host(&mut host);
         host.force_ws_settings_settled();
+        paint(&mut host);
 
         let btn = host.ws_settings_invite_rect_for_tests();
-        let p = Point::new(btn.x0 - 160.0, btn.center().y);
+        assert!(btn.area() > 0.0, "the Create button is laid out");
+        let p = Point::new(btn.x1 + 160.0, btn.center().y);
         click(&mut host, &taffy, host_node, p);
 
         assert!(
@@ -749,7 +751,7 @@ fn only_the_invite_button_opens_the_signed_composer() {
 
 /// The ribbon's own geometry is unit-tested in `ui`, but geometry that
 /// nothing routes is exactly the defect the ws-settings Copy button was
-/// — this drives a real click and asserts `active_strip` moved.
+/// — this drives real clicks and asserts `active_strip` moved.
 #[test]
 fn clicking_a_strip_ribbon_segment_moves_focus() {
     let mut tree = minimal_tree();
@@ -773,12 +775,21 @@ fn clicking_a_strip_ribbon_segment_moves_focus() {
 
     let target = ribbon.hit_rect(2).expect("third segment has a target");
     let c = target.center();
+    // A tap on the ribbon opens the strip switcher's labels, pinned (a
+    // finger cannot rest there to open them); the third strip's label row
+    // reaches under its mark, so a second tap there takes it.
+    click(&mut host, &taffy, host_node, c);
+    assert!(
+        chrome.borrow().strip_switcher_open(),
+        "a tap on the ribbon opens the strip switcher"
+    );
+    assert_eq!(chrome.borrow().strip_focus().1, 0, "nothing moved yet");
     click(&mut host, &taffy, host_node, c);
 
     let (_, focused) = chrome.borrow().strip_focus();
     assert_eq!(
         focused, 2,
-        "clicking the third ribbon segment must focus the third strip"
+        "the third strip's label, over its ribbon segment, focuses the third strip"
     );
 }
 

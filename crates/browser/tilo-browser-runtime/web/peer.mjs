@@ -121,6 +121,24 @@ function keepProfileDevice(profile, slot, device, namespaces) {
   all[forSlot(profile, slot)] = device;
   namespaces?.setItem(PROFILE_DEVICES, JSON.stringify(all));
 }
+/**
+ * Replace the device key `custody` holds for `profile` with a new one, in a
+ * namespace of its own: a new device of the same person. For a key a host
+ * knows under a certificate this browser no longer holds, which that host
+ * never admits again under another. What was kept for the old key stays in
+ * its namespace, never opened for the new one. Resolves to the new custody.
+ */
+export async function renewDevice(custody, profile, {
+  open = name => openDeviceCustody({profile: name, storage: idbStorage()}), namespaces = globalThis.localStorage,
+  random = bytes => crypto.getRandomValues(bytes),
+} = {}) {
+  await custody.destroy();
+  const renewed = await open(profile);
+  // Another tab may have taken the freed slot meanwhile: a key that is not
+  // new keeps the namespace it has.
+  if (renewed.created) keepProfileDevice(profile, renewed.slot ?? 0, forSlot(`${PROFILE_DEVICE}:${hexKey(random(new Uint8Array(16)))}`, renewed.slot ?? 0), namespaces);
+  return renewed;
+}
 /** The namespace a profile's slot keeps a host's state in once that host
  * replaced the one it kept state for: named after the host's device key, so
  * it never shares a record with another host's. */
@@ -775,12 +793,16 @@ async function connect({
   let voice;
   let disposed = false;
   let drawName = null;
+  // What the person says they are doing, in their own words: their
+  // presence carries it as their participant's activity.
+  let activity = null;
+  const publishParticipant = () => live?.publishPresence({participant: {kind: 'person',
+    label: (displayName || label).slice(0, 32), color: ownColor(), activity}});
   // The person's name, as history and presence show it from now on.
   const rename = name => {
     displayName = fitDisplayName(name);
     peer?.setDisplayName?.(displayName);
-    live?.publishPresence({participant: {kind: 'person', label: (displayName || label).slice(0, 32),
-      color: ownColor(), activity: null}});
+    publishParticipant();
   };
   let snapshot = {phase: 'authenticating', records: []};
   // The session's remote-action events are taken once per change and read
@@ -984,7 +1006,7 @@ async function connect({
       peer.joinRoom(room);
       if (liveEnabled) {
         live = createLiveLayer(peer, runtime, room, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, watching, participant: {
-          kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity: null,
+          kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity,
         }});
       }
       agents?.dispose();
@@ -1055,11 +1077,17 @@ async function connect({
     if (token) globalThis.navigator?.sendBeacon?.(new URL(SESSION_END_PATH, origin).href, token);
   };
   page?.addEventListener('pagehide', leavePage);
+  // Back online, the session reconnects now rather than when its backoff
+  // (up to half a minute after a long outage) runs out: a call waits on it
+  // for its fresh grant.
+  const online = () => { if (!disposed) { try { peer?.retryNow?.(); } catch {} } };
+  page?.addEventListener('online', online);
 
   let disposal;
   function dispose() {
     if (disposal) return disposal;
     page?.removeEventListener('pagehide', leavePage);
+    page?.removeEventListener('online', online);
     let resolve, reject;
     disposal = new Promise((done, failed) => { resolve = done; reject = failed; });
     disposed = true;
@@ -1133,6 +1161,15 @@ async function connect({
     /** This person as their presence names them: `{label, color}`. */
     get participant() {
       return {label: (displayName || label).slice(0, 32), color: ownColor()};
+    },
+    /** Say what this person is doing in their own words (`null` clears
+     * it): everyone here reads it on their presence, before anything
+     * the host words for them. */
+    setStatus(text) {
+      const said = typeof text === 'string' && text.trim() ? text.trim() : null;
+      if (said === activity) return;
+      activity = said;
+      publishParticipant();
     },
     /** Post this person's name, the window they focus (tab id, hex, or
      * null) and their own recent steps (`[{id, action, resource, app,

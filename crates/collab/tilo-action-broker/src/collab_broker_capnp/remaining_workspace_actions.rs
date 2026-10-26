@@ -367,6 +367,17 @@ impl CapnpBrokerState {
             crate::automation::LibraryPlan::Answer(output) => {
                 return self.finish_framework_action(admitted, Ok(output));
             }
+            crate::automation::LibraryPlan::Stop(stop) => {
+                let stopped = self.ended_runs.running.running.stop(
+                    &room,
+                    &stop,
+                    "asked for from the shortcuts library",
+                );
+                return self.finish_framework_action(
+                    admitted,
+                    Ok(crate::automation::stopped_output(&stopped)),
+                );
+            }
             crate::automation::LibraryPlan::Change { change, output } => (change, output),
         };
         let failed = |message: String| {

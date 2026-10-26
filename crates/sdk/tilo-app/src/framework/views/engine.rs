@@ -1035,6 +1035,27 @@ impl QueryEngine {
         true
     }
 
+    /// Ask remote source `source` again for the open query, after it
+    /// could not answer: its section waits again, its placeholder timed
+    /// from now. Whether it was asked.
+    pub fn retry(&mut self, source: &str) -> bool {
+        let Some(at) = self
+            .results
+            .remote
+            .iter()
+            .position(|section| section.source == source && section.failure().is_some())
+        else {
+            return false;
+        };
+        let now = self.background.now();
+        let section = self.start_remote(at, now);
+        if let Some(shown) = self.results.remote.get_mut(at) {
+            *shown = section;
+        }
+        self.arm(now);
+        true
+    }
+
     /// The open query's filter chips, each value filter's values counted
     /// among what the query finds without that filter's own choice: the
     /// library searched again without it, and the remote rows shown.

@@ -1330,10 +1330,6 @@ async fn a_held_native_reask_is_answered_when_the_child_settles() {
             });
             holding(&f, before).await;
             assert!(!held.is_finished(), "held while the child runs");
-            // The clock moves only while every task waits: the settling
-            // update, not a sample or the hold's end, must answer.
-            tokio::time::pause();
-            let settled_at = tokio::time::Instant::now();
             let terminal = tilo_actions::InvocationUpdate::Succeeded {
                 invocation: tilo_actions::InvocationId(id),
                 output: tilo_actions::ActionOutput::default(),
@@ -1344,6 +1340,11 @@ async fn a_held_native_reask_is_answered_when_the_child_settles() {
                 .get()
                 .set_update_json(serde_json::to_string(&terminal).unwrap());
             update.send().promise.await.unwrap();
+            // The update is answered once its outcome is on disk. From here
+            // the clock moves only while every task waits: the settled
+            // outcome, not a sample or the hold's end, must answer.
+            tokio::time::pause();
+            let settled_at = tokio::time::Instant::now();
             let answered = tilo_test_env::within("the held re-ask's answer", held)
                 .await
                 .unwrap()

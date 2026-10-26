@@ -80,7 +80,9 @@ struct Pane {
     packages_loaded: bool,
     selected: Option<StoredApplication>,
     page: usize,
-    busy: bool,
+    /// Since when a registry job (a refresh, or a decision and the refresh
+    /// after it) reads this device's registry: the queue is on its way.
+    busy: Option<ui::time::Instant>,
     error: Option<String>,
     loaded: bool,
 }
@@ -171,7 +173,7 @@ fn install(
     let pane = pane.clone();
     let navigation = navigation.clone();
     cx.effects::<Review>(move |effect, cx| {
-        if pane.get().busy {
+        if pane.get().busy.is_some() {
             return Err("A registry operation is running; wait for it to finish.".into());
         }
         match effect {
@@ -247,7 +249,7 @@ fn start(
         _ => return Err("This operation is not a registry job.".into()),
     };
     let mut state = pane.get();
-    state.busy = true;
+    state.busy = Some(ui::time::now());
     state.error = None;
     pane.set(state);
     let directory = directory.to_owned();
@@ -262,7 +264,7 @@ fn start(
         },
         move |(), result, _| {
             let mut state = pane.get();
-            state.busy = false;
+            state.busy = None;
             match result {
                 Ok(applications) => {
                     state.applications = applications;
@@ -282,6 +284,18 @@ fn start(
             }
         },
     ))
+}
+
+/// What stands where the queue's rows will be while a job read since
+/// `since` brings them: the framework's placeholder for a read of this
+/// device.
+fn on_its_way(since: ui::time::Instant) -> Element {
+    ui::widget::ArrivingView::placeholder_since(
+        ui::arriving::Source::Local,
+        since,
+        // An entry's line: what the queue lists first.
+        ui::widget::SkeletonShape::Text { lines: 1 },
+    )
 }
 
 fn verbatim(text: impl Into<String>) -> Text {
@@ -372,13 +386,15 @@ fn queue(cx: &mut ViewCx<Draft>, pane: &Pane) -> Element {
             Button::new("refresh-applications", "review-refresh"),
             &Review::Refresh,
         )));
-    if pane.busy {
-        column = column.push(Box::new(Spinner::new()));
-    }
     if let Some(error) = &pane.error {
         column = column.push(Box::new(Banner::error(error.clone())));
     }
-    if !pane.loaded {
+    if let Some(since) = pane.busy.filter(|_| !pane.loaded) {
+        // The queue's first read, from this device's registry: within a
+        // frame nothing stands in; a slow read reserves its first row. A
+        // queue read again keeps what it shows until the new one is in.
+        column = column.push(on_its_way(since));
+    } else if !pane.loaded {
         column = column.push(Box::new(Text::new("review-start")));
     } else if pane.applications.is_empty() {
         column = column.push(Box::new(Text::new("review-empty").with_id("empty-queue")));
@@ -483,9 +499,6 @@ impl ResourceApp for App {
                 let mut body = Column::new().with_intrinsic_height();
                 if let Some(error) = &pane.error {
                     body = body.push(Box::new(Banner::error(error.clone())));
-                }
-                if pane.busy {
-                    body = body.push(Box::new(Spinner::new()));
                 }
                 body = body.push(detail);
                 Box::new(

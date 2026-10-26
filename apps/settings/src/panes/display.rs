@@ -2466,13 +2466,14 @@ impl DisplayModel {
         }
         self.last_seen_transaction = Some(marker);
         self.changed = true;
+        // The transaction's `message` is the compositor's diagnostic, in its
+        // terms and in English: the inspection carries it, the page says the
+        // outcome in the person's words. A refusal is said by its own card,
+        // with the way to try again: a notice too would say it twice.
         let notice = match transaction.state {
-            DisplayTransactionState::Confirmed => "Display changes kept.".to_owned(),
-            DisplayTransactionState::Reverted => "Display changes reverted.".to_owned(),
-            DisplayTransactionState::Rejected => transaction
-                .message
-                .clone()
-                .unwrap_or_else(|| "Display configuration was rejected.".into()),
+            DisplayTransactionState::Confirmed => Some(t("display-changes-kept")),
+            DisplayTransactionState::Reverted => Some(t("display-changes-reverted")),
+            DisplayTransactionState::Rejected => None,
             _ => return,
         };
         self.output_config = self.host_state.as_ref().map_or_else(
@@ -2480,7 +2481,7 @@ impl DisplayModel {
             |state| state.committed.clone(),
         );
         self.pending_candidate = None;
-        self.notice = Some(notice);
+        self.notice = notice;
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -3163,22 +3164,12 @@ impl DisplayModel {
                 DisplayTransactionState::Requested
                 | DisplayTransactionState::ConfirmRequested
                 | DisplayTransactionState::RevertRequested,
-            ) => {
-                let applying = transaction
-                    .as_ref()
-                    .and_then(|transaction| transaction.message.as_deref())
-                    .map_or_else(|| t("display-applying-caption"), str::to_string);
-                Some(section(
-                    &t("display-applying-title"),
-                    rows(vec![note(&applying)]),
-                ))
-            }
+            ) => Some(section(
+                &t("display-applying-title"),
+                rows(vec![note(&t("display-applying-caption"))]),
+            )),
             Some(DisplayTransactionState::Rejected) => {
-                let rejected = transaction
-                    .as_ref()
-                    .and_then(|transaction| transaction.message.as_deref())
-                    .map_or_else(|| t("display-rejected-caption"), str::to_string);
-                let mut content = vec![note(&rejected)];
+                let mut content = vec![note(&t("display-rejected-caption"))];
                 if self.pending_candidate.is_some() {
                     let try_again = t("display-try-again");
                     content.push(self.cx.row(t("display-retry")).button(

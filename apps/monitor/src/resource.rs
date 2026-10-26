@@ -724,3 +724,27 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios show a sample table, which no signal reaches;
+    /// the app someone opens lists this machine's processes, and walking
+    /// its Kill would signal every one of them, the test's own among them.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::MonitorShell::scenarios() {
+            let mut app = TestApp::<super::MonitorShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

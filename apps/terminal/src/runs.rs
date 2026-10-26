@@ -72,10 +72,17 @@ pub fn new_key() -> String {
 pub enum Mark {
     /// The prompt is shown.
     Prompt,
-    /// A command line starts running in `cwd`.
-    Started { command: String, cwd: String },
-    /// The command ended with `status`.
-    Ended { status: i32 },
+    /// A command line starts running in `cwd`. A shell that numbers its
+    /// runs also says where this one is in its history: the number the run
+    /// carries.
+    Started {
+        command: String,
+        cwd: String,
+        number: Option<u64>,
+    },
+    /// The command ended with `status`, the one numbered `number` when the
+    /// shell numbers its runs.
+    Ended { status: i32, number: Option<u64> },
 }
 
 /// A piece of the pty stream: output, or one of the session's marks.
@@ -180,12 +187,14 @@ impl Marks {
         let mut key = None;
         let mut command = None;
         let mut cwd = None;
+        let mut number = None;
         let mut status = None;
         for field in fields {
             match field.split_once('=') {
                 Some(("k", value)) => key = Some(value),
                 Some(("cmd", value)) => command = Some(decode(value)?),
                 Some(("cwd", value)) => cwd = Some(decode(value)?),
+                Some(("t", value)) => number = value.parse().ok(),
                 Some(_) => {}
                 None => status = field.parse().ok(),
             }
@@ -198,9 +207,11 @@ impl Marks {
             "C" => Some(Mark::Started {
                 command: command?,
                 cwd: cwd.unwrap_or_default(),
+                number,
             }),
             "D" => Some(Mark::Ended {
                 status: status.unwrap_or(0),
+                number,
             }),
             _ => None,
         }
@@ -219,6 +230,10 @@ fn decode(value: &str) -> Option<String> {
 pub struct FinishedRun {
     pub command: String,
     pub cwd: String,
+    /// The command's place in the shell's own history, when its shell
+    /// numbered it: the session record keeps runs by this, so a person
+    /// typing the same line as a request does not take its id.
+    pub number: Option<u64>,
     pub started_ms: i64,
     pub ended_ms: i64,
     pub exit: i32,
@@ -247,10 +262,11 @@ impl Runs {
                 }
                 None
             }
-            Piece::Mark(Mark::Started { command, cwd }) => {
+            Piece::Mark(Mark::Started { command, cwd, .. }) => {
                 self.open = Some(FinishedRun {
                     command: command.clone(),
                     cwd: cwd.clone(),
+                    number: None,
                     started_ms: now_ms,
                     ended_ms: now_ms,
                     exit: 0,
@@ -259,10 +275,13 @@ impl Runs {
                 });
                 None
             }
-            Piece::Mark(Mark::Ended { status }) => {
+            Piece::Mark(Mark::Ended { status, number }) => {
                 let mut run = self.open.take()?;
                 run.ended_ms = now_ms;
                 run.exit = *status;
+                // The end says which command it was when both sides number
+                // their runs; a start that named none takes the end's.
+                run.number = run.number.or(*number);
                 Some(run)
             }
             Piece::Mark(Mark::Prompt) => {
@@ -288,8 +307,8 @@ mod tests {
     fn marks_split_anywhere_make_runs_and_forged_ones_stay_output() {
         let key = "0123456789abcdef0123456789abcdef";
         let stream = format!(
-            "\x1b]133;A;k={key}\x07$ \x1b]133;C;k={key};cmd={};cwd={}\x07hello\r\n\
-             \x1b]133;D;0;k=forged\x07more\r\n\x1b]133;D;3;k={key}\x07\x1b]133;A;k={key}\x07$ ",
+            "\x1b]133;A;k={key}\x07$ \x1b]133;C;k={key};cmd={};cwd={};t=4\x07hello\r\n\
+             \x1b]133;D;0;k=forged\x07more\r\n\x1b]133;D;3;k={key};t=4\x07\x1b]133;A;k={key}\x07$ ",
             b64("echo hello"),
             b64("/home/you")
         );
@@ -312,6 +331,7 @@ mod tests {
             assert_eq!(run.command, "echo hello");
             assert_eq!(run.cwd, "/home/you");
             assert_eq!(run.exit, 3);
+            assert_eq!(run.number, Some(4), "the shell's own history number");
             let output = String::from_utf8_lossy(&run.output);
             assert!(
                 output.starts_with("hello\r\n\x1b]133;D;0;k=forged\x07more"),
@@ -333,12 +353,19 @@ mod tests {
             &Piece::Mark(Mark::Started {
                 command: "yes".into(),
                 cwd: String::new(),
+                number: None,
             }),
             1,
         );
         runs.follow(&Piece::Output(vec![b'y'; MAX_OUTPUT_BYTES + 10]), 2);
         let run = runs
-            .follow(&Piece::Mark(Mark::Ended { status: 130 }), 3)
+            .follow(
+                &Piece::Mark(Mark::Ended {
+                    status: 130,
+                    number: None,
+                }),
+                3,
+            )
             .unwrap();
         assert_eq!(run.output.len(), MAX_OUTPUT_BYTES);
         assert!(run.truncated);

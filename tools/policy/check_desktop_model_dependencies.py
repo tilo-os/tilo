@@ -41,6 +41,8 @@ NATIVE = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
 @dataclass(frozen=True)
 class Boundary:
     package: str
+    # The package's manifest, relative to the root: where its findings point.
+    manifest: str
     # Never reached, through any dependency.
     forbidden: frozenset[str]
     # Never a direct dependency of the package itself.
@@ -51,6 +53,7 @@ class Boundary:
 BOUNDARIES = (
     Boundary(
         package="tilo-desktop-model",
+        manifest="crates/session/desktop-model/Cargo.toml",
         forbidden=frozenset(
             {
                 "dirs",
@@ -68,6 +71,7 @@ BOUNDARIES = (
     ),
     Boundary(
         package="tilo-desktop",
+        manifest="crates/session/desktop/Cargo.toml",
         forbidden=frozenset({"iroh", "smithay"}),
         not_direct=frozenset({"dirs", "libc", "settings-store", "tokio"}),
         targets=(*NATIVE, WASM),
@@ -111,12 +115,12 @@ def violations(boundary: Boundary, target: str | None) -> list[str]:
     where = target or "the host"
     packages = reached_packages(boundary.package, target)
     if boundary.package not in packages:
-        return [f"cargo tree did not describe {boundary.package} for {where}"]
+        raise RuntimeError(f"cargo tree did not describe {boundary.package} for {where}")
     found = []
     reached = sorted(packages & boundary.forbidden)
     if reached:
         found.append(
-            f"{boundary.package} reaches {', '.join(reached)} for {where}; "
+            f"{boundary.manifest}: {boundary.package} reaches {', '.join(reached)} for {where}; "
             "hosts own those stacks, the shared desktop must not"
         )
     if boundary.not_direct:
@@ -124,7 +128,7 @@ def violations(boundary: Boundary, target: str | None) -> list[str]:
         reached = sorted(direct & boundary.not_direct)
         if reached:
             found.append(
-                f"{boundary.package} depends on {', '.join(reached)} itself for {where}; "
+                f"{boundary.manifest}: {boundary.package} depends on {', '.join(reached)} itself for {where}; "
                 "only the crates that own those stacks may"
             )
     return found
@@ -140,10 +144,10 @@ def main() -> int:
                 print(error, file=sys.stderr)
                 return 1
             for message in found:
-                print(message, file=sys.stderr)
+                print(message)
                 failed = True
             if not found:
-                print(f"{boundary.package} ({target or 'host'}): no host stacks")
+                print(f"{boundary.package} ({target or 'host'}): no host stacks", file=sys.stderr)
     return 1 if failed else 0
 
 

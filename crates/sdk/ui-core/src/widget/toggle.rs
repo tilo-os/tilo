@@ -1717,12 +1717,27 @@ mod tests {
             crate::interaction::TouchClaim::DragAcross
         );
 
+        // A finger reports every 8 ms (120 Hz) however long the test takes
+        // to handle each report: a swipe's throw is read from those times,
+        // and a loaded host must not turn it into a slow drag.
+        let finger = |frame: &mut crate::headless::FrameHarness,
+                      start: crate::time::Instant,
+                      reports: &[(u64, winit::event::TouchPhase, f64, f64)]| {
+            let mut at = start;
+            for &(id, phase, x, y) in reports {
+                crate::time::testing::with_monotonic_time(at, || frame.touch(id, phase, x, y));
+                at += crate::time::Duration::from_millis(8);
+            }
+            at
+        };
+
         // Up from the knob: the page scrolls and the switch stays off.
-        frame.touch(1, Started, at.x, at.y);
+        let mut swipe = vec![(1, Started, at.x, at.y)];
         for step in 1..=6 {
-            frame.touch(1, Moved, at.x + 2.0, at.y - 10.0 * f64::from(step));
+            swipe.push((1, Moved, at.x + 2.0, at.y - 10.0 * f64::from(step)));
         }
-        frame.touch(1, Ended, at.x + 2.0, at.y - 60.0);
+        swipe.push((1, Ended, at.x + 2.0, at.y - 60.0));
+        let _ = finger(&mut frame, crate::time::now(), &swipe);
         assert!(offset(&frame) > 0.0, "the page scrolled");
         assert!(!states[1].get(), "the switch is untouched");
         assert!(states.iter().all(|state| !state.get()));
@@ -1733,19 +1748,23 @@ mod tests {
         let scrolled = offset(&frame);
         let at = knob(&frame, 6);
         assert!(at.y > 0.0 && at.y < 300.0, "on screen: {at:?}");
-        frame.touch(2, Started, at.x, at.y);
+        let mut drag = vec![(2, Started, at.x, at.y)];
         for step in 1..=5 {
-            frame.touch(2, Moved, at.x + 5.0 * f64::from(step), at.y + 1.0);
+            drag.push((2, Moved, at.x + 5.0 * f64::from(step), at.y + 1.0));
         }
-        frame.touch(2, Ended, at.x + 25.0, at.y + 1.0);
+        drag.push((2, Ended, at.x + 25.0, at.y + 1.0));
+        let next = finger(&mut frame, crate::time::now(), &drag);
         assert!(states[6].get(), "dragged on");
         assert_eq!(states.iter().filter(|state| state.get()).count(), 1);
         assert_eq!(offset(&frame), scrolled, "a drag across does not scroll");
 
         // A tap on the knob flips it back.
         let at = Point::new(at.x + 20.0, at.y);
-        frame.touch(3, Started, at.x, at.y);
-        frame.touch(3, Ended, at.x, at.y);
+        let _ = finger(
+            &mut frame,
+            next,
+            &[(3, Started, at.x, at.y), (3, Ended, at.x, at.y)],
+        );
         assert!(!states[6].get(), "a tap flips");
         assert_eq!(offset(&frame), scrolled);
     }

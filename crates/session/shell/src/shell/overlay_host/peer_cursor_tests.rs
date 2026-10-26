@@ -512,7 +512,8 @@ fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves(
                 fanout.subscribe_rooms(
                     vec![subscribed_room],
                     Box::new(move |event, _| {
-                        if let ui::collaboration::CollabEvent::FollowChanged { peer_id } = event {
+                        if let runtime_collab::event::CollabEvent::FollowChanged { peer_id } = event
+                        {
                             events.lock().unwrap().push((app, peer_id.clone()));
                         }
                     }),
@@ -558,7 +559,7 @@ fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves(
         assert!(host.reconcile_followed_peer());
         assert!(host.followed_peer.is_none());
         assert!(host.followed_room.is_none());
-        assert_eq!(host.follow_stop_rect, Rect::ZERO);
+        assert_eq!(host.follow_banner.stop_rect(), Rect::ZERO);
         let received = events.lock().unwrap();
         for app in [0, 1] {
             assert_eq!(

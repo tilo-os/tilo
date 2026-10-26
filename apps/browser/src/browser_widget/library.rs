@@ -34,7 +34,32 @@ const SECTIONS: [(LibrarySection, &str, &str); 4] = [
     ),
 ];
 
+/// What the window bar's location commits for the Library itself.
+pub(super) const LIBRARY_LOCATION: &str = "browser:library";
+
 impl BrowserWidget {
+    /// Where the window bar puts the Library: the Library, then the section
+    /// on screen, each committing its place (the section, its resource).
+    pub(super) fn library_segments(&self) -> Vec<(&'static str, &'static str)> {
+        let mut segments = vec![("Library", LIBRARY_LOCATION)];
+        segments.extend(
+            SECTIONS
+                .iter()
+                .find(|(section, ..)| *section == self.library_section)
+                .map(|(_, label, resource)| (*label, *resource)),
+        );
+        segments
+    }
+
+    /// The Library's section whose resource is `place`, as a bar segment
+    /// commits it.
+    pub(super) fn library_section_at(place: &str) -> Option<&'static str> {
+        SECTIONS
+            .iter()
+            .find(|(_, _, resource)| *resource == place)
+            .map(|(_, _, resource)| *resource)
+    }
+
     /// The visited pages, newest first, in one group per day: Today,
     /// Yesterday, the days of the past week by name, then dates. Each row
     /// says where the page is and when it was last open.
@@ -304,16 +329,12 @@ impl BrowserWidget {
         Box::new(body.push(list))
     }
 
-    pub(super) fn build_library_composition(
-        &self,
-        theme: &Theme,
-        notices: &[crate::notice::Notice],
-    ) -> Box<dyn Widget> {
-        let current = SECTIONS
-            .iter()
-            .position(|(section, ..)| *section == self.library_section)
-            .unwrap_or(0);
-
+    /// The Library's own header outside a Tilo session: its title, Pause
+    /// history, Clear filter, search and Done. While the desktop's bar
+    /// hosts the window, the bar's location names the Library, Clear filter
+    /// is its action, Pause history is in its menu, its search is the bar's
+    /// and its Library button closes it.
+    fn library_header(&self, current: usize) -> Row {
         let mut header = Row::new().no_wrap().push(Box::new(
             Text::new("Library")
                 .with_role(TextRole::LargeTitle)
@@ -349,6 +370,7 @@ impl BrowserWidget {
         if let Some((_, label, scope)) = SECTIONS.get(current)
             && self.library_section != LibrarySection::Extensions
         {
+            // window-bar: fallback, the bar's search while it hosts the window
             header = header.push(Box::new(search_button(SearchRequest::within(
                 ScopeDecl::new(*scope, *label),
             ))));
@@ -358,6 +380,20 @@ impl BrowserWidget {
             "browser",
             "show-page",
         )));
+
+        header
+    }
+
+    pub(super) fn build_library_composition(
+        &self,
+        theme: &Theme,
+        notices: &[crate::notice::Notice],
+    ) -> Box<dyn Widget> {
+        let current = SECTIONS
+            .iter()
+            .position(|(section, ..)| *section == self.library_section)
+            .unwrap_or(0);
+        let header = (!ui::window_toolbar::is_hosted()).then(|| self.library_header(current));
 
         let queue = self.pending_commands.clone();
         let tabs = ui::widget::ViewTabs::new(
@@ -374,15 +410,15 @@ impl BrowserWidget {
         });
 
         let mut parts: Vec<Element> = notices.iter().map(|notice| notice.widget(false)).collect();
-        parts.extend([
-            Box::new(header) as Element,
-            Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_padding(0.0, 0.0)
-                    .push(Box::new(tabs)),
-            ),
-        ]);
+        if let Some(header) = header {
+            parts.push(Box::new(header));
+        }
+        parts.push(Box::new(
+            Row::new()
+                .no_wrap()
+                .with_padding(0.0, 0.0)
+                .push(Box::new(tabs)),
+        ));
         if matches!(
             self.library_section,
             LibrarySection::Bookmarks | LibrarySection::History

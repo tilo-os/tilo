@@ -59,15 +59,53 @@ impl<R: Resource> Clone for WindowDocument<R> {
 
 impl<R: Resource> Clone for RecordEnv<R> {
     fn clone(&self) -> Self {
+        let Shared {
+            alive,
+            saved,
+            saves,
+            run,
+            storage,
+        } = Shared::of(
+            &self.alive,
+            &self.saved,
+            (&self.saves, &self.run, &self.storage),
+        );
         Self {
             live: self.live.clone(),
-            alive: self.alive.clone(),
+            alive,
             dispatch: self.dispatch.clone(),
-            saved: self.saved.clone(),
-            saves: self.saves.clone(),
-            run: self.run.clone(),
-            storage: Rc::clone(&self.storage),
+            saved,
+            saves,
+            run,
+            storage,
             effects: self.effects.clone(),
+        }
+    }
+}
+
+/// What a [`RecordEnv`] holds that does not name its resource type, cloned
+/// here once rather than in every app's clone of it.
+struct Shared {
+    alive: Weak<()>,
+    saved: LocalState<RecordSaveStatus>,
+    saves: super::saves::Saves,
+    run: Run,
+    storage: Rc<ViewStorage>,
+}
+
+impl Shared {
+    #[inline(never)]
+    fn of(
+        alive: &Weak<()>,
+        status: &LocalState<RecordSaveStatus>,
+        (saves, run, storage): (&super::saves::Saves, &Run, &Rc<ViewStorage>),
+    ) -> Self {
+        Self {
+            alive: alive.clone(),
+            saved: status.clone(),
+            saves: saves.clone(),
+            run: run.clone(),
+            storage: Rc::clone(storage),
         }
     }
 }
@@ -380,6 +418,15 @@ impl<R: Resource> RecordEnv<R> {
     /// past version) or the record cannot be opened.
     pub fn person<P: Resource>(&self) -> Option<super::PersonRecord<P>> {
         self.storage.person::<P>()
+    }
+
+    /// The record `P` that `owner` keeps in the window's room and every app
+    /// of the room opens (`collab_types::WORKSPACE_RECORDS`): the
+    /// workspace's emoji, which are Chat's. Changes to it are decided by the
+    /// room's grants on `owner`'s resource. `None` where the host keeps no
+    /// such records (a view of a past version) or it cannot be opened.
+    pub fn workspace<P: Resource>(&self, owner: &'static str) -> Option<super::WorkspaceRecord<P>> {
+        self.storage.workspace::<P>(owner)
     }
 
     /// The person's record `P` that one app keeps for all of theirs — their

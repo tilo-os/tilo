@@ -58,7 +58,7 @@ CREDENTIAL_REQUIRES = ["arch=any"]
 PRODUCT_KEYS = {"name", "about", "repository", "arches", "index", "dev", "release", "release_on",
                 "tlog", "context", "build", "gates", "anonymous", "after_publish", "publish",
                 "dir", "out", "dispatch", "dev_signed", "release_build", "children", "provenance"}
-STEP_KEYS = {"run", "test", "containerfile", "context", "build_args", "name", "about"}
+STEP_KEYS = {"run", "test", "containerfile", "context", "build_args", "name", "about", "hosts"}
 # Fields the generator writes itself, so a product can't set them by accident.
 OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secrets"}
 # The order fields appear in, as the hand-written checks of t.toml have them.
@@ -342,7 +342,9 @@ class Product:
             **fields,
             "inputs": dedupe([*BUILD_INPUTS, *fields.get("inputs", [])]),
             "outputs": [f"{values['out']}/image.oci.tar", f"{values['out']}/digest", *fields.get("outputs", [])],
-            "requires": self.requires(arch, dict(fields)),
+            # `hosts` names the machine an architecture's build runs on where it isn't its own
+            # (a cross-compile): `hosts = { aarch64 = "x86_64" }`.
+            "requires": self.requires(spec.get("hosts", {}).get(arch, arch), dict(fields)),
             "default": fields.get("default", False),
         }
         if needs:

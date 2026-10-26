@@ -79,6 +79,12 @@ impl ShellOverlayHost {
         if repeat {
             return true;
         }
+        if action == A::ToggleFullscreen {
+            // A key lands what it changes, as Super+Up does: the window is
+            // whole at once, and the windows it covers go with it, not on a
+            // fade drawn under it.
+            self.begin_motion(source);
+        }
         if let Some(chrome) = self.chrome.clone() {
             self.run_chrome_chord(&chrome, action);
         }
@@ -123,11 +129,7 @@ impl ShellOverlayHost {
                 }
             }
             A::NextInputSource => {
-                if let Some((index, name)) = select_next_input_source(&self.keyboard_scope) {
-                    let mut st = chrome.borrow_mut();
-                    st.request_input_source(index);
-                    st.show_osd(crate::shell::osd::Osd::input_source(&name));
-                }
+                let _ = chrome.borrow_mut().switch_to_next_input_source();
             }
             A::PowerMenu => {
                 self.layers.power_menu.open();
@@ -435,6 +437,10 @@ impl ShellOverlayHost {
         }
         if self.palette_visible {
             self.palette_escape();
+            *handled = true;
+            return true;
+        }
+        if self.dismiss_permission_prompt() {
             *handled = true;
             return true;
         }

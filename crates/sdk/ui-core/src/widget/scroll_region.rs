@@ -359,14 +359,26 @@ impl ScrollRegion {
     #[must_use]
     pub fn content_transform(&self, transform: Affine) -> Affine {
         let shown = self.content_rect();
-        transform.pre_translate(Vec2::new(shown.x0, shown.y0) - self.offset)
+        transform.pre_translate(Vec2::new(shown.x0, shown.y0) - self.drawn_offset())
+    }
+
+    /// The offset the content is drawn at: where it is scrolled, and past
+    /// an end by the give fingers pull it there with
+    /// ([`crate::motion::RubberBand`]).
+    fn drawn_offset(&self) -> Vec2 {
+        let give = self.glide.give(crate::motion::frame_now());
+        if self.glides_vertically() {
+            self.offset + Vec2::new(0.0, give)
+        } else {
+            self.offset + Vec2::new(give, 0.0)
+        }
     }
 
     /// Where a point in the window falls in the content, for hit-testing.
     #[must_use]
     pub fn to_content(&self, point: Point) -> Point {
         let shown = self.content_rect();
-        point - Vec2::new(shown.x0, shown.y0) + self.offset
+        point - Vec2::new(shown.x0, shown.y0) + self.drawn_offset()
     }
 
     /// The part of the content in view, in content coordinates (cull what
@@ -374,7 +386,7 @@ impl ScrollRegion {
     #[must_use]
     pub fn visible_content(&self) -> Rect {
         let shown = self.content_rect();
-        Rect::from_origin_size(self.offset.to_point(), shown.size())
+        Rect::from_origin_size(self.drawn_offset().to_point(), shown.size())
     }
 
     fn v_metrics(&self) -> ScrollMetrics {
@@ -448,7 +460,7 @@ impl ScrollRegion {
             }
         }
         self.shown.note(RegionShown {
-            offset: self.offset,
+            offset: self.drawn_offset(),
             clip,
             transform: crate::scroll_copy::on_screen(transform),
             overlays,
@@ -603,6 +615,7 @@ impl ScrollRegion {
     pub fn needs_animation_frame(&self, theme: &Theme) -> bool {
         let now = crate::motion::frame_now();
         self.glide.is_active()
+            || self.glide.give_needs_frame(now)
             || self.scroll_to.target().is_some()
             || self.scroll_to.is_moving(now)
             || self.fade_drawn.get() < 1.0
@@ -621,8 +634,10 @@ impl ScrollRegion {
         if self.scroll_to.target().is_some() {
             return self.follow_scroll_to(now) | fading;
         }
+        // The give springing back moves the content as a glide does.
+        let giving = self.glide.give_needs_frame(now);
         if !self.glide.is_active() {
-            return fading;
+            return fading | giving;
         }
         let delta = self.glide.advance(crate::motion::frame_now());
         let step = if self.glides_vertically() {
@@ -910,6 +925,14 @@ impl ScrollRegion {
             }
         };
         self.glide.set_device_scale(scale_factor);
+        let shown = self.content_rect();
+        let max = self.max_offset();
+        let (extent, room) = if vertical {
+            (shown.height(), max.y)
+        } else {
+            (shown.width(), max.x)
+        };
+        self.glide.set_view(extent, room > 0.0, theme.motion());
         let step = match self.glide.wheel(&delta, phase, theme.reduce_motion) {
             crate::virtual_viewport::WheelStep::Scroll(step) => step,
             crate::virtual_viewport::WheelStep::Fling => {
@@ -924,12 +947,18 @@ impl ScrollRegion {
             MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * self.line,
             MouseScrollDelta::PixelDelta(_) => step,
         };
-        let moved = self.scroll_by(if vertical {
+        let before = self.offset;
+        self.scroll_by(if vertical {
             Vec2::new(0.0, step)
         } else {
             Vec2::new(step, 0.0)
         });
-        self.glide.wheel_applied(step, moved);
+        let along = if vertical {
+            self.offset.y - before.y
+        } else {
+            self.offset.x - before.x
+        };
+        let moved = self.glide.wheel_applied(step, along);
         if moved {
             *handled = true;
         }

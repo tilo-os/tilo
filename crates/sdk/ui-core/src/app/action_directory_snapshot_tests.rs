@@ -424,6 +424,26 @@ fn directory_snapshot_estimate_bounds_its_measured_memory() {
     }
 }
 
+/// Every publication builds a snapshot, and serializing each of its actions
+/// to estimate what it holds cost an app with many resources most of a
+/// publication: the estimate waits for the local input that pins it.
+#[test]
+fn a_snapshot_is_estimated_only_when_an_input_pins_it() {
+    let (mut app, _) = declared_directory(40);
+    publish_declared_directory(&mut app);
+    let snapshot = app.actions.action_directory_snapshot.clone().unwrap();
+    assert!(
+        !snapshot.retention_estimated(),
+        "a publication estimated a snapshot nothing pinned"
+    );
+    let revision = app.action_directory_revision();
+    let _pin = app
+        .try_pin_local_document_action_directory(&revision)
+        .ok()
+        .unwrap();
+    assert!(snapshot.retention_estimated(), "a pin is bounded by it");
+}
+
 #[test]
 fn retained_local_directory_distinct_revision_limit_preserves_pending_reports() {
     let (mut app, _) = declared_directory(1);
@@ -1207,6 +1227,47 @@ fn directory_revision_describes_search_sources_without_making_them() {
     );
     assert_eq!(made.get(), 0, "the witness never makes a provider");
 }
+/// A name asked under a parent is answered among that parent's children
+/// alone, whole: the child is found without a page of its siblings, and
+/// neither the top level nor another parent's children answer for it.
+#[test]
+fn directory_names_a_child_among_its_parents_children_alone() {
+    let (mut app, _) = declared_directory(3);
+    app.state_mut_for_test()
+        .doc
+        .put(ROOT, "hierarchy", true)
+        .unwrap();
+    let named = |app: &mut App, parent: &str, name: &str| {
+        let mut query = directory_query("", parent, 8, 65536, 1);
+        query.resource_name = name.into();
+        app.action_directory_page(query)
+    };
+    for published in [false, true] {
+        if published {
+            publish_declared_directory(&mut app);
+        }
+        let page = named(&mut app, "declared:0", "declared 2");
+        assert_eq!(
+            page.rows
+                .iter()
+                .map(|row| (row.parent_resource.as_str(), row.resource.as_str()))
+                .collect::<Vec<_>>(),
+            [("declared:0", "declared:2")],
+            "published: {published}"
+        );
+        assert!(page.exhausted && page.next_cursor.is_empty());
+        assert!(page.rows[0].action.is_none());
+        assert!(
+            named(&mut app, "", "Declared 2").rows.is_empty(),
+            "not at the top level (published: {published})"
+        );
+        assert!(
+            named(&mut app, "declared:1", "Declared 2").rows.is_empty(),
+            "not under another parent (published: {published})"
+        );
+    }
+}
+
 #[test]
 fn directory_names_a_resource_whole_wherever_a_listing_would_page_it() {
     let (mut app, _) = declared_directory(137);

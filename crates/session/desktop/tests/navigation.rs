@@ -530,8 +530,14 @@ fn navigation_a_window_opened_beside_the_selection_is_shown_whole_with_it() {
     beside.tabs[0].title = "Notes".into();
     beside.active_tab = 20;
     test.tree.workspaces[0].strips[0].window_groups.push(beside);
-    test.reconcile();
-    test.finish_pan();
+    let mut clock = ui::time::now();
+    with_monotonic_time(clock, || test.reconcile());
+    // The window in use narrows and the new one grows on their slot
+    // springs; where they land is measured once those have come to rest.
+    for _ in 0..60 {
+        clock += FRAME;
+        with_monotonic_time(clock, || test.frame.poll_frame()).unwrap();
+    }
     test.finish_pan();
     test.assert_visible(StripId(2), 3);
     test.assert_visible(StripId(2), 4);
@@ -830,8 +836,17 @@ fn external_navigation_lone_window_keeps_pointer_resize_and_local_width_intent()
     // on screen, at most at the display's edge.
     assert!(before.height() > 0.0 && before.x1 <= 1472.0);
     let point = (before.x1 - 2.0, before.center().y);
-    frame.drag_at(point, (point.0 - 80.0, point.1));
-    frame.poll_frame().unwrap();
+    // The grab is at the display's edge, where a drag resting in the edge
+    // band pans the strip for as long as it rests there. The drag here
+    // leaves the band at once, so no time passes while it is in it: on the
+    // running clock a loaded machine let the band pan the strip between
+    // the press and the first move, and the window narrowed less or moved.
+    let clock = ui::time::now();
+    with_monotonic_time(clock, || {
+        frame.drag_at(point, (point.0 - 80.0, point.1));
+        frame.poll_frame()
+    })
+    .unwrap();
     let after = unsafe { (&*ptr).row(StripId(2)).unwrap().groups[0].get_rect() };
     assert!(
         after.width() < before.width() - 70.0,

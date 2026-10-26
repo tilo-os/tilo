@@ -4,16 +4,20 @@
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
 mod audio;
+mod damage;
 mod extension_notification;
 mod extension_omnibox;
 mod extension_permissions;
 mod extension_sign_in;
+mod frame_memory;
 pub mod install;
 mod menus;
+mod page_clipboard;
 mod protocol;
 pub mod runtime;
 mod service_session_probe;
 mod shared;
+mod text_field;
 pub use service_session_probe::service_session_capability;
 pub use shared::serve_shared_until_idle;
 
@@ -75,6 +79,7 @@ struct Shared {
     dialogs_can: AtomicBool,
     dialogs_asked: AtomicBool,
     dialogs_told: AtomicBool,
+    clipboard: page_clipboard::Sharing,
     /// Popups the page opened, not yet taken.
     popups: Mutex<VecDeque<super::Popup>>,
     /// The endpoints of popups the page opened, not yet adopted: each is
@@ -86,10 +91,17 @@ struct Shared {
     native_edit_history: AtomicBool,
     guarded_edit_history: AtomicBool,
     native_caret_text_input: AtomicBool,
+    /// The host takes compositions and reports the focused field.
+    composition: AtomicBool,
+    text_field: Mutex<Option<super::TextField>>,
     open_tabs: Mutex<VecDeque<(String, bool)>>,
     /// The pointer shape the page last asked for.
     cursor: Mutex<Option<winit::window::CursorIcon>>,
     frames: FrameSlot,
+    /// The tab's frame whole, which the host's damage packets change.
+    frame_store: Mutex<damage::FrameStore>,
+    /// The host was asked to send the tab's frame whole and has not yet.
+    frame_asked: AtomicBool,
     events: Mutex<VecDeque<WebViewEvent>>,
     waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     uri: Mutex<String>,
@@ -525,6 +537,7 @@ fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
 /// frame drawn here is converted.
 fn deliver_frame(routes: &Routes, tab: u32, frame: protocol::WireFrame) {
     if let Some(shared) = route(routes, tab) {
+        shared.frame_asked.store(false, Ordering::Relaxed);
         if let Some(outbox) = &shared.remote {
             outbox.frame(tab, frame);
             return;
@@ -533,33 +546,62 @@ fn deliver_frame(routes: &Routes, tab: u32, frame: protocol::WireFrame) {
     }
 }
 
+/// What changed of a tab's frame goes on to a client tab's process as the
+/// host sent it, and is applied to the tab's frame here otherwise. Where the
+/// frame it changes is missing, the host is asked, once, for it whole.
+fn deliver_damage(routes: &Routes, tab: u32, damage: damage::WireDamage, tx: &CommandQueue) {
+    let Some(shared) = route(routes, tab) else {
+        return;
+    };
+    let delivered = match &shared.remote {
+        Some(outbox) => outbox.damage(tab, damage),
+        None => present_damage(&shared, tab, damage),
+    };
+    if !delivered && !shared.frame_asked.swap(true, Ordering::Relaxed) {
+        let _ = tx.push(json!({"op":"resend_frame","tab":tab}));
+    }
+}
+
 /// Makes `frame` the tab's newest and wakes the view, unless it shows exactly
 /// what the tab already has.
-fn present_frame(shared: &Shared, tab: u32, frame: super::Frame) {
-    // Comparing a full-resolution frame may scan tens of megabytes.
-    // The UI takes this same lock while handling input and drawing; keep
-    // that scan outside it, retaining only the immutable pixel allocation.
-    let previous = shared.frames.lock().ok().and_then(|slot| slot.clone());
-    let unchanged = previous.as_ref().is_some_and(|previous| {
-        previous.width == frame.width
-            && previous.height == frame.height
-            && previous.rgba == frame.rgba
-    });
+fn present_frame(shared: &Shared, tab: u32, mut frame: super::Frame) {
+    // Comparing a full-resolution frame may scan tens of megabytes. The UI
+    // takes the slot's lock while handling input and drawing; the store's
+    // is this thread's alone.
+    let changed = shared.frame_store.lock_recover().replace(&mut frame);
     if let Ok(mut slot) = shared.frames.lock() {
-        if unchanged
-            && let (Some(previous), Some(current)) = (&previous, slot.as_ref())
-            && current.width == previous.width
-            && current.height == previous.height
-            && Arc::ptr_eq(&previous.rgba, &current.rgba)
-        {
+        if !changed && let Some(current) = slot.as_ref() {
             super::frame_trace::unchanged(tab, frame.trace_id, current.trace_id);
             return;
         }
-        // A cleared/replaced slot during comparison still needs this
-        // frame, even if it matched the earlier snapshot.
+        // A view whose frame was cleared needs this one, even unchanged.
         *slot = Some(frame);
     }
     shared.wake();
+}
+
+/// Applies `damage` to the tab's frame and shows the result, as
+/// [`present_frame`] shows a whole frame. Returns `false` when there is no
+/// frame for it to change.
+fn present_damage(shared: &Shared, tab: u32, damage: damage::WireDamage) -> bool {
+    let mut store = shared.frame_store.lock_recover();
+    let frame = match store.apply(tab, damage) {
+        damage::Applied::Missing => return false,
+        damage::Applied::Changed(frame) => frame,
+        damage::Applied::Unchanged => {
+            let cleared = shared.frames.lock().is_ok_and(|slot| slot.is_none());
+            match store.frame(None) {
+                Some(frame) if cleared => frame,
+                _ => return true,
+            }
+        }
+    };
+    drop(store);
+    if let Ok(mut slot) = shared.frames.lock() {
+        *slot = Some(frame);
+    }
+    shared.wake();
+    true
 }
 
 /// Error-only surface used when the engine is not installed or cannot start.
@@ -580,6 +622,8 @@ impl UnavailableEngine {
                 native_edit_history: AtomicBool::new(false),
                 guarded_edit_history: AtomicBool::new(false),
                 native_caret_text_input: AtomicBool::new(false),
+                composition: AtomicBool::new(false),
+                text_field: Mutex::default(),
                 document_size: DocumentSizeReports::default(),
                 selection_text: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
@@ -589,10 +633,13 @@ impl UnavailableEngine {
                 dialogs_can: AtomicBool::default(),
                 dialogs_asked: AtomicBool::default(),
                 dialogs_told: AtomicBool::default(),
+                clipboard: page_clipboard::Sharing::default(),
                 popups: Mutex::default(),
                 unadopted: Mutex::default(),
                 cursor: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
+                frame_store: Mutex::default(),
+                frame_asked: AtomicBool::new(false),
                 events: Mutex::new(VecDeque::new()),
                 waker: Mutex::new(None),
                 uri: Mutex::new(String::new()),
@@ -706,15 +753,23 @@ fn spawn_command_writer(
     })
 }
 
-fn spawn_frame_reader(
+/// The host's output: its events, and its frames, piped or in `memory`.
+struct HostOutput {
     stdout: std::process::ChildStdout,
+    memory: Option<frame_memory::FrameMemory>,
+}
+
+fn spawn_frame_reader(
+    output: HostOutput,
     reader_shared: Arc<Shared>,
     reader_routes: Routes,
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
     ready_tx: std::sync::mpsc::SyncSender<()>,
     hub: Arc<shared::Hub>,
+    tx: Arc<CommandQueue>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     spawn_named("chromium-frames", move || {
+        let HostOutput { stdout, memory } = output;
         let mut reader = BufReader::new(stdout);
         loop {
             match protocol::read_packet(&mut reader) {
@@ -723,6 +778,19 @@ fn spawn_frame_reader(
                 }
                 Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
                     deliver_frame(&reader_routes, tab, frame);
+                }
+                Ok(Some(protocol::Packet::TabDamage(tab, damage))) => {
+                    deliver_damage(&reader_routes, tab, damage, &tx);
+                }
+                Ok(Some(protocol::Packet::SharedFrame(notice))) => {
+                    let delivered = memory.as_ref().map_or_else(
+                        || Err(std::io::Error::other("no frame memory was handed over")),
+                        |memory| frame_memory::deliver(&reader_routes, memory, &notice),
+                    );
+                    if let Err(error) = delivered {
+                        reader_shared.fail(format!("Invalid Chromium output: {error}"));
+                        break;
+                    }
                 }
                 Ok(Some(protocol::Packet::Json(value))) => {
                     if let Err(error) =
@@ -927,10 +995,19 @@ fn launch_host(
     extensions: &[String],
     private_root: Option<&Path>,
     mode: HostMode<'_>,
-) -> Result<std::process::Child, String> {
+) -> Result<(std::process::Child, Option<frame_memory::FrameMemory>), String> {
     let mut command =
         host_command(host).map_err(|error| format!("Could not confine Chromium: {error}"))?;
+    // Without frame memory the host pipes its frames: slower, still whole.
+    let mut memory = frame_memory::FrameMemory::create()
+        .inspect_err(|error| tracing::warn!(%error, "Chromium frame memory unavailable"))
+        .ok();
+    if let Some(memory) = &memory {
+        memory.hand_to(&mut command);
+    }
     command.args(host_audio_switches(media::audio_output::is_governed()));
+    // A frame's changed rects, not the frame again (`damage`).
+    command.arg("--tilo-frame-damage");
     if private_root.is_some() {
         command.arg("--private");
     }
@@ -959,6 +1036,9 @@ fn launch_host(
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|error| format!("Could not start Chromium at {}: {error}", host.display()))?;
+    if let Some(memory) = &mut memory {
+        memory.spawned();
+    }
     if let Some(root) = private_root
         && let Err(error) = record_private_helper(root, child.id())
     {
@@ -968,7 +1048,7 @@ fn launch_host(
             "Could not record private Chromium process: {error}"
         ));
     }
-    Ok(child)
+    Ok((child, memory))
 }
 
 /// What a starting host's supervisor needs: it serves the profile to other
@@ -1229,7 +1309,8 @@ impl ChromiumEngine {
                 }
             }
         };
-        let mut child = launch_host(host, profile, &extensions, private_root.as_deref(), mode)?;
+        let (mut child, memory) =
+            launch_host(host, profile, &extensions, private_root.as_deref(), mode)?;
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -1270,12 +1351,13 @@ impl ChromiumEngine {
         let reader_shared = shared.clone();
         let reader_routes = routes;
         if let Err(error) = spawn_frame_reader(
-            stdout,
+            HostOutput { stdout, memory },
             reader_shared,
             reader_routes,
             download_events,
             ready_tx,
             hub.clone(),
+            tx.clone(),
         ) {
             tx.close();
             let _ = child.kill();
@@ -1367,6 +1449,13 @@ impl ChromiumEngine {
         }
     }
 
+    fn tell_clipboard(&self) {
+        (self.shared.clipboard).tell(|mut command| {
+            command["tab"] = json!(self.tab);
+            self.tx.push(command).is_ok()
+        });
+    }
+
     fn tell_document_size(&self) {
         let reports = &self.shared.document_size;
         let asked = reports.asked.load(Ordering::Acquire);
@@ -1389,6 +1478,14 @@ impl ChromiumEngine {
 impl WebViewEngine for ChromiumEngine {
     fn cursor(&self) -> Option<winit::window::CursorIcon> {
         *self.shared.cursor.lock_recover()
+    }
+
+    fn supports_composition(&self) -> bool {
+        self.supports_text_input() && self.shared.composition.load(Ordering::Acquire)
+    }
+
+    fn text_field(&self) -> Option<super::TextField> {
+        *self.shared.text_field.lock_recover()
     }
 
     fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
@@ -1518,6 +1615,11 @@ impl WebViewEngine for ChromiumEngine {
     fn accept_page_dialogs(&self) {
         self.shared.dialogs_asked.store(true, Ordering::Release);
         self.tell_dialogs();
+    }
+
+    fn share_clipboard(&self) {
+        self.shared.clipboard.asked.store(true, Ordering::Release);
+        self.tell_clipboard();
     }
 
     fn take_popups(&self) -> Vec<super::Popup> {
@@ -1684,6 +1786,7 @@ impl WebViewEngine for ChromiumEngine {
         self.tell_document_size();
         self.tell_popups();
         self.tell_dialogs();
+        self.tell_clipboard();
         self.shared
             .events
             .lock()
@@ -1787,6 +1890,10 @@ fn route_native_event(
                 value["native_caret_text_input"].as_bool() == Some(true),
                 Ordering::Release,
             );
+            shared.composition.store(
+                value["ime_composition"].as_bool() == Some(true),
+                Ordering::Release,
+            );
             shared.guarded_edit_history.store(
                 value["guarded_edit_history"].as_bool() == Some(true),
                 Ordering::Release,
@@ -1810,6 +1917,7 @@ fn route_native_event(
                 value["selection_text"].as_bool() == Some(true),
                 Ordering::Release,
             );
+            (shared.clipboard.can).store(value["page_clipboard"] == true, Ordering::Release);
         }
         if event_name == "popup"
             && let Some(popup) = value["popup"]
@@ -1853,6 +1961,11 @@ fn route_native_event(
         }
         if matches!(event_name, "audio_start" | "audio" | "audio_stop") {
             shared.audio.event(event_name, value);
+            return Ok(());
+        }
+        if matches!(event_name, "text_field" | "ime_composition_bounds") {
+            text_field::update(&shared.text_field, event_name, value);
+            shared.wake();
             return Ok(());
         }
         if event_name == "cursor" {
@@ -1968,211 +2081,6 @@ fn extension_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
 }
 
-fn validate_event(value: &Value) -> Result<(), &'static str> {
-    if value.get("tab").is_some_and(|tab| {
-        !tab.as_u64()
-            .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
-    }) {
-        return Err("Invalid tab ID");
-    }
-    let event = value
-        .get("event")
-        .and_then(Value::as_str)
-        .ok_or("missing event name")?;
-    let text = |key: &str| value.get(key).is_some_and(Value::is_string);
-    let valid = match event {
-        "credential_result" => super::CredentialReply::decode(value).is_some(),
-        "service_session_result" => super::ServiceSessionReply::decode(value).is_some(),
-        "site_status" | "site_result" => valid_site_event(value, event),
-        "extension_action"
-        | "extension_open_popup"
-        | "extension_execute_action"
-        | "extension_notification"
-        | "extension_sign_in"
-        | "extension_omnibox_suggestions"
-        | "extension_omnibox_default"
-        | "extension_side_panel" => decode_extension_event(value).is_some(),
-        "extension_menu" => decode_extension_menu(value).is_some(),
-        "extension_permission_request" | "extension_permissions" => {
-            extension_permissions::decode(value).is_some()
-        }
-        "devtools_result" => {
-            value["request_id"]
-                .as_u64()
-                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
-                && value["ok"].is_boolean()
-                && value["body"]
-                    .as_str()
-                    .is_some_and(|body| body.len() <= 1024 * 1024)
-        }
-        "context_closed" | "permission_closed" | "js_dialog_closed" => valid_id(value),
-        "js_dialog" => decode_page_dialog(value).is_some(),
-        "context_menu" => valid_context_menu(value),
-        "find_result" => {
-            valid_id(value)
-                && ["count", "active"].iter().all(|key| {
-                    value[*key]
-                        .as_i64()
-                        .is_some_and(|n| (-1..=i64::from(i32::MAX)).contains(&n))
-                })
-                && value["final"].is_boolean()
-        }
-        "zoom" => value["level"]
-            .as_f64()
-            .is_some_and(|level| level.is_finite() && (-5.0..=9.0).contains(&level)),
-        "fullscreen" => value["fullscreen"].is_boolean(),
-        "audio_start" | "audio" | "audio_stop" => audio::valid_event(event, value),
-        "renderer_terminated" => value
-            .as_object()
-            .is_some_and(|object| object.len() == if value.get("tab").is_some() { 2 } else { 1 }),
-        "permission_prompt" => valid_id(value) && text("origin") && text("permissions"),
-        "download_prompt" => valid_id(value) && text("url") && text("name"),
-        "download" => {
-            valid_id(value)
-                && text("path")
-                && text("name")
-                // Any length: a page's own export (a `data:` address) is
-                // its whole file. What is kept of it is bounded in decoding.
-                && text("url")
-                && value["retryable"].is_boolean()
-                && text("error")
-                && matches!(
-                    value["state"].as_str(),
-                    Some("progress" | "complete" | "cancelled" | "failed")
-                )
-                && wire_u64(&value["received"]).is_some()
-                && wire_u64(&value["total"]).is_some()
-        }
-        "download_runtime" => {
-            ["admitted", "detached"]
-                .iter()
-                .all(|key| value[*key].as_u64().is_some_and(|count| count <= 32))
-                && value["accepting"].is_boolean()
-                && value["error"]
-                    .as_str()
-                    .is_some_and(|error| error.len() <= 1024)
-        }
-        "ready" => {
-            value
-                .get("native_caret_text_input")
-                .is_none_or(Value::is_boolean)
-                && text("cef_version")
-                && text("chromium_version")
-                && value
-                    .get("guarded_edit_history")
-                    .is_none_or(Value::is_boolean)
-                && value
-                    .get("native_edit_history")
-                    .is_none_or(Value::is_boolean)
-                && value.get("document_size").is_none_or(Value::is_boolean)
-                && value.get("selection_text").is_none_or(Value::is_boolean)
-                && value.get("sealed_documents").is_none_or(Value::is_boolean)
-        }
-        "tab_ready" => {
-            value
-                .get("native_caret_text_input")
-                .is_none_or(Value::is_boolean)
-                && value
-                    .get("guarded_edit_history")
-                    .is_none_or(Value::is_boolean)
-                && value
-                    .get("native_edit_history")
-                    .is_none_or(Value::is_boolean)
-                && value.get("document_size").is_none_or(Value::is_boolean)
-        }
-        "selection_text" => {
-            value["request_id"]
-                .as_u64()
-                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
-                && value["text"]
-                    .as_str()
-                    .is_some_and(|text| text.len() <= 1024 * 1024)
-        }
-        "link_status" => value["url"].as_str().is_some_and(|url| url.len() <= 8192),
-        "extension_download_open" => valid_id(value) && value["reveal"].is_boolean(),
-        "find_selection" => {
-            valid_id(value)
-                && ["x", "y", "width", "height"].iter().all(|key| {
-                    value[*key]
-                        .as_f64()
-                        .is_some_and(|n| n.is_finite() && (-1e7..=1e7).contains(&n))
-                })
-        }
-        "document_size" => ["width", "height", "scroll_y"].iter().all(|key| {
-            value[*key]
-                .as_f64()
-                .is_some_and(|n| n.is_finite() && (0.0..=1e7).contains(&n))
-        }),
-        "open_tab" => {
-            value["url"].as_str().is_some_and(|url| url.len() <= 8192)
-                && value["background"].is_boolean()
-        }
-        "popup" => {
-            value["popup"]
-                .as_u64()
-                .is_some_and(|id| id >= u64::from(FIRST_POPUP) && i32::try_from(id).is_ok())
-                && value["url"].as_str().is_some_and(|url| url.len() <= 8192)
-                && ["width", "height"]
-                    .iter()
-                    .all(|key| value[*key].as_u64().is_some_and(|n| n <= 10_000))
-        }
-        "cursor" => value["cursor"]
-            .as_str()
-            .is_some_and(|name| !name.is_empty() && name.len() <= 64),
-        "uri" => text("url"),
-        "title" => text("title"),
-        "progress" => value["progress"]
-            .as_f64()
-            .is_some_and(|n| n.is_finite() && (0.0..=1.0).contains(&n)),
-        "loaded" => text("url") && value["status"].as_i64().is_some(),
-        "navigation_outcome" => {
-            value["request_id"]
-                .as_u64()
-                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
-                // The frame's address, as long as Chromium lets one be.
-                && value["url"]
-                    .as_str()
-                    .is_some_and(|uri| uri.len() <= MAX_PAGE_URL)
-                && value.get("error").is_none_or(|error| {
-                    error
-                        .as_str()
-                        .is_some_and(|message| !message.is_empty() && message.len() <= 4096)
-                })
-        }
-        "navigation_history" => {
-            value["request_id"]
-                .as_u64()
-                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
-                && super::NavigationDirection::from_wire(value["direction"].as_str()).is_some()
-                && value["entries"].as_array().is_some_and(|entries| {
-                    entries.len() <= 12
-                        && entries.iter().all(|entry| {
-                            valid_id(entry)
-                                && entry["url"].as_str().is_some_and(|s| s.len() <= 8192)
-                                && entry["title"].as_str().is_some_and(|s| s.len() <= 4096)
-                        })
-                })
-        }
-        "history" => value["back"].is_boolean() && value["forward"].is_boolean(),
-        "page_result" | "text_input_result" => super::page::decode_result(value).is_some(),
-        "paint_snapshot" | "paint_resource" => {
-            value["request_id"]
-                .as_u64()
-                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
-                && value["ok"].is_boolean()
-        }
-        // A load's failure names its address; the engine's own trouble (a
-        // filter that could not check a resource) does not.
-        "error" => value.get("url").is_none_or(Value::is_string) && text("message"),
-        _ => true,
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err("malformed known event")
-    }
-}
-
 fn command_within_limits(command: &WebViewCommand) -> bool {
     match command {
         WebViewCommand::ScopedNavigation {
@@ -2263,6 +2171,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             permissions,
             hosts,
             scriptable,
+            framed,
             token,
             commands,
         } => {
@@ -2270,7 +2179,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                 && token
                     .as_ref()
                     .is_none_or(|token| (32..=128).contains(&token.len()))
-                && [permissions, hosts, scriptable]
+                && [permissions, hosts, scriptable, framed]
                     .iter()
                     .all(|list| list.len() <= 512 && list.iter().all(|entry| entry.len() <= 2048))
                 && commands.as_ref().is_none_or(|commands| {
@@ -2295,7 +2204,8 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::ExtensionForget { id }
         | WebViewCommand::ExtensionIdentity { id }
         | WebViewCommand::ExtensionClick { id }
-        | WebViewCommand::ExtensionOpenSidePanel { id } => extension_id(id),
+        | WebViewCommand::ExtensionOpenSidePanel { id }
+        | WebViewCommand::ExtensionSidePanelPage { id } => extension_id(id),
         WebViewCommand::ExtensionMenuChoice { id, key } => {
             extension_id(id) && !key.is_empty() && key.len() <= 1024
         }
@@ -2325,10 +2235,14 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                     matches!(url.scheme(), "http" | "https") && url.host().is_some()
                 })
         }
-        WebViewCommand::Key {
+        WebViewCommand::Key { .. }
+        | WebViewCommand::ImeComposition { .. }
+        | WebViewCommand::ImeCommit(_) => text_field::within_limits(command),
+        // A shortcut's key is one character, or a named key.
+        WebViewCommand::ExtensionCommandKey {
             key: KeyInput::Character(text),
             ..
-        } => text.len() <= 65536,
+        } => text.len() <= 16,
         WebViewCommand::SetUserScripts(scripts) | WebViewCommand::SetBlockingScripts(scripts) => {
             scripts.len() <= 1024
                 && scripts
@@ -2473,7 +2387,16 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "extension_permission_request" | "extension_permissions" => {
             extension_permissions::decode(value)?
         }
+        "extension_permission_closed" => WebViewEvent::ExtensionPermissionClosed {
+            request: value["request"]
+                .as_u64()
+                .filter(|request| *request > 0)
+                .and_then(|request| u32::try_from(request).ok())?,
+        },
         "extension_action_reset" => WebViewEvent::ExtensionActionReset,
+        "extension_shortcuts" => {
+            WebViewEvent::ExtensionShortcuts(decode_extension_shortcuts(value)?)
+        }
         "extension_download_open" => WebViewEvent::ExtensionDownloadOpen {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
             reveal: value["reveal"].as_bool()?,
@@ -2590,6 +2513,7 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             let (request_id, result) = super::page::decode_result(value)?;
             WebViewEvent::PageResult { request_id, result }
         }
+        "clipboard" | "clipboard_read" => page_clipboard::decode(value)?,
         "selection_text" => WebViewEvent::SelectionText {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             text: value["text"].as_str()?.into(),
@@ -2715,17 +2639,11 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::Scroll { dx, dy, x, y } => {
             json!({"op":"scroll","dx":dx,"dy":dy,"x":x,"y":y})
         }
-        WebViewCommand::Key {
-            key,
-            down,
-            modifiers,
-        } => {
-            let key = match key {
-                KeyInput::Character(value) => value,
-                KeyInput::Named(named) => format!("{named:?}"),
-            };
-            json!({"op":"key","key":key,"down":down,"ctrl":modifiers.ctrl,"shift":modifiers.shift,"alt":modifiers.alt,"meta":modifiers.meta})
-        }
+        command @ (WebViewCommand::Key { .. }
+        | WebViewCommand::ImeComposition { .. }
+        | WebViewCommand::ImeCommit(_)
+        | WebViewCommand::ImeCancel
+        | WebViewCommand::ImeFinish) => text_field::input_command(command),
         WebViewCommand::SetBlockingScripts(scripts) => {
             json!({"op":"blocking_scripts","scripts": &*scripts})
         }
@@ -2738,11 +2656,13 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             permissions,
             hosts,
             scriptable,
+            framed,
             token,
             commands,
         } => {
             let mut command = json!({"op":"extension_access","id":id,
-                "permissions":permissions,"hosts":hosts,"scriptable":scriptable});
+                "permissions":permissions,"hosts":hosts,"scriptable":scriptable,
+                "framed":framed});
             if let Some(token) = token {
                 command["token"] = json!(token);
             }
@@ -2789,6 +2709,16 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::ExtensionOmnibox { id, input } => extension_omnibox::encode(&id, input),
         WebViewCommand::ExtensionOpenSidePanel { id } => {
             json!({"op":"extension_side_panel","id":id})
+        }
+        WebViewCommand::ExtensionSidePanelPage { id } => {
+            json!({"op":"extension_panel","side_panel":id})
+        }
+        WebViewCommand::ExtensionCommandKey { key, modifiers } => {
+            let key = match key {
+                KeyInput::Character(value) => value,
+                KeyInput::Named(named) => format!("{named:?}"),
+            };
+            json!({"op":"extension_command_key","key":key,"ctrl":modifiers.ctrl,"shift":modifiers.shift,"alt":modifiers.alt,"meta":modifiers.meta})
         }
         WebViewCommand::DevTools {
             request_id,
@@ -2847,6 +2777,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::CopySelection { request_id } => {
             json!({"op":"selection_text","request_id":request_id})
         }
+        WebViewCommand::AnswerClipboardRead { request_id, text } => {
+            page_clipboard::answer(request_id, text.as_deref())?
+        }
         WebViewCommand::CancelNativeDownload { id } => json!({"op":"download_cancel","id":id}),
         WebViewCommand::RetryDownload { id } => json!({"op":"download_retry","id":id}),
         WebViewCommand::CancelAllDownloads => json!({"op":"download_cancel_all"}),
@@ -2879,7 +2812,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
 
 mod event_decoding;
 use event_decoding::{
-    decode_extension_event, decode_page_dialog, decode_site_event, valid_site_event,
+    decode_extension_event, decode_extension_shortcuts, decode_page_dialog, decode_site_event,
+    validate_event,
 };
 #[cfg(test)]
 mod extension_tests;

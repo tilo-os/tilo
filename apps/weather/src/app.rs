@@ -84,7 +84,6 @@ pub struct WeatherApp {
     initial_fetch_done: bool,
     /// Whether the framework has presented the saved places yet.
     presented: bool,
-    last_activity: Instant,
     /// The refresh an invocation waits for, if any.
     refresh: Option<PendingRefresh>,
 }
@@ -239,7 +238,6 @@ impl WeatherApp {
             }
             None => self.core.borrow_mut().refresh_all(),
         }
-        self.last_activity = ui::time::now();
         self.refresh = Some(PendingRefresh {
             tickets: self.core.borrow().queued_weather_tickets_after(marker),
             failure: None,
@@ -337,7 +335,6 @@ impl WeatherApp {
             service: None,
             initial_fetch_done: false,
             presented: false,
-            last_activity: ui::time::now(),
             refresh: None,
         }
     }
@@ -400,9 +397,6 @@ impl WeatherApp {
         let reqs = self.core.borrow_mut().take_tracked_outbox();
         let mut completions = Vec::new();
         let disconnected = if let Some(svc) = self.service.as_ref() {
-            if !reqs.is_empty() {
-                self.last_activity = ui::time::now();
-            }
             for r in reqs {
                 if let Some(failed) = svc.request(r) {
                     completions.push(failed);
@@ -615,26 +609,14 @@ impl ui::widget::Decorator for WeatherApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let core_busy = {
-            let core = self.core.borrow();
-            (core.is_fetching() && self.last_activity.elapsed().as_secs() < 12)
-                || core.search_pending()
-        };
-        core_busy
-            || self.pending_scenario.is_some()
-            || self.repaint_staged
-            || self.nav.needs_animation_frame()
+        // A forecast or a place on its way wakes the app when it lands
+        // (the worker's wake handle), and a debounced search at its
+        // deadline: neither runs frames while it waits.
+        self.pending_scenario.is_some() || self.repaint_staged || self.nav.needs_animation_frame()
     }
 
     fn needs_idle_sync(&self) -> bool {
-        let core_busy = {
-            let core = self.core.borrow();
-            // Keep pumping while a geocode is armed OR in flight, so its
-            // result is drained and the dropdown updates promptly rather than
-            // parking on the loading state until the next input event.
-            core.is_fetching() || core.search_pending()
-        };
-        core_busy || self.nav.needs_idle_sync()
+        self.nav.needs_idle_sync()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -2067,16 +2049,17 @@ mod framework_tests {
         .unwrap();
         assert_eq!(app.state().model().locations[0].id, tokyo);
         let removed = app.state().model().locations[3].id;
-        assert!(
-            app.call_on(
-                &location_resource_id(removed),
-                "remove",
-                serde_json::json!({})
-            )
-            .is_err(),
-            "removing a place asks for confirmation"
-        );
-        assert_eq!(app.state().model().locations.len(), 4);
+        app.call_on(
+            &location_resource_id(removed),
+            "remove",
+            serde_json::json!({}),
+        )
+        .expect("Undo takes a removed place back, so removing asks nothing");
+        assert_eq!(app.state().model().locations.len(), 3);
+        assert!(app.undo(), "removing a place is one undo step");
+        let restored = app.state().model();
+        assert_eq!(restored.locations.len(), 4);
+        assert_eq!(restored.locations[3].id, removed, "back where it was");
     }
 
     /// What an agent does to the places is history a person can read.

@@ -8,6 +8,7 @@ use crate::permissions::UserId;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::HashMap;
+use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
 
 /// Admission metadata for precisely one live widget/Taffy layout.
@@ -22,7 +23,7 @@ pub struct BoundNodeMap {
 /// A node to admit, with the binding, legacy owner and inactivity it inherits.
 type PendingAdmission = (
     NodeId,
-    Option<CallbackBinding>,
+    Option<Rc<CallbackBinding>>,
     Option<crate::history_mode::HistoryOwner>,
     bool,
 );
@@ -97,7 +98,15 @@ impl BoundNodeMap {
         self.nodes
             .get(&node)
             .filter(|node| !node.inactive)
-            .and_then(|node| node.binding.clone())
+            .and_then(|node| node.binding.as_deref().cloned())
+    }
+    /// [`Self::binding_for`] without copying the binding, for a walk that
+    /// asks it of every node.
+    pub(crate) fn binding_ref(&self, node: NodeId) -> Option<&CallbackBinding> {
+        self.nodes
+            .get(&node)
+            .filter(|node| !node.inactive)
+            .and_then(|node| node.binding.as_deref())
     }
     /// Whether `node` was admitted inside a bound component or a legacy tile.
     pub(crate) fn has_owner(&self, node: NodeId) -> bool {
@@ -204,7 +213,14 @@ impl BoundNodeMap {
         }
         let pending: Vec<_> = roots
             .iter()
-            .map(|(root, layout_root)| (*layout_root, root.callback_binding(), None, false))
+            .map(|(root, layout_root)| {
+                (
+                    *layout_root,
+                    root.callback_binding().map(Rc::new),
+                    None,
+                    false,
+                )
+            })
             .collect();
         // SAFETY: the caller owns all supplied roots and layout pointers.
         unsafe { self.admit(pending, &boundaries, taffy, nodes) };
@@ -279,7 +295,7 @@ impl BoundNodeMap {
                 let binding = if widget.resets_callback_binding() {
                     None
                 } else {
-                    widget.callback_binding().or(inherited)
+                    widget.callback_binding().map(Rc::new).or(inherited)
                 };
                 if binding.is_some() || widget.resets_callback_binding() {
                     legacy = None;
@@ -414,7 +430,7 @@ pub(crate) unsafe fn inspect_bound_node<R>(
     let admitted = bindings.admitted(nodes, node)?;
     let _entry = admitted
         .binding
-        .as_ref()
+        .as_deref()
         .map(CallbackBinding::enter)
         .transpose()?;
     // SAFETY: admission and lifetime checked; caller owns the stable live tree.
@@ -435,11 +451,99 @@ pub(crate) unsafe fn layout_bound_node<R>(
     let admitted = bindings.admitted(nodes, node)?;
     let _entry = admitted
         .binding
-        .as_ref()
+        .as_deref()
         .map(CallbackBinding::enter)
         .transpose()?;
     // SAFETY: admission and lifetime checked; caller exclusively owns this target.
     Ok(callback(unsafe { &mut *admitted.pointer }))
+}
+
+/// One walk over many admitted nodes, asking each a question that reads or
+/// settles only the widget itself (a flag, a measurement, a layout style).
+///
+/// Every node of a component enters that component's callback scope
+/// ([`CallbackBinding::enter`]), which sets the executing host's identity and
+/// copies three strings into it. A walk of a long list entered it once per
+/// widget, thousands of times a frame, to answer one flag each. A sweep
+/// keeps the scope it entered while the following nodes enter the same one
+/// ([`CallbackBinding::enters_same_scope`]), as a tree walk does under
+/// [`enter_widget`], and leaves it before a node of another component, a
+/// legacy tile or an unbound node, so each widget still answers inside its
+/// own scope and nowhere else. The record and lifetime are checked for
+/// every node, as entering checks them.
+pub(crate) struct NodeSweep<'m> {
+    bindings: &'m BoundNodeMap,
+    nodes: &'m HashMap<NodeId, *mut dyn Widget>,
+    held: Option<(&'m CallbackBinding, CallbackScopeGuard)>,
+}
+
+impl<'m> NodeSweep<'m> {
+    pub(crate) fn new(
+        bindings: &'m BoundNodeMap,
+        nodes: &'m HashMap<NodeId, *mut dyn Widget>,
+    ) -> Self {
+        Self {
+            bindings,
+            nodes,
+            held: None,
+        }
+    }
+
+    /// Enter `binding`'s scope unless the sweep already holds the same one.
+    fn enter(&mut self, binding: Option<&'m CallbackBinding>) -> Result<(), BoundDispatchError> {
+        let Some(binding) = binding else {
+            self.held = None;
+            return Ok(());
+        };
+        if let Some((held, _)) = &self.held
+            && (std::ptr::eq(*held, binding) || held.enters_same_scope(binding))
+        {
+            binding.check_record()?;
+            return Ok(());
+        }
+        // The scope held is left before the next is entered: each restores
+        // what was there before it.
+        self.held = None;
+        let guard = binding.enter()?;
+        self.held = Some((binding, guard));
+        Ok(())
+    }
+
+    /// Leave the scope the sweep holds, before code that enters scopes of
+    /// its own runs between two of its nodes.
+    pub(crate) fn leave(&mut self) {
+        self.held = None;
+    }
+
+    /// [`inspect_bound_node`] within this sweep.
+    ///
+    /// # Safety
+    /// As [`inspect_bound_node`].
+    pub(crate) unsafe fn inspect<R>(
+        &mut self,
+        node: NodeId,
+        callback: impl FnOnce(&dyn Widget) -> R,
+    ) -> Result<R, BoundDispatchError> {
+        let admitted = self.bindings.admitted(self.nodes, node)?;
+        self.enter(admitted.binding.as_deref())?;
+        // SAFETY: admission and lifetime checked; caller owns the stable live tree.
+        Ok(callback(unsafe { &*admitted.pointer }))
+    }
+
+    /// [`layout_bound_node`] within this sweep.
+    ///
+    /// # Safety
+    /// As [`layout_bound_node`].
+    pub(crate) unsafe fn layout<R>(
+        &mut self,
+        node: NodeId,
+        callback: impl FnOnce(&mut dyn Widget) -> R,
+    ) -> Result<R, BoundDispatchError> {
+        let admitted = self.bindings.admitted(self.nodes, node)?;
+        self.enter(admitted.binding.as_deref())?;
+        // SAFETY: admission and lifetime checked; caller exclusively owns this target.
+        Ok(callback(unsafe { &mut *admitted.pointer }))
+    }
 }
 
 /// Non-document mutations (focus/measurement) enter the same lifetime.
@@ -457,7 +561,7 @@ pub(crate) unsafe fn mutate_bound_node<R>(
     }
     let _entry = admitted
         .binding
-        .as_ref()
+        .as_deref()
         .map(CallbackBinding::enter)
         .transpose()?;
     // SAFETY: admission and lifetime checked; caller exclusively owns this target.

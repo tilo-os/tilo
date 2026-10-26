@@ -879,8 +879,9 @@ impl ui::tilo_actions::remote::ActionHost for OpeningSession {
         &self,
         _caller: &ui::tilo_actions::remote::Caller,
         _id: &ui::tilo_actions::InvocationId,
-    ) -> Result<(), ui::tilo_actions::remote::ActionHostError> {
-        Ok(())
+    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+    {
+        ui::tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 

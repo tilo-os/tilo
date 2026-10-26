@@ -44,12 +44,11 @@ impl Chat {
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
         });
+        // A report is found by what its message says: the summary, and the
+        // picks of one filed without words.
         let feedback = self.feedback.iter().filter_map(|(id, report)| {
-            let submission = report.submission.as_ref()?;
-            Some(
-                SearchEntry::new(&submission.feedback.text, "Feedback")
-                    .anchored(anchor("feedback", id)),
-            )
+            let message = crate::feedback::message::message(report)?;
+            Some(SearchEntry::new(&message.text, "Feedback").anchored(anchor("feedback", id)))
         });
         let people = self.people.iter().map(|person| {
             SearchEntry::new(&person.name, "Person")
@@ -157,6 +156,9 @@ impl ResourceApp for ChatShell {
     /// The chat's messages, kept in parts beside the room's chat record.
     fn records(records: &mut ui::framework::Records<'_>) {
         records.chain::<crate::parts::ChatPart>();
+        // The workspace's emoji are Chat's: every app of the room opens
+        // them, and their changes are decided against Chat's surface.
+        records.workspace::<ui::tilo_workspace_emoji::WorkspaceEmoji>();
     }
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
@@ -542,12 +544,32 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
                     self.adopt_private_draft(token, invocation)
                 });
             }
-            ChatEffect::OpenDirectConversation { .. }
-            | ChatEffect::SendDirectMessage { .. }
-            | ChatEffect::ReadDirectConversation { .. } => {
+            ChatEffect::OpenDirectConversation { .. } => {
                 return ui::person_chat::with_invocation(cx.invocation(), || {
                     self.answer_effect(effect)
                 });
+            }
+            // The room answers these: at once from the native host, later in
+            // a page. Either way the effect answers when it has.
+            ChatEffect::SendDirectMessage { public_key, text } => {
+                let reply = ui::person_chat::with_invocation(cx.invocation(), || {
+                    self.send_person_message(public_key, text)
+                })?;
+                let public_key = public_key.clone();
+                return Ok(cx.spawn(
+                    |_| reply,
+                    move |chat: &mut Self, answer, _| chat.sent_person_answer(&public_key, answer),
+                ));
+            }
+            ChatEffect::ReadDirectConversation { public_key } => {
+                let reply = ui::person_chat::with_invocation(cx.invocation(), || {
+                    self.read_person_conversation(public_key)
+                })?;
+                let public_key = public_key.clone();
+                return Ok(cx.spawn(
+                    |_| reply,
+                    move |chat: &mut Self, answer, _| chat.read_person_answer(&public_key, answer),
+                ));
             }
             _ => {}
         }
@@ -660,3 +682,63 @@ impl ChatApp {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// The walk's slices: a drive of one scenario walks dozens of actions,
+    /// so each slice is its own test and they run side by side.
+    const SLICES: usize = 6;
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// every `SLICES`th scenario from `slice`: none is advertised yet
+    /// handled only by a click. The scenarios stage fixtures; the app
+    /// someone opens acts on this machine, so it is not walked.
+    fn walk(slice: usize) {
+        for scenario in super::ChatShell::scenarios()
+            .iter()
+            .skip(slice)
+            .step_by(SLICES)
+        {
+            let mut app = TestApp::<super::ChatShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_0() {
+        walk(0);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_1() {
+        walk(1);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_2() {
+        walk(2);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_3() {
+        walk(3);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_4() {
+        walk(4);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_5() {
+        walk(5);
+    }
+}

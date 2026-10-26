@@ -479,12 +479,6 @@ fn panel_contents(
     if !selected.open {
         return Box::new(body.with_no_padding());
     }
-    let back = dispatcher.clone();
-    body = body.push(Box::new(
-        Button::new("contacts.accounts.back", "contacts-account-close").on_view(move || {
-            back.effect(&AccountEffect::CloseAccounts);
-        }),
-    ));
     let Ok(directory) = editor.current() else {
         return Box::new(body.push(Box::new(Text::new("contacts-accounts-unavailable"))));
     };
@@ -1051,7 +1045,6 @@ mod tests {
                 "Contact",
                 "Account address or identifier",
                 "Review association",
-                "Close accounts",
             ] {
                 let node = nodes
                     .iter()
@@ -1066,6 +1059,12 @@ mod tests {
                     "{label}: {rect:?}"
                 );
             }
+            assert!(
+                nodes
+                    .iter()
+                    .all(|(_, node)| node.label() != Some("Close accounts")),
+                "the window bar's inspector toggle closes the panel"
+            );
             review(&mut app, &one, "identity-narrow-fixture");
             confirm(&mut app);
             for label in ["Edit association", "Remove association"] {

@@ -73,7 +73,10 @@ impl Workspace {
     }
 
     /// Remove saved connection
-    #[action(destructive, item = connections)]
+    ///
+    /// The window forgets the connection's password on this device too,
+    /// which Undo cannot bring back, so the removal is asked first.
+    #[action(destructive, irreversible, item = connections)]
     pub fn remove_connection(&mut self, connection: &Id) -> Result<(), Refusal> {
         self.connections
             .remove(connection)
@@ -359,3 +362,26 @@ impl ResourceSurface<Workspace, DbEffect> for DbClientApp {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::DbClientShell::scenarios() {
+            let mut app = TestApp::<super::DbClientShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

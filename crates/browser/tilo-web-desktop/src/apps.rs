@@ -8,6 +8,7 @@
 /// Register every web-capable application with the page runtime, in
 /// launcher order.
 pub(crate) fn register() {
+    activity_split::register();
     api_tester_split::register();
     calculator_split::register();
     calendar_split::register();
@@ -45,6 +46,38 @@ pub(crate) fn register() {
     video_player_split::register();
     weather_split::register();
     word_processor_split::register();
+}
+
+mod activity_split {
+    use std::ffi::c_void;
+
+    use ui::application::ApplicationDefinition;
+    use ui::application::registry::{self, Loading};
+
+    use crate::split::Callback;
+
+    #[link(wasm_import_module = "./__wasm_split.js")]
+    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
+    unsafe extern "C" {
+        #[link_name = "__wasm_split_load_activity_8cab21a8cb9da4ea_definition"]
+        fn load(callback: Callback, data: *const c_void);
+        #[link_name = "__wasm_split_00___activity___00_import_8cab21a8cb9da4ea_definition"]
+        fn definition() -> *const ApplicationDefinition;
+    }
+
+    #[unsafe(export_name = "__wasm_split_00___activity___00_export_8cab21a8cb9da4ea_definition")]
+    #[allow(improper_ctypes_definitions, reason = "called only from Rust")]
+    extern "C" fn export() -> *const ApplicationDefinition {
+        activity::definition()
+    }
+
+    fn open() -> Loading {
+        Box::pin(crate::split::definition(load, definition))
+    }
+
+    pub(super) fn register() {
+        registry::defer("so.tilo.activity", "Activity", open);
+    }
 }
 
 mod api_tester_split {

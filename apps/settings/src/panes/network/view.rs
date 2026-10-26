@@ -714,43 +714,27 @@ impl NetworkModel {
         )
     }
 
-    /// The advanced settings: work or school networks, diagnostics.
+    /// The advanced settings: work or school networks, diagnostics. The
+    /// work or school network's setup opens in place under its row.
     fn advanced_page(&self) -> Vec<SettingsSection> {
-        let mut enterprise = vec![crate::widgets::icon_row(
-            Icon::Landmark,
-            &t("net-enterprise-entry"),
-            &t("net-enterprise-entry-detail"),
-            Box::new(self.disclosure_button(
-                "settings.network.enterprise.editor",
-                &t("net-enterprise-entry"),
-                self.enterprise_open,
-                NetworkEffect::ShowEnterpriseSetup,
-            )),
-        )];
-        if self.enterprise_open {
-            enterprise.extend(self.enterprise_rows());
-        }
+        let setup = ui::widget::Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_extra_bottom_padding(crate::widgets::spacing().rhythm.sibling)
+            .push(Box::new(
+                crate::widgets::untitled(rows(self.enterprise_rows())).into_section(),
+            ));
+        let enterprise = ui::widget::DisclosureRow::new(t("net-enterprise-entry"), Box::new(setup))
+            .with_state(&self.enterprise_setup)
+            .icon(Icon::Landmark)
+            .secondary(t("net-enterprise-entry-detail"));
         vec![
-            card(&t("net-enterprise-title"), rows(enterprise)),
+            card(
+                &t("net-enterprise-title"),
+                rows(vec![row(Box::new(enterprise))]),
+            ),
             card(&t("net-diag-title"), rows(self.diagnostic_rows())),
         ]
-    }
-
-    /// A quiet chevron button that opens or closes something in place.
-    fn disclosure_button(&self, id: &str, name: &str, open: bool, effect: NetworkEffect) -> Button {
-        self.cx.bind_invocation(
-            Button::icon_only(
-                id,
-                if open {
-                    Icon::ChevronDown
-                } else {
-                    Icon::ChevronRight
-                },
-                name,
-            )
-            .role(ButtonRole::Plain),
-            effect,
-        )
     }
 
     fn diagnostic_rows(&self) -> Vec<Item> {

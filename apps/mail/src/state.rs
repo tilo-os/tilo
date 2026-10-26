@@ -187,6 +187,11 @@ pub enum Command {
     AccountSettings,
     /// Start a new message.
     Compose,
+    /// Close the message being written; one with anything written in it
+    /// stays in Drafts.
+    CloseCompose,
+    /// Throw the message being written away, its draft with it.
+    DiscardCompose,
     /// Enter or leave selecting several messages.
     ToggleBulk,
     /// Select every message the list shows.

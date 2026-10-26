@@ -32,6 +32,7 @@ pub mod runs;
 mod scenarios;
 pub mod screen;
 pub mod target;
+pub mod undoability;
 
 pub use graphics::TerminalImagePlacement;
 
@@ -47,6 +48,7 @@ pub use portable_pty::CommandBuilder;
 // Keep the large implementation private while exposing the stable types above.
 mod inner {
     include!("main_body.rs");
+    include!("scrollback_ui.rs");
     include!("target_ui.rs");
     include!("window_ui.rs");
 }

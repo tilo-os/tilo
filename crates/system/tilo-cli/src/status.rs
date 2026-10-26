@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 
 pub const SOCKET: &str = "/run/tilo-deployment/status.sock";
 
-/// Above the service's own `RuntimeMaxSec=`, so its verdict arrives before this gives up.
+/// Above the service's own `TimeoutStartSec=`, so its verdict arrives before this gives up.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(75);
 
 /// Where the service listens, or `None` on a system that has no such socket (an image older

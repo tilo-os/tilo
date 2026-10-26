@@ -57,7 +57,7 @@ async function fixture({boot, remembered = []} = {}) {
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot;')
     .replace("import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';", 'const loadRuntime = async () => ({}), mountDesktop = () => {}, prefetchApplication = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu();')
     .replace("import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';", "const startArrival = () => {}, failureMessage = error => error.message, STOPPED_DRAWING = 'stopped';")
-    .replace("import {watchForUpdate} from './bundle-update.mjs';", 'const watchForUpdate = () => {};')
+    .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
@@ -92,6 +92,26 @@ test('a page the host refuses compiles no renderer for the next page to wait on'
   assert.equal(failure?.code, 'no-access');
   assert.equal(document.documentElement.dataset.entry, 'refused');
   assert.deepEqual(prepared, []);
+});
+
+test('the account choice says it is the account choice, and resolves to the account taken', async () => {
+  // Pages driving a link wait for this card rather than counting buttons
+  // against a clock.
+  const accounts = [{displayName: 'Fixture reader', userPublicKey: USER}, {displayName: '', userPublicKey: 'bb'.repeat(32)}];
+  let chosen;
+  const {failure} = await fixture({boot: async ({deps}, page) => {
+    const choice = deps.chooseAccount(accounts);
+    const shown = document.body.children.filter(form => form.dataset.card === 'accounts');
+    assert.equal(shown.length, 1, 'one account choice is shown');
+    const buttons = shown[0].children.find(child => child.className === 'tilo-entry-options' || child.className === 'tilo-entry-actions').children;
+    assert.deepEqual(buttons.map(button => button.textContent), ['Fixture reader', 'bbbbbbbbbbbb']);
+    buttons[1].listeners.get('click')();
+    chosen = await choice;
+    return page;
+  }});
+  assert.equal(failure, null);
+  assert.equal(chosen, accounts[1]);
+  assert.equal(document.body.children.filter(form => form.dataset.card === 'accounts').length, 0, 'taking an account closes the choice');
 });
 
 test('rooms another host held at the origin of the page host are no longer offered', async () => {

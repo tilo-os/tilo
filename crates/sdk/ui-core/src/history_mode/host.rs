@@ -1804,32 +1804,32 @@ impl HistoryHost {
                         review.status,
                         super::pending_controls::PendingControlStatus::NeedsConfirmation
                     ) {
-                        let expected = match &review.confirmation {
-                            Ok(tilo_actions::ConfirmationPolicy::Confirm) => "CONFIRM".to_owned(),
-                            Ok(tilo_actions::ConfirmationPolicy::Phrase { phrase }) => {
-                                phrase.clone()
-                            }
-                            Ok(tilo_actions::ConfirmationPolicy::None) => {
-                                I18nManager::lookup_plain("history-mode-confirmation-unavailable")
-                            }
-                            Err(reason) => reason.clone(),
-                        };
+                        // A click on Confirm confirms. Only an irreversible
+                        // action that names what it destroys (a drive, an
+                        // app) asks for that name typed, in a plain field:
+                        // never a search field, never a generic word.
                         let entered = Rc::new(RefCell::new(String::new()));
-                        let changed = entered.clone();
+                        if let Ok(tilo_actions::ConfirmationPolicy::Phrase { phrase }) =
+                            &review.confirmation
+                        {
+                            let changed = entered.clone();
+                            row = row.push(Box::new(
+                                TextInput::local_with_language("und")
+                                    .with_spellcheck(false)
+                                    .with_autocorrect(false)
+                                    .with_id(&format!("{id}-phrase"))
+                                    .with_placeholder(I18nManager::format(
+                                        "history-mode-type-to-confirm",
+                                        &[("phrase", phrase.clone().into())],
+                                    ))
+                                    .on_change(move |value| {
+                                        changed.borrow_mut().replace_range(.., value)
+                                    }),
+                            ));
+                        } else if let Err(reason) = &review.confirmation {
+                            row = row.push(Box::new(Text::new(reason)));
+                        }
                         let confirm_token = token.clone();
-                        row = row.push(Box::new(
-                            TextInput::local_with_language("und")
-                                .with_spellcheck(false)
-                                .with_autocorrect(false)
-                                .with_id(&format!("{id}-phrase"))
-                                .with_placeholder(I18nManager::format(
-                                    "history-mode-type-to-confirm",
-                                    &[("phrase", expected.into())],
-                                ))
-                                .on_change(move |value| {
-                                    changed.borrow_mut().replace_range(.., value)
-                                }),
-                        ));
                         let typed = entered;
                         let callback = PendingControlCallback::new(move || {
                             commands.borrow_mut().push_back(

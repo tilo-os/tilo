@@ -25,6 +25,9 @@ export function createPeerVoice({peer, room, createCall = createVoiceCall, rando
   const signalling = {
     join: call => peer().voiceJoin(room, call),
     leave: () => { try { peer().voiceLeave(room); } catch {} },
+    // The host just answered the carrier: a session waiting to reconnect
+    // can now, and brings the fresh grant the call waits for.
+    reachable: () => { try { peer().retryNow?.(); } catch {} },
     show: (camera, screen, muted, deafened) => { try { peer().voiceShow(room, camera, screen, muted, deafened); } catch {} },
     onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };

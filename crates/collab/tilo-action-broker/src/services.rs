@@ -1,12 +1,14 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
 mod own_device;
 pub mod person_chat;
+mod room_nodes;
 mod task_execution;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
+pub use room_nodes::{RoomNodeActions, RoomNodeAsk, RoomNodeOutcome};
 pub use task_execution::{
-    NativeTaskActionRequirement, NativeTaskBinding, TRACKER_APP, TRACKER_ISSUE_PREFIX,
-    TRACKER_RESOURCE, TrackerAnswer, TrackerDirection, TrackerQuestion, TrackerRun, TrackerRuns,
-    is_tracker_issue,
+    NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
+    TRACKER_ISSUE_PREFIX, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection, TrackerQuestion,
+    TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
 };
 
 use std::sync::Arc;
@@ -129,7 +131,7 @@ pub trait WorkspaceAuthority: Send + Sync {
     /// who an app's history names for the changes an agent's own key
     /// signed. Presentation only; nothing is admitted by it. The default
     /// knows none, so every such change stays an unknown participant.
-    fn history_agents(&self, _room: &str) -> Vec<ui::history_source::RosterAgent> {
+    fn history_agents(&self, _room: &str) -> Vec<collab_types::history::RosterAgent> {
         Vec::new()
     }
 
@@ -275,8 +277,9 @@ pub trait WorkspaceMemberships: Send + Sync {
     }
 
     /// Whether `room` is held here but governed by the node that stewards
-    /// it, where the one membership change this device asks is the
-    /// authorship an app opening there needs, committed by that host.
+    /// it, where this device asks that host to commit the room's own
+    /// membership changes, decided by the room's governance as they are
+    /// where this device governs the room itself.
     fn grants_authorship_at_host(&self, _room: &str) -> bool {
         false
     }
@@ -616,6 +619,15 @@ pub trait LauncherServices: Send + Sync {
     /// neither challenge bytes nor credentials, document or application output.
     fn observe_executing_binding(&self, _observation: u64, _phase: ExecutingBindingPhase) {}
     fn applications(&self) -> Vec<LaunchableApplication>;
+    /// The same installed entries as `applications`, narrowed to an exact ID.
+    /// Hosts may avoid constructing unrelated entries. This is discovery only;
+    /// the broker still decides which rows the caller may see or invoke.
+    fn applications_for(&self, app_id: &str) -> Vec<LaunchableApplication> {
+        self.applications()
+            .into_iter()
+            .filter(|app| app.package_id == app_id)
+            .collect()
+    }
     /// Whether the person's own input is behind what app `app_id` asks for
     /// now: a press of theirs (never an agent's) reached one of its windows
     /// within the activation window, and has not proved another open
@@ -1017,7 +1029,7 @@ pub trait ContinuationServices: Send + Sync {
     fn clear(&self, room: RoomId, app: &str, instance: u64) -> Result<(), String>;
     /// One application instance answering a handoff request, or reporting
     /// that the document it shows arrived retired. `message` is an encoded
-    /// `ui::collaboration::handoff::HandoffReport`.
+    /// `collab_types::handoff::HandoffReport`.
     fn handoff(
         &self,
         room: RoomId,
@@ -1185,6 +1197,38 @@ pub trait SpeakerServices: Send + Sync {
 /// A wait for the speaker groups' next change, as [`SpeakerServices::changed`]
 /// returns it.
 pub type SpeakerChange = NearbyTransferChange;
+
+/// The host's drives, as the tools service lists them to Files. The broker
+/// admits only the certified Files route to wait on them; the list itself
+/// is asked of the tools service, which answers as it always does.
+pub trait DriveServices: Send + Sync {
+    /// Resolves once the drive list may have changed since `after` (0 at
+    /// first, then the value the previous wait returned), with the value to
+    /// wait from next. It names nothing: Files asks for the list again.
+    /// `None` when the host cannot say when its drives change; the broker
+    /// then answers unimplemented.
+    fn changed(&self, after: u64) -> Option<DriveChange>;
+}
+
+/// A wait for the drive list's next change, as [`DriveServices::changed`]
+/// returns it.
+pub type DriveChange = NearbyTransferChange;
+
+/// The person's apps, as the tools service lists them to Files. The broker
+/// admits only the certified Files route to wait on them; the list itself is
+/// asked of the tools service, which answers as it always does.
+pub trait ApplicationServices: Send + Sync {
+    /// Resolves once the app list may have changed since `after` (0 at first,
+    /// then the value the previous wait returned), with the value to wait
+    /// from next. It names nothing: Files asks for the list again. `None`
+    /// when the host cannot say when its apps change; the broker then
+    /// answers unimplemented.
+    fn changed(&self, after: u64) -> Option<ApplicationChange>;
+}
+
+/// A wait for the app list's next change, as
+/// [`ApplicationServices::changed`] returns it.
+pub type ApplicationChange = NearbyTransferChange;
 /// The host's Wi-Fi credential continuity across the person's devices: the
 /// broker admits only the certified Settings route, bounds and validates the
 /// command, and hands it here. A host without Wi-Fi radios installs none.
@@ -1387,6 +1431,10 @@ pub struct FileClipboardContext {
     pub(crate) workspace: String,
     pub(crate) owner: String,
     pub(crate) history_compensation: bool,
+    /// The agent behind this command, when the broker's custody of its
+    /// original invocation names an agent acting for the person whose
+    /// session Files runs in (`agent:<id>`). Presentation only.
+    pub(crate) attributed_agent: Option<String>,
     pub(crate) check: Arc<dyn Fn(tilo_actions::ActionKind) -> Result<(), String> + Send + Sync>,
 }
 impl FileClipboardContext {
@@ -1411,6 +1459,14 @@ impl FileClipboardContext {
     }
     pub fn owner(&self) -> &str {
         &self.owner
+    }
+    /// The agent (`agent:<id>`) whose invocation this command continues,
+    /// acting for the person whose session Files runs in, as the broker's
+    /// custody of that invocation names it; `None` for anyone else. What the
+    /// transfer writes is recorded as that agent's, for its person. It grants
+    /// nothing.
+    pub fn attributed_agent(&self) -> Option<&str> {
+        self.attributed_agent.as_deref()
     }
     /// Whether the broker admitted this command through a declared document Undo.
     /// This is minted from original invocation custody, never caller parameters.
@@ -1564,6 +1620,20 @@ pub trait FileClipboardServices: Send + Sync {
         command: runtime_collab::file_clipboard::Command,
     ) -> Result<runtime_collab::file_clipboard::Reply, String>;
     fn disconnect(&self, peer: u64);
+
+    /// Name `agent`, an `agent:<id>` principal the broker took from its own
+    /// custody of a live Files invocation and that acts for the person whose
+    /// session Files runs in, as the cause of this device's next writes to
+    /// `paths` (absolute paths under the workspace mount; a folder covers
+    /// what is under it). Presentation only: it grants nothing.
+    ///
+    /// # Errors
+    /// Refuses when the host records no write attribution, or the filesystem
+    /// refused it.
+    fn attribute_writes(&self, agent: &str, paths: Vec<String>) -> Result<(), String> {
+        let _ = (agent, paths);
+        Err("write attribution is unavailable".into())
+    }
 }
 /// A grant being recorded ([`AppActionGrants::record`]): its id once it is
 /// in force, or why it is not.
@@ -1653,6 +1723,15 @@ pub struct HostServices {
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
     pub speakers: Option<Arc<dyn SpeakerServices>>,
+    /// The drives the tools service lists to Files, which tell the certified
+    /// Files route when they change (`drivesChanged`). Without it Files is
+    /// never told, and lists no drives.
+    pub drives: Option<Arc<dyn DriveServices>>,
+    /// The person's apps the tools service lists to Files, which tell the
+    /// certified Files route when they change (`applicationsChanged`).
+    /// Without it Files is never told, and its Applications place asks on a
+    /// timer while it is open.
+    pub applications: Option<Arc<dyn ApplicationServices>>,
     /// The session's settings, of which each app reaches its own entries
     /// and the shared sections (`settings_store::app_scope`). Without it
     /// apps have no settings beyond their own process.
@@ -1690,4 +1769,9 @@ pub struct HostServices {
     /// Carries an application's action to another of the person's own
     /// devices. Without it no app reaches another device's actions.
     pub own_device: Option<Arc<dyn OwnDeviceActions>>,
+    /// Asks the room a node of its tree is in to share it, end a share of
+    /// it, or say what the person may do there. Without it no app's share
+    /// reaches a room, and the broker refuses it rather than let a share
+    /// promise access no grant backs.
+    pub room_nodes: Option<Arc<dyn RoomNodeActions>>,
 }

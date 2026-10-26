@@ -11,8 +11,8 @@
 //!     ROUNDDOWN, ROUNDUP, FLOOR, CEILING, SIGN, EXP, LN, LOG, LOG10, PI
 //!   * stats: AVERAGE, MEDIAN, MIN, MAX, COUNT, COUNTA, COUNTBLANK,
 //!     COUNTIF, COUNTIFS, SUMIF, SUMIFS, AVERAGEIF, AVERAGEIFS
-//!   * logical: IF, IFS, IFERROR, IFNA, AND, OR, NOT, XOR, SWITCH,
-//!     TRUE, FALSE
+//!   * logical: IF, IFS, IFERROR, IFNA, ISERROR, ISERR, ISNA, AND, OR,
+//!     NOT, XOR, SWITCH, TRUE, FALSE
 //!   * text: LEN, UPPER, LOWER, PROPER, TRIM, LEFT, RIGHT, MID, REPLACE,
 //!     SUBSTITUTE, FIND, SEARCH, REPT, CONCAT/CONCATENATE, TEXTJOIN, TEXT,
 //!     VALUE, EXACT, CHAR, CODE
@@ -23,19 +23,24 @@
 //! Evaluation is memoised with on-the-fly cycle detection so a sheet with
 //! `A1 = B1 + 1`, `B1 = A1` resolves to `#CYCLE!` rather than recursing
 //! forever. References that point at unparseable cells yield `#REF!`;
-//! division by zero yields `#DIV/0!`; type mismatches yield `#VALUE!`.
+//! division by zero yields `#DIV/0!`; type mismatches yield `#VALUE!`; a
+//! result outside the real numbers (`SQRT(-1)`, `LN(0)`) yields `#NUM!`.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::hash::BuildHasher;
 use ui::num::f64_of_usize;
 
-use crate::model::{Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1};
+use crate::model::{
+    Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1, parse_number,
+};
 
 mod book;
+mod real;
 mod resolve;
 mod rounding;
 pub use book::{Book, recalculate_in_book, recalculate_snapshot};
+use real::{finite_number, logarithm, power};
 use rounding::RoundMode;
 
 // ---------------------------------------------------------------------------
@@ -1143,7 +1148,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
 
     fn eval_expr(&mut self, expr: &Expr) -> CellValue {
         match expr {
-            Expr::Num(n) => CellValue::Number(*n),
+            Expr::Num(n) => finite_number(*n),
             Expr::Str(s) => CellValue::Text(s.clone()),
             Expr::Bool(b) => CellValue::Bool(*b),
             Expr::Ref(addr) => self.eval_cell(*addr),
@@ -1196,7 +1201,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 }
                 a / b
             }
-            BinOp::Pow => a.powf(b),
+            BinOp::Pow => return power(a, b),
             // Concat and the comparisons are handled above.
             BinOp::Concat
             | BinOp::Eq
@@ -1206,7 +1211,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             | BinOp::Le
             | BinOp::Ge => return CellValue::Error(FormulaError::Value),
         };
-        CellValue::Number(result)
+        finite_number(result)
     }
 
     /// Flatten an argument into the list of scalar values it represents.
@@ -1250,10 +1255,21 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         Ok(nums)
     }
 
+    /// Evaluate a function call. A function whose arithmetic leaves the real
+    /// numbers (`SQRT(-1)`, `LN(0)`, `EXP(1000)`, a `SUM` that overflows)
+    /// yields `#NUM!` here, once for every function, so IFERROR and ISERROR
+    /// see a real error rather than a NaN or an infinity in the cell.
+    fn eval_call(&mut self, name: &str, args: &[Expr]) -> CellValue {
+        match self.dispatch_call(name, args) {
+            CellValue::Number(n) => finite_number(n),
+            other => other,
+        }
+    }
+
     /// Dispatch a function call to the family that implements it. Each stage
     /// returns `None` for a name it does not own, so an unknown function falls
     /// through to `#NAME?`.
-    fn eval_call(&mut self, name: &str, args: &[Expr]) -> CellValue {
+    fn dispatch_call(&mut self, name: &str, args: &[Expr]) -> CellValue {
         if let Some(v) = self.eval_aggregate(name, args) {
             return v;
         }
@@ -1391,6 +1407,11 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             "IFS" => self.eval_ifs(args),
             "IFERROR" => self.eval_iferror(args),
             "IFNA" => self.eval_ifna(args),
+            "ISERROR" => self.eval_is(args, CellValue::is_error),
+            "ISERR" => self.eval_is(args, |v| {
+                v.is_error() && !matches!(v, CellValue::Error(FormulaError::Na))
+            }),
+            "ISNA" => self.eval_is(args, |v| matches!(v, CellValue::Error(FormulaError::Na))),
             "SWITCH" => self.eval_switch(args),
             "TRUE" => CellValue::Bool(true),
             "FALSE" => CellValue::Bool(false),
@@ -1457,6 +1478,14 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         } else {
             v
         }
+    }
+
+    /// ISERROR and its siblings: whether the one argument's value is of a kind.
+    fn eval_is(&mut self, args: &[Expr], test: impl Fn(&CellValue) -> bool) -> CellValue {
+        let [only] = args else {
+            return CellValue::Error(FormulaError::Error);
+        };
+        CellValue::Bool(test(&self.eval_expr(only)))
     }
 
     fn eval_ifna(&mut self, args: &[Expr]) -> CellValue {
@@ -1526,11 +1555,15 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 let Some(n) = v.as_number() else {
                     return Some(CellValue::Error(FormulaError::Value));
                 };
-                let base = args
-                    .get(1)
-                    .and_then(|a| self.eval_expr(a).as_number())
-                    .unwrap_or(10.0);
-                CellValue::Number(n.log(base))
+                let base = match args.get(1).map(|a| self.eval_expr(a)) {
+                    None => 10.0,
+                    Some(b) if b.is_error() => return Some(b),
+                    Some(b) => match b.as_number() {
+                        Some(base) => base,
+                        None => return Some(CellValue::Error(FormulaError::Value)),
+                    },
+                };
+                logarithm(n, base)
             }
             "PI" => CellValue::Number(std::f64::consts::PI),
             "ROUND" => self.round_fn(args, RoundMode::Nearest),
@@ -1538,12 +1571,12 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             "ROUNDUP" => self.round_fn(args, RoundMode::Up),
             "MOD" => self.binary_num(args, |a, b| {
                 if b == 0.0 {
-                    None
+                    CellValue::Error(FormulaError::Div0)
                 } else {
-                    Some(a - b * (a / b).floor())
+                    CellValue::Number(a - b * (a / b).floor())
                 }
             }),
-            "POWER" => self.binary_num(args, |a, b| Some(a.powf(b))),
+            "POWER" => self.binary_num(args, power),
             "CEILING" => self.round_to_multiple(args, f64::ceil, CellValue::Number(0.0)),
             _ => return None,
         };
@@ -1561,7 +1594,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             }
             "UPPER" => self.unary_text(args, str::to_uppercase),
             "LOWER" => self.unary_text(args, str::to_lowercase),
-            "TRIM" => self.unary_text(args, |s| s.trim().to_string()),
+            "TRIM" => self.unary_text(args, trim_spaces),
             "PROPER" => self.unary_text(args, proper_case),
             "LEFT" => self.substr_fn(args, true),
             "RIGHT" => self.substr_fn(args, false),
@@ -1593,18 +1626,10 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 CellValue::Text(s.repeat(count))
             }
             "VALUE" => {
-                let s = self
-                    .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
-                    .to_plain_string();
-                let cleaned: String = s
-                    .chars()
-                    .filter(|c| !matches!(c, ',' | '$' | ' '))
-                    .collect();
-                let core = cleaned.trim_end_matches('%');
-                match core.parse::<f64>() {
-                    Ok(n) => CellValue::Number(if cleaned.ends_with('%') { n / 100.0 } else { n }),
-                    Err(_) => CellValue::Error(FormulaError::Value),
-                }
+                let text = args
+                    .first()
+                    .map_or_else(String::new, |a| self.eval_expr(a).to_plain_string());
+                text_to_number(&text)
             }
             "EXACT" => {
                 let (Some(left), Some(right)) = (args.first(), args.get(1)) else {
@@ -1783,7 +1808,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         }
     }
 
-    fn binary_num(&mut self, args: &[Expr], op: impl Fn(f64, f64) -> Option<f64>) -> CellValue {
+    fn binary_num(&mut self, args: &[Expr], op: impl Fn(f64, f64) -> CellValue) -> CellValue {
         let [left, right] = args else {
             return CellValue::Error(FormulaError::Error);
         };
@@ -1796,10 +1821,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             return rv;
         }
         match (lv.as_number(), rv.as_number()) {
-            (Some(ln), Some(rn)) => match op(ln, rn) {
-                Some(result) => CellValue::Number(result),
-                None => CellValue::Error(FormulaError::Div0),
-            },
+            (Some(ln), Some(rn)) => op(ln, rn),
             _ => CellValue::Error(FormulaError::Value),
         }
     }
@@ -2430,6 +2452,33 @@ fn time_parts(serial: f64) -> (i64, i64, i64) {
     )
 }
 
+/// VALUE: read text as a number, ignoring thousands separators, a dollar
+/// sign and spaces, with a trailing percent sign dividing by 100.
+fn text_to_number(s: &str) -> CellValue {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !matches!(c, ',' | '$' | ' '))
+        .collect();
+    let core = cleaned.trim_end_matches('%');
+    match parse_number(core) {
+        Some(n) => CellValue::Number(if cleaned.ends_with('%') { n / 100.0 } else { n }),
+        None => CellValue::Error(FormulaError::Value),
+    }
+}
+
+/// TRIM: drop leading and trailing spaces and collapse each run of inner
+/// spaces to one, as Excel and Calc do. Only the space character counts.
+fn trim_spaces(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for word in s.split(' ').filter(|w| !w.is_empty()) {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
+}
+
 /// Title-case a string: capitalize the first letter of each run of letters.
 fn proper_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -2615,12 +2664,12 @@ fn parse_literal(raw: &str) -> CellValue {
     if trimmed.is_empty() {
         return CellValue::Empty;
     }
-    if let Ok(n) = trimmed.parse::<f64>() {
+    if let Some(n) = parse_number(trimmed) {
         return CellValue::Number(n);
     }
     // Accept a leading currency/percent for convenience.
     if let Some(p) = trimmed.strip_suffix('%')
-        && let Ok(n) = p.trim().parse::<f64>()
+        && let Some(n) = parse_number(p.trim())
     {
         return CellValue::Number(n / 100.0);
     }
@@ -2829,6 +2878,21 @@ mod tests {
         map.get(&a1_to_addr(a).unwrap())
             .cloned()
             .unwrap_or(CellValue::Empty)
+    }
+
+    /// TRIM drops the outer spaces and collapses inner runs to one space.
+    #[test]
+    fn trim_collapses_inner_spaces() {
+        let m = run(&[
+            ("A1", "=TRIM(\"  a   b  \")"),
+            ("A2", "=TRIM(\"one\")"),
+            ("A3", "=TRIM(\"   \")"),
+            ("A4", "=LEN(TRIM(\" x  y  z \"))"),
+        ]);
+        assert_eq!(val(&m, "A1"), CellValue::Text("a b".into()));
+        assert_eq!(val(&m, "A2"), CellValue::Text("one".into()));
+        assert_eq!(val(&m, "A3"), CellValue::Text(String::new()));
+        assert_eq!(val(&m, "A4"), CellValue::Number(5.0));
     }
 
     /// Precedence, references/SUM, IF/comparisons, div-zero/cycles and Excel error codes.

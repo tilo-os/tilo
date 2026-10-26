@@ -104,7 +104,6 @@ impl PresenceStatus {
 #[derive(Clone, Copy, Debug)]
 pub struct AvatarFace<'a> {
     name: &'a str,
-    #[cfg(feature = "local-daemons")]
     identity: &'a str,
     tint: Tint<'a>,
     image: Option<&'a peniko::ImageData>,
@@ -124,7 +123,6 @@ impl<'a> AvatarFace<'a> {
     pub fn new(name: &'a str, identity: &'a str) -> Self {
         Self {
             name,
-            #[cfg(feature = "local-daemons")]
             identity,
             tint: Tint::Identity(identity),
             image: None,
@@ -189,6 +187,12 @@ impl<'a> AvatarFace<'a> {
     pub fn square(mut self) -> Self {
         self.square = true;
         self
+    }
+
+    /// Whether it is the rounded square rather than the circle.
+    #[must_use]
+    pub fn is_square(&self) -> bool {
+        self.square
     }
 
     /// Paint a separator ring of `ground` around the avatar, for avatars that
@@ -439,6 +443,14 @@ impl<'a> AvatarFace<'a> {
         let image = self.image.or(public_image.as_ref());
         #[cfg(not(feature = "local-daemons"))]
         let image = self.image;
+        // The picture the person chose for their profile, wherever they
+        // show up, unless the caller drew them neutral.
+        let chosen = if image.is_none() && self.tint != Tint::Neutral {
+            crate::people_photos::photo(self.identity)
+        } else {
+            None
+        };
+        let image = image.or(chosen.as_ref());
         if let Some(image) = image {
             crate::image_store::paint_image_cover(
                 ctx.scene,

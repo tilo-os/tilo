@@ -6821,27 +6821,6 @@ pub fn device_fabric_view(
     }
 }
 
-/// Route existing local playback streams and future default-following streams
-/// to one currently enumerated output, including a connected Bluetooth sink.
-///
-/// # Errors
-///
-/// Returns an error if the node disappeared or `PipeWire` rejects any graph
-/// edit. The node id is resolved against a fresh graph before it is used.
-pub fn route_local_audio(node_id: u32) -> Result<(), String> {
-    let graph = media::audio::enumerate();
-    let sink = graph
-        .sink_by_id(node_id)
-        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-output-gone"))?;
-    let target_serial = sink.serial;
-    let control = media::audio::real_control();
-    control.set_default_sink(node_id)?;
-    for stream in graph.playback_streams {
-        control.route_stream(stream.id, target_serial)?;
-    }
-    Ok(())
-}
-
 /// An input level in `0.0..=1.0` as a whole percentage.
 #[must_use]
 pub fn input_level_percent(level: f32) -> u8 {
@@ -6856,29 +6835,6 @@ pub fn input_level_percent(level: f32) -> u8 {
 
 /// How far one step of the input level moves.
 const INPUT_LEVEL_STEP: f32 = 0.05;
-
-/// Record from one currently enumerated input from now on: make it the
-/// default source and move every running capture stream onto it.
-///
-/// # Errors
-///
-/// Returns an error if the input disappeared or `PipeWire` rejects any graph
-/// edit. The node id is resolved against a fresh graph before it is used.
-pub fn select_local_input(node_id: u32) -> Result<(), String> {
-    let graph = media::audio::enumerate();
-    let source = graph
-        .sources
-        .iter()
-        .find(|source| source.id == node_id)
-        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-input-gone"))?;
-    let target_serial = source.serial;
-    let control = media::audio::real_control();
-    control.set_default_source(node_id)?;
-    for stream in graph.record_streams {
-        control.route_stream(stream.id, target_serial)?;
-    }
-    Ok(())
-}
 
 /// The input level one step up or down from `current`, within `0..=1`.
 #[must_use]

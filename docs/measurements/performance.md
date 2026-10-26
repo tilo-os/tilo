@@ -133,10 +133,34 @@ the window), a second person invited as a viewer (frames, but no control, and
 input they send the host directly refused), the live plane dropped under the
 page while a window streams (it must resume and end on the last frame), and
 typing that never reaches a window that does not hold the keyboard or has
-closed. Safari is not automated: WebKit's Linux builds (WebKitGTK and WPE,
-which Playwright's WebKit is) are not Safari and have no WebTransport, and
-Safari runs only on macOS, for a logged-in user who has enabled remote
-automation (`safaridriver --enable`), which no CI runner here provides.
+closed.
+
+`--platform safari` runs the same qualification in Safari, over WebDriver
+(`tools/web/webdriver.mjs`), beside Chrome: the second browser a qualification
+needs before a browser runtime is qualified. Safari has no WebTransport, so it
+takes the HTTPS stream:
+
+```bash
+node scripts/perf/native_stream_qualification.mjs target/qualify --out safari.json \
+  --relay target/release/tilo-relay --source target/release/examples/legacy_stream_source \
+  --renderer gpu --carrier https --platform safari --expect-revision "$(git rev-parse HEAD)" --enforce-goals
+```
+
+It needs what no CI runner here has: a macOS host, a logged-in desktop user,
+and remote automation turned on once with `safaridriver --enable` (an
+administrator's password). The dev host's certificate is self-signed, and
+Safari's exception for it is a person's, asked once per Safari profile: the
+run opens the host alone first and waits up to five minutes
+(`TILO_SAFARI_CERTIFICATE_WAIT_MS`) for whoever watches to accept it, and
+refuses the run as invalid if no one does. WebDriver drives one window and has
+no browser context and no input method, so two cases run as far as its driver
+reaches: the paste is the page's paste event (the window's input is judged as
+before) and the input method's committed text is typed as key presses. The
+cases that need a second device and a second person (`fallback`, `viewer`) are
+Chrome's; a Safari report records them as not run, and
+`tools/perf/adapters.py` refuses a run that claims Safari without the HTTPS
+stream it takes. Safari's own build is a browser WebKit, and the qualification
+only drives it: nothing here runs WebKitGTK or WPE.
 
 The `latency` group is the compositor's side only (headless, no panel).
 Input-to-presentation latency on the reference machines is a weekly,

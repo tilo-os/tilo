@@ -99,14 +99,11 @@ def main() -> int:
         )
         return 1
     if shed:
-        print(
-            "widget document writes fell in "
-            + ", ".join(shed)
-            + "; record it with tools/policy/check_widget_document_writes.py --update",
-            file=sys.stderr,
-        )
+        for name in shed:
+            print(f"{name}: widget document writes fell below {BASELINE}; record it with "
+                  "tools/policy/check_widget_document_writes.py --update")
         return 1
-    print(f"widget document writes OK ({sum(counts.values())} left, none new)")
+    print(f"widget document writes OK ({sum(counts.values())} left, none new)", file=sys.stderr)
     return 0
 
 

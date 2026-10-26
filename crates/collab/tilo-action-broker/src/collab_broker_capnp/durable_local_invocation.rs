@@ -5,8 +5,9 @@ use super::{
     DIRECTORY_MAX_IDENTIFIER_BYTES, DIRECTORY_MAX_PARAMS_BYTES, DIRECTORY_MAX_QUERY_REVISION_BYTES,
     DirectoryActionConfirmation, DurableInvocation, InvocationCaller, InvocationEnvelope,
     InvocationInputs, InvocationKey, InvocationOwner, LocalActionDirectoryRegistry, Promise,
-    PublishedAction, PublishedSurface, Rc, VerifiedActionCaller, channel_handle, mpsc,
-    resolved_invocation, validate_directory_identifier, validate_directory_text,
+    PublishedAction, PublishedSurface, Rc, VerifiedActionCaller, channel_handle,
+    legacy_door_may_act_as_person, mpsc, resolved_invocation, validate_directory_identifier,
+    validate_directory_text,
 };
 use resolved_invocation::ResolvedOffer;
 
@@ -810,6 +811,18 @@ pub(super) fn invoke(
             .await
             .map_err(capnp::Error::failed)?;
         let publication = offer.offered(request.binding.peer_id);
+        // The binding names the target, so the target's application must be
+        // the caller's own. Checked before the person is asked anything.
+        let asked = caller.current(state).map_err(capnp::Error::failed)?;
+        let invoke_access = state.app_action_access(&caller.route.app_id).invoke;
+        if !legacy_door_may_act_as_person(
+            &asked,
+            &caller.route,
+            &publication.0.app_id,
+            invoke_access,
+        ) {
+            return Err(capnp::Error::failed(super::LEGACY_DOOR_FOREIGN_APP.into()));
+        }
         let store_answer = if super::requires_store_witness(&publication.0.app_id, &request.action)
         {
             let mut binding = state.native_witness_binding(
@@ -849,10 +862,22 @@ pub(super) fn invoke(
         } else {
             None
         };
-        let admission = state
-            .admission_lock
-            .lock()
-            .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
+        // A duplicate arriving while the first's admission is written waits
+        // for it, then finds it.
+        let admission = loop {
+            let in_flight = {
+                let admission = state
+                    .admission_lock
+                    .lock()
+                    .map_err(|_| capnp::Error::failed("invocation admission unavailable".into()))?;
+                let in_flight = state.journal_in_flight(&request.invocation);
+                if !in_flight.pending() {
+                    break admission;
+                }
+                in_flight
+            };
+            in_flight.wait().await.map_err(capnp::Error::failed)?;
+        };
         let current = caller.current(state).map_err(capnp::Error::failed)?;
         if let Some(record) = state
             .local_existing(&caller, &request)
@@ -881,6 +906,17 @@ pub(super) fn invoke(
             return Err(capnp::Error::failed(
                 "original invocation target binding changed".into(),
             ));
+        }
+        // The binding names the target, so the target's application must be
+        // the caller's own. Checked before any confirmation is minted.
+        let invoke_access = state.app_action_access(&caller.route.app_id).invoke;
+        if !legacy_door_may_act_as_person(
+            &current,
+            &caller.route,
+            &request.binding.app_id,
+            invoke_access,
+        ) {
+            return Err(capnp::Error::failed(super::LEGACY_DOOR_FOREIGN_APP.into()));
         }
         let offered = offer.offered(request.binding.peer_id);
         let actor = current.broker_actor();
@@ -926,7 +962,7 @@ pub(super) fn invoke(
             offer: &offer,
             directories: &channel.directories,
         };
-        let job = state
+        let staged = state
             .dispatch_invocation_from_offered_owned(
                 request.binding.peer_id,
                 offered,
@@ -948,12 +984,15 @@ pub(super) fn invoke(
                 },
             )
             .map_err(capnp::Error::failed)?;
+        // Answered once durable, the loop free meanwhile: the admission lock
+        // is not held across the wait.
+        drop(admission);
+        let job = staged.start(state).await.map_err(capnp::Error::failed)?;
         drop(job.completion);
         let record = state
             .local_existing(&caller, &request)
             .map_err(capnp::Error::failed)?
             .ok_or_else(|| capnp::Error::failed("admitted invocation missing".into()))?;
-        drop(admission);
         write_observation(
             results.get().init_observation(),
             host,
@@ -1005,7 +1044,7 @@ pub(super) fn cancel(
     params: &channel_handle::CancelDurablePublishedInvocationParams,
     mut results: channel_handle::CancelDurablePublishedInvocationResults,
 ) -> Promise<(), capnp::Error> {
-    let outcome = (|| {
+    let staged = (|| {
         let p = params.get()?;
         let host = uuid::Uuid::from_bytes(array(p.get_host()?, "invocation host")?);
         let id = tilo_actions::InvocationId(uuid::Uuid::from_bytes(array(
@@ -1022,24 +1061,29 @@ pub(super) fn cancel(
             .state
             .local_status(&caller, host, id)
             .map_err(capnp::Error::failed)?;
-        if let Some(record) = &record
-            && !record.update.is_terminal()
-            && !record.cancellation_requested
-        {
-            channel
-                .state
-                .cancel_durable_record(record)
-                .map_err(capnp::Error::failed)?;
-        }
-        let record = channel
-            .state
+        let durable = match &record {
+            Some(record) if !record.update.is_terminal() && !record.cancellation_requested => {
+                channel
+                    .state
+                    .cancel_durable_record(record)
+                    .map_err(capnp::Error::failed)?
+            }
+            _ => super::invocation_journal::Durable::settled(),
+        };
+        drop(admission);
+        Ok::<_, capnp::Error>((caller, host, id, durable))
+    })();
+    let (caller, host, id, durable) = match staged {
+        Ok(staged) => staged,
+        Err(error) => return Promise::err(error),
+    };
+    let state = channel.state.clone();
+    // Answered once the request is durable, without holding the loop.
+    Promise::from_future(async move {
+        durable.wait().await.map_err(capnp::Error::failed)?;
+        let record = state
             .local_status(&caller, host, id)
             .map_err(capnp::Error::failed)?;
-        drop(admission);
         write_observation(results.get().init_observation(), host, id, record.as_ref())
-    })();
-    match outcome {
-        Ok(()) => Promise::ok(()),
-        Err(error) => Promise::err(error),
-    }
+    })
 }

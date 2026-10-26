@@ -173,8 +173,10 @@ impl Browser {
 }
 
 /// The screenshot scenarios: the page, the chrome's states, the library's
-/// sections and the tab strip.
+/// sections and the tab strip. `page` is the deterministic page as it opens,
+/// nothing staged over it.
 const SCENARIOS: &[&str] = &[
+    "page",
     "pip-active",
     "pip-empty",
     "settings",
@@ -387,9 +389,11 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
             // Visits and addresses are the person's own: they follow them to
             // their other devices and never reach a collaborator. A private
             // window keeps none.
-            // Downloads stay on this device, in its settings.
+            // Downloads stay on this device, in its settings, as do the
+            // widths side panels are dragged to.
             if !cx.is_private() {
                 self.attach_downloads(cx.storage().settings());
+                self.attach_side_panel_widths(cx.storage().settings());
             }
             if !cx.is_private()
                 && let Some(bookmarks) = cx.person::<crate::personal_bookmarks::PersonalBookmarks>()
@@ -796,3 +800,26 @@ mod tests {
 
 #[cfg(test)]
 mod model_tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::BrowserShell::scenarios() {
+            let mut app = TestApp::<super::BrowserShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

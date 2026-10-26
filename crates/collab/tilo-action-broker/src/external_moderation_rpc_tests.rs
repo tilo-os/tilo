@@ -193,6 +193,8 @@ mod external_moderation_rpc_tests {
                     },
                     Some(origin),
                 )
+                .unwrap()
+                .start_blocking(&self.state)
                 .unwrap();
             job.id
         }

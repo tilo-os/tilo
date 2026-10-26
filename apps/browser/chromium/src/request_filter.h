@@ -1,5 +1,6 @@
 #pragma once
 #include "blocker.h"
+#include "extension_standins.h"
 #include "site_policy.h"
 #include <map>
 #include <set>
@@ -91,7 +92,18 @@ class RequestFilter final : public CefRequestContextHandler {
   void Begin(int browser,const std::string& url) {std::lock_guard<std::mutex> lock(owners_mutex_);owners_[browser]=std::make_shared<SiteDocument>(Origin(url),++generation_);}
   void Remove(int browser) {std::lock_guard<std::mutex> lock(owners_mutex_);owners_.erase(browser);}
   std::shared_ptr<SiteDocument> Document(int browser) {std::lock_guard<std::mutex> lock(owners_mutex_);auto it=owners_.find(browser);return it==owners_.end()?nullptr:it->second;}
-  CefRefPtr<CefResourceRequestHandler> GetResourceRequestHandler(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool,bool,const CefString& initiator,bool&) override {
+  // Set once, before the first request (extension_standins.h).
+  void ServeStandIns(std::shared_ptr<StandIns> stand_ins) {stand_ins_=std::move(stand_ins);}
+  CefRefPtr<CefResourceRequestHandler> GetResourceRequestHandler(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool navigation,bool,const CefString& initiator,bool&) override {
+    // An ad blocker's stand-in at its address for the session, and the
+    // request that becomes at its own address: the host answers it.
+    if(stand_ins_ && !navigation) {
+      if(auto address=ExtensionAddressOf(request->GetURL())) {
+        if(SessionExtensionHost(address->host) || (OwnExtensionHost(address->host) && stand_ins_->Expects(request->GetIdentifier())))
+          return new StandInRequest(stand_ins_,initiator.ToString());
+        return nullptr;
+      }
+    }
     auto state=std::atomic_load(&state_);
     if(!state->enabled || !WebURL(request->GetURL())) return nullptr;
     auto document=browser && frame?Document(browser->GetIdentifier()):nullptr;
@@ -111,6 +123,7 @@ class RequestFilter final : public CefRequestContextHandler {
   }
  private:
   std::shared_ptr<FilterState> state_;std::function<void()> failure_;bool fail_closed_;
+  std::shared_ptr<StandIns> stand_ins_;
   std::mutex owners_mutex_;std::map<int,std::shared_ptr<SiteDocument>> owners_;uint64_t generation_=0;
   IMPLEMENT_REFCOUNTING(RequestFilter);
 };

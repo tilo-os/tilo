@@ -68,6 +68,11 @@ cleanup() {
   kill "$sampler" 2>/dev/null || true
   if [ "$rc" -ne 0 ]; then
     TILO_SSH_BOUND=60 "$vm" ssh 'systemctl --failed --no-pager; journalctl -b --no-pager -o short-monotonic -p warning -n 200' || true
+    # The session's own account: the compositor logs to its state directory.
+    TILO_SSH_BOUND=60 "$vm" ssh 'journalctl -b --no-pager -o short-monotonic -n 400 _UID=$(id -u)' \
+      > "$out/session-journal.txt" 2>&1 || true
+    TILO_SSH_BOUND=60 "$vm" ssh 'cat "$HOME"/.local/state/tilo/session-logs/*.log' \
+      > "$out/compositor-session.log" 2>&1 || true
   fi
   "$vm" stop >/dev/null 2>&1 || true
   cp -f "$TILO_RUN/qemu.log" "$TILO_RUN/serial.log" "$TILO_RUN"/*.png "$out/" 2>/dev/null || true
@@ -184,6 +189,15 @@ fi
 "$vm" ssh "/usr/libexec/tilo-session-report --render-gate $render_budgets"
 
 "$vm" test projection-boot-check.sh
+# H.264 decode names the element the image really chose. Reported, not gating:
+# the clip it decodes is written by an encoder only the opt-in codec pack
+# carries, so a stock guest has no subject and the check fails saying so. Run
+# it on a board whose SoC has a codec block with --require-hardware.
+if "$vm" test h264-boot-check.py; then
+  note 'H.264 decode named the element the image chose'
+else
+  note 'H.264 decode could not be observed (reported, not gating)'
+fi
 # AirPlay encrypted-media acceptance: phase-bounded deadlines on the shipped
 # script. Its failure is reported and does not fail the desktop gate;
 # OpenH264 arrives via the opt-in codec pack.

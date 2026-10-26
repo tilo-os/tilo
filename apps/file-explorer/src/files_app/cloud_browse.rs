@@ -422,6 +422,7 @@ impl FileExplorerWidget {
             self.update_toolbar();
             // window-bar: fallback, the bar shows the path while it hosts the window
             self.nav.set_content_header_leading(Some(Box::new(leading)));
+            // window-bar: fallback, the bar holds the folder's actions while it hosts the window
             self.nav.set_content_header("", vec![Box::new(actions)]);
             self.cloud.header_shown = false;
         }

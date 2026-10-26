@@ -61,7 +61,11 @@ impl VideoEditorApp {
             }
             _ => false,
         };
-        if !showed_real {
+        // No clip under the playhead: whatever was composited is the bare
+        // letterbox, so it says so, as it does when nothing was.
+        let between_clips = !self.project.clips.is_empty()
+            && self.project.top_video_clip_at(self.playhead).is_none();
+        if !showed_real || between_clips {
             // Nothing was composited, so there is no picture. Say why in
             // words on the letterbox, in the media inks — text only, never an
             // invented picture or a glyph that looks like a control.
@@ -80,12 +84,10 @@ impl VideoEditorApp {
             let title_style = theme.text(TextRole::Body).strong();
             let hint_style = theme.text(TextRole::Caption);
             let th = line_height(tr, &title_style);
-            let hh = if hint.is_empty() {
-                -S1
-            } else {
-                line_height(tr, &hint_style)
-            };
-            let top = canvas.center().y - (th + S1 + hh) / 2.0;
+            // The hint asks for a step, so it carries the button for it.
+            let offer = title == PREVIEW_EMPTY_TITLE && self.preview_offers_go_to_clip();
+            let (top, go_to_clip) =
+                Self::preview_hint_stack(canvas, tr, theme, !hint.is_empty(), offer);
             let room = (canvas.width() - S6) as f32;
             let title = elide_at(title, room, &title_style, tr);
             let hint = elide_at(hint, room, &hint_style, tr);
@@ -111,6 +113,12 @@ impl VideoEditorApp {
                 canvas.center().x - hw / 2.0,
                 top + th + S1,
             );
+            if let Some(button) = go_to_clip {
+                let face = ButtonFace::new(button, super::go_to_clip::GO_TO_CLIP_LABEL)
+                    .control_size(ControlSize::Small)
+                    .hovered(button.contains(self.last_mouse));
+                Button::paint(scene, tf, tr, theme, &face);
+            }
         }
         // The clip under the playhead has no bytes on this device: say so on the
         // canvas, because the picture behind this line is a stand-in generated

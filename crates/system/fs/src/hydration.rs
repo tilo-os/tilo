@@ -824,6 +824,33 @@ fn slice(bytes: &[u8], offset: u64, size: u64) -> Vec<u8> {
         .unwrap_or_default()
 }
 
+/// Peers for tests of what a fetch does when a peer stops answering.
+#[cfg(test)]
+pub(crate) mod test_peers {
+    use iroh::endpoint::{Connection, Endpoint, presets};
+    use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+
+    /// Accepts blob connections and never answers a request on them, as a
+    /// peer does that went quiet without closing its connection.
+    #[derive(Debug)]
+    struct Silent;
+
+    impl ProtocolHandler for Silent {
+        async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+            connection.closed().await;
+            Ok(())
+        }
+    }
+
+    /// A running silent peer; it stops when the router is dropped.
+    pub(crate) async fn silent() -> Router {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        Router::builder(endpoint)
+            .accept(iroh_blobs::ALPN, Silent)
+            .spawn()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

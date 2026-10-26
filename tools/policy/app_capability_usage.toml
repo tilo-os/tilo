@@ -24,7 +24,7 @@
 schema = 1
 
 [uses."network.http"]
-crates = ["reqwest", "rustypipe", "ureq", "tilo-model-gateway"]
+crates = ["reqwest", "rustypipe", "ureq", "tilo-model-gateway", "tilo-model-client"]
 features = ["tilo-net/http", "tilo-net/json", "tilo-net/blocking"]
 paths = ["tilo_net::Client", "tilo_net::http"]
 

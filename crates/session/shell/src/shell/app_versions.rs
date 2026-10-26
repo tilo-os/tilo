@@ -75,6 +75,16 @@ pub(crate) const UPDATE_TIMEOUT: Duration = crate::shell::catalogue::INSTALL_TIM
 /// `start` with whether a build that fits is installed now. `start` runs on
 /// the worker; it launches the app again, or reports why it cannot.
 pub(crate) fn update_then(package_id: &str, start: impl FnOnce(UpdateOutcome) + Send + 'static) {
+    update_after(package_id, || {}, start);
+}
+
+/// [`update_then`], running `first` on the worker before the update starts.
+/// When `package_id` is already being updated, neither runs.
+pub(crate) fn update_after(
+    package_id: &str,
+    first: impl FnOnce() + Send + 'static,
+    start: impl FnOnce(UpdateOutcome) + Send + 'static,
+) {
     if !UPDATING.lock_recover().insert(package_id.to_owned()) {
         return;
     }
@@ -83,6 +93,7 @@ pub(crate) fn update_then(package_id: &str, start: impl FnOnce(UpdateOutcome) + 
     let spawned = std::thread::Builder::new()
         .name("app-update".to_string())
         .spawn(move || {
+            first();
             let outcome = crate::shell::catalogue::update_package(&package);
             crate::shell::launcher::invalidate_app_cache();
             UPDATING.lock_recover().remove(&package);

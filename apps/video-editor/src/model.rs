@@ -24,6 +24,8 @@ pub type MarkerId = Uuid;
 /// grabbed again.
 pub const MIN_CLIP: f64 = 0.10;
 
+pub use crate::angles::{CutSides, Side, SidePlacement};
+
 /// Per-clip colour + blend filters. All are linear, normalised so the
 /// inspector sliders run 0..1 and a fresh clip is the identity:
 ///   * `brightness`/`contrast`/`saturation`: 0.5 = unchanged, 0 = none,

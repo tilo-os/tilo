@@ -709,6 +709,67 @@ impl Rooms {
         .await
     }
 
+    /// Add an agent to `room`, remove one, or give and take back a grant,
+    /// as `device`: the room's own membership changes, which its governance
+    /// decides. A room whose host stewards its channels commits these
+    /// here, because the host is the one party that may; the same typed
+    /// command is what a room a device governs applies itself.
+    ///
+    /// # Errors
+    /// Refuses a member the room does not let make the change, a malformed
+    /// command, and a change that could not commit.
+    pub async fn govern_room_membership(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        request_id: [u8; 32],
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+        if request_id == [0; 32] {
+            return Err(CollaborationError::new(
+                "request identifier must be nonzero",
+            ));
+        }
+        // Adding an agent puts its preset's grants on the room, removing it
+        // takes them back, and a grant or revocation is itself one: both
+        // are the room's grant and revoke actions.
+        let gate = match &command {
+            Command::AddAgent { .. } | Command::Grant { .. } => governance::GRANT,
+            Command::RemoveAgent { .. } | Command::Revoke { .. } => governance::REVOKE,
+            _ => {
+                return Err(CollaborationError::new(
+                    "only an agent's membership and the room's grants govern membership",
+                ));
+            }
+        };
+        command.validate()?;
+        let now = tilo_clock::unix_now_ns();
+        let room = self.room(room).await?;
+        let mut room = room.lock().await;
+        let by = self.authorize(device, Some(&room), RoomOp::Govern(gate), now)?;
+        tracing::debug!(room = %room.room(), %by, operation = gate, "workspace membership change");
+        let key = self.inner.host.key.clone();
+        // The change names itself: the same command sent again is the same
+        // administration request, answered with what the first committed.
+        let digest = request_digest(&("room.membership", &command))?;
+        self.administer(
+            &mut room,
+            request_id,
+            digest,
+            |peer| {
+                peer.workspace_mut().apply_workspace_membership_command(
+                    device,
+                    &command,
+                    &key,
+                    system_time(now),
+                )
+            },
+            now,
+        )
+        .await
+    }
+
     /// Install a bot as a governed member of `room`, update its program,
     /// renew its delegation or uninstall it
     /// ([`WorkspaceMembershipCommand::InstallBot`],
@@ -1069,6 +1130,9 @@ impl Rooms {
         let admitted = tilo_governor::admit(&mut held, joins, key, now);
         if held.committed {
             self.settle(room).await?;
+            // Someone invited from the wait list is in now: their entry
+            // leaves it.
+            room.forget_joined_wait_list();
         }
         admitted
     }

@@ -325,6 +325,17 @@ pub struct AccessNode {
     /// The export layer emits them as this node's subtree, nested as deeply
     /// as needed (rows containing cells).
     pub children: Vec<AccessNode>,
+    /// Whether [`name`](Self::name) is the app's own fixed, localized copy (a
+    /// button's label, a heading), the same for everyone, rather than
+    /// something a person or a resource put there. Unset means content: a
+    /// feedback report hides it until the reporter shows it.
+    #[serde(skip)]
+    pub interface_name: bool,
+    /// What kind of thing this is in the app's own words, where its role
+    /// says too little ("Message" for a chat row that is a list item), in
+    /// the reader's language. Always the app's own copy, never content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_description: Option<String>,
 }
 
 /// A widget's [`AccessNode`] with its synthetic children shared rather than
@@ -373,7 +384,23 @@ impl AccessNode {
             key: None,
             bounds: None,
             children: Vec::new(),
+            interface_name: false,
+            role_description: None,
         }
+    }
+
+    /// Mark the name as the app's own fixed, localized copy
+    /// ([`Self::interface_name`]).
+    pub fn with_interface_name(mut self, interface: bool) -> Self {
+        self.interface_name = interface;
+        self
+    }
+
+    /// Say what kind of thing this is in the app's own words
+    /// ([`Self::role_description`]).
+    pub fn with_role_description(mut self, kind: impl Into<String>) -> Self {
+        self.role_description = Some(kind.into()).filter(|kind| !kind.trim().is_empty());
+        self
     }
 
     pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
@@ -383,8 +410,13 @@ impl AccessNode {
 
     /// Attach an opaque, widget-local target for actions on this synthetic
     /// node. Prefer stable model keys over visible indices.
-    pub fn with_action_target(mut self, target: impl Into<String>) -> Self {
-        let target = target.into();
+    pub fn with_action_target(self, target: impl Into<String>) -> Self {
+        self.with_owned_action_target(target.into())
+    }
+
+    /// [`Self::with_action_target`] once the target is owned: one copy in the
+    /// toolkit rather than one in every app that names a target.
+    fn with_owned_action_target(mut self, target: String) -> Self {
         // An actionable synthetic node necessarily needs stable identity for
         // agents and AT to hold across frames. Derive the existing compact key
         // from the same opaque target so authors cannot accidentally provide

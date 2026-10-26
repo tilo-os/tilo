@@ -208,7 +208,8 @@ impl PeerMember<'_> {
     pub fn person(&self) -> &str {
         self.person.as_str()
     }
-    /// The room's grants as admitted.
+    /// The room's grants as the document stores them, built-in roles
+    /// included as stored; [`Self::room_policy`] decides with the current ones.
     pub fn grants(&self) -> &[Grant] {
         self.policy.grants()
     }
@@ -226,6 +227,7 @@ impl PeerMember<'_> {
             joined: BTreeMap::new(),
             grants: self.policy.grants().to_vec(),
         }
+        .with_current_roles()
     }
     /// The member's authority over `policy` (from [`Self::room_policy`]),
     /// held to `foreign_bound` on a foreign device.
