@@ -123,6 +123,7 @@ def run_check(ctx, chk: Check) -> Result:
         res.detail = _join(res.detail, f"{type(exc).__name__}: {exc}")
         (ctx.out / "errors").mkdir(exist_ok=True)
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
+    leave_running(ctx, chk, res)
     leave_unlocked(ctx, chk, res)
     leave_no_dialog(ctx, chk, res)
     restarted = session_restart(ctx, chk.id)
@@ -132,6 +133,41 @@ def run_check(ctx, chk: Check) -> Result:
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
+
+
+LEFT_STOPPED = "left no slot session answering"
+# How long a session that is not answering after a check is given to come back by itself
+# (systemd's Restart= after a crash, a session still starting) before the harness restarts it.
+SESSION_RETURN_S = 60
+
+
+def leave_running(ctx, chk: Check, res: Result) -> None:
+    """No check may hand the next one a slot whose session does not answer: every later
+    check would fail on a missing control socket instead of its subject (after A17 ended
+    the session on purpose and the next one died too, R04 and W01-W07 all failed so). A
+    session that does not answer is waited for until its control socket answers again,
+    as long as systemd may still be bringing it back; one still silent after that is
+    restarted by the harness and the check fails, however it ended."""
+    def answering():
+        try:
+            return ctx.state()
+        except VmError:
+            return None
+
+    if answering() is not None:
+        return
+    if wait_until(answering, SESSION_RETURN_S, 2.0) is not None:
+        return
+    res.status = "fail"
+    ctx.facts.setdefault("session_recovered_after", []).append(chk.id)
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s, and restarting "
+                                       f"the slot session failed: {exc.reason()}")
+        return
+    res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s; the harness "
+                                   "restarted the slot session")
 
 
 LEFT_LOCKED = "left the session locked"
