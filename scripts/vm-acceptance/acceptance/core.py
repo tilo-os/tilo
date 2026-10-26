@@ -98,6 +98,33 @@ def _calibrated(func, why: str):
     return run
 
 
+# The session locks after 5 minutes without a person's input (Settings' default), and the
+# harness drives most checks through the control socket, which is no person's input: R01 to
+# R03 alone run that long, and the idle lock then fired inside R03 (its compositor memory
+# taken over the lock overlay, the session left locked). A lone Shift press, real input that
+# no binding takes, restarts the person's idle period before a check once the last one is
+# this old; the settle keeps its handling out of the check's own idle windows.
+AWAKE_EVERY_S = 120
+AWAKE_SETTLE_S = 2.0
+
+
+def keep_awake(ctx) -> None:
+    """Press Shift on the slot's seat when the last press is `AWAKE_EVERY_S` old (or there was
+    none), so no check meets the idle dim, blank or lock it is not about. run.py calls it
+    before each check."""
+    now = time.monotonic()
+    last = ctx.facts.get("awake_at")
+    if last is not None and now - last < AWAKE_EVERY_S:
+        return
+    try:
+        ctx.vm.key("shift")
+    except VmError as exc:
+        ctx.facts["awake_failed"] = exc.reason()
+        return
+    ctx.facts["awake_at"] = now
+    time.sleep(AWAKE_SETTLE_S)
+
+
 def run_check(ctx, chk: Check) -> Result:
     res = Result(chk.id, chk.area, chk.title)
     started = time.monotonic()
